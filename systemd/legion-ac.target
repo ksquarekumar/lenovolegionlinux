@@ -1,0 +1,6 @@
+[Unit]
+Description=Legion AC power policy target
+DefaultDependencies=no
+StopWhenUnneeded=yes
+Conflicts=legion-battery.target
+

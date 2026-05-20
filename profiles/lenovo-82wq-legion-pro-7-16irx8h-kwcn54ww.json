@@ -1,0 +1,110 @@
+{
+  "schema": 1,
+  "id": "lenovo-82wq-legion-pro-7-16irx8h-kwcn54ww",
+  "description": "LENOVO 82WQ Legion Pro 7 16IRX8H BIOS KWCN54WW",
+  "dmi": {
+    "sys_vendor": "LENOVO",
+    "product_name": "82WQ",
+    "product_family": "Legion Pro 7 16IRX8H",
+    "product_version": "Legion Pro 7 16IRX8H",
+    "product_sku": "LENOVO_MT_82WQ_BU_idea_FM_Legion Pro 7 16IRX8H",
+    "board_name": "LNVNB161216",
+    "bios_version": "KWCN54WW"
+  },
+  "paths": {
+    "ac_adapter": "/sys/class/power_supply/ADP0/online",
+    "platform_profile": "/sys/firmware/acpi/platform_profile",
+    "platform_profile_choices": "/sys/firmware/acpi/platform_profile_choices",
+    "fan_mode": "/sys/devices/pci0000:00/0000:00:1f.0/PNP0C09:00/VPC2004:00/fan_mode"
+  },
+  "ac": {
+    "cpu_power": {
+      "nominal_uw": 55000000,
+      "long_uw": 70000000,
+      "loaded_long_uw": 70000000,
+      "short_uw": 125000000,
+      "peak_uw": 125000000
+    },
+    "rapl": {
+      "package_zone_names": ["package-0"],
+      "constraints": {
+        "long_term": {
+          "power_limit_uw": 70000000,
+          "time_window_us": 55967744
+        },
+        "short_term": {
+          "power_limit_uw": 125000000,
+          "time_window_us": 2928
+        },
+        "peak_power": {
+          "power_limit_uw": 125000000
+        }
+      }
+    },
+    "cpu": {
+      "ignore_ppc": "1",
+      "no_turbo": "0",
+      "max_perf_pct": "100",
+      "governor": "performance",
+      "energy_performance_preference": "performance",
+      "energy_perf_bias": "0",
+      "disable_idle": true
+    },
+    "firmware": {
+      "platform_profile_preference": ["max-power", "performance"],
+      "fan_mode": "4"
+    },
+    "nvidia": {
+      "start_persistenced": true,
+      "start_powerd": true,
+      "set_persistence_mode": true,
+      "expected_dynamic_power_w": 150
+    }
+  },
+  "battery": {
+    "rapl": {
+      "package_zone_names": ["package-0"],
+      "constraints": {
+        "long_term": {
+          "power_limit_uw": 25000000,
+          "time_window_us": 55967744
+        },
+        "short_term": {
+          "power_limit_uw": 35000000,
+          "time_window_us": 2928
+        },
+        "peak_power": {
+          "power_limit_uw": 45000000
+        }
+      }
+    },
+    "cpu": {
+      "ignore_ppc": "0",
+      "no_turbo": "0",
+      "governor": "powersave",
+      "energy_performance_preference": "balance_power",
+      "energy_perf_bias": "8",
+      "disable_idle": false
+    },
+    "firmware": {
+      "platform_profile_preference": ["low-power", "quiet", "balanced"],
+      "fan_mode": "0"
+    }
+  },
+  "conflicts": {
+    "systemd_units": [
+      "legiond.service",
+      "legiond-onresume.service",
+      "legiond-cpuset.timer",
+      "powersaver.service",
+      "ac_performance.service"
+    ],
+    "packages": [
+      "lenovolegionlinux-git",
+      "lenovolegionlinux-dkms-git"
+    ],
+    "fan_telemetry_ignore": [
+      "thinkpad_acpi"
+    ]
+  }
+}

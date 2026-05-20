@@ -1,0 +1,9 @@
+[Unit]
+Description=Reassert local Legion AC firmware thermal policy
+After=power-profiles-daemon.service
+ConditionACPower=true
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/legionctl reassert ac --quiet
+

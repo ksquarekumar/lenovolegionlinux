@@ -1,0 +1,5 @@
+# Only ADP0 represents the real AC adapter on this machine. Other power_supply
+# objects can report online=0 while the laptop is still connected to AC.
+SUBSYSTEM=="power_supply", KERNEL=="ADP0", ATTR{type}=="Mains", ATTR{online}=="0", RUN+="/usr/bin/systemctl --no-block start legion-battery.target"
+SUBSYSTEM=="power_supply", KERNEL=="ADP0", ATTR{type}=="Mains", ATTR{online}=="1", RUN+="/usr/bin/systemctl --no-block start legion-ac.target"
+

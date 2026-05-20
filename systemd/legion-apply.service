@@ -1,0 +1,11 @@
+[Unit]
+Description=Apply local Legion power policy for the current power source
+After=power-profiles-daemon.service nvidia-persistenced.service nvidia-powerd.service
+Wants=nvidia-persistenced.service nvidia-powerd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/legionctl apply auto --quiet
+
+[Install]
+WantedBy=multi-user.target

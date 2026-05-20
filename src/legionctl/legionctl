@@ -1,0 +1,532 @@
+#!/usr/bin/env python3
+import argparse
+import glob
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+DEFAULT_PROFILE = Path("/usr/share/legion-control/profiles/lenovo-82wq-legion-pro-7-16irx8h-kwcn54ww.json")
+REPO_PROFILE = Path(__file__).resolve().parents[2] / "profiles" / "lenovo-82wq-legion-pro-7-16irx8h-kwcn54ww.json"
+DMI_ROOT = Path("/sys/class/dmi/id")
+POWERCAP_ROOT = Path("/sys/class/powercap")
+
+
+class Runner:
+    def __init__(self, dry_run=False, quiet=False):
+        self.dry_run = dry_run
+        self.quiet = quiet
+        self.changed = []
+        self.warnings = []
+
+    def info(self, message):
+        if not self.quiet:
+            print(message)
+
+    def warn(self, message):
+        self.warnings.append(message)
+        print(f"warning: {message}", file=sys.stderr)
+
+    def write(self, path, value, required=False):
+        path = Path(path)
+        text = str(value)
+        if not text.endswith("\n"):
+            text += "\n"
+        if not path.exists():
+            if required:
+                raise RuntimeError(f"missing required path: {path}")
+            self.warn(f"missing path: {path}")
+            return False
+        if self.dry_run:
+            current = read_text(path)
+            if current is not None and current.strip() == str(value):
+                return True
+            self.info(f"would write {path}: {value}")
+            return True
+        if not os.access(path, os.W_OK):
+            if required:
+                raise RuntimeError(f"path is not writable: {path}")
+            self.warn(f"path is not writable: {path}")
+            return False
+        current = read_text(path)
+        if current is not None and current.strip() == str(value):
+            return True
+        if self.dry_run:
+            self.info(f"would write {path}: {value}")
+            return True
+        path.write_text(text)
+        self.changed.append(str(path))
+        self.info(f"wrote {path}: {value}")
+        return True
+
+    def run(self, argv, required=False):
+        if shutil.which(argv[0]) is None:
+            if required:
+                raise RuntimeError(f"missing command: {argv[0]}")
+            self.warn(f"missing command: {argv[0]}")
+            return False
+        if self.dry_run:
+            self.info("would run: " + " ".join(argv))
+            return True
+        result = subprocess.run(argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if result.returncode != 0:
+            message = " ".join(argv)
+            detail = (result.stderr or result.stdout).strip()
+            if required:
+                raise RuntimeError(f"command failed: {message}: {detail}")
+            self.warn(f"command failed: {message}: {detail}")
+            return False
+        return True
+
+
+def read_text(path):
+    try:
+        return Path(path).read_text().strip()
+    except OSError:
+        return None
+
+
+def load_profile(path):
+    if path:
+        profile_path = Path(path)
+    elif DEFAULT_PROFILE.exists():
+        profile_path = DEFAULT_PROFILE
+    else:
+        profile_path = REPO_PROFILE
+    return json.loads(profile_path.read_text()), profile_path
+
+
+def read_dmi():
+    keys = [
+        "sys_vendor",
+        "product_name",
+        "product_family",
+        "product_version",
+        "product_sku",
+        "board_name",
+        "bios_version",
+    ]
+    return {key: read_text(DMI_ROOT / key) for key in keys}
+
+
+def dmi_mismatches(profile):
+    live = read_dmi()
+    expected = profile["dmi"]
+    mismatches = []
+    for key, expected_value in expected.items():
+        live_value = live.get(key)
+        if live_value != expected_value:
+            mismatches.append((key, expected_value, live_value))
+    return mismatches
+
+
+def require_supported_machine(profile, force=False):
+    mismatches = dmi_mismatches(profile)
+    if mismatches and not force:
+        lines = ["DMI profile mismatch; refusing to apply policy for this machine:"]
+        for key, expected, actual in mismatches:
+            lines.append(f"  {key}: expected {expected!r}, got {actual!r}")
+        lines.append("Use --force only if you intentionally want to override this guard.")
+        raise RuntimeError("\n".join(lines))
+
+
+def is_ac_online(profile):
+    path = profile["paths"]["ac_adapter"]
+    return read_text(path) == "1"
+
+
+def choose_auto_mode(profile):
+    return "ac" if is_ac_online(profile) else "battery"
+
+
+def powercap_package_zones():
+    zones = []
+    for path in sorted(POWERCAP_ROOT.glob("intel-rapl*:*")):
+        name = read_text(path / "name")
+        if name == "package-0" and ":" in path.name and path.name.count(":") == 1:
+            zones.append(path)
+    return zones
+
+
+def constraint_index(zone, constraint_name):
+    for name_file in sorted(zone.glob("constraint_*_name")):
+        if read_text(name_file) == constraint_name:
+            return name_file.name.split("_")[1]
+    return None
+
+
+def apply_rapl(runner, profile, mode):
+    rapl = profile[mode].get("rapl", {})
+    constraints = rapl.get("constraints", {})
+    zones = powercap_package_zones()
+    if not zones:
+        runner.warn("no package RAPL zones found under /sys/class/powercap")
+        return
+    for zone in zones:
+        for name, values in constraints.items():
+            index = constraint_index(zone, name)
+            if index is None:
+                runner.warn(f"{zone} has no RAPL constraint named {name}")
+                continue
+            power_limit = values.get("power_limit_uw")
+            if power_limit is not None:
+                runner.write(zone / f"constraint_{index}_power_limit_uw", power_limit)
+            time_window = values.get("time_window_us")
+            if time_window is not None:
+                runner.write(zone / f"constraint_{index}_time_window_us", time_window)
+
+
+def apply_cpu_policy(runner, profile, mode):
+    cpu = profile[mode].get("cpu", {})
+    if "ignore_ppc" in cpu:
+        runner.write("/sys/module/processor/parameters/ignore_ppc", cpu["ignore_ppc"])
+    if "no_turbo" in cpu:
+        runner.write("/sys/devices/system/cpu/intel_pstate/no_turbo", cpu["no_turbo"])
+    if "max_perf_pct" in cpu:
+        runner.write("/sys/devices/system/cpu/intel_pstate/max_perf_pct", cpu["max_perf_pct"])
+
+    governor = cpu.get("governor")
+    epp = cpu.get("energy_performance_preference")
+    for policy in sorted(Path("/sys/devices/system/cpu/cpufreq").glob("policy*")):
+        if governor:
+            runner.write(policy / "scaling_governor", governor)
+        if epp:
+            runner.write(policy / "energy_performance_preference", epp)
+
+    perf_bias = cpu.get("energy_perf_bias")
+    if perf_bias is not None:
+        for bias_file in sorted(Path("/sys/devices/system/cpu").glob("cpu*/power/energy_perf_bias")):
+            runner.write(bias_file, perf_bias)
+        if shutil.which("cpupower"):
+            runner.run(["cpupower", "set", "--perf-bias", str(perf_bias)])
+
+    if cpu.get("disable_idle"):
+        runner.run(["cpupower", "idle-set", "-E"])
+
+
+def platform_choice(profile, mode):
+    firmware = profile[mode].get("firmware", {})
+    profile_path = Path(profile["paths"]["platform_profile_choices"])
+    choices_text = read_text(profile_path) or ""
+    choices = choices_text.split()
+    for choice in firmware.get("platform_profile_preference", []):
+        if choice in choices:
+            return choice
+    return None
+
+
+def fan_mode_paths(profile):
+    configured = Path(profile["paths"]["fan_mode"])
+    if configured.exists():
+        return [configured]
+    return [Path(p) for p in glob.glob("/sys/devices/**/VPC2004:00/fan_mode", recursive=True)]
+
+
+def apply_firmware_policy(runner, profile, mode):
+    chosen = platform_choice(profile, mode)
+    if chosen:
+        runner.write(profile["paths"]["platform_profile"], chosen)
+    else:
+        runner.warn("no matching platform_profile choice found")
+
+    fan_mode = profile[mode].get("firmware", {}).get("fan_mode")
+    if fan_mode is not None:
+        paths = fan_mode_paths(profile)
+        if not paths:
+            runner.warn("no VPC2004 fan_mode path found")
+        for path in paths:
+            runner.write(path, fan_mode)
+
+
+def apply_nvidia_policy(runner, profile, mode):
+    if mode != "ac":
+        return
+    nvidia = profile[mode].get("nvidia", {})
+    if nvidia.get("start_persistenced"):
+        runner.run(["systemctl", "start", "nvidia-persistenced.service"])
+    if nvidia.get("start_powerd"):
+        runner.run(["systemctl", "start", "nvidia-powerd.service"])
+    if nvidia.get("set_persistence_mode"):
+        runner.run(["nvidia-smi", "-i", "0", "-pm", "1"])
+
+
+def apply_mode(runner, profile, mode, force=False, reassert=False):
+    if mode == "auto":
+        mode = choose_auto_mode(profile)
+    require_supported_machine(profile, force=force)
+    if mode not in ("ac", "battery"):
+        raise RuntimeError(f"invalid mode: {mode}")
+    if mode == "battery" and is_ac_online(profile):
+        runner.warn("ADP0 is online but battery policy was requested")
+    if mode == "ac" and not is_ac_online(profile):
+        runner.warn("ADP0 is offline but AC policy was requested")
+
+    apply_firmware_policy(runner, profile, mode)
+    if not reassert:
+        apply_rapl(runner, profile, mode)
+        apply_cpu_policy(runner, profile, mode)
+        apply_nvidia_policy(runner, profile, mode)
+    return mode
+
+
+def systemctl_is_active(unit):
+    if shutil.which("systemctl") is None:
+        return "unknown"
+    result = subprocess.run(["systemctl", "is-active", unit], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    return result.stdout.strip() if result.stdout.strip() else "inactive"
+
+
+def systemctl_is_enabled(unit):
+    if shutil.which("systemctl") is None:
+        return "unknown"
+    result = subprocess.run(["systemctl", "is-enabled", unit], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    return result.stdout.strip() if result.stdout.strip() else "disabled"
+
+
+def pacman_installed(package):
+    if shutil.which("pacman") is None:
+        return False
+    result = subprocess.run(["pacman", "-Q", package], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return result.returncode == 0
+
+
+def loaded_modules():
+    modules = set()
+    text = read_text("/proc/modules")
+    if not text:
+        return modules
+    for line in text.splitlines():
+        parts = line.split()
+        if parts:
+            modules.add(parts[0])
+    return modules
+
+
+def nvidia_power_limit():
+    if shutil.which("nvidia-smi") is None:
+        return None
+    result = subprocess.run(
+        ["nvidia-smi", "--query-gpu=power.limit", "--format=csv,noheader,nounits"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip().splitlines()[0] if result.stdout.strip() else None
+
+
+def rapl_status_lines():
+    lines = []
+    for zone in powercap_package_zones():
+        lines.append(f"{zone.name} ({read_text(zone / 'name')}):")
+        for name_file in sorted(zone.glob("constraint_*_name")):
+            index = name_file.name.split("_")[1]
+            name = read_text(name_file)
+            limit = read_text(zone / f"constraint_{index}_power_limit_uw")
+            window = read_text(zone / f"constraint_{index}_time_window_us")
+            suffix = f", window={window}us" if window is not None else ""
+            lines.append(f"  {name}: {limit}uW{suffix}")
+    return lines
+
+
+def cpufreq_values(filename):
+    values = {}
+    root = Path("/sys/devices/system/cpu/cpufreq")
+    for policy in sorted(root.glob("policy*")):
+        value = read_text(policy / filename)
+        if value is not None:
+            values[policy.name] = value
+    return values
+
+
+def summarize_values(values):
+    summary = {}
+    for value in values.values():
+        summary[value] = summary.get(value, 0) + 1
+    return ", ".join(f"{key}={count}" for key, count in sorted(summary.items())) or "none"
+
+
+def print_status(profile, profile_path):
+    print(f"profile: {profile['id']} ({profile_path})")
+    mismatches = dmi_mismatches(profile)
+    if mismatches:
+        print("dmi: mismatch")
+        for key, expected, actual in mismatches:
+            print(f"  {key}: expected {expected!r}, got {actual!r}")
+    else:
+        print("dmi: match")
+
+    print(f"ac_online: {is_ac_online(profile)}")
+    print(f"platform_profile: {read_text(profile['paths']['platform_profile'])}")
+    print(f"platform_profile_choices: {read_text(profile['paths']['platform_profile_choices'])}")
+
+    fan_paths = fan_mode_paths(profile)
+    if fan_paths:
+        for path in fan_paths:
+            print(f"fan_mode {path}: {read_text(path)}")
+    else:
+        print("fan_mode: not found")
+
+    print(f"intel_pstate.no_turbo: {read_text('/sys/devices/system/cpu/intel_pstate/no_turbo')}")
+    print(f"intel_pstate.max_perf_pct: {read_text('/sys/devices/system/cpu/intel_pstate/max_perf_pct')}")
+    print(f"processor.ignore_ppc: {read_text('/sys/module/processor/parameters/ignore_ppc')}")
+    print(f"cpufreq.governors: {summarize_values(cpufreq_values('scaling_governor'))}")
+    print(f"cpufreq.epp: {summarize_values(cpufreq_values('energy_performance_preference'))}")
+
+    print("rapl:")
+    for line in rapl_status_lines():
+        print(f"  {line}")
+
+    print(f"nvidia_power_limit_w: {nvidia_power_limit()}")
+    for unit in ["nvidia-powerd.service", "nvidia-persistenced.service", "legion-apply.service", "legion-reassert-ac.timer"]:
+        print(f"unit {unit}: active={systemctl_is_active(unit)} enabled={systemctl_is_enabled(unit)}")
+
+    modules = loaded_modules()
+    interesting = [
+        "ideapad_laptop",
+        "lenovo_wmi_gamezone",
+        "lenovo_wmi_events",
+        "thinkpad_acpi",
+        "legion_laptop",
+        "lenovo_legion",
+    ]
+    print("modules:")
+    for module in interesting:
+        print(f"  {module}: {'loaded' if module in modules else 'not-loaded'}")
+
+
+def doctor(profile):
+    warnings = []
+    if dmi_mismatches(profile):
+        warnings.append("DMI does not match this repo profile")
+    if not is_ac_online(profile):
+        warnings.append("ADP0 is offline; AC performance policy should not be active")
+
+    current_profile = read_text(profile["paths"]["platform_profile"])
+    wanted_profile = platform_choice(profile, "ac") if is_ac_online(profile) else platform_choice(profile, "battery")
+    if wanted_profile and current_profile != wanted_profile:
+        warnings.append(f"platform_profile is {current_profile!r}, expected {wanted_profile!r}")
+
+    fan_paths = fan_mode_paths(profile)
+    if fan_paths and is_ac_online(profile):
+        wanted_fan = profile["ac"]["firmware"]["fan_mode"]
+        for path in fan_paths:
+            if read_text(path) != wanted_fan:
+                warnings.append(f"{path} is {read_text(path)!r}, expected {wanted_fan!r}")
+
+    mode = "ac" if is_ac_online(profile) else "battery"
+    expected_cpu = profile[mode]["cpu"]
+    expected_governor = expected_cpu.get("governor")
+    if expected_governor:
+        wrong = [name for name, value in cpufreq_values("scaling_governor").items() if value != expected_governor]
+        if wrong:
+            warnings.append(f"{len(wrong)} cpufreq policies are not using governor {expected_governor!r}")
+    expected_epp = expected_cpu.get("energy_performance_preference")
+    if expected_epp:
+        wrong = [name for name, value in cpufreq_values("energy_performance_preference").items() if value != expected_epp]
+        if wrong:
+            warnings.append(f"{len(wrong)} cpufreq policies are not using EPP {expected_epp!r}")
+
+    for unit in profile["conflicts"]["systemd_units"]:
+        active = systemctl_is_active(unit)
+        enabled = systemctl_is_enabled(unit)
+        if active == "active" or enabled not in ("disabled", "not-found", "masked", "unknown"):
+            warnings.append(f"conflicting unit {unit}: active={active}, enabled={enabled}")
+
+    for package in profile["conflicts"]["packages"]:
+        if pacman_installed(package):
+            warnings.append(f"conflicting package is installed: {package}")
+
+    modules = loaded_modules()
+    if "legion_laptop" in modules:
+        warnings.append("old legion_laptop module is loaded")
+    if "thinkpad_acpi" in modules:
+        fan_state = read_text("/proc/acpi/ibm/fan")
+        if fan_state and "status:\t\tenabled" in fan_state:
+            warnings.append("thinkpad_acpi fan control appears enabled; this is not trusted on this machine")
+
+    power_limit = nvidia_power_limit()
+    expected = str(profile["ac"]["nvidia"]["expected_dynamic_power_w"])
+    if is_ac_online(profile) and systemctl_is_active("nvidia-powerd.service") != "active":
+        warnings.append("nvidia-powerd.service is not active on AC")
+    if is_ac_online(profile) and systemctl_is_active("nvidia-persistenced.service") != "active":
+        warnings.append("nvidia-persistenced.service is not active on AC")
+    if is_ac_online(profile) and power_limit and power_limit.split(".")[0] != expected:
+        warnings.append(f"NVIDIA power limit is {power_limit} W, expected around {expected} W on AC")
+
+    if warnings:
+        print("doctor: warnings")
+        for warning in warnings:
+            print(f"- {warning}")
+        return 1
+    print("doctor: no obvious conflicts")
+    return 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Local Lenovo Legion 82WQ power controller")
+    parser.add_argument("--profile", help="profile JSON path")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    status = sub.add_parser("status", help="print current state")
+    status.set_defaults(func=cmd_status)
+
+    doctor_cmd = sub.add_parser("doctor", help="print conflict and drift warnings")
+    doctor_cmd.set_defaults(func=cmd_doctor)
+
+    apply_cmd = sub.add_parser("apply", help="apply ac, battery, or auto policy")
+    apply_cmd.add_argument("mode", choices=["ac", "battery", "auto"])
+    apply_cmd.add_argument("--dry-run", action="store_true")
+    apply_cmd.add_argument("--force", action="store_true")
+    apply_cmd.add_argument("--quiet", action="store_true")
+    apply_cmd.set_defaults(func=cmd_apply)
+
+    reassert_cmd = sub.add_parser("reassert", help="reassert firmware-only policy")
+    reassert_cmd.add_argument("mode", choices=["ac", "battery", "auto"])
+    reassert_cmd.add_argument("--dry-run", action="store_true")
+    reassert_cmd.add_argument("--force", action="store_true")
+    reassert_cmd.add_argument("--quiet", action="store_true")
+    reassert_cmd.set_defaults(func=cmd_reassert)
+
+    args = parser.parse_args(argv)
+    try:
+        return args.func(args)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_status(args):
+    profile, profile_path = load_profile(args.profile)
+    print_status(profile, profile_path)
+    return 0
+
+
+def cmd_doctor(args):
+    profile, profile_path = load_profile(args.profile)
+    print_status(profile, profile_path)
+    return doctor(profile)
+
+
+def cmd_apply(args):
+    profile, _ = load_profile(args.profile)
+    runner = Runner(dry_run=args.dry_run, quiet=args.quiet)
+    mode = apply_mode(runner, profile, args.mode, force=args.force, reassert=False)
+    runner.info(f"applied {mode} policy")
+    return 0
+
+
+def cmd_reassert(args):
+    profile, _ = load_profile(args.profile)
+    runner = Runner(dry_run=args.dry_run, quiet=args.quiet)
+    mode = apply_mode(runner, profile, args.mode, force=args.force, reassert=True)
+    runner.info(f"reasserted {mode} firmware policy")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

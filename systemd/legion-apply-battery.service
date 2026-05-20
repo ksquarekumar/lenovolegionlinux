@@ -1,0 +1,12 @@
+[Unit]
+Description=Apply local Legion battery policy
+After=power-profiles-daemon.service
+ConditionACPower=false
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/legionctl apply battery --quiet
+
+[Install]
+WantedBy=legion-battery.target
+

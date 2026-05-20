@@ -1,0 +1,26 @@
+# Maintainer: ksquare
+pkgname=legion-control
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Local Lenovo Legion 82WQ power and firmware policy"
+arch=("any")
+url="file:///data/git/lenovolegionlinux"
+license=("MIT")
+depends=("python" "systemd" "cpupower" "nvidia-utils")
+optdepends=(
+  "dkms: future optional local Lenovo Legion kernel module work"
+)
+conflicts=("LenovoLegion" "lenovolegionlinux-git" "lenovolegionlinux-dkms-git" "lenovo-legion-wmi-dkms-git")
+backup=("etc/udev/rules.d/99-legion-control.rules")
+source=()
+sha256sums=()
+
+package() {
+  local repo_root
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  make -C "${repo_root}" DESTDIR="${pkgdir}" install
+  install -Dm644 "${repo_root}/README.md" "${pkgdir}/usr/share/doc/legion-control/README.md"
+  install -Dm644 "${repo_root}/docs/ARCHITECTURE.md" "${pkgdir}/usr/share/doc/legion-control/ARCHITECTURE.md"
+  install -Dm644 "${repo_root}/docs/UPSTREAMS.md" "${pkgdir}/usr/share/doc/legion-control/UPSTREAMS.md"
+  install -Dm644 "${repo_root}/LICENSE" "${pkgdir}/usr/share/licenses/legion-control/LICENSE"
+}
