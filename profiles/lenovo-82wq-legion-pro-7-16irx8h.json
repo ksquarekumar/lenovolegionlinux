@@ -1,15 +1,17 @@
 {
   "schema": 1,
-  "id": "lenovo-82wq-legion-pro-7-16irx8h-kwcn54ww",
-  "description": "LENOVO 82WQ Legion Pro 7 16IRX8H BIOS KWCN54WW",
-  "dmi": {
+  "id": "lenovo-82wq-legion-pro-7-16irx8h",
+  "description": "LENOVO 82WQ Legion Pro 7 16IRX8H",
+  "dmi_match": {
     "sys_vendor": "LENOVO",
     "product_name": "82WQ",
     "product_family": "Legion Pro 7 16IRX8H",
     "product_version": "Legion Pro 7 16IRX8H",
-    "product_sku": "LENOVO_MT_82WQ_BU_idea_FM_Legion Pro 7 16IRX8H",
-    "board_name": "LNVNB161216",
-    "bios_version": "KWCN54WW"
+    "product_sku": "LENOVO_MT_82WQ_BU_idea_FM_Legion Pro 7 16IRX8H"
+  },
+  "dmi_observed": {
+    "board_name": ["INVALID", "LNVNB161216"],
+    "bios_version": ["KWCN42WW", "KWCN54WW"]
   },
   "paths": {
     "ac_adapter": "/sys/class/power_supply/ADP0/online",
@@ -101,7 +103,14 @@
     ],
     "packages": [
       "lenovolegionlinux-git",
-      "lenovolegionlinux-dkms-git"
+      "lenovolegionlinux-dkms-git",
+      "LenovoLegion",
+      "lenovo-legion-wmi-dkms-git"
+    ],
+    "modules": [
+      "legion_laptop",
+      "lenovo_legion",
+      "lenovo_legion_wmi"
     ],
     "fan_telemetry_ignore": [
       "thinkpad_acpi"

@@ -9,8 +9,8 @@ import sys
 from pathlib import Path
 
 
-DEFAULT_PROFILE = Path("/usr/share/legion-control/profiles/lenovo-82wq-legion-pro-7-16irx8h-kwcn54ww.json")
-REPO_PROFILE = Path(__file__).resolve().parents[2] / "profiles" / "lenovo-82wq-legion-pro-7-16irx8h-kwcn54ww.json"
+DEFAULT_PROFILE = Path("/usr/share/legion-control/profiles/lenovo-82wq-legion-pro-7-16irx8h.json")
+REPO_PROFILE = Path(__file__).resolve().parents[2] / "profiles" / "lenovo-82wq-legion-pro-7-16irx8h.json"
 DMI_ROOT = Path("/sys/class/dmi/id")
 POWERCAP_ROOT = Path("/sys/class/powercap")
 
@@ -114,7 +114,9 @@ def read_dmi():
 
 def dmi_mismatches(profile):
     live = read_dmi()
-    expected = profile["dmi"]
+    expected = profile.get("dmi_match") or profile.get("dmi")
+    if not expected:
+        raise RuntimeError("profile has no dmi_match or dmi section")
     mismatches = []
     for key, expected_value in expected.items():
         live_value = live.get(key)
@@ -293,6 +295,10 @@ def pacman_installed(package):
     return result.returncode == 0
 
 
+def installed_conflict_packages(profile):
+    return [package for package in profile["conflicts"]["packages"] if pacman_installed(package)]
+
+
 def loaded_modules():
     modules = set()
     text = read_text("/proc/modules")
@@ -303,6 +309,34 @@ def loaded_modules():
         if parts:
             modules.add(parts[0])
     return modules
+
+
+def cleanup_conflicts(runner, profile, force=False, unload_modules=False, remove_packages=False):
+    require_supported_machine(profile, force=force)
+
+    for unit in profile["conflicts"]["systemd_units"]:
+        active = systemctl_is_active(unit)
+        enabled = systemctl_is_enabled(unit)
+        if active == "active" or enabled not in ("disabled", "not-found", "masked", "unknown"):
+            runner.run(["systemctl", "disable", "--now", unit])
+        runner.run(["systemctl", "reset-failed", unit])
+
+    modules = loaded_modules()
+    if unload_modules:
+        for module in profile["conflicts"].get("modules", []):
+            if module in modules:
+                runner.run(["modprobe", "-r", module])
+    else:
+        stale_modules = [module for module in profile["conflicts"].get("modules", []) if module in modules]
+        for module in stale_modules:
+            runner.warn(f"obsolete module is loaded but was not unloaded without --unload-modules: {module}")
+
+    packages = installed_conflict_packages(profile)
+    if packages and remove_packages:
+        runner.run(["pacman", "-Rns", *packages])
+    else:
+        for package in packages:
+            runner.warn(f"conflicting package is installed but was not removed without --remove-packages: {package}")
 
 
 def nvidia_power_limit():
@@ -437,13 +471,13 @@ def doctor(profile):
         if active == "active" or enabled not in ("disabled", "not-found", "masked", "unknown"):
             warnings.append(f"conflicting unit {unit}: active={active}, enabled={enabled}")
 
-    for package in profile["conflicts"]["packages"]:
-        if pacman_installed(package):
-            warnings.append(f"conflicting package is installed: {package}")
+    for package in installed_conflict_packages(profile):
+        warnings.append(f"conflicting package is installed: {package}")
 
     modules = loaded_modules()
-    if "legion_laptop" in modules:
-        warnings.append("old legion_laptop module is loaded")
+    for module in profile["conflicts"].get("modules", []):
+        if module in modules:
+            warnings.append(f"conflicting module is loaded: {module}")
     if "thinkpad_acpi" in modules:
         fan_state = read_text("/proc/acpi/ibm/fan")
         if fan_state and "status:\t\tenabled" in fan_state:
@@ -492,6 +526,14 @@ def main(argv=None):
     reassert_cmd.add_argument("--quiet", action="store_true")
     reassert_cmd.set_defaults(func=cmd_reassert)
 
+    cleanup_cmd = sub.add_parser("cleanup", help="disable old local Legion power-management conflicts")
+    cleanup_cmd.add_argument("--dry-run", action="store_true")
+    cleanup_cmd.add_argument("--force", action="store_true")
+    cleanup_cmd.add_argument("--quiet", action="store_true")
+    cleanup_cmd.add_argument("--unload-modules", action="store_true")
+    cleanup_cmd.add_argument("--remove-packages", action="store_true")
+    cleanup_cmd.set_defaults(func=cmd_cleanup)
+
     args = parser.parse_args(argv)
     try:
         return args.func(args)
@@ -525,6 +567,20 @@ def cmd_reassert(args):
     runner = Runner(dry_run=args.dry_run, quiet=args.quiet)
     mode = apply_mode(runner, profile, args.mode, force=args.force, reassert=True)
     runner.info(f"reasserted {mode} firmware policy")
+    return 0
+
+
+def cmd_cleanup(args):
+    profile, _ = load_profile(args.profile)
+    runner = Runner(dry_run=args.dry_run, quiet=args.quiet)
+    cleanup_conflicts(
+        runner,
+        profile,
+        force=args.force,
+        unload_modules=args.unload_modules,
+        remove_packages=args.remove_packages,
+    )
+    runner.info("cleanup completed")
     return 0
 
 

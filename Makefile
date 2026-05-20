@@ -8,7 +8,7 @@ BINDIR ?= $(PREFIX)/bin
 .PHONY: install
 install:
 	install -Dm755 src/legionctl/legionctl "$(DESTDIR)$(BINDIR)/legionctl"
-	install -Dm644 profiles/lenovo-82wq-legion-pro-7-16irx8h-kwcn54ww.json "$(DESTDIR)$(DATADIR)/profiles/lenovo-82wq-legion-pro-7-16irx8h-kwcn54ww.json"
+	install -Dm644 profiles/lenovo-82wq-legion-pro-7-16irx8h.json "$(DESTDIR)$(DATADIR)/profiles/lenovo-82wq-legion-pro-7-16irx8h.json"
 	install -Dm644 systemd/legion-ac.target "$(DESTDIR)$(UNITDIR)/legion-ac.target"
 	install -Dm644 systemd/legion-battery.target "$(DESTDIR)$(UNITDIR)/legion-battery.target"
 	install -Dm644 systemd/legion-apply.service "$(DESTDIR)$(UNITDIR)/legion-apply.service"
@@ -21,4 +21,4 @@ install:
 .PHONY: check
 check:
 	python -m py_compile src/legionctl/legionctl
-	python src/legionctl/legionctl --profile profiles/lenovo-82wq-legion-pro-7-16irx8h-kwcn54ww.json status
+	python src/legionctl/legionctl --profile profiles/lenovo-82wq-legion-pro-7-16irx8h.json status

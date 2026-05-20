@@ -3,11 +3,13 @@
 This repo is a local policy package for one laptop:
 
 ```text
-LENOVO 82WQ / Legion Pro 7 16IRX8H / LNVNB161216 / KWCN54WW
+LENOVO 82WQ / Legion Pro 7 16IRX8H
 ```
 
-The package refuses to apply policy when the DMI tuple does not match the
-profile unless `--force` is supplied.
+The package refuses to apply policy when the stable DMI identity does not match
+the profile unless `--force` is supplied. Board name and BIOS version are kept
+as observed metadata because this machine has reported both `INVALID`/`KWCN42WW`
+and `LNVNB161216`/`KWCN54WW`.
 
 ## Layers
 
@@ -17,6 +19,10 @@ live state, and applies AC/battery policy.
 Systemd and udev only trigger `legionctl`; they do not carry duplicated policy.
 This avoids the previous split where separate AC, battery, RAPL, firmware, and
 GPU services could disagree.
+
+`legionctl cleanup` centralizes the removal of old local actors. By default it
+only disables stale systemd units. Module unloading and package removal are
+separate explicit flags.
 
 The kernel driver lane is optional. The first package version does not install
 or blacklist any DKMS driver because the in-tree Lenovo stack currently provides
@@ -72,4 +78,3 @@ This package must not manage:
 - `thinkpad_acpi` fan control
 
 Those are separate system concerns and should not be coupled to power policy.
-

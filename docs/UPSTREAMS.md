@@ -7,8 +7,9 @@ blindly combine them.
 
 Source: <https://github.com/johnfanv2/LenovoLegionLinux>
 
-Useful as historical reference for Legion feature names, fan curves, and older
-userspace behavior.
+Useful as historical reference for Legion feature names, fan curves, older
+userspace behavior, power-profile integration, and fan-controller recovery
+concepts.
 
 Not used as the base package because:
 
@@ -54,3 +55,5 @@ DKMS should only be introduced behind an explicit package option after it proves
 it improves fan telemetry or control without regressing the working platform
 profile and GPU power behavior.
 
+See [FEATURE_MATRIX.md](FEATURE_MATRIX.md) for the active adoption/rejection
+list and [DKMS_PLAN.md](DKMS_PLAN.md) for the kernel-driver import gate.

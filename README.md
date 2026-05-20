@@ -4,8 +4,8 @@ Local control package for this machine:
 
 - `LENOVO 82WQ`
 - `Legion Pro 7 16IRX8H`
-- board `LNVNB161216`
-- BIOS `KWCN54WW`
+- observed board values: `INVALID`, `LNVNB161216`
+- observed BIOS values: `KWCN42WW`, `KWCN54WW`
 
 This repository is intentionally machine-specific. It is not a generic Legion
 support package and it does not try to guess safe behavior for other models.
@@ -39,6 +39,7 @@ Run read-only status checks:
 ```bash
 ./src/legionctl/legionctl status
 ./src/legionctl/legionctl doctor
+./src/legionctl/legionctl cleanup --dry-run
 ```
 
 Apply the AC policy:
@@ -57,6 +58,19 @@ Dry-run an apply:
 
 ```bash
 ./src/legionctl/legionctl apply ac --dry-run
+```
+
+Disable old local power-management units:
+
+```bash
+sudo legionctl cleanup
+```
+
+Package removal and obsolete module unloading are intentionally explicit:
+
+```bash
+sudo legionctl cleanup --unload-modules
+sudo legionctl cleanup --remove-packages
 ```
 
 ## Install
@@ -94,4 +108,3 @@ sudo systemctl start legion-apply.service
 - GPU: firmware-managed Dynamic Boost through `nvidia-powerd`, expected 150 W
 - Firmware thermal profile: `max-power` when available
 - VPC2004 fan mode: `4`
-
