@@ -1,6 +1,6 @@
 # 08 — Kernel modules, drivers and DKMS
 
-legiond owns an explicit inventory of the kernel pieces this machine relies on, validates it on every boot and
+legionctl-system owns an explicit inventory of the kernel pieces this machine relies on, validates it on every boot and
 after every kernel update, and repairs what it can (load, rebuild through DKMS, fix autoload config).
 
 ## Inventory (measured 2026-10-12, kernel 7.2.9-2-cachyos)
@@ -11,7 +11,7 @@ after every kernel update, and repairs what it can (load, rebuild through DKMS, 
 | `lenovo_wmi_gamezone`, `lenovo_wmi_other`, `lenovo_wmi_capdata`, `lenovo_wmi_events` | in-tree | loaded | `platform_profile`, firmware power limits (`ppt_*`), Fn+Q events | required |
 | `acpi_call` | DKMS 1.2.2 (both kernels built) | loaded, autoloaded | firmware fan RPM through `\_SB_.GZFD.WMAE` | required (fan) |
 | `msr` | built-in | n/a | throttle reasons (`IA32_*THERM_STATUS`), turbostat | required |
-| `intel_rapl_msr`, `processor_thermal_rapl` | in-tree | loaded | RAPL fallback (MSR and MMIO zones) | required |
+| `intel_rapl_msr`, `processor_thermal_rapl` | in-tree | loaded | RAPL energy counters (watts) | required |
 | `nvidia`, `nvidia_modeset`, `nvidia_drm`, `nvidia_uvm` | DKMS 580.178.04 (both kernels built) | loaded | dGPU, external outputs (DP-3 is wired to NVIDIA) | required |
 | `i915` | in-tree | loaded, bound to 00:02.0 | iGPU, built-in panel | required |
 | `kvm_intel`, `vfio_pci`, `vfio_iommu_type1` | in-tree | loaded | WinBoat VM, installed-Windows VM | optional |
@@ -40,7 +40,7 @@ after every kernel update, and repairs what it can (load, rebuild through DKMS, 
 
 - The profile (later a configset) declares modules as `required`, `optional` or `unwanted`, each with the
   feature that needs it, plus the DKMS packages that provide out-of-tree ones.
-- `doctor` / legiond health check, per installed kernel (`/usr/lib/modules/*` owned by a package):
+- `doctor` / legionctl-system health check, per installed kernel (`/usr/lib/modules/*` owned by a package):
   - required module available for that kernel (in-tree, built-in, or DKMS built — `dkms status`);
   - loaded on the running kernel when its feature is enabled;
   - unwanted modules not autoloaded; autoload files reference only modules that exist;
@@ -72,7 +72,7 @@ after every kernel update, and repairs what it can (load, rebuild through DKMS, 
 
 ## Initramfs ownership (decided 2026-10-12)
 
-legionctl/legiond manages the initramfs module set as part of the GPU mode, without editing files it does not own:
+legionctl/legionctl-system manages the initramfs module set as part of the GPU mode, without editing files it does not own:
 
 - Owned drop-in: `/etc/mkinitcpio.conf.d/90-legion.conf`. It sorts after CachyOS's auto-generated `10-chwd.conf`
   (`MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)`), so its plain `MODULES=(...)` assignment wins without

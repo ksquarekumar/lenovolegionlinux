@@ -15,7 +15,7 @@
 
 | Capability | How |
 | --- | --- |
-| Inventory | udisks2 D-Bus (drives, partitions, filesystems, mount state), `lsblk -J` fallback |
+| Inventory | udisks2 D-Bus (drives, partitions, filesystems, mount state) |
 | Health | `smartctl -j -a` per NVMe: percentage used, available spare, media errors, unsafe shutdowns, temperature; trend stored over time |
 | TRIM | `fstrim.timer` state and last run; warn if disabled |
 | fstab manager | parse, validate (`findmnt --verify --verbose`), show each entry with its systemd mount/automount state and last failure; edits are previewed as a diff, backed up (`/etc/fstab.legion-<timestamp>`), validated, then applied with `systemctl daemon-reload` |
@@ -31,7 +31,7 @@
 2. **Safe access now**: offer a read-only mount (`ntfs3` mounts dirty volumes read-only).
 3. **Quick fix (with warning)**: `ntfsfix -d` clears the dirty flag so `ntfs3` mounts read-write. Refused if the
    volume is hibernated, because writing to it can lose data Windows has not flushed.
-4. **Full repair**: `chkdsk /f` in Windows. With the VM in place, legiond can run it in the installed Windows
+4. **Full repair**: `chkdsk /f` in Windows. With the VM in place, legionctl-system can run it in the installed Windows
    without a reboot.
 5. **Recover the mount**: `systemctl reset-failed mnt-windows\x2ddata.mount`, then access the path to trigger the
    automount.

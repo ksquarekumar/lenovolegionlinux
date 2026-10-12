@@ -7,7 +7,7 @@ LenovoLegionLinux's `model_kwcn` entry and the in-tree drivers. Every new firmwa
 | Feature (Windows) | Linux today | Path here | Priority |
 | --- | --- | --- | --- |
 | Power modes Quiet / Balance / Performance / Extreme (max-power) | done: `platform_profile`, Fn+Q follow, PPD sync, OSD | `lenovo_wmi_gamezone` | — |
-| Custom mode with CPU/GPU power limits | partly: RAPL fallback; firmware limits visible | `lenovo-wmi-other` firmware attributes (`ppt_*`, `gpu_*`); verify writability in `custom` | high |
+| Custom mode with CPU/GPU power limits | partly: firmware limits visible; Python tooling still writes RAPL until the switch | `lenovo-wmi-other` firmware attributes (`ppt_*`, `gpu_*`); verify writability in `custom` | high |
 | Fan speed readout | done (validated) | Other Method 17, feature 0x04030001/2 via `acpi_call` | — |
 | Custom fan curve | missing | WMI3 `Fan_Get_Table` / `Fan_Set_Table`, speed-only on this model (`wmi_fancurve_speed_only`) | medium |
 | Fan full speed (dust cleaning) | missing | WMI3, only in custom mode (`fanfullspeed_requires_custom_powermode`) | low |
@@ -32,16 +32,16 @@ LenovoLegionLinux's `model_kwcn` entry and the in-tree drivers. Every new firmwa
 
 ## Actions and triggers
 
-LLT's action triggers map onto legiond event sources, so actions become configset layers with an optional
-`run` list (commands executed as the user through legion-agent, or as root only if declared and polkit-allowed):
+LLT's action triggers map onto legionctl-system event sources, so actions become configset layers with an optional
+`run` list (commands executed as the user through legionctl-operator, or as root only if declared and polkit-allowed):
 
 | Trigger | Source |
 | --- | --- |
 | AC connected / low-wattage adapter / disconnected | udev `power_supply` (adapter wattage via `ADP0` `power_now`/USB-PD where exposed) |
 | Power mode changed | `platform-profile` uevent (ownership ledger knows who changed it) |
-| Game / app started or closed | eBPF exec sensor, `/proc` fallback |
+| Game / app started or closed | eBPF exec sensor |
 | Lid open/closed, session lock/unlock, user idle/active | logind (`LidClosed`, `LockedHint`, `IdleHint`) |
-| Display on/off, external display connected, HDR on/off | legion-agent from Mutter `MonitorsChanged`; DRM uevents |
+| Display on/off, external display connected, HDR on/off | legionctl-operator from Mutter `MonitorsChanged`; DRM uevents |
 | Wi-Fi connected (SSID) | NetworkManager D-Bus |
 | Time of day, sunrise/sunset, periodic | timers (sunrise/sunset from configured location) |
 | Startup, resume | daemon start, logind `PrepareForSleep(false)` |

@@ -9,7 +9,7 @@ system state outside it, recorded here so they are not lost.
 | --- | --- | --- | --- | --- |
 | 1 | Choppy animations on the external monitor | Mutter: "GPU /dev/dri/card1 selected primary from builtin panel presence"; DP-3 (3440x1440@144) is on NVIDIA card0 | repo | Prefer NVIDIA as Mutter primary when the external display is in use (02-platform, Phase 0.3) |
 | 2 | Two power-limit surfaces disagree | RAPL PL1 70 W written by legionctl; firmware `ppt_pl1_spl` 90 W; firmware mode changes rewrite MMIO RAPL | repo | Firmware attributes primary, RAPL fallback (Phase 0.4) |
-| 3 | No re-apply after suspend/resume | no sleep hook; old `legiond-onresume` disabled by cleanup | repo | system-sleep hook now, logind sensor in legiond |
+| 3 | No re-apply after suspend/resume | no sleep hook; old `legionctl-system-onresume` disabled by cleanup | repo | system-sleep hook now, logind sensor in legionctl-system |
 | 4 | `reassert` does not restore power limits | code path skips `apply_rapl` | repo | Phase 0.2 |
 | 5 | Fan RPM bogus | `thinkpad_acpi` hwmon reports `speed: 4`, `status: disabled` | repo | Fixed: firmware WMI via `acpi_call` (`\_SB_.GZFD.WMAE`, feature 0x04030001/2); validated idle vs gpu-burn |
 | 6 | Frequent package throttling | `package_throttle_count` 33,251 since boot at moderate temperatures | repo | MSR throttle-reason sensor; check whether firmware PROCHOT or power limits fire |
@@ -17,7 +17,7 @@ system state outside it, recorded here so they are not lost.
 | 8 | Windows data partition will not mount | `ntfs3: volume is dirty`; `mnt-windows-data.mount` start-limit-hit | host (Windows) | Disable Fast Startup, run chkdsk in Windows |
 | 9 | `doctor` warns "ADP0 is offline; AC performance policy should not be active" whenever on battery | unconditional check in `doctor()` | repo | Only warn if AC policy is actually applied on battery |
 | 10 | Throughput results of the 2026-10-12 sweeps are contaminated | load average 6–35 during steps; manual apply mid-step | repo | Re-run clean; next sweep tunes `ppt_*` |
-| 11 | Fn+R firmware sends ~10 events per press | libinput capture | repo | Debounced (1.5 s) in legion-osd and the toggle; move to legiond |
+| 11 | Fn+R firmware sends ~10 events per press | libinput capture | repo | Debounced (1.5 s) in legionctl-osd and the toggle; move to legionctl-system |
 | 12 | Mutter persistent display changes show a confirmation dialog | user report after test toggles | repo | Toggle uses TEMPORARY method (done) |
 | 13 | `make install` leaves untracked files | stale `/usr/lib/sysctl.d/90-legion-tuning.conf` had to be removed by hand | repo | Install via PKGBUILD/pacman |
 | 14 | MongoDB service fails on kernel ≥ 6.19 | journal | host | Disable the unit; run MongoDB in a container |
@@ -44,8 +44,8 @@ system state outside it, recorded here so they are not lost.
 ## Cleanups in this repo
 
 - Remove or wire up the unused `ac.cpu_power` profile block (duplicates `rapl`).
-- Rename `legion-reassert-ac.{service,timer}`: it now also handles PPD and governor, and goes away with legiond.
-- `legion-osd` starts `legion-refresh-toggle` via `PATH`; use the absolute install path.
+- Rename `legion-reassert-ac.{service,timer}`: it now also handles PPD and governor, and goes away with legionctl-system.
+- `legionctl-osd` starts `legion-refresh-toggle` via `PATH`; use the absolute install path.
 - README "Commands" section predates `follow`, `validate`, Fn keys, OSD and the Makefile tooling; refresh it.
 - `docs/DKMS_PLAN.md` and `docs/UPSTREAMS.md` predate the firmware-attribute findings; reconcile.
 - PKGBUILD: `url=file:///...`, static `pkgver`; derive from git (`pkgver()`), point `url` at the GitHub repo.

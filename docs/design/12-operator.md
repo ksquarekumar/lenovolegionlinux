@@ -8,8 +8,8 @@ implementation, one permission model and one audit trail.
 
 ```mermaid
 flowchart LR
-  core[legion-core: state, load, worktrees, plans, configs, actions]
-  core --> api[legiond API: axum HTTP + WebSocket on a unix socket; MCP over stdio]
+  core[legionctl-core: state, load, worktrees, plans, configs, actions]
+  core --> api[legionctl-system API: axum HTTP + WebSocket on a unix socket; MCP over stdio]
   api --> cli[legion CLI + shell completions]
   api --> tui[legion TUI: ratatui]
   api --> app[desktop app: GPUI]
@@ -18,12 +18,12 @@ flowchart LR
   api --> gw[AI gateway: axum, exact + semantic cache]
 ```
 
-- **Today (Phase 1a, built):** `legion-core` plus one `legion` binary that is CLI, TUI and stdio MCP server, and a
-  Claude Code plugin (MCP server, load hooks, `/legion:status`, `/legion:worktree`, `/legion:act`). Every surface calls
-  `legion-core` directly.
-- **Next (Phase 1b):** `legiond` owns state and long-running work (sessions, gateway, indexing) and exposes an axum
-  API on `$XDG_RUNTIME_DIR/legion/api.sock`; `legion` becomes a client of it. `legion mcp` keeps working: it proxies
-  tools to the daemon when it runs and falls back to direct calls when it does not.
+- **Today (Phase 1a, built):** `legionctl-core` plus one client binary (named `legion` until the switch in
+  15-layout) that is CLI, TUI and stdio MCP server, and the `legionctl` Claude Code plugin. Every surface calls
+  `legionctl-core` directly.
+- **Next (Phase 1b):** `legionctl-operator` owns state and long-running work (sessions, indexing) and exposes the
+  operation registry on `$XDG_RUNTIME_DIR/legionctl/api.sock`. The CLI, TUI and MCP server become clients of it,
+  in the same change; they have no direct path after that.
 
 ## Approvals
 
@@ -41,7 +41,7 @@ always propose; only an approval channel applies.
 
 - **Copy-on-write:** this machine's disks are ext4, which cannot reflink. A worktree is a `git worktree` (shares the
   object store). Heavy build directories (`target/`, `node_modules/`) can be overlay-mounted per worktree with
-  `fuse-overlayfs` (installed) so a new worktree starts from the main checkout's build cache without copying it. On
+  kernel overlayfs in the session's user namespace so a new worktree starts from the main checkout's build cache without copying it. On
   btrfs/xfs the same API uses reflink copies.
 - **Tracking:** registry of worktrees with repo, branch, plan, session, created, size and dirty state; garbage
   collection proposals for merged or idle worktrees (never automatic deletion of uncommitted work).
@@ -131,8 +131,8 @@ its own helper agents, such as the work-ordering planner or the intent-log summa
 
 | Phase | Delivers |
 | --- | --- |
-| 1a (done) | legion-core, legion CLI/TUI/stdio MCP, Claude Code plugin, Codex MCP snippet |
-| 1b | legiond with axum API on a unix socket; legion as client; audit log |
+| 1a (done) | legionctl-core, client CLI/TUI/stdio MCP, Claude Code plugin, Codex MCP snippet |
+| 1b | legionctl-operator with the operation registry on a unix socket; CLI, TUI and MCP as clients; audit log |
 | 2 | Sandboxed ACP sessions (bwrap), session registry and resume, overlay build caches; detail in 14-sessions |
 | 3 | Plan workspaces, intent log, search, session-declared active plan |
 | 4 | Code graph mapping and dependency ordering of work items |

@@ -41,7 +41,7 @@ Recommended path for the VFIO option, given the measurements:
    bare-metal Windows and Linux mounts of p4 keep working otherwise.
 3. VM: QEMU/libvirt with OVMF Secure Boot vars, `swtpm` vTPM, host SMBIOS type 1/2 values and
    `-acpitable file=/sys/firmware/acpi/tables/MSDM` so the OEM activation still matches.
-4. Guard rails in legiond: refuse to start if any `nvme0` partition is mounted, if Windows is hibernated, or if
+4. Guard rails in legionctl-system: refuse to start if any `nvme0` partition is mounted, if Windows is hibernated, or if
    `BootNext` points at Windows; release the device and remount automounts on shutdown.
 5. Display: SPICE or RDP; seamless apps through FreeRDP RemoteApp (WinBoat's approach) against the same VM.
 

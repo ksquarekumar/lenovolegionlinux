@@ -21,7 +21,7 @@ Vantage switches to Custom mode to apply them)? Test: write `ppt_pl1_spl` in `ma
 
 | Knob | Path | Notes |
 | --- | --- | --- |
-| RAPL PL1/PL2 (fallback) | `/sys/class/powercap/intel-rapl:0` and `intel-rapl-mmio:0` | Effective limit is the minimum of MSR, MMIO and firmware. Firmware mode changes rewrite MMIO. Only used if firmware attributes are absent. |
+| RAPL (read only) | `/sys/class/powercap/intel-rapl:0` and `intel-rapl-mmio:0` | Energy counters for watts. Limits are set only through firmware attributes; firmware mode changes rewrite MMIO, so legionctl never writes RAPL. |
 | Governor, EPP | `/sys/devices/system/cpu/cpufreq/policy*/` | PPD writes EPP on profile changes; the daemon either drives PPD (preferred) or enforces. |
 | Turbo, max_perf_pct, ignore_ppc | `intel_pstate/*`, `processor/parameters/ignore_ppc` | enforce |
 | C-states | `cpupower idle-set` / `cpuidle/state*/disable` | keep all enabled (deep idle frees turbo headroom) |
@@ -41,7 +41,7 @@ Vantage switches to Custom mode to apply them)? Test: write `ppt_pl1_spl` in `ma
 | --- | --- | --- |
 | NVIDIA persistence, powerd | systemd units, NVML | as today |
 | NVIDIA power | firmware `gpu_nv_ctgp` / `gpu_nv_ppab` / `gpu_nv_ac_offset`; NVML limits as read-only check | Dynamic Boost moves the limit between ctgp and ctgp+ppab (150–175 W). |
-| Internal refresh | Mutter `org.gnome.Mutter.DisplayConfig.ApplyMonitorsConfig` (method TEMPORARY) via legion-agent | Persistent method triggers GNOME's confirmation dialog. Keep VRR state. |
+| Internal refresh | Mutter `org.gnome.Mutter.DisplayConfig.ApplyMonitorsConfig` (method TEMPORARY) via legionctl-operator | Persistent method triggers GNOME's confirmation dialog. Keep VRR state. |
 | Primary GPU | udev tag `mutter-device-preferred-primary` on the card that drives the active outputs | **Issue:** Mutter picked i915 because the panel exists, while the 144 Hz external is on NVIDIA. Rule: if an external output on card0 is active, prefer NVIDIA; on battery with only eDP, prefer i915 so the dGPU can suspend. Takes effect on next Mutter start (re-login), so the daemon can only recommend/prepare, not hot-switch. |
 | MUX / GPU mode | Lenovo WMI gamezone (hybrid / dGPU-only) | Read-only first; switching needs reboot. |
 
@@ -56,7 +56,7 @@ Lenovo "Other Method" WMI interface, `GetFeatureValue` (method 17) with feature 
 (value = FANS × 100), the path LenovoLegionLinux uses for this model (`model_kwcn`, `ACCESS_METHOD_WMI3`). The
 WMI object is `AE` on `PNP0C14:02` = `\_SB_.GZFD.WMAE`. `acpi_call` (DKMS, already installed) lets root call it
 read-only: `echo '\_SB_.GZFD.WMAE 0 17 b01000304' > /proc/acpi/call; cat /proc/acpi/call`. legionctl reads it
-in `status`; legiond will poll it as a sensor (2 s). Alternatives if this path misbehaves:
+in `status`; legionctl-system will poll it as a sensor (2 s). Alternatives if this path misbehaves:
 
 1. **Upstream Lenovo WMI fan data**: newer `lenovo-wmi-*` drivers may expose fan RPM via hwmon. Check on each
    kernel update; zero maintenance if it lands.
@@ -94,12 +94,12 @@ Generic, works on any machine where the package is installed:
   -p AllowedCPUs=0-15 cmd`), or move running PIDs with `taskset`. Rules apply automatically at exec once the eBPF
   workload sensor exists (04-ebpf); until then via desktop-entry wrappers and `legionctl run --cores p|e`.
 - **Priority**: nice, I/O class and latency-nice through ananicy-cpp, which is already running with CachyOS rules.
-  legiond writes one owned rules file (`/etc/ananicy.d/99-legion/legion.rules`) from the configset instead of a
+  legionctl-system writes one owned rules file (`/etc/ananicy.d/99-legion/legion.rules`) from the configset instead of a
   second mechanism, and reloads ananicy.
 
 ## Input
 
 - Fn keys: evdev on `Ideapad extra buttons` (found by name), debounced (Fn+R: 1.5 s). The daemon reads the device
-  as root, so the user no longer needs to be in `input`; the agent performs session-side actions.
-- hwdb remap `KEYBOARD_KEY_110=f18` stays as a fallback for other tools.
+  as root, so the user no longer needs to be in `input`; the operator performs session-side actions.
+- The hwdb remap `KEYBOARD_KEY_110=f18` and its GNOME shortcut are deleted in the switch (15-layout).
 - Logitech: logiops (logid) stays external; HID-BPF is an option for in-kernel remaps later (04-ebpf).

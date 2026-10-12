@@ -3,7 +3,7 @@
 ## Why redesign
 
 The Python tooling grew by accretion: a oneshot `legionctl` run by udev, a 30 s reassert timer, a `follow`
-service for Fn+Q, a user-session `legion-osd`, a refresh toggle, a sweep script. Each fixes one thing and they
+service for Fn+Q, a user-session `legionctl-osd`, a refresh toggle, a sweep script. Each fixes one thing and they
 coordinate through files in `/run` and timing assumptions. Gaps found on 2026-10-12 all come from that shape:
 
 - nothing runs after suspend/resume, so firmware resets survive until the next AC change;
@@ -17,16 +17,15 @@ file-based coordination.
 ## Goals
 
 1. **Event-driven**: react to udev, sysfs notify, logind, D-Bus and input events; no fixed-interval reassert.
-   A slow drift check remains as a safety net, not the mechanism.
+   Knobs that cannot notify (sysctl, governor) are read by a periodic drift check; that is their only path.
 2. **Declarative**: desired state comes from layered *configsets* (TOML). The daemon reconciles observed state
    toward it, including sysctl and every other knob.
-3. **Modular and pluggable**: sensors and actuators are plugins behind traits; optional ones (eBPF, NVML, GPUI,
-   Windows) are cargo features. External process plugins allow prototyping without recompiling.
-4. **Redundant and safe**: each sensor/actuator has a fallback; writes are bounded, verified and rate-limited;
-   the machine returns to firmware defaults if the daemon dies.
+3. **Modular**: sensors and actuators are modules behind traits, one path for each capability (15-layout).
+4. **Safe**: writes are bounded, verified and rate-limited; a failed path puts the daemon in safe mode and reports
+   why; the machine returns to firmware defaults if the daemon dies.
 5. **Low-level where it pays**: eBPF for observation (workload detection, latency, power attribution), HID-BPF for
    input fixes, sched_ext through scx_loader. No eBPF for actuation.
-6. **First-class session UX**: native GNOME OSD, a GPUI control center, Fn keys handled by the daemon.
+6. **First-class session UX**: animated GNOME OSD, the GPUI app, Fn keys handled by the daemon.
 7. **Dual boot aware**: detect and fix Windows-side hazards, reboot into Windows, and run the installed Windows
    under KVM when wanted.
 
@@ -53,56 +52,39 @@ validated, replacing the kernel's in-tree Lenovo drivers.
 flowchart LR
   subgraph sources[Sensors / event sources]
     udev[udev: power_supply, platform-profile, drm, input]
-    sysfs[sysfs notify + poll fallback]
+    sysfs[sysfs notify; drift check for knobs without notify]
     logind[logind: PrepareForSleep, sessions]
     dbus[D-Bus: PPD, UPower, scx_loader]
     evdev[evdev: Fn keys]
     bpf[eBPF: exec, sched, power tracepoints]
     hw[hwmon / NVML / MSR / EC read-only]
   end
-  subgraph legiond[legiond (root)]
+  subgraph legionctl-system[legionctl-system (root)]
     bus((event bus))
     policy[policy: active selectors]
     cfg[configset engine: layered merge + validation]
     rec[reconciler + ownership ledger]
-    api[D-Bus API org.legion.Control1 + polkit]
+    api[D-Bus API org.legionctl.System1 + polkit]
   end
   subgraph actuators[Actuators]
     fw[firmware attributes / platform_profile]
-    rapl[RAPL fallback]
     cpu[cpufreq / EPP / sysctl / sysfs]
     ppd[PPD + scx_loader]
     nv[NVIDIA]
   end
   sources --> bus --> policy --> cfg --> rec --> actuators
   rec --> api
-  api <--> agent[legion-agent (user session)]
-  agent --> osd[OSD: GNOME Shell extension / notifications]
-  agent --> mutter[Mutter DisplayConfig: refresh, primary GPU hints]
-  api <--> cli[legionctl]
-  agent --> ui[legion-ui: web (wasm) + desktop (Dioxus)]
-  api <--> center[legion-center (GPUI, optional)]
+  api <--> op[legionctl-operator (user)]
+  op --> osd[OSD: GNOME Shell extension]
+  op --> mutter[Mutter DisplayConfig: refresh, primary GPU hints]
+  op <--> clients[legionctl CLI / TUI / MCP, legionctl-app (GPUI)]
 ```
 
-## Crate layout (cargo workspace)
+## Crates, processes and names
 
-| Crate | Role | Notes |
-| --- | --- | --- |
-| `legion-core` | Domain types, knob catalog, configset model, merge, validation, plan/diff | No I/O; all unit tests live here |
-| `legion-sys` | `SysRoot` path abstraction over `/sys`, `/proc`, `/dev`, `/run` | Tests run against a temp-dir fake root |
-| `legion-sensors` | udev, sysfs notify, hwmon, logind, UPower, evdev, NVML, MSR, EC (read-only) | Each behind a `Sensor` trait |
-| `legion-actuators` | firmware attributes, platform_profile, RAPL, cpufreq/EPP, sysctl, generic sysfs, PPD, scx_loader, NVIDIA | Each behind an `Actuator` trait |
-| `legion-bpf` | aya programs and loader | `bpf` feature |
-| `legiond` | The daemon: bus, policy, reconciler, D-Bus API, sd_notify watchdog | system service |
-| `legionctl` | CLI: talks to legiond over D-Bus; offline `validate`/`plan` work without it | replaces the Python script |
-| `legion-agent` | User-session helper: OSD backend selection, Mutter calls, notifications | user service |
-| `legion-ui` | Dioxus UI: wasm web UI (served by legion-agent) and desktop app | `ui` feature |
-| `legion-center` | Optional GPUI native control center | `gpui` feature |
-| `legion-win` | Linux-side Windows tooling: boot-next, hive checks, installed-Windows VM | `windows` feature |
-
-Plus `gnome-extension/legion-osd@legion` (JavaScript) for native OSD.
+See 15-layout.
 
 ## Key dependencies (to confirm versions when Phase 1 starts)
 
-`tokio`, `zbus` (D-Bus), `udev` (or `tokio-udev`), `evdev`, `serde` + `toml`, `nvml-wrapper` (optional),
-`aya` (optional), `sd-notify`, `tracing` + `tracing-journald`, `gpui` (optional, pinned by git rev).
+`tokio`, `zbus` (D-Bus), `udev` (or `tokio-udev`), `evdev`, `serde` + `toml`, `nvml-wrapper`,
+`aya`, `sd-notify`, `tracing` + `tracing-journald`, `gpui` (pinned by git rev).

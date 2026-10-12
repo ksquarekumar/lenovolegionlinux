@@ -8,7 +8,7 @@ resumed quickly; mutating git and other unsafe commands are gated by a layered c
 privileged location.
 
 Builds on 12-operator (harness, sandbox, gateway) and 13-daemon (one-writer database, event log, sagas). Owner:
-`legion-agentd` (user); privileged parts through `legiond`.
+`legionctl-operator` (user); privileged parts through `legionctl-system`.
 
 ## Session record
 
@@ -16,7 +16,7 @@ One row per session in the user database (plus child tables), changed only throu
 
 | Field | Content |
 | --- | --- |
-| id, agent | legion id; agent (claude-code, codex, any ACP agent) and its ACP session id |
+| id, agent | legionctl id; agent (claude-code, codex, any ACP agent) and its ACP session id |
 | account | account profile (12-operator) the session bills to |
 | state | `running`, `paused`, `offloaded`, `archived`, `failed` |
 | workdir | source path, copy path, copy method (worktree, overlay, reflink), base ref, branch |
@@ -27,7 +27,7 @@ One row per session in the user database (plus child tables), changed only throu
 | usage | tokens, cost and calls, per model and per tool |
 
 Creating a session is a saga (13-daemon): copy workdir, materialize tools, resolve policy, start sandbox, ACP
-`initialize` + `session/new` (with `cwd` = the copy and `mcpServers` = the legion proxies). Each step has a
+`initialize` + `session/new` (with `cwd` = the copy and `mcpServers` = the legionctl proxies). Each step has a
 compensation, so a failed create leaves nothing behind.
 
 ## Operating directory: copy-on-write
@@ -36,8 +36,8 @@ Disks here are ext4 (`/`, `/home`, `/data`), which cannot reflink, so:
 
 | Source | Copy |
 | --- | --- |
-| git repository | `git worktree` on branch `legion/<session>` from a recorded base ref; ignored build dirs (`target/`, `node_modules/`) overlay-mounted from the main checkout |
-| other directory | overlayfs: source read-only lower layer, per-session upper layer (kernel overlay in the session's user namespace; `fuse-overlayfs` as fallback) |
+| git repository | `git worktree` on branch `legionctl/<session>` from a recorded base ref; ignored build dirs (`target/`, `node_modules/`) overlay-mounted from the main checkout |
+| other directory | overlayfs: source read-only lower layer, per-session upper layer (kernel overlayfs in the session's user namespace) |
 | btrfs/xfs volume (if added later) | reflink copy or btrfs snapshot; same API |
 
 Repo copies always record repo, base ref, branch and merge-base, so "what did this session change" is always
@@ -59,12 +59,12 @@ Snapshots go to the event log, so the UIs show history ("conflict at 14:02, reso
 
 ## Skills and MCP servers: package, pin, proxy, cache
 
-- **Package store** `~/.local/share/legion/store/`: each skill or stdio MCP server is fetched once (npx, uvx,
+- **Package store** `~/.local/share/legionctl/store/`: each skill or stdio MCP server is fetched once (npx, uvx,
   cargo, git), pinned to a version and content hash, and recorded with its source. Fetching runs in a sandbox with
   network; running does not get network unless its policy allows it. Updates are explicit and shown as a diff.
-- **Per-session set:** the session record lists the skills and servers to activate; legion materializes them into
+- **Per-session set:** the session record lists the skills and servers to activate; legionctl materializes them into
   the session home (`.claude/skills`, `.codex/skills`, MCP config) so the agent sees only that set.
-- **Proxy:** the agent never connects to an MCP server directly. `session/new` passes legion's proxy endpoints; the
+- **Proxy:** the agent never connects to an MCP server directly. `session/new` passes legionctl's proxy endpoints; the
   proxy starts stdio servers inside the sandbox, connects to remote ones with credentials from the keyring, applies
   the tool allowlist, and records every call (session, tool, arguments hash, duration, result size, outcome).
 - **Cache:** only tools that are read-only (`readOnlyHint`) or allowlisted as deterministic. Key = server pin + tool +
@@ -84,7 +84,7 @@ Snapshots go to the event log, so the UIs show history ("conflict at 14:02, reso
 
 ## Lifecycle: run, pause, offload, resume
 
-Each session runs in its own systemd user scope (`legion-session-<id>.scope`) with memory and CPU limits.
+Each session runs in its own systemd user scope (`legionctl-session-<id>.scope`) with memory and CPU limits.
 
 | Transition | Mechanism | Resume cost |
 | --- | --- | --- |
@@ -94,7 +94,7 @@ Each session runs in its own systemd user scope (`legion-session-<id>.scope`) wi
 
 - Policy (in the config model): freeze after N minutes idle, offload after M minutes or when memory pressure is
   `Busy` (load module), wake on a timer or on an incoming run. Timers are systemd user timers, so they survive
-  restarts of `legion-agentd`.
+  restarts of `legionctl-operator`.
 - CRIU (installed) can checkpoint a whole process tree, but agents hold TLS connections to providers and child
   processes; restore is fragile. Kept as an experiment, not the offload path.
 
@@ -104,7 +104,7 @@ Three layers, generated from the same resolved policy:
 
 1. **Agent permissions:** Claude Code `permissions.deny/ask` and a PreToolUse hook; Codex approval policy and sandbox
    mode. Fast feedback to the agent, but the agent's own settings could be changed, so not enough alone.
-2. **Sandbox shims:** inside bwrap, `/usr/bin/git` (and other gated commands) is bind-mounted to the legion shim,
+2. **Sandbox shims:** inside bwrap, `/usr/bin/git` (and other gated commands) is bind-mounted to the legionctl shim,
    which checks the policy: read-only git commands pass; `commit`, `push`, `reset --hard`, `rebase`, `checkout -- .`,
    `clean`, branch deletion and similar are allowed, asked (approval queue) or denied per policy. The agent cannot
    reach the real binary.
@@ -119,19 +119,19 @@ A hierarchy of layers, each either a file or a directory of files:
 
 | Layer | Path | Writable by |
 | --- | --- | --- |
-| base data | `/usr/share/legion/defaults/` (package) | package manager |
-| system | `/etc/legion/` | root |
-| user | `~/.config/legion/` | user |
-| repository | `<repo>/.legion/` | repository commits |
+| base data | `/usr/share/legionctl/defaults/` (package) | package manager |
+| system | `/etc/legionctl/` | root |
+| user | `~/.config/legionctl/` | user |
+| repository | `<repo>/.legionctl/` | repository commits |
 | session | session record overrides | harness, per session |
 
-- **Order and merge mode are themselves config**, set only in `/etc/legion/legion.toml`: `precedence = [...]` lists
+- **Order and merge mode are themselves config**, set only in `/etc/legionctl/legionctl.toml`: `precedence = [...]` lists
   the layers from lowest to highest, and each layer is `merge = "key"` (deep merge per key; arrays by explicit
   `append`/`replace`) or `merge = "file"` (a file in this layer replaces the same file from lower layers).
-- **Locks:** `/etc/legion` can lock keys or key prefixes (`locked = ["gates.git.*", "sandbox.network"]`); higher
+- **Locks:** `/etc/legionctl` can lock keys or key prefixes (`locked = ["gates.git.*", "sandbox.network"]`); higher
   layers that set them are rejected with the lock shown. Only the system layer controls ordering and locks, so a
   repository or session cannot reorder layers to escape a gate.
-- **Explain:** `legion config explain <key>` shows the value, the layer and file that set it, and the values it
+- **Explain:** `legionctl config explain <key>` shows the value, the layer and file that set it, and the values it
   overrode. Each session stores its resolved snapshot, so later config edits do not change running sessions until
   they are resumed or explicitly re-resolved.
 - `/etc` (root-owned, bind-mounted read-only into every sandbox) is the trust root; the boot partition is not needed.
@@ -145,7 +145,7 @@ session's resolved snapshot.
 ## Order of work
 
 1. Config model (layers, precedence, locks, explain) — everything else reads it.
-2. Session record, workdir copies, git state; `legion session create|list|show`.
+2. Session record, workdir copies, git state; `legionctl sessions create|list|show`.
 3. Sandbox + git shim + agent permission generation.
 4. ACP client (agent-client-protocol crate): create, prompt, pause/offload/resume.
 5. Package store and MCP proxy with call log, then the cache.

@@ -8,7 +8,7 @@
 - The sweep tuned RAPL PL1 while the firmware's own `ppt_pl1_spl` was 90 W. The real knobs are the firmware
   attributes, and `ppt_cpu_cl` is exactly the CPU limit under combined CPU+GPU load.
 
-## Tuning engine in legiond
+## Tuning engine in legionctl-system
 
 `StartTune(spec)` runs inside the daemon, which already has every sensor:
 
@@ -19,8 +19,8 @@
   validated), throttle reasons from MSR, run-queue latency p99 (eBPF).
 - **Guards**: AC only, idle check (load and the workload classifier), reconciler paused for the tuned knobs,
   restore on any exit, abort on temperatures above the firmware limits.
-- **Output**: results to `/var/lib/legion/tune/<timestamp>.jsonl`; a recommended layer to
-  `/var/lib/legion/configsets/tuned.toml` that is inactive until the user enables it.
+- **Output**: results to `/var/lib/legionctl/tune/<timestamp>.jsonl`; a recommended layer to
+  `/var/lib/legionctl/configsets/tuned.toml` that is inactive until the user enables it.
 - **Recommendation**: per scenario the knee (smallest limit within 2 % of the best score), constrained by no
   thermal throttle reasons in the steady-state half and GPU throughput within 2 % of its best for cross-load.
 

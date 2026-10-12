@@ -1,6 +1,7 @@
 # 07 — Migration plan
 
-Each phase ships something usable and keeps the previous tooling working until parity is proven.
+Each phase ships something usable. The Python tooling runs until `legionctl-system` passes the parity gate; one
+change then replaces it (15-layout). No phase leaves two implementations installed.
 
 ## Phase 0 — fixes in the current Python tooling (days)
 
@@ -19,43 +20,44 @@ Cheap, independent, and they de-risk the Rust work by answering open questions.
 8. Kernel module inventory in `doctor` (08-kernel): required/optional/unwanted, DKMS built per kernel, autoload drift.
 9. GPU mode detection in `status`; `legionctl run --gpu nvidia|intel --cores p|e -- cmd`; primary-GPU toggle.
 
-## Phase 1 — legiond core with parity (weeks)
+## Phase 1 — legionctl-system with parity, then the switch (weeks)
 
-- Workspace, `legion-core` (configsets, merge, validate, plan), `legion-sys` (fake-root testing),
-  sensors: udev, sysfs notify, logind, evdev; actuators: platform_profile, firmware attributes, RAPL, cpufreq,
-  sysctl, PPD, scx_loader, NVIDIA units.
-- Profile JSON → configset TOML converter; same validation rules as `legionctl validate`.
-- Rust `legionctl` with `status`, `doctor`, `plan`, `apply`, `validate`, `follow` semantics via the ledger.
-- **Parity gate**: on this machine, for AC, battery, Fn+Q override, resume and boot, the Rust daemon in
-  `--dry-run` plans exactly the writes the Python tooling performs (diffed in CI from recorded fixtures).
-- Then: switch over, remove the reassert timer, follow service and udev `RUN+=` rules.
+- `legionctl-machine`: sysroot (recorded-tree testing), sensors (udev, sysfs notify, logind, evdev), actuators
+  (platform_profile, firmware attributes, cpufreq, sysctl, PPD, scx_loader, NVIDIA units). No RAPL writes.
+- Profile JSON → configset TOML converter with the same validation rules as `legionctl validate`.
+- `legionctl-system` with `status`, `doctor`, `plan`, `apply`, `validate`, `follow` semantics through the ledger.
+- **Parity gate**: on this machine, for AC, battery, Fn+Q override, resume and boot, `legionctl-system --dry-run`
+  plans the same writes as the Python tooling (except RAPL), compared in CI from recorded fixtures.
+- **Switch** (one change): install `legionctl-system`; delete the Python `legionctl`, `legion-osd`,
+  `legion-refresh-toggle`, the reassert timer, the follow service, the udev `RUN+=` rules, the sleep hook and the
+  hwdb remap; rename the Rust client binary to `legionctl`.
 
 ## Phase 2 — session
 
-- `legion-agent` with Mutter actions (Fn+R, refresh per layer) and OSD backend selection.
-- GNOME Shell extension `legion-osd@legion` for native OSD; notifications as fallback.
-- Retire `legion-osd` and `legion-refresh-toggle`.
+- Operator session module: Mutter actions (Fn+R, refresh per layer), OSD requests.
+- GNOME Shell extension `legionctl-osd@legionctl`: animated OSD (03-session).
 
 ## Phase 3 — observability and tuning
 
-- MSR throttle-reason sensor; fan source validated (02-platform options); `legionctl monitor`.
-- eBPF plugins: workload classifier, run-queue latency, power attribution.
-- Tuning engine in the daemon; retire `scripts/rapl-sweep.sh`.
+- MSR throttle-reason sensor; validated fan source; `legionctl power monitor`.
+- eBPF sensors: workload classifier, run-queue latency, power attribution, session activity.
+- Tuning engine in the daemon sweeps `ppt_*`; delete `scripts/rapl-sweep.sh` in the same change.
 
-## Phase 4 — UI: web (wasm) + desktop (Dioxus), GPUI optional
+## Phase 4 — GPUI app
 
-`legion-ui` (Dioxus) built for wasm (served by legion-agent) and desktop; live view, configset editor with plan
-preview, tuning wizard, Windows panel. GPUI `legion-center` only if a native-first variant is still wanted.
+`legionctl-app`: live view, configset editor with plan preview, tuning wizard, Windows panel, agent sessions.
 
 ## Phase 5 — Windows
 
 Hazard detection (hivex read-only), `RebootToWindows`, VFIO VM of the installed Windows with guard rails.
 No Windows-side agent: Lenovo Vantage covers Windows (decided 2026-10-12).
 
-## Testing strategy
+## Testing
 
-- Unit tests in `legion-core` (merge, validation, plan, ledger decisions) — the bulk.
-- Integration tests against a fake `SysRoot` with recorded sysfs trees from this machine
-  (`tests/fixtures/sysroot-82wq-2026-10-12/`), including uevent replay for Fn+Q bursts and AC changes.
-- On-machine `make selftest`: daemon in dry-run against the real system, then `doctor`.
-- CI: `cargo fmt --check`, `clippy -D warnings`, `cargo test`, `cargo deny`, plus the existing pre-commit hooks.
+- End-to-end at a boundary: `legionctl-system --dry-run` against recorded sysroots of this machine
+  (`tests/fixtures/sysroot-82wq-*`), with uevent replay for Fn+Q bursts, AC changes and resume; the CLI and MCP
+  server against a temporary operator database.
+- Narrow tests only for failures that are not obvious (ledger decisions on firmware-initiated changes, phantom I/O
+  pressure). Tests that restate the code are deleted.
+- On-machine `make selftest`: the daemon in dry-run against the real system, then `doctor`.
+- CI: `cargo fmt --check`, `clippy -D warnings`, `cargo test`, `cargo deny`, and the pre-commit hooks.

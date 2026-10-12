@@ -11,7 +11,7 @@ enum Event {
     Sleep { entering: bool },            // logind PrepareForSleep
     Key(FnKey),                          // Fn+Q / Fn+R / ... from evdev, debounced at the source
     Workload(WorkloadChange),            // eBPF exec classification (optional)
-    Display(DisplayState),               // from legion-agent: outputs, active GPU, refresh
+    Display(DisplayState),               // from legionctl-operator: outputs, active GPU, refresh
     Thermal(ThermalSample),              // periodic sensor snapshot
     ConfigReloaded,                      // SIGHUP / D-Bus Reload / inotify on /etc/legion
     Drift { knob: KnobId, observed: String },
@@ -27,9 +27,9 @@ the policy task (a 300 ms settle window before reconciling, so a burst of uevent
 Desired state is a merge of TOML layers selected by the current *conditions*. Later layers win per knob.
 
 ```
-/usr/share/legion/configsets/   shipped defaults (from profiles/)
-/etc/legion/configsets/         machine admin overrides
-/var/lib/legion/configsets/     generated (e.g. tuning results), never hand-edited
+/usr/share/legionctl/configsets/   shipped defaults (from profiles/)
+/etc/legionctl/configsets/         machine admin overrides
+/var/lib/legionctl/configsets/     generated (e.g. tuning results), never hand-edited
 ```
 
 Example:
@@ -78,7 +78,7 @@ Each knob declares how to treat an external change:
 
 | Policy | Meaning | Examples |
 | --- | --- | --- |
-| `enforce` | Restore our value; log who changed it | sysctl, governor, RAPL fallback |
+| `enforce` | Restore our value; log who changed it | sysctl, governor, firmware limits |
 | `follow` | Accept a firmware/user change as an override until the next condition change | platform_profile (Fn+Q) |
 | `observe` | Never write; report only | fan RPM, temperatures, `conservation_mode` unless configured |
 
@@ -90,7 +90,7 @@ it wrote and when. On a change event:
 - observed == last written → our own write, ignore;
 - otherwise → external change, handled per knob policy, and attributed (firmware event, D-Bus caller, unknown).
 
-The ledger lives in memory and is mirrored to `/run/legion/ledger.json` for debugging and crash recovery.
+The ledger lives in memory and is mirrored to `/run/legionctl/ledger.json` for debugging and crash recovery.
 
 ## Reconciler
 
@@ -115,30 +115,28 @@ trait Actuator: Send + Sync {
 }
 ```
 
-- Built-in plugins are compiled in and registered at startup; optional ones sit behind cargo features.
-- External plugins: an executable speaking JSON lines over stdin/stdout (`{"read": knob}` → `{"value": ...}`),
-  declared in `/etc/legion/plugins.d/*.toml`. This lets the existing Python pieces be wrapped during migration.
-- No dynamic `.so` loading: Rust has no stable ABI and the safety story is worse.
+- All sensors and actuators are compiled in and registered at startup.
+- No external process plugins and no dynamic `.so` loading: one implementation for each knob, in Rust.
 
-## Redundancy and failure handling
+## One path for each concern, and failure handling
 
-| Concern | Primary | Fallback |
+| Concern | Path | When it fails |
 | --- | --- | --- |
-| CPU power limits | firmware attributes (`ppt_*`) | RAPL MSR + MMIO |
-| Change detection | sysfs `POLLPRI` / uevents | poll in the drift check |
-| GPU data | NVML | `nvidia-smi` parsing |
-| Fn keys | evdev on the platform device | hwdb remap + session shortcut |
-| OSD | GNOME Shell extension | desktop notifications |
-| Fan RPM | validated EC/WMI source | none (marked unknown, never the thinkpad value) |
+| CPU power limits | firmware attributes (`ppt_*`); RAPL is read for watts, never written | safe mode, report |
+| Change detection | sysfs `POLLPRI` / uevents; drift check only for knobs that cannot notify | report the knob |
+| GPU data | NVML | sensor `failed`, report |
+| Fn keys | evdev on the platform device | report; no key actions |
+| OSD | GNOME Shell extension | `doctor` reports it; no OSD |
+| Fan RPM | validated WMI source | marked unknown, never the thinkpad value |
 
 - `Type=notify` with `WatchdogSec=30`; a hung reconciler gets restarted.
-- `OnFailure=legion-safe.service`: writes firmware defaults (platform_profile `balanced`, firmware limits back to
+- `OnFailure=legionctl-safe.service`: writes firmware defaults (platform_profile `balanced`, firmware limits back to
   their boot values captured at first start) so a crash never leaves aggressive limits on battery.
 - Every write is refused unless DMI matches the profile (today's `require_supported_machine`).
 - Structured audit log to journald: knob, old, new, reason, condition set.
 - `--dry-run` for the whole daemon: runs sensors and planning, logs intended writes, writes nothing.
 
-## D-Bus API (`org.legion.Control1`, system bus)
+## D-Bus API (`org.legionctl.System1`, system bus)
 
 - Properties: `PowerSource`, `FirmwareMode`, `Override`, `Conditions`, `DesiredState`, `ObservedState`.
 - Methods: `SetOverride(mode)`, `ClearOverride()`, `Plan() → diff`, `Apply()`, `Reload()`, `StartTune(spec)`,
