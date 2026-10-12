@@ -1,5 +1,4 @@
-//! What the machine daemon does for each event. The same decisions the Python units made, now in one place and in
-//! one queue, so two events never race.
+//! What the machine daemon does for each event, in one place and in one queue, so two events never race.
 
 use anyhow::Result;
 

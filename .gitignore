@@ -1,10 +1,4 @@
-__pycache__/
-*.py[cod]
 .vscode/
 pkg/
-src/*.tar*
 *.pkg.tar.*
-.mypy_cache/
-.ruff_cache/
-rapl-sweep-*.csv
 target/

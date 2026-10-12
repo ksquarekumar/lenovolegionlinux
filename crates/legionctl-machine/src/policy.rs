@@ -83,7 +83,7 @@ pub struct Machine<'a> {
     pub has_command: &'a dyn Fn(&str) -> bool,
 }
 
-/// Python's `repr` of a string, kept for messages users and logs already know.
+/// A value in single quotes, as the policy messages show it.
 fn quoted(s: &str) -> String {
     format!("'{s}'")
 }
