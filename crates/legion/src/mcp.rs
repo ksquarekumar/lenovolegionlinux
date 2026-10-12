@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use legion_core::{actions, agents, load, snapshot::Snapshot, worktree::Store};
+use legion_core::{actions, agents, load, setup, snapshot::Snapshot, worktree::Store};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock as Content};
 use rmcp::{ServiceExt, tool, tool_router};
@@ -136,6 +136,20 @@ impl Legion {
         actions::run_approved(&args.action, &args.value).map_or_else(fail, |text| {
             CallToolResult::success(vec![Content::text(text)])
         })
+    }
+
+    #[tool(
+        description = "Check whether ctx (agent history search) and legion are set up for Claude Code and Codex: skills and MCP servers. Read-only."
+    )]
+    fn setup_check(&self) -> CallToolResult {
+        ok(&setup::check())
+    }
+
+    #[tool(
+        description = "Set up ctx and legion for Claude Code and Codex: install the ctx skill and MCP server for both, add legion's MCP server to ~/.codex/config.toml (with a backup) and link legion's skills for Codex. Changes user-level config files only."
+    )]
+    fn setup_apply(&self) -> CallToolResult {
+        setup::apply(false).map_or_else(fail, |done| ok(&done))
     }
 }
 

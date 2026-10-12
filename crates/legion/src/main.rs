@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use legion_core::{actions, agents, load, snapshot::Snapshot, worktree::Store};
+use legion_core::{actions, agents, load, setup, snapshot::Snapshot, worktree::Store};
 
 #[derive(Parser)]
 #[command(
@@ -56,6 +56,20 @@ enum Command {
         action: String,
         /// auto|ac|battery for apply-power-policy, nvidia|intel|auto for set-desktop-gpu
         value: String,
+    },
+    /// Set up ctx and legion for Claude Code and Codex (skills, MCP servers)
+    Setup {
+        /// Only report what is missing; change nothing
+        #[arg(long)]
+        check: bool,
+        /// With --check: one line, and only when something needs attention (for agent hooks)
+        #[arg(long)]
+        brief: bool,
+        /// Install ctx with its signed installer if it is missing
+        #[arg(long)]
+        install_ctx: bool,
+        #[arg(long)]
+        json: bool,
     },
     /// MCP server over stdio, for Claude Code, Codex and other agents
     Mcp,
@@ -241,6 +255,60 @@ fn main() -> Result<()> {
                 actions::approved_command(&action, &value)?.join(" ")
             );
             print!("{}", actions::run_approved(&action, &value)?);
+        }
+        Command::Setup {
+            check: true,
+            brief,
+            json,
+            ..
+        } => {
+            let report = setup::check();
+            let todo = report.needs_attention();
+            if json {
+                print_json(&report)?;
+            } else if brief {
+                if !todo.is_empty() {
+                    let names: Vec<String> = todo
+                        .iter()
+                        .map(|i| format!("{} for {}", i.what, i.agent))
+                        .collect();
+                    println!(
+                        "legion setup: {} need attention ({}). Run /legion:setup or `legion setup`.",
+                        todo.len(),
+                        names.join(", ")
+                    );
+                }
+            } else {
+                println!(
+                    "ctx: {}",
+                    report.ctx_version.as_deref().unwrap_or("not installed")
+                );
+                for i in &report.items {
+                    println!("{:<26} {:<12} {:<14} {}", i.what, i.agent, i.status, i.path);
+                }
+            }
+        }
+        Command::Setup {
+            check: false,
+            install_ctx,
+            ..
+        } => {
+            for line in setup::apply(install_ctx)? {
+                println!("{line}");
+            }
+            let left = setup::check();
+            let todo = left.needs_attention();
+            println!(
+                "{}",
+                if todo.is_empty() {
+                    "all set up".to_string()
+                } else {
+                    format!(
+                        "{} items still need attention; run `legion setup --check`",
+                        todo.len()
+                    )
+                }
+            );
         }
         Command::Mcp => tokio::runtime::Runtime::new()?.block_on(mcp::serve())?,
         Command::Tui => tui::run()?,

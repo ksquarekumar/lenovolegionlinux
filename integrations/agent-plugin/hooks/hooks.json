@@ -1,11 +1,32 @@
 {
-  "description": "Tell the agent when this machine is under load, so it scales builds and parallel work accordingly",
+  "description": "Tell the agent when this machine is under load, and when ctx or legion setup needs attention",
   "hooks": {
     "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "legion load --brief", "timeout": 5 }] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "legion load --brief",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "legion setup --check --brief",
+            "timeout": 10
+          }
+        ]
+      }
     ],
     "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "legion load --brief --only-busy", "timeout": 5 }] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "legion load --brief --only-busy",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

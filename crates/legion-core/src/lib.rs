@@ -4,6 +4,7 @@
 pub mod actions;
 pub mod agents;
 pub mod load;
+pub mod setup;
 pub mod snapshot;
 pub mod worktree;
 
