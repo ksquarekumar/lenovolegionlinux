@@ -104,6 +104,7 @@ A module becomes its own crate only when its size or its dependencies require it
 | graphics and display | `gpu` (mode, desktop GPU, pinning, run on), `display` (refresh, primary GPU) | system, operator for Mutter |
 | kernel and OS | `kernel` (modules, DKMS, initramfs, sysctl, sched_ext), `disk`, `boot`, `windows` | system |
 | input | `input` (Fn keys, Logitech devices) | system |
+| virtualization | `virt` (status, list, create, start, stop, pause, tune), 17-virtualization | operator, system for kernel parts |
 | config | `config` (layers, explain, edit, lock) | operator, system for `/etc` |
 | agents | `agents`, `skills`, `reminders`, `hooks`, `tools` | operator |
 | work | `sessions`, `worktree`, `plans`, `gateway` | operator, gateway |
