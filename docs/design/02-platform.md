@@ -47,28 +47,31 @@ Vantage switches to Custom mode to apply them)? Test: write `ppt_pl1_spl` in `ma
 
 ## Fans
 
-`hwmon4` (`thinkpad`) reports `fan1/fan2` from `/proc/acpi/ibm/fan` (`speed: 4`, `status: disabled`). That
-driver targets ThinkPad ECs and the value is meaningless here.
+There is no fan hwmon on this machine (`thinkpad_acpi`, which reported a bogus fan, is no longer autoloaded;
+`hwmon4` is now `spd5118`).
 
-**Fix (implemented and validated in legionctl 2026-10-12):** idle 2,200/2,300 rpm in max-power, 2,900/2,900 rpm after
-40 s of gpu-burn (GPU 60 → 70 °C); readings move with load in the firmware's 100 rpm steps. the firmware publishes real RPM through the
-Lenovo "Other Method" WMI interface, `GetFeatureValue` (method 17) with feature `0x04030001`/`0x04030002`
-(value = FANS × 100), the path LenovoLegionLinux uses for this model (`model_kwcn`, `ACCESS_METHOD_WMI3`). The
-WMI object is `AE` on `PNP0C14:02` = `\_SB_.GZFD.WMAE`. `acpi_call` (DKMS, already installed) lets root call it
-read-only: `echo '\_SB_.GZFD.WMAE 0 17 b01000304' > /proc/acpi/call; cat /proc/acpi/call`. legionctl reads it
-in `status`; legionctl-system will poll it as a sensor (2 s). Alternatives if this path misbehaves:
+**Path (implemented and validated 2026-10-12):** idle 2,200/2,300 rpm in max-power, 2,900/2,900 rpm after 40 s of
+gpu-burn (GPU 60 → 70 °C); readings move with load in the firmware's 100 rpm steps. The firmware publishes RPM
+through the Lenovo "Other Method" WMI interface, `GetFeatureValue` (method 17) with feature `0x04030001`/`0x04030002`
+(value = FANS × 100), the path LenovoLegionLinux uses for this model (`model_kwcn`, `ACCESS_METHOD_WMI3`). The WMI
+object is `AE` on `PNP0C14:02` = `\_SB_.GZFD.WMAE`. `acpi_call` lets root call it read-only:
+`echo '\_SB_.GZFD.WMAE 0 17 b01000304' > /proc/acpi/call; cat /proc/acpi/call`. legionctl-system polls it as a
+sensor (2 s). This is the only fan source; a failed read reports the RPM as unknown.
 
-1. **Upstream Lenovo WMI fan data**: newer `lenovo-wmi-*` drivers may expose fan RPM via hwmon. Check on each
-   kernel update; zero maintenance if it lands.
-2. **Read-only EC access**: `ec_sys` debugfs (`/sys/kernel/debug/ec/ec0/io`, no `write_support`) with the 82WQ
-   register map from LenovoLegionLinux's `legion-laptop` model table. Userspace, no custom kernel module,
-   read-only. Mark readings `unverified` until validated.
-3. **legion-laptop DKMS hwmon** (read-only) as already gated in `MEASUREMENT.md`.
+The in-tree `lenovo_wmi_other` module has `expose_all_fans` and `relax_fan_constraint` parameters. If a kernel
+update makes it register a fan hwmon on this model without them, that hwmon replaces the acpi_call path in the
+same change (check on each kernel update).
 
-Validation for any source: RPM must be ~0 at idle with fans stopped, rise under `gpu-burn`/stress, track
-`max-power` vs `quiet`, and match Vantage's reading for the same load when booted into Windows.
-Until then the daemon reports fan RPM as unknown and never uses the thinkpad value.
+## Fan control (from LenovoLegionLinux `model_kwcn`, source HEAD 6cf67c3)
 
+| Control | Firmware call | Rules on this model |
+| --- | --- | --- |
+| Fan curve | FAN_METHOD `\_SB_.GZFD.WMAB` id 5 `Fan_Get_Table`, id 6 `Fan_Set_Table`; 0x40-byte input, FSS0–FSS9 one byte each at 0x06 + 2·i; header ignored by the DSDT, which copies the 10 bytes to EC RAM F9F0..F9F9 | Speed-only: one table for both fans; no temperature points. Units are **levels 1–10**, not RPM or percent (percent values hard-powered-off an 82WM). Per-point minimum {1,1,1,1,1,1,1,1,3,5}. **Custom mode (255) only**: on the 16IRX8H the EC resets the table when mode 0xE0 is entered and ignores later writes (LLL issue #429). Read back after each write; re-apply after resume and on every custom-mode entry. |
+| Level → RPM ladder | WQA3 `LENOVO_FAN_TABLE_DATA`, 15 instances | Read on this machine before the first write (needs root). |
+| Fan ceiling | GameZone `WMAA` id 0x0D, arg 1/0 | Validated on the 16IRX8H: ~4,400 → ~7,000 rpm. No readback on this model: legionctl-system owns the state and re-asserts it after resume. |
+| Full speed (dust cleaning) | Other Method `SetFeatureValue` (18), feature 0x04020000 | Custom mode only. |
+| FAN_METHOD ids 1–4 | — | Not implemented by this firmware; never called. |
+| EC fan lock (EC 0xC4AB over port I/O) | raw EC write | Not done: no validation for this EC, can stop fan control. |
 ## GPU mode, primary GPU and per-app pinning
 
 - **Detect** (no root): which DRM card drives each connected output (`/sys/class/drm/card*-*/status` plus the card's
