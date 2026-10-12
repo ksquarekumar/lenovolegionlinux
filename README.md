@@ -4,8 +4,10 @@ Local control package for this machine:
 
 - `LENOVO 82WQ`
 - `Legion Pro 7 16IRX8H`
-- observed board values: `INVALID`, `LNVNB161216`
-- observed BIOS values: `KWCN42WW`, `KWCN54WW`
+- observed BIOS: `KWCN54WW`
+- observed BIOS release: `1.54`
+- observed EC firmware release: `1.51`
+- observed board name: `INVALID`
 
 This repository is intentionally machine-specific. It is not a generic Legion
 support package and it does not try to guess safe behavior for other models.
@@ -18,9 +20,12 @@ Owned here:
 - Intel RAPL package limits through standard `powercap` sysfs
 - CPU EPP/governor/turbo policy
 - Lenovo firmware thermal profile through `platform_profile`
-- VPC2004 firmware fan mode
+- VPC2004 fan mode status
 - NVIDIA persistence and `nvidia-powerd` integration
-- conflict/status checks
+- power-profiles-daemon profile sync (PPD keeps EPP and the GNOME Power Mode UI)
+- system sysctl set (profile `sysctl`, per-mode overrides in `ac.sysctl`/`battery.sysctl`)
+- sched_ext scheduler config (`tuning/scx_loader.toml`: `scx_lavd --autopower`)
+- conflict/status checks and profile validation
 
 Not owned here:
 
@@ -39,7 +44,30 @@ Run read-only status checks:
 ```bash
 ./src/legionctl/legionctl status
 ./src/legionctl/legionctl doctor
+./src/legionctl/legionctl capabilities
 ./src/legionctl/legionctl cleanup --dry-run
+./src/legionctl/legionctl validate          # profile structure, no hardware access
+./src/legionctl/legionctl gpu               # which GPU drives each display; hybrid vs discrete
+```
+
+`status` also shows firmware power limits, fan RPM (root, via `acpi_call`), logged throttle reasons (root) and the
+Fn+Q override. `doctor` adds kernel module/DKMS inventory, dirty NTFS volumes and desktop-GPU placement.
+
+Choose the GPU that draws the desktop (applies at next login), and launch programs on a GPU, core class and priority:
+
+```bash
+sudo legionctl gpu primary nvidia            # or intel, or auto
+legionctl run --gpu nvidia -- blender
+legionctl run --cores e --nice 10 -- make -j16
+```
+
+Fn+Q is followed automatically (`legionctl follow`, run by udev); the choice holds until the power source changes,
+reboot, or `apply`. After resume, `/usr/lib/systemd/system-sleep/legion` re-applies policy and keeps that choice.
+
+Capture hotkey/WMI/display/fan evidence:
+
+```bash
+sudo -E ./scripts/capture-capabilities.sh
 ```
 
 Apply the AC policy:
@@ -85,6 +113,12 @@ sudo systemctl enable --now legion-apply.service legion-reassert-ac.timer
 sudo systemctl start legion-apply.service
 ```
 
+Or run the combined install/apply/check helper:
+
+```bash
+sudo ./scripts/install-apply-check.sh
+```
+
 For Arch/CachyOS packaging:
 
 ```bash
@@ -107,4 +141,35 @@ sudo systemctl start legion-apply.service
 - CPU peak: 125 W
 - GPU: firmware-managed Dynamic Boost through `nvidia-powerd`, expected 150 W
 - Firmware thermal profile: `max-power` when available
-- VPC2004 fan mode: `4`
+- VPC2004 fan mode: status-only; writing `4` immediately reads back as `0`
+
+## Capability Coverage
+
+See [docs/CAPABILITIES.md](docs/CAPABILITIES.md) for the machine capability
+inventory. The current installed scope is CPU/GPU/firmware performance policy.
+Hotkeys such as `Fn+Q`, `Fn+R`, `Fn+Space`, real fan telemetry/control, RGB,
+hybrid graphics, G-Sync, and panel overdrive are tracked there as separate
+capabilities until they are verified on this 82WQ machine.
+
+See [docs/REFERENCE_COMPARISON.md](docs/REFERENCE_COMPARISON.md) for the
+baseline-vs-reference comparison against the three upstream repositories.
+
+See [docs/MEASUREMENT.md](docs/MEASUREMENT.md) for the capture workflow that
+feeds the next DKMS and hotkey work.
+
+## Development
+
+`make` is the entry point; run `make help` for every target.
+
+```bash
+make tools      # uv-installed pre-commit plus hook environments (ruff, mypy, shellcheck, shfmt, actionlint)
+make hooks      # also install the git pre-commit hook
+make fmt        # format Python and shell in place
+make lint       # every hook on all tracked files (what CI runs, plus `make validate`)
+make validate   # profile structure and ac/battery consistency, no hardware access
+make check      # validate + live status on this machine
+make lint-pkg   # namcap the PKGBUILD (Arch only)
+```
+
+Measure before changing sustained CPU power: `sudo ./scripts/rapl-sweep.sh` sweeps RAPL PL1 and
+writes a CSV of throughput, package power, temperature, clocks and fan speed per step.

@@ -3,4 +3,3 @@ Description=Legion battery power policy target
 DefaultDependencies=no
 StopWhenUnneeded=yes
 Conflicts=legion-ac.target
-

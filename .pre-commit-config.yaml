@@ -1,0 +1,52 @@
+# Run through the Makefile: `make hooks` installs, `make lint` runs everything on all files.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-json
+      - id: check-toml
+      - id: check-yaml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.0
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.4.0
+    hooks:
+      - id: mypy
+        args: [--scripts-are-modules]
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+
+  - repo: local
+    hooks:
+      - id: shfmt
+        name: shfmt
+        language: python
+        additional_dependencies: [shfmt-py==4.2.0]
+        entry: shfmt -w -i 2 -ci
+        types: [shell]
+      - id: legionctl-validate
+        name: legionctl validate profiles
+        language: system
+        entry: make validate
+        pass_filenames: false
+        files: ^(profiles/.*\.json|src/legionctl/legionctl)$
+
+  - repo: https://github.com/Mateusz-Grzelinski/actionlint-py
+    rev: v1.7.12.25
+    hooks:
+      - id: actionlint

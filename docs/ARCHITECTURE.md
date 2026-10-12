@@ -7,9 +7,9 @@ LENOVO 82WQ / Legion Pro 7 16IRX8H
 ```
 
 The package refuses to apply policy when the stable DMI identity does not match
-the profile unless `--force` is supplied. Board name and BIOS version are kept
-as observed metadata because this machine has reported both `INVALID`/`KWCN42WW`
-and `LNVNB161216`/`KWCN54WW`.
+the profile unless `--force` is supplied. BIOS and EC firmware are status data,
+not policy gates. Board name is not a hard gate because this board currently
+reports `INVALID`.
 
 ## Layers
 
@@ -26,8 +26,9 @@ separate explicit flags.
 
 The kernel driver lane is optional. The first package version does not install
 or blacklist any DKMS driver because the in-tree Lenovo stack currently provides
-working `platform_profile`, VPC2004 `fan_mode`, and NVIDIA Dynamic Boost
-behavior.
+working `platform_profile` and NVIDIA Dynamic Boost behavior. VPC2004
+`fan_mode` is visible but not a working control surface on this machine: writing
+`4` immediately reads back as `0`.
 
 ## AC Policy
 
@@ -37,7 +38,6 @@ The AC profile writes standard interfaces first:
 - `intel_pstate` turbo and performance percentage controls
 - cpufreq governor and EPP per policy
 - ACPI `platform_profile`
-- VPC2004 `fan_mode`
 - `nvidia-powerd.service`
 - NVIDIA persistence mode
 
@@ -60,7 +60,6 @@ does not force `nvidia-smi -pl 150`, because that was rejected on this system.
 The reassert timer writes only firmware-level settings:
 
 - `platform_profile`
-- VPC2004 `fan_mode`
 
 It does not rewrite all RAPL and CPU state every 30 seconds. Full CPU/GPU policy
 is applied at boot and on ADP0 AC/battery transitions.

@@ -4,17 +4,21 @@ The goal is a best-of-three local package, not a mechanical merge. Each feature
 must have one owner. If the kernel or NVIDIA already provides a working owner,
 this repo should orchestrate it instead of replacing it.
 
+The source capability catalog is compared in
+[REFERENCE_COMPARISON.md](REFERENCE_COMPARISON.md).
+
 ## Already Adopted
 
 | Area | Source influence | Local owner | Decision |
 | --- | --- | --- | --- |
-| Machine identity | Bolekjar DMI compatibility concept | `profiles/*.json` | Adopted, stricter than upstream: exact stable 82WQ/16IRX8H match with board/BIOS as observed metadata. |
+| Machine identity | Bolekjar DMI compatibility concept | `profiles/*.json` | Adopted, stricter than upstream: exact stable 82WQ/16IRX8H match. BIOS/EC are status facts, not gates. |
 | Central control surface | johnfan Python module/CLI idea | `legionctl` | Adopted, but without GUI and without daemon state split. |
 | AC/battery automation | johnfan `legiond` profile idea | `udev` + systemd targets + `legionctl` | Adopted in simpler form using ADP0 only. |
 | Power mode/platform profile | johnfan and Bolekjar platform profile work | in-tree kernel + `legionctl` | Adopted through existing `/sys/firmware/acpi/platform_profile`. |
 | CPU power limits | johnfan/legiond profiles, Bolekjar RAPL work | standard `intel_rapl` powercap sysfs | Adopted without DKMS RAPL/MMIO sync by default. |
 | GPU performance | johnfan notes about NVIDIA power limits | `nvidia-powerd` + persistence | Adopted as firmware-managed Dynamic Boost; no forced `nvidia-smi -pl 150`. |
-| VPC fan mode | in-tree `ideapad_laptop`/VPC2004 behavior | `legionctl` | Adopted as firmware fan mode `4` on AC. |
+| VPC fan mode | in-tree `ideapad_laptop`/VPC2004 behavior | status only | Rejected as a control path after measurement: writing `4` immediately reads back as `0`. |
+| Capability inventory | all references | profile metadata + `legionctl capabilities` | Adopted to separate verified features from source-derived or pending Legion features. |
 | Conflict detection | local audit findings | `legionctl doctor` | Adopted. |
 | Conflict cleanup | local audit findings | `legionctl cleanup` | Adopted for old services; module/package removal requires explicit flags. |
 
@@ -22,10 +26,13 @@ this repo should orchestrate it instead of replacing it.
 
 | Area | Best source | Why it is useful | Import condition |
 | --- | --- | --- | --- |
-| Reliable fan RPM/temperature telemetry | Bolekjar `legion-hwmon` and johnfan `legion_hwmon` | Current `thinkpad_acpi` fan RPM is bogus on this machine. | Only after a DKMS test proves it binds without breaking `platform_profile`, VPC2004 `fan_mode`, or NVIDIA Dynamic Boost. |
+| Reliable fan RPM/temperature telemetry | Bolekjar `legion-hwmon` and johnfan `legion_hwmon` | Current `thinkpad_acpi` fan RPM is bogus on this machine. | Only after a DKMS test proves it binds without breaking `platform_profile` or NVIDIA Dynamic Boost. |
 | Fan table/method support | Bolekjar `legion-wmi-ftable` / `legion-wmi-fm` | Could expose real firmware fan state and possibly fix fan control visibility. | Optional DKMS branch; no custom fan curves until read-only telemetry works. |
 | Fan curve read/write | johnfan fan curve implementation | Useful later for controlled profiles. | Deferred; EC fan writes are too risky until telemetry is trustworthy. |
 | Maximum fan / dust mode | johnfan fan full-speed controls, Bolekjar fan method | Useful as a manual recovery/test command. | Add only as an explicit command with timeout/failsafe. |
+| Fn+Q event sync | johnfan power-mode notes, Bolekjar WMI events | Keeps local policy aware when firmware mode is changed by the hardware hotkey. | After WMI events are captured and coexist with the in-tree Lenovo stack. |
+| Fn+R refresh-rate toggle | johnfan ACPI action sketch | Useful panel shortcut; must use real local panel modes. | Add only after event capture and display-mode enumeration. |
+| Fn+Space keyboard lighting | Bolekjar keyboard/RGB methods | Likely maps to keyboard lighting/RGB cycle. | Discover event/controller path first; no GUI import in phase one. |
 | Hybrid graphics toggle | null-dev WMI method, Bolekjar gamezone | Useful for reboot-time MUX/hybrid state. | Later utility command; never tied to AC policy. |
 | Firmware attributes | Bolekjar firmware attributes class | Useful for discoverability and future GUI/API. | DKMS import only if it does not duplicate in-tree Lenovo WMI drivers. |
 | WMI event handling | Bolekjar WMI events/gamezone | Useful for Fn+Q/profile event sync. | Only after confirming it can coexist with or safely replace in-tree `lenovo_wmi_*`. |
@@ -48,8 +55,8 @@ this repo should orchestrate it instead of replacing it.
 
 | Existing component | Keep or remove | Reason |
 | --- | --- | --- |
-| `power-profiles-daemon` | Keep | Desktop UI state; `legionctl` reasserts stronger firmware mode when needed. |
-| `ideapad_laptop` | Keep | Provides the current VPC2004 `fan_mode` path. |
+| `power-profiles-daemon` | Keep | Desktop UI state; PPD keeps CPU EPP and the GNOME Power Mode UI; its `platform_profile` driver is blocked (drop-in) so `legionctl` alone owns firmware mode. `legionctl` sets the PPD profile per mode (`power_profile`) and reasserts it with the governor. |
+| `ideapad_laptop` | Keep | Provides useful platform devices, but its VPC2004 `fan_mode` write is ineffective on this machine. |
 | `lenovo_wmi_gamezone` / `lenovo_wmi_events` | Keep | Part of the current working Lenovo WMI path. |
 | `nvidia-powerd` | Keep | Required for Dynamic Boost/Swing behavior. |
 | `intel_rapl` / `intel_rapl_msr` / `intel_rapl_mmio` | Keep | Standard CPU powercap backend. |

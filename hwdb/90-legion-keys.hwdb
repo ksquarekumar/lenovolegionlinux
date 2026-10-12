@@ -1,0 +1,6 @@
+# Fn+R emits KEY_REFRESH_RATE_TOGGLE (562), above the 255-keycode limit GNOME/XKB can bind.
+# Remap its scancode (0x110, captured 2026-10-12) to F18 (keysym XF86Launch9, unused by GNOME);
+# legion-osd reads this device directly and runs legion-refresh-toggle on either code; the remap only
+# keeps Fn+R bindable for other tools.
+evdev:name:Ideapad extra buttons:*
+ KEYBOARD_KEY_110=f18

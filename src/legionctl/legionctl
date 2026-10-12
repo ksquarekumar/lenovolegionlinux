@@ -3,11 +3,11 @@ import argparse
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-
 
 DEFAULT_PROFILE = Path("/usr/share/legion-control/profiles/lenovo-82wq-legion-pro-7-16irx8h.json")
 REPO_PROFILE = Path(__file__).resolve().parents[2] / "profiles" / "lenovo-82wq-legion-pro-7-16irx8h.json"
@@ -60,24 +60,29 @@ class Runner:
         path.write_text(text)
         self.changed.append(str(path))
         self.info(f"wrote {path}: {value}")
+        after = read_text(path)
+        if after is not None and after.strip() != str(value):
+            self.warn(f"{path} read back as {after!r} after writing {value!r}")
         return True
 
-    def run(self, argv, required=False):
+    def run(self, argv, required=False, warn_on_failure=True):
         if shutil.which(argv[0]) is None:
             if required:
                 raise RuntimeError(f"missing command: {argv[0]}")
-            self.warn(f"missing command: {argv[0]}")
+            if warn_on_failure:
+                self.warn(f"missing command: {argv[0]}")
             return False
         if self.dry_run:
             self.info("would run: " + " ".join(argv))
             return True
-        result = subprocess.run(argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        result = subprocess.run(argv, text=True, capture_output=True)
         if result.returncode != 0:
             message = " ".join(argv)
             detail = (result.stderr or result.stdout).strip()
             if required:
                 raise RuntimeError(f"command failed: {message}: {detail}")
-            self.warn(f"command failed: {message}: {detail}")
+            if warn_on_failure:
+                self.warn(f"command failed: {message}: {detail}")
             return False
         return True
 
@@ -101,6 +106,11 @@ def load_profile(path):
 
 def read_dmi():
     keys = [
+        "bios_vendor",
+        "bios_version",
+        "bios_date",
+        "bios_release",
+        "ec_firmware_release",
         "sys_vendor",
         "product_name",
         "product_family",
@@ -181,6 +191,45 @@ def apply_rapl(runner, profile, mode):
                 runner.write(zone / f"constraint_{index}_time_window_us", time_window)
 
 
+def sysctl_settings(profile, mode):
+    # top-level "sysctl" applies in every mode; "<mode>.sysctl" overrides per power source
+    return {**profile.get("sysctl", {}), **profile[mode].get("sysctl", {})}
+
+
+def sysctl_path(key):
+    return Path("/proc/sys") / key.replace(".", "/")
+
+
+def apply_sysctl(runner, profile, mode):
+    for key, value in sysctl_settings(profile, mode).items():
+        runner.write(sysctl_path(key), value)
+
+
+def set_power_profile(runner, wanted):
+    # keep power-profiles-daemon (GNOME Power Mode) in step with the legion mode instead of fighting it
+    if not wanted or shutil.which("powerprofilesctl") is None:
+        return
+    result = subprocess.run(["powerprofilesctl", "get"], text=True, capture_output=True)
+    if result.stdout.strip() != wanted:
+        runner.run(["powerprofilesctl", "set", wanted])
+
+
+def apply_power_profile(runner, profile, mode):
+    set_power_profile(runner, profile[mode].get("power_profile"))
+
+
+def write_cpufreq(runner, name, value):
+    if value:
+        for policy in sorted(Path("/sys/devices/system/cpu/cpufreq").glob("policy*")):
+            runner.write(policy / name, value)
+
+
+def apply_cpu_governor_epp(runner, profile, mode):
+    cpu = profile[mode].get("cpu", {})
+    write_cpufreq(runner, "scaling_governor", cpu.get("governor"))
+    write_cpufreq(runner, "energy_performance_preference", cpu.get("energy_performance_preference"))
+
+
 def apply_cpu_policy(runner, profile, mode):
     cpu = profile[mode].get("cpu", {})
     if "ignore_ppc" in cpu:
@@ -190,13 +239,7 @@ def apply_cpu_policy(runner, profile, mode):
     if "max_perf_pct" in cpu:
         runner.write("/sys/devices/system/cpu/intel_pstate/max_perf_pct", cpu["max_perf_pct"])
 
-    governor = cpu.get("governor")
-    epp = cpu.get("energy_performance_preference")
-    for policy in sorted(Path("/sys/devices/system/cpu/cpufreq").glob("policy*")):
-        if governor:
-            runner.write(policy / "scaling_governor", governor)
-        if epp:
-            runner.write(policy / "energy_performance_preference", epp)
+    apply_cpu_governor_epp(runner, profile, mode)
 
     perf_bias = cpu.get("energy_perf_bias")
     if perf_bias is not None:
@@ -205,7 +248,8 @@ def apply_cpu_policy(runner, profile, mode):
         if shutil.which("cpupower"):
             runner.run(["cpupower", "set", "--perf-bias", str(perf_bias)])
 
-    if cpu.get("disable_idle"):
+    # re-enable every C-state in case something disabled them; deep idle frees turbo headroom
+    if cpu.get("enable_all_idle_states"):
         runner.run(["cpupower", "idle-set", "-E"])
 
 
@@ -227,10 +271,46 @@ def fan_mode_paths(profile):
     return [Path(p) for p in glob.glob("/sys/devices/**/VPC2004:00/fan_mode", recursive=True)]
 
 
+# Fn+Q changes platform_profile in firmware and emits the same uevent as our own writes. We record every
+# value we write; a change to anything else is the user's choice, kept as an override until the power
+# source changes, the machine reboots (/run is tmpfs), or `apply` runs.
+STATE_DIR = Path("/run/legion-control")
+WRITTEN_FILE = STATE_DIR / "firmware-written"
+OVERRIDE_FILE = STATE_DIR / "firmware-override"
+
+
+def save_state(runner, path, value):
+    if runner.dry_run:
+        return
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{value}\n")
+
+
+def firmware_override():
+    return read_text(OVERRIDE_FILE)
+
+
+def clear_firmware_override(runner):
+    if firmware_override() is not None:
+        runner.info(f"clearing firmware override {firmware_override()!r}")
+        if not runner.dry_run:
+            OVERRIDE_FILE.unlink(missing_ok=True)
+
+
+def apply_follow_policy(runner, profile, firmware_mode):
+    follow = profile.get("firmware_follow", {}).get(firmware_mode)
+    if not follow:
+        runner.warn(f"no firmware_follow entry for {firmware_mode!r}; leaving CPU policy alone")
+        return
+    set_power_profile(runner, follow.get("power_profile"))
+    write_cpufreq(runner, "scaling_governor", follow.get("governor"))
+
+
 def apply_firmware_policy(runner, profile, mode):
     chosen = platform_choice(profile, mode)
     if chosen:
         runner.write(profile["paths"]["platform_profile"], chosen)
+        save_state(runner, WRITTEN_FILE, chosen)
     else:
         runner.warn("no matching platform_profile choice found")
 
@@ -241,6 +321,34 @@ def apply_firmware_policy(runner, profile, mode):
             runner.warn("no VPC2004 fan_mode path found")
         for path in paths:
             runner.write(path, fan_mode)
+
+
+FIRMWARE_ATTRIBUTES = Path("/sys/class/firmware-attributes/lenovo-wmi-other-0/attributes")
+
+
+def firmware_attribute(name):
+    base = FIRMWARE_ATTRIBUTES / name
+    return {key: read_text(base / key) for key in ("current_value", "min_value", "max_value")}
+
+
+def firmware_attributes_status():
+    if not FIRMWARE_ATTRIBUTES.is_dir():
+        return {}
+    return {path.name: firmware_attribute(path.name) for path in sorted(FIRMWARE_ATTRIBUTES.iterdir())}
+
+
+def apply_firmware_attributes(runner, profile, mode):
+    for name, value in profile[mode].get("firmware_attributes", {}).items():
+        attr = firmware_attribute(name)
+        if attr["current_value"] is None:
+            runner.warn(f"firmware attribute {name} not found")
+            continue
+        low, high = int(attr["min_value"] or 0), int(attr["max_value"] or 0)
+        # some attributes publish min=max=0, meaning the firmware does not report a range
+        if high and not low <= int(value) <= high:
+            runner.warn(f"firmware attribute {name}={value} is outside {low}-{high}; skipped")
+            continue
+        runner.write(FIRMWARE_ATTRIBUTES / name / "current_value", value)
 
 
 def apply_nvidia_policy(runner, profile, mode):
@@ -255,7 +363,7 @@ def apply_nvidia_policy(runner, profile, mode):
         runner.run(["nvidia-smi", "-i", "0", "-pm", "1"])
 
 
-def apply_mode(runner, profile, mode, force=False, reassert=False):
+def apply_mode(runner, profile, mode, force=False, reassert=False, keep_override=False):
     if mode == "auto":
         mode = choose_auto_mode(profile)
     require_supported_machine(profile, force=force)
@@ -266,26 +374,201 @@ def apply_mode(runner, profile, mode, force=False, reassert=False):
     if mode == "ac" and not is_ac_online(profile):
         runner.warn("ADP0 is offline but AC policy was requested")
 
-    apply_firmware_policy(runner, profile, mode)
+    if not reassert and not keep_override:
+        # a power-source change, boot or manual apply starts from the profile defaults again
+        clear_firmware_override(runner)
+    override = firmware_override()
+    if override:
+        apply_follow_policy(runner, profile, override)
+    else:
+        apply_firmware_policy(runner, profile, mode)
+        apply_power_profile(runner, profile, mode)
+        if reassert:
+            # power-profiles-daemon rewrites governor/EPP on profile changes; reassert wins them back
+            apply_cpu_governor_epp(runner, profile, mode)
+    # firmware mode changes and resume rewrite the MMIO RAPL limits; restoring them only writes what drifted
+    apply_rapl(runner, profile, mode)
+    apply_firmware_attributes(runner, profile, mode)
     if not reassert:
-        apply_rapl(runner, profile, mode)
+        apply_sysctl(runner, profile, mode)
         apply_cpu_policy(runner, profile, mode)
         apply_nvidia_policy(runner, profile, mode)
     return mode
 
 
+DRM = Path("/sys/class/drm")
+PRIMARY_GPU_RULE = Path("/etc/udev/rules.d/61-legion-mutter-primary.rules")
+PRIMARY_GPU_DRIVERS = {"nvidia": "nvidia", "intel": "i915"}
+
+
+def gpu_outputs(drm=DRM):
+    """(connector, card, driver, connected) for every DRM connector."""
+    rows = []
+    for connector in sorted(drm.glob("card*-*")):
+        card, name = connector.name.split("-", 1)
+        driver = Path(os.path.realpath(drm / card / "device" / "driver")).name
+        rows.append((name, card, driver, read_text(connector / "status") == "connected"))
+    return rows
+
+
+def gpu_mode(outputs):
+    """hybrid: built-in panel on the iGPU; discrete: panel wired to NVIDIA (MUX)."""
+    panels = [o for o in outputs if o[0].startswith("eDP") and o[3]]
+    if not panels:
+        return "unknown"
+    return "discrete" if panels[0][2] == "nvidia" else "hybrid"
+
+
+def preferred_primary_gpu():
+    text = read_text(PRIMARY_GPU_RULE)
+    for name, driver in PRIMARY_GPU_DRIVERS.items():
+        if text and f'DRIVERS=="{driver}"' in text:
+            return name
+    return "auto"
+
+
+def primary_gpu_rule(choice):
+    driver = PRIMARY_GPU_DRIVERS[choice]
+    return (
+        "# lenovolegionlinux: GPU that Mutter uses to draw the desktop (read at login)\n"
+        f'SUBSYSTEM=="drm", KERNEL=="card*", DRIVERS=="{driver}", TAG+="mutter-device-preferred-primary"\n'
+    )
+
+
+def cpu_class_cpus(kind, devices=Path("/sys/devices")):
+    """CPU list for performance (p) or efficiency (e) cores on hybrid Intel CPUs."""
+    return read_text(devices / {"p": "cpu_core", "e": "cpu_atom"}[kind] / "cpus")
+
+
+def gpu_env(gpu, drm=DRM):
+    if gpu == "nvidia":
+        return {"__NV_PRIME_RENDER_OFFLOAD": "1", "__GLX_VENDOR_LIBRARY_NAME": "nvidia", "__VK_LAYER_NV_optimus": "NVIDIA_only"}
+    if gpu == "intel":
+        env = {
+            "__GLX_VENDOR_LIBRARY_NAME": "mesa",
+            "__EGL_VENDOR_LIBRARY_FILENAMES": "/usr/share/glvnd/egl_vendor.d/50_mesa.json",
+        }
+        for card in sorted(drm.glob("card[0-9]")):
+            if Path(os.path.realpath(card / "device" / "driver")).name in ("i915", "xe"):
+                device = (read_text(card / "device" / "device") or "").removeprefix("0x")
+                env["MESA_VK_DEVICE_SELECT"] = f"8086:{device}!"
+        return env
+    return {}
+
+
+# Kernel modules: what this machine relies on, checked for every installed kernel.
+MODULES_LOAD_DIRS = (Path("/etc/modules-load.d"), Path("/usr/lib/modules-load.d"))
+
+
+def parse_modules_load(text):
+    return [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith(("#", ";"))]
+
+
+def autoload_entries(dirs=MODULES_LOAD_DIRS):
+    entries = {}
+    for directory in dirs:
+        for conf in sorted(directory.glob("*.conf")) if directory.is_dir() else []:
+            for module in parse_modules_load(read_text(conf) or ""):
+                entries.setdefault(module.replace("-", "_"), str(conf))
+    return entries
+
+
+def installed_kernels(root=Path("/usr/lib/modules")):
+    return sorted(p.name for p in root.iterdir() if (p / "vmlinuz").exists()) if root.is_dir() else []
+
+
+def module_available(name, kernel):
+    if shutil.which("modinfo") is None:
+        return True
+    result = subprocess.run(["modinfo", "-k", kernel, "-F", "filename", name], text=True, capture_output=True)
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def parse_dkms_status(text):
+    """[(module/version, kernel, state)] from `dkms status` lines like 'nvidia/580, 7.2.9-cachyos, x86_64: installed'."""
+    rows = []
+    for line in text.splitlines():
+        head, _, state = line.partition(": ")
+        parts = [part.strip() for part in head.split(",")]
+        if len(parts) >= 3 and state:
+            rows.append((parts[0], parts[1], state.strip()))
+    return rows
+
+
+def module_warnings(profile):
+    spec = profile.get("kernel_modules", {})
+    warnings = []
+    kernels = installed_kernels()
+    for module in spec.get("required", []):
+        for kernel in kernels:
+            if not module_available(module, kernel):
+                warnings.append(f"required module {module} is missing for kernel {kernel}")
+    loaded = loaded_modules()
+    running = os.uname().release
+    for module in spec.get("required", []):
+        if module not in loaded and not module_builtin(module, running):
+            warnings.append(f"required module {module} is not loaded")
+    for module, source in autoload_entries().items():
+        if not module_available(module, running):
+            warnings.append(f"{source} autoloads {module}, which does not exist for {running} (fails every boot)")
+        if module in spec.get("unwanted_autoload", []):
+            warnings.append(f"{source} autoloads {module}, which this machine should not load")
+    if shutil.which("dkms"):
+        rows = parse_dkms_status(subprocess.run(["dkms", "status"], text=True, capture_output=True).stdout)
+        for name in sorted({row[0] for row in rows}):
+            built = {row[1] for row in rows if row[0] == name and row[2].startswith("installed")}
+            for kernel in kernels:
+                if kernel not in built:
+                    warnings.append(f"DKMS module {name} is not built for kernel {kernel}")
+    return warnings
+
+
+def module_builtin(name, kernel):
+    builtin = read_text(Path("/usr/lib/modules") / kernel / "modules.builtin") or ""
+    return any(Path(line).name.split(".ko")[0].replace("-", "_") == name for line in builtin.splitlines())
+
+
+# IA32_PACKAGE_THERM_STATUS log bits stay set until cleared; we only read them.
+PACKAGE_THERM_STATUS = 0x1B1
+THROTTLE_LOG_BITS = {1: "thermal", 3: "PROCHOT", 5: "critical temperature", 11: "power limit"}
+
+
+def throttle_reasons(value):
+    return [name for bit, name in THROTTLE_LOG_BITS.items() if value >> bit & 1]
+
+
+def read_package_therm_status():
+    try:
+        with open("/dev/cpu/0/msr", "rb") as msr:
+            msr.seek(PACKAGE_THERM_STATUS)
+            return int.from_bytes(msr.read(8), "little")
+    except OSError:
+        return None
+
+
+def dirty_ntfs_messages():
+    if shutil.which("journalctl") is None:
+        return []
+    result = subprocess.run(["journalctl", "-k", "-b", "-q", "--no-pager", "-g", "ntfs3.*dirty"], text=True, capture_output=True)
+    return sorted({line.split("ntfs3(")[1].split(")")[0] for line in result.stdout.splitlines() if "ntfs3(" in line})
+
+
 def systemctl_is_active(unit):
     if shutil.which("systemctl") is None:
         return "unknown"
-    result = subprocess.run(["systemctl", "is-active", unit], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    return result.stdout.strip() if result.stdout.strip() else "inactive"
+    result = subprocess.run(["systemctl", "is-active", unit], text=True, capture_output=True)
+    if result.stdout.strip():
+        return result.stdout.strip()
+    return "unknown" if result.returncode != 0 else "inactive"
 
 
 def systemctl_is_enabled(unit):
     if shutil.which("systemctl") is None:
         return "unknown"
-    result = subprocess.run(["systemctl", "is-enabled", unit], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    return result.stdout.strip() if result.stdout.strip() else "disabled"
+    result = subprocess.run(["systemctl", "is-enabled", unit], text=True, capture_output=True)
+    if result.stdout.strip():
+        return result.stdout.strip()
+    return "unknown" if result.returncode != 0 else "disabled"
 
 
 def pacman_installed(package):
@@ -319,7 +602,7 @@ def cleanup_conflicts(runner, profile, force=False, unload_modules=False, remove
         enabled = systemctl_is_enabled(unit)
         if active == "active" or enabled not in ("disabled", "not-found", "masked", "unknown"):
             runner.run(["systemctl", "disable", "--now", unit])
-        runner.run(["systemctl", "reset-failed", unit])
+        runner.run(["systemctl", "reset-failed", unit], warn_on_failure=False)
 
     modules = loaded_modules()
     if unload_modules:
@@ -339,6 +622,36 @@ def cleanup_conflicts(runner, profile, force=False, unload_modules=False, remove
             runner.warn(f"conflicting package is installed but was not removed without --remove-packages: {package}")
 
 
+# Fan RPM: thinkpad_acpi's hwmon reports garbage on this Legion. The firmware publishes real RPM through the
+# Lenovo "Other Method" WMI interface (GetFeatureValue, method 17; feature 0x04030001/2 = FANS*100), the same path
+# LenovoLegionLinux uses for this model (ACCESS_METHOD_WMI3). acpi_call lets root invoke it read-only.
+ACPI_CALL = Path("/proc/acpi/call")
+WMI_GET_FEATURE_VALUE = 17
+FAN_FEATURES = {"fan1": 0x04030001, "fan2": 0x04030002}
+
+
+def parse_acpi_call(text):
+    text = text.strip().rstrip("\x00").strip()
+    if text.startswith("0x"):
+        return int(text, 16)
+    if text.startswith("{") and text.endswith("}"):
+        values = [int(v, 16) for v in text[1:-1].replace(" ", "").split(",") if v]
+        return int.from_bytes(bytes(values[:4]), "little")
+    return None  # "Error: ..." or "not called"
+
+
+def wmi_other_get(profile, feature_id):
+    method = profile["paths"].get("wmi_other_method")
+    if not method or not os.access(ACPI_CALL, os.W_OK):
+        return None
+    ACPI_CALL.write_text(f"{method} 0 {WMI_GET_FEATURE_VALUE} b{feature_id.to_bytes(4, 'little').hex()}")
+    return parse_acpi_call(ACPI_CALL.read_text())
+
+
+def fan_rpm(profile):
+    return {name: wmi_other_get(profile, feature) for name, feature in FAN_FEATURES.items()}
+
+
 def nvidia_power_limit():
     if shutil.which("nvidia-smi") is None:
         return None
@@ -348,9 +661,21 @@ def nvidia_power_limit():
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     )
+    if result.returncode == 0 and result.stdout.strip():
+        value = result.stdout.strip().splitlines()[0].strip()
+        if value and not value.startswith("["):
+            return value
+
+    result = subprocess.run(
+        ["nvidia-smi", "-q", "-d", "POWER"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
     if result.returncode != 0:
         return None
-    return result.stdout.strip().splitlines()[0] if result.stdout.strip() else None
+    match = re.search(r"Current Power Limit\s*:\s*([0-9.]+)\s*W", result.stdout)
+    return match.group(1) if match else None
 
 
 def rapl_status_lines():
@@ -393,6 +718,12 @@ def print_status(profile, profile_path):
             print(f"  {key}: expected {expected!r}, got {actual!r}")
     else:
         print("dmi: match")
+    print(f"firmware_override: {firmware_override() or 'none (profile defaults)'}")
+    live_dmi = read_dmi()
+    print(f"bios_version: {live_dmi.get('bios_version')}")
+    print(f"bios_release: {live_dmi.get('bios_release')}")
+    print(f"ec_firmware_release: {live_dmi.get('ec_firmware_release')}")
+    print(f"board_name: {live_dmi.get('board_name')}")
 
     print(f"ac_online: {is_ac_online(profile)}")
     print(f"platform_profile: {read_text(profile['paths']['platform_profile'])}")
@@ -416,6 +747,22 @@ def print_status(profile, profile_path):
         print(f"  {line}")
 
     print(f"nvidia_power_limit_w: {nvidia_power_limit()}")
+    fans = fan_rpm(profile)
+    if any(v is not None for v in fans.values()):
+        print("fan_rpm (firmware WMI): " + " ".join(f"{k}={v}" for k, v in fans.items()))
+    else:
+        print("fan_rpm: unknown (needs root and the acpi_call module)")
+    limits = firmware_attributes_status()
+    if limits:
+        print("firmware_limits: " + " ".join(f"{k}={v['current_value']}" for k, v in limits.items()))
+    therm = read_package_therm_status()
+    if therm is not None:
+        print(f"throttle_reasons_logged: {', '.join(throttle_reasons(therm)) or 'none'}")
+    outputs = gpu_outputs()
+    print(f"gpu_mode: {gpu_mode(outputs)} (desktop GPU preference: {preferred_primary_gpu()})")
+    for name, card, driver, connected in outputs:
+        if connected:
+            print(f"  {name}: {card} ({driver})")
     for unit in ["nvidia-powerd.service", "nvidia-persistenced.service", "legion-apply.service", "legion-reassert-ac.timer"]:
         print(f"unit {unit}: active={systemctl_is_active(unit)} enabled={systemctl_is_enabled(unit)}")
 
@@ -433,21 +780,34 @@ def print_status(profile, profile_path):
         print(f"  {module}: {'loaded' if module in modules else 'not-loaded'}")
 
 
+def print_capabilities(profile):
+    print(f"profile: {profile['id']}")
+    for capability in profile.get("capabilities", []):
+        print(f"{capability['id']}: {capability['name']}")
+        print(f"  status: {capability.get('status', 'unknown')}")
+        print(f"  current_owner: {capability.get('current_owner', 'unknown')}")
+        print(f"  planned_owner: {capability.get('planned_owner', 'unknown')}")
+        notes = capability.get("notes")
+        if notes:
+            print(f"  notes: {notes}")
+
+
 def doctor(profile):
     warnings = []
     if dmi_mismatches(profile):
         warnings.append("DMI does not match this repo profile")
-    if not is_ac_online(profile):
-        warnings.append("ADP0 is offline; AC performance policy should not be active")
 
+    override = firmware_override()
     current_profile = read_text(profile["paths"]["platform_profile"])
-    wanted_profile = platform_choice(profile, "ac") if is_ac_online(profile) else platform_choice(profile, "battery")
+    wanted_profile = override or (
+        platform_choice(profile, "ac") if is_ac_online(profile) else platform_choice(profile, "battery")
+    )
     if wanted_profile and current_profile != wanted_profile:
         warnings.append(f"platform_profile is {current_profile!r}, expected {wanted_profile!r}")
 
     fan_paths = fan_mode_paths(profile)
-    if fan_paths and is_ac_online(profile):
-        wanted_fan = profile["ac"]["firmware"]["fan_mode"]
+    wanted_fan = profile["ac"]["firmware"].get("fan_mode") if is_ac_online(profile) else None
+    if fan_paths and wanted_fan is not None:
         for path in fan_paths:
             if read_text(path) != wanted_fan:
                 warnings.append(f"{path} is {read_text(path)!r}, expected {wanted_fan!r}")
@@ -455,6 +815,11 @@ def doctor(profile):
     mode = "ac" if is_ac_online(profile) else "battery"
     expected_cpu = profile[mode]["cpu"]
     expected_governor = expected_cpu.get("governor")
+    if override:
+        # following Fn+Q: governor comes from firmware_follow, EPP from power-profiles-daemon
+        follow = profile.get("firmware_follow", {}).get(override, {})
+        expected_cpu = {"governor": follow.get("governor")}
+        expected_governor = expected_cpu["governor"]
     if expected_governor:
         wrong = [name for name, value in cpufreq_values("scaling_governor").items() if value != expected_governor]
         if wrong:
@@ -464,6 +829,11 @@ def doctor(profile):
         wrong = [name for name, value in cpufreq_values("energy_performance_preference").items() if value != expected_epp]
         if wrong:
             warnings.append(f"{len(wrong)} cpufreq policies are not using EPP {expected_epp!r}")
+
+    for key, value in sysctl_settings(profile, mode).items():
+        current = read_text(sysctl_path(key))
+        if current is not None and current != str(value):
+            warnings.append(f"sysctl {key} is {current!r}, expected {str(value)!r}")
 
     for unit in profile["conflicts"]["systemd_units"]:
         active = systemctl_is_active(unit)
@@ -483,13 +853,31 @@ def doctor(profile):
         if fan_state and "status:\t\tenabled" in fan_state:
             warnings.append("thinkpad_acpi fan control appears enabled; this is not trusted on this machine")
 
+    warnings.extend(module_warnings(profile))
+    therm = read_package_therm_status()
+    if therm is not None and {"PROCHOT", "critical temperature"} & set(throttle_reasons(therm)):
+        warnings.append(f"CPU throttling logged: {', '.join(throttle_reasons(therm))}")
+    for volume in dirty_ntfs_messages():
+        warnings.append(
+            f"NTFS volume {volume} is marked dirty; run chkdsk in Windows (or ntfsfix -d, see docs/design/11-disks.md)"
+        )
+    outputs = gpu_outputs()
+    external_on_nvidia = any(o[3] and o[2] == "nvidia" and not o[0].startswith("eDP") for o in outputs)
+    if gpu_mode(outputs) == "hybrid" and external_on_nvidia and preferred_primary_gpu() != "nvidia":
+        warnings.append(
+            "an external display runs on NVIDIA but the desktop may be drawn on Intel; try `legionctl gpu primary nvidia`"
+        )
+
     power_limit = nvidia_power_limit()
     expected = str(profile["ac"]["nvidia"]["expected_dynamic_power_w"])
-    if is_ac_online(profile) and systemctl_is_active("nvidia-powerd.service") != "active":
+    nvidia_powerd_state = systemctl_is_active("nvidia-powerd.service")
+    nvidia_persistenced_state = systemctl_is_active("nvidia-persistenced.service")
+    if is_ac_online(profile) and nvidia_powerd_state not in ("active", "unknown"):
         warnings.append("nvidia-powerd.service is not active on AC")
-    if is_ac_online(profile) and systemctl_is_active("nvidia-persistenced.service") != "active":
+    if is_ac_online(profile) and nvidia_persistenced_state not in ("active", "unknown"):
         warnings.append("nvidia-persistenced.service is not active on AC")
-    if is_ac_online(profile) and power_limit and power_limit.split(".")[0] != expected:
+    # nvidia-powerd Dynamic Boost moves the limit between the base and base+25 W
+    if is_ac_online(profile) and power_limit and not 0 <= float(power_limit) - float(expected) <= 25:
         warnings.append(f"NVIDIA power limit is {power_limit} W, expected around {expected} W on AC")
 
     if warnings:
@@ -512,12 +900,29 @@ def main(argv=None):
     doctor_cmd = sub.add_parser("doctor", help="print conflict and drift warnings")
     doctor_cmd.set_defaults(func=cmd_doctor)
 
+    capabilities_cmd = sub.add_parser("capabilities", help="print known and planned Legion capability coverage")
+    capabilities_cmd.set_defaults(func=cmd_capabilities)
+
     apply_cmd = sub.add_parser("apply", help="apply ac, battery, or auto policy")
     apply_cmd.add_argument("mode", choices=["ac", "battery", "auto"])
     apply_cmd.add_argument("--dry-run", action="store_true")
     apply_cmd.add_argument("--force", action="store_true")
     apply_cmd.add_argument("--quiet", action="store_true")
+    apply_cmd.add_argument("--keep-override", action="store_true", help="keep an Fn+Q choice (used after resume)")
     apply_cmd.set_defaults(func=cmd_apply)
+
+    gpu_cmd = sub.add_parser("gpu", help="show GPU wiring, or choose which GPU draws the desktop")
+    gpu_cmd.add_argument("action", nargs="?", choices=["status", "primary"], default="status")
+    gpu_cmd.add_argument("choice", nargs="?", choices=["nvidia", "intel", "auto"])
+    gpu_cmd.add_argument("--dry-run", action="store_true")
+    gpu_cmd.set_defaults(func=cmd_gpu)
+
+    run_cmd = sub.add_parser("run", help="run a program on a chosen GPU, core class and priority")
+    run_cmd.add_argument("--gpu", choices=["nvidia", "intel", "default"], default="default")
+    run_cmd.add_argument("--cores", choices=["p", "e", "all"], default="all")
+    run_cmd.add_argument("--nice", type=int)
+    run_cmd.add_argument("cmd", nargs=argparse.REMAINDER)
+    run_cmd.set_defaults(func=cmd_run)
 
     reassert_cmd = sub.add_parser("reassert", help="reassert firmware-only policy")
     reassert_cmd.add_argument("mode", choices=["ac", "battery", "auto"])
@@ -533,6 +938,14 @@ def main(argv=None):
     cleanup_cmd.add_argument("--unload-modules", action="store_true")
     cleanup_cmd.add_argument("--remove-packages", action="store_true")
     cleanup_cmd.set_defaults(func=cmd_cleanup)
+
+    follow_cmd = sub.add_parser("follow", help="react to a firmware platform_profile change (Fn+Q); run by udev")
+    follow_cmd.add_argument("--dry-run", action="store_true")
+    follow_cmd.add_argument("--quiet", action="store_true")
+    follow_cmd.set_defaults(func=cmd_follow)
+
+    validate_cmd = sub.add_parser("validate", help="check profile structure and ac/battery consistency (no hardware access)")
+    validate_cmd.set_defaults(func=cmd_validate)
 
     args = parser.parse_args(argv)
     try:
@@ -554,12 +967,61 @@ def cmd_doctor(args):
     return doctor(profile)
 
 
+def cmd_capabilities(args):
+    profile, _ = load_profile(args.profile)
+    print_capabilities(profile)
+    return 0
+
+
 def cmd_apply(args):
     profile, _ = load_profile(args.profile)
     runner = Runner(dry_run=args.dry_run, quiet=args.quiet)
-    mode = apply_mode(runner, profile, args.mode, force=args.force, reassert=False)
+    mode = apply_mode(runner, profile, args.mode, force=args.force, reassert=False, keep_override=args.keep_override)
     runner.info(f"applied {mode} policy")
     return 0
+
+
+def cmd_gpu(args):
+    outputs = gpu_outputs()
+    if args.action == "status":
+        print(f"gpu_mode: {gpu_mode(outputs)}")
+        print(f"desktop GPU preference: {preferred_primary_gpu()} (Mutter reads it at login)")
+        for name, card, driver, connected in outputs:
+            print(f"  {name}: {card} ({driver}) {'connected' if connected else '-'}")
+        return 0
+    if args.choice is None:
+        raise RuntimeError("gpu primary needs nvidia, intel or auto")
+    runner = Runner(dry_run=args.dry_run)
+    if args.choice == "auto":
+        if PRIMARY_GPU_RULE.exists() and not args.dry_run:
+            PRIMARY_GPU_RULE.unlink()
+        runner.info(f"removed {PRIMARY_GPU_RULE}; Mutter picks the GPU of the built-in panel")
+    elif args.dry_run:
+        runner.info(f"would write {PRIMARY_GPU_RULE}:\n{primary_gpu_rule(args.choice)}")
+    else:
+        PRIMARY_GPU_RULE.write_text(primary_gpu_rule(args.choice))
+        runner.info(f"wrote {PRIMARY_GPU_RULE}")
+    runner.run(["udevadm", "control", "--reload"])
+    runner.run(["udevadm", "trigger", "--subsystem-match=drm"])
+    runner.info("log out and back in for GNOME to draw the desktop on the new GPU")
+    return 0
+
+
+def cmd_run(args):
+    cmd = args.cmd[1:] if args.cmd[:1] == ["--"] else args.cmd
+    if not cmd:
+        raise RuntimeError("usage: legionctl run [--gpu nvidia|intel] [--cores p|e] [--nice N] -- command ...")
+    env = {**os.environ, **gpu_env(args.gpu)}
+    if args.nice is not None:
+        # `nice -n` is relative to the caller's niceness; make --nice the absolute value the program gets
+        cmd = ["nice", "-n", str(args.nice - os.nice(0)), *cmd]
+    if args.cores != "all":
+        cpus = cpu_class_cpus(args.cores)
+        if not cpus:
+            raise RuntimeError("this CPU does not report performance/efficiency core groups")
+        # a transient scope pins the program and everything it starts; keep `$` in the command literal
+        cmd = ["systemd-run", "--user", "--scope", "--quiet", "--expand-environment=no", "-p", f"AllowedCPUs={cpus}", "--", *cmd]
+    os.execvpe(cmd[0], cmd, env)
 
 
 def cmd_reassert(args):
@@ -568,6 +1030,75 @@ def cmd_reassert(args):
     mode = apply_mode(runner, profile, args.mode, force=args.force, reassert=True)
     runner.info(f"reasserted {mode} firmware policy")
     return 0
+
+
+PPD_PROFILES = ("performance", "balanced", "power-saver")
+
+
+def validate_profile(profile):
+    errors = []
+    for key in ("id", "paths", "conflicts"):
+        if key not in profile:
+            errors.append(f"missing top-level key {key!r}")
+    modes = [mode for mode in ("ac", "battery") if isinstance(profile.get(mode), dict)]
+    for mode in ("ac", "battery"):
+        if mode not in modes:
+            errors.append(f"missing {mode!r} section")
+    for mode in modes:
+        for block in ("rapl", "cpu", "firmware"):
+            if block not in profile[mode]:
+                errors.append(f"{mode}.{block} is missing")
+        wanted = profile[mode].get("power_profile")
+        if wanted is not None and wanted not in PPD_PROFILES:
+            errors.append(f"{mode}.power_profile {wanted!r} is not one of {', '.join(PPD_PROFILES)}")
+    # every policy knob must be set for both power sources, or a mode switch leaves the other's value behind
+    if len(modes) == 2:
+        for block in ("cpu", "firmware", "firmware_attributes"):
+            drift = set(profile["ac"].get(block, {})) ^ set(profile["battery"].get(block, {}))
+            if drift:
+                errors.append(f"{block} keys differ between ac and battery: {', '.join(sorted(drift))}")
+        if ("power_profile" in profile["ac"]) != ("power_profile" in profile["battery"]):
+            errors.append("power_profile must be set for both ac and battery or neither")
+    for firmware_mode, follow in profile.get("firmware_follow", {}).items():
+        if follow.get("power_profile") not in (None, *PPD_PROFILES):
+            errors.append(f"firmware_follow.{firmware_mode}.power_profile {follow.get('power_profile')!r} is not a PPD profile")
+        if follow.get("governor") not in (None, "performance", "powersave"):
+            errors.append(f"firmware_follow.{firmware_mode}.governor {follow.get('governor')!r} is not performance/powersave")
+    for mode in modes:
+        for choice in profile[mode].get("firmware", {}).get("platform_profile_preference", []):
+            if "firmware_follow" in profile and choice not in profile["firmware_follow"]:
+                errors.append(f"{mode} platform_profile {choice!r} has no firmware_follow entry")
+    for scope, values in [("sysctl", profile.get("sysctl", {}))] + [(f"{m}.sysctl", profile[m].get("sysctl", {})) for m in modes]:
+        for key, value in values.items():
+            if not isinstance(value, str):
+                errors.append(f"{scope}.{key} must be a string, got {type(value).__name__}")
+    return errors
+
+
+def cmd_follow(args):
+    profile, _ = load_profile(args.profile)
+    runner = Runner(dry_run=args.dry_run, quiet=args.quiet)
+    current = read_text(profile["paths"]["platform_profile"])
+    if current is None:
+        runner.warn("platform_profile is not readable")
+        return 1
+    override = firmware_override()
+    if current == (override or read_text(WRITTEN_FILE)):
+        runner.info(f"platform_profile {current!r} is already the active policy; nothing to follow")
+        return 0
+    runner.info(f"following firmware mode {current!r} (Fn+Q)")
+    save_state(runner, OVERRIDE_FILE, current)
+    apply_follow_policy(runner, profile, current)
+    return 0
+
+
+def cmd_validate(args):
+    profile, profile_path = load_profile(args.profile)
+    errors = validate_profile(profile)
+    for error in errors:
+        print(f"- {error}")
+    print(f"validate: {'failed' if errors else 'ok'} ({profile_path})")
+    return 1 if errors else 0
 
 
 def cmd_cleanup(args):

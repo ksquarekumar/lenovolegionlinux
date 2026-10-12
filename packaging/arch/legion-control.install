@@ -1,0 +1,15 @@
+_legion_reload() {
+  systemd-hwdb update
+  udevadm control --reload
+  systemctl daemon-reload
+}
+
+post_install() {
+  _legion_reload
+  echo ":: enable with: systemctl enable --now legion-apply.service legion-reassert-ac.timer scx_loader"
+  echo ":: per user:    systemctl --user enable --now legion-osd"
+}
+
+post_upgrade() {
+  _legion_reload
+}

@@ -4,3 +4,6 @@ __pycache__/
 pkg/
 src/*.tar*
 *.pkg.tar.*
+.mypy_cache/
+.ruff_cache/
+rapl-sweep-*.csv

@@ -6,4 +6,3 @@ ConditionACPower=true
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/legionctl reassert ac --quiet
-

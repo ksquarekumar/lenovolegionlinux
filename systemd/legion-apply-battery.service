@@ -9,4 +9,3 @@ ExecStart=/usr/bin/legionctl apply battery --quiet
 
 [Install]
 WantedBy=legion-battery.target
-

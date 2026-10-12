@@ -9,15 +9,120 @@
     "product_version": "Legion Pro 7 16IRX8H",
     "product_sku": "LENOVO_MT_82WQ_BU_idea_FM_Legion Pro 7 16IRX8H"
   },
-  "dmi_observed": {
-    "board_name": ["INVALID", "LNVNB161216"],
-    "bios_version": ["KWCN42WW", "KWCN54WW"]
+  "firmware_observed": {
+    "bios_version": "KWCN54WW",
+    "bios_date": "10/22/2025",
+    "bios_release": "1.54",
+    "ec_firmware_release": "1.51"
+  },
+  "dmi_notes": {
+    "board_name": "This board currently reports INVALID and is not useful as a hard identity gate."
   },
   "paths": {
     "ac_adapter": "/sys/class/power_supply/ADP0/online",
     "platform_profile": "/sys/firmware/acpi/platform_profile",
     "platform_profile_choices": "/sys/firmware/acpi/platform_profile_choices",
-    "fan_mode": "/sys/devices/pci0000:00/0000:00:1f.0/PNP0C09:00/VPC2004:00/fan_mode"
+    "fan_mode": "/sys/devices/pci0000:00/0000:00:1f.0/PNP0C09:00/VPC2004:00/fan_mode",
+    "wmi_other_method": "\\_SB_.GZFD.WMAE"
+  },
+  "observations": {
+    "vpc2004_fan_mode": "Writing 4 succeeds at sysfs level but immediately reads back as 0 on this machine, so it is status-only until DKMS fan support is added.",
+    "thinkpad_acpi_fan": "Reports 4 RPM and is not trusted as Legion fan telemetry."
+  },
+  "capabilities": [
+    {
+      "id": "fn_q_power_mode",
+      "name": "Fn+Q power mode switch",
+      "status": "source-derived; live firmware profile surface present",
+      "current_owner": "firmware platform_profile plus legionctl policy reassertion",
+      "planned_owner": "WMI event listener after DKMS/event surface is proven",
+      "notes": "Hardware toggles Lenovo thermal/power mode. This package currently enforces max-power on AC and low-power/balanced on battery, but does not yet consume Fn+Q WMI events."
+    },
+    {
+      "id": "fn_r_refresh_rate",
+      "name": "Fn+R refresh-rate toggle",
+      "status": "source-derived; not implemented locally",
+      "current_owner": "none",
+      "planned_owner": "userspace hotkey action after event and panel-mode capture",
+      "notes": "johnfan reference contains an ACPI hook and action script, but marks the driver event path unfinished and hardcodes panel/output values. Local implementation must enumerate this panel's real modes instead of assuming 165/60 Hz."
+    },
+    {
+      "id": "fn_space_keyboard_lighting",
+      "name": "Fn+Space keyboard lighting/RGB cycle",
+      "status": "expected Legion behavior; not verified on this machine",
+      "current_owner": "firmware or keyboard controller",
+      "planned_owner": "read-only event/controller discovery first; RGB control later if needed",
+      "notes": "Bolekjar exposes keyboard feature/light WMI methods and RGB controller code; this repo has not yet captured the actual Fn+Space event path on 82WQ."
+    },
+    {
+      "id": "fn_esc_fn_lock",
+      "name": "Fn+Esc Fn-lock toggle",
+      "status": "source-derived; not verified locally",
+      "current_owner": "firmware",
+      "planned_owner": "status/control only if a stable sysfs or WMI surface is observed",
+      "notes": "johnfan documents Fn-lock support. It is not part of the current power stability target."
+    },
+    {
+      "id": "fan_telemetry",
+      "name": "Real fan RPM/temperature telemetry",
+      "status": "missing locally",
+      "current_owner": "none; thinkpad_acpi fan data is ignored",
+      "planned_owner": "read-only DKMS hwmon import",
+      "notes": "Bolekjar hwmon reads CPU/GPU/SYS fan RPM and temperatures via Legion WMI methods. This is the first DKMS target."
+    },
+    {
+      "id": "fan_control",
+      "name": "Fan max/full-speed and fan curve control",
+      "status": "deferred",
+      "current_owner": "firmware automatic fan controller",
+      "planned_owner": "explicit commands only after telemetry is trusted",
+      "notes": "VPC2004 fan_mode is ineffective here. Fan writes should not be added until read-only telemetry proves the DKMS path is correct."
+    },
+    {
+      "id": "hybrid_graphics_gsync",
+      "name": "Hybrid graphics / G-Sync / MUX state",
+      "status": "source-derived; not owned locally",
+      "current_owner": "kernel/NVIDIA stack",
+      "planned_owner": "explicit utility command, never automatic AC policy",
+      "notes": "null-dev exposes hybrid graphics through a WMI method; Bolekjar exposes G-Sync and iGPU-mode methods. These are reboot-risk features and stay out of the first power policy layer."
+    },
+    {
+      "id": "display_overdrive",
+      "name": "Panel overdrive",
+      "status": "source-derived; not owned locally",
+      "current_owner": "firmware/default",
+      "planned_owner": "explicit status/control only after method support is confirmed",
+      "notes": "Bolekjar WMI gamezone exposes OD status/set methods."
+    },
+    {
+      "id": "keyboard_win_touchpad",
+      "name": "Win-key lock and touchpad toggle",
+      "status": "source-derived; not owned locally",
+      "current_owner": "firmware/desktop input stack",
+      "planned_owner": "optional explicit status/control",
+      "notes": "Bolekjar exposes Win-key and touchpad enable/disable WMI methods. These do not affect CPU/GPU performance policy."
+    },
+    {
+      "id": "battery_charge_modes",
+      "name": "Battery conservation / rapid charge / charge mode events",
+      "status": "source-derived; not owned locally",
+      "current_owner": "firmware/default",
+      "planned_owner": "optional explicit status/control",
+      "notes": "johnfan documents conservation/rapid charge; Bolekjar has charge-mode WMI event handling. This remains separate from AC performance enforcement."
+    }
+  ],
+  "sysctl": {
+    "net.core.default_qdisc": "fq",
+    "net.ipv4.tcp_congestion_control": "bbr",
+    "vm.swappiness": "150"
+  },
+  "firmware_follow": {
+    "max-power": { "power_profile": "performance", "governor": "performance" },
+    "performance": { "power_profile": "performance", "governor": "performance" },
+    "custom": { "power_profile": "performance", "governor": "performance" },
+    "balanced": { "power_profile": "balanced", "governor": "powersave" },
+    "low-power": { "power_profile": "power-saver", "governor": "powersave" },
+    "quiet": { "power_profile": "power-saver", "governor": "powersave" }
   },
   "ac": {
     "cpu_power": {
@@ -31,7 +136,7 @@
       "package_zone_names": ["package-0"],
       "constraints": {
         "long_term": {
-          "power_limit_uw": 70000000,
+          "power_limit_uw": 85000000,
           "time_window_us": 55967744
         },
         "short_term": {
@@ -50,18 +155,19 @@
       "governor": "performance",
       "energy_performance_preference": "performance",
       "energy_perf_bias": "0",
-      "disable_idle": true
+      "enable_all_idle_states": true
     },
     "firmware": {
       "platform_profile_preference": ["max-power", "performance"],
-      "fan_mode": "4"
+      "fan_mode": null
     },
     "nvidia": {
       "start_persistenced": true,
       "start_powerd": true,
       "set_persistence_mode": true,
       "expected_dynamic_power_w": 150
-    }
+    },
+    "power_profile": "performance"
   },
   "battery": {
     "rapl": {
@@ -83,15 +189,17 @@
     "cpu": {
       "ignore_ppc": "0",
       "no_turbo": "0",
+      "max_perf_pct": "100",
       "governor": "powersave",
       "energy_performance_preference": "balance_power",
       "energy_perf_bias": "8",
-      "disable_idle": false
+      "enable_all_idle_states": true
     },
     "firmware": {
-      "platform_profile_preference": ["low-power", "quiet", "balanced"],
-      "fan_mode": "0"
-    }
+      "platform_profile_preference": ["balanced", "low-power", "quiet"],
+      "fan_mode": null
+    },
+    "power_profile": "balanced"
   },
   "conflicts": {
     "systemd_units": [
@@ -99,7 +207,10 @@
       "legiond-onresume.service",
       "legiond-cpuset.timer",
       "powersaver.service",
-      "ac_performance.service"
+      "ac_performance.service",
+      "firmware_max_power.timer",
+      "firmware_max_power.service",
+      "cpupower.service"
     ],
     "packages": [
       "lenovolegionlinux-git",
@@ -115,5 +226,21 @@
     "fan_telemetry_ignore": [
       "thinkpad_acpi"
     ]
+  },
+  "kernel_modules": {
+    "required": [
+      "ideapad_laptop",
+      "lenovo_wmi_gamezone",
+      "lenovo_wmi_other",
+      "lenovo_wmi_events",
+      "acpi_call",
+      "msr",
+      "intel_rapl_msr",
+      "i915",
+      "nvidia",
+      "nvidia_drm",
+      "tcp_bbr"
+    ],
+    "unwanted_autoload": ["thinkpad_acpi", "wl", "kvmgt", "vfio_mdev"]
   }
 }

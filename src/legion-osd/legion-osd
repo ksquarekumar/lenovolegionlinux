@@ -1,0 +1,246 @@
+#!/usr/bin/env python3
+"""Legion OSD: brief notifications when the thermal mode (Fn+Q, power source), Fn-lock (Fn+Esc) or the built-in
+panel refresh rate (Fn+R) changes, and the Fn+R handler itself. Runs as a user service in the GNOME session.
+
+GNOME restricts its own OSD API to its settings daemon, so this uses transient desktop notifications that replace
+themselves per topic instead of stacking. Fn+Space (keyboard backlight) is firmware-only with no sysfs state, so it
+cannot be shown.
+"""
+
+import os
+import struct
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib  # noqa: E402
+
+try:  # PyGObject >= 3.52 moved unix fd watches to GLibUnix
+    from gi.repository import GLibUnix
+
+    fd_add_full = GLibUnix.fd_add_full
+except ImportError:
+    fd_add_full = GLib.unix_fd_add_full
+
+PLATFORM_PROFILE = Path("/sys/firmware/acpi/platform_profile")
+FN_LOCK = Path("/sys/bus/platform/devices/VPC2004:00/fn_lock")
+AC_ONLINE = Path("/sys/class/power_supply/ADP0/online")
+OVERRIDE = Path("/run/legion-control/firmware-override")
+SETTLE_MS = 400  # coalesce rapid presses and give `legionctl follow` time to record an override
+POLL_S = 2  # fallback in case an attribute never raises POLLPRI
+TIMEOUT_MS = 2500
+FN_KEYS_DEVICE = "Ideapad extra buttons"
+EV_KEY = 1
+# Fn+R: KEY_REFRESH_RATE_TOGGLE, or KEY_F18 once hwdb/90-legion-keys.hwdb remapped it
+FN_R_CODES = {562, 188}
+FN_R_DEBOUNCE_S = 1.5  # one press is a burst of ~10 events within ~1 s
+INPUT_EVENT = struct.Struct("llHHi")  # struct input_event on 64-bit: timeval, type, code, value
+REOPEN_S = 5
+MUTTER = "org.gnome.Mutter.DisplayConfig"
+MUTTER_PATH = "/org/gnome/Mutter/DisplayConfig"
+MODES = {
+    "max-power": ("Max power", "power-profile-performance-symbolic"),
+    "performance": ("Performance", "power-profile-performance-symbolic"),
+    "custom": ("Custom", "power-profile-performance-symbolic"),
+    "balanced": ("Balanced", "power-profile-balanced-symbolic"),
+    "low-power": ("Low power", "power-profile-power-saver-symbolic"),
+    "quiet": ("Quiet", "power-profile-power-saver-symbolic"),
+}
+
+
+def read(path):
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return None
+
+
+def describe_mode(mode, override, ac_online):
+    label, icon = MODES.get(mode, (mode, "power-profile-balanced-symbolic"))
+    source = "AC" if ac_online == "1" else "battery"
+    detail = "Fn+Q choice until unplug or reboot" if override == mode else f"{source} default"
+    return f"Thermal mode: {label}", detail, icon
+
+
+class Notifier:
+    def __init__(self, bus):
+        self.bus = bus
+        self.ids = {}
+
+    def show(self, topic, summary, body, icon):
+        hints = {"transient": GLib.Variant("b", True)}
+        args = GLib.Variant("(susssasa{sv}i)", ("Legion", self.ids.get(topic, 0), icon, summary, body, [], hints, TIMEOUT_MS))
+        try:
+            reply = self.bus.call_sync(
+                "org.freedesktop.Notifications",
+                "/org/freedesktop/Notifications",
+                "org.freedesktop.Notifications",
+                "Notify",
+                args,
+                GLib.VariantType("(u)"),
+                Gio.DBusCallFlags.NONE,
+                -1,
+                None,
+            )
+        except GLib.Error as error:
+            print(f"notify failed: {error.message}", file=sys.stderr)
+            return
+        self.ids[topic] = reply.unpack()[0]
+
+
+class SysfsWatch:
+    """Calls on_change(value) once a sysfs attribute settles on a new value."""
+
+    def __init__(self, path, on_change):
+        self.path = path
+        self.on_change = on_change
+        self.last = read(path)
+        self.pending = 0
+        try:
+            fd = os.open(path, os.O_RDONLY)
+            os.read(fd, 64)  # sysfs only reports POLLPRI after an initial read
+            fd_add_full(GLib.PRIORITY_DEFAULT, fd, GLib.IOCondition.PRI | GLib.IOCondition.ERR, self._on_pri)
+        except OSError:
+            pass
+        GLib.timeout_add_seconds(POLL_S, self._poll)
+
+    def _on_pri(self, fd, _condition):
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.read(fd, 64)
+        self._schedule()
+        return True
+
+    def _poll(self):
+        if read(self.path) != self.last:
+            self._schedule()
+        return True
+
+    def _schedule(self):
+        if self.pending:
+            GLib.source_remove(self.pending)
+        self.pending = GLib.timeout_add(SETTLE_MS, self._fire)
+
+    def _fire(self):
+        self.pending = 0
+        value = read(self.path)
+        if value is not None and value != self.last:
+            self.last = value
+            self.on_change(value)
+        return False
+
+
+def find_input_device(name):
+    for path in sorted(Path("/sys/class/input").glob("event*")):
+        if read(path / "device/name") == name:
+            return Path("/dev/input") / path.name
+    return None
+
+
+def fn_r_presses(data):
+    """Timestamps of Fn+R key-down events in a buffer of raw input_event records."""
+    presses = []
+    for offset in range(0, len(data) - INPUT_EVENT.size + 1, INPUT_EVENT.size):
+        sec, usec, etype, code, value = INPUT_EVENT.unpack_from(data, offset)
+        if etype == EV_KEY and code in FN_R_CODES and value == 1:
+            presses.append(sec + usec / 1e6)
+    return presses
+
+
+class FnKeyWatch:
+    """Runs legion-refresh-toggle on Fn+R by reading the Fn-key device directly (user is in the `input` group).
+
+    This avoids GNOME shortcuts: XKB cannot bind keycodes above 255, and a remap only reaches GNOME after it
+    reopens the device.
+    """
+
+    def __init__(self):
+        self.last_toggle = 0.0
+        self.open()
+
+    def open(self):
+        device = find_input_device(FN_KEYS_DEVICE)
+        try:
+            fd = os.open(device, os.O_RDONLY | os.O_NONBLOCK) if device else None
+        except OSError as error:
+            print(f"legion-osd: cannot read {device}: {error}", file=sys.stderr)
+            fd = None
+        if fd is None:
+            GLib.timeout_add_seconds(REOPEN_S, self._reopen)
+            return
+        fd_add_full(GLib.PRIORITY_DEFAULT, fd, GLib.IOCondition.IN | GLib.IOCondition.HUP | GLib.IOCondition.ERR, self._on_input)
+
+    def _reopen(self):
+        self.open()
+        return False
+
+    def _on_input(self, fd, condition):
+        try:
+            data = os.read(fd, INPUT_EVENT.size * 64)
+        except BlockingIOError:
+            return True
+        except OSError:
+            data = b""
+        if not data or condition & (GLib.IOCondition.HUP | GLib.IOCondition.ERR):
+            os.close(fd)  # device went away (udev remove, resume); find it again
+            GLib.timeout_add_seconds(REOPEN_S, self._reopen)
+            return False
+        if fn_r_presses(data) and time.monotonic() - self.last_toggle > FN_R_DEBOUNCE_S:
+            self.last_toggle = time.monotonic()
+            subprocess.Popen(["/usr/bin/legion-refresh-toggle"])
+        return True
+
+
+class PanelRefreshWatch:
+    """Reports refresh-rate changes of the active built-in (eDP) panel; ignores it turning on or off."""
+
+    def __init__(self, bus, notifier):
+        self.notifier = notifier
+        self.proxy = Gio.DBusProxy.new_sync(bus, Gio.DBusProxyFlags.NONE, None, MUTTER, MUTTER_PATH, MUTTER, None)
+        self.last = self.refresh()
+        bus.signal_subscribe(MUTTER, MUTTER, "MonitorsChanged", MUTTER_PATH, None, Gio.DBusSignalFlags.NONE, self.on_changed)
+
+    def refresh(self):
+        try:
+            _, monitors, logical, _ = self.proxy.call_sync("GetCurrentState", None, Gio.DBusCallFlags.NONE, -1, None).unpack()
+        except GLib.Error:
+            return None
+        active = {spec[0] for lm in logical for spec in lm[5]}
+        for spec, modes, _ in monitors:
+            if spec[0].startswith("eDP") and spec[0] in active:
+                current = next((m for m in modes if m[6].get("is-current")), None)
+                return round(current[3]) if current else None
+        return None
+
+    def on_changed(self, *_args):
+        value = self.refresh()
+        if value and self.last and value != self.last:
+            self.notifier.show("refresh", f"Built-in display: {value} Hz", "Refresh rate", "video-display-symbolic")
+        self.last = value
+
+
+def main():
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    notifier = Notifier(bus)
+
+    def on_mode(mode):
+        notifier.show("mode", *describe_mode(mode, read(OVERRIDE), read(AC_ONLINE)))
+
+    def on_fn_lock(value):
+        notifier.show("fnlock", "Fn lock on" if value == "1" else "Fn lock off", "Fn+Esc", "input-keyboard-symbolic")
+
+    watches = [
+        SysfsWatch(PLATFORM_PROFILE, on_mode),
+        SysfsWatch(FN_LOCK, on_fn_lock),
+        PanelRefreshWatch(bus, notifier),
+        FnKeyWatch(),
+    ]
+    print(f"legion-osd: watching {len(watches)} sources", flush=True)
+    GLib.MainLoop().run()
+
+
+if __name__ == "__main__":
+    main()

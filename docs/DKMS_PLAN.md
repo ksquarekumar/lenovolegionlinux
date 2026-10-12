@@ -3,6 +3,9 @@
 The DKMS target is not "install Bolekjar as-is". The target is a small optional
 driver package that adds only the kernel surfaces missing on this machine.
 
+The feature source map is tracked in
+[REFERENCE_COMPARISON.md](REFERENCE_COMPARISON.md).
+
 ## Baseline Choice
 
 Bolekjar's driver is the best starting point because it is modular:
@@ -43,6 +46,7 @@ Phase 2 should be a separate branch with a read-only DKMS module:
 - exact DMI guard
 - hwmon telemetry
 - WMI fan table read
+- WMI event observation for Fn+Q/thermal mode and utility hotkeys
 - machine information sysfs
 - no fan writes
 - no RAPL writes
@@ -56,7 +60,10 @@ Phase 3 can add explicit write commands:
 
 Phase 4 can add non-critical features:
 
+- Fn+R refresh-rate toggle after the local panel modes are discovered
+- Fn+Space keyboard lighting/RGB support after event and controller discovery
 - hybrid graphics state/toggle
+- G-Sync, panel overdrive, Win-key lock, touchpad, and battery charge-mode controls
 - extra firmware attributes
 - GUI or tray integration
 
@@ -66,7 +73,7 @@ Before enabling a DKMS package by default, all of these must remain true:
 
 - `platform_profile` still exposes `max-power`
 - `nvidia-powerd` still raises the GPU limit to around 150 W on AC
-- VPC2004 or replacement fan mode still works
+- fan telemetry/control improves beyond the ineffective VPC2004 `fan_mode`
 - standard RAPL limits remain at `70/125/125` on AC
 - suspend/resume does not revert into a conflicting profile
 - no in-tree Lenovo module is blacklisted unless the replacement owns the same

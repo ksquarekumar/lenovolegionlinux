@@ -1,0 +1,11 @@
+[Unit]
+Description=Legion OSD notifications (thermal mode, Fn-lock, refresh rate)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/legion-osd
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target

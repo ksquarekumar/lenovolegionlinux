@@ -1,0 +1,10 @@
+# sched_ext: scx_lavd follows EPP (--autopower), which PPD sets from the legionctl
+# AC/battery mode -> performance scheduling on AC, core compaction on battery.
+default_sched = "scx_lavd"
+default_mode = "Auto"
+
+[scheds.scx_lavd]
+auto_mode = ["--autopower"]
+gaming_mode = ["--performance"]
+lowlatency_mode = ["--performance"]
+powersave_mode = ["--powersave"]
