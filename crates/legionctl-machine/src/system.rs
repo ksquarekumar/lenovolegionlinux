@@ -27,7 +27,9 @@ pub fn package_installed(package: &str) -> bool {
 /// with this driver).
 pub fn nvidia_power_limit() -> Option<String> {
     let (ok, text) = output("nvidia-smi", &["-q", "-d", "POWER"])?;
-    let line = text.lines().find(|l| l.trim_start().starts_with("Current Power Limit"))?;
+    let line = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("Current Power Limit"))?;
     let value = line.split(':').nth(1)?.trim().trim_end_matches('W').trim();
     (ok && value.parse::<f64>().is_ok()).then(|| value.to_string())
 }
