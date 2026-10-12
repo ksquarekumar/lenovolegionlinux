@@ -93,7 +93,7 @@ mod tests {
             (user.valid, user.sections.clone()),
             (
                 Some(true),
-                vec!["env".to_string(), "permissions".to_string()]
+                vec!["permissions".to_string(), "env".to_string()]
             )
         );
         assert!(
