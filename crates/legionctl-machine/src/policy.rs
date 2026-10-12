@@ -332,12 +332,8 @@ impl Machine<'_> {
             );
             self.power_profile(&mut steps, policy.power_profile.as_deref());
             if opts.reassert {
-                // power-profiles-daemon rewrites governor/EPP on profile changes; reassert wins them back
-                self.cpufreq(
-                    &mut steps,
-                    "scaling_governor",
-                    policy.cpu.governor.as_deref(),
-                );
+                // power-profiles-daemon rewrites EPP on profile changes; reassert wins it back (the governor was
+                // written before power-profiles-daemon)
                 self.cpufreq(
                     &mut steps,
                     "energy_performance_preference",

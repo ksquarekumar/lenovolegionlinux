@@ -324,3 +324,80 @@ fn cleanup_disables_running_conflicts_and_only_warns_about_packages_unless_asked
             .contains(&"pacman -Rns lenovolegionlinux-git".into())
     );
 }
+
+/// The daemon's decisions per event, planned (not executed) against the recorded machine.
+mod daemon_events {
+    use super::*;
+    use legionctl_machine::policy::{self, Machine as Planner, Step};
+    use legionctl_machine::react::{Event, react};
+    use legionctl_machine::sysroot::SysRoot;
+
+    fn plan(m: &Machine, event: Event) -> Vec<String> {
+        let (profile, _) = legionctl_machine::profile::load(Some(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join(PROFILE),
+        ))
+        .unwrap();
+        let root = SysRoot::new(m.dir.join("root"));
+        let planner = Planner {
+            root: &root,
+            profile: &profile,
+            ppd_current: Some("performance".into()),
+            has_command: &|_| true,
+        };
+        react(&planner, event)
+            .unwrap()
+            .iter()
+            .filter(|s| !matches!(s, Step::Run(_) | Step::Try(_)))
+            .filter_map(policy::describe)
+            .collect()
+    }
+
+    #[test]
+    fn tick_repairs_ac_drift_and_does_nothing_on_battery() {
+        let m = Machine::new("tick");
+        assert_eq!(
+            plan(&m, Event::Tick),
+            Vec::<String>::new(),
+            "AC policy in place"
+        );
+        m.set(
+            "/sys/devices/system/cpu/cpufreq/policy3/scaling_governor",
+            "powersave",
+        );
+        assert_eq!(
+            plan(&m, Event::Tick),
+            ["would write /sys/devices/system/cpu/cpufreq/policy3/scaling_governor: performance"]
+        );
+        m.set("/sys/class/power_supply/ADP0/online", "0");
+        assert_eq!(
+            plan(&m, Event::Tick),
+            Vec::<String>::new(),
+            "no periodic writes on battery"
+        );
+    }
+
+    #[test]
+    fn fn_q_choice_survives_resume_and_ends_at_the_next_start() {
+        let m = Machine::new("events");
+        // our own write produces a platform-profile event too; it is not a choice
+        m.set(WRITTEN, "max-power");
+        assert_eq!(
+            plan(&m, Event::PlatformProfile),
+            ["platform_profile 'max-power' is already the active policy; nothing to follow"]
+        );
+        // Fn+Q to performance
+        m.set(PROFILE_PATH, "performance");
+        m.set(OVERRIDE, "performance");
+        let resume = plan(&m, Event::Resume);
+        assert!(
+            !resume.iter().any(|l| l.contains(PROFILE_PATH)),
+            "resume keeps the choice: {resume:?}"
+        );
+        let start = plan(&m, Event::Start);
+        assert_eq!(start[0], "clearing firmware override 'performance'");
+        assert!(
+            start.contains(&format!("would write {PROFILE_PATH}: max-power")),
+            "{start:?}"
+        );
+    }
+}

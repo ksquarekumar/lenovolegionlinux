@@ -1,0 +1,15 @@
+[package]
+name = "legionctl-system"
+description = "The machine daemon: applies the power policy on boot, power-source changes, Fn+Q and resume"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+legionctl-machine = { path = "../legionctl-machine" }
+anyhow.workspace = true
+tokio = { version = "1.53.2", features = ["macros", "rt", "time", "net", "signal"] }
+udev = "0.9.3"
+zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }
+futures-util = "0.3.34"
+sd-notify = "0.5.0"

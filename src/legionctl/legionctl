@@ -386,8 +386,11 @@ def apply_mode(runner, profile, mode, force=False, reassert=False, keep_override
         write_cpufreq(runner, "scaling_governor", profile[mode].get("cpu", {}).get("governor"))
         apply_power_profile(runner, profile, mode)
         if reassert:
-            # power-profiles-daemon rewrites governor/EPP on profile changes; reassert wins them back
-            apply_cpu_governor_epp(runner, profile, mode)
+            # power-profiles-daemon rewrites EPP on profile changes; reassert wins it back (the governor was
+            # written before power-profiles-daemon)
+            write_cpufreq(
+                runner, "energy_performance_preference", profile[mode].get("cpu", {}).get("energy_performance_preference")
+            )
     # firmware mode changes and resume rewrite the MMIO RAPL limits; restoring them only writes what drifted
     apply_rapl(runner, profile, mode)
     apply_firmware_attributes(runner, profile, mode)
