@@ -70,5 +70,21 @@ in-tree drivers, so the out-of-tree `legion_laptop` module is not needed. Loadin
 Not done: LLL's raw EC writes (`lockfancontroller`) and GPU/CPU overclock methods (not declared by this DSDT).
 Firmware WMI objects on `\_SB_.GZFD`: WMAA GameZone, WMAB FAN_METHOD, WMAC CPU_METHOD, WMAD GPU_METHOD,
 WMAE Other Method, WMAF lights, WQA3 fan table data, WQA5 capdata01, WQA7 discrete data.
-Unverified until read on this machine (root): GameZone ids 21–26, 40–42, 49–51, 63–66; WMAF light ids; the WQA3
-ladder; whether the fan ceiling survives suspend.
+Read-only probe on this machine (2026-10-12, `acpi_call`, IsSupport and Get ids only; ids from LLL source):
+
+| Call | Result | Meaning |
+| --- | --- | --- |
+| WMAA 21 / 23 | 1 / 0 | Win-key lock supported; Win key enabled |
+| WMAA 24 / 26 | 1 / 0 | touchpad lock supported; touchpad enabled |
+| WMAA 40 / 41 | 2 / 0 | GSync/MUX supported; status 0 = hybrid (matches the detected panel on i915) |
+| WMAA 43 / 45, 55 | 6 / 0xE0, 0xE0 | smart-fan modes supported; current mode and thermal mode 0xE0 = max-power |
+| WMAA 47 | 1 | power charge mode 1 (on AC) |
+| WMAA 49 / 50 | 1 / 1 | panel overdrive supported; on |
+| WMAA 63 / 64 | 3 / 0 | iGPU mode supported; mode 0 = default |
+| WMAF get 0x03 | byte 0 = 1 | Y-logo light present; on |
+| WMAF get 0x05 | 0, 0 | no IO-port light (LLL reads 0 as "not present") |
+| WMAF get 0x00 | 0, 1 | white keyboard light id answers; this model has per-key RGB, so not used |
+| WQA3 rows 0–14 | ladders in 02-platform | fan level → RPM |
+
+Still unverified: whether the raised fan ceiling survives suspend and whether it goes above level 10 (needs a write
+test under load).

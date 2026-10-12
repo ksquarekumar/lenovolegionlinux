@@ -67,7 +67,7 @@ same change (check on each kernel update).
 | Control | Firmware call | Rules on this model |
 | --- | --- | --- |
 | Fan curve | FAN_METHOD `\_SB_.GZFD.WMAB` id 5 `Fan_Get_Table`, id 6 `Fan_Set_Table`; 0x40-byte input, FSS0–FSS9 one byte each at 0x06 + 2·i; header ignored by the DSDT, which copies the 10 bytes to EC RAM F9F0..F9F9 | Speed-only: one table for both fans; no temperature points. Units are **levels 1–10**, not RPM or percent (percent values hard-powered-off an 82WM). Per-point minimum {1,1,1,1,1,1,1,1,3,5}. **Custom mode (255) only**: on the 16IRX8H the EC resets the table when mode 0xE0 is entered and ignores later writes (LLL issue #429). Read back after each write; re-apply after resume and on every custom-mode entry. |
-| Level → RPM ladder | WQA3 `LENOVO_FAN_TABLE_DATA`, 15 instances | Read on this machine before the first write (needs root). |
+| Level → RPM ladder | WQA3 `LENOVO_FAN_TABLE_DATA`, 15 rows (modes 1, 2, 3, 0xFF, 0xE0 × fan/sensor) | Measured 2026-10-12, the same in every mode. Fan 1: 1700 1900 2100 2200 2600 2800 3300 3500 4400 5100 rpm; fan 2: 1700 1800 2100 2300 2600 2800 3300 3600 4400 5100 rpm (levels 1–10). Fan 1 follows sensors 1 (IC) and 4 (CPU), fan 2 sensor 5 (GPU). Level 10 is 5,100 rpm; whether the raised ceiling (~7,000 rpm) goes above level 10 is still unverified. |
 | Fan ceiling | GameZone `WMAA` id 0x0D, arg 1/0 | Validated on the 16IRX8H: ~4,400 → ~7,000 rpm. No readback on this model: legionctl-system owns the state and re-asserts it after resume. |
 | Full speed (dust cleaning) | Other Method `SetFeatureValue` (18), feature 0x04020000 | Custom mode only. |
 | FAN_METHOD ids 1–4 | — | Not implemented by this firmware; never called. |
