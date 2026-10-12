@@ -26,6 +26,12 @@ repos:
         additional_dependencies: [shfmt-py==4.2.0]
         entry: shfmt -w -i 2 -ci
         types: [shell]
+      - id: rust-fmt-clippy
+        name: rustfmt and clippy (pedantic, warnings as errors)
+        language: system
+        entry: sh -c 'cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -q -- -D warnings'
+        pass_filenames: false
+        files: (\.rs|Cargo\.toml|Cargo\.lock)$
       - id: js-lint
         name: biome and tsc (GNOME Shell extension)
         language: system
