@@ -8,6 +8,7 @@ pub mod hooks;
 pub mod load;
 pub mod reminders;
 pub mod setup;
+pub mod skills;
 pub mod snapshot;
 pub mod worktree;
 

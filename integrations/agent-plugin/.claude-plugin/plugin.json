@@ -1,6 +1,6 @@
 {
   "name": "legion",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Operate this Lenovo Legion laptop from Claude Code: system state and load, isolated git worktrees, agent settings, and human-approved power/GPU actions through the local legion MCP server.",
   "author": {
     "name": "ksquarekumar",

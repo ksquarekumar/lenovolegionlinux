@@ -124,7 +124,7 @@ pub fn codex_has_legion(text: &str) -> Result<bool> {
         .is_some())
 }
 
-fn plugin_skills() -> PathBuf {
+pub fn plugin_skills() -> PathBuf {
     std::env::var_os("LEGION_PLUGIN_SKILLS")
         .map_or_else(|| PathBuf::from(PLUGIN_SKILLS), PathBuf::from)
 }

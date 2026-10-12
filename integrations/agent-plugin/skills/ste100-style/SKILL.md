@@ -1,6 +1,7 @@
 ---
 name: ste100-style
 description: Write all user-facing text in ASD-STE100 Simplified Technical English. Use for every answer, summary, instruction, error message, UI or CLI copy, notification, README or doc section, commit message and PR description that a person reads. Do not apply it to code, identifiers, command lines, quoted logs or text the user wrote.
+user-invocable: false
 ---
 
 # ASD-STE100 Simplified Technical English

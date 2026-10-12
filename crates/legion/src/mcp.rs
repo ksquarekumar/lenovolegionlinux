@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use legion_core::reminders::{self, Event};
 use legion_core::{actions, agents, load, setup, snapshot::Snapshot, worktree::Store};
-use legion_core::{db::Db, hooks::Hooks};
+use legion_core::{db::Db, hooks::Hooks, skills};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock as Content};
 use rmcp::{ServiceExt, tool, tool_router};
@@ -255,6 +255,16 @@ impl Legion {
             Ok(serde_json::json!({"actions": hooks.actions()?, "bindings": hooks.bindings()?}))
         });
         result.map_or_else(fail, |v| ok(&v))
+    }
+
+    #[tool(
+        description = "List legion skills (ste100-style, glanceable-style, ...): description, where Claude Code and Codex have them installed, and whether the reminder that keeps each in force is on."
+    )]
+    fn skills_list(&self) -> CallToolResult {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        skills::inventory(&home, &reminders::Store::default()).map_or_else(fail, |list| ok(&list))
     }
 }
 

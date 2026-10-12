@@ -192,8 +192,8 @@ legion tui                           # live dashboard
 
 Claude Code plugin: MCP tools; skills `legion:ste100-style` (ASD-STE100 writing) and `legion:glanceable-style`
 (glanceable, agent-readable output); hooks that inject reminders, load and setup notices; commands `/legion:status`,
-`/legion:worktree`, `/legion:act`, `/legion:setup`, `/legion:reminders` (guided), and `/legion:ste100`,
-`/legion:glanceable` (load the skill now, turn its reminder on or off). Reminders also work from the shell:
+`/legion:worktree`, `/legion:act`, `/legion:setup`, `/legion:reminders` (guided), and `/legion:skills`
+(list skills and where they are installed, load one, turn its reminder on or off; also `legion skills`). Reminders also work from the shell:
 `legion reminders`, `legion reminders on|off <id>`, `legion reminders add <id> "<text>" [--event prompt]`.
 What the hooks run is configurable: `/legion:hooks` (guided) or `legion hooks`, `legion hooks bind|unbind <event> <action>`,
 `legion hooks add <id> "<command>" [--timeout N]`. Bindings and an event log of every change live in

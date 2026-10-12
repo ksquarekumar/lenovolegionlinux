@@ -1,6 +1,7 @@
 ---
 name: glanceable-style
 description: Structure every user-facing output (answers, reports, status, docs, UI and CLI text) so a person gets the point at a glance and can open more detail on demand (progressive disclosure), and so agents and tools can search, link and track it with few tokens. Use with the ste100-style skill for the wording.
+user-invocable: false
 ---
 
 # Glanceable, progressive, agent-readable output

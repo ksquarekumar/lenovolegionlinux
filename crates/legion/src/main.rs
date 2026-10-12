@@ -10,7 +10,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use legion_core::reminders::{self, Event};
 use legion_core::{actions, agents, load, setup, snapshot::Snapshot, worktree::Store};
-use legion_core::{db::Db, hooks::Hooks};
+use legion_core::{db::Db, hooks::Hooks, skills};
 
 #[derive(Parser)]
 #[command(
@@ -82,6 +82,11 @@ enum Command {
     Hooks {
         #[command(subcommand)]
         command: Option<HookCommand>,
+    },
+    /// legion skills: where each agent has them and whether their reminder is on
+    Skills {
+        #[arg(long)]
+        json: bool,
     },
     /// MCP server over stdio, for Claude Code, Codex and other agents
     Mcp,
@@ -456,6 +461,38 @@ fn main() -> Result<()> {
                     if !text.is_empty() {
                         println!("{text}");
                     }
+                }
+            }
+        }
+        Command::Skills { json } => {
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default();
+            let list = skills::inventory(&home, &reminders::Store::default())?;
+            if json {
+                print_json(&list)?;
+            } else {
+                for s in list {
+                    let reminder = match (&s.reminder, s.reminder_on) {
+                        (Some(id), Some(true)) => format!("reminder {id}: on"),
+                        (Some(id), _) => format!("reminder {id}: off"),
+                        _ => "no reminder".into(),
+                    };
+                    println!("legion:{}  ({reminder})", s.name);
+                    println!(
+                        "  claude: {}",
+                        s.claude
+                            .map_or("plugin not installed".into(), |p| p.display().to_string())
+                    );
+                    println!(
+                        "  codex:  {} ({})",
+                        s.codex.display(),
+                        if s.codex_linked {
+                            "linked"
+                        } else {
+                            "missing; run `legion setup`"
+                        }
+                    );
                 }
             }
         }
