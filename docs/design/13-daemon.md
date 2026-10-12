@@ -26,7 +26,17 @@ system down.
   `events`, `hook_actions`, `hook_bindings`).
 - The owning daemon is the only writer; WAL mode lets clients and the bootstrap read concurrently. Until the daemons
   exist, the CLI writes directly and relies on WAL plus a busy timeout.
-- Remaining Phase 1a stores move in (worktree registry JSON, reminders TOML) with a one-time import migration.
+- All legionctl state is in SQLite (decided 2026-10-12): the remaining Phase 1a stores (worktree registry JSON,
+  reminders TOML) and the Fn+Q ledger (today files in `/run/legionctl`; in `system.db` keyed by boot id, so a reboot
+  still clears it) move in, each with a one-time import migration. Configuration stays in files (the profile as
+  JSONC, the config layers of 14-sessions); the databases hold state, never configuration.
+- Graph data (the workspace work graph, the capability/provider/consumer model, links to code graphs) uses graph
+  tables in the same SQLite file: `node(id, kind, key, props)` and `edge(src, dst, kind, props, valid_from,
+  valid_to)` with indexes on `(src, kind)` and `(dst, kind)`, queried with recursive CTEs behind a small `Graph`
+  trait (`neighbors`, `walk`, `path`). Each repo's ctx code graph `.db` is `ATTACH`ed and joined in place. Chosen over
+  a separate embedded graph engine (LadybugDB, the maintained Kuzu fork, was the best alternative) because WAL already
+  gives one writer and many reader processes, there is no new dependency, and there is one backup and migration
+  path. The trait lets an engine replace the tables if graph algorithms become necessary.
 
 ## Event log, outbox and sagas
 
