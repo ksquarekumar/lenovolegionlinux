@@ -11,7 +11,7 @@ LenovoLegionLinux's `model_kwcn` entry and the in-tree drivers. Every new firmwa
 | Fan speed readout | done (validated) | Other Method 17, feature 0x04030001/2 via `acpi_call` | — |
 | Custom fan curve | missing | FAN_METHOD `WMAB` 5/6, levels 1–10, speed-only, custom mode only (02-platform, Fan control) | medium |
 | Fan full speed (dust cleaning) | missing | Other Method `SetFeatureValue` 0x04020000, custom mode only | low |
-| Lift firmware fan ceiling | missing | GameZone `WMAA(0, 0x0D)`; validated on KWCN54WW (LenovoLegionLinux PR #443) | medium |
+| Lift firmware fan ceiling | missing | GameZone `WMAA(0, 0x0D)`; measured here: 5,100 → 6,000–6,100 rpm, GPU +10 % power at its temperature limit | medium |
 | Hybrid mode / GPU working mode (dGPU only, Hybrid, Hybrid Auto, iGPU only) | detection designed (02-platform) | GameZone GSync 40/41/42 and iGPU mode 63/64/65; restart required | high |
 | Deactivate dGPU (kill dGPU processes, nudge runtime PM) | missing | NVML process list, `power/runtime_status`; only in hybrid with no display on NVIDIA | medium |
 | GPU overclock | missing | NVML clock offsets; limited on Wayland | low |
@@ -86,5 +86,5 @@ Read-only probe on this machine (2026-10-12, `acpi_call`, IsSupport and Get ids 
 | WMAF get 0x00 | 0, 1 | white keyboard light id answers; this model has per-key RGB, so not used |
 | WQA3 rows 0–14 | ladders in 02-platform | fan level → RPM |
 
-Still unverified: whether the raised fan ceiling survives suspend and whether it goes above level 10 (needs a write
-test under load).
+Write test 2026-10-12 (WMAA 0x0D under full CPU + GPU load): the raised ceiling gives 6,000–6,100 rpm vs 5,100 rpm
+default and ~+10 % sustained GPU power at the 87 °C limit (02-platform). Still unverified: whether it survives suspend.
