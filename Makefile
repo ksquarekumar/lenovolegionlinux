@@ -52,6 +52,10 @@ test: ## unit tests (no hardware access)
 	$(PYTHON) -m unittest discover -s tests -v
 	cargo test --workspace --locked
 
+.PHONY: parity
+parity: ## Rust vs Python policy plans on this machine (dry run; build first)
+	scripts/parity.sh
+
 .PHONY: package
 package: ## build and install the Arch package (pacman tracks every file)
 	cd packaging/arch && makepkg -sfi

@@ -1,6 +1,7 @@
 //! `legionctl` (binary `legion` until the switch in docs/design/15-layout.md): operator CLI, TUI and MCP server for this machine. Every subcommand goes through legionctl-core, so the
 //! terminal, the TUI and agents (over MCP) see the same state and hit the same guard rails.
 
+mod machine;
 mod mcp;
 mod tui;
 
@@ -22,8 +23,70 @@ struct Cli {
     command: Command,
 }
 
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum SourceArg {
+    Ac,
+    Battery,
+    Auto,
+}
+
+impl SourceArg {
+    fn source(self) -> Option<legionctl_machine::policy::Source> {
+        use legionctl_machine::policy::Source;
+        match self {
+            SourceArg::Ac => Some(Source::Ac),
+            SourceArg::Battery => Some(Source::Battery),
+            SourceArg::Auto => None,
+        }
+    }
+}
+
+#[derive(clap::Args)]
+struct PolicyArgs {
+    /// Profile (JSONC); default: the installed one
+    #[arg(long)]
+    profile: Option<PathBuf>,
+    /// Print what would change; change nothing
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    quiet: bool,
+}
+
 #[derive(Subcommand)]
 enum Command {
+    /// Apply the power policy for ac, battery, or the current power source (auto)
+    Apply {
+        #[arg(value_enum)]
+        mode: SourceArg,
+        #[command(flatten)]
+        args: PolicyArgs,
+        /// Apply even if the machine's DMI does not match the profile
+        #[arg(long)]
+        force: bool,
+        /// Keep an Fn+Q choice (used after resume)
+        #[arg(long)]
+        keep_override: bool,
+    },
+    /// Restore firmware mode, PPD, governor and EPP only
+    Reassert {
+        #[arg(value_enum)]
+        mode: SourceArg,
+        #[command(flatten)]
+        args: PolicyArgs,
+        #[arg(long)]
+        force: bool,
+    },
+    /// React to a firmware platform_profile change (Fn+Q)
+    Follow {
+        #[command(flatten)]
+        args: PolicyArgs,
+    },
+    /// Check the profile's structure and ac/battery consistency (no hardware access)
+    Validate {
+        #[arg(long)]
+        profile: Option<PathBuf>,
+    },
     /// Power, firmware, GPU and load state
     Status {
         #[arg(long)]
@@ -205,6 +268,47 @@ fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::Apply {
+            mode,
+            args,
+            force,
+            keep_override,
+        } => machine::apply(
+            machine::Run {
+                profile: args.profile.as_deref(),
+                dry_run: args.dry_run,
+                quiet: args.quiet,
+            },
+            mode.source(),
+            legionctl_machine::policy::Options {
+                force,
+                reassert: false,
+                keep_override,
+            },
+        )?,
+        Command::Reassert { mode, args, force } => machine::apply(
+            machine::Run {
+                profile: args.profile.as_deref(),
+                dry_run: args.dry_run,
+                quiet: args.quiet,
+            },
+            mode.source(),
+            legionctl_machine::policy::Options {
+                force,
+                reassert: true,
+                keep_override: false,
+            },
+        )?,
+        Command::Follow { args } => machine::follow(machine::Run {
+            profile: args.profile.as_deref(),
+            dry_run: args.dry_run,
+            quiet: args.quiet,
+        })?,
+        Command::Validate { profile } => {
+            if !machine::validate(profile.as_deref())? {
+                std::process::exit(1);
+            }
+        }
         Command::Status { json: true } => print_json(&Snapshot::read())?,
         Command::Status { json: false } => {
             let s = Snapshot::read();
