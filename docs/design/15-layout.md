@@ -119,6 +119,6 @@ the AC/battery targets, the udev `RUN+=` rules, the sleep hook and the hwdb rema
 - End-to-end at a boundary: the CLI against a temporary operator database, the daemon against a recorded sysroot
   of this machine (`tests/fixtures/sysroot-82wq-*`), the MCP server over stdio, the hooks through the plugin's real
   commands.
-- Narrow tests only where they catch a failure that is not obvious, such as phantom I/O pressure from D-state
-  kernel threads or a migration that runs twice.
+- Narrow tests only where they catch a failure that is not obvious, such as phantom I/O pressure (iowait
+  with idle disks) or a migration that runs twice.
 - Tests that only restate the code are deleted.

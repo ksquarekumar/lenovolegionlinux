@@ -37,7 +37,7 @@ Fixes are applied only through `legionctl approve`.
 | Kernel | module inventory and autoload drift, DKMS not built for an installed kernel, initramfs contents and size, Secure Boot signature (08-kernel) |
 | Boot | boot time regression vs the recorded baseline (`systemd-analyze`), failed units, journal error bursts since boot |
 | Graphics | primary GPU vs the outputs in use, desktop GPU preference, NVIDIA module and driver version match |
-| Load | phantom I/O pressure (D-state kernel threads with idle disks), memory pressure |
+| Load | phantom I/O pressure (iowait with idle disks, named by cgroup), memory pressure |
 | Session | OSD extension not enabled, Mutter refresh state vs the layer |
 | Virtualization | provider health, guest memory, Docker disk use, NVIDIA runtime vs driver, KVM/IOMMU/VFIO, binfmt (17-virtualization) |
 | Agents | setup gaps (ctx, MCP, skills), invalid agent settings, quota near limit, gate denials, stale worktrees |

@@ -3,6 +3,7 @@
 //! Pressure stall information (PSI, `/proc/pressure/*`) says how much work is actually waiting on CPU, memory
 //! or I/O, which tells "busy" apart from "many runnable threads" better than the load average alone.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use schemars::JsonSchema;
@@ -38,6 +39,8 @@ pub struct Load {
     pub io: Option<Pressure>,
     pub mem_available_mib: u32,
     pub mem_total_mib: u32,
+    /// With I/O pressure while no disk works: the cgroup that stalls most, and its pressure. Not counted in `level`.
+    pub io_stall_source: Option<String>,
 }
 
 #[must_use]
@@ -88,10 +91,10 @@ pub fn classify(
     let mem_full = memory.and_then(|p| p.full_avg10).unwrap_or(0.0);
     let io_some = io.map_or(0.0, |p| p.some_avg10);
     let io_full = io.and_then(|p| p.full_avg10).unwrap_or(0.0);
-    // Kernel workers stuck in uninterruptible sleep (seen here: RCU grace-period kworkers) count as I/O stalls with
-    // the disks idle, and a single stalled task maxes out "full". I/O pressure counts only while a disk does I/O;
-    // the load average cannot gate it, because it stays high for minutes after heavy CPU work ends.
-    let disks_working = disks_busy >= 0.10;
+    // Tasks can wait in iowait with the disks idle (seen here: a QEMU/KVM Windows VM in Docker, 77-91% "some" and
+    // "full" in its cgroup, 0 disk I/O). I/O pressure counts only while a disk does I/O; the load average cannot
+    // gate it, because it stays high for minutes after heavy CPU work ends.
+    let disks_working = disks_busy >= DISK_WORKING;
     let working = load1 >= 0.10 * cpus_f;
     let heavily_working = load1 >= 0.25 * cpus_f;
 
@@ -174,14 +177,59 @@ pub fn brief(load: &Load) -> String {
     } else {
         format!(" ({})", load.reasons.join(", "))
     };
+    let stall = load.io_stall_source.as_ref().map_or(String::new(), |src| {
+        format!(" I/O wait without disk I/O from {src}; not counted.")
+    });
     format!(
-        "System load: {:?}{why}; load {:.1} on {} CPUs, {} of {} free.{advice}",
+        "System load: {:?}{why}; load {:.1} on {} CPUs, {} of {} free.{advice}{stall}",
         load.level,
         load.load1,
         load.cpus,
         crate::human_bytes(u64::from(load.mem_available_mib) << 20),
         crate::human_bytes(u64::from(load.mem_total_mib) << 20)
     )
+}
+
+/// Share of a short window in which a disk must do I/O before I/O pressure counts as load.
+const DISK_WORKING: f64 = 0.10;
+const CGROUPS: &str = "/sys/fs/cgroup";
+
+/// The cgroup that explains the I/O stall, as `path (N%)`: from the root, go down to the child that stalls most while
+/// it has at least 90% of its parent's pressure (values read moments apart differ a little). Container ids are cut
+/// to 12 characters as `docker ps` shows them.
+fn io_stall_source(root: &SysRoot) -> Option<String> {
+    let pressure = |cgroup: &PathBuf| {
+        root.read(cgroup.join("io.pressure"))
+            .as_deref()
+            .and_then(parse_pressure)
+            .map(|p| p.some_avg10)
+    };
+    let mut path = PathBuf::from(CGROUPS);
+    let mut some = pressure(&path)?;
+    while let Some((child, child_some)) = root
+        .children(&path, "")
+        .into_iter()
+        .filter_map(|c| pressure(&c).map(|p| (c, p)))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .filter(|(_, p)| *p >= 0.9 * some)
+    {
+        path = child;
+        some = child_some;
+    }
+    let name: Vec<String> = path
+        .strip_prefix(CGROUPS)
+        .ok()?
+        .iter()
+        .map(|part| {
+            let part = part.to_string_lossy();
+            if part.len() == 64 && part.chars().all(|c| c.is_ascii_hexdigit()) {
+                part[..12].to_string()
+            } else {
+                part.into_owned()
+            }
+        })
+        .collect();
+    Some(format!("{} ({some:.0}%)", name.join("/")))
 }
 
 /// Busiest whole disk's share of a short window, from `io_ticks` (ms spent doing I/O) in /proc/diskstats.
@@ -241,8 +289,9 @@ pub fn read_load(root: &SysRoot) -> Load {
     } else {
         1.0
     };
+    let io_some = io.as_ref().map_or(0.0, |p| p.some_avg10);
     // sample the disks only when I/O pressure could matter, so the usual call stays instant
-    let disks = if io.as_ref().is_some_and(|p| p.some_avg10 >= 20.0) {
+    let disks = if io_some >= 20.0 {
         disks_busy(root)
     } else {
         0.0
@@ -266,6 +315,9 @@ pub fn read_load(root: &SysRoot) -> Load {
         io,
         mem_available_mib: available,
         mem_total_mib: total,
+        io_stall_source: (io_some >= 20.0 && disks < DISK_WORKING)
+            .then(|| io_stall_source(root))
+            .flatten(),
     }
 }
 
@@ -274,8 +326,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stalled_kernel_workers_are_not_io_load_while_the_disks_are_idle() {
-        // measured on this machine: I/O some/full ~77% from one D-state RCU kworker, disks 0 ms busy
+    fn iowait_without_disk_io_is_not_load_and_names_its_cgroup() {
+        // measured on this machine: I/O some/full ~77% from a QEMU/KVM VM in Docker, disks 0 ms busy
         let phantom = Pressure {
             some_avg10: 77.0,
             full_avg10: Some(65.0),
@@ -293,5 +345,27 @@ mod tests {
         let (busy, why) = level(2.3, 0.6);
         assert_eq!(busy, Level::Overloaded);
         assert_eq!(why, vec!["I/O stalls (full) 65%".to_string()]);
+
+        // the cgroup tree of that measurement: the container stalls, the rest of the system does not
+        let dir = std::env::temp_dir().join(format!("legionctl-io-source-{}", std::process::id()));
+        let id = "09bd9c9baa5f59137a2440fe5cc44399965edc74eb94f4a04559353cd7d099ef";
+        for (cgroup, some) in [
+            ("", 28.6),
+            ("docker", 77.3),
+            (&format!("docker/{id}") as &str, 77.3),
+            ("user.slice", 0.4),
+            ("user.slice/user-1000.slice", 0.4),
+        ] {
+            let path = dir.join("sys/fs/cgroup").join(cgroup);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(
+                path.join("io.pressure"),
+                format!("some avg10={some} avg60=0 avg300=0 total=0\nfull avg10={some} avg60=0 avg300=0 total=0\n"),
+            )
+            .unwrap();
+        }
+        let source = io_stall_source(&SysRoot::new(&dir));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(source.as_deref(), Some("docker/09bd9c9baa5f (77%)"));
     }
 }
