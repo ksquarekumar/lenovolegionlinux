@@ -1,23 +1,13 @@
 {
-  "description": "Inject legion reminders (skills to follow, habits), and tell the agent about machine load and setup gaps",
+  "description": "Run the legion hook actions bound to each event (manage them with /legion:hooks or `legion hooks`)",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "legion reminders emit --event session-start",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "legion load --brief",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "legion setup --check --brief",
-            "timeout": 10
+            "command": "legion hooks run --event session-start",
+            "timeout": 30
           }
         ]
       }
@@ -27,13 +17,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "legion reminders emit --event prompt",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "legion load --brief --only-busy",
-            "timeout": 5
+            "command": "legion hooks run --event prompt",
+            "timeout": 30
           }
         ]
       }

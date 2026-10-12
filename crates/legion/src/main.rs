@@ -10,6 +10,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use legion_core::reminders::{self, Event};
 use legion_core::{actions, agents, load, setup, snapshot::Snapshot, worktree::Store};
+use legion_core::{db::Db, hooks::Hooks};
 
 #[derive(Parser)]
 #[command(
@@ -77,6 +78,11 @@ enum Command {
         #[command(subcommand)]
         command: Option<ReminderCommand>,
     },
+    /// What agent hooks run: bind built-in or your own actions to hook events
+    Hooks {
+        #[command(subcommand)]
+        command: Option<HookCommand>,
+    },
     /// MCP server over stdio, for Claude Code, Codex and other agents
     Mcp,
     /// Live dashboard
@@ -106,6 +112,42 @@ enum ReminderCommand {
     Rm { id: String },
     /// Print enabled reminders for a hook event (used by the agent plugin)
     Emit {
+        #[arg(long, value_enum)]
+        event: EventArg,
+    },
+}
+
+#[derive(Subcommand)]
+enum HookCommand {
+    /// Show actions and what is bound to each event
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run an action when an event fires (after the ones already bound)
+    Bind {
+        #[arg(value_enum)]
+        event: EventArg,
+        action: String,
+    },
+    /// Stop running an action for an event
+    Unbind {
+        #[arg(value_enum)]
+        event: EventArg,
+        action: String,
+    },
+    /// Define your own action: a one-line shell command whose output goes to the agent
+    Add {
+        id: String,
+        command: String,
+        /// Seconds before it is stopped (1-30); the agent waits for hooks
+        #[arg(long, default_value_t = 5)]
+        timeout: u32,
+    },
+    /// Remove an action you defined, and its bindings
+    Rm { id: String },
+    /// Run everything bound to an event (the agent plugin calls this)
+    Run {
         #[arg(long, value_enum)]
         event: EventArg,
     },
@@ -151,43 +193,6 @@ enum WorktreeCommand {
     },
 }
 
-pub fn human_bytes(bytes: u64) -> String {
-    let units = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < units.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", units[unit])
-    }
-}
-
-/// One line an agent can act on: the level, why, and what to do about it.
-pub fn brief(load: &load::Load) -> String {
-    let advice = match load.level {
-        load::Level::Overloaded => " Avoid builds, test suites and parallel jobs until it settles.",
-        load::Level::Busy => " Prefer light commands; limit parallelism (e.g. -j4).",
-        _ => "",
-    };
-    let why = if load.reasons.is_empty() {
-        String::new()
-    } else {
-        format!(" ({})", load.reasons.join(", "))
-    };
-    format!(
-        "System load: {:?}{why}; load {:.1} on {} CPUs, {} of {} free.{advice}",
-        load.level,
-        load.load1,
-        load.cpus,
-        human_bytes(load.mem_available_mib * 1024 * 1024),
-        human_bytes(load.mem_total_mib * 1024 * 1024)
-    )
-}
-
 fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
@@ -226,7 +231,7 @@ fn main() -> Result<()> {
             for d in &s.displays {
                 println!("  {} on {} ({})", d.connector, d.card, d.driver);
             }
-            println!("{}", brief(&s.load));
+            println!("{}", load::brief(&s.load));
         }
         Command::Load {
             json,
@@ -237,7 +242,7 @@ fn main() -> Result<()> {
             if json {
                 print_json(&l)?;
             } else if !(short && only_busy && l.level < load::Level::Busy) {
-                println!("{}", brief(&l));
+                println!("{}", load::brief(&l));
             }
         }
         Command::Doctor => print!("{}", actions::doctor()?),
@@ -275,7 +280,7 @@ fn main() -> Result<()> {
                 WorktreeCommand::List { json: true } => print_json(&store.list(true)?)?,
                 WorktreeCommand::List { json: false } => {
                     for w in store.list(true)? {
-                        let size = w.size_bytes.map_or("-".into(), human_bytes);
+                        let size = w.size_bytes.map_or("-".into(), legion_core::human_bytes);
                         let state = if !w.exists {
                             "missing"
                         } else if w.dirty == Some(true) {
@@ -394,6 +399,60 @@ fn main() -> Result<()> {
                 }
                 ReminderCommand::Emit { event } => {
                     let text = store.emit(event.into())?;
+                    if !text.is_empty() {
+                        println!("{text}");
+                    }
+                }
+            }
+        }
+        Command::Hooks { command } => {
+            let db = Db::open_default()?;
+            let hooks = Hooks {
+                db: &db,
+                reminders: reminders::Store::default(),
+                actor: "cli",
+            };
+            match command.unwrap_or(HookCommand::List { json: false }) {
+                HookCommand::List { json: true } => print_json(
+                    &serde_json::json!({"actions": hooks.actions()?, "bindings": hooks.bindings()?}),
+                )?,
+                HookCommand::List { json: false } => {
+                    println!("bindings (in order):");
+                    for b in hooks.bindings()? {
+                        println!("  {:<14} {}", format!("{:?}", b.event), b.action);
+                    }
+                    println!("actions:");
+                    for a in hooks.actions()? {
+                        let kind = if a.builtin {
+                            "built-in".to_string()
+                        } else {
+                            format!("command, {}s", a.timeout_s)
+                        };
+                        println!("  {:<16} {:<14} {}", a.id, kind, a.detail);
+                    }
+                }
+                HookCommand::Bind { event, action } => {
+                    hooks.bind(event.into(), &action)?;
+                    println!("{action}: bound");
+                }
+                HookCommand::Unbind { event, action } => {
+                    hooks.unbind(event.into(), &action)?;
+                    println!("{action}: unbound");
+                }
+                HookCommand::Add {
+                    id,
+                    command,
+                    timeout,
+                } => {
+                    hooks.add_command(&id, &command, timeout)?;
+                    println!("{id}: defined; bind it with `legion hooks bind <event> {id}`");
+                }
+                HookCommand::Rm { id } => {
+                    hooks.remove_action(&id)?;
+                    println!("{id}: removed");
+                }
+                HookCommand::Run { event } => {
+                    let text = hooks.run(event.into())?;
                     if !text.is_empty() {
                         println!("{text}");
                     }

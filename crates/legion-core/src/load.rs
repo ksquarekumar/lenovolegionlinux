@@ -156,6 +156,28 @@ pub fn classify(
     (Level::Normal, vec![])
 }
 
+/// One line an agent can act on: the level, why, and what to do about it.
+pub fn brief(load: &Load) -> String {
+    let advice = match load.level {
+        Level::Overloaded => " Avoid builds, test suites and parallel jobs until it settles.",
+        Level::Busy => " Prefer light commands; limit parallelism (e.g. -j4).",
+        _ => "",
+    };
+    let why = if load.reasons.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", load.reasons.join(", "))
+    };
+    format!(
+        "System load: {:?}{why}; load {:.1} on {} CPUs, {} of {} free.{advice}",
+        load.level,
+        load.load1,
+        load.cpus,
+        crate::human_bytes(load.mem_available_mib * 1024 * 1024),
+        crate::human_bytes(load.mem_total_mib * 1024 * 1024)
+    )
+}
+
 pub fn read_load() -> Load {
     let load1 = read("/proc/loadavg")
         .and_then(|t| t.split_whitespace().next()?.parse().ok())

@@ -195,6 +195,9 @@ Claude Code plugin: MCP tools; skills `legion:ste100-style` (ASD-STE100 writing)
 `/legion:worktree`, `/legion:act`, `/legion:setup`, `/legion:reminders` (guided), and `/legion:ste100`,
 `/legion:glanceable` (load the skill now, turn its reminder on or off). Reminders also work from the shell:
 `legion reminders`, `legion reminders on|off <id>`, `legion reminders add <id> "<text>" [--event prompt]`.
+What the hooks run is configurable: `/legion:hooks` (guided) or `legion hooks`, `legion hooks bind|unbind <event> <action>`,
+`legion hooks add <id> "<command>" [--timeout N]`. Bindings and an event log of every change live in
+`~/.local/state/legion/legion.db` (SQLite, WAL).
 
 ```
 /plugin marketplace add /data/git/lenovolegionlinux

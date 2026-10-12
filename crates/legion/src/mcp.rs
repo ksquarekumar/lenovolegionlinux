@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use legion_core::reminders::{self, Event};
 use legion_core::{actions, agents, load, setup, snapshot::Snapshot, worktree::Store};
+use legion_core::{db::Db, hooks::Hooks};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock as Content};
 use rmcp::{ServiceExt, tool, tool_router};
@@ -63,6 +64,20 @@ pub struct ActionArgs {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct HookArgs {
+    /// "bind", "unbind", "add" (define a command action) or "remove" (delete a command action).
+    pub action: String,
+    /// Hook event for bind/unbind: session-start or prompt.
+    pub event: Option<Event>,
+    /// Action id: a built-in (reminders, load, load-if-busy, setup-check) or one you defined.
+    pub id: String,
+    /// For "add": a one-line shell command; its stdout goes to the agent.
+    pub command: Option<String>,
+    /// For "add": seconds before it is stopped (1-30, default 5).
+    pub timeout_s: Option<u32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ReminderArgs {
     /// "on", "off", "add" or "remove".
     pub action: String,
@@ -89,7 +104,7 @@ impl Legion {
     fn system_load(&self) -> CallToolResult {
         let l = load::read_load();
         CallToolResult::success(vec![
-            Content::text(crate::brief(&l)),
+            Content::text(load::brief(&l)),
             Content::text(serde_json::to_string_pretty(&l).unwrap_or_default()),
         ])
     }
@@ -195,6 +210,51 @@ impl Legion {
         result
             .and_then(|()| store.list())
             .map_or_else(fail, |list| ok(&list))
+    }
+
+    #[tool(
+        description = "List hook actions (built-in and user-defined commands) and which run, in order, at session start and on every prompt."
+    )]
+    fn hooks_list(&self) -> CallToolResult {
+        let result = Db::open_default().and_then(|db| {
+            let hooks = Hooks {
+                db: &db,
+                reminders: reminders::Store::default(),
+                actor: "mcp",
+            };
+            Ok(serde_json::json!({"actions": hooks.actions()?, "bindings": hooks.bindings()?}))
+        });
+        result.map_or_else(fail, |v| ok(&v))
+    }
+
+    #[tool(
+        description = "Change hook bindings: bind or unbind an action for an event, define a one-line shell-command action (add), or remove one. Changes are recorded in the operator event log."
+    )]
+    fn hooks_update(&self, Parameters(args): Parameters<HookArgs>) -> CallToolResult {
+        let result = Db::open_default().and_then(|db| {
+            let hooks = Hooks {
+                db: &db,
+                reminders: reminders::Store::default(),
+                actor: "mcp",
+            };
+            let event = || {
+                args.event
+                    .ok_or_else(|| anyhow::anyhow!("event is required: session-start or prompt"))
+            };
+            match args.action.as_str() {
+                "bind" => hooks.bind(event()?, &args.id)?,
+                "unbind" => hooks.unbind(event()?, &args.id)?,
+                "add" => hooks.add_command(
+                    &args.id,
+                    args.command.as_deref().unwrap_or(""),
+                    args.timeout_s.unwrap_or(5),
+                )?,
+                "remove" => hooks.remove_action(&args.id)?,
+                other => anyhow::bail!("unknown action {other}; use bind, unbind, add or remove"),
+            }
+            Ok(serde_json::json!({"actions": hooks.actions()?, "bindings": hooks.bindings()?}))
+        });
+        result.map_or_else(fail, |v| ok(&v))
     }
 }
 

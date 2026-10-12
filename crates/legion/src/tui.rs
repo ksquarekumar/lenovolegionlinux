@@ -119,7 +119,7 @@ fn draw(f: &mut Frame, s: &Snapshot, worktrees: &[WorktreeStatus], configs: &[Co
         };
         Row::new(vec![
             w.worktree.name.clone(),
-            w.size_bytes.map_or("-".into(), crate::human_bytes),
+            w.size_bytes.map_or("-".into(), legion_core::human_bytes),
             state.into(),
             w.worktree.repo.display().to_string(),
         ])
