@@ -60,6 +60,10 @@ also records how it runs: its entrypoints (binaries, services, scripts, test tar
 (toolchain versions, interpreters, containers or VMs from 17), and its dependencies and environment (packages,
 services, environment variables, ports, devices such as the GPU). A sandbox (14, 17) or a packed workspace is
 built from these records, and a change to a dependency marks the work items that use it for re-verification.
+The graph also tracks provenance: the commits each change set produced, the package versions and lock files in
+use, and changelog entries. From these it can recreate a buildable, runnable version of any recorded state (a
+container or VM image with the exact commits, packages and environment), so an old result can be rebuilt and
+re-checked.
 Every node has a
 status (`planned`, `pending`, `in-progress`, `done`, `failed`, `abandoned`) with history, so an agent that resumes
 work days later sees what was planned, what was done, what failed and why, and what the code graph says changed.
