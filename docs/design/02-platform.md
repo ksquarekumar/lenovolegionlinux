@@ -17,6 +17,9 @@ Every knob the daemon touches, with the source of truth measured on this machine
 Vantage switches to Custom mode to apply them)? Test: write `ppt_pl1_spl` in `max-power`, read back, then in
 `custom`. The answer decides whether the AC layer uses `max-power` + limits or `custom` + limits.
 
+**Measured 2026-10-12:** in `max-power`, writes to `ppt_pl1_spl` and `ppt_pl2_sppt` fail with `EBUSY` ("Device or
+resource busy") and the values stay 90/135 W: the firmware limits are writable only in `custom` mode.
+
 ## CPU
 
 | Knob | Path | Notes |
