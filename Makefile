@@ -6,7 +6,8 @@ DATADIR ?= $(PREFIX)/share/legion-control
 BINDIR ?= $(PREFIX)/bin
 PROFILE ?= profiles/lenovo-82wq-legion-pro-7-16irx8h.json
 PRE_COMMIT ?= pre-commit
-LEGIONCTL = python src/legionctl/legionctl --profile $(PROFILE)
+PYTHON ?= python
+LEGIONCTL = $(PYTHON) src/legionctl/legionctl --profile $(PROFILE)
 
 .PHONY: help
 help: ## list targets
@@ -38,7 +39,7 @@ validate: ## check profile structure and ac/battery consistency (no hardware acc
 
 .PHONY: test
 test: ## unit tests (no hardware access)
-	python -m unittest discover -s tests -v
+	$(PYTHON) -m unittest discover -s tests -v
 
 .PHONY: package
 package: ## build and install the Arch package (pacman tracks every file)
@@ -74,5 +75,5 @@ install: ## install legionctl, profile, units, udev and tuning (needs root)
 
 .PHONY: check
 check: validate ## compile + live status on this machine
-	python -m py_compile src/legionctl/legionctl
+	$(PYTHON) -m py_compile src/legionctl/legionctl
 	$(LEGIONCTL) status
