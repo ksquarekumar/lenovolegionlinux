@@ -1,12 +1,12 @@
 {
-  "description": "Run the legionctl hook actions bound to each event (manage them with /legionctl:hooks or `legion hooks`)",
+  "description": "Run the legionctl hook actions bound to each event (manage them with /legionctl:hooks or `legionctl hooks`)",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "legion hooks run --event session-start",
+            "command": "legionctl hooks run --event session-start",
             "timeout": 30
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "legion hooks run --event prompt",
+            "command": "legionctl hooks run --event prompt",
             "timeout": 30
           }
         ]

@@ -1,214 +1,83 @@
 # legionctl
 
-One unified, modular operator for this machine and the coding agents that run on it. It replaces
-LenovoLegionLinux here (in-tree drivers, no out-of-tree module), gives developers and superusers tools to see,
-check, tune and record the system, and runs agent sessions with their tools, skills, MCP servers, model access,
-and Claude/Codex accounts and quotas. Design: [docs/design](docs/design/README.md) (start with 15-layout and
-16-observability).
+One operator for this machine and the coding agents that run on it. It controls power, firmware, GPU and display
+policy with the in-tree Lenovo drivers (no out-of-tree module), gives developers tools to see and check the system,
+and gives Claude Code and Codex hooks, skills, reminders, worktrees and an MCP server. Design notes:
+[docs/design](docs/design/README.md) (start with 15-layout).
 
-Machine:
+This repository is for one machine only. It does not guess safe behavior for other models.
 
-- `LENOVO 82WQ`
-- `Legion Pro 7 16IRX8H`
-- observed BIOS: `KWCN54WW`
-- observed BIOS release: `1.54`
-- observed EC firmware release: `1.51`
-- observed board name: `INVALID`
+| | |
+| --- | --- |
+| Model | `LENOVO 82WQ`, Legion Pro 7 16IRX8H |
+| BIOS / EC | `KWCN54WW` (1.54) / 1.51 |
 
-This repository is intentionally machine-specific. It is not a generic Legion
-support package and it does not try to guess safe behavior for other models.
+## Parts
 
-## Scope
+| Part | Runs as | Does |
+| --- | --- | --- |
+| `legionctl` | you | CLI, TUI (`legionctl tui`), MCP server (`legionctl mcp`), agent hook dispatcher |
+| `legionctl-system` | root, `legionctl-system.service` | power policy on boot, charger plug/unplug, Fn+Q and resume; Fn+R key; D-Bus API `org.legionctl.System1` (polkit decides each change) |
+| `legionctl-operator` | you, `legionctl-operator.service` (user) | Fn+R panel refresh toggle through Mutter; OSD requests |
+| `legionctl-osd@legionctl` | GNOME Shell extension | the animated OSD: thermal mode, panel refresh rate, Fn lock |
 
-Owned here:
-
-- AC and battery power policy
-- Intel RAPL package limits through standard `powercap` sysfs
-- CPU EPP/governor/turbo policy
-- Lenovo firmware thermal profile through `platform_profile`
-- VPC2004 fan mode status
-- NVIDIA persistence and `nvidia-powerd` integration
-- power-profiles-daemon profile sync (PPD keeps EPP and the GNOME Power Mode UI)
-- system sysctl set (profile `sysctl`, per-mode overrides in `ac.sysctl`/`battery.sysctl`)
-- sched_ext scheduler config (`tuning/scx_loader.toml`: `scx_lavd --autopower`)
-- conflict/status checks and profile validation
-
-Not owned here:
-
-- NTFS, fstab, or mount management
-- GUI
-- RGB
-- custom fan curves
-- direct `thinkpad_acpi` fan control
-- blanket blacklisting of in-tree Lenovo kernel drivers
-- replacing `nvidia-powerd`
-
-## Commands
-
-Run read-only status checks:
-
-```bash
-./src/legionctl/legionctl status
-./src/legionctl/legionctl doctor
-./src/legionctl/legionctl capabilities
-./src/legionctl/legionctl cleanup --dry-run
-./src/legionctl/legionctl validate          # profile structure, no hardware access
-./src/legionctl/legionctl gpu               # which GPU drives each display; hybrid vs discrete
-```
-
-`status` also shows firmware power limits, fan RPM (root, via `acpi_call`), logged throttle reasons (root) and the
-Fn+Q override. `doctor` adds kernel module/DKMS inventory, dirty NTFS volumes and desktop-GPU placement.
-
-Choose the GPU that draws the desktop (applies at next login), and launch programs on a GPU, core class and priority:
-
-```bash
-sudo legionctl gpu primary nvidia            # or intel, or auto
-legionctl run --gpu nvidia -- blender
-legionctl run --cores e --nice 10 -- make -j16
-```
-
-Fn+Q is followed automatically (`legionctl follow`, run by udev); the choice holds until the power source changes,
-reboot, or `apply`. After resume, `/usr/lib/systemd/system-sleep/legion` re-applies policy and keeps that choice.
-
-Capture hotkey/WMI/display/fan evidence:
-
-```bash
-sudo -E ./scripts/capture-capabilities.sh
-```
-
-Apply the AC policy:
-
-```bash
-sudo ./src/legionctl/legionctl apply ac
-```
-
-Apply the current AC/battery mode automatically:
-
-```bash
-sudo ./src/legionctl/legionctl apply auto
-```
-
-Dry-run an apply:
-
-```bash
-./src/legionctl/legionctl apply ac --dry-run
-```
-
-Disable old local power-management units:
-
-```bash
-sudo legionctl cleanup
-```
-
-Package removal and obsolete module unloading are intentionally explicit:
-
-```bash
-sudo legionctl cleanup --unload-modules
-sudo legionctl cleanup --remove-packages
-```
+State: `/var/lib/legionctl/system.db` (machine), `~/.local/state/legionctl/operator.db` (agent hooks, event log).
+Machine policy: `profiles/lenovo-82wq-legion-pro-7-16irx8h.json` (JSONC).
 
 ## Install
 
-For a direct local install:
+Install with the Arch package, so pacman tracks every file:
 
 ```bash
-sudo make install
-sudo udevadm control --reload
-sudo systemctl daemon-reload
-sudo systemctl enable --now legion-apply.service legion-reassert-ac.timer
-sudo systemctl start legion-apply.service
+make package
+sudo systemctl enable --now legionctl-system.service scx_loader.service
+systemctl --user enable --now legionctl-operator.service
+gnome-extensions enable legionctl-osd@legionctl    # takes effect at the next login
 ```
 
-Or run the combined install/apply/check helper:
+## Commands
 
 ```bash
-sudo ./scripts/install-apply-check.sh
+legionctl status                  # power, mode, CPU, limits, GPU wiring, units, modules, load (fans and throttle: root)
+legionctl doctor                  # drift, conflicts, kernel modules and DKMS, NTFS, GPU placement
+legionctl load --brief            # one-line load level for scripts and agent hooks
+legionctl gpu                     # which GPU drives each display; hybrid or discrete
+legionctl run --gpu nvidia -- blender
+legionctl run --cores e --nice 10 -- make -j16
+legionctl act apply-power-policy auto    # through the daemon; polkit asks you
+legionctl act set-desktop-gpu nvidia     # applies at the next login
+legionctl apply auto --dry-run    # what the policy would change now
+legionctl validate                # profile structure, no hardware access
+legionctl tui                     # live dashboard
 ```
 
-For Arch/CachyOS packaging:
+The policy: AC uses the firmware's `max-power` mode, battery uses `balanced`; power limits are the firmware's own
+(note 02). Fn+Q changes the mode until the charger is plugged in or out, a reboot, or `apply`.
 
-```bash
-cd packaging/arch
-makepkg -si
-```
+## Agents
 
-Then enable the same services:
+Claude Code plugin (`/plugin marketplace add /data/git/lenovolegionlinux`, then
+`/plugin install legionctl@lenovolegionlinux`):
 
-```bash
-sudo systemctl enable --now legion-apply.service legion-reassert-ac.timer
-sudo systemctl start legion-apply.service
-```
+- MCP tools for status, load, doctor, worktrees, actions, setup, reminders, hooks and skills;
+- skills `legionctl:ste100-style` and `legionctl:glanceable-style`, kept in force by reminders;
+- hooks that inject reminders, load and setup notices; commands `/legionctl:status`, `/legionctl:worktree`,
+  `/legionctl:act`, `/legionctl:setup`, `/legionctl:reminders`, `/legionctl:hooks`, `/legionctl:skills`.
 
-## Current AC Targets
-
-- CPU nominal metadata: 55 W
-- CPU sustained/loaded long: 70 W
-- CPU short: 125 W
-- CPU peak: 125 W
-- GPU: firmware-managed Dynamic Boost through `nvidia-powerd`, expected 150 W
-- Firmware thermal profile: `max-power` when available
-- VPC2004 fan mode: status-only; writing `4` immediately reads back as `0`
-
-## Capability Coverage
-
-See [docs/CAPABILITIES.md](docs/CAPABILITIES.md) for the machine capability
-inventory. The current installed scope is CPU/GPU/firmware performance policy.
-Hotkeys such as `Fn+Q`, `Fn+R`, `Fn+Space`, real fan telemetry/control, RGB,
-hybrid graphics, G-Sync, and panel overdrive are tracked there as separate
-capabilities until they are verified on this 82WQ machine.
-
-See [docs/REFERENCE_COMPARISON.md](docs/REFERENCE_COMPARISON.md) for the
-baseline-vs-reference comparison against the three upstream repositories.
-
-See [docs/MEASUREMENT.md](docs/MEASUREMENT.md) for the capture workflow that
-feeds the next DKMS and hotkey work.
+Codex: `legionctl setup` adds the MCP server to `~/.codex/config.toml` and links the skills.
 
 ## Development
 
-`make` is the entry point; run `make help` for every target.
+`make help` lists every target.
 
 ```bash
-make tools      # uv-installed pre-commit plus hook environments (ruff, mypy, shellcheck, shfmt, actionlint)
-make hooks      # also install the git pre-commit hook
-make fmt        # format Python and shell in place
-make lint       # every hook on all tracked files (what CI runs, plus `make validate`)
-make validate   # profile structure and ac/battery consistency, no hardware access
-make check      # validate + live status on this machine
-make lint-pkg   # namcap the PKGBUILD (Arch only)
+make tools      # pre-commit and its hooks (shellcheck, shfmt, actionlint)
+make lint       # every pre-commit hook on all files
+make rust-lint  # rustfmt check and clippy with warnings as errors
+make test       # end-to-end and behavior tests against a recorded copy of this machine (tests/fixtures)
+make ci         # what CI runs
+make package    # build and install the Arch package
 ```
 
-Measure before changing sustained CPU power: `sudo ./scripts/rapl-sweep.sh` sweeps RAPL PL1 and
-writes a CSV of throughput, package power, temperature, clocks and fan speed per step.
-
-## Operator CLI, TUI and agent plugin
-
-The Rust `legionctl` client (binary `legion` until it replaces the Python `legionctl`; see
-docs/design/15-layout.md) shows this machine's state and load, manages isolated git worktrees, checks Claude Code and Codex
-settings, and requests machine changes that a human approves in a polkit dialog. The same functions are exposed to
-agents as an MCP server.
-
-```bash
-make build && sudo make install      # builds and installs /usr/bin/legion with the rest
-legion status                        # power, thermal mode, limits, GPU wiring, load
-legion load --brief                  # one-line load level for scripts and agent hooks
-legion worktree create my-task --repo ~/code/project
-legion agents                        # Claude Code / Codex settings: present, valid, sections
-legion act set-desktop-gpu nvidia    # asks for approval first
-legion tui                           # live dashboard
-```
-
-Claude Code plugin: MCP tools; skills `legionctl:ste100-style` (ASD-STE100 writing) and `legionctl:glanceable-style`
-(glanceable, agent-readable output); hooks that inject reminders, load and setup notices; commands `/legionctl:status`,
-`/legionctl:worktree`, `/legionctl:act`, `/legionctl:setup`, `/legionctl:reminders` (guided), and `/legionctl:skills`
-(list skills and where they are installed, load one, turn its reminder on or off; also `legion skills`). Reminders also work from the shell:
-`legion reminders`, `legion reminders on|off <id>`, `legion reminders add <id> "<text>" [--event prompt]`.
-What the hooks run is configurable: `/legionctl:hooks` (guided) or `legion hooks`, `legion hooks bind|unbind <event> <action>`,
-`legion hooks add <id> "<command>" [--timeout N]`. Bindings and an event log of every change live in
-`~/.local/state/legionctl/operator.db` (SQLite, WAL).
-
-```
-/plugin marketplace add /data/git/lenovolegionlinux
-/plugin install legionctl@lenovolegionlinux
-```
-
-Codex: append `integrations/codex/config.toml` to `~/.codex/config.toml`.
+`scripts/capture-capabilities.sh` records hotkey, WMI, display, fan and power evidence (until `legionctl record`
+exists, note 16).

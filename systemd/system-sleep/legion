@@ -1,4 +1,0 @@
-#!/bin/sh
-# Firmware can reset its thermal mode and power limits during suspend; re-apply after resume, keeping an Fn+Q choice.
-[ "$1" = post ] && exec /usr/bin/legionctl apply auto --keep-override --quiet
-exit 0

@@ -1,6 +1,6 @@
 //! Hook bindings: which actions run when an agent harness fires a hook event.
 //!
-//! The agent plugin calls one dispatcher (`legion hooks run --event <event>`); what it runs is data in the operator
+//! The agent plugin calls one dispatcher (`legionctl hooks run --event <event>`); what it runs is data in the operator
 //! database, so users change it without editing the plugin. Actions are built in (reminders, load notices, setup
 //! check) or user-defined shell commands with a timeout. One failing action never stops the others.
 
@@ -20,7 +20,7 @@ use legionctl_machine::{load, sysroot::SysRoot};
 pub const BUILTIN_ACTIONS: &[(&str, &str)] = &[
     (
         "reminders",
-        "Inject the enabled reminders for this event (see `legion reminders`).",
+        "Inject the enabled reminders for this event (see `legionctl reminders`).",
     ),
     ("load", "One line with the current load level and advice."),
     (
@@ -144,7 +144,7 @@ impl Hooks<'_> {
     pub fn bind(&self, event: Event, action: &str) -> Result<()> {
         ensure!(
             self.action_exists(action)?,
-            "no action named {action}; see `legion hooks actions`"
+            "no action named {action}; see `legionctl hooks actions`"
         );
         let next: i64 = self.db.conn().query_row(
             "SELECT coalesce(max(position) + 1, 0) FROM hook_bindings WHERE event = ?1",

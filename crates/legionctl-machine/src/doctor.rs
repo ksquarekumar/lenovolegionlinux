@@ -5,7 +5,8 @@ use std::process::Command;
 
 use crate::gpu;
 use crate::kernel;
-use crate::policy::{LEDGER_OVERRIDE, Machine};
+use crate::ledger::Key;
+use crate::policy::Machine;
 use crate::profile::Profile;
 use crate::snapshot::{cpufreq_counts, dmi_mismatches};
 use crate::sysroot::SysRoot;
@@ -96,7 +97,7 @@ pub fn doctor(machine: &Machine) -> Vec<String> {
 
     let ac = machine.ac_online();
     let policy = if ac { &profile.ac } else { &profile.battery };
-    let override_mode = root.read(LEDGER_OVERRIDE);
+    let override_mode = machine.ledger.get(Key::Override);
     let current = root.read(&profile.paths.platform_profile);
     let wanted = override_mode
         .clone()

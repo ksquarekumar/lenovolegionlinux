@@ -82,7 +82,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             dir.join(".codex/config.toml"),
-            "model = 'x'\n[mcp_servers.legionctl]\ncommand = 'legion'\n",
+            "model = 'x'\n[mcp_servers.legionctl]\ncommand = 'legionctl'\n",
         )
         .unwrap();
         std::fs::write(dir.join(".mcp.json"), "{ not json").unwrap();

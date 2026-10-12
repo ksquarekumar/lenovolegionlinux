@@ -1,11 +1,12 @@
 [Unit]
-Description=Legion OSD notifications (thermal mode, Fn-lock, refresh rate)
+Description=legionctl operator (session module: Fn+R refresh toggle, OSD)
 PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
-ExecStart=/usr/bin/legion-osd
+ExecStart=/usr/lib/legionctl/legionctl-operator
 Restart=on-failure
+RestartSec=2
 
 [Install]
 WantedBy=graphical-session.target

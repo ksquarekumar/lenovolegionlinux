@@ -9,16 +9,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
       - uses: astral-sh/setup-uv@v6
       - name: Rust toolchain
         run: rustup toolchain install stable --profile minimal -c clippy,rustfmt && rustup default stable
       - name: Install tools
         run: make tools
-      # legion-osd and legion-refresh-toggle import PyGObject (gi), a system package; run tests with the system Python
-      - name: Install PyGObject
-        run: sudo apt-get update && sudo apt-get install -y python3-gi libudev-dev
-      - name: Lint, format check, type check, profile validation, tests
-        run: make ci PYTHON=/usr/bin/python3
+      # legionctl-system reads udev events through libudev
+      - name: Install libudev
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+      - name: Lint, format check, profile validation, tests
+        run: make ci

@@ -20,7 +20,7 @@ Cheap, independent, and they de-risk the Rust work by answering open questions.
 8. Kernel module inventory in `doctor` (08-kernel): required/optional/unwanted, DKMS built per kernel, autoload drift.
 9. GPU mode detection in `status`; `legionctl run --gpu nvidia|intel --cores p|e -- cmd`; primary-GPU toggle.
 
-## Phase 1 — legionctl-system with parity, then the switch (weeks)
+## Phase 1 — legionctl-system with parity, then the switch (done 2026-10-13)
 
 - `legionctl-machine`: sysroot (recorded-tree testing), sensors (udev, sysfs notify, logind, evdev), actuators
   (platform_profile, firmware attributes, cpufreq, sysctl, PPD, scx_loader, NVIDIA units). No RAPL writes.

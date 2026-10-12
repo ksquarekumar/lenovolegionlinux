@@ -1,4 +1,4 @@
-//! `legionctl` (binary `legion` until the switch in docs/design/15-layout.md): operator CLI, TUI and MCP server for this machine. Every subcommand goes through legionctl-core, so the
+//! `legionctl`: operator CLI, TUI and MCP server for this machine. Every subcommand goes through legionctl-core, so the
 //! terminal, the TUI and agents (over MCP) see the same state and hit the same guard rails.
 
 mod machine;
@@ -549,7 +549,7 @@ fn main() -> Result<()> {
                         .map(|i| format!("{} for {}", i.what, i.agent))
                         .collect();
                     println!(
-                        "legionctl setup: {} need attention ({}). Run /legionctl:setup or `legion setup`.",
+                        "legionctl setup: {} need attention ({}). Run /legionctl:setup or `legionctl setup`.",
                         todo.len(),
                         names.join(", ")
                     );
@@ -580,7 +580,7 @@ fn main() -> Result<()> {
                     "all set up".to_string()
                 } else {
                     format!(
-                        "{} items still need attention; run `legion setup --check`",
+                        "{} items still need attention; run `legionctl setup --check`",
                         todo.len()
                     )
                 }
@@ -667,7 +667,7 @@ fn main() -> Result<()> {
                     timeout,
                 } => {
                     hooks.add_command(&id, &command, timeout)?;
-                    println!("{id}: defined; bind it with `legion hooks bind <event> {id}`");
+                    println!("{id}: defined; bind it with `legionctl hooks bind <event> {id}`");
                 }
                 HookCommand::Rm { id } => {
                     hooks.remove_action(&id)?;
@@ -707,7 +707,7 @@ fn main() -> Result<()> {
                         if s.codex_linked {
                             "linked"
                         } else {
-                            "missing; run `legion setup`"
+                            "missing; run `legionctl setup`"
                         }
                     );
                 }

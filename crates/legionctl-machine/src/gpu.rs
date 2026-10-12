@@ -13,7 +13,7 @@ use crate::policy::{Machine, Step};
 use crate::sysroot::SysRoot;
 
 const DRM: &str = "/sys/class/drm";
-pub const PRIMARY_GPU_RULE: &str = "/etc/udev/rules.d/61-legion-mutter-primary.rules";
+pub const PRIMARY_GPU_RULE: &str = "/etc/udev/rules.d/61-legionctl-mutter-primary.rules";
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct Output {
@@ -73,7 +73,7 @@ pub fn desktop_preference(root: &SysRoot) -> &'static str {
 pub fn primary_rule(choice: &str) -> Option<String> {
     let (_, driver) = PRIMARY_DRIVERS.iter().find(|(name, _)| *name == choice)?;
     Some(format!(
-        "# lenovolegionlinux: GPU that Mutter uses to draw the desktop (read at login)\n\
+        "# legionctl: GPU that Mutter uses to draw the desktop (read at login)\n\
          SUBSYSTEM==\"drm\", KERNEL==\"card*\", DRIVERS==\"{driver}\", TAG+=\"mutter-device-preferred-primary\"\n"
     ))
 }

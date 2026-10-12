@@ -1,7 +1,0 @@
-[Unit]
-Description=Follow a firmware thermal mode change (Fn+Q)
-After=power-profiles-daemon.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/legionctl follow --quiet

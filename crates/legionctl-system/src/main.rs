@@ -1,12 +1,12 @@
 //! `legionctl-system`: the machine daemon. It turns events into the power policy, one at a time, in one queue:
 //!
-//! | Event | Source | Replaces |
-//! | --- | --- | --- |
-//! | start | the daemon starts | `legion-apply.service` |
-//! | power source | udev `power_supply` change of the AC adapter | udev `RUN+=` rules, `legion-ac/battery.target` |
-//! | Fn+Q | udev `platform-profile` change | `legion-follow.service` |
-//! | resume | logind `PrepareForSleep(false)` | the system-sleep hook |
-//! | tick | every 30 s | `legion-reassert-ac.timer` |
+//! | Event | Source |
+//! | --- | --- |
+//! | start | the daemon starts |
+//! | power source | udev `power_supply` change of the AC adapter |
+//! | Fn+Q | udev `platform-profile` change |
+//! | resume | logind `PrepareForSleep(false)` |
+//! | tick | every 30 s, on AC (knobs that cannot notify) |
 //!
 //! It serves `org.legionctl.System1` on the system bus: methods change the machine after polkit authorizes the
 //! caller, and signals tell the session what changed (`Changed`), the firmware mode after a change (`ModeChanged`),
@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use legionctl_machine::keys::{self, Debounce, EVENT_SIZE, FN_KEYS_DEVICE};
+use legionctl_machine::ledger::{Key, Ledger};
 use legionctl_machine::policy::{self, Machine, Options, Source, Step};
 use legionctl_machine::react::{Event, react};
 use legionctl_machine::sysroot::SysRoot;
@@ -36,7 +37,6 @@ const OBJECT_PATH: &str = "/org/legionctl/System1";
 const REOPEN: Duration = Duration::from_secs(3);
 /// Written by the kernel when the firmware toggles Fn lock (Fn+Esc); readable only after the first change.
 const FN_LOCK_CHANGED: &str = "/sys/class/leds/platform::fnlock/brightness_hw_changed";
-const LEDGER_OVERRIDE: &str = "/run/legionctl/firmware-override";
 
 #[zbus::proxy(
     default_service = "org.freedesktop.login1",
@@ -92,13 +92,15 @@ fn carry_out(
     plan: impl FnOnce(&Machine) -> Result<Vec<Step>>,
 ) -> Result<Vec<String>> {
     let (profile, _) = profile::load(None)?;
+    let ledger = Ledger::open(root)?;
     let machine = Machine {
         root,
         profile: &profile,
+        ledger: &ledger,
         ppd_current: has_command("powerprofilesctl").then(ppd_current).flatten(),
         has_command: &has_command,
     };
-    Ok(policy::execute(root, &plan(&machine)?))
+    Ok(policy::execute(root, &ledger, &plan(&machine)?))
 }
 
 /// What the session shows about the firmware mode: the mode, whether it is the user's Fn+Q choice, and the power
@@ -114,7 +116,7 @@ fn mode(root: &SysRoot) -> Option<ModeState> {
     let (profile, _) = profile::load(None).ok()?;
     let mode = root.read(&profile.paths.platform_profile)?;
     Some(ModeState {
-        fn_q_choice: root.read(LEDGER_OVERRIDE).as_deref() == Some(mode.as_str()),
+        fn_q_choice: Ledger::open(root).ok()?.get(Key::Override).as_deref() == Some(mode.as_str()),
         source: if root.read(&profile.paths.ac_adapter).as_deref() == Some("1") {
             "ac"
         } else {

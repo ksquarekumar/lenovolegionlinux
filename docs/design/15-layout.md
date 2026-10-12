@@ -109,16 +109,10 @@ A module becomes its own crate only when its size or its dependencies require it
 
 ## Switch from the Python tooling
 
-The Python `legionctl` (status, doctor, capabilities, apply, gpu, run, reassert, cleanup, follow, validate) and its
-helpers stay in use until `legionctl-system` does all of their work. Until then the Rust client binary keeps the
-name `legion`. One change then does the switch:
-
-1. `legionctl-system` passes the parity gate (07-plan): for AC, battery, Fn+Q, resume and boot it makes the same
-   writes as the Python tooling, compared from recorded fixtures.
-2. The same change deletes `src/legionctl`, `src/legion-osd`, `src/legion-refresh-toggle`, the reassert timer, the
-   follow service, the udev `RUN+=` rules and the sleep hook, and renames the Rust client binary to `legionctl`.
-
-There is no period with two implementations installed, and no passthrough.
+Done 2026-10-13, in one change: the parity gate passed (`make parity`, 12 cases) and the change deleted
+`src/legionctl`, `src/legion-osd`, `src/legion-refresh-toggle`, the reassert timer, the follow and apply services,
+the AC/battery targets, the udev `RUN+=` rules, the sleep hook and the hwdb remap, renamed the client binary to
+`legionctl`, moved the Fn+Q record to `system.db`, and made the Arch package the install path.
 
 ## Tests
 

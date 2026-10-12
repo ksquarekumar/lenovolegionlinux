@@ -8,21 +8,21 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::gpu::{self, Output};
+use crate::ledger::{Key, Ledger};
 use crate::load::{Load, read_load};
 use crate::profile::Profile;
 use crate::sysroot::SysRoot;
 use crate::{firmware, kernel, system};
 
 const DMI: &str = "/sys/class/dmi/id";
-const LEDGER_OVERRIDE: &str = "/run/legionctl/firmware-override";
 const FIRMWARE_ATTRIBUTES: &str = "/sys/class/firmware-attributes/lenovo-wmi-other-0/attributes";
 const CPUFREQ: &str = "/sys/devices/system/cpu/cpufreq";
 const POWERCAP: &str = "/sys/class/powercap";
 const UNITS: [&str; 4] = [
+    "legionctl-system.service",
+    "scx_loader.service",
     "nvidia-powerd.service",
     "nvidia-persistenced.service",
-    "legion-apply.service",
-    "legion-reassert-ac.timer",
 ];
 const MODULES: [&str; 6] = [
     "ideapad_laptop",
@@ -214,7 +214,7 @@ impl Snapshot {
                 .split_whitespace()
                 .map(String::from)
                 .collect(),
-            fn_q_override: root.read(LEDGER_OVERRIDE),
+            fn_q_override: Ledger::open(root).ok().and_then(|l| l.get(Key::Override)),
             cpu_settings: [
                 ("no_turbo", "/sys/devices/system/cpu/intel_pstate/no_turbo"),
                 (

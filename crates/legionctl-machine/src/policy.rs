@@ -1,9 +1,9 @@
 //! Power policy: what to write for a power source (apply, reassert) or a firmware mode the user chose (follow), as a
 //! plan of steps that is either printed (dry run) or executed. Only changed values become writes.
 //!
-//! Fn+Q changes `platform_profile` in firmware and emits the same uevent as our own writes. A ledger in
-//! `/run/legionctl` records the value we wrote; any other value is the user's choice, kept as an override until the
-//! power source changes, the machine reboots (`/run` is tmpfs), or `apply` runs.
+//! Fn+Q changes `platform_profile` in firmware and emits the same uevent as our own writes. The ledger (`system.db`)
+//! records the value we wrote; any other value is the user's choice, kept as an override until the power source
+//! changes, the machine reboots (ledger rows are per boot), or `apply` runs.
 //!
 //! Power limits are never written through RAPL: firmware mode changes rewrite the MMIO limits, so a second write
 //! path only fights the firmware (docs/design/15-layout.md, one path per capability).
@@ -13,11 +13,10 @@ use std::process::Command;
 
 use anyhow::{Result, bail};
 
+use crate::ledger::{Key, Ledger};
 use crate::profile::{self, ModePolicy, Profile};
 use crate::sysroot::SysRoot;
 
-const LEDGER_WRITTEN: &str = "/run/legionctl/firmware-written";
-pub const LEDGER_OVERRIDE: &str = "/run/legionctl/firmware-override";
 const CPUFREQ: &str = "/sys/devices/system/cpu/cpufreq";
 const FIRMWARE_ATTRIBUTES: &str = "/sys/class/firmware-attributes/lenovo-wmi-other-0/attributes";
 const DMI: &str = "/sys/class/dmi/id";
@@ -40,9 +39,9 @@ pub enum Step {
     Remove {
         path: String,
     },
-    /// Ledger file content; `None` removes it.
+    /// A ledger value; `None` removes it.
     Record {
-        path: &'static str,
+        key: Key,
         value: Option<String>,
     },
     Info(String),
@@ -74,10 +73,12 @@ pub struct Options {
     pub keep_override: bool,
 }
 
-/// What the planner needs from outside the sysroot: power-profiles-daemon's current profile and which commands exist.
+/// What the planner needs besides the sysroot: the ledger, power-profiles-daemon's current profile and which commands
+/// exist.
 pub struct Machine<'a> {
     pub root: &'a SysRoot,
     pub profile: &'a Profile,
+    pub ledger: &'a Ledger,
     pub ppd_current: Option<String>,
     pub has_command: &'a dyn Fn(&str) -> bool,
 }
@@ -158,7 +159,7 @@ impl Machine<'_> {
             Some(chosen) => {
                 self.write(steps, &self.profile.paths.platform_profile, &chosen);
                 steps.push(Step::Record {
-                    path: LEDGER_WRITTEN,
+                    key: Key::Written,
                     value: Some(chosen),
                 });
             }
@@ -315,7 +316,7 @@ impl Machine<'_> {
             Source::Ac => &self.profile.ac,
             Source::Battery => &self.profile.battery,
         };
-        let mut override_mode = self.root.read(LEDGER_OVERRIDE);
+        let mut override_mode = self.ledger.get(Key::Override);
         if !opts.reassert && !opts.keep_override {
             // a power-source change, boot or manual apply starts from the profile defaults again
             if let Some(mode) = override_mode.take() {
@@ -324,7 +325,7 @@ impl Machine<'_> {
                     quoted(&mode)
                 )));
                 steps.push(Step::Record {
-                    path: LEDGER_OVERRIDE,
+                    key: Key::Override,
                     value: None,
                 });
             }
@@ -367,9 +368,9 @@ impl Machine<'_> {
             bail!("platform_profile is not readable");
         };
         let active = self
-            .root
-            .read(LEDGER_OVERRIDE)
-            .or_else(|| self.root.read(LEDGER_WRITTEN));
+            .ledger
+            .get(Key::Override)
+            .or_else(|| self.ledger.get(Key::Written));
         if active.as_deref() == Some(current.as_str()) {
             return Ok(vec![Step::Info(format!(
                 "platform_profile {} is already the active policy; nothing to follow",
@@ -382,7 +383,7 @@ impl Machine<'_> {
                 quoted(&current)
             )),
             Step::Record {
-                path: LEDGER_OVERRIDE,
+                key: Key::Override,
                 value: Some(current.clone()),
             },
         ];
@@ -405,7 +406,7 @@ pub fn describe(step: &Step) -> Option<String> {
 }
 
 /// Carry out a plan. Returns the messages to show (writes done, warnings), in order.
-pub fn execute(root: &SysRoot, steps: &[Step]) -> Vec<String> {
+pub fn execute(root: &SysRoot, ledger: &Ledger, steps: &[Step]) -> Vec<String> {
     let mut out = Vec::new();
     for step in steps {
         match step {
@@ -452,20 +453,9 @@ pub fn execute(root: &SysRoot, steps: &[Step]) -> Vec<String> {
             Step::Try(argv) => {
                 let _ = Command::new(&argv[0]).args(&argv[1..]).output();
             }
-            Step::Record { path, value } => {
-                let file = root.path(path);
-                let result = match value {
-                    Some(v) => file
-                        .parent()
-                        .map_or(Ok(()), std::fs::create_dir_all)
-                        .and_then(|()| std::fs::write(&file, format!("{v}\n"))),
-                    None => match std::fs::remove_file(&file) {
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                        other => other,
-                    },
-                };
-                if let Err(e) = result {
-                    out.push(format!("warning: ledger {path}: {e}"));
+            Step::Record { key, value } => {
+                if let Err(e) = ledger.set(*key, value.as_deref()) {
+                    out.push(format!("warning: {e:#}"));
                 }
             }
             Step::Info(text) => out.push(text.clone()),

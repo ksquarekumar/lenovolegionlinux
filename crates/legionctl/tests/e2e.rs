@@ -14,7 +14,7 @@ fn home(tag: &str) -> PathBuf {
 }
 
 fn legion(home: &Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_legion"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_legionctl"));
     cmd.env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap())
         .env("HOME", home)

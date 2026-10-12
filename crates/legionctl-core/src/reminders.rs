@@ -165,7 +165,7 @@ impl Store {
                 state.disabled.push(id.into());
             }
         } else {
-            bail!("no reminder named {id}; see `legion reminders`");
+            bail!("no reminder named {id}; see `legionctl reminders`");
         }
         self.save(&state)
     }

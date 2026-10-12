@@ -1,0 +1,15 @@
+[Unit]
+Description=legionctl machine daemon (power policy, Fn keys, D-Bus API)
+After=power-profiles-daemon.service nvidia-persistenced.service dbus.service
+
+[Service]
+Type=notify
+ExecStart=/usr/lib/legionctl/legionctl-system
+Restart=on-failure
+RestartSec=2
+StateDirectory=legionctl
+ProtectSystem=strict
+ReadWritePaths=/etc/udev/rules.d
+
+[Install]
+WantedBy=multi-user.target

@@ -5,6 +5,7 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::Result;
+use legionctl_machine::ledger::Ledger;
 use legionctl_machine::policy::{self, Machine, Options, Source, Step};
 use legionctl_machine::profile::{self, Profile};
 use legionctl_machine::snapshot::{Detail, Snapshot};
@@ -28,21 +29,22 @@ fn ppd_current() -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-fn machine<'a>(root: &'a SysRoot, profile: &'a Profile) -> Machine<'a> {
+fn machine<'a>(root: &'a SysRoot, profile: &'a Profile, ledger: &'a Ledger) -> Machine<'a> {
     Machine {
         root,
         profile,
+        ledger,
         ppd_current: has_command("powerprofilesctl").then(ppd_current).flatten(),
         has_command: &has_command,
     }
 }
 
 /// Print a dry run, or execute; warnings go to stderr, the rest to stdout unless quiet.
-fn finish(root: &SysRoot, steps: &[Step], dry_run: bool, quiet: bool) {
+fn finish(root: &SysRoot, ledger: &Ledger, steps: &[Step], dry_run: bool, quiet: bool) {
     let lines: Vec<String> = if dry_run {
         steps.iter().filter_map(policy::describe).collect()
     } else {
-        policy::execute(root, steps)
+        policy::execute(root, ledger, steps)
     };
     for line in lines {
         if line.starts_with("warning: ") {
@@ -62,8 +64,9 @@ pub struct Run<'a> {
 pub fn apply(run: Run, source: Option<Source>, opts: Options) -> Result<()> {
     let (profile, _) = profile::load(run.profile)?;
     let root = SysRoot::from_env();
-    let (source, steps) = machine(&root, &profile).apply(source, opts)?;
-    finish(&root, &steps, run.dry_run, run.quiet);
+    let ledger = Ledger::open(&root)?;
+    let (source, steps) = machine(&root, &profile, &ledger).apply(source, opts)?;
+    finish(&root, &ledger, &steps, run.dry_run, run.quiet);
     if !run.quiet {
         let verb = if opts.reassert {
             "reasserted"
@@ -83,8 +86,9 @@ pub fn apply(run: Run, source: Option<Source>, opts: Options) -> Result<()> {
 pub fn follow(run: Run) -> Result<()> {
     let (profile, _) = profile::load(run.profile)?;
     let root = SysRoot::from_env();
-    let steps = machine(&root, &profile).follow()?;
-    finish(&root, &steps, run.dry_run, run.quiet);
+    let ledger = Ledger::open(&root)?;
+    let steps = machine(&root, &profile, &ledger).follow()?;
+    finish(&root, &ledger, &steps, run.dry_run, run.quiet);
     Ok(())
 }
 
@@ -237,7 +241,8 @@ pub fn print_status(s: &Snapshot) {
 pub fn doctor(profile: Option<&Path>) -> Result<(bool, String)> {
     let (profile, _) = profile::load(profile)?;
     let root = SysRoot::from_env();
-    let findings = legionctl_machine::doctor::doctor(&machine(&root, &profile));
+    let ledger = Ledger::open(&root)?;
+    let findings = legionctl_machine::doctor::doctor(&machine(&root, &profile, &ledger));
     let report = if findings.is_empty() {
         "doctor: no obvious conflicts\n".to_string()
     } else {
@@ -270,8 +275,9 @@ pub fn gpu_status() {
 pub fn gpu_primary(choice: &str, dry_run: bool) -> Result<()> {
     let (profile, _) = profile::load(None)?;
     let root = SysRoot::from_env();
-    let steps = legionctl_machine::gpu::set_desktop(&machine(&root, &profile), choice)?;
-    finish(&root, &steps, dry_run, false);
+    let ledger = Ledger::open(&root)?;
+    let steps = legionctl_machine::gpu::set_desktop(&machine(&root, &profile, &ledger), choice)?;
+    finish(&root, &ledger, &steps, dry_run, false);
     Ok(())
 }
 
@@ -337,8 +343,9 @@ pub fn run(gpu: &str, cores: &str, nice: Option<i32>, cmd: &[String]) -> Result<
 pub fn cleanup(run: Run, opts: legionctl_machine::cleanup::Options) -> Result<()> {
     let (profile, _) = profile::load(run.profile)?;
     let root = SysRoot::from_env();
-    let steps = legionctl_machine::cleanup::plan(&machine(&root, &profile), opts)?;
-    finish(&root, &steps, run.dry_run, run.quiet);
+    let ledger = Ledger::open(&root)?;
+    let steps = legionctl_machine::cleanup::plan(&machine(&root, &profile, &ledger), opts)?;
+    finish(&root, &ledger, &steps, run.dry_run, run.quiet);
     if !run.quiet {
         println!("cleanup completed");
     }

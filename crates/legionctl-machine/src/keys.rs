@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use crate::sysroot::SysRoot;
 
 pub const FN_KEYS_DEVICE: &str = "Ideapad extra buttons";
-/// KEY_REFRESH_RATE_TOGGLE (562), and 188 (F18) while the old hwdb remap is installed.
-const FN_R_CODES: [u16; 2] = [562, 188];
+/// KEY_REFRESH_RATE_TOGGLE.
+const FN_R_CODE: u16 = 562;
 const EV_KEY: u16 = 1;
 /// `struct input_event` on 64-bit: timeval (16 bytes), type u16, code u16, value i32.
 pub const EVENT_SIZE: usize = 24;
@@ -31,7 +31,7 @@ pub fn has_fn_r_press(data: &[u8]) -> bool {
         let kind = u16::from_ne_bytes([e[16], e[17]]);
         let code = u16::from_ne_bytes([e[18], e[19]]);
         let value = i32::from_ne_bytes([e[20], e[21], e[22], e[23]]);
-        kind == EV_KEY && FN_R_CODES.contains(&code) && value == 1
+        kind == EV_KEY && code == FN_R_CODE && value == 1
     })
 }
 
@@ -66,12 +66,13 @@ mod tests {
 
     #[test]
     fn each_tap_is_one_action_and_fast_taps_each_count() {
-        // one key event as captured on this machine: scan code, key down, sync, key up, sync
+        // one key event as captured on this machine (code 188 then, through the old hwdb remap; 562 is the raw
+        // code): scan code, key down, sync, key up, sync
         let captured = [
             event(4, 4, 272),
-            event(EV_KEY, 188, 1),
+            event(EV_KEY, 562, 1),
             event(0, 0, 0),
-            event(EV_KEY, 188, 0),
+            event(EV_KEY, 562, 0),
             event(0, 0, 0),
         ]
         .concat();
@@ -80,7 +81,7 @@ mod tests {
             !has_fn_r_press(
                 &[
                     event(4, 4, 272),
-                    event(EV_KEY, 188, 0),
+                    event(EV_KEY, 562, 0),
                     event(EV_KEY, 30, 1)
                 ]
                 .concat()

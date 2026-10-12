@@ -87,7 +87,7 @@ impl Machine {
     }
 
     fn legion(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_legion"))
+        Command::new(env!("CARGO_BIN_EXE_legionctl"))
             .args(args)
             .args([
                 "--profile",
@@ -139,8 +139,25 @@ impl Machine {
 }
 
 const PROFILE_PATH: &str = "/sys/class/platform-profile/platform-profile-0/profile";
-const OVERRIDE: &str = "/run/legionctl/firmware-override";
-const WRITTEN: &str = "/run/legionctl/firmware-written";
+use legionctl_machine::ledger::{Key, Ledger};
+
+impl Machine {
+    fn ledger(&self) -> Ledger {
+        Ledger::open(&legionctl_machine::sysroot::SysRoot::new(
+            self.dir.join("root"),
+        ))
+        .unwrap()
+    }
+
+    /// A ledger value, or `<missing>`.
+    fn recorded(&self, key: Key) -> String {
+        self.ledger().get(key).unwrap_or_else(|| "<missing>".into())
+    }
+
+    fn record(&self, key: Key, value: &str) {
+        self.ledger().set(key, Some(value)).unwrap();
+    }
+}
 
 #[test]
 fn a_machine_already_in_ac_policy_gets_no_writes() {
@@ -159,7 +176,7 @@ fn unplug_fn_q_resume_and_replug_follow_the_policy_and_the_users_choice() {
     let out = m.ok(&["apply", "auto", "--quiet"]);
     assert!(!out.contains("warning"), "unplug applies cleanly: {out}");
     assert_eq!(m.file(PROFILE_PATH), "balanced");
-    assert_eq!(m.file(WRITTEN), "balanced");
+    assert_eq!(m.recorded(Key::Written), "balanced");
     assert_eq!(m.governors(), ["powersave"]);
     assert_eq!(
         m.file("/sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference"),
@@ -181,7 +198,7 @@ fn unplug_fn_q_resume_and_replug_follow_the_policy_and_the_users_choice() {
     // Fn+Q: the firmware switches to performance; that is the user's choice
     m.set(PROFILE_PATH, "performance");
     m.ok(&["follow", "--quiet"]);
-    assert_eq!(m.file(OVERRIDE), "performance");
+    assert_eq!(m.recorded(Key::Override), "performance");
     assert_eq!(m.governors(), ["performance"]);
     assert_eq!(m.calls(), ["powerprofilesctl set performance"]);
 
@@ -189,7 +206,7 @@ fn unplug_fn_q_resume_and_replug_follow_the_policy_and_the_users_choice() {
     m.ok(&["reassert", "battery", "--quiet"]);
     m.ok(&["apply", "auto", "--keep-override", "--quiet"]);
     assert_eq!(m.file(PROFILE_PATH), "performance");
-    assert_eq!(m.file(OVERRIDE), "performance");
+    assert_eq!(m.recorded(Key::Override), "performance");
 
     // plug in: a power-source change starts from the profile again
     m.set("/sys/class/power_supply/ADP0/online", "1");
@@ -198,9 +215,9 @@ fn unplug_fn_q_resume_and_replug_follow_the_policy_and_the_users_choice() {
         out.contains("clearing firmware override 'performance'"),
         "{out}"
     );
-    assert_eq!(m.file(OVERRIDE), "<missing>");
+    assert_eq!(m.recorded(Key::Override), "<missing>");
     assert_eq!(m.file(PROFILE_PATH), "max-power");
-    assert_eq!(m.file(WRITTEN), "max-power");
+    assert_eq!(m.recorded(Key::Written), "max-power");
     assert!(m.calls().contains(&"nvidia-smi -i 0 -pm 1".into()));
 }
 
@@ -336,9 +353,11 @@ mod daemon_events {
         ))
         .unwrap();
         let root = SysRoot::new(m.dir.join("root"));
+        let ledger = m.ledger();
         let planner = Planner {
             root: &root,
             profile: &profile,
+            ledger: &ledger,
             ppd_current: Some("performance".into()),
             has_command: &|_| true,
         };
@@ -378,14 +397,14 @@ mod daemon_events {
     fn fn_q_choice_survives_resume_and_ends_at_the_next_start() {
         let m = Machine::new("events");
         // our own write produces a platform-profile event too; it is not a choice
-        m.set(WRITTEN, "max-power");
+        m.record(Key::Written, "max-power");
         assert_eq!(
             plan(&m, Event::PlatformProfile),
             ["platform_profile 'max-power' is already the active policy; nothing to follow"]
         );
         // Fn+Q to performance
         m.set(PROFILE_PATH, "performance");
-        m.set(OVERRIDE, "performance");
+        m.record(Key::Override, "performance");
         let resume = plan(&m, Event::Resume);
         assert!(
             !resume.iter().any(|l| l.contains(PROFILE_PATH)),

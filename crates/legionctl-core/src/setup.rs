@@ -60,7 +60,7 @@ fn ctx_bin() -> Option<PathBuf> {
 }
 
 fn ctx(args: &[&str]) -> Result<String> {
-    let bin = ctx_bin().context("ctx is not installed; run `legion setup --install-ctx`")?;
+    let bin = ctx_bin().context("ctx is not installed; run `legionctl setup --install-ctx`")?;
     let out = Command::new(bin)
         .args(args)
         .output()
@@ -118,10 +118,13 @@ pub fn codex_has_legionctl(text: &str) -> Result<bool> {
     let table: toml::Table = text
         .parse()
         .context("~/.codex/config.toml is not valid TOML; fix it before setup")?;
+    // an entry that still starts the old `legion` binary needs attention too
     Ok(table
         .get("mcp_servers")
         .and_then(|s| s.get("legionctl"))
-        .is_some())
+        .and_then(|e| e.get("command"))
+        .and_then(|c| c.as_str())
+        == Some("legionctl"))
 }
 
 pub fn plugin_skills() -> PathBuf {
@@ -230,12 +233,17 @@ pub fn apply(install_missing_ctx: bool) -> Result<Vec<String>> {
     let config = codex_config();
     let text = std::fs::read_to_string(&config).unwrap_or_default();
     if !codex_has_legionctl(&text)? {
+        ensure!(
+            !text.contains("[mcp_servers.legionctl]"),
+            "{} has [mcp_servers.legionctl] with another command; set `command = \"legionctl\"` in it",
+            config.display()
+        );
         if config.exists() {
             std::fs::copy(&config, config.with_extension("toml.legionctl-bak"))
                 .context("backing up codex config")?;
         }
         std::fs::create_dir_all(config.parent().context("codex config has no parent")?)?;
-        let block = "\n# added by `legion setup`\n[mcp_servers.legionctl]\ncommand = \"legion\"\nargs = [\"mcp\"]\n";
+        let block = "\n# added by `legionctl setup`\n[mcp_servers.legionctl]\ncommand = \"legionctl\"\nargs = [\"mcp\"]\n";
         let updated = format!("{}{block}", text.trim_end_matches('\n'));
         ensure!(
             codex_has_legionctl(&updated)?,

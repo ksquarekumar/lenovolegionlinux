@@ -1,30 +1,29 @@
 # Maintainer: ksquare
 # shellcheck shell=bash disable=SC2034,SC2154  # makepkg reads these variables and provides $pkgdir
 pkgname=legionctl
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
-pkgdesc="Local Lenovo Legion 82WQ power and firmware policy"
-arch=("any")
+pkgdesc="Operator for the Lenovo Legion Pro 7 16IRX8H (82WQ): power policy daemon, session OSD and agent tooling"
+arch=("x86_64")
 url="https://github.com/ksquarekumar/lenovolegionlinux"
 install=legionctl.install
 license=("MIT")
-depends=("python" "systemd" "cpupower" "nvidia-utils")
+depends=("systemd" "systemd-libs" "dbus" "polkit" "power-profiles-daemon" "cpupower" "nvidia-utils")
 makedepends=("git" "cargo")
 optdepends=(
-  "dkms: future optional local Lenovo Legion kernel module work"
-  "scx-scheds: sched_ext schedulers (scx_lavd) for tuning/scx_loader.toml"
-  "scx-tools: scx_loader service"
-  "python-gobject: legion-refresh-toggle (Fn+R) and legion-osd notifications"
+  "gnome-shell: the legionctl-osd OSD extension"
   "acpi_call-dkms: firmware fan RPM through Lenovo WMI"
+  "scx-scheds: sched_ext schedulers (scx_lavd) for /etc/scx_loader.toml"
+  "scx-tools: scx_loader service"
 )
 conflicts=("LenovoLegion" "lenovolegionlinux-git" "lenovolegionlinux-dkms-git" "lenovo-legion-wmi-dkms-git")
-backup=("etc/udev/rules.d/99-legionctl.rules" "etc/udev/hwdb.d/90-legion-keys.hwdb" "etc/scx_loader.toml")
+backup=("etc/scx_loader.toml")
 source=()
 sha256sums=()
 
 pkgver() {
   local repo_root="${startdir}/../.."
-  printf '0.1.0.r%s.g%s' "$(git -C "${repo_root}" rev-list --count HEAD)" "$(git -C "${repo_root}" rev-parse --short HEAD)"
+  printf '0.2.0.r%s.g%s' "$(git -C "${repo_root}" rev-list --count HEAD)" "$(git -C "${repo_root}" rev-parse --short HEAD)"
 }
 
 build() {
@@ -35,7 +34,5 @@ package() {
   local repo_root="${startdir}/../.."
   make -C "${repo_root}" DESTDIR="${pkgdir}" install
   install -Dm644 "${repo_root}/README.md" "${pkgdir}/usr/share/doc/legionctl/README.md"
-  install -Dm644 "${repo_root}/docs/ARCHITECTURE.md" "${pkgdir}/usr/share/doc/legionctl/ARCHITECTURE.md"
-  install -Dm644 "${repo_root}/docs/UPSTREAMS.md" "${pkgdir}/usr/share/doc/legionctl/UPSTREAMS.md"
   install -Dm644 "${repo_root}/LICENSE" "${pkgdir}/usr/share/licenses/legionctl/LICENSE"
 }

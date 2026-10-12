@@ -1,58 +1,63 @@
-//! Actions that change the machine. Each runs `legionctl` through `pkexec`, so a human approves it in the
-//! desktop's polkit dialog every time; agents can request actions but never perform them silently.
+//! Actions that change the machine. Each is a method call to the machine daemon (`org.legionctl.System1`), which asks
+//! polkit, so a human approves it in the desktop's dialog; agents can request actions but never perform them silently.
 
 use std::process::Command;
 
 use anyhow::{Context, Result, ensure};
 
-const LEGIONCTL: &str = "/usr/bin/legionctl";
-
-/// The exact command an approved action would run, shown to the human before they approve.
+/// The exact command an approved action runs, shown to the human before they approve.
 pub fn approved_command(action: &str, value: &str) -> Result<Vec<String>> {
-    let args: Vec<&str> = match action {
+    let method = match action {
         "apply-power-policy" => {
             ensure!(
                 matches!(value, "auto" | "ac" | "battery"),
                 "power policy must be auto, ac or battery"
             );
-            vec!["apply", value]
+            "Apply"
         }
         "set-desktop-gpu" => {
             ensure!(
                 matches!(value, "nvidia" | "intel" | "auto"),
                 "desktop GPU must be nvidia, intel or auto"
             );
-            vec!["gpu", "primary", value]
+            "SetDesktopGpu"
         }
         _ => anyhow::bail!("unknown action {action}; known: apply-power-policy, set-desktop-gpu"),
     };
-    Ok(std::iter::once("pkexec")
-        .chain(std::iter::once(LEGIONCTL))
-        .chain(args)
-        .map(String::from)
-        .collect())
+    Ok([
+        "busctl",
+        "call",
+        "org.legionctl.System1",
+        "/org/legionctl/System1",
+        "org.legionctl.System1",
+        method,
+        "s",
+        value,
+    ]
+    .map(String::from)
+    .to_vec())
 }
 
-/// Runs an action after the polkit dialog is approved. Returns legionctl's output; a refusal is an error.
+/// Runs an action after polkit approves it. Returns what the daemon changed, one line each; a refusal is an error.
 pub fn run_approved(action: &str, value: &str) -> Result<String> {
     let argv = approved_command(action, value)?;
     let out = Command::new(&argv[0])
         .args(&argv[1..])
         .output()
-        .context("running pkexec")?;
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    // pkexec exits 126 when the human dismisses the dialog and 127 when authorization fails
+        .context("running busctl")?;
     ensure!(
         out.status.success(),
-        "not applied ({}): {}",
-        out.status,
-        text.trim()
+        "not applied: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
     );
-    Ok(text)
+    // busctl prints the string array as: as N "line" "line" ...
+    let reply = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = reply.split('"').skip(1).step_by(2).collect();
+    Ok(if lines.is_empty() {
+        "no changes\n".into()
+    } else {
+        lines.iter().map(|l| format!("{l}\n")).collect()
+    })
 }
 
 #[cfg(test)]
@@ -60,14 +65,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_known_actions_and_values_pass() {
+    fn only_known_actions_and_values_reach_the_daemon() {
         assert_eq!(
-            approved_command("set-desktop-gpu", "nvidia").unwrap(),
-            ["pkexec", LEGIONCTL, "gpu", "primary", "nvidia"]
-        );
-        assert_eq!(
-            approved_command("apply-power-policy", "auto").unwrap(),
-            ["pkexec", LEGIONCTL, "apply", "auto"]
+            approved_command("set-desktop-gpu", "nvidia").unwrap()[5..],
+            ["SetDesktopGpu", "s", "nvidia"]
         );
         assert!(approved_command("apply-power-policy", "auto; rm -rf /").is_err());
         assert!(approved_command("set-desktop-gpu", "--force").is_err());
