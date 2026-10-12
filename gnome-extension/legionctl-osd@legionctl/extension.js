@@ -36,10 +36,17 @@ const MODES = [
     ['max-power', 'Max power', 'power-profile-performance-symbolic'],
     ['custom', 'Custom', 'preferences-system-symbolic'],
 ];
-const SLOT = 48; // icon size plus strip spacing
 
 function animationsEnabled() {
     return St.Settings.get().enable_animations;
+}
+
+// Fn keys are on the built-in keyboard, so the OSD shows on the built-in panel; with the lid closed, on the primary
+function builtInMonitor() {
+    const manager = global.backend.get_monitor_manager();
+    const panel = manager.get_monitors().find(m => m.is_builtin() && m.is_active());
+    const index = panel ? manager.get_monitor_for_connector(panel.get_connector()) : -1;
+    return Main.layoutManager.monitors[index] ?? Main.layoutManager.primaryMonitor;
 }
 
 class Osd {
@@ -53,7 +60,7 @@ class Osd {
         this._title = new St.Label({style_class: 'legionctl-osd-title'});
         this._detail = new St.Label({style_class: 'legionctl-osd-detail'});
 
-        // mode: a strip of mode icons that slides so the selected one sits in the middle
+        // mode: a strip of mode icons; the selected one grows
         this._strip = new St.BoxLayout({style_class: 'legionctl-osd-strip', x_align: Clutter.ActorAlign.CENTER});
         this._modeIcons = MODES.map(([, , icon]) => {
             const i = new St.Icon({icon_name: icon, style_class: 'legionctl-osd-mode'});
@@ -92,8 +99,8 @@ class Osd {
             child.visible = shown.includes(child);
     }
 
-    _placeOnPointerMonitor() {
-        const monitor = Main.layoutManager.currentMonitor;
+    _place() {
+        const monitor = builtInMonitor();
         const [, natWidth] = this._box.get_preferred_width(-1);
         const [, natHeight] = this._box.get_preferred_height(natWidth);
         this._box.set_position(
@@ -102,11 +109,11 @@ class Osd {
     }
 
     _present() {
-        this._placeOnPointerMonitor();
-        if (!this._box.visible) {
-            this._box.visible = true;
-            this._box.ease({opacity: 255, duration: IN_MS, mode: Clutter.AnimationMode.EASE_OUT_QUAD});
-        }
+        this._title.visible = this._title.text !== '';
+        this._place();
+        // also stops a fade-out that is in progress
+        this._box.visible = true;
+        this._box.ease({opacity: 255, duration: IN_MS, mode: Clutter.AnimationMode.EASE_OUT_QUAD});
         if (this._hideId)
             GLib.source_remove(this._hideId);
         this._hideId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, VISIBLE_MS, () => {
@@ -149,18 +156,11 @@ class Osd {
             else
                 icon.remove_style_class_name('selected');
             icon.ease({
-                scale_x: selected ? 1.35 : 1,
-                scale_y: selected ? 1.35 : 1,
+                scale_x: selected ? 1.25 : 1,
+                scale_y: selected ? 1.25 : 1,
                 duration: 220,
                 mode: Clutter.AnimationMode.EASE_OUT_BACK,
             });
-        });
-        // slide the strip so the selected icon is centered
-        const middle = (MODES.length - 1) / 2;
-        this._strip.ease({
-            translation_x: index >= 0 ? (middle - index) * SLOT : 0,
-            duration: 220,
-            mode: Clutter.AnimationMode.EASE_OUT_QUAD,
         });
     }
 

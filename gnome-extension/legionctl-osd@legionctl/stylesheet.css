@@ -2,6 +2,7 @@
   padding: 18px 24px;
   spacing: 10px;
   min-width: 280px;
+  border-radius: 24px;
 }
 
 .legionctl-osd-title {
@@ -17,6 +18,7 @@
 
 .legionctl-osd-strip {
   spacing: 16px;
+  padding: 6px 4px; /* room for the selected icon to grow */
 }
 
 .legionctl-osd-mode {
