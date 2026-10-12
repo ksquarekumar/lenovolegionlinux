@@ -7,7 +7,7 @@ LenovoLegionLinux's `model_kwcn` entry and the in-tree drivers. Every new firmwa
 | Feature (Windows) | Linux today | Path here | Priority |
 | --- | --- | --- | --- |
 | Power modes Quiet / Balance / Performance / Extreme (max-power) | done: `platform_profile`, Fn+Q follow, PPD sync, OSD | `lenovo_wmi_gamezone` | — |
-| Custom mode with CPU/GPU power limits | done in the profile (2026-10-12): AC custom 90/135 W with max-power's other limits, battery custom 30/55 W with the custom defaults; no RAPL writes | `lenovo-wmi-other` firmware attributes (`ppt_*`, `gpu_*`); verify writability in `custom` | high |
+| Custom mode with CPU/GPU power limits | blocked: custom mode accepts `ppt_*` (enforcement measured) but runs the fans at ~6,000 rpm until a fan table is written; policy uses the firmware modes' built-in limits; no RAPL writes | `lenovo-wmi-other` firmware attributes (`ppt_*`, `gpu_*`); verify writability in `custom` | high |
 | Fan speed readout | done (validated) | Other Method 17, feature 0x04030001/2 via `acpi_call` | — |
 | Custom fan curve | missing | FAN_METHOD `WMAB` 5/6, levels 1–10, speed-only, custom mode only (02-platform, Fan control) | medium |
 | Fan full speed (dust cleaning) | missing | Other Method `SetFeatureValue` 0x04020000, custom mode only | low |

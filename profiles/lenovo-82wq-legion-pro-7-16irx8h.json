@@ -155,7 +155,8 @@
     },
     "firmware": {
       "platform_profile_preference": [
-        "custom"
+        "max-power",
+        "performance"
       ],
       "fan_mode": null
     },
@@ -165,15 +166,7 @@
       "set_persistence_mode": true,
       "expected_dynamic_power_w": 150
     },
-    "power_profile": "performance",
-    "firmware_attributes": {
-      "ppt_pl1_spl": 90,
-      "ppt_pl2_sppt": 135,
-      "ppt_cpu_cl": 75,
-      "cpu_temp": 100,
-      "gpu_nv_ac_offset": 75,
-      "gpu_temp": 87
-    }
+    "power_profile": "performance"
   },
   "battery": {
     "rapl": {},
@@ -188,19 +181,13 @@
     },
     "firmware": {
       "platform_profile_preference": [
-        "custom"
+        "balanced",
+        "low-power",
+        "quiet"
       ],
       "fan_mode": null
     },
-    "power_profile": "balanced",
-    "firmware_attributes": {
-      "ppt_pl1_spl": 30,
-      "ppt_pl2_sppt": 55,
-      "ppt_cpu_cl": 55,
-      "cpu_temp": 97,
-      "gpu_nv_ac_offset": 55,
-      "gpu_temp": 87
-    }
+    "power_profile": "balanced"
   },
   "conflicts": {
     "systemd_units": [
