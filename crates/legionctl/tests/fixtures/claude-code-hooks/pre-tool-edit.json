@@ -1,0 +1,20 @@
+{
+  "session_id": "SESSION",
+  "transcript_path": "/tmp/transcript.jsonl",
+  "cwd": "CWD",
+  "scratchpad_dir": "/tmp/scratchpad",
+  "prompt_id": "PROMPT",
+  "permission_mode": "auto",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Edit",
+  "tool_input": {
+    "file_path": "FILE",
+    "old_string": "TEXT",
+    "new_string": "TEXT",
+    "replace_all": false
+  },
+  "tool_use_id": "TOOL"
+}

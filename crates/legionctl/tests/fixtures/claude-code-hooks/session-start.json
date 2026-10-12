@@ -1,0 +1,12 @@
+{
+  "session_id": "SESSION",
+  "transcript_path": "/tmp/transcript.jsonl",
+  "cwd": "CWD",
+  "scratchpad_dir": "/tmp/scratchpad",
+  "hook_event_name": "SessionStart",
+  "source": "resume",
+  "seconds_since_last_response": 84,
+  "context_tokens": 786495,
+  "prompt_cache_likely_expired": false,
+  "estimated_cache_write_usd": 6.292
+}

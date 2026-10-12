@@ -10,6 +10,23 @@ use std::process::{Command, Stdio};
 use common::Operator;
 use serde_json::{Value, json};
 
+/// A hook payload as Claude Code sends it (recorded 2026-10-13, anonymized in tests/fixtures/claude-code-hooks), with
+/// the test's own fields set over it. A `pre-tool` payload is the one recorded for its `tool_name`.
+fn claude_hook(event: &str, fields: &Value) -> String {
+    let name = match fields["tool_name"].as_str() {
+        Some(tool) => format!("{event}-{}", tool.to_lowercase()),
+        None => event.to_string(),
+    };
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("tests/fixtures/claude-code-hooks/{name}.json"));
+    let mut payload: Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    for (key, value) in fields.as_object().unwrap() {
+        payload[key] = value.clone();
+    }
+    payload.to_string()
+}
+
 /// An operator with an empty HOME and the repo's plugin skills.
 fn operator(tag: &str) -> (Operator, PathBuf) {
     let home = std::env::temp_dir().join(format!("legionctl-e2e-{tag}-{}", std::process::id()));
@@ -280,8 +297,9 @@ fn config_layers_merge_in_order_and_etc_locks_win() {
 fn dossier_gate_and_stop_hook_hold_the_agent_until_the_session_has_a_dossier() {
     let (op, home) = operator("dossier");
     let out = |o: std::process::Output| String::from_utf8_lossy(&o.stdout).trim().to_string();
-    let hook =
-        |event: &str, input: Value| out(op.run(&home, &[], &["hook", event], &input.to_string()));
+    let hook = |event: &str, input: Value| {
+        out(op.run(&home, &[], &["hook", event], &claude_hook(event, &input)))
+    };
     let as_session = |session: &str, args: &[&str], stdin: &str| {
         let o = op.run(&home, &[("LEGIONCTL_SESSION", session)], args, stdin);
         assert!(
@@ -384,8 +402,9 @@ fn dossier_gate_and_stop_hook_hold_the_agent_until_the_session_has_a_dossier() {
 fn dossier_write_guard_and_takeover_work_through_the_claude_code_hooks() {
     let (op, home) = operator("guard");
     let out = |o: std::process::Output| String::from_utf8_lossy(&o.stdout).trim().to_string();
-    let hook =
-        |event: &str, input: Value| out(op.run(&home, &[], &["hook", event], &input.to_string()));
+    let hook = |event: &str, input: Value| {
+        out(op.run(&home, &[], &["hook", event], &claude_hook(event, &input)))
+    };
     let as_session = |session: &str, args: &[&str], stdin: &str| {
         let o = op.run(&home, &[("LEGIONCTL_SESSION", session)], args, stdin);
         assert!(
@@ -518,7 +537,7 @@ fn workspace_opens_checkpoints_reports_drift_merges_and_closes_in_a_real_reposit
             &repo,
             &[],
             &["hook", event],
-            &json!({"session_id": "s1", "cwd": repo}).to_string(),
+            &claude_hook(event, &json!({"session_id": "s1", "cwd": repo})),
         );
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     };
