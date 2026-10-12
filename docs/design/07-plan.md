@@ -32,7 +32,7 @@ Cheap, independent, and they de-risk the Rust work by answering open questions.
   `legion-refresh-toggle`, the reassert timer, the follow service, the udev `RUN+=` rules, the sleep hook and the
   hwdb remap; rename the Rust client binary to `legionctl`.
 
-## Phase 2 — session
+## Phase 2 — session (built 2026-10-13; the OSD in a real login is still to be checked)
 
 - Operator session module: Mutter actions (Fn+R, refresh per layer), OSD requests.
 - GNOME Shell extension `legionctl-osd@legionctl`: animated OSD (03-session).
@@ -54,9 +54,10 @@ No Windows-side agent: Lenovo Vantage covers Windows (decided 2026-10-12).
 
 ## Testing
 
-- End-to-end at a boundary: `legionctl-system --dry-run` against recorded sysroots of this machine
-  (`tests/fixtures/sysroot-82wq-*`), with uevent replay for Fn+Q bursts, AC changes and resume; the CLI and MCP
-  server against a temporary operator database.
+- End-to-end at a boundary (built): the `legionctl-system` process on a private D-Bus with polkit and logind
+  stand-ins against a recorded sysroot of this machine (`tests/fixtures/sysroot-82wq-*`); the daemon's event
+  reactions (unplug, Fn+Q, resume, replug) against the same tree; the CLI, MCP server and Claude Code hooks against
+  the real operator started by socket activation. Not yet: uevent replay (udev events cannot be injected).
 - Narrow tests only for failures that are not obvious (ledger decisions on firmware-initiated changes, phantom I/O
   pressure). Tests that restate the code are deleted.
 - On-machine `make selftest`: the daemon in dry-run against the real system, then `doctor`.

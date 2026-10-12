@@ -8,20 +8,19 @@ implementation, one permission model and one audit trail.
 
 ```mermaid
 flowchart LR
-  core[legionctl-core: state, load, worktrees, plans, configs, actions]
-  core --> api[legionctl-system API: axum HTTP + WebSocket on a unix socket; MCP over stdio]
-  api --> cli[legion CLI + shell completions]
-  api --> tui[legion TUI: ratatui]
+  core[legionctl-core and legionctl-machine: config, dossiers, hooks, worktrees, machine reads and plans]
+  core --> api[legionctl-operator: legionctl-api registry over HTTP on a unix socket; machine changes via legionctl-system]
+  api --> cli[legionctl CLI, generated from the registry]
+  api --> tui[legionctl tui: ratatui]
   api --> app[desktop app: GPUI]
   api --> mcp[MCP tools for Claude / Codex / ACP sessions]
   api --> hooks[harness hooks + slash commands]
   api --> gw[AI gateway: axum, exact + semantic cache]
 ```
 
-- **Today (Phase 1a, built):** `legionctl-core` plus one client binary (named `legion` until the switch in
-  15-layout) that is CLI, TUI and stdio MCP server, and the `legionctl` Claude Code plugin. Every surface calls
-  `legionctl-core` directly.
-- **Phase 1b (decided 2026-10-13):**
+- **Phase 1a (done):** `legionctl-core`, one client binary and the `legionctl` Claude Code plugin; every surface called
+  `legionctl-core` directly. Phase 1b replaced that path.
+- **Phase 1b (built 2026-10-13):**
   - `legionctl-api` declares every operation once (name, permission class, input type, output type; the doc comment
     is the help). From that list it generates the HTTP routes, the MCP tools, the CLI (clap builder, from the input
     JSON schemas) and the `Engine` trait that `legionctl-operator` must implement, so a missing handler does not
@@ -87,7 +86,7 @@ Operating directory, named workspace in `~/.agentworkspace`, dossier and change 
 
 ## Agents, plugins and settings
 
-- **Settings:** read and validate Claude Code and Codex user/project settings (built: `legion agents`,
+- **Settings:** read and validate Claude Code and Codex user/project settings (built: `legionctl agents`,
   `agents`). Editing: schema-checked (Claude's published settings schema; TOML parse plus known-keys check for
   Codex), shown as a diff, backed up, then written.
 - **Plugins, MCP servers and skills:** an allowlist of authorised marketplaces and items; install into Claude Code
@@ -125,9 +124,9 @@ its own helper agents, such as the work-ordering planner or the intent-log summa
 | Phase | Delivers |
 | --- | --- |
 | 1a (done) | legionctl-core, client CLI/TUI/stdio MCP, Claude Code plugin, Codex MCP snippet |
-| 1b | legionctl-operator with the operation registry on a unix socket; CLI, TUI and MCP as clients; audit log |
+| 1b (done 2026-10-13) | legionctl-operator with the operation registry on a unix socket; CLI, TUI and MCP as clients; audit log |
 | 2 | Sandboxed ACP sessions (bwrap), session registry and resume, overlay build caches; detail in 14-sessions |
-| 3 | Workspaces: `~/.agentworkspace`, dossier, change sets, gate (18-workspaces) |
+| 3 (milestone 1 done 2026-10-13: dossier, binding, gate) | Workspaces: `~/.agentworkspace`, dossier, change sets, gate (18-workspaces) |
 | 4 | Code graph mapping and dependency ordering of work items |
 | 5 | Settings editing, plugin/MCP/skill management, accounts and usage |
 | 6 | AI gateway with exact and semantic cache |

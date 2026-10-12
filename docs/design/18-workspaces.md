@@ -113,8 +113,8 @@ back after a diff and approval.
 
 - `<repo-id>` comes from the repo's first commit hash, so clones and worktrees of one repo share one graph. Graphs
   never live inside a repo: ctx's default (`.graf/index.db` in an ancestor) is not used.
-- The global `dossier.toml` is created on first use from the package default. A dossier's own `dossier.toml` holds
-  its data and may add classes; the canonical classes cannot be removed or renamed.
+- The pattern (classes, plan sections, gate) is the `dossier.*` config (14); a dossier's own `dossier.jsonc` holds
+  its data. The canonical classes cannot be removed or renamed.
 
 ## Artifact classes and routing
 
@@ -125,7 +125,7 @@ back after a diff and approval.
 | DESIGN | `DESIGN/...` | Intended design, separate from plan status and from evidence; written after its inputs are settled in MEMORY. |
 | EVIDENCE | `EVIDENCE/<class>/.../NN-<scope>.md` | Validation logs, reports, inventories, comparison tables, dumps; written when the check runs, from its real output. Every claim and finding has one. |
 | SPIKE | `SPIKE/...` | Minimal, self-contained, disposable prototypes and experiments. Product code enters the product only through an approved change. |
-| other | `<class>/.../NN-<scope>.md` | Declared in a `dossier.toml`, for example `HOMEWORK` or `PROBES`. |
+| other | `<class>/.../NN-<scope>.md` | Declared in `dossier.classes` config, for example `HOMEWORK` or `PROBES`. |
 
 Routing rules (checked by `legionctl dossier check`):
 
@@ -209,66 +209,31 @@ change to a dependency marks the work items that use it for re-verification.
   describe a proposal as a decision; update the dossier in the same turn as the finding.
 - MCP tools expose the dossier commands and the work graph.
 
-## Example `dossier.toml`
+## Example
 
-`~/.agentworkspace/dossier.toml` (global default):
+The pattern is config; a repository can add a class in `<repo>/.legionctl/dossier.jsonc`:
 
-```toml
-pattern = "scope-dossier"
-statuses = ["planned", "pending", "in-progress", "done", "failed", "abandoned"]
-plan_sections = [
-  "Purpose", "Requested Outcome", "Scope Fence", "Governing Principles", "Instruction Inventory",
-  "Current Behavior / Findings", "Open Questions / Decision Points", "Complexity / Trade-offs",
-  "Options / Recommendation", "User Decisions / Approval", "Design", "Acceptance Criteria",
-  "Requirement-to-Change Map", "Done", "ToDo", "Deferred", "Rejected", "Validation / Evidence Status",
-]
-
-[classes.MEMORY]
-path = "MEMORY/NN-<topic>.md"
-purpose = "Working memory: intake, source reads, decision and ambiguity registers, context from chat"
-
-[classes.DESIGN]
-path = "DESIGN/<name>.md"
-purpose = "Intended design, separate from plan status and evidence"
-
-[classes.EVIDENCE]
-path = "EVIDENCE/<class>/.../NN-<scope>.md"
-purpose = "Proof from real output: validation logs, reports, inventories, comparisons"
-
-[classes.SPIKE]
-path = "SPIKE/..."
-purpose = "Disposable prototypes and reproducible experiments"
-
-[hooks]
-"session.start" = ["brief"]
-"dossier.use" = ["brief", "check"]
-"checkpoint" = ["codegraph-update", "check"]
+```jsonc
+{
+  "dossier": {
+    "classes": { "PROBES": "acpi_call read and write probes with the log of each run" }
+  }
+}
 ```
 
-`~/.agentworkspace/legion-port/dossier.toml` (one dossier):
+`~/.agentworkspace/legion-port/dossier.jsonc` (one dossier's data):
 
-```toml
-title = "Port the Python machine tooling to Rust"
-
-[[entities]]
-id = "lenovolegionlinux"
-type = "repo"
-path = "/data/git/lenovolegionlinux"
-base_ref = "main"
-
-[[objectives]]
-id = "Y1"
-outcome = "legionctl-system plans the same writes as the Python tool for AC, battery, Fn+Q, resume and boot"
-status = "in-progress"
-
-[[objectives]]
-id = "Y2"
-outcome = "No Python installed after the switch; units, udev and sleep hook call legionctl-system"
-status = "planned"
-
-[classes.PROBES]
-path = "PROBES/NN-<scope>.md"
-purpose = "acpi_call read and write probes with the log of each run"
+```jsonc
+{
+  "title": "Port the Python machine tooling to Rust",
+  "entities": [
+    { "id": "lenovolegionlinux", "type": "repo", "path": "/data/git/lenovolegionlinux", "base_ref": "main" }
+  ],
+  "objectives": [
+    { "id": "Y1", "outcome": "legionctl-system plans the same writes as the Python tool", "status": "done" },
+    { "id": "Y2", "outcome": "No Python installed after the switch", "status": "done" }
+  ]
+}
 ```
 
 ## Sandboxed instances

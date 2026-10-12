@@ -22,10 +22,11 @@ system down.
 
 ## State: one database per scope, one writer
 
-- System: `/var/lib/legionctl/system.db`. User: `~/.local/state/legionctl/operator.db` (exists since Phase 1a, schema v1:
-  `events`, `hook_actions`, `hook_bindings`).
-- The owning daemon is the only writer; WAL mode lets clients and the bootstrap read concurrently. Until the daemons
-  exist, the CLI writes directly and relies on WAL plus a busy timeout.
+- System: `/var/lib/legionctl/system.db` (the Fn+Q ledger). User: `~/.local/state/legionctl/operator.db` (the event
+  log; schema v2 dropped the hook tables, which are config now) and `~/.agentworkspace/workspace.db` (dossier
+  bindings and writes, 18).
+- The owning daemon is the only writer (`legionctl-system` for `system.db`, `legionctl-operator` for the user
+  databases); WAL mode lets the bootstrap and tools read concurrently.
 - All legionctl state is in SQLite (decided 2026-10-12): the remaining Phase 1a stores (worktree registry JSON,
   reminders TOML) and the Fn+Q ledger (today files in `/run/legionctl`; in `system.db` keyed by boot id, so a reboot
   still clears it) move in, each with a one-time import migration. Configuration stays in files (the profile as
@@ -42,7 +43,7 @@ system down.
 
 - **Event log** (`events`): append-only record of every change: time, actor (cli, mcp, hook, daemon, bootstrap,
   kernel-module manager), kind, payload. It is the audit trail and the replication stream.
-- **Projections:** tables such as `hook_bindings` are the current state; they are updated in the same transaction
+- **Projections:** tables such as the dossier `bindings` are the current state; they are updated in the same transaction
   as the event, so the log and the state never disagree.
 - **Consumers** (OSD, UIs, the kernel-module manager, agent sessions) follow the log by cursor (`last_event_id`) over
   the API's WebSocket, at-least-once; handlers are idempotent (keyed by event id).

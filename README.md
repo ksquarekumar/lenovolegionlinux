@@ -21,7 +21,8 @@ This repository is for one machine only. It does not guess safe behavior for oth
 | `legionctl-operator` | you, `legionctl-operator.socket` and `.service` (user) | the operation API on `$XDG_RUNTIME_DIR/legionctl/api.sock` (reads, plans, agent tooling, event log; machine changes go to `legionctl-system`); Fn+R through Mutter; OSD requests |
 | `legionctl-osd@legionctl` | GNOME Shell extension | the animated OSD: thermal mode, panel refresh rate, Fn lock |
 
-State: `/var/lib/legionctl/system.db` (machine), `~/.local/state/legionctl/operator.db` (agent hooks, event log).
+State: `/var/lib/legionctl/system.db` (machine: the Fn+Q ledger), `~/.local/state/legionctl/operator.db` (event log),
+`~/.agentworkspace/workspace.db` (dossier bindings). Configuration is files only (see Agents).
 Machine policy: `profiles/lenovo-82wq-legion-pro-7-16irx8h.json` (JSONC).
 
 ## Install
@@ -48,6 +49,8 @@ legionctl power apply --dry-run   # what the policy would change now
 legionctl power apply             # through the daemon; polkit asks you
 legionctl gpu primary --choice nvidia    # applies at the next login
 legionctl validate                # profile structure, no hardware access
+legionctl config layers           # config files in merge order; `config explain <key>` says which file set a value
+legionctl dossier ls              # agent dossiers in ~/.agentworkspace (agents bind them; see Agents)
 legionctl tui                     # live dashboard
 legionctl --help                  # every operation; add --json to any of them
 ```
@@ -60,10 +63,18 @@ The policy: AC uses the firmware's `max-power` mode, battery uses `balanced`; po
 Claude Code plugin (`/plugin marketplace add /data/git/lenovolegionlinux`, then
 `/plugin install legionctl@lenovolegionlinux`):
 
-- one MCP tool per operation (status, load, doctor, power, GPU, cleanup, worktrees, setup, reminders, hooks, skills);
-- skills `legionctl:ste100-style` and `legionctl:glanceable-style`, kept in force by reminders;
-- hooks that inject reminders, load and setup notices; commands `/legionctl:status`, `/legionctl:worktree`,
-  `/legionctl:act`, `/legionctl:setup`, `/legionctl:reminders`, `/legionctl:hooks`, `/legionctl:skills`.
+- one MCP tool per operation (status, load, doctor, power, GPU, cleanup, worktrees, setup, reminders, hooks, skills,
+  config, dossiers);
+- skills `legionctl:ste100-style`, `legionctl:glanceable-style` and `legionctl:dossier-practice`, kept in force by
+  reminders;
+- hooks (`legionctl hook <event>`): reminders, load and setup notices; one dossier per session, bound again at
+  session start where the last session worked; the agent is told first when a session has none (`dossier.nudge`),
+  prompts are blocked until it has one (`dossier.gate`), and writes into another session's dossier are denied;
+- commands `/legionctl:dossier`, `/legionctl:status`, `/legionctl:worktree`, `/legionctl:act`, `/legionctl:setup`,
+  `/legionctl:reminders`, `/legionctl:hooks`, `/legionctl:skills`.
+
+Settings (worktree root, reminders, hook bindings, load thresholds, dossier pattern and gate) are JSONC config:
+built-in defaults (`config/defaults.jsonc`), then `/etc/legionctl`, `~/.config/legionctl` and `<repo>/.legionctl`.
 
 Codex: `legionctl setup apply` adds the MCP server to `~/.codex/config.toml` and links the skills.
 
