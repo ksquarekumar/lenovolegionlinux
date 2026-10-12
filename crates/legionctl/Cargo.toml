@@ -19,5 +19,9 @@ ratatui = "0.30.2"
 rmcp = { version = "3.5.1", features = ["server", "transport-io"] }
 tokio = { version = "1.53.2", features = ["macros", "net", "rt-multi-thread", "io-std"] }
 
+[dev-dependencies]
+zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }
+futures-util = "0.3.34"
+
 [lints]
 workspace = true

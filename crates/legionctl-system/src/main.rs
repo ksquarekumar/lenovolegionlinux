@@ -393,7 +393,10 @@ async fn main() -> Result<()> {
     tick.tick().await;
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
-    let fn_lock = fn_lock_watch(&root)?;
+    // a missing sensor is reported, and the daemon runs without it (note 01)
+    let fn_lock = fn_lock_watch(&root)
+        .inspect_err(|e| eprintln!("FnLock: not watched: {e:#}"))
+        .ok();
     // announce later changes only; the session asks for the current state when it starts
     let mut announced = mode(&root);
     handle(&root, &emitter, Event::Start, &mut announced).await;
@@ -420,7 +423,12 @@ async fn main() -> Result<()> {
                     eprintln!("Key: cannot send: {e}");
                 }
             }
-            ready = fn_lock.ready(Interest::PRIORITY) => {
+            ready = async {
+                match &fn_lock {
+                    Some(fd) => fd.ready(Interest::PRIORITY).await,
+                    None => std::future::pending().await,
+                }
+            } => {
                 let mut guard = ready?;
                 let on = reread(guard.get_inner()).is_ok_and(|v| v == "1");
                 guard.clear_ready_matching(Ready::PRIORITY);

@@ -18,8 +18,8 @@ jobs:
         run: rustup toolchain install stable --profile minimal -c clippy,rustfmt && rustup default stable
       - name: Install tools
         run: make tools
-      # legionctl-system reads udev events through libudev
+      # legionctl-system reads udev events through libudev; the daemon test runs a private dbus-daemon
       - name: Install libudev
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev dbus
       - name: Lint, format check, profile validation, tests
         run: make ci

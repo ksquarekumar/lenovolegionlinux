@@ -59,7 +59,7 @@ impl Machine {
         Self::script(
             &bin,
             "powerprofilesctl",
-            "[ \"$1\" = get ] && echo performance",
+            "if [ \"$1\" = get ]; then echo performance; fi",
         );
         Machine { tag, dir }
     }
@@ -421,6 +421,206 @@ mod daemon_events {
         assert!(
             start.contains(&format!("would write {PROFILE_PATH}: max-power")),
             "{start:?}"
+        );
+    }
+}
+
+/// The `legionctl-system` process itself: on a private D-Bus with stand-ins for polkit and logind, against the recorded
+/// machine. This is the root path that agents and the CLI reach through the operator.
+mod daemon_process {
+    use super::*;
+    use futures_util::StreamExt;
+    use std::collections::HashMap;
+    use std::process::{Child, Command, Stdio};
+    use std::time::{Duration, Instant};
+    use zbus::zvariant::OwnedValue;
+
+    /// (subject kind, action, flags, whether anything else was attached)
+    type Asked = std::sync::Arc<std::sync::Mutex<Vec<(String, String, u32, bool)>>>;
+
+    /// Allows every action except the denied ones, as a polkit that asked a human would, and records each question:
+    /// (subject kind, action, flags, whether anything else was attached).
+    struct Polkit {
+        denied: &'static [&'static str],
+        asked: Asked,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.PolicyKit1.Authority")]
+    impl Polkit {
+        fn check_authorization(
+            &self,
+            subject: (String, HashMap<String, OwnedValue>),
+            action: &str,
+            details: HashMap<String, String>,
+            flags: u32,
+            cancellation: &str,
+        ) -> (bool, bool, HashMap<String, String>) {
+            let extra = details.into_keys().next().is_some()
+                || !cancellation.is_empty()
+                || !subject.1.contains_key("name");
+            self.asked
+                .lock()
+                .unwrap()
+                .push((subject.0, action.to_string(), flags, extra));
+            (!self.denied.contains(&action), false, HashMap::new())
+        }
+    }
+
+    struct Kill(Child);
+
+    impl Drop for Kill {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn wait_for(what: &str, mut ok: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ok() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// A private bus, the polkit and logind stand-ins on it, and the daemon on the recorded machine `m`. The
+    /// processes stop when the returned guards drop.
+    async fn start(m: &Machine) -> (zbus::Connection, Asked, (Kill, Kill)) {
+        let bus_path = m.dir.join("bus");
+        let bus = Kill(
+            Command::new("dbus-daemon")
+                .args(["--session", "--nofork", "--nopidfile"])
+                .arg(format!("--address=unix:path={}", bus_path.display()))
+                .spawn()
+                .unwrap(),
+        );
+        wait_for("the private bus", || bus_path.exists());
+        let address = format!("unix:path={}", bus_path.display());
+        let asked = Asked::default();
+        let stand_ins = zbus::connection::Builder::address(address.as_str())
+            .unwrap()
+            .name("org.freedesktop.PolicyKit1")
+            .unwrap()
+            .name("org.freedesktop.login1")
+            .unwrap()
+            .serve_at(
+                "/org/freedesktop/PolicyKit1/Authority",
+                Polkit {
+                    denied: &["org.legionctl.gpu.desktop"],
+                    asked: asked.clone(),
+                },
+            )
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+
+        let daemon_bin =
+            Path::new(env!("CARGO_BIN_EXE_legionctl")).with_file_name("legionctl-system");
+        let daemon = Kill(
+            Command::new(daemon_bin)
+                .env_clear()
+                .env("PATH", m.dir.join("bin"))
+                .env("LEGIONCTL_SYSROOT", m.dir.join("root"))
+                .env("DBUS_SYSTEM_BUS_ADDRESS", &address)
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+
+        (stand_ins, asked, (bus, daemon))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_daemon_applies_policy_on_start_and_on_d_bus_calls_resume_and_polkit_refusals() {
+        let m = Machine::new("daemon");
+        m.set("/sys/class/power_supply/ADP0/online", "0");
+        let (stand_ins, asked, _processes) = start(&m).await;
+
+        // start: the battery policy, written and recorded as the daemon's own
+        wait_for("the battery policy at start", || {
+            m.file(PROFILE_PATH) == "balanced"
+        });
+        let dbus = zbus::fdo::DBusProxy::new(&stand_ins).await.unwrap();
+        let name = zbus::names::BusName::try_from("org.legionctl.System1").unwrap();
+        while !dbus.name_has_owner(name.clone()).await.unwrap() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let system = zbus::Proxy::new(
+            &stand_ins,
+            "org.legionctl.System1",
+            "/org/legionctl/System1",
+            "org.legionctl.System1",
+        )
+        .await
+        .unwrap();
+        let mut changes = system.receive_signal("Changed").await.unwrap();
+
+        // Apply("ac") with polkit's yes: the AC policy, and the session hears what changed and why
+        // (the firmware's own platform-profile uevent, which a recorded machine does not send, announces the mode)
+        let lines: Vec<String> = system.call("Apply", &("ac",)).await.unwrap();
+        assert!(lines.iter().any(|l| l.contains("max-power")), "{lines:?}");
+        assert_eq!(m.file(PROFILE_PATH), "max-power");
+        let signal = tokio::time::timeout(Duration::from_secs(5), changes.next())
+            .await
+            .unwrap()
+            .unwrap();
+        let (cause, announced): (String, Vec<String>) = signal.body().deserialize().unwrap();
+        assert_eq!((cause.as_str(), announced), ("Apply", lines));
+
+        // resume (logind PrepareForSleep(false)) repairs what drifted while asleep, for the real power source:
+        // still battery, so Apply("ac") lasts until the next event
+        m.set(
+            "/sys/devices/system/cpu/cpufreq/policy3/scaling_governor",
+            "performance",
+        );
+        stand_ins
+            .emit_signal(
+                None::<()>,
+                "/org/freedesktop/login1",
+                "org.freedesktop.login1.Manager",
+                "PrepareForSleep",
+                &(false,),
+            )
+            .await
+            .unwrap();
+        wait_for("the resume repair", || {
+            m.file("/sys/devices/system/cpu/cpufreq/policy3/scaling_governor") == "powersave"
+        });
+
+        // polkit's no: nothing changes, and the caller hears why
+        let refused = system
+            .call::<_, _, Vec<String>>("SetDesktopGpu", &("nvidia",))
+            .await
+            .unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("not authorized for org.legionctl.gpu.desktop"),
+            "{refused}"
+        );
+        assert_eq!(
+            m.file("/etc/udev/rules.d/61-legionctl-mutter-primary.rules"),
+            "<missing>"
+        );
+        // each method asked polkit about its own caller, allowing the dialog (flag 1), with nothing else attached
+        let asked: Vec<(String, String, u32, bool)> = asked.lock().unwrap().clone();
+        assert_eq!(
+            asked,
+            [
+                (
+                    "system-bus-name".into(),
+                    "org.legionctl.power.apply".into(),
+                    1,
+                    false
+                ),
+                (
+                    "system-bus-name".into(),
+                    "org.legionctl.gpu.desktop".into(),
+                    1,
+                    false
+                ),
+            ]
         );
     }
 }

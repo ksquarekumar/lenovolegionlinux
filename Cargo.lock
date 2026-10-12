@@ -1088,6 +1088,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
+ "futures-util",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -1097,6 +1098,7 @@ dependencies = [
  "rmcp",
  "serde_json",
  "tokio",
+ "zbus",
 ]
 
 [[package]]
