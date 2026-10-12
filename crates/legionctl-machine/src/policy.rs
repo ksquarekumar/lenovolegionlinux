@@ -17,7 +17,7 @@ use crate::profile::{self, ModePolicy, Profile};
 use crate::sysroot::SysRoot;
 
 const LEDGER_WRITTEN: &str = "/run/legionctl/firmware-written";
-const LEDGER_OVERRIDE: &str = "/run/legionctl/firmware-override";
+pub const LEDGER_OVERRIDE: &str = "/run/legionctl/firmware-override";
 const CPUFREQ: &str = "/sys/devices/system/cpu/cpufreq";
 const FIRMWARE_ATTRIBUTES: &str = "/sys/class/firmware-attributes/lenovo-wmi-other-0/attributes";
 const DMI: &str = "/sys/class/dmi/id";
@@ -29,6 +29,8 @@ pub enum Step {
         value: String,
     },
     Run(Vec<String>),
+    /// Run and ignore failure (for example `systemctl reset-failed` of a unit that may not exist).
+    Try(Vec<String>),
     /// Ledger file content; `None` removes it.
     Record {
         path: &'static str,
@@ -89,7 +91,7 @@ impl Machine<'_> {
         }
     }
 
-    fn run(&self, steps: &mut Vec<Step>, argv: &[&str]) {
+    pub fn run(&self, steps: &mut Vec<Step>, argv: &[&str]) {
         if (self.has_command)(argv[0]) {
             steps.push(Step::Run(argv.iter().map(|s| s.to_string()).collect()));
         } else {
@@ -127,23 +129,28 @@ impl Machine<'_> {
         self.cpufreq(steps, "scaling_governor", follow.governor.as_deref());
     }
 
-    fn firmware_policy(&self, steps: &mut Vec<Step>, policy: &ModePolicy) {
+    /// The first firmware mode in `policy`'s preference that this machine offers.
+    pub fn platform_choice(&self, policy: &ModePolicy) -> Option<String> {
         let choices = self
             .root
             .read(&self.profile.paths.platform_profile_choices)
             .unwrap_or_default();
         let available: Vec<&str> = choices.split_whitespace().collect();
-        match policy
+        policy
             .firmware
             .platform_profile_preference
             .iter()
             .find(|c| available.contains(&c.as_str()))
-        {
+            .cloned()
+    }
+
+    fn firmware_policy(&self, steps: &mut Vec<Step>, policy: &ModePolicy) {
+        match self.platform_choice(policy) {
             Some(chosen) => {
-                self.write(steps, &self.profile.paths.platform_profile, chosen);
+                self.write(steps, &self.profile.paths.platform_profile, &chosen);
                 steps.push(Step::Record {
                     path: LEDGER_WRITTEN,
-                    value: Some(chosen.clone()),
+                    value: Some(chosen),
                 });
             }
             None => steps.push(Step::Warn(
@@ -258,7 +265,7 @@ impl Machine<'_> {
         self.root.read(&self.profile.paths.ac_adapter).as_deref() == Some("1")
     }
 
-    fn require_supported_machine(&self, force: bool) -> Result<()> {
+    pub fn require_supported_machine(&self, force: bool) -> Result<()> {
         let mismatches: Vec<String> = self
             .profile
             .dmi_match
@@ -383,7 +390,7 @@ impl Machine<'_> {
 pub fn describe(step: &Step) -> Option<String> {
     match step {
         Step::Write { path, value } => Some(format!("would write {path}: {value}")),
-        Step::Run(argv) => Some(format!("would run: {}", argv.join(" "))),
+        Step::Run(argv) | Step::Try(argv) => Some(format!("would run: {}", argv.join(" "))),
         Step::Info(text) => Some(text.clone()),
         Step::Warn(text) => Some(format!("warning: {text}")),
         Step::Record { .. } => None,
@@ -426,6 +433,9 @@ pub fn execute(root: &SysRoot, steps: &[Step]) -> Vec<String> {
                 }
                 Err(e) => out.push(format!("warning: command failed: {}: {e}", argv.join(" "))),
             },
+            Step::Try(argv) => {
+                let _ = Command::new(&argv[0]).args(&argv[1..]).output();
+            }
             Step::Record { path, value } => {
                 let file = root.path(path);
                 let result = match value {

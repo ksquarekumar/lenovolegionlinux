@@ -23,6 +23,40 @@ pub struct Profile {
     pub firmware_follow: BTreeMap<String, Follow>,
     pub ac: ModePolicy,
     pub battery: ModePolicy,
+    pub conflicts: Conflicts,
+    #[serde(default)]
+    pub kernel_modules: KernelModules,
+    #[serde(default)]
+    pub capabilities: Vec<Capability>,
+}
+
+/// Units, packages and modules from earlier Legion tooling that fight this policy.
+#[derive(Debug, Default, Deserialize)]
+pub struct Conflicts {
+    #[serde(default)]
+    pub systemd_units: Vec<String>,
+    #[serde(default)]
+    pub packages: Vec<String>,
+    #[serde(default)]
+    pub modules: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct KernelModules {
+    #[serde(default)]
+    pub required: Vec<String>,
+    #[serde(default)]
+    pub unwanted_autoload: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, serde::Serialize)]
+pub struct Capability {
+    pub id: String,
+    pub name: String,
+    pub status: Option<String>,
+    pub current_owner: Option<String>,
+    pub planned_owner: Option<String>,
+    pub notes: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,6 +116,8 @@ pub struct Nvidia {
     pub start_powerd: bool,
     #[serde(default)]
     pub set_persistence_mode: bool,
+    /// NVIDIA board power limit expected on AC; nvidia-powerd may add up to 25 W (Dynamic Boost).
+    pub expected_dynamic_power_w: Option<f64>,
 }
 
 /// Text written to a sysfs file for a profile value: strings as they are, numbers in decimal.

@@ -15,7 +15,11 @@ fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap().flatten() {
         let target = to.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
+        let kind = entry.file_type().unwrap();
+        if kind.is_symlink() {
+            // driver links point outside the tree (../../bus/pci/drivers/...); keep them as links
+            std::os::unix::fs::symlink(std::fs::read_link(entry.path()).unwrap(), &target).unwrap();
+        } else if kind.is_dir() {
             copy_tree(&entry.path(), &target);
         } else {
             std::fs::copy(entry.path(), &target).unwrap();
@@ -213,4 +217,110 @@ fn refuses_to_apply_on_a_machine_that_is_not_this_model() {
         String::from_utf8_lossy(&out.stderr).contains("product_name: expected '82WQ', got '82WK'")
     );
     assert_eq!(m.file(PROFILE_PATH), "max-power", "nothing written");
+}
+
+#[test]
+fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
+    let m = Machine::new("doctor");
+    let bin = m.dir.join("bin");
+    // unplugged, but the firmware and CPU still run the AC policy
+    m.set("/sys/class/power_supply/ADP0/online", "0");
+    // an old Legion daemon is running and its package is installed
+    Machine::script(
+        &bin,
+        "systemctl",
+        "if [ \"$1\" = is-active ] && [ \"$2\" = legiond.service ]; then echo active; \
+         elif [ \"$1\" = is-active ]; then echo inactive; else echo disabled; fi",
+    );
+    Machine::script(&bin, "pacman", "[ \"$2\" = lenovolegionlinux-git ]");
+    // acpi_call is not available for the bore-lto kernel, and DKMS built it only for the other one
+    Machine::script(
+        &bin,
+        "modinfo",
+        "if [ \"$5\" = acpi_call ] && [ \"$2\" = 7.2.9-2-cachyos-bore-lto ]; then exit 1; fi; echo /m/$5.ko",
+    );
+    Machine::script(
+        &bin,
+        "dkms",
+        "echo 'acpi_call/1.2.2, 7.2.9-2-cachyos, x86_64: installed'",
+    );
+    Machine::script(
+        &bin,
+        "journalctl",
+        "echo 'kernel: ntfs3(nvme0n1p3): volume is dirty'",
+    );
+
+    let out = m.legion(&["doctor"]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "findings fail the command: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report = String::from_utf8(out.stdout).unwrap();
+    let lines: Vec<&str> = report.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "doctor: warnings",
+            "- platform_profile is 'max-power', expected 'balanced'",
+            "- 32 cpufreq policies are not using governor 'powersave'",
+            "- 32 cpufreq policies are not using EPP 'balance_power'",
+            "- conflicting unit legiond.service: active=active, enabled=disabled",
+            "- conflicting package is installed: lenovolegionlinux-git",
+            "- required module acpi_call is missing for kernel 7.2.9-2-cachyos-bore-lto",
+            "- /etc/modules-load.d/acpi.conf autoloads acpi_call, which does not exist for 7.2.9-2-cachyos-bore-lto (fails every boot)",
+            "- DKMS module acpi_call/1.2.2 is not built for kernel 7.2.9-2-cachyos-bore-lto",
+            "- NTFS volume nvme0n1p3 is marked dirty; run chkdsk in Windows (or ntfsfix -d, see docs/design/11-disks.md)",
+            "- an external display runs on NVIDIA but the desktop may be drawn on Intel; try `legionctl gpu primary nvidia`",
+        ]
+    );
+}
+
+#[test]
+fn cleanup_disables_running_conflicts_and_only_warns_about_packages_unless_asked() {
+    let m = Machine::new("cleanup");
+    let bin = m.dir.join("bin");
+    Machine::script(
+        &bin,
+        "systemctl",
+        &format!(
+            "echo \"systemctl $*\" >> {log}; \
+             if [ \"$1\" = is-active ] && [ \"$2\" = legiond.service ]; then echo active; \
+             elif [ \"$1\" = is-active ]; then echo inactive; elif [ \"$1\" = is-enabled ]; then echo disabled; fi",
+            log = m.dir.join("calls.log").display()
+        ),
+    );
+    Machine::script(
+        &bin,
+        "pacman",
+        &format!(
+            "echo \"pacman $*\" >> {}; [ \"$2\" = lenovolegionlinux-git ]",
+            m.dir.join("calls.log").display()
+        ),
+    );
+
+    let out = m.ok(&["cleanup"]);
+    assert!(out.contains("conflicting package is installed but was not removed without --remove-packages: lenovolegionlinux-git"), "{out}");
+    let calls = m.calls();
+    assert!(
+        calls.contains(&"systemctl disable --now legiond.service".into()),
+        "{calls:?}"
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|c| c.starts_with("systemctl disable --now powersaver")),
+        "quiet units stay: {calls:?}"
+    );
+    assert!(
+        !calls.iter().any(|c| c.starts_with("pacman -Rns")),
+        "{calls:?}"
+    );
+
+    m.ok(&["cleanup", "--remove-packages", "--quiet"]);
+    assert!(
+        m.calls()
+            .contains(&"pacman -Rns lenovolegionlinux-git".into())
+    );
 }

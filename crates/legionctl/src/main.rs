@@ -44,6 +44,33 @@ impl SourceArg {
     }
 }
 
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum GpuAction {
+    Status,
+    Primary,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum GpuChoice {
+    Nvidia,
+    Intel,
+    Auto,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum RunGpu {
+    Nvidia,
+    Intel,
+    Default,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum Cores {
+    P,
+    E,
+    All,
+}
+
 #[derive(clap::Args)]
 struct PolicyArgs {
     /// Profile (JSONC); default: the installed one
@@ -85,6 +112,43 @@ enum Command {
         #[command(flatten)]
         args: PolicyArgs,
     },
+    /// Show GPU wiring, or choose which GPU draws the desktop (at the next login)
+    Gpu {
+        #[arg(value_enum, default_value = "status")]
+        action: GpuAction,
+        #[arg(value_enum)]
+        choice: Option<GpuChoice>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Run a program on a chosen GPU, core class and priority
+    Run {
+        #[arg(long, value_enum, default_value = "default")]
+        gpu: RunGpu,
+        #[arg(long, value_enum, default_value = "all")]
+        cores: Cores,
+        /// Absolute niceness for the program
+        #[arg(long, allow_hyphen_values = true)]
+        nice: Option<i32>,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        cmd: Vec<String>,
+    },
+    /// Disable conflicting units from earlier Legion tooling; optionally unload modules and remove packages
+    Cleanup {
+        #[command(flatten)]
+        args: PolicyArgs,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        unload_modules: bool,
+        #[arg(long)]
+        remove_packages: bool,
+    },
+    /// Known and planned capability coverage from the profile
+    Capabilities {
+        #[arg(long)]
+        profile: Option<PathBuf>,
+    },
     /// Check the profile's structure and ac/battery consistency (no hardware access)
     Validate {
         #[arg(long)]
@@ -94,6 +158,9 @@ enum Command {
     Status {
         #[arg(long)]
         json: bool,
+        /// Profile (JSONC); default: the installed one
+        #[arg(long)]
+        profile: Option<PathBuf>,
     },
     /// System load level and why
     Load {
@@ -107,7 +174,11 @@ enum Command {
         only_busy: bool,
     },
     /// Read-only health checks (legionctl doctor)
-    Doctor,
+    Doctor {
+        /// Profile (JSONC); default: the installed one
+        #[arg(long)]
+        profile: Option<PathBuf>,
+    },
     /// Claude Code and Codex settings files: present, valid, which sections
     Agents {
         #[arg(long, default_value = ".")]
@@ -307,13 +378,69 @@ fn main() -> Result<()> {
             dry_run: args.dry_run,
             quiet: args.quiet,
         })?,
+        Command::Gpu {
+            action,
+            choice,
+            dry_run,
+        } => match (action, choice) {
+            (GpuAction::Status, _) => machine::gpu_status(),
+            (GpuAction::Primary, None) => anyhow::bail!("gpu primary needs nvidia, intel or auto"),
+            (GpuAction::Primary, Some(c)) => machine::gpu_primary(
+                match c {
+                    GpuChoice::Nvidia => "nvidia",
+                    GpuChoice::Intel => "intel",
+                    GpuChoice::Auto => "auto",
+                },
+                dry_run,
+            )?,
+        },
+        Command::Run {
+            gpu,
+            cores,
+            nice,
+            cmd,
+        } => {
+            let cmd: Vec<String> = cmd.into_iter().skip_while(|a| a == "--").collect();
+            machine::run(
+                match gpu {
+                    RunGpu::Nvidia => "nvidia",
+                    RunGpu::Intel => "intel",
+                    RunGpu::Default => "default",
+                },
+                match cores {
+                    Cores::P => "p",
+                    Cores::E => "e",
+                    Cores::All => "all",
+                },
+                nice,
+                &cmd,
+            )?
+        }
+        Command::Cleanup {
+            args,
+            force,
+            unload_modules,
+            remove_packages,
+        } => machine::cleanup(
+            machine::Run {
+                profile: args.profile.as_deref(),
+                dry_run: args.dry_run,
+                quiet: args.quiet,
+            },
+            legionctl_machine::cleanup::Options {
+                force,
+                unload_modules,
+                remove_packages,
+            },
+        )?,
+        Command::Capabilities { profile } => machine::capabilities(profile.as_deref())?,
         Command::Validate { profile } => {
             if !machine::validate(profile.as_deref())? {
                 std::process::exit(1);
             }
         }
-        Command::Status { json } => {
-            let s = machine::snapshot(None, Detail::Full)?;
+        Command::Status { json, profile } => {
+            let s = machine::snapshot(profile.as_deref(), Detail::Full)?;
             if json {
                 print_json(&s)?;
             } else {
@@ -332,7 +459,13 @@ fn main() -> Result<()> {
                 println!("{}", load::brief(&l));
             }
         }
-        Command::Doctor => print!("{}", actions::doctor()?),
+        Command::Doctor { profile } => {
+            let (clean, report) = machine::doctor(profile.as_deref())?;
+            print!("{report}");
+            if !clean {
+                std::process::exit(1);
+            }
+        }
         Command::Agents { project, json } => {
             let home = std::env::var_os("HOME")
                 .map(PathBuf::from)

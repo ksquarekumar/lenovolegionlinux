@@ -116,8 +116,8 @@ impl Legion {
         description = "Read-only health checks of power policy, kernel modules, DKMS, GPU placement and conflicts (legionctl doctor)."
     )]
     fn doctor(&self) -> CallToolResult {
-        actions::doctor().map_or_else(fail, |text| {
-            CallToolResult::success(vec![Content::text(text)])
+        crate::machine::doctor(None).map_or_else(fail, |(_, report)| {
+            CallToolResult::success(vec![Content::text(report)])
         })
     }
 

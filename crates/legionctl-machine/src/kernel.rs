@@ -1,7 +1,7 @@
 //! Kernel modules this machine relies on: loaded, built in, available for every installed kernel, autoloaded, and
 //! built by DKMS (docs/design/08-kernel.md).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
 
@@ -25,18 +25,19 @@ pub fn parse_modules_load(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// module → the first modules-load.d file that loads it.
-pub fn autoload_entries(root: &SysRoot) -> BTreeMap<String, String> {
-    let mut entries = BTreeMap::new();
+/// `(module, first modules-load.d file that loads it)`, in the order the files and lines appear.
+pub fn autoload_entries(root: &SysRoot) -> Vec<(String, String)> {
+    let mut entries: Vec<(String, String)> = Vec::new();
     for dir in MODULES_LOAD_DIRS {
         for conf in root.children(dir, "") {
             if conf.extension().is_none_or(|e| e != "conf") {
                 continue;
             }
             for module in parse_modules_load(&root.read(&conf).unwrap_or_default()) {
-                entries
-                    .entry(module.replace('-', "_"))
-                    .or_insert_with(|| conf.display().to_string());
+                let module = module.replace('-', "_");
+                if !entries.iter().any(|(m, _)| *m == module) {
+                    entries.push((module, conf.display().to_string()));
+                }
             }
         }
     }

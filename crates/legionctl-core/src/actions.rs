@@ -7,15 +7,6 @@ use anyhow::{Context, Result, ensure};
 
 const LEGIONCTL: &str = "/usr/bin/legionctl";
 
-/// Read-only checks run as the calling user and need no approval.
-pub fn doctor() -> Result<String> {
-    let out = Command::new(LEGIONCTL)
-        .arg("doctor")
-        .output()
-        .context("running legionctl doctor")?;
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
 /// The exact command an approved action would run, shown to the human before they approve.
 pub fn approved_command(action: &str, value: &str) -> Result<Vec<String>> {
     let args: Vec<&str> = match action {

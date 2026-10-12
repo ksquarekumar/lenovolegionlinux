@@ -232,3 +232,152 @@ pub fn print_status(s: &Snapshot) {
     println!("modules: {}", modules.join(", "));
     println!("{}", legionctl_machine::load::brief(&s.load));
 }
+
+/// Findings as a report: `doctor: warnings` and one line per finding, or `doctor: no obvious conflicts`.
+pub fn doctor(profile: Option<&Path>) -> Result<(bool, String)> {
+    let (profile, _) = profile::load(profile)?;
+    let root = SysRoot::from_env();
+    let findings = legionctl_machine::doctor::doctor(&machine(&root, &profile));
+    let report = if findings.is_empty() {
+        "doctor: no obvious conflicts\n".to_string()
+    } else {
+        let lines: String = findings.iter().map(|f| format!("- {f}\n")).collect();
+        format!("doctor: warnings\n{lines}")
+    };
+    Ok((findings.is_empty(), report))
+}
+
+pub fn gpu_status() {
+    let root = SysRoot::from_env();
+    let outputs = legionctl_machine::gpu::outputs(&root);
+    println!("gpu_mode: {}", legionctl_machine::gpu::mode(&outputs));
+    println!(
+        "desktop GPU preference: {} (Mutter reads it at login)",
+        legionctl_machine::gpu::desktop_preference(&root)
+    );
+    for o in outputs {
+        println!(
+            "  {}: {} ({}) {}",
+            o.connector,
+            o.card,
+            o.driver,
+            if o.connected { "connected" } else { "-" }
+        );
+    }
+}
+
+/// Which GPU Mutter draws the desktop on (`nvidia`, `intel`, `auto`); takes effect at the next login.
+pub fn gpu_primary(choice: &str, dry_run: bool) -> Result<()> {
+    use legionctl_machine::gpu::{PRIMARY_GPU_RULE, primary_rule};
+    let root = SysRoot::from_env();
+    let rule_path = root.path(PRIMARY_GPU_RULE);
+    if choice == "auto" {
+        if rule_path.exists() && !dry_run {
+            std::fs::remove_file(&rule_path)?;
+        }
+        println!("removed {PRIMARY_GPU_RULE}; Mutter picks the GPU of the built-in panel");
+    } else {
+        let rule = primary_rule(choice)
+            .ok_or_else(|| anyhow::anyhow!("gpu primary needs nvidia, intel or auto"))?;
+        if dry_run {
+            println!("would write {PRIMARY_GPU_RULE}:\n{rule}");
+        } else {
+            std::fs::write(&rule_path, rule)?;
+            println!("wrote {PRIMARY_GPU_RULE}");
+        }
+    }
+    let (profile, _) = profile::load(None)?;
+    let m = machine(&root, &profile);
+    let mut steps = Vec::new();
+    m.run(&mut steps, &["udevadm", "control", "--reload"]);
+    m.run(&mut steps, &["udevadm", "trigger", "--subsystem-match=drm"]);
+    finish(&root, &steps, dry_run, false);
+    println!("log out and back in for GNOME to draw the desktop on the new GPU");
+    Ok(())
+}
+
+/// Niceness of this process, from /proc/self/stat (field 19).
+fn current_nice() -> i32 {
+    std::fs::read_to_string("/proc/self/stat")
+        .ok()
+        .and_then(|s| {
+            s.rsplit_once(')')?
+                .1
+                .split_whitespace()
+                .nth(16)?
+                .parse()
+                .ok()
+        })
+        .unwrap_or(0)
+}
+
+/// Replace this process with `cmd`, rendering on `gpu`, pinned to a core class, at an absolute niceness.
+pub fn run(gpu: &str, cores: &str, nice: Option<i32>, cmd: &[String]) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    anyhow::ensure!(
+        !cmd.is_empty(),
+        "usage: legionctl run [--gpu nvidia|intel] [--cores p|e] [--nice N] -- command ..."
+    );
+    let root = SysRoot::from_env();
+    let mut argv: Vec<String> = cmd.to_vec();
+    if let Some(n) = nice {
+        // `nice -n` is relative to the caller's niceness; make --nice the absolute value the program gets
+        argv = [
+            vec!["nice".into(), "-n".into(), (n - current_nice()).to_string()],
+            argv,
+        ]
+        .concat();
+    }
+    if cores != "all" {
+        let cpus = legionctl_machine::gpu::core_class_cpus(&root, cores).ok_or_else(|| {
+            anyhow::anyhow!("this CPU does not report performance/efficiency core groups")
+        })?;
+        // a transient scope pins the program and everything it starts; keep `$` in the command literal
+        let scope = [
+            "systemd-run",
+            "--user",
+            "--scope",
+            "--quiet",
+            "--expand-environment=no",
+            "-p",
+        ];
+        argv = [
+            scope.iter().map(|s| s.to_string()).collect(),
+            vec![format!("AllowedCPUs={cpus}"), "--".into()],
+            argv,
+        ]
+        .concat();
+    }
+    let err = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .envs(legionctl_machine::gpu::render_env(&root, gpu))
+        .exec();
+    Err(err.into())
+}
+
+pub fn cleanup(run: Run, opts: legionctl_machine::cleanup::Options) -> Result<()> {
+    let (profile, _) = profile::load(run.profile)?;
+    let root = SysRoot::from_env();
+    let steps = legionctl_machine::cleanup::plan(&machine(&root, &profile), opts)?;
+    finish(&root, &steps, run.dry_run, run.quiet);
+    if !run.quiet {
+        println!("cleanup completed");
+    }
+    Ok(())
+}
+
+pub fn capabilities(path: Option<&Path>) -> Result<()> {
+    let (profile, _) = profile::load(path)?;
+    println!("profile: {}", profile.id);
+    for c in &profile.capabilities {
+        println!("{}: {}", c.id, c.name);
+        let or = |v: &Option<String>| v.clone().unwrap_or_else(|| "unknown".into());
+        println!("  status: {}", or(&c.status));
+        println!("  current_owner: {}", or(&c.current_owner));
+        println!("  planned_owner: {}", or(&c.planned_owner));
+        if let Some(notes) = &c.notes {
+            println!("  notes: {notes}");
+        }
+    }
+    Ok(())
+}
