@@ -48,10 +48,17 @@ impl Machine {
         Self::script(
             &bin,
             "powerprofilesctl",
+            // like the real daemon: intel_pstate refuses EPP changes while the governor is performance
             &format!(
-                "if [ \"$1\" = get ]; then cat {ppd}; else echo \"powerprofilesctl $*\" >> {log}; echo \"$2\" > {ppd}; fi",
+                "if [ \"$1\" = get ]; then read -r p < {ppd}; echo \"$p\"; exit 0; fi\n\
+                 if [ \"$2\" != performance ] && {{ read -r g < {gov}; [ \"$g\" = performance ]; }}; then\n\
+                 echo \"Failed to activate CPU driver intel_pstate: Device or resource busy\" >&2; exit 1; fi\n\
+                 echo \"powerprofilesctl $*\" >> {log}; echo \"$2\" > {ppd}",
                 ppd = ppd.display(),
-                log = log.display()
+                log = log.display(),
+                gov = dir
+                    .join("root/sys/devices/system/cpu/cpufreq/policy0/scaling_governor")
+                    .display()
             ),
         );
         Machine { dir }
@@ -162,14 +169,15 @@ fn unplug_fn_q_resume_and_replug_follow_the_policy_and_the_users_choice() {
 
     // unplug: battery policy, firmware custom mode with the battery limits, recorded as our own write
     m.set("/sys/class/power_supply/ADP0/online", "0");
-    m.ok(&["apply", "auto", "--quiet"]);
+    let out = m.ok(&["apply", "auto", "--quiet"]);
+    assert!(!out.contains("warning"), "unplug applies cleanly: {out}");
     assert_eq!(m.file(PROFILE_PATH), "custom");
     assert_eq!(m.file(WRITTEN), "custom");
     assert_eq!(
         (m.limit("ppt_pl1_spl"), m.limit("ppt_pl2_sppt")),
         ("30".into(), "55".into())
     );
-    assert_eq!(m.limit("gpu_nv_ctgp"), "80");
+    assert_eq!(m.limit("gpu_nv_ac_offset"), "55");
     assert_eq!(m.governors(), ["powersave"]);
     assert_eq!(
         m.file("/sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference"),
@@ -215,7 +223,7 @@ fn unplug_fn_q_resume_and_replug_follow_the_policy_and_the_users_choice() {
         (m.limit("ppt_pl1_spl"), m.limit("ppt_pl2_sppt")),
         ("90".into(), "135".into())
     );
-    assert_eq!(m.limit("gpu_nv_ctgp"), "150");
+    assert_eq!(m.limit("gpu_nv_ac_offset"), "75");
     assert!(m.calls().contains(&"nvidia-smi -i 0 -pm 1".into()));
 }
 

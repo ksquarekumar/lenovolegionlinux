@@ -382,6 +382,8 @@ def apply_mode(runner, profile, mode, force=False, reassert=False, keep_override
         apply_follow_policy(runner, profile, override)
     else:
         apply_firmware_policy(runner, profile, mode)
+        # intel_pstate refuses EPP writes while the governor is performance, which makes PPD fail; governor first
+        write_cpufreq(runner, "scaling_governor", profile[mode].get("cpu", {}).get("governor"))
         apply_power_profile(runner, profile, mode)
         if reassert:
             # power-profiles-daemon rewrites governor/EPP on profile changes; reassert wins them back

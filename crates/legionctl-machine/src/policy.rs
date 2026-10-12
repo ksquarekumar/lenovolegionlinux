@@ -317,6 +317,12 @@ impl Machine<'_> {
             self.follow_policy(&mut steps, mode);
         } else {
             self.firmware_policy(&mut steps, policy);
+            // intel_pstate refuses EPP writes while the governor is performance, which makes PPD fail; governor first
+            self.cpufreq(
+                &mut steps,
+                "scaling_governor",
+                policy.cpu.governor.as_deref(),
+            );
             self.power_profile(&mut steps, policy.power_profile.as_deref());
             if opts.reassert {
                 // power-profiles-daemon rewrites governor/EPP on profile changes; reassert wins them back
@@ -390,8 +396,8 @@ pub fn execute(root: &SysRoot, steps: &[Step]) -> Vec<String> {
     for step in steps {
         match step {
             Step::Write { path, value } => {
-                if std::fs::write(root.path(path), format!("{value}\n")).is_err() {
-                    out.push(format!("warning: path is not writable: {path}"));
+                if let Err(e) = std::fs::write(root.path(path), format!("{value}\n")) {
+                    out.push(format!("warning: path is not writable: {path} ({e})"));
                     continue;
                 }
                 out.push(format!("wrote {path}: {value}"));

@@ -169,11 +169,8 @@
     "firmware_attributes": {
       "ppt_pl1_spl": 90,
       "ppt_pl2_sppt": 135,
-      "ppt_pl1_tau": 112,
       "ppt_cpu_cl": 75,
       "cpu_temp": 100,
-      "gpu_nv_ctgp": 150,
-      "gpu_nv_ppab": 25,
       "gpu_nv_ac_offset": 75,
       "gpu_temp": 87
     }
@@ -199,11 +196,8 @@
     "firmware_attributes": {
       "ppt_pl1_spl": 30,
       "ppt_pl2_sppt": 55,
-      "ppt_pl1_tau": 56,
       "ppt_cpu_cl": 55,
       "cpu_temp": 97,
-      "gpu_nv_ctgp": 80,
-      "gpu_nv_ppab": 15,
       "gpu_nv_ac_offset": 55,
       "gpu_temp": 87
     }
