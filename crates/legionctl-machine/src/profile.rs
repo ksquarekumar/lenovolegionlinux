@@ -45,8 +45,9 @@ pub struct ModePolicy {
     pub cpu: Cpu,
     #[serde(default)]
     pub firmware: Firmware,
+    /// Written in file order; the firmware may care which limit changes first.
     #[serde(default)]
-    pub firmware_attributes: BTreeMap<String, Value>,
+    pub firmware_attributes: serde_json::Map<String, Value>,
     #[serde(default)]
     pub nvidia: Nvidia,
     pub power_profile: Option<String>,

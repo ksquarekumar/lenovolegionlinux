@@ -1,5 +1,6 @@
-//! End-to-end: the power policy commands against a recorded sysroot of this machine (2026-10-12, on AC with the AC
-//! policy applied), with logging stand-ins for powerprofilesctl, cpupower, systemctl and nvidia-smi.
+//! End-to-end: the power policy commands against a recorded sysroot of this machine (2026-10-12, on AC in max-power,
+//! before custom mode carried the limits), with logging stand-ins for powerprofilesctl, cpupower, systemctl and
+//! nvidia-smi.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -129,27 +130,46 @@ impl Machine {
     }
 }
 
-const PROFILE_PATH: &str = "/sys/firmware/acpi/platform_profile";
+const PROFILE_PATH: &str = "/sys/class/platform-profile/platform-profile-0/profile";
+const LIMITS: &str = "/sys/class/firmware-attributes/lenovo-wmi-other-0/attributes";
 const OVERRIDE: &str = "/run/legionctl/firmware-override";
 const WRITTEN: &str = "/run/legionctl/firmware-written";
 
+impl Machine {
+    fn limit(&self, name: &str) -> String {
+        self.file(&format!("{LIMITS}/{name}/current_value"))
+    }
+}
+
 #[test]
-fn a_machine_already_in_ac_policy_gets_no_writes() {
+fn ac_policy_moves_max_power_to_custom_once_and_then_writes_nothing() {
     let m = Machine::new("steady");
-    let out = m.ok(&["apply", "auto", "--dry-run"]);
-    assert!(!out.contains("would write"), "{out}");
-    assert!(out.ends_with("applied ac policy\n"), "{out}");
+    let first = m.ok(&["apply", "auto", "--dry-run"]);
+    assert!(
+        first.contains(&format!("would write {PROFILE_PATH}: custom")),
+        "{first}"
+    );
+    m.ok(&["apply", "auto", "--quiet"]);
+    assert_eq!(m.file(PROFILE_PATH), "custom");
+    let second = m.ok(&["apply", "auto", "--dry-run"]);
+    assert!(!second.contains("would write"), "second apply: {second}");
+    assert!(second.ends_with("applied ac policy\n"), "{second}");
 }
 
 #[test]
 fn unplug_fn_q_resume_and_replug_follow_the_policy_and_the_users_choice() {
     let m = Machine::new("cycle");
 
-    // unplug: battery policy, firmware balanced, recorded as our own write
+    // unplug: battery policy, firmware custom mode with the battery limits, recorded as our own write
     m.set("/sys/class/power_supply/ADP0/online", "0");
     m.ok(&["apply", "auto", "--quiet"]);
-    assert_eq!(m.file(PROFILE_PATH), "balanced");
-    assert_eq!(m.file(WRITTEN), "balanced");
+    assert_eq!(m.file(PROFILE_PATH), "custom");
+    assert_eq!(m.file(WRITTEN), "custom");
+    assert_eq!(
+        (m.limit("ppt_pl1_spl"), m.limit("ppt_pl2_sppt")),
+        ("30".into(), "55".into())
+    );
+    assert_eq!(m.limit("gpu_nv_ctgp"), "80");
     assert_eq!(m.governors(), ["powersave"]);
     assert_eq!(
         m.file("/sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference"),
@@ -189,8 +209,13 @@ fn unplug_fn_q_resume_and_replug_follow_the_policy_and_the_users_choice() {
         "{out}"
     );
     assert_eq!(m.file(OVERRIDE), "<missing>");
-    assert_eq!(m.file(PROFILE_PATH), "max-power");
-    assert_eq!(m.file(WRITTEN), "max-power");
+    assert_eq!(m.file(PROFILE_PATH), "custom");
+    assert_eq!(m.file(WRITTEN), "custom");
+    assert_eq!(
+        (m.limit("ppt_pl1_spl"), m.limit("ppt_pl2_sppt")),
+        ("90".into(), "135".into())
+    );
+    assert_eq!(m.limit("gpu_nv_ctgp"), "150");
     assert!(m.calls().contains(&"nvidia-smi -i 0 -pm 1".into()));
 }
 

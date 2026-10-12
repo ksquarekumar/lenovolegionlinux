@@ -20,8 +20,8 @@
   },
   "paths": {
     "ac_adapter": "/sys/class/power_supply/ADP0/online",
-    "platform_profile": "/sys/firmware/acpi/platform_profile",
-    "platform_profile_choices": "/sys/firmware/acpi/platform_profile_choices",
+    "platform_profile": "/sys/class/platform-profile/platform-profile-0/profile",
+    "platform_profile_choices": "/sys/class/platform-profile/platform-profile-0/choices",
     "fan_mode": "/sys/devices/pci0000:00/0000:00:1f.0/PNP0C09:00/VPC2004:00/fan_mode",
     "wmi_other_method": "\\_SB_.GZFD.WMAE"
   },
@@ -117,37 +117,33 @@
     "vm.swappiness": "150"
   },
   "firmware_follow": {
-    "max-power": { "power_profile": "performance", "governor": "performance" },
-    "performance": { "power_profile": "performance", "governor": "performance" },
-    "custom": { "power_profile": "performance", "governor": "performance" },
-    "balanced": { "power_profile": "balanced", "governor": "powersave" },
-    "low-power": { "power_profile": "power-saver", "governor": "powersave" },
-    "quiet": { "power_profile": "power-saver", "governor": "powersave" }
+    "max-power": {
+      "power_profile": "performance",
+      "governor": "performance"
+    },
+    "performance": {
+      "power_profile": "performance",
+      "governor": "performance"
+    },
+    "custom": {
+      "power_profile": "performance",
+      "governor": "performance"
+    },
+    "balanced": {
+      "power_profile": "balanced",
+      "governor": "powersave"
+    },
+    "low-power": {
+      "power_profile": "power-saver",
+      "governor": "powersave"
+    },
+    "quiet": {
+      "power_profile": "power-saver",
+      "governor": "powersave"
+    }
   },
   "ac": {
-    "cpu_power": {
-      "nominal_uw": 55000000,
-      "long_uw": 70000000,
-      "loaded_long_uw": 70000000,
-      "short_uw": 125000000,
-      "peak_uw": 125000000
-    },
-    "rapl": {
-      "package_zone_names": ["package-0"],
-      "constraints": {
-        "long_term": {
-          "power_limit_uw": 85000000,
-          "time_window_us": 55967744
-        },
-        "short_term": {
-          "power_limit_uw": 125000000,
-          "time_window_us": 2928
-        },
-        "peak_power": {
-          "power_limit_uw": 125000000
-        }
-      }
-    },
+    "rapl": {},
     "cpu": {
       "ignore_ppc": "1",
       "no_turbo": "0",
@@ -158,7 +154,9 @@
       "enable_all_idle_states": true
     },
     "firmware": {
-      "platform_profile_preference": ["max-power", "performance"],
+      "platform_profile_preference": [
+        "custom"
+      ],
       "fan_mode": null
     },
     "nvidia": {
@@ -167,25 +165,21 @@
       "set_persistence_mode": true,
       "expected_dynamic_power_w": 150
     },
-    "power_profile": "performance"
+    "power_profile": "performance",
+    "firmware_attributes": {
+      "ppt_pl1_spl": 90,
+      "ppt_pl2_sppt": 135,
+      "ppt_pl1_tau": 112,
+      "ppt_cpu_cl": 75,
+      "cpu_temp": 100,
+      "gpu_nv_ctgp": 150,
+      "gpu_nv_ppab": 25,
+      "gpu_nv_ac_offset": 75,
+      "gpu_temp": 87
+    }
   },
   "battery": {
-    "rapl": {
-      "package_zone_names": ["package-0"],
-      "constraints": {
-        "long_term": {
-          "power_limit_uw": 25000000,
-          "time_window_us": 55967744
-        },
-        "short_term": {
-          "power_limit_uw": 35000000,
-          "time_window_us": 2928
-        },
-        "peak_power": {
-          "power_limit_uw": 45000000
-        }
-      }
-    },
+    "rapl": {},
     "cpu": {
       "ignore_ppc": "0",
       "no_turbo": "0",
@@ -196,10 +190,23 @@
       "enable_all_idle_states": true
     },
     "firmware": {
-      "platform_profile_preference": ["balanced", "low-power", "quiet"],
+      "platform_profile_preference": [
+        "custom"
+      ],
       "fan_mode": null
     },
-    "power_profile": "balanced"
+    "power_profile": "balanced",
+    "firmware_attributes": {
+      "ppt_pl1_spl": 30,
+      "ppt_pl2_sppt": 55,
+      "ppt_pl1_tau": 56,
+      "ppt_cpu_cl": 55,
+      "cpu_temp": 97,
+      "gpu_nv_ctgp": 80,
+      "gpu_nv_ppab": 15,
+      "gpu_nv_ac_offset": 55,
+      "gpu_temp": 87
+    }
   },
   "conflicts": {
     "systemd_units": [
@@ -243,6 +250,11 @@
       "nvidia_drm",
       "tcp_bbr"
     ],
-    "unwanted_autoload": ["thinkpad_acpi", "wl", "kvmgt", "vfio_mdev"]
+    "unwanted_autoload": [
+      "thinkpad_acpi",
+      "wl",
+      "kvmgt",
+      "vfio_mdev"
+    ]
   }
 }
