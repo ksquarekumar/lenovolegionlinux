@@ -24,20 +24,17 @@ commit on the base branch, after approval.
 
 ```
 ~/.agentworkspace/
-  workspace.db                 SQLite (WAL): workspaces, entities, objectives, changes, sessions, events
+  dossier.toml                 global default: folder pattern, statuses, hooks (seeded from the package default)
+  workspace.db                 SQLite (WAL): workspaces, entities, objectives, work graph, sessions, events
   codegraphs/<repo-id>.db      one ctx graph per unique repo (ctx graph index --db ...), updated after each change set
   <name>/
-    dossier.toml               title, objectives Y1..Yn, entities, operating directories, status
-    plan/                      change sets: what changes where, toward which objective, in which order
-    evidence/                  proofs, prototypes, research, crawls
-    verify/                    e2e, UI and eval results per objective
-    scratch/                   anything else
-    log.jsonl                  intent and decisions, read before each change set starts
+    dossier.toml               this workspace only: title, objectives, entities; may add or override folders
+    <folders from the pattern>
 ```
 
-- The folders under `<name>/` are a named, flexible pattern, not a fixed schema: the ones above are the default
-  pattern, and a workspace can add its own (for example `homework/`, `prototypes/`, `sanity/`). `dossier.toml`
-  names the pattern and what each folder is for, so tools and agents read it instead of assuming.
+- The folders under `<name>/` follow a named, flexible pattern. The global `~/.agentworkspace/dossier.toml` defines
+  the default pattern (folders, what each is for, statuses, hooks); a workspace's own `dossier.toml` holds only its
+  data and may add folders or override one by name. Tools and agents read the merged result instead of assuming.
 - `<repo-id>` comes from the repo's first commit hash, so clones and worktrees of one repo share one graph.
 - Graphs never live inside a repo: ctx's default (`.graf/index.db` in an ancestor) is not used.
 
@@ -51,6 +48,78 @@ commit on the base branch, after approval.
 | Hook | event (`workspace.open`, `changeset.start`, `changeset.done`, `merge`), action (13 hooks manager) |
 
 Ordering of change sets uses the code graph (12-operator, "Code graph and work ordering").
+
+### Example
+
+`~/.agentworkspace/dossier.toml` (global default):
+
+```toml
+# Default pattern for every workspace; a workspace's dossier.toml may add or override folders by name.
+pattern = "default"
+statuses = ["planned", "pending", "in-progress", "done", "failed", "abandoned"]
+
+[folders.plan]
+purpose = "Change sets: what changes where, toward which objective, in which order"
+
+[folders.homework]
+purpose = "Background reading, notes and questions answered before a change set starts"
+
+[folders.sanity]
+purpose = "Quick checks that an assumption holds (a command and its output, a measurement)"
+
+[folders.evidence]
+purpose = "Proofs, measurements, research and crawls that support a decision or an objective"
+
+[folders.prototypes]
+purpose = "Throw-away code to try an approach before it goes into the product"
+
+[folders.verify]
+purpose = "End-to-end, UI and eval results for each objective"
+
+[folders.scratch]
+purpose = "Anything else; never read by tools"
+
+[hooks]
+"workspace.open" = ["brief"]              # inject the workspace brief into the agent session
+"changeset.start" = ["read-log"]          # show log.jsonl entries for this objective first
+"changeset.done" = ["codegraph-update", "checkpoint"]
+```
+
+`~/.agentworkspace/legion-port/dossier.toml` (one workspace):
+
+```toml
+title = "Port the Python machine tooling to Rust"
+status = "in-progress"
+
+[[entities]]
+id = "lenovolegionlinux"
+type = "repo"
+path = "/data/git/lenovolegionlinux"
+base_ref = "main"
+notes = "Machine tooling; Python legionctl is replaced in one change (docs/design/15-layout.md)"
+
+[[entities]]
+id = "machine-captures"
+type = "folder"
+path = "/data/captures/legion"
+notes = "sysfs and firmware captures used as test fixtures"
+
+[[objectives]]
+id = "Y1"
+outcome = "legionctl-system plans the same writes as the Python tool for AC, battery, Fn+Q, resume and boot"
+verify = "make parity; crates/legionctl/tests/machine.rs"
+status = "in-progress"
+
+[[objectives]]
+id = "Y2"
+outcome = "No Python installed after the switch; units, udev and sleep hook call legionctl-system"
+verify = "pacman -Ql legionctl | grep -c '\\.py$' is 0; a full boot/suspend/Fn+Q cycle on the machine"
+status = "planned"
+
+# this workspace also keeps firmware probe scripts and their logs
+[folders.probes]
+purpose = "acpi_call read and write probes, with the logs of each run"
+```
 
 ## Living work graph
 
