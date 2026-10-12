@@ -87,6 +87,6 @@ Read-only probe on this machine (2026-10-12, `acpi_call`, IsSupport and Get ids 
 | WQA3 rows 0–14 | ladders in 02-platform | fan level → RPM |
 
 Write test 2026-10-12: WMAA 0x0D is a fan max mode, not a ceiling (6,000–6,100 rpm at any load vs 5,100 rpm normal
-maximum; ~+10 % sustained GPU power at the 87 °C limit; 02-platform). Still unverified: whether it survives suspend
-(the first attempt used `rtcwake -m mem`, which skips the NVIDIA suspend services and fails with
-`nv_pmops_suspend returns -5`; suspend must go through `systemctl suspend`).
+maximum; ~+10 % sustained GPU power at the 87 °C limit; 02-platform). It does not survive suspend (S3 through `systemctl suspend`;
+`rtcwake -m mem` skips the NVIDIA suspend services and fails with `nv_pmops_suspend returns -5`), so it is
+re-asserted after every resume.
