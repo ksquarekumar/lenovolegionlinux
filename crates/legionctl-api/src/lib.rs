@@ -79,6 +79,22 @@ pub struct Ctx {
 #[serde(transparent)]
 pub struct ClientPath(pub PathBuf);
 
+impl ClientPath {
+    /// The path, which must be absolute: a client resolves it against its own working directory, and a relative
+    /// path (or a field an old client did not send) has no meaning in the operator.
+    ///
+    /// # Errors
+    /// The path is not absolute.
+    pub fn get(&self) -> anyhow::Result<&std::path::Path> {
+        anyhow::ensure!(
+            self.0.is_absolute(),
+            "path '{}' is not absolute; the client must resolve it (an outdated client? restart it)",
+            self.0.display()
+        );
+        Ok(&self.0)
+    }
+}
+
 impl JsonSchema for ClientPath {
     fn schema_name() -> Cow<'static, str> {
         "ClientPath".into()

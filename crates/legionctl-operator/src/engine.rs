@@ -70,8 +70,8 @@ fn home() -> PathBuf {
         .unwrap_or_default()
 }
 
-fn path(p: Option<&ClientPath>) -> Option<&Path> {
-    p.map(|p| p.0.as_path())
+fn path(p: Option<&ClientPath>) -> Result<Option<&Path>> {
+    p.map(ClientPath::get).transpose()
 }
 
 /// The machine, its profile and the Fn+Q ledger, as the planners need them.
@@ -189,12 +189,12 @@ fn gate_message(resolved: &Resolved) -> Result<String> {
 
 /// The config for work in `project` (its repository layer applies), or without a repository.
 fn config(project: Option<&ClientPath>) -> Result<Resolved> {
-    resolve(&Dirs::from_env(), path(project))
+    resolve(&Dirs::from_env(), path(project)?)
 }
 
 impl Engine for Operator {
     fn status(&self, _: &Ctx, input: StatusIn) -> Result<Snapshot> {
-        let plan = Plan::load(path(input.profile.as_ref()))?;
+        let plan = Plan::load(path(input.profile.as_ref())?)?;
         let detail = if input.fast {
             Detail::Fast
         } else {
@@ -216,14 +216,14 @@ impl Engine for Operator {
     }
 
     fn doctor(&self, _: &Ctx, input: ProfileIn) -> Result<Findings> {
-        let plan = Plan::load(path(input.profile.as_ref()))?;
+        let plan = Plan::load(path(input.profile.as_ref())?)?;
         Ok(Findings {
             findings: legionctl_machine::doctor::doctor(&plan.machine()),
         })
     }
 
     fn capabilities(&self, _: &Ctx, input: ProfileIn) -> Result<CapabilityList> {
-        let (profile, _) = profile::load(path(input.profile.as_ref()))?;
+        let (profile, _) = profile::load(path(input.profile.as_ref())?)?;
         Ok(CapabilityList {
             profile_id: profile.id,
             capabilities: profile.capabilities,
@@ -232,7 +232,7 @@ impl Engine for Operator {
 
     fn validate(&self, _: &Ctx, input: ProfileIn) -> Result<Validation> {
         let path =
-            path(input.profile.as_ref()).map_or_else(profile::default_path, Path::to_path_buf);
+            path(input.profile.as_ref())?.map_or_else(profile::default_path, Path::to_path_buf);
         Ok(Validation {
             problems: profile::validate(&path)?,
             path: path.display().to_string(),
@@ -319,7 +319,7 @@ impl Engine for Operator {
     }
 
     fn agents(&self, _: &Ctx, input: ProjectIn) -> Result<ConfigFiles> {
-        Ok(agents::config_files(&home(), &input.project.0))
+        Ok(agents::config_files(&home(), input.project.get()?))
     }
 
     fn worktree_list(&self, _: &Ctx, input: WorktreeListIn) -> Result<Worktrees> {
@@ -329,7 +329,7 @@ impl Engine for Operator {
     fn worktree_create(&self, ctx: &Ctx, input: WorktreeCreateIn) -> Result<Worktree> {
         Self::record(ctx, "worktree.create", &input)?;
         worktree::Store::new(config(None)?.config.worktree.root).create(
-            &input.repo.0,
+            input.repo.get()?,
             &input.name,
             input.base.as_deref(),
         )
@@ -439,7 +439,7 @@ impl Engine for Operator {
             && active.is_none()
             && let Some(s) = session
         {
-            let place = place_of(&input.project.0);
+            let place = place_of(input.project.get()?);
             if let Some(last) = ws.last_in(&place)? {
                 rebound = Some(
                     match ws.bind(&s.0, "hook", &last, false, false, Some(&place)) {
@@ -515,7 +515,7 @@ impl Engine for Operator {
             &input.name,
             input.create,
             input.steal,
-            Some(&place_of(&input.project.0)),
+            Some(&place_of(input.project.get()?)),
         )?;
         Ok(Lines { lines })
     }

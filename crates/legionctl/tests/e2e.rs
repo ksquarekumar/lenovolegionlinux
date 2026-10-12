@@ -403,6 +403,18 @@ fn dossier_write_guard_and_takeover_work_through_the_claude_code_hooks() {
     as_session("s1", &["dossier", "use", "port", "--create"], "");
     as_session("s1", &["dossier", "add", "MEMORY", "intake"], "# Intake\n");
 
+    // a call without an absolute path (an outdated client) is refused, not stored with a relative place
+    let refused = op.run(
+        &home,
+        &[],
+        &["hook", "session-start"],
+        &json!({"session_id": "s5"}).to_string(),
+    );
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("is not absolute"),
+        "{refused:?}"
+    );
+
     // the write guard: only the holder writes into the dossier; other paths are not legionctl's business
     let plan = home.join(".agentworkspace/port/plan.md");
     let denied: Value = serde_json::from_str(&hook(
