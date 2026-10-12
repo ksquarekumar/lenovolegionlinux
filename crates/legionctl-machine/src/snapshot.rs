@@ -75,7 +75,7 @@ pub struct Snapshot {
     pub dmi_mismatches: Vec<DmiMismatch>,
     /// `bios_version`, `bios_release`, `ec_firmware_release`, `board_name`.
     pub firmware_versions: BTreeMap<String, Option<String>>,
-    /// "ac", "battery" or "unknown".
+    /// "ac" (the barrel adapter), "usb-c" (USB-C power only; the battery policy applies), "battery" or "unknown".
     pub power_source: String,
     /// Firmware thermal mode: low-power, balanced, performance, max-power, custom.
     pub platform_profile: Option<String>,
@@ -168,6 +168,13 @@ fn rapl(root: &SysRoot) -> Vec<RaplZone> {
         .collect()
 }
 
+/// USB-C power delivery is online. It gives less than the barrel adapter, so the battery policy applies (issue 41).
+fn usb_c_online(root: &SysRoot) -> bool {
+    root.children("/sys/class/power_supply", "ucsi-source-psy-")
+        .iter()
+        .any(|p| root.read(p.join("online")).as_deref() == Some("1"))
+}
+
 fn package_temp(root: &SysRoot) -> Option<f64> {
     root.children("/sys/class/hwmon", "hwmon")
         .into_iter()
@@ -206,6 +213,7 @@ impl Snapshot {
             .collect(),
             power_source: match root.read(&profile.paths.ac_adapter).as_deref() {
                 Some("1") => "ac".into(),
+                Some("0") if usb_c_online(root) => "usb-c".into(),
                 Some("0") => "battery".into(),
                 _ => "unknown".into(),
             },

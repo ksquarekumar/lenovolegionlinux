@@ -50,7 +50,7 @@ system state outside it, recorded here so they are not lost.
 | 38 | `spd5118` resume errors | `spd5118_resume returns -6` for both DIMM sensors at every resume; sensors read correctly afterwards | host | Kernel driver noise; report upstream if it persists |
 | 39 | Plugging or unplugging never applied the power policy | `legion-apply-ac/battery.service` disabled, no `.wants` links: the udev rule started empty targets; measured on battery in `max-power` with PPD `performance` (2026-10-12) | repo | Fixed by the switch: legionctl-system reacts to power-source events itself — **Fixed by the switch** |
 | 40 | One i915 FIFO underrun when the built-in panel turned on | `CPU pipe A FIFO underrun` at panel enable; no glitch after that | host | Closed unless it repeats |
-| 41 | On USB-C power the Python reassert timer forced the AC policy on battery | the USB-C port (`ucsi-source-psy-USBC000:001`, the monitor) reports `online=1`, so `ConditionACPower` is true while `ADP0` is offline; the battery ran in `max-power` (2026-10-12) | repo | Fixed by the switch (no timer; legionctl-system reads `ADP0`). Open decision: how the policy treats USB-C power that is less than the machine uses |
+| 41 | On USB-C power the Python reassert timer forced the AC policy on battery | the USB-C port (`ucsi-source-psy-USBC000:001`, the monitor) reports `online=1`, so `ConditionACPower` is true while `ADP0` is offline; the battery ran in `max-power` (2026-10-12) | repo | Fixed by the switch (no timer; legionctl-system reads `ADP0`). Decided 2026-10-13: USB-C power uses the battery policy (USB-C PD gives less than the barrel adapter); `status` shows the source as `usb-c` |
 
 ## Cleanups in this repo
 
