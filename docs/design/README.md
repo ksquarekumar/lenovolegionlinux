@@ -17,6 +17,7 @@ the design is explored and are meant to change; decisions and open questions are
 | [09-ux.md](09-ux.md) | UI structure: progressive disclosure levels, views, interaction model |
 | [12-operator.md](12-operator.md) | Operator and agent harness: one core and API for CLI, TUI, GPUI app, MCP and plugins; worktrees, sandboxes, ACP, plans, accounts, gateway |
 | [13-daemon.md](13-daemon.md) | Operator daemon: processes, one-writer SQLite, event log, outbox and sagas, bootstrap, eBPF toolkit, shared memory, failure isolation |
+| [14-sessions.md](14-sessions.md) | Sessions: COW workdirs, git state, packaged skills/MCP with call proxy and cache, sessions as model calls with quotas, pause/offload/resume, git gates, layered config |
 | [issues.md](issues.md) | Issues found on this machine and cleanups to do |
 
 Evidence for every machine-specific claim was collected on 2026-10-12 (CachyOS, kernel 7.2.9, GNOME 51,

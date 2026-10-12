@@ -133,7 +133,7 @@ its own helper agents, such as the work-ordering planner or the intent-log summa
 | --- | --- |
 | 1a (done) | legion-core, legion CLI/TUI/stdio MCP, Claude Code plugin, Codex MCP snippet |
 | 1b | legiond with axum API on a unix socket; legion as client; audit log |
-| 2 | Sandboxed ACP sessions (bwrap), session registry and resume, overlay build caches |
+| 2 | Sandboxed ACP sessions (bwrap), session registry and resume, overlay build caches; detail in 14-sessions |
 | 3 | Plan workspaces, intent log, search, session-declared active plan |
 | 4 | Code graph mapping and dependency ordering of work items |
 | 5 | Settings editing, plugin/MCP/skill management, accounts and usage |
