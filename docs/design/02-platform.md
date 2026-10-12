@@ -30,6 +30,9 @@ W, `ppt_cpu_cl` 55, `ppt_pl1_tau` 56, `gpu_nv_ctgp` 80, `gpu_nv_ppab` 15.
 `ppt_pl1_spl` 60 and `ppt_pl2_sppt` 55 the package held 55 W (the lower limit wins). Each write sets the MMIO
 RAPL PL1 at once, so the firmware enforces through MMIO; no other writer may touch RAPL. Writes to `ppt_pl1_tau`,
 `gpu_nv_ctgp` and `gpu_nv_ppab` (the attributes with no published range) are refused.
+**Battery, measured 2026-10-12:** in `max-power` on battery the firmware itself sets MMIO RAPL PL1 to 45 W (90 W
+on AC; MSR zone 140/190 W); under full load the package runs ~80 W for ~30 s, then 45 W sustained; the battery
+discharges at 78–105 W. The limits of `balanced` on battery are still to be measured.
 
 ## CPU
 

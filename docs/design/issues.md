@@ -41,13 +41,15 @@ system state outside it, recorded here so they are not lost.
 | 30 | VMware leftovers (installed with VMware's own installer) | `/etc/vmware`, `/usr/lib/vmware-installer`, `/var/log/vmware*`, `~/.vmware`, autoload `vmware.conf` | host | Remove — **Fixed: removed** |
 | 31 | `/etc/default/grub` is unused | the machine boots rEFInd via shim; kernel options live in `/boot/refind_linux.conf` | host | Treat `refind_linux.conf` as the source of kernel options in tooling and docs |
 
-| 32 | Phantom I/O pressure (60–80 % "full") with idle disks | one D-state `kworker/*+rcu_gp`; disks 0 ms busy | host | Load classifier gates on disk activity (fixed in legion); root cause open: test with `systemctl stop scx_loader` |
+| 32 | Phantom I/O pressure (60–80 % "full") with idle disks | one D-state `kworker/*+rcu_gp`; disks 0 ms busy | host | Load classifier gates on disk activity (fixed). Not scx_lavd: with scx_loader stopped the stall rose to 72 % with idle disks (2026-10-12); it appears at idle and goes away under CPU load. Root cause open: capture all D-state tasks and their kernel stacks while it shows |
 | 33 | Two `docker` CLIs | `/usr/local/bin/docker` (unowned) shadows `/usr/bin/docker`, both 29.9.0 | host | Remove `/usr/local/bin/docker` |
 | 34 | Docker uses the cgroupfs driver on a systemd, cgroup v2 host | `/etc/docker/daemon.json` `native.cgroupdriver=cgroupfs` | host | Switch to the systemd driver (recreates containers) |
 | 35 | WinBoat holds 16 GiB of 31 GiB RAM | `docker stats` | host | Pause or stop when not in use; memory alert (17-virtualization) |
 | 36 | Docker disk use | 32 GB reclaimable images, 50 GB build cache on `/data` | host | `docker image prune`, `docker builder prune` after review |
 | 37 | Machine wakes from suspend early | S3 on 2026-10-12 woke after ~7 s, before a 40 s RTC alarm; no wake IRQ recorded; USB wake enabled on ITE 8258 keyboard, Logitech receiver, USB LAN | host | Find the source (`/sys/kernel/debug/wakeup_sources`); disable wake on the receiver and LAN if it is them |
 | 38 | `spd5118` resume errors | `spd5118_resume returns -6` for both DIMM sensors at every resume; sensors read correctly afterwards | host | Kernel driver noise; report upstream if it persists |
+| 39 | Plugging or unplugging never applied the power policy | `legion-apply-ac/battery.service` disabled, no `.wants` links: the udev rule started empty targets; measured on battery in `max-power` with PPD `performance` (2026-10-12) | repo | Fixed by the switch: legionctl-system reacts to power-source events itself |
+| 40 | One i915 FIFO underrun when the built-in panel turned on | `CPU pipe A FIFO underrun` at panel enable; no glitch after that | host | Closed unless it repeats |
 
 ## Cleanups in this repo
 
