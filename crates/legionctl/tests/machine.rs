@@ -81,11 +81,9 @@ impl Machine {
     }
 
     fn set(&self, machine_path: &str, value: &str) {
-        std::fs::write(
-            self.dir.join("root").join(&machine_path[1..]),
-            format!("{value}\n"),
-        )
-        .unwrap();
+        let path = self.dir.join("root").join(&machine_path[1..]);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, format!("{value}\n")).unwrap();
     }
 
     fn legion(&self, args: &[&str]) -> Output {
