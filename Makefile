@@ -67,15 +67,22 @@ test: ## end-to-end and behavior tests (no hardware access); the CLI tests start
 ci: lint rust-lint js-lint validate test ## what CI runs
 
 .PHONY: package
-package: ## build and install the Arch package (pacman tracks every file)
-	cd packaging/arch && makepkg -sfi --noconfirm
+package: ## build the Arch package (makepkg writes the version into the PKGBUILD; it is restored)
+	cd packaging/arch && makepkg -sf --noconfirm
+	git checkout -- packaging/arch/PKGBUILD
+
+.PHONY: install-package
+install-package: ## install the newest built package (sudo) and restart your operator
+	sudo pacman -U --noconfirm "$$(ls -t packaging/arch/legionctl-*.pkg.tar.zst | head -1)"
+	systemctl --user daemon-reload
+	systemctl --user restart legionctl-operator.service
 
 .PHONY: lint-pkg
 lint-pkg: ## namcap the PKGBUILD (Arch only)
 	namcap packaging/arch/PKGBUILD
 
 .PHONY: install
-install: ## install into DESTDIR; the PKGBUILD calls this (install on this machine with `make package`)
+install: ## install into DESTDIR; the PKGBUILD calls this (on this machine: `make package install-package`)
 	@test -x target/release/legionctl || { echo "target/release/legionctl missing: run 'make build' first"; exit 1; }
 	install -Dm755 target/release/legionctl "$(DESTDIR)$(BINDIR)/legionctl"
 	install -Dm755 target/release/legionctl-system "$(DESTDIR)$(LIBDIR)/legionctl-system"
