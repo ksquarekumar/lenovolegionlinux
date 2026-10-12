@@ -76,71 +76,106 @@ fn meminfo_kib(text: &str, key: &str) -> Option<u64> {
         .ok()
 }
 
-/// Thresholds are deliberately simple and documented in the reasons, so an agent can explain its choice.
+/// When load counts as busy or overloaded. The values come from the config (`load`); see its defaults.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Thresholds {
+    /// Share of a short window (%) in which a disk must do I/O before I/O pressure counts as load.
+    pub disk_busy_percent: f64,
+    pub busy: Limits,
+    pub overloaded: Limits,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Limits {
+    /// CPU pressure, "some" (%).
+    pub cpu_pressure: f64,
+    /// Memory pressure (%): "some" for busy, "full" for overloaded; counts only while the CPUs work.
+    pub memory_pressure: f64,
+    /// I/O pressure (%): "some" for busy, "full" for overloaded; counts only while a disk works.
+    pub io_pressure: f64,
+    /// Available memory below this share of the total (%).
+    pub memory_available_percent: f64,
+    /// Load average per CPU.
+    pub load_per_cpu: f64,
+}
+
+/// One reading of the inputs the classifier uses.
+#[derive(Debug, Clone)]
+pub struct Sample {
+    pub load1: f64,
+    pub cpus: u32,
+    pub cpu: Option<Pressure>,
+    pub memory: Option<Pressure>,
+    pub io: Option<Pressure>,
+    /// Busiest whole disk's share of a short window (0-1).
+    pub disks_busy: f64,
+    pub mem_available_fraction: f64,
+}
+
+/// The level and the reasons, each reason naming the threshold it crossed so an agent can explain its choice.
 #[must_use]
-pub fn classify(
-    load1: f64,
-    cpus: u32,
-    cpu: Option<&Pressure>,
-    memory: Option<&Pressure>,
-    io: Option<&Pressure>,
-    disks_busy: f64,
-    mem_available_fraction: f64,
-) -> (Level, Vec<String>) {
+pub fn classify(s: &Sample, t: &Thresholds) -> (Level, Vec<String>) {
+    let cpus = s.cpus;
+    let load1 = s.load1;
     let cpus_f = f64::from(cpus.max(1));
-    let cpu_some = cpu.map_or(0.0, |p| p.some_avg10);
-    let mem_some = memory.map_or(0.0, |p| p.some_avg10);
-    let mem_full = memory.and_then(|p| p.full_avg10).unwrap_or(0.0);
-    let io_some = io.map_or(0.0, |p| p.some_avg10);
-    let io_full = io.and_then(|p| p.full_avg10).unwrap_or(0.0);
+    let cpu_some = s.cpu.as_ref().map_or(0.0, |p| p.some_avg10);
+    let mem_some = s.memory.as_ref().map_or(0.0, |p| p.some_avg10);
+    let mem_full = s.memory.as_ref().and_then(|p| p.full_avg10).unwrap_or(0.0);
+    let io_some = s.io.as_ref().map_or(0.0, |p| p.some_avg10);
+    let io_full = s.io.as_ref().and_then(|p| p.full_avg10).unwrap_or(0.0);
+    let available = s.mem_available_fraction * 100.0;
     // Tasks can wait in iowait with the disks idle (seen here: a QEMU/KVM Windows VM in Docker, 77-91% "some" and
     // "full" in its cgroup, 0 disk I/O). I/O pressure counts only while a disk does I/O; the load average cannot
     // gate it, because it stays high for minutes after heavy CPU work ends.
-    let disks_working = disks_busy >= DISK_WORKING;
+    let disks_working = s.disks_busy * 100.0 >= t.disk_busy_percent;
+    // memory stalls matter only while the CPUs have work: 10% and 25% of them busy
     let working = load1 >= 0.10 * cpus_f;
     let heavily_working = load1 >= 0.25 * cpus_f;
+    let (b, o) = (&t.busy, &t.overloaded);
 
     let overloaded = [
-        (cpu_some >= 60.0, format!("CPU pressure {cpu_some:.0}%")),
         (
-            heavily_working && mem_full >= 10.0,
+            cpu_some >= o.cpu_pressure,
+            format!("CPU pressure {cpu_some:.0}%"),
+        ),
+        (
+            heavily_working && mem_full >= o.memory_pressure,
             format!("memory stalls (full) {mem_full:.0}%"),
         ),
         (
-            disks_working && io_full >= 30.0,
+            disks_working && io_full >= o.io_pressure,
             format!("I/O stalls (full) {io_full:.0}%"),
         ),
         (
-            mem_available_fraction < 0.05,
-            format!(
-                "only {:.0}% memory available",
-                mem_available_fraction * 100.0
-            ),
+            available < o.memory_available_percent,
+            format!("only {available:.0}% memory available"),
         ),
         (
-            load1 >= 1.5 * cpus_f,
+            load1 >= o.load_per_cpu * cpus_f,
             format!("load {load1:.1} on {cpus} CPUs"),
         ),
     ];
     let busy = [
-        (cpu_some >= 20.0, format!("CPU pressure {cpu_some:.0}%")),
         (
-            working && mem_some >= 10.0,
+            cpu_some >= b.cpu_pressure,
+            format!("CPU pressure {cpu_some:.0}%"),
+        ),
+        (
+            working && mem_some >= b.memory_pressure,
             format!("memory pressure {mem_some:.0}%"),
         ),
         (
-            disks_working && io_some >= 20.0,
+            disks_working && io_some >= b.io_pressure,
             format!("I/O pressure {io_some:.0}%"),
         ),
         (
-            mem_available_fraction < 0.15,
-            format!(
-                "only {:.0}% memory available",
-                mem_available_fraction * 100.0
-            ),
+            available < b.memory_available_percent,
+            format!("only {available:.0}% memory available"),
         ),
         (
-            load1 >= 0.75 * cpus_f,
+            load1 >= b.load_per_cpu * cpus_f,
             format!("load {load1:.1} on {cpus} CPUs"),
         ),
     ];
@@ -192,8 +227,6 @@ pub fn brief(load: &Load) -> String {
     )
 }
 
-/// Share of a short window in which a disk must do I/O before I/O pressure counts as load.
-const DISK_WORKING: f64 = 0.10;
 const CGROUPS: &str = "/sys/fs/cgroup";
 
 /// The cgroup that explains the I/O stall, as `path (N%)`: from the root, go down to the child that stalls most while
@@ -261,7 +294,7 @@ fn disks_busy(root: &SysRoot) -> f64 {
         .fold(0.0, f64::max)
 }
 
-pub fn read_load(root: &SysRoot) -> Load {
+pub fn read_load(root: &SysRoot, thresholds: &Thresholds) -> Load {
     let load1 = root
         .read("/proc/loadavg")
         .and_then(|t| t.split_whitespace().next()?.parse().ok())
@@ -291,22 +324,24 @@ pub fn read_load(root: &SysRoot) -> Load {
     } else {
         1.0
     };
+    // sample the disks only when I/O pressure could count, so the usual call stays instant ("full" <= "some")
     let io_some = io.as_ref().map_or(0.0, |p| p.some_avg10);
-    // sample the disks only when I/O pressure could matter, so the usual call stays instant
-    let disks = if io_some >= 20.0 {
-        disks_busy(root)
-    } else {
-        0.0
-    };
-    let (level, reasons) = classify(
+    let io_counts = io_some
+        >= thresholds
+            .busy
+            .io_pressure
+            .min(thresholds.overloaded.io_pressure);
+    let disks = if io_counts { disks_busy(root) } else { 0.0 };
+    let sample = Sample {
         load1,
         cpus,
-        cpu.as_ref(),
-        memory.as_ref(),
-        io.as_ref(),
-        disks,
-        fraction,
-    );
+        cpu: cpu.clone(),
+        memory: memory.clone(),
+        io: io.clone(),
+        disks_busy: disks,
+        mem_available_fraction: fraction,
+    };
+    let (level, reasons) = classify(&sample, thresholds);
     Load {
         level,
         reasons,
@@ -317,7 +352,7 @@ pub fn read_load(root: &SysRoot) -> Load {
         io,
         mem_available_mib: available,
         mem_total_mib: total,
-        io_stall_source: (io_some >= 20.0 && disks < DISK_WORKING)
+        io_stall_source: (io_counts && disks * 100.0 < thresholds.disk_busy_percent)
             .then(|| io_stall_source(root))
             .flatten(),
     }
@@ -338,8 +373,24 @@ mod tests {
             some_avg10: 1.0,
             full_avg10: None,
         };
-        let level =
-            |load1, disks| classify(load1, 32, Some(&quiet), None, Some(&phantom), disks, 0.3);
+        let defaults: serde_json::Value =
+            serde_json::from_reader(json_comments::StripComments::new(
+                include_str!("../../../config/defaults.jsonc").as_bytes(),
+            ))
+            .unwrap();
+        let thresholds: Thresholds = serde_json::from_value(defaults["load"].clone()).unwrap();
+        let level = |load1, disks_busy| {
+            let sample = Sample {
+                load1,
+                cpus: 32,
+                cpu: Some(quiet.clone()),
+                memory: None,
+                io: Some(phantom.clone()),
+                disks_busy,
+                mem_available_fraction: 0.3,
+            };
+            classify(&sample, &thresholds)
+        };
         assert_eq!(level(2.3, 0.0).0, Level::Idle);
         // just after a full CPU + GPU load test: load average still 10, disks idle (2026-10-12 false "Overloaded")
         assert_eq!(level(10.0, 0.0).0, Level::Normal);

@@ -1,14 +1,17 @@
 //! Reminders: short instructions that agent hooks inject at session start or on every prompt, so a skill or a
-//! working rule stays in force for the whole session. A built-in catalogue covers legionctl's skills and habits;
-//! users add their own. State lives in ~/.config/legionctl/reminders.toml.
+//! working rule stays in force for the whole session. They are config (`reminders.<id>`): the built-in ones come with
+//! the defaults; `add`, `on` and `off` write the user layer's managed file.
 
-use std::path::PathBuf;
-
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Result, ensure};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+use crate::config::Resolved;
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum Event {
     /// Once, when a session starts.
@@ -23,69 +26,8 @@ pub struct Reminder {
     pub text: String,
     pub event: Event,
     pub enabled: bool,
+    /// Set by the built-in defaults; it can be turned off, not removed.
     pub builtin: bool,
-}
-
-/// (id, text, event, enabled by default)
-const BUILTINS: &[(&str, &str, Event, bool)] = &[
-    (
-        "ste100",
-        "Write all user-facing text in ASD-STE100 Simplified Technical English (skill legionctl:ste100-style).",
-        Event::Prompt,
-        true,
-    ),
-    (
-        "glanceable",
-        "Structure user-facing output for a glance: answer first, then layered detail; exact identifiers; no repetition (skill legionctl:glanceable-style).",
-        Event::Prompt,
-        true,
-    ),
-    (
-        "load-aware",
-        "Check the legionctl load (MCP tool `load`) before builds, test suites or parallel jobs, and scale them down when busy.",
-        Event::SessionStart,
-        false,
-    ),
-    (
-        "worktree-per-task",
-        "Do each code-changing task in its own legionctl worktree (/legionctl:worktree).",
-        Event::SessionStart,
-        false,
-    ),
-];
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct Custom {
-    id: String,
-    text: String,
-    event: Option<Event>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct State {
-    /// Built-ins switched away from their default: id -> enabled.
-    #[serde(default)]
-    builtins: std::collections::BTreeMap<String, bool>,
-    #[serde(default)]
-    custom: Vec<Custom>,
-    /// Custom reminders that are switched off.
-    #[serde(default)]
-    disabled: Vec<String>,
-}
-
-pub struct Store {
-    pub path: PathBuf,
-}
-
-impl Default for Store {
-    fn default() -> Self {
-        let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
-        let config =
-            std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| home.join(".config"), PathBuf::from);
-        Store {
-            path: config.join("legionctl/reminders.toml"),
-        }
-    }
 }
 
 fn validate_id(id: &str) -> Result<()> {
@@ -113,138 +55,68 @@ fn validate_text(text: &str) -> Result<()> {
     Ok(())
 }
 
-impl Store {
-    fn load(&self) -> Result<State> {
-        match std::fs::read_to_string(&self.path) {
-            Ok(text) => {
-                toml::from_str(&text).with_context(|| format!("reading {}", self.path.display()))
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(State::default()),
-            Err(e) => Err(e).with_context(|| format!("reading {}", self.path.display())),
-        }
-    }
-
-    fn save(&self, state: &State) -> Result<()> {
-        std::fs::create_dir_all(self.path.parent().context("reminders path has no parent")?)?;
-        let tmp = self.path.with_extension("toml.tmp");
-        std::fs::write(&tmp, toml::to_string_pretty(state)?)?;
-        std::fs::rename(&tmp, &self.path)?;
-        Ok(())
-    }
-
-    /// # Errors
-    /// The reminder store cannot be read.
-    pub fn list(&self) -> Result<Vec<Reminder>> {
-        let state = self.load()?;
-        let mut all: Vec<Reminder> = BUILTINS
-            .iter()
-            .map(|&(id, text, event, default)| Reminder {
-                id: id.into(),
-                text: text.into(),
-                event,
-                enabled: *state.builtins.get(id).unwrap_or(&default),
-                builtin: true,
-            })
-            .collect();
-        all.extend(state.custom.iter().map(|c| Reminder {
-            id: c.id.clone(),
-            text: c.text.clone(),
-            event: c.event.unwrap_or(Event::SessionStart),
-            enabled: !state.disabled.contains(&c.id),
-            builtin: false,
-        }));
-        Ok(all)
-    }
-
-    /// # Errors
-    /// `id` is not valid or not known, or the store cannot be read or written.
-    pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<()> {
-        validate_id(id)?;
-        let mut state = self.load()?;
-        if BUILTINS.iter().any(|b| b.0 == id) {
-            state.builtins.insert(id.into(), enabled);
-        } else if state.custom.iter().any(|c| c.id == id) {
-            state.disabled.retain(|d| d != id);
-            if !enabled {
-                state.disabled.push(id.into());
-            }
-        } else {
-            bail!("no reminder named {id}; see `legionctl reminders`");
-        }
-        self.save(&state)
-    }
-
-    /// # Errors
-    /// `id` or `text` is not valid, or the store cannot be read or written.
-    pub fn add(&self, id: &str, text: &str, event: Event) -> Result<()> {
-        validate_id(id)?;
-        validate_text(text)?;
-        let mut state = self.load()?;
-        ensure!(
-            !BUILTINS.iter().any(|b| b.0 == id),
-            "{id} is a built-in reminder; turn it on or off instead"
-        );
-        state.custom.retain(|c| c.id != id);
-        state.disabled.retain(|d| d != id);
-        state.custom.push(Custom {
-            id: id.into(),
-            text: text.trim().into(),
-            event: Some(event),
-        });
-        self.save(&state)
-    }
-
-    /// # Errors
-    /// `id` is not valid, or the store cannot be read or written.
-    pub fn remove(&self, id: &str) -> Result<()> {
-        validate_id(id)?;
-        ensure!(
-            !BUILTINS.iter().any(|b| b.0 == id),
-            "{id} is built in and cannot be removed; turn it off instead"
-        );
-        let mut state = self.load()?;
-        let before = state.custom.len();
-        state.custom.retain(|c| c.id != id);
-        ensure!(state.custom.len() < before, "no custom reminder named {id}");
-        state.disabled.retain(|d| d != id);
-        self.save(&state)
-    }
-
-    /// Text for a hook: enabled reminders for this event, one per line, nothing when none apply.
-    ///
-    /// # Errors
-    /// The reminder store cannot be read.
-    pub fn emit(&self, event: Event) -> Result<String> {
-        Ok(self
-            .list()?
-            .into_iter()
-            .filter(|r| r.enabled && r.event == event)
-            .map(|r| format!("Reminder: {}", r.text))
-            .collect::<Vec<_>>()
-            .join("\n"))
-    }
+#[must_use]
+pub fn list(config: &Resolved) -> Vec<Reminder> {
+    config
+        .config
+        .reminders
+        .iter()
+        .map(|(id, r)| Reminder {
+            id: id.clone(),
+            text: r.text.clone(),
+            event: r.event,
+            enabled: r.enabled,
+            builtin: config.built_in(&format!("reminders.{id}")),
+        })
+        .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// # Errors
+/// No reminder has this id, the key is locked, or the managed file cannot be written.
+pub fn set_enabled(config: &Resolved, id: &str, enabled: bool) -> Result<()> {
+    ensure!(
+        config.config.reminders.contains_key(id),
+        "no reminder named {id}; see `legionctl reminders list`"
+    );
+    config.set_user(&format!("reminders.{id}.enabled"), Value::Bool(enabled))
+}
 
-    fn store(tag: &str) -> Store {
-        let dir =
-            std::env::temp_dir().join(format!("legionctl-reminders-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        Store {
-            path: dir.join("reminders.toml"),
-        }
-    }
+/// # Errors
+/// `id` or `text` is not valid, `id` is a built-in reminder, the key is locked, or the file cannot be written.
+pub fn add(config: &Resolved, id: &str, text: &str, event: Event) -> Result<()> {
+    validate_id(id)?;
+    validate_text(text)?;
+    ensure!(
+        !config.built_in(&format!("reminders.{id}")),
+        "{id} is a built-in reminder; turn it on or off instead"
+    );
+    config.set_user(
+        &format!("reminders.{id}"),
+        json!({"text": text.trim(), "event": event, "enabled": true}),
+    )
+}
 
-    #[test]
-    fn rejects_bad_ids_and_text() {
-        let s = store("bad");
-        assert!(s.add("Bad Id", "x", Event::Prompt).is_err());
-        assert!(s.add("ok", "line one\nline two", Event::Prompt).is_err());
-        assert!(s.add("ok", &"x".repeat(301), Event::Prompt).is_err());
-        assert!(s.add("ste100", "override", Event::Prompt).is_err());
-        assert!(s.set_enabled("nope", true).is_err());
-    }
+/// # Errors
+/// `id` is built in or not known, the key is locked, or the managed file cannot be written.
+pub fn remove(config: &Resolved, id: &str) -> Result<()> {
+    ensure!(
+        !config.built_in(&format!("reminders.{id}")),
+        "{id} is built in and cannot be removed; turn it off instead"
+    );
+    ensure!(
+        config.config.reminders.contains_key(id),
+        "no reminder named {id}"
+    );
+    config.set_user(&format!("reminders.{id}"), Value::Null)
+}
+
+/// Text for a hook: enabled reminders for this event, one per line, nothing when none apply.
+#[must_use]
+pub fn emit(config: &Resolved, event: Event) -> String {
+    list(config)
+        .into_iter()
+        .filter(|r| r.enabled && r.event == event)
+        .map(|r| format!("Reminder: {}", r.text))
+        .collect::<Vec<_>>()
+        .join("\n")
 }

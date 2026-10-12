@@ -6,15 +6,16 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use legionctl_api::{
-    CapabilityList, Changes, CleanupIn, ClientPath, ConfigFiles, Ctx, DesktopGpu, Empty, Engine,
-    EventIn, Findings, GpuPrimaryIn, GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LoadState,
-    PowerApplyIn, PowerSource, ProfileIn, ProjectIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn,
-    SetupApplyIn, SetupReport, SkillList, Snapshot, StatusIn, Text, Validation, Worktree,
-    WorktreeCreateIn, WorktreeListIn, WorktreeRmIn, Worktrees,
+    CapabilityList, Changes, CleanupIn, ClientPath, ConfigFiles, ConfigView, Ctx, DesktopGpu,
+    Empty, Engine, EventIn, ExplainIn, Explanation, Findings, GpuPrimaryIn, GpuState, HookAddIn,
+    HookBindIn, HookTable, IdIn, LayerList, LoadState, PowerApplyIn, PowerSource, ProfileIn,
+    ProjectIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn, SetupApplyIn, SetupReport, SkillList,
+    Snapshot, StatusIn, Text, Validation, Worktree, WorktreeCreateIn, WorktreeListIn, WorktreeRmIn,
+    Worktrees,
 };
+use legionctl_core::config::{Dirs, Resolved, resolve};
 use legionctl_core::db::Db;
-use legionctl_core::hooks::Hooks;
-use legionctl_core::{agents, reminders, setup, skills, worktree};
+use legionctl_core::{agents, hooks, reminders, setup, skills, worktree};
 use legionctl_machine::ledger::Ledger;
 use legionctl_machine::policy::{self, Machine, Options, Source};
 use legionctl_machine::profile::{self, Profile};
@@ -127,22 +128,17 @@ impl Operator {
         })
     }
 
-    fn hooks<T>(ctx: &Ctx, f: impl FnOnce(&Hooks) -> Result<T>) -> Result<T> {
-        let db = Db::open_default()?;
-        let hooks = Hooks {
-            db: &db,
-            reminders: reminders::Store::default(),
-            actor: &ctx.actor,
-        };
-        f(&hooks)
+    fn hook_table(config: &Resolved) -> HookTable {
+        HookTable {
+            actions: hooks::actions(config),
+            bindings: hooks::bindings(config),
+        }
     }
+}
 
-    fn hook_table(hooks: &Hooks) -> Result<HookTable> {
-        Ok(HookTable {
-            actions: hooks.actions()?,
-            bindings: hooks.bindings()?,
-        })
-    }
+/// The config for work in `project` (its repository layer applies), or without a repository.
+fn config(project: Option<&ClientPath>) -> Result<Resolved> {
+    resolve(&Dirs::from_env(), path(project))
 }
 
 impl Engine for Operator {
@@ -153,11 +149,19 @@ impl Engine for Operator {
         } else {
             Detail::Full
         };
-        Ok(Snapshot::read(&plan.root, &plan.profile, detail))
+        Ok(Snapshot::read(
+            &plan.root,
+            &plan.profile,
+            detail,
+            &config(None)?.config.load,
+        ))
     }
 
     fn load(&self, _: &Ctx, _: Empty) -> Result<LoadState> {
-        Ok(load::read_load(&SysRoot::from_env()))
+        Ok(load::read_load(
+            &SysRoot::from_env(),
+            &config(None)?.config.load,
+        ))
     }
 
     fn doctor(&self, _: &Ctx, input: ProfileIn) -> Result<Findings> {
@@ -268,17 +272,21 @@ impl Engine for Operator {
     }
 
     fn worktree_list(&self, _: &Ctx, input: WorktreeListIn) -> Result<Worktrees> {
-        worktree::Store::default().list(input.sizes)
+        worktree::Store::new(config(None)?.config.worktree.root).list(input.sizes)
     }
 
     fn worktree_create(&self, ctx: &Ctx, input: WorktreeCreateIn) -> Result<Worktree> {
         Self::record(ctx, "worktree.create", &input)?;
-        worktree::Store::default().create(&input.repo.0, &input.name, input.base.as_deref())
+        worktree::Store::new(config(None)?.config.worktree.root).create(
+            &input.repo.0,
+            &input.name,
+            input.base.as_deref(),
+        )
     }
 
     fn worktree_rm(&self, ctx: &Ctx, input: WorktreeRmIn) -> Result<Worktree> {
         Self::record(ctx, "worktree.rm", &input)?;
-        worktree::Store::default().remove(&input.name, input.force)
+        worktree::Store::new(config(None)?.config.worktree.root).remove(&input.name, input.force)
     }
 
     fn setup_check(&self, _: &Ctx, _: Empty) -> Result<SetupReport> {
@@ -293,85 +301,106 @@ impl Engine for Operator {
         })
     }
 
-    fn reminders_list(&self, _: &Ctx, _: Empty) -> Result<Reminders> {
-        reminders::Store::default().list()
+    fn reminders_list(&self, _: &Ctx, input: ProjectIn) -> Result<Reminders> {
+        Ok(reminders::list(&config(Some(&input.project))?))
     }
 
     fn reminders_on(&self, ctx: &Ctx, input: IdIn) -> Result<Reminders> {
         Self::record(ctx, "reminders.on", &input)?;
-        let store = reminders::Store::default();
-        store.set_enabled(&input.id, true)?;
-        store.list()
+        reminders::set_enabled(&config(Some(&input.project))?, &input.id, true)?;
+        Ok(reminders::list(&config(Some(&input.project))?))
     }
 
     fn reminders_off(&self, ctx: &Ctx, input: IdIn) -> Result<Reminders> {
         Self::record(ctx, "reminders.off", &input)?;
-        let store = reminders::Store::default();
-        store.set_enabled(&input.id, false)?;
-        store.list()
+        reminders::set_enabled(&config(Some(&input.project))?, &input.id, false)?;
+        Ok(reminders::list(&config(Some(&input.project))?))
     }
 
     fn reminders_add(&self, ctx: &Ctx, input: ReminderAddIn) -> Result<Reminders> {
         Self::record(ctx, "reminders.add", &input)?;
-        let store = reminders::Store::default();
-        store.add(&input.id, &input.text, input.event)?;
-        store.list()
+        reminders::add(
+            &config(Some(&input.project))?,
+            &input.id,
+            &input.text,
+            input.event,
+        )?;
+        Ok(reminders::list(&config(Some(&input.project))?))
     }
 
     fn reminders_rm(&self, ctx: &Ctx, input: IdIn) -> Result<Reminders> {
         Self::record(ctx, "reminders.rm", &input)?;
-        let store = reminders::Store::default();
-        store.remove(&input.id)?;
-        store.list()
+        reminders::remove(&config(Some(&input.project))?, &input.id)?;
+        Ok(reminders::list(&config(Some(&input.project))?))
     }
 
     fn reminders_emit(&self, _: &Ctx, input: EventIn) -> Result<Text> {
         Ok(Text {
-            text: reminders::Store::default().emit(input.event)?,
+            text: reminders::emit(&config(Some(&input.project))?, input.event),
         })
     }
 
-    fn hooks_list(&self, ctx: &Ctx, _: Empty) -> Result<HookTable> {
-        Self::hooks(ctx, Self::hook_table)
+    fn hooks_list(&self, _: &Ctx, input: ProjectIn) -> Result<HookTable> {
+        Ok(Self::hook_table(&config(Some(&input.project))?))
     }
 
     fn hooks_bind(&self, ctx: &Ctx, input: HookBindIn) -> Result<HookTable> {
-        Self::hooks(ctx, |h| {
-            h.bind(input.event, &input.action)?;
-            Self::hook_table(h)
-        })
+        Self::record(ctx, "hooks.bind", &input)?;
+        hooks::bind(&config(Some(&input.project))?, input.event, &input.action)?;
+        Ok(Self::hook_table(&config(Some(&input.project))?))
     }
 
     fn hooks_unbind(&self, ctx: &Ctx, input: HookBindIn) -> Result<HookTable> {
-        Self::hooks(ctx, |h| {
-            h.unbind(input.event, &input.action)?;
-            Self::hook_table(h)
-        })
+        Self::record(ctx, "hooks.unbind", &input)?;
+        hooks::unbind(&config(Some(&input.project))?, input.event, &input.action)?;
+        Ok(Self::hook_table(&config(Some(&input.project))?))
     }
 
     fn hooks_add(&self, ctx: &Ctx, input: HookAddIn) -> Result<HookTable> {
-        Self::hooks(ctx, |h| {
-            h.add_command(&input.id, &input.command, input.timeout)?;
-            Self::hook_table(h)
-        })
+        Self::record(ctx, "hooks.add", &input)?;
+        hooks::add_command(
+            &config(Some(&input.project))?,
+            &input.id,
+            &input.command,
+            input.timeout,
+        )?;
+        Ok(Self::hook_table(&config(Some(&input.project))?))
     }
 
     fn hooks_rm(&self, ctx: &Ctx, input: IdIn) -> Result<HookTable> {
-        Self::hooks(ctx, |h| {
-            h.remove_action(&input.id)?;
-            Self::hook_table(h)
+        Self::record(ctx, "hooks.rm", &input)?;
+        hooks::remove_action(&config(Some(&input.project))?, &input.id)?;
+        Ok(Self::hook_table(&config(Some(&input.project))?))
+    }
+
+    fn hooks_run(&self, _: &Ctx, input: EventIn) -> Result<Text> {
+        Ok(Text {
+            text: hooks::run(&config(Some(&input.project))?, input.event),
         })
     }
 
-    fn hooks_run(&self, ctx: &Ctx, input: EventIn) -> Result<Text> {
-        Self::hooks(ctx, |h| {
-            Ok(Text {
-                text: h.run(input.event)?,
-            })
+    fn skills(&self, _: &Ctx, input: ProjectIn) -> Result<SkillList> {
+        Ok(skills::inventory(&home(), &config(Some(&input.project))?))
+    }
+
+    fn config_show(&self, _: &Ctx, input: ProjectIn) -> Result<ConfigView> {
+        let resolved = config(Some(&input.project))?;
+        Ok(ConfigView {
+            value: resolved.value,
+            problems: resolved.problems,
         })
     }
 
-    fn skills(&self, _: &Ctx, _: Empty) -> Result<SkillList> {
-        skills::inventory(&home(), &reminders::Store::default())
+    fn config_explain(&self, _: &Ctx, input: ExplainIn) -> Result<Explanation> {
+        Ok(config(Some(&input.project))?.explain(&input.key))
+    }
+
+    fn config_layers(&self, _: &Ctx, input: ProjectIn) -> Result<LayerList> {
+        let resolved = config(Some(&input.project))?;
+        Ok(LayerList {
+            layers: resolved.layers,
+            locked: resolved.config.config.locked,
+            problems: resolved.problems,
+        })
     }
 }

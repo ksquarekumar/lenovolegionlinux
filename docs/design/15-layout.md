@@ -84,7 +84,7 @@ A module becomes its own crate only when its size or its dependencies require it
 | system units | `legionctl-system.service`, `legionctl-bootstrap.service`, `legionctl-safe.service` |
 | user units | `legionctl-operator.service`, `legionctl-session-<id>.scope`, `legionctl-session-<id>.timer` |
 | D-Bus, polkit | `org.legionctl.System1`, actions `org.legionctl.<operation>` |
-| config layers | `/usr/share/legionctl/defaults` → `/etc/legionctl` → `~/.config/legionctl` → `<repo>/.legionctl` → session |
+| config layers | built-in defaults (`config/defaults.jsonc`) → `/etc/legionctl` → `~/.config/legionctl` → `<repo>/.legionctl` → session; JSONC (14) |
 | state | `/var/lib/legionctl/system.db`, `~/.local/state/legionctl/operator.db`, `~/.local/share/legionctl/{store,sessions}`, `~/.cache/legionctl/{gateway,tools}` |
 | runtime | `/run/legionctl/`, `$XDG_RUNTIME_DIR/legionctl/`, `/sys/fs/bpf/legionctl/` |
 | udev, hwdb | `99-legionctl.rules`, `90-legionctl-keys.hwdb` |

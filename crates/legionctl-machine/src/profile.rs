@@ -128,7 +128,11 @@ pub fn text(value: &Value) -> String {
     }
 }
 
-fn read_jsonc(path: &Path) -> Result<Value> {
+/// A JSONC file (JSON with comments) as JSON.
+///
+/// # Errors
+/// The file cannot be opened or is not valid JSONC.
+pub fn read_jsonc(path: &Path) -> Result<Value> {
     let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     serde_json::from_reader(json_comments::StripComments::new(file))
         .with_context(|| format!("parsing {}", path.display()))

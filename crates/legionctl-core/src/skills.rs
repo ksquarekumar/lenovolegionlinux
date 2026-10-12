@@ -2,10 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::config::Resolved;
 use crate::reminders;
 use crate::setup::plugin_skills;
 
@@ -51,11 +51,10 @@ fn reminder_id(skill: &str) -> String {
     skill.trim_end_matches("-style").into()
 }
 
-/// # Errors
-/// The reminder store cannot be read.
-pub fn inventory(home: &Path, reminders: &reminders::Store) -> Result<Vec<SkillInfo>> {
+#[must_use]
+pub fn inventory(home: &Path, config: &Resolved) -> Vec<SkillInfo> {
     let claude = claude_plugin_dir(home);
-    let known = reminders.list()?;
+    let known = reminders::list(config);
     let mut out = Vec::new();
     for entry in std::fs::read_dir(plugin_skills())
         .into_iter()
@@ -83,7 +82,7 @@ pub fn inventory(home: &Path, reminders: &reminders::Store) -> Result<Vec<SkillI
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(out)
+    out
 }
 
 #[cfg(test)]

@@ -1,0 +1,75 @@
+// legionctl defaults: the lowest config layer, compiled into every legionctl binary.
+//
+// Layers, lowest first: these defaults, /etc/legionctl/*.jsonc (system), ~/.config/legionctl/*.jsonc (user),
+// <repo>/.legionctl/*.jsonc (repository). Files in a layer merge in name order; in the user layer, managed.jsonc
+// (written by `legionctl reminders` and `legionctl hooks`) merges last.
+//
+// Merge: objects merge per key; any other value replaces the lower one; `null` removes the key; "name+": [...]
+// appends to the array "name". `legionctl config explain <key>` shows which file set a value.
+{
+  "config": {
+    // Only these defaults and /etc/legionctl may set "config". Lowest first.
+    "precedence": ["defaults", "system", "user", "repo"],
+    // Keys or prefixes ("hooks.actions") that only the defaults and /etc/legionctl may set.
+    "locked": []
+  },
+
+  "worktree": {
+    // Agent worktrees live in <root>/<repo>/<name>.
+    "root": "/data/worktrees"
+  },
+
+  // Reminders that the hooks inject into agent sessions. Turn one on or off with "<id>": {"enabled": ...}.
+  "reminders": {
+    "ste100": {
+      "text": "Write all user-facing text in ASD-STE100 Simplified Technical English (skill legionctl:ste100-style).",
+      "event": "prompt",
+      "enabled": true
+    },
+    "glanceable": {
+      "text": "Structure user-facing output for a glance: answer first, then layered detail; exact identifiers; no repetition (skill legionctl:glanceable-style).",
+      "event": "prompt",
+      "enabled": true
+    },
+    "load-aware": {
+      "text": "Check the legionctl load (MCP tool `load`) before builds, test suites or parallel jobs, and scale them down when busy.",
+      "event": "session-start",
+      "enabled": false
+    },
+    "worktree-per-task": {
+      "text": "Do each code-changing task in its own legionctl worktree (/legionctl:worktree).",
+      "event": "session-start",
+      "enabled": false
+    }
+  },
+
+  "hooks": {
+    // Your own actions: "<id>": {"command": "one-line shell command", "timeout": seconds (1-30)}.
+    // Built-in actions: reminders, load, load-if-busy, setup-check.
+    "actions": {},
+    // What runs, in order, for each hook event.
+    "bindings": {
+      "session-start": ["reminders", "load", "setup-check"],
+      "prompt": ["reminders", "load-if-busy"]
+    }
+  },
+
+  // When the load counts as busy or overloaded (`legionctl load`). Pressure values are PSI avg10 percentages.
+  "load": {
+    "disk_busy_percent": 10,
+    "busy": {
+      "cpu_pressure": 20,
+      "memory_pressure": 10,
+      "io_pressure": 20,
+      "memory_available_percent": 15,
+      "load_per_cpu": 0.75
+    },
+    "overloaded": {
+      "cpu_pressure": 60,
+      "memory_pressure": 10,
+      "io_pressure": 30,
+      "memory_available_percent": 5,
+      "load_per_cpu": 1.5
+    }
+  }
+}

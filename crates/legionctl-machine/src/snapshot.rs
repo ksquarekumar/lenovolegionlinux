@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::gpu::{self, Output};
 use crate::ledger::{Key, Ledger};
-use crate::load::{Load, read_load};
+use crate::load::{Load, Thresholds, read_load};
 use crate::profile::Profile;
 use crate::sysroot::SysRoot;
 use crate::{firmware, kernel, system};
@@ -185,7 +185,12 @@ fn package_temp(root: &SysRoot) -> Option<f64> {
 }
 
 impl Snapshot {
-    pub fn read(root: &SysRoot, profile: &Profile, detail: Detail) -> Snapshot {
+    pub fn read(
+        root: &SysRoot,
+        profile: &Profile,
+        detail: Detail,
+        thresholds: &Thresholds,
+    ) -> Snapshot {
         let full = detail == Detail::Full;
         let outputs = gpu::outputs(root);
         let loaded = kernel::loaded_modules(root);
@@ -264,7 +269,7 @@ impl Snapshot {
                 .iter()
                 .map(|m| (m.to_string(), loaded.contains(*m)))
                 .collect(),
-            load: read_load(root),
+            load: read_load(root, thresholds),
         }
     }
 }

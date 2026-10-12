@@ -40,6 +40,9 @@ const MIGRATIONS: &[&str] = &[
         ('session-start', 'setup-check', 2),
         ('prompt', 'reminders', 0),
         ('prompt', 'load-if-busy', 1);",
+    // v2: hook actions and bindings are config now (hooks.actions, hooks.bindings)
+    "DROP TABLE hook_actions;
+     DROP TABLE hook_bindings;",
 ];
 
 pub struct Db {
@@ -142,12 +145,17 @@ mod tests {
         );
         let path = db.conn().path().unwrap().to_owned();
         drop(db);
+        // a second run of v2 would fail on DROP TABLE: reopening must not migrate again
         let again = Db::open(Path::new(&path)).unwrap();
-        let bindings: i64 = again
+        let hook_tables: i64 = again
             .conn()
-            .query_row("SELECT count(*) FROM hook_bindings", [], |r| r.get(0))
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name LIKE 'hook_%'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(bindings, 5, "defaults are seeded once, not on every open");
+        assert_eq!(hook_tables, 0, "hook bindings are config since v2");
         let mode: String = again
             .conn()
             .query_row("PRAGMA journal_mode", [], |r| r.get(0))

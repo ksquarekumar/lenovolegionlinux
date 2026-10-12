@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::ClientPath;
 
 pub use legionctl_core::agents::ConfigFile;
+pub use legionctl_core::config::{Explanation, Layer as ConfigLayer};
 pub use legionctl_core::hooks::{Action, Binding};
 pub use legionctl_core::reminders::Reminder;
 pub use legionctl_core::setup::Report as SetupReport;
@@ -43,9 +44,33 @@ pub struct StatusIn {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ProjectIn {
-    /// Project directory whose .claude and .codex settings to include.
+    /// Project directory: its agent settings and its repository's .legionctl config layer apply.
     #[serde(default = "here")]
     pub project: ClientPath,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ExplainIn {
+    /// Dotted key, such as hooks.bindings.prompt or load.busy.
+    pub key: String,
+    /// Project directory; its repository's .legionctl layer applies.
+    #[serde(default = "here")]
+    pub project: ClientPath,
+}
+
+/// The merged config and what was not used.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigView {
+    pub value: serde_json::Value,
+    pub problems: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LayerList {
+    /// Lowest first.
+    pub layers: Vec<ConfigLayer>,
+    pub locked: Vec<String>,
+    pub problems: Vec<String>,
 }
 
 fn here() -> ClientPath {
@@ -89,6 +114,9 @@ pub struct SetupApplyIn {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct IdIn {
     pub id: String,
+    /// Project directory; its repository's .legionctl layer applies.
+    #[serde(default = "here")]
+    pub project: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -100,6 +128,9 @@ pub struct ReminderAddIn {
     /// When to inject it; prompt fires on every turn, so keep those short.
     #[serde(default = "session_start")]
     pub event: Event,
+    /// Project directory; its repository's .legionctl layer applies.
+    #[serde(default = "here")]
+    pub project: ClientPath,
 }
 
 fn session_start() -> Event {
@@ -109,6 +140,9 @@ fn session_start() -> Event {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EventIn {
     pub event: Event,
+    /// Project directory; its repository's .legionctl layer applies.
+    #[serde(default = "here")]
+    pub project: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -116,6 +150,9 @@ pub struct HookBindIn {
     pub event: Event,
     /// Action id: a built-in (reminders, load, load-if-busy, setup-check) or one you defined.
     pub action: String,
+    /// Project directory; its repository's .legionctl layer applies.
+    #[serde(default = "here")]
+    pub project: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -126,6 +163,9 @@ pub struct HookAddIn {
     /// Seconds before it is stopped (1-30); the agent waits for hooks.
     #[serde(default = "five")]
     pub timeout: u32,
+    /// Project directory; its repository's .legionctl layer applies.
+    #[serde(default = "here")]
+    pub project: ClientPath,
 }
 
 fn five() -> u32 {

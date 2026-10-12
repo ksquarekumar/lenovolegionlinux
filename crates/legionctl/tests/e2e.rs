@@ -17,9 +17,13 @@ fn operator(tag: &str) -> (Operator, PathBuf) {
     std::fs::create_dir_all(&home).unwrap();
     let skills =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integrations/agent-plugin/skills");
+    // an empty machine: no /etc/legionctl unless a test writes one
+    let root = home.join("root");
+    std::fs::create_dir_all(&root).unwrap();
     let operator = Operator::start(
         tag,
         &[
+            ("LEGIONCTL_SYSROOT", root.into()),
             ("HOME", home.clone().into()),
             ("PATH", std::env::var_os("PATH").unwrap()),
             ("LEGIONCTL_PLUGIN_SKILLS", OsString::from(skills)),
@@ -169,4 +173,109 @@ fn mcp_server_has_one_tool_per_operation_and_calls_the_operator() {
         )),
         "{message}"
     );
+}
+
+fn write(path: &Path, text: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+#[test]
+fn config_layers_merge_in_order_and_etc_locks_win() {
+    let (op, home) = operator("config");
+    // the site locks a key and a reminder; the user tries to change both; a repository adds its own rules
+    write(
+        &home.join("root/etc/legionctl/10-site.jsonc"),
+        r#"{ "config": { "locked": ["load", "reminders.ste100"] }, "worktree": { "root": "/srv/worktrees" } }"#,
+    );
+    write(
+        &home.join(".config/legionctl/mine.jsonc"),
+        r#"{
+          // tries a locked key and the layer order: both ignored and reported
+          "load": { "busy": { "cpu_pressure": 1 } },
+          "config": { "precedence": ["defaults", "user"] },
+          "reminders": { "load-aware": { "enabled": true } }
+        }"#,
+    );
+    let repo = home.join("repo");
+    std::fs::create_dir_all(repo.join(".git/objects")).unwrap();
+    write(
+        &repo.join(".legionctl/rules.jsonc"),
+        r#"{
+          "reminders": { "repo-rule": { "text": "Use the make targets.", "event": "prompt", "enabled": true } },
+          "hooks": { "bindings": { "prompt+": ["load"] } }
+        }"#,
+    );
+    let sub = repo.join("crates/a");
+    std::fs::create_dir_all(&sub).unwrap();
+    let cli = |cwd: &Path, args: &[&str]| {
+        let out = op.cli_in(cwd, args);
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned()
+                + &String::from_utf8_lossy(&out.stderr),
+        )
+    };
+    let json = |cwd: &Path, args: &[&str]| -> Value {
+        let (ok, text) = cli(cwd, &[args, &["--json"]].concat());
+        assert!(ok, "{args:?}: {text}");
+        serde_json::from_str(&text).unwrap()
+    };
+
+    // the repository layer applies anywhere inside the repository, and only there
+    let (_, inside) = cli(&sub, &["reminders", "emit", "--event", "prompt"]);
+    assert!(inside.contains("Use the make targets."), "{inside}");
+    let (_, outside) = cli(&home, &["reminders", "emit", "--event", "prompt"]);
+    assert!(!outside.contains("make targets"), "{outside}");
+    assert_eq!(
+        json(&repo, &["config", "explain", "hooks.bindings.prompt"])["value"],
+        json!(["reminders", "load-if-busy", "load"]),
+        "prompt+ appends to the defaults"
+    );
+
+    // /etc/legionctl wins: the locked key keeps its default, the layer order stays, and both are reported
+    let explained = json(&repo, &["config", "explain", "load.busy.cpu_pressure"]);
+    assert_eq!(explained["value"], 20.0);
+    assert_eq!(explained["locked"], true);
+    let layers = json(&repo, &["config", "layers"]);
+    let names: Vec<&str> = layers["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["defaults", "system", "user", "repo"]);
+    let problems = layers["problems"].to_string();
+    assert!(
+        problems.contains("mine.jsonc: load is set only by"),
+        "{problems}"
+    );
+    assert!(
+        problems.contains("mine.jsonc: config is set only by"),
+        "{problems}"
+    );
+    assert_eq!(
+        json(&repo, &["config", "explain", "worktree.root"])["value"],
+        "/srv/worktrees"
+    );
+
+    // a change through legionctl goes to managed.jsonc, which merges after the user's own files
+    let (ok, text) = cli(&repo, &["reminders", "off", "load-aware"]);
+    assert!(ok, "{text}");
+    let reminders = json(&repo, &["reminders", "list"]);
+    let load_aware = reminders
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "load-aware")
+        .unwrap();
+    assert_eq!(
+        load_aware["enabled"], false,
+        "managed.jsonc wins over mine.jsonc"
+    );
+    assert!(home.join(".config/legionctl/managed.jsonc").exists());
+
+    // a locked key cannot be changed through legionctl either
+    let (ok, text) = cli(&repo, &["reminders", "off", "ste100"]);
+    assert!(!ok && text.contains("locked by /etc/legionctl"), "{text}");
 }

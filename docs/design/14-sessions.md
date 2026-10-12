@@ -108,25 +108,30 @@ Every gated call is an event (allowed, asked and answered, denied).
 
 ## Config model
 
-A hierarchy of layers, each either a file or a directory of files:
+Built 2026-10-13 (`legionctl-core::config`, operations `config.show`, `config.explain`, `config.layers`). Layers,
+each a folder of `*.jsonc` files merged in name order:
 
 | Layer | Path | Writable by |
 | --- | --- | --- |
-| base data | `/usr/share/legionctl/defaults/` (package) | package manager |
+| defaults | `config/defaults.jsonc`, compiled into every binary (one copy, nothing to install) | the repo |
 | system | `/etc/legionctl/` | root |
-| user | `~/.config/legionctl/` | user |
-| repository | `<repo>/.legionctl/` | repository commits |
-| session | session record overrides | harness, per session |
+| user | `~/.config/legionctl/` (`managed.jsonc`, written by legionctl, merges last) | user, legionctl |
+| repository | `<repo>/.legionctl/`, for work inside that repository | repository commits |
+| session | session record overrides (with sessions) | harness, per session |
 
-- **Order and merge mode are themselves config**, set only in `/etc/legionctl/legionctl.toml`: `precedence = [...]` lists
-  the layers from lowest to highest, and each layer is `merge = "key"` (deep merge per key; arrays by explicit
-  `append`/`replace`) or `merge = "file"` (a file in this layer replaces the same file from lower layers).
-- **Locks:** `/etc/legionctl` can lock keys or key prefixes (`locked = ["gates.git.*", "sandbox.network"]`); higher
-  layers that set them are rejected with the lock shown. Only the system layer controls ordering and locks, so a
-  repository or session cannot reorder layers to escape a gate.
-- **Explain:** `legionctl config explain <key>` shows the value, the layer and file that set it, and the values it
-  overrode. Each session stores its resolved snapshot, so later config edits do not change running sessions until
-  they are resumed or explicitly re-resolved.
+- **Format:** JSONC, like the machine profile (decided 2026-10-13).
+- **Merge:** per key only (decided 2026-10-13): objects merge per key, other values replace, `null` removes a key,
+  `"name+": [...]` appends to the array `name`. A whole-file merge mode waits for a reader that needs it.
+- **Order and locks** (`config.precedence`, `config.locked`) come only from the defaults and `/etc/legionctl`. A
+  lower-trust layer that sets `config` or a locked key (or a key below it) is ignored and reported, so a repository or
+  session cannot reorder layers to escape a gate. `legionctl reminders` and `legionctl hooks` refuse to write a
+  locked key.
+- **Explain:** `legionctl config explain <key>` shows the value, whether it is locked, and every file that set it or a
+  key below it, lowest first. Each session will store its resolved snapshot, so later config edits do not change
+  running sessions until they are resumed or explicitly re-resolved.
+- **Readers today:** `worktree.root`, `reminders.*` (built-in and your own), `hooks.actions` and `hooks.bindings`
+  (the operator database no longer holds them; migration v2 drops its hook tables), `load.*` (the load classifier's
+  thresholds).
 - `/etc` (root-owned, bind-mounted read-only into every sandbox) is the trust root; the boot partition is not needed.
 
 ## Tables (user database, new migration)

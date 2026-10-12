@@ -3,8 +3,9 @@
 use std::collections::BTreeMap;
 
 use crate::io::{
-    CapabilityList, Changes, ConfigFile, Findings, GpuState, HookTable, LoadState, Reminder,
-    RunEnv, SetupReport, SkillInfo, Snapshot, Text, Validation, Worktree, WorktreeStatus,
+    CapabilityList, Changes, ConfigFile, ConfigView, Explanation, Findings, GpuState, HookTable,
+    LayerList, LoadState, Reminder, RunEnv, SetupReport, SkillInfo, Snapshot, Text, Validation,
+    Worktree, WorktreeStatus,
 };
 
 pub trait Render {
@@ -411,5 +412,76 @@ impl Render for Vec<SkillInfo> {
             ));
         }
         out.join("\n")
+    }
+}
+
+fn problems(lines: &mut Vec<String>, problems: &[String]) {
+    if !problems.is_empty() {
+        lines.push("not used:".into());
+        lines.extend(problems.iter().map(|p| format!("  {p}")));
+    }
+}
+
+impl Render for ConfigView {
+    fn text(&self) -> String {
+        let mut out = vec![serde_json::to_string_pretty(&self.value).unwrap_or_default()];
+        problems(&mut out, &self.problems);
+        out.join("\n")
+    }
+
+    fn success(&self) -> bool {
+        self.problems.is_empty()
+    }
+}
+
+impl Render for Explanation {
+    fn text(&self) -> String {
+        let mut out = vec![format!(
+            "{} = {}{}",
+            self.key,
+            self.value,
+            if self.locked {
+                "  (locked by /etc/legionctl)"
+            } else {
+                ""
+            }
+        )];
+        out.extend(self.settings.iter().map(|(key, s)| {
+            format!(
+                "  {:<8} {}  {key} = {}",
+                s.source.layer, s.source.file, s.value
+            )
+        }));
+        out.join("\n")
+    }
+}
+
+impl Render for LayerList {
+    fn text(&self) -> String {
+        let mut out: Vec<String> = self
+            .layers
+            .iter()
+            .map(|l| {
+                let files = if l.files.is_empty() {
+                    "no files".into()
+                } else {
+                    l.files.join(", ")
+                };
+                format!(
+                    "{:<8} {}  ({files})",
+                    l.name,
+                    l.dir.as_deref().unwrap_or("built in")
+                )
+            })
+            .collect();
+        if !self.locked.is_empty() {
+            out.push(format!("locked: {}", self.locked.join(", ")));
+        }
+        problems(&mut out, &self.problems);
+        out.join("\n")
+    }
+
+    fn success(&self) -> bool {
+        self.problems.is_empty()
     }
 }

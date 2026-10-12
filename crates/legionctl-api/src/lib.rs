@@ -226,7 +226,7 @@ operations! {
     /// Set up ctx and legionctl for Claude Code and Codex. Changes user-level config files only, with backups.
     setup_apply / SetupApply = "setup.apply", Workspace, SetupApplyIn => Changes;
     /// Reminders that hooks inject into agent sessions, with on/off state and when they fire.
-    reminders_list / RemindersList = "reminders.list", Read, Empty => Reminders;
+    reminders_list / RemindersList = "reminders.list", Read, ProjectIn => Reminders;
     /// Turn a reminder on.
     reminders_on / RemindersOn = "reminders.on", Workspace, IdIn => Reminders;
     /// Turn a reminder off.
@@ -238,7 +238,7 @@ operations! {
     /// Enabled reminders for a hook event, one per line.
     reminders_emit / RemindersEmit = "reminders.emit", Read, EventIn => Text;
     /// Hook actions (built-in and your commands) and what runs, in order, for each event.
-    hooks_list / HooksList = "hooks.list", Read, Empty => HookTable;
+    hooks_list / HooksList = "hooks.list", Read, ProjectIn => HookTable;
     /// Run an action when an event fires, after the ones already bound.
     hooks_bind / HooksBind = "hooks.bind", Workspace, HookBindIn => HookTable;
     /// Stop running an action for an event.
@@ -250,5 +250,12 @@ operations! {
     /// Run everything bound to an event and return the combined output (the agent plugin calls this).
     hooks_run / HooksRun = "hooks.run", Workspace, EventIn => Text;
     /// legionctl skills: where each agent has them and whether the reminder that keeps each in force is on.
-    skills / Skills = "skills", Read, Empty => SkillList;
+    skills / Skills = "skills", Read, ProjectIn => SkillList;
+    /// The merged config (defaults, /etc/legionctl, ~/.config/legionctl, the repository's .legionctl) and the files
+    /// or keys that were not used.
+    config_show / ConfigShow = "config.show", Read, ProjectIn => ConfigView;
+    /// Which file set a key, the values it overrode, and whether /etc/legionctl locks it.
+    config_explain / ConfigExplain = "config.explain", Read, ExplainIn => Explanation;
+    /// The config layers in merge order, their files, and the locked keys.
+    config_layers / ConfigLayers = "config.layers", Read, ProjectIn => LayerList;
 }

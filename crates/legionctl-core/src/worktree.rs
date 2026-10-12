@@ -32,22 +32,22 @@ pub struct WorktreeStatus {
     pub dirty: Option<bool>,
 }
 
-/// Where worktrees live and where the registry is kept. Separate from the process environment so tests can
-/// point it at a temporary directory.
+/// Where worktrees live (config `worktree.root`) and where the registry is kept.
 #[derive(Debug, Clone)]
 pub struct Store {
     pub root: PathBuf,
     pub registry: PathBuf,
 }
 
-impl Default for Store {
-    fn default() -> Self {
+impl Store {
+    /// The store for worktrees under `root`, with the registry in `$XDG_STATE_HOME/legionctl`.
+    #[must_use]
+    pub fn new(root: PathBuf) -> Store {
         let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
         let state = std::env::var_os("XDG_STATE_HOME")
             .map_or_else(|| home.join(".local/state"), PathBuf::from);
         Store {
-            root: std::env::var_os("LEGIONCTL_WORKTREES")
-                .map_or_else(|| PathBuf::from("/data/worktrees"), PathBuf::from),
+            root,
             registry: state.join("legionctl/worktrees.json"),
         }
     }

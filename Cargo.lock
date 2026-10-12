@@ -1106,6 +1106,7 @@ name = "legionctl-core"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "json_comments",
  "legionctl-machine",
  "rusqlite",
  "schemars",
