@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use legion_core::reminders::{self, Event};
 use legion_core::{actions, agents, load, setup, snapshot::Snapshot, worktree::Store};
 
 #[derive(Parser)]
@@ -71,10 +72,58 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Reminders that agent hooks inject (skills to follow, working habits)
+    Reminders {
+        #[command(subcommand)]
+        command: Option<ReminderCommand>,
+    },
     /// MCP server over stdio, for Claude Code, Codex and other agents
     Mcp,
     /// Live dashboard
     Tui,
+}
+
+#[derive(Subcommand)]
+enum ReminderCommand {
+    /// Show all reminders and whether they are on
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Turn a reminder on
+    On { id: String },
+    /// Turn a reminder off
+    Off { id: String },
+    /// Add your own reminder (one line, 300 characters max)
+    Add {
+        id: String,
+        text: String,
+        /// When to inject it: session-start (default) or prompt (every turn; keep it short)
+        #[arg(long, value_enum, default_value = "session-start")]
+        event: EventArg,
+    },
+    /// Remove a reminder you added
+    Rm { id: String },
+    /// Print enabled reminders for a hook event (used by the agent plugin)
+    Emit {
+        #[arg(long, value_enum)]
+        event: EventArg,
+    },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum EventArg {
+    SessionStart,
+    Prompt,
+}
+
+impl From<EventArg> for Event {
+    fn from(e: EventArg) -> Self {
+        match e {
+            EventArg::SessionStart => Event::SessionStart,
+            EventArg::Prompt => Event::Prompt,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -309,6 +358,47 @@ fn main() -> Result<()> {
                     )
                 }
             );
+        }
+        Command::Reminders { command } => {
+            let store = reminders::Store::default();
+            match command.unwrap_or(ReminderCommand::List { json: false }) {
+                ReminderCommand::List { json: true } => print_json(&store.list()?)?,
+                ReminderCommand::List { json: false } => {
+                    for r in store.list()? {
+                        let kind = if r.builtin { "built-in" } else { "custom" };
+                        println!(
+                            "{:<3} {:<20} {:<14} {:<9} {}",
+                            if r.enabled { "on" } else { "off" },
+                            r.id,
+                            format!("{:?}", r.event),
+                            kind,
+                            r.text
+                        );
+                    }
+                }
+                ReminderCommand::On { id } => {
+                    store.set_enabled(&id, true)?;
+                    println!("{id}: on");
+                }
+                ReminderCommand::Off { id } => {
+                    store.set_enabled(&id, false)?;
+                    println!("{id}: off");
+                }
+                ReminderCommand::Add { id, text, event } => {
+                    store.add(&id, &text, event.into())?;
+                    println!("{id}: added and on");
+                }
+                ReminderCommand::Rm { id } => {
+                    store.remove(&id)?;
+                    println!("{id}: removed");
+                }
+                ReminderCommand::Emit { event } => {
+                    let text = store.emit(event.into())?;
+                    if !text.is_empty() {
+                        println!("{text}");
+                    }
+                }
+            }
         }
         Command::Mcp => tokio::runtime::Runtime::new()?.block_on(mcp::serve())?,
         Command::Tui => tui::run()?,

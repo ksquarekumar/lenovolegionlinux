@@ -190,7 +190,11 @@ legion act set-desktop-gpu nvidia    # asks for approval first
 legion tui                           # live dashboard
 ```
 
-Claude Code plugin (MCP tools, load hooks, `/legion:status`, `/legion:worktree`, `/legion:act`):
+Claude Code plugin: MCP tools; skills `legion:ste100-style` (ASD-STE100 writing) and `legion:glanceable-style`
+(glanceable, agent-readable output); hooks that inject reminders, load and setup notices; commands `/legion:status`,
+`/legion:worktree`, `/legion:act`, `/legion:setup`, `/legion:reminders` (guided), and `/legion:ste100`,
+`/legion:glanceable` (load the skill now, turn its reminder on or off). Reminders also work from the shell:
+`legion reminders`, `legion reminders on|off <id>`, `legion reminders add <id> "<text>" [--event prompt]`.
 
 ```
 /plugin marketplace add /data/git/lenovolegionlinux

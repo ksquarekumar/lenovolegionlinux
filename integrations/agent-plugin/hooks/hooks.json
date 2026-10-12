@@ -1,9 +1,14 @@
 {
-  "description": "Tell the agent when this machine is under load, and when ctx or legion setup needs attention",
+  "description": "Inject legion reminders (skills to follow, habits), and tell the agent about machine load and setup gaps",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "legion reminders emit --event session-start",
+            "timeout": 5
+          },
           {
             "type": "command",
             "command": "legion load --brief",
@@ -20,6 +25,11 @@
     "UserPromptSubmit": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "legion reminders emit --event prompt",
+            "timeout": 5
+          },
           {
             "type": "command",
             "command": "legion load --brief --only-busy",

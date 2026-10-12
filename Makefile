@@ -68,7 +68,7 @@ install: ## install legionctl, profile, units, udev and tuning (needs root)
 	install -Dm755 src/legionctl/legionctl "$(DESTDIR)$(BINDIR)/legionctl"
 	@test -x target/release/legion || { echo "target/release/legion missing: run 'make build' as your user first"; exit 1; }
 	install -Dm755 target/release/legion "$(DESTDIR)$(BINDIR)/legion"
-	install -d "$(DESTDIR)$(DATADIR)" && cp -r integrations/agent-plugin "$(DESTDIR)$(DATADIR)/"
+	install -d "$(DESTDIR)$(DATADIR)" && rm -rf "$(DESTDIR)$(DATADIR)/agent-plugin" && cp -r integrations/agent-plugin "$(DESTDIR)$(DATADIR)/"
 	install -Dm755 src/legion-refresh-toggle/legion-refresh-toggle "$(DESTDIR)$(BINDIR)/legion-refresh-toggle"
 	install -Dm755 src/legion-osd/legion-osd "$(DESTDIR)$(BINDIR)/legion-osd"
 	install -Dm644 systemd/user/legion-osd.service "$(DESTDIR)$(PREFIX)/lib/systemd/user/legion-osd.service"

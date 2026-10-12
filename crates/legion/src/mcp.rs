@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use legion_core::reminders::{self, Event};
 use legion_core::{actions, agents, load, setup, snapshot::Snapshot, worktree::Store};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock as Content};
@@ -59,6 +60,18 @@ pub struct ActionArgs {
     /// "apply-power-policy" (value: auto|ac|battery) or "set-desktop-gpu" (value: nvidia|intel|auto).
     pub action: String,
     pub value: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ReminderArgs {
+    /// "on", "off", "add" or "remove".
+    pub action: String,
+    /// Reminder id: a-z, 0-9 and '-', 32 characters max. Built-ins: ste100, glanceable, load-aware, worktree-per-task.
+    pub id: String,
+    /// For "add": one line, 300 characters max.
+    pub text: Option<String>,
+    /// For "add": session-start (default) or prompt (every turn; keep it short).
+    pub event: Option<Event>,
 }
 
 #[tool_router(server_handler)]
@@ -150,6 +163,38 @@ impl Legion {
     )]
     fn setup_apply(&self) -> CallToolResult {
         setup::apply(false).map_or_else(fail, |done| ok(&done))
+    }
+
+    #[tool(
+        description = "List reminders that legion's hooks inject into agent sessions (skills to follow, habits), with on/off state and when they fire."
+    )]
+    fn reminders_list(&self) -> CallToolResult {
+        reminders::Store::default()
+            .list()
+            .map_or_else(fail, |list| ok(&list))
+    }
+
+    #[tool(
+        description = "Change a reminder: turn a built-in or custom one on or off, add a custom one, or remove a custom one. Takes effect at the next session start or prompt."
+    )]
+    fn reminders_update(&self, Parameters(args): Parameters<ReminderArgs>) -> CallToolResult {
+        let store = reminders::Store::default();
+        let result = match args.action.as_str() {
+            "on" => store.set_enabled(&args.id, true),
+            "off" => store.set_enabled(&args.id, false),
+            "add" => store.add(
+                &args.id,
+                args.text.as_deref().unwrap_or(""),
+                args.event.unwrap_or(Event::SessionStart),
+            ),
+            "remove" => store.remove(&args.id),
+            other => Err(anyhow::anyhow!(
+                "unknown action {other}; use on, off, add or remove"
+            )),
+        };
+        result
+            .and_then(|()| store.list())
+            .map_or_else(fail, |list| ok(&list))
     }
 }
 

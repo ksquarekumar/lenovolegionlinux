@@ -247,6 +247,21 @@ pub fn apply(install_missing_ctx: bool) -> Result<Vec<String>> {
     }
 
     let skills_dir = home().join(".codex/skills");
+    // skills that were renamed or removed leave dangling legion-* links behind; drop only those
+    for entry in std::fs::read_dir(&skills_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let path = entry.path();
+        if entry.file_name().to_string_lossy().starts_with("legion-")
+            && path.is_symlink()
+            && !path.exists()
+        {
+            std::fs::remove_file(&path)?;
+            done.push(format!("removed stale link {}", path.display()));
+        }
+    }
     for name in skill_names() {
         let target = plugin_skills().join(&name);
         let link = skills_dir.join(format!("legion-{name}"));
