@@ -55,7 +55,12 @@ Ordering of change sets uses the code graph (12-operator, "Code graph and work o
 ## Living work graph
 
 `workspace.db` keeps the work itself as a graph: objectives, change sets, homework and sanity checks, evidence,
-prototypes and tests are nodes; edges link them to each other and to code-graph symbols and paths. Every node has a
+prototypes and tests are nodes; edges link them to each other and to code-graph symbols and paths. Each work item
+also records how it runs: its entrypoints (binaries, services, scripts, test targets), the runtimes it needs
+(toolchain versions, interpreters, containers or VMs from 17), and its dependencies and environment (packages,
+services, environment variables, ports, devices such as the GPU). A sandbox (14, 17) or a packed workspace is
+built from these records, and a change to a dependency marks the work items that use it for re-verification.
+Every node has a
 status (`planned`, `pending`, `in-progress`, `done`, `failed`, `abandoned`) with history, so an agent that resumes
 work days later sees what was planned, what was done, what failed and why, and what the code graph says changed.
 
@@ -99,3 +104,10 @@ Processes (bwrap), containers and VMs (17) get the same layout: the operating di
 working directory, the named workspace mounted at `<operating directory>/.agentworkspace`, nothing else writable.
 A container or VM for a workspace is recorded in `workspace.db`, so it is reused, not recreated, when the workspace
 is opened again.
+
+A workspace can also be packaged and run as one sandboxed unit: `legionctl workspace pack <name> --as container|vm`
+builds a copy-on-write image (an OCI image with the operating directory and the named workspace as layers, or a
+qcow2 overlay over a base VM image) together with the session spec (agent, tools, skills, MCP servers, policy; 14).
+`legionctl workspace run <name>` starts it with the same mounts, gates and accounting as a local session, and
+changes come back only through the normal merge with approval. A packed workspace can move to another machine or
+run several copies in parallel from one base.
