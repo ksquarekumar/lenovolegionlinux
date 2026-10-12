@@ -72,7 +72,7 @@ class Osd {
 
         for (const child of [this._strip, this._big, this._sweep, this._lock, this._title, this._detail])
             this._box.add_child(child);
-        Main.layoutManager.addTopChrome(this._box, {affectsInputRegion: false});
+        Main.layoutManager.addTopChrome(this._box);
 
         this._hideId = 0;
         this._countId = 0;
