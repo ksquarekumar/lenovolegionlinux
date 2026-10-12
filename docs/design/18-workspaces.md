@@ -35,6 +35,9 @@ commit on the base branch, after approval.
     log.jsonl                  intent and decisions, read before each change set starts
 ```
 
+- The folders under `<name>/` are a named, flexible pattern, not a fixed schema: the ones above are the default
+  pattern, and a workspace can add its own (for example `homework/`, `prototypes/`, `sanity/`). `dossier.toml`
+  names the pattern and what each folder is for, so tools and agents read it instead of assuming.
 - `<repo-id>` comes from the repo's first commit hash, so clones and worktrees of one repo share one graph.
 - Graphs never live inside a repo: ctx's default (`.graf/index.db` in an ancestor) is not used.
 
@@ -48,6 +51,23 @@ commit on the base branch, after approval.
 | Hook | event (`workspace.open`, `changeset.start`, `changeset.done`, `merge`), action (13 hooks manager) |
 
 Ordering of change sets uses the code graph (12-operator, "Code graph and work ordering").
+
+## Living work graph
+
+`workspace.db` keeps the work itself as a graph: objectives, change sets, homework and sanity checks, evidence,
+prototypes and tests are nodes; edges link them to each other and to code-graph symbols and paths. Every node has a
+status (`planned`, `pending`, `in-progress`, `done`, `failed`, `abandoned`) with history, so an agent that resumes
+work days later sees what was planned, what was done, what failed and why, and what the code graph says changed.
+
+## Making the pattern obvious to agents
+
+- At session start, the hook injects a short workspace brief: the workspace name, its folder pattern and what each
+  folder is for, the open objectives, and the next pending nodes of the work graph.
+- A `legionctl:workspace-practice` skill (reminder on by default, like ste100 and glanceable) says how to use the
+  space: keep plans, homework, sanity checks, evidence, prototypes and tests in the workspace, never in the product
+  tree; record each step's status in the work graph; read the log before a new change set.
+- MCP tools give the agent the work graph directly: list and update nodes, link evidence to an objective, query
+  which code-graph symbols a change set touches.
 
 ## Lifecycle
 
