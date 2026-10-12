@@ -38,6 +38,17 @@ const SCHEMA: &[&str] = &[
      );",
     // v2: where the session worked (repository root, else its folder), for binding the next session there
     "ALTER TABLE bindings ADD COLUMN place TEXT;",
+    // v3: workspaces, the operating directories of dossiers (one open per dossier and repository)
+    "CREATE TABLE workspaces (
+        dossier TEXT NOT NULL,
+        repo    TEXT NOT NULL,
+        path    TEXT NOT NULL,
+        branch  TEXT NOT NULL,
+        base    TEXT NOT NULL,
+        opened  INTEGER NOT NULL,
+        closed  INTEGER
+     );
+     CREATE UNIQUE INDEX open_workspace ON workspaces (dossier, repo) WHERE closed IS NULL;",
 ];
 
 /// Where a session works, for binding the next session there: the repository that contains `dir`, else `dir`.
@@ -88,7 +99,7 @@ fn parse_anchor(anchor: &str) -> Result<(usize, String)> {
     parsed.with_context(|| format!("anchor must look like 12:a3f0, got '{anchor}'"))
 }
 
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     name.chars()
         .next()
         .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
@@ -124,18 +135,18 @@ pub struct DossierInfo {
     pub has_plan: bool,
 }
 
-pub struct Workspace {
+pub struct Dossiers {
     pub root: PathBuf,
     db: Db,
     config: DossierConfig,
 }
 
-impl Workspace {
+impl Dossiers {
     /// The workspace of `config.root` (`~/` is the home folder).
     ///
     /// # Errors
     /// The root or its database cannot be created.
-    pub fn open(config: &DossierConfig) -> Result<Workspace> {
+    pub fn open(config: &DossierConfig) -> Result<Dossiers> {
         let root = match config.root.strip_prefix("~/") {
             Some(rest) => {
                 PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?).join(rest)
@@ -143,11 +154,15 @@ impl Workspace {
             None => PathBuf::from(&config.root),
         };
         std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
-        Ok(Workspace {
+        Ok(Dossiers {
             db: Db::open(&root.join(DB_FILE), SCHEMA)?,
             root,
             config: config.clone(),
         })
+    }
+
+    pub(crate) fn db(&self) -> &rusqlite::Connection {
+        self.db.conn()
     }
 
     fn stale_after(&self) -> i64 {
@@ -780,7 +795,7 @@ mod tests {
         .config;
         let mut dossier = config.dossier;
         dossier.root = dir.join("ws").display().to_string();
-        let ws = Workspace::open(&dossier).unwrap();
+        let ws = Dossiers::open(&dossier).unwrap();
         ws.bind("s1", "test", "port", true, false, None).unwrap();
         ws.write("s1", "port/MEMORY/01-a.md", "alpha\nbeta\ngamma", false)
             .unwrap();

@@ -1,7 +1,7 @@
 {
   "name": "legionctl",
-  "version": "0.5.0",
-  "description": "Operate this Lenovo Legion laptop from Claude Code: system state and load, isolated git worktrees, agent settings, and human-approved power/GPU actions through the local legionctl MCP server.",
+  "version": "0.6.0",
+  "description": "Operate this Lenovo Legion laptop from Claude Code: system state and load, dossiers and workspaces (one git worktree per dossier), agent settings, and human-approved power/GPU actions through the local legionctl MCP server.",
   "author": {
     "name": "ksquarekumar",
     "url": "https://github.com/ksquarekumar/lenovolegionlinux"

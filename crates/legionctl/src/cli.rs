@@ -1,4 +1,4 @@
-//! The CLI, generated from the operation registry: `worktree.create` is `legionctl worktree create`. Each input
+//! The CLI, generated from the operation registry: `workspace.open` is `legionctl workspace open`. Each input
 //! field becomes an argument: a required plain string is positional, a bool is a flag, the rest are `--options`
 //! (enum values and defaults come from the schema). Paths are resolved against this process's working directory.
 
@@ -190,7 +190,7 @@ impl Node {
 pub fn command(client_only: Vec<Command>) -> Command {
     let root = Command::new("legionctl")
         .version(env!("CARGO_PKG_VERSION"))
-        .about("Operate this Legion and the coding agents on it: machine state, load, worktrees, agent setup")
+        .about("Operate this Legion and the coding agents on it: machine state, load, dossiers and workspaces, agent setup")
         .subcommand_required(true)
         .arg_required_else_help(true)
         .arg(

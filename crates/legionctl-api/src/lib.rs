@@ -42,8 +42,8 @@ pub enum Class {
 /// One operation as the surfaces see it.
 #[derive(Debug, Clone)]
 pub struct OpInfo {
-    /// Dotted name: `worktree.create` is `POST /v1/ops/worktree.create`, `legionctl worktree create` and the MCP
-    /// tool `worktree_create`.
+    /// Dotted name: `workspace.open` is `POST /v1/ops/workspace.open`, `legionctl workspace open` and the MCP tool
+    /// `workspace_open`.
     pub name: &'static str,
     /// The doc comment as one paragraph; see [`OpInfo::summary`].
     pub help: &'static str,
@@ -270,12 +270,22 @@ operations! {
     cleanup / Cleanup = "cleanup", Machine, CleanupIn => Changes;
     /// Claude Code and Codex settings files (user and project): present, valid, which top-level sections.
     agents / Agents = "agents", Read, ProjectIn => ConfigFiles;
-    /// Agent worktrees with branch, dirty state and optional disk usage.
-    worktree_list / WorktreeList = "worktree.list", Read, WorktreeListIn => Worktrees;
-    /// Create a worktree of a repository on a new branch legionctl/NAME, one per task.
-    worktree_create / WorktreeCreate = "worktree.create", Workspace, WorktreeCreateIn => Worktree;
-    /// Remove a worktree's checkout; its branch is kept. Refuses uncommitted changes unless force is set.
-    worktree_rm / WorktreeRm = "worktree.rm", Workspace, WorktreeRmIn => Worktree;
+    /// Open (or reopen) this session's dossier workspace in a repository: a worktree on legionctl/<dossier> with the
+    /// dossier linked as .agentworkspace. Change code there, not in the main checkout.
+    workspace_open / WorkspaceOpen = "workspace.open", Workspace, WorkspaceOpenIn => Workspace;
+    /// Git state of this session's workspaces (ahead/behind the base, staged, unstaged, untracked, conflicts) and
+    /// drift from the record.
+    workspace_status / WorkspaceStatusOp = "workspace.status", Read, WorkspaceIn => WorkspaceStates;
+    /// Every open workspace, of every dossier.
+    workspace_list / WorkspaceList = "workspace.list", Read, Empty => Workspaces;
+    /// Stage everything in the workspace and commit it with the message.
+    workspace_checkpoint / WorkspaceCheckpoint = "workspace.checkpoint", Workspace, CheckpointIn => Lines;
+    /// Start legionctl/<dossier>/<topic> from the current branch; it becomes the active branch.
+    workspace_branch / WorkspaceBranch = "workspace.branch", Workspace, BranchIn => Lines;
+    /// Rebase the branch onto the base, then fast-forward the base in the main checkout (which must be clean).
+    workspace_merge / WorkspaceMerge = "workspace.merge", Workspace, WorkspaceIn => Lines;
+    /// Remove the worktree; the branch and the dossier stay. Refuses uncommitted changes unless force.
+    workspace_close / WorkspaceClose = "workspace.close", Workspace, CloseIn => Lines;
     /// Whether ctx and legionctl are set up for Claude Code and Codex (skills, MCP servers).
     setup_check / SetupCheck = "setup.check", Read, Empty => SetupReport;
     /// Set up ctx and legionctl for Claude Code and Codex. Changes user-level config files only, with backups.
@@ -316,7 +326,7 @@ operations! {
     /// Which session holds which dossier, and stale bindings.
     dossier_locks / DossierLocks = "dossier.locks", Read, Empty => Locks;
     /// Dossiers, most recently changed first.
-    dossier_ls / DossierLs = "dossier.ls", Read, Empty => Dossiers;
+    dossier_ls / DossierLs = "dossier.ls", Read, Empty => DossierList;
     /// Read a dossier file; each line prints as <line>:<hash>|<text>, the anchors that edit takes.
     dossier_read / DossierRead = "dossier.read", Read, DossierReadIn => Lines;
     /// Search every dossier (or one) for a text; rows are <path>:<line>:<hash>|<text>.

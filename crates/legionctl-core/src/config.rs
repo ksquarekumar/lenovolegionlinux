@@ -26,7 +26,7 @@ const MANAGED_HEADER: &str = "// Written by legionctl (reminders, hooks). Change
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub config: Meta,
-    pub worktree: WorktreeConfig,
+    pub workspace: WorkspaceConfig,
     pub reminders: BTreeMap<String, ReminderConfig>,
     pub hooks: HooksConfig,
     pub dossier: DossierConfig,
@@ -61,8 +61,12 @@ pub struct Meta {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct WorktreeConfig {
+pub struct WorkspaceConfig {
+    /// Workspaces live in `<root>/<repo>/<dossier>`.
     pub root: PathBuf,
+    /// Tell the agent to open a workspace: at session start when there is none, and before a reply ends when it
+    /// changed the main checkout instead.
+    pub nudge: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

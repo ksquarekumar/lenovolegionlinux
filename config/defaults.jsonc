@@ -14,9 +14,12 @@
     "locked": []
   },
 
-  "worktree": {
-    // Agent worktrees live in <root>/<repo>/<name>.
-    "root": "/data/worktrees"
+  "workspace": {
+    // Workspaces (a dossier's operating directory in a repository) live in <root>/<repo>/<dossier>.
+    "root": "/data/worktrees",
+    // Tell the agent to open one: at session start when the dossier has none in this repository, and before a reply
+    // ends when the main checkout has changes (decided 2026-10-13: a nudge, not a write block).
+    "nudge": true
   },
 
   // Reminders that the hooks inject into agent sessions. Turn one on or off with "<id>": {"enabled": ...}.
@@ -41,8 +44,8 @@
       "event": "session-start",
       "enabled": false
     },
-    "worktree-per-task": {
-      "text": "Do each code-changing task in its own legionctl worktree (/legionctl:worktree).",
+    "workspace": {
+      "text": "Change code in the dossier's workspace (MCP tool workspace_open), not in the repository's own checkout.",
       "event": "session-start",
       "enabled": false
     }

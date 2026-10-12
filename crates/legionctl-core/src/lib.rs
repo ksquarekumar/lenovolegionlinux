@@ -9,4 +9,4 @@ pub mod hooks;
 pub mod reminders;
 pub mod setup;
 pub mod skills;
-pub mod worktree;
+pub mod workspace;

@@ -162,17 +162,13 @@ fn mcp_server_has_one_tool_per_operation_and_calls_the_operator() {
     // an agent's relative path is its own working directory, not the operator's
     let result = mcp.call(
         "tools/call",
-        &json!({"name": "worktree_create", "arguments": {"name": "x", "repo": "no-such-repo"}}),
+        &json!({"name": "agents", "arguments": {"project": "some-project"}}),
     );
-    assert_eq!(result["isError"], true, "{result}");
-    let message = result["content"][0]["text"].as_str().unwrap();
-    assert!(
-        message.contains(&format!(
-            "{}/no-such-repo",
-            std::env::current_dir().unwrap().display()
-        )),
-        "{message}"
-    );
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let here = std::env::current_dir()
+        .unwrap()
+        .join("some-project/.claude/settings.json");
+    assert!(text.contains(&here.display().to_string()), "{text}");
 }
 
 fn write(path: &Path, text: &str) {
@@ -186,7 +182,7 @@ fn config_layers_merge_in_order_and_etc_locks_win() {
     // the site locks a key and a reminder; the user tries to change both; a repository adds its own rules
     write(
         &home.join("root/etc/legionctl/10-site.jsonc"),
-        r#"{ "config": { "locked": ["load", "reminders.ste100"] }, "worktree": { "root": "/srv/worktrees" } }"#,
+        r#"{ "config": { "locked": ["load", "reminders.ste100"] }, "workspace": { "root": "/srv/worktrees" } }"#,
     );
     write(
         &home.join(".config/legionctl/mine.jsonc"),
@@ -255,7 +251,7 @@ fn config_layers_merge_in_order_and_etc_locks_win() {
         "{problems}"
     );
     assert_eq!(
-        json(&repo, &["config", "explain", "worktree.root"])["value"],
+        json(&repo, &["config", "explain", "workspace.root"])["value"],
         "/srv/worktrees"
     );
 
@@ -457,5 +453,151 @@ fn dossier_write_guard_and_takeover_work_through_the_claude_code_hooks() {
     assert!(
         as_session("s2", &["dossier", "use", "port"], "")
             .contains("newest memory:\n  MEMORY/01-intake.md  Intake")
+    );
+}
+
+/// git with the test's own HOME (its identity and default branch), in `dir`.
+fn git(home: &Path, dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("HOME", home)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// A repository with one commit on main, and workspaces configured under `home/worktrees`.
+fn repository(home: &Path) -> PathBuf {
+    write(
+        &home.join(".gitconfig"),
+        "[user]\n  name = Test\n  email = test@example.com\n[init]\n  defaultBranch = main\n",
+    );
+    write(
+        &home.join(".config/legionctl/workspace.jsonc"),
+        &format!(
+            r#"{{ "workspace": {{ "root": "{}" }} }}"#,
+            home.join("worktrees").display()
+        ),
+    );
+    let repo = home.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(home, &repo, &["init", "--quiet"]);
+    write(&repo.join("README.md"), "repo\n");
+    git(home, &repo, &["add", "."]);
+    git(home, &repo, &["commit", "--quiet", "-m", "start"]);
+    repo
+}
+
+#[test]
+fn workspace_opens_checkpoints_reports_drift_merges_and_closes_in_a_real_repository() {
+    let (op, home) = operator("workspace");
+    let repo = repository(&home);
+    let git_env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", "s1"),
+    ];
+    let run_git = |dir: &Path, args: &[&str]| git(&home, dir, args);
+    let ok = |cwd: &Path, args: &[&str]| {
+        let o = op.run(cwd, &git_env, args, "");
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    let hook = |event: &str| {
+        let o = op.run(
+            &repo,
+            &[],
+            &["hook", event],
+            &json!({"session_id": "s1", "cwd": repo}).to_string(),
+        );
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    ok(&repo, &["dossier", "use", "port", "--create"]);
+
+    // no workspace yet: the agent is told at session start, and before a reply ends once the main checkout changed
+    assert!(hook("session-start").contains(&format!("no workspace for {} yet", repo.display())));
+    assert_eq!(
+        hook("stop"),
+        "",
+        "a clean main checkout needs no workspace yet"
+    );
+    write(&repo.join("README.md"), "changed in the main checkout\n");
+    let stop: Value = serde_json::from_str(&hook("stop")).unwrap();
+    assert!(
+        stop["reason"]
+            .as_str()
+            .unwrap()
+            .contains("has changes but dossier port has no workspace"),
+        "{stop}"
+    );
+    run_git(&repo, &["checkout", "--quiet", "README.md"]);
+
+    // open: a worktree on legionctl/port with the dossier linked in and its ignore line committed on the branch
+    let ws = home.join("worktrees/repo/port");
+    assert!(ok(&repo, &["workspace", "open"]).contains(&ws.display().to_string()));
+    assert!(
+        ws.join(".agentworkspace/plan.md").is_file(),
+        "the dossier is linked into the workspace"
+    );
+    assert_eq!(
+        run_git(&ws, &["status", "--porcelain"]),
+        "",
+        "the link is ignored"
+    );
+    assert!(hook("session-start").contains(&format!(
+        "legionctl workspace: {} on legionctl/port (base main)",
+        ws.display()
+    )));
+
+    // checkpoint, status, drift
+    write(&ws.join("feature.rs"), "fn feature() {}\n");
+    assert!(ok(&repo, &["workspace", "checkpoint", "add feature"]).ends_with("add feature"));
+    let status: Value =
+        serde_json::from_str(&ok(&repo, &["workspace", "status", "--json"])).unwrap();
+    assert_eq!(
+        (status[0]["ahead"].as_u64(), status[0]["behind"].as_u64()),
+        (Some(2), Some(0)),
+        "{status}"
+    );
+    run_git(&ws, &["switch", "--quiet", "-c", "elsewhere"]);
+    let drifted = op.run(&repo, &git_env, &["workspace", "status"], "");
+    assert!(!drifted.status.success(), "drift fails the status command");
+    assert!(
+        String::from_utf8_lossy(&drifted.stdout)
+            .contains("drift: the branch is elsewhere, recorded legionctl/port")
+    );
+    run_git(&ws, &["switch", "--quiet", "legionctl/port"]);
+
+    // merge: rebase onto main, then main moves forward; close keeps the branch
+    run_git(
+        &repo,
+        &["commit", "--quiet", "--allow-empty", "-m", "main moved"],
+    );
+    ok(&repo, &["workspace", "merge"]);
+    assert_eq!(
+        run_git(&repo, &["log", "-1", "--format=%s"]),
+        "add feature",
+        "main has the dossier's work on top"
+    );
+    assert_eq!(
+        run_git(&repo, &["rev-list", "--count", "HEAD"]),
+        "4",
+        "linear: start, main moved, ignore line, feature"
+    );
+    assert!(ok(&repo, &["workspace", "close"]).contains("branch legionctl/port kept"));
+    assert!(!ws.exists());
+    assert_eq!(
+        run_git(&repo, &["branch", "--list", "legionctl/port"]),
+        "legionctl/port"
     );
 }

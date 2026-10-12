@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use crate::io::{
     CapabilityList, Changes, ConfigFile, ConfigView, DossierFindings, DossierInfo, Explanation,
     Findings, GpuState, Guard, HookReply, HookTable, LayerList, Lines, LoadState, Lock, Reminder,
-    RunEnv, SetupReport, SkillInfo, Snapshot, Text, Validation, Worktree, WorktreeStatus,
+    RunEnv, SetupReport, SkillInfo, Snapshot, Text, Validation, Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -277,37 +277,47 @@ impl Render for Vec<ConfigFile> {
     }
 }
 
-fn worktree_state(w: &WorktreeStatus) -> &'static str {
-    if !w.exists {
-        "missing"
-    } else if w.dirty == Some(true) {
-        "dirty"
-    } else {
-        "clean"
+impl Render for Workspace {
+    fn text(&self) -> String {
+        format!(
+            "{}: {} on {} (base {}; main checkout {})",
+            self.dossier,
+            self.path.display(),
+            self.branch,
+            self.base,
+            self.repo.display()
+        )
     }
 }
 
-impl Render for Vec<WorktreeStatus> {
+impl Render for Vec<Workspace> {
     fn text(&self) -> String {
-        self.iter()
-            .map(|w| {
-                format!(
-                    "{:<20} {:>10}  {:<7} {}",
-                    w.worktree.name,
-                    w.size_bytes
-                        .map_or("-".into(), legionctl_machine::human_bytes),
-                    worktree_state(w),
-                    w.worktree.path.display()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        if self.is_empty() {
+            return "no open workspaces".into();
+        }
+        self.iter().map(Render::text).collect::<Vec<_>>().join("\n")
     }
 }
 
-impl Render for Worktree {
+impl Render for Vec<WorkspaceStatus> {
     fn text(&self) -> String {
-        format!("{} on branch {}", self.path.display(), self.branch)
+        if self.is_empty() {
+            return "this dossier has no open workspace".into();
+        }
+        let mut out = Vec::new();
+        for s in self {
+            out.push(s.workspace.text());
+            out.push(format!(
+                "  {} ahead, {} behind; staged {}, unstaged {}, untracked {}, conflicts {}",
+                s.ahead, s.behind, s.staged, s.unstaged, s.untracked, s.conflicted
+            ));
+            out.extend(s.drift.iter().map(|d| format!("  drift: {d}")));
+        }
+        out.join("\n")
+    }
+
+    fn success(&self) -> bool {
+        self.iter().all(|s| s.drift.is_empty())
     }
 }
 

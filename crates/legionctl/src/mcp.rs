@@ -1,4 +1,4 @@
-//! MCP server over stdio: one tool per operation of the registry (`worktree.create` is `worktree_create`), each a
+//! MCP server over stdio: one tool per operation of the registry (`workspace.open` is `workspace_open`), each a
 //! call to `legionctl-operator`. Machine changes need a human's approval in the polkit dialog on this machine, so an
 //! agent can propose them but never apply them silently.
 

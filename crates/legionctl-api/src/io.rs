@@ -13,18 +13,19 @@ pub use legionctl_core::hooks::{Action, Binding};
 pub use legionctl_core::reminders::Reminder;
 pub use legionctl_core::setup::Report as SetupReport;
 pub use legionctl_core::skills::SkillInfo;
-pub use legionctl_core::worktree::{Worktree, WorktreeStatus};
+pub use legionctl_core::workspace::{Workspace, WorkspaceStatus};
 pub use legionctl_machine::gpu::Output;
 pub use legionctl_machine::load::Load as LoadState;
 pub use legionctl_machine::profile::Capability;
 pub use legionctl_machine::snapshot::Snapshot;
 
 pub type ConfigFiles = Vec<ConfigFile>;
-pub type Worktrees = Vec<WorktreeStatus>;
+pub type Workspaces = Vec<Workspace>;
+pub type WorkspaceStates = Vec<WorkspaceStatus>;
 pub type Reminders = Vec<Reminder>;
 pub type SkillList = Vec<SkillInfo>;
 pub type Locks = Vec<Lock>;
-pub type Dossiers = Vec<DossierInfo>;
+pub type DossierList = Vec<DossierInfo>;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct Empty {}
@@ -80,31 +81,57 @@ fn here() -> ClientPath {
     ClientPath(".".into())
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
-pub struct WorktreeListIn {
-    /// Measure the disk usage of each worktree (slower on large checkouts).
-    pub sizes: bool,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct WorktreeCreateIn {
-    /// Worktree name: letters, digits, '-', '_', '.'; the branch is legionctl/NAME.
-    pub name: String,
-    /// Git repository to branch from.
+pub struct WorkspaceOpenIn {
+    /// A folder in the repository (its main checkout or any worktree of it).
     #[serde(default = "here")]
     pub repo: ClientPath,
-    /// Git ref to start from; default: the repository's HEAD.
+    /// Ref the dossier's branch starts from and merges into; default: the main checkout's current branch.
     #[serde(default)]
     pub base: Option<String>,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+/// Which of this session's workspaces: the one in `repo`, or the only one.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct WorkspaceIn {
+    /// A folder in the repository; needed only when the dossier has workspaces in several repositories.
+    #[serde(default)]
+    pub repo: Option<ClientPath>,
+    #[serde(default)]
+    pub session: SessionId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct WorktreeRmIn {
-    pub name: String,
+pub struct CheckpointIn {
+    /// Commit message: what this change set does (from the plan entry).
+    pub message: String,
+    #[serde(default)]
+    pub repo: Option<ClientPath>,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BranchIn {
+    /// The branch becomes legionctl/<dossier>/<topic>.
+    pub topic: String,
+    #[serde(default)]
+    pub repo: Option<ClientPath>,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct CloseIn {
     /// Discard uncommitted changes.
     #[serde(default)]
     pub force: bool,
+    #[serde(default)]
+    pub repo: Option<ClientPath>,
+    #[serde(default)]
+    pub session: SessionId,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]

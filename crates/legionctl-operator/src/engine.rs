@@ -6,23 +6,24 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use legionctl_api::{
-    CapabilityList, Changes, CleanupIn, ClientPath, ConfigFiles, ConfigView, Ctx, DesktopGpu,
-    Empty, Engine, EventIn, ExplainIn, Explanation, Findings, GpuPrimaryIn, GpuState, HookAddIn,
-    HookBindIn, HookTable, IdIn, LayerList, LoadState, PowerApplyIn, PowerSource, ProfileIn,
-    ProjectIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn, SetupApplyIn, SetupReport, SkillList,
-    Snapshot, StatusIn, Text, Validation, Worktree, WorktreeCreateIn, WorktreeListIn, WorktreeRmIn,
-    Worktrees,
+    BranchIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath, CloseIn, ConfigFiles,
+    ConfigView, Ctx, DesktopGpu, Empty, Engine, EventIn, ExplainIn, Explanation, Findings,
+    GpuPrimaryIn, GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LayerList, LoadState,
+    PowerApplyIn, PowerSource, ProfileIn, ProjectIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn,
+    SetupApplyIn, SetupReport, SkillList, Snapshot, StatusIn, Text, Validation, Workspace,
+    WorkspaceIn, WorkspaceOpenIn, WorkspaceStates, Workspaces,
 };
 use legionctl_api::{
-    DossierAddIn, DossierAppendIn, DossierCheckIn, DossierEditIn, DossierFindings, DossierReadIn,
-    DossierSearchIn, DossierUseIn, DossierWriteIn, Dossiers, Guard, GuardIn, HookReply, HookRunIn,
-    Lines, Locks, SessionId, SessionIn,
+    DossierAddIn, DossierAppendIn, DossierCheckIn, DossierEditIn, DossierFindings, DossierList,
+    DossierReadIn, DossierSearchIn, DossierUseIn, DossierWriteIn, Guard, GuardIn, HookReply,
+    HookRunIn, Lines, Locks, SessionId, SessionIn,
 };
 use legionctl_core::config::{Dirs, Resolved, resolve};
 use legionctl_core::db::Db;
-use legionctl_core::dossier::{Workspace, place_of};
+use legionctl_core::dossier::{Dossiers, place_of};
 use legionctl_core::reminders::Event;
-use legionctl_core::{agents, hooks, reminders, setup, skills, worktree};
+use legionctl_core::workspace::Place;
+use legionctl_core::{agents, hooks, reminders, setup, skills};
 use legionctl_machine::ledger::Ledger;
 use legionctl_machine::policy::{self, Machine, Options, Source};
 use legionctl_machine::profile::{self, Profile};
@@ -143,8 +144,8 @@ impl Operator {
     }
 }
 
-fn workspace() -> Result<Workspace> {
-    Workspace::open(&config(None)?.config.dossier)
+fn dossiers() -> Result<Dossiers> {
+    Dossiers::open(&config(None)?.config.dossier)
 }
 
 fn session(id: &SessionId) -> Result<&str> {
@@ -153,6 +154,119 @@ fn session(id: &SessionId) -> Result<&str> {
         "no session id: set LEGIONCTL_SESSION (Claude Code sets CLAUDE_CODE_SESSION_ID)"
     );
     Ok(&id.0)
+}
+
+/// A new or resumed session takes the dossier last used where it works, so nobody has to bind it again. Returns the
+/// line for the agent, and sets `active` when the binding worked.
+fn rebind(
+    store: &Dossiers,
+    session: &str,
+    dir: &Path,
+    active: &mut Option<String>,
+) -> Result<Option<String>> {
+    let place = place_of(dir);
+    let Some(last) = store.last_in(&place)? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        match store.bind(session, "hook", &last, false, false, Some(&place)) {
+            Ok(_) => {
+                let line = format!(
+                    "legionctl dossier: {last} (bound at session start: the last dossier used in {}; read its plan.md and \
+                 newest MEMORY, and use another with dossier_use if this work needs one)",
+                    place.display()
+                );
+                *active = Some(last);
+                line
+            }
+            Err(e) => format!("legionctl: the last dossier here could not be bound: {e}"),
+        },
+    ))
+}
+
+/// Why this hook call stops the prompt (the gate, for the user) or the end of the reply (for the agent), if it does.
+fn blocking_reason(
+    resolved: &Resolved,
+    input: &HookRunIn,
+    has_session: bool,
+    active: Option<&str>,
+    place: Option<&Place>,
+) -> Result<Option<String>> {
+    let config = &resolved.config;
+    // the gate: a session without a dossier gets no prompt through, except the one that binds a dossier
+    let runs_dossier = input
+        .prompt
+        .as_deref()
+        .is_some_and(|p| p.contains("legionctl:dossier"));
+    if input.event == Event::Prompt
+        && config.dossier.gate
+        && has_session
+        && active.is_none()
+        && !runs_dossier
+    {
+        return gate_message(resolved).map(Some);
+    }
+    if input.event != Event::Stop {
+        return Ok(None);
+    }
+    // before the reply ends, the agent (not the user) hears what is not set up, and sets it up first
+    if config.dossier.nudge.contains(&Event::Stop) && has_session && active.is_none() {
+        return Ok(Some(
+            "legionctl: this session has no dossier. Before you end this reply, bind one with the legionctl MCP tool \
+             dossier_use (create: true for a new one; ask the user for the name if it is not clear), record the state \
+             in its plan.md and MEMORY, then finish."
+                .into(),
+        ));
+    }
+    Ok(place
+        .filter(|p| config.workspace.nudge && p.workspace.is_none() && p.main_dirty)
+        .map(|p| {
+            format!(
+                "legionctl: the main checkout {} has changes but dossier {} has no workspace there. Open one with the \
+                 legionctl MCP tool workspace_open and make code changes in its path; tell the user about the changes \
+                 already in the main checkout, then finish.",
+                p.repo.display(),
+                active.unwrap_or_default()
+            )
+        }))
+}
+
+/// What the agent reads first in a session: its dossier and its workspace, or what to set up.
+fn start_lines(
+    resolved: &Resolved,
+    store: &Dossiers,
+    session: &str,
+    active: Option<&str>,
+    rebound: Option<String>,
+    place: Option<&Place>,
+) -> Vec<String> {
+    let nudge = resolved.config.dossier.nudge.contains(&Event::SessionStart);
+    let mut lines = vec![match (active, rebound) {
+        (Some(_), Some(line)) => line,
+        (Some(d), None) => format!("legionctl dossier: {d} (session {session})"),
+        (None, Some(failed)) if nudge => format!("{failed}\n{}", nudge_line(resolved)),
+        (None, _) if nudge => nudge_line(resolved),
+        (None, _) => "legionctl dossier: none".into(),
+    }];
+    match place.map(|p| (p, &p.workspace)) {
+        Some((_, Some(w))) => {
+            lines.push(format!(
+                "legionctl workspace: {} on {} (base {}); make code changes there",
+                w.path.display(),
+                w.branch,
+                w.base
+            ));
+            let drift = store.workspace_status(w).map(|s| s.drift).unwrap_or_default();
+            lines.extend(drift.into_iter().map(|d| format!("legionctl workspace drift: {d}")));
+        }
+        Some((p, None)) if resolved.config.workspace.nudge => lines.push(format!(
+            "legionctl: no workspace for {} yet. Before code changes, open one with the legionctl MCP tool \
+             workspace_open and work in its path.",
+            p.repo.display()
+        )),
+        _ => {}
+    }
+    lines
 }
 
 /// What the agent hears at session start when its session has no dossier.
@@ -170,7 +284,7 @@ fn nudge_line(resolved: &Resolved) -> String {
 
 /// What a blocked prompt shows: why, and the commands that pass the gate, with the most recent dossiers.
 fn gate_message(resolved: &Resolved) -> Result<String> {
-    let recent: Vec<String> = Workspace::open(&resolved.config.dossier)?
+    let recent: Vec<String> = Dossiers::open(&resolved.config.dossier)?
         .list()
         .into_iter()
         .take(5)
@@ -322,22 +436,69 @@ impl Engine for Operator {
         Ok(agents::config_files(&home(), input.project.get()?))
     }
 
-    fn worktree_list(&self, _: &Ctx, input: WorktreeListIn) -> Result<Worktrees> {
-        worktree::Store::new(config(None)?.config.worktree.root).list(input.sizes)
-    }
-
-    fn worktree_create(&self, ctx: &Ctx, input: WorktreeCreateIn) -> Result<Worktree> {
-        Self::record(ctx, "worktree.create", &input)?;
-        worktree::Store::new(config(None)?.config.worktree.root).create(
+    fn workspace_open(&self, ctx: &Ctx, input: WorkspaceOpenIn) -> Result<Workspace> {
+        Self::record(ctx, "workspace.open", &input)?;
+        let root = config(None)?.config.workspace.root;
+        dossiers()?.open_workspace(
+            session(&input.session)?,
             input.repo.get()?,
-            &input.name,
             input.base.as_deref(),
+            &root,
         )
     }
 
-    fn worktree_rm(&self, ctx: &Ctx, input: WorktreeRmIn) -> Result<Worktree> {
-        Self::record(ctx, "worktree.rm", &input)?;
-        worktree::Store::new(config(None)?.config.worktree.root).remove(&input.name, input.force)
+    fn workspace_status(&self, _: &Ctx, input: WorkspaceIn) -> Result<WorkspaceStates> {
+        let store = dossiers()?;
+        let id = session(&input.session)?;
+        let open = if let Some(repo) = path(input.repo.as_ref())? {
+            vec![store.workspace_of(id, Some(repo))?]
+        } else {
+            let dossier = store
+                .active(id)?
+                .context("this session has no active dossier")?;
+            store.workspaces(Some(&dossier))?
+        };
+        open.iter().map(|ws| store.workspace_status(ws)).collect()
+    }
+
+    fn workspace_list(&self, _: &Ctx, _: Empty) -> Result<Workspaces> {
+        dossiers()?.workspaces(None)
+    }
+
+    fn workspace_checkpoint(&self, ctx: &Ctx, input: CheckpointIn) -> Result<Lines> {
+        Self::record(ctx, "workspace.checkpoint", &input)?;
+        let store = dossiers()?;
+        let ws = store.workspace_of(session(&input.session)?, path(input.repo.as_ref())?)?;
+        Ok(Lines {
+            lines: vec![store.checkpoint(&ws, &input.message)?],
+        })
+    }
+
+    fn workspace_branch(&self, ctx: &Ctx, input: BranchIn) -> Result<Lines> {
+        Self::record(ctx, "workspace.branch", &input)?;
+        let store = dossiers()?;
+        let ws = store.workspace_of(session(&input.session)?, path(input.repo.as_ref())?)?;
+        Ok(Lines {
+            lines: vec![format!("on {}", store.new_branch(&ws, &input.topic)?)],
+        })
+    }
+
+    fn workspace_merge(&self, ctx: &Ctx, input: WorkspaceIn) -> Result<Lines> {
+        Self::record(ctx, "workspace.merge", &input)?;
+        let store = dossiers()?;
+        let ws = store.workspace_of(session(&input.session)?, path(input.repo.as_ref())?)?;
+        Ok(Lines {
+            lines: store.merge(&ws)?,
+        })
+    }
+
+    fn workspace_close(&self, ctx: &Ctx, input: CloseIn) -> Result<Lines> {
+        Self::record(ctx, "workspace.close", &input)?;
+        let store = dossiers()?;
+        let ws = store.workspace_of(session(&input.session)?, path(input.repo.as_ref())?)?;
+        Ok(Lines {
+            lines: vec![store.close(&ws, input.force)?],
+        })
     }
 
     fn setup_check(&self, _: &Ctx, _: Empty) -> Result<SetupReport> {
@@ -426,90 +587,64 @@ impl Engine for Operator {
 
     fn hooks_run(&self, _: &Ctx, input: HookRunIn) -> Result<HookReply> {
         let resolved = config(Some(&input.project))?;
+        let store = Dossiers::open(&resolved.config.dossier)?;
         let session = input.session.as_ref().filter(|s| !s.0.is_empty());
-        let ws = Workspace::open(&resolved.config.dossier)?;
         let mut active = match session {
-            Some(s) => ws.active(&s.0)?,
+            Some(s) => store.active(&s.0)?,
             None => None,
         };
-        // a new or resumed session takes the dossier last used where it works, so nobody has to bind it again
-        let mut rebound = None;
-        if input.event == Event::SessionStart
-            && resolved.config.dossier.auto_bind
-            && active.is_none()
-            && let Some(s) = session
-        {
-            let place = place_of(input.project.get()?);
-            if let Some(last) = ws.last_in(&place)? {
-                rebound = Some(
-                    match ws.bind(&s.0, "hook", &last, false, false, Some(&place)) {
-                        Ok(_) => {
-                            active = Some(last.clone());
-                            format!(
-                                "legionctl dossier: {last} (bound at session start: the last dossier used in {}; read its \
-                             plan.md and newest MEMORY, and use another with dossier_use if this work needs one)",
-                                place.display()
-                            )
-                        }
-                        Err(e) => {
-                            format!("legionctl: the last dossier here could not be bound: {e}")
-                        }
-                    },
-                );
+        let rebound = match session {
+            Some(s)
+                if input.event == Event::SessionStart
+                    && active.is_none()
+                    && resolved.config.dossier.auto_bind =>
+            {
+                rebind(&store, &s.0, input.project.get()?, &mut active)?
             }
-        }
-        // the gate: a session without a dossier gets no prompt through, except the one that binds a dossier
-        let runs_dossier = input
-            .prompt
+            _ => None,
+        };
+        let place = active
             .as_deref()
-            .is_some_and(|p| p.contains("legionctl:dossier"));
-        if input.event == Event::Prompt
-            && resolved.config.dossier.gate
-            && session.is_some()
-            && active.is_none()
-            && !runs_dossier
-        {
+            .zip(input.project.get().ok())
+            .and_then(|(d, dir)| store.place(d, dir));
+        if let Some(block) = blocking_reason(
+            &resolved,
+            &input,
+            session.is_some(),
+            active.as_deref(),
+            place.as_ref(),
+        )? {
             return Ok(HookReply {
                 text: String::new(),
-                block: Some(gate_message(&resolved)?),
+                block: Some(block),
             });
         }
-        // before the reply ends, the agent (not the user) hears what is not set up, and sets it up first
-        let nudge = resolved.config.dossier.nudge.contains(&input.event);
-        if input.event == Event::Stop && nudge && session.is_some() && active.is_none() {
-            return Ok(HookReply {
-                text: String::new(),
-                block: Some(
-                    "legionctl: this session has no dossier. Before you end this reply, bind one with the \
-                     legionctl MCP tool dossier_use (create: true for a new one; ask the user for the name if it is \
-                     not clear), record the state in its plan.md and MEMORY, then finish."
-                        .into(),
-                ),
-            });
-        }
-        let mut text = hooks::run(&resolved, input.event);
+        let mut lines = Vec::new();
         if input.event == Event::SessionStart
             && let Some(s) = session
         {
-            let line = match (&active, rebound) {
-                (Some(_), Some(line)) => line,
-                (Some(d), None) => format!("legionctl dossier: {d} (session {})", s.0),
-                (None, Some(failed)) if nudge => format!("{failed}\n{}", nudge_line(&resolved)),
-                (None, _) if nudge => nudge_line(&resolved),
-                (None, _) => "legionctl dossier: none".into(),
-            };
-            text = if text.is_empty() {
-                line
-            } else {
-                format!("{line}\n{text}")
-            };
+            lines.extend(start_lines(
+                &resolved,
+                &store,
+                &s.0,
+                active.as_deref(),
+                rebound,
+                place.as_ref(),
+            ));
         }
-        Ok(HookReply { text, block: None })
+        let ran = hooks::run(&resolved, input.event);
+        if !ran.is_empty() {
+            lines.push(ran);
+        }
+        Ok(HookReply {
+            text: lines.join("\n"),
+            block: None,
+        })
     }
 
     fn dossier_use(&self, ctx: &Ctx, input: DossierUseIn) -> Result<Lines> {
         Self::record(ctx, "dossier.use", &input)?;
-        let lines = workspace()?.bind(
+        let lines = dossiers()?.bind(
             session(&input.session)?,
             &ctx.actor,
             &input.name,
@@ -522,7 +657,7 @@ impl Engine for Operator {
 
     fn dossier_active(&self, _: &Ctx, input: SessionIn) -> Result<Lines> {
         let id = session(&input.session)?;
-        let active = workspace()?.active(id)?;
+        let active = dossiers()?.active(id)?;
         Ok(Lines {
             lines: vec![format!(
                 "session {id}: active dossier {}",
@@ -533,7 +668,7 @@ impl Engine for Operator {
 
     fn dossier_release(&self, ctx: &Ctx, input: SessionIn) -> Result<Lines> {
         Self::record(ctx, "dossier.release", &input)?;
-        let released = workspace()?.release(session(&input.session)?)?;
+        let released = dossiers()?.release(session(&input.session)?)?;
         Ok(Lines {
             lines: vec![
                 released.map_or_else(|| "no active dossier".into(), |d| format!("released {d}")),
@@ -542,15 +677,15 @@ impl Engine for Operator {
     }
 
     fn dossier_locks(&self, _: &Ctx, _: Empty) -> Result<Locks> {
-        workspace()?.locks()
+        dossiers()?.locks()
     }
 
-    fn dossier_ls(&self, _: &Ctx, _: Empty) -> Result<Dossiers> {
-        Ok(workspace()?.list())
+    fn dossier_ls(&self, _: &Ctx, _: Empty) -> Result<DossierList> {
+        Ok(dossiers()?.list())
     }
 
     fn dossier_read(&self, _: &Ctx, input: DossierReadIn) -> Result<Lines> {
-        let lines = workspace()?.read(
+        let lines = dossiers()?.read(
             &input.path,
             input.first as usize,
             input.last.map(|l| l as usize),
@@ -559,7 +694,7 @@ impl Engine for Operator {
     }
 
     fn dossier_search(&self, _: &Ctx, input: DossierSearchIn) -> Result<Lines> {
-        let lines = workspace()?.search(
+        let lines = dossiers()?.search(
             &input.pattern,
             input.dossier.as_deref(),
             input.ignore_case,
@@ -569,7 +704,7 @@ impl Engine for Operator {
     }
 
     fn dossier_write(&self, _: &Ctx, input: DossierWriteIn) -> Result<Lines> {
-        let path = workspace()?.write(
+        let path = dossiers()?.write(
             session(&input.session)?,
             &input.path,
             &input.content.0,
@@ -581,14 +716,14 @@ impl Engine for Operator {
     }
 
     fn dossier_append(&self, _: &Ctx, input: DossierAppendIn) -> Result<Lines> {
-        let path = workspace()?.append(session(&input.session)?, &input.path, &input.content.0)?;
+        let path = dossiers()?.append(session(&input.session)?, &input.path, &input.content.0)?;
         Ok(Lines {
             lines: vec![path.display().to_string()],
         })
     }
 
     fn dossier_edit(&self, _: &Ctx, input: DossierEditIn) -> Result<Lines> {
-        let lines = workspace()?.edit(
+        let lines = dossiers()?.edit(
             session(&input.session)?,
             &input.path,
             input.mode,
@@ -600,7 +735,7 @@ impl Engine for Operator {
     }
 
     fn dossier_add(&self, _: &Ctx, input: DossierAddIn) -> Result<Lines> {
-        let rel = workspace()?.add(
+        let rel = dossiers()?.add(
             session(&input.session)?,
             &input.class,
             &input.slug,
@@ -610,7 +745,7 @@ impl Engine for Operator {
     }
 
     fn dossier_check(&self, _: &Ctx, input: DossierCheckIn) -> Result<DossierFindings> {
-        let ws = workspace()?;
+        let ws = dossiers()?;
         let dossier = match input.dossier {
             Some(d) => d,
             None => ws
@@ -625,8 +760,7 @@ impl Engine for Operator {
 
     fn dossier_guard(&self, _: &Ctx, input: GuardIn) -> Result<Guard> {
         Ok(Guard {
-            refusal: workspace()?
-                .write_refusal(session(&input.session)?, Path::new(&input.path))?,
+            refusal: dossiers()?.write_refusal(session(&input.session)?, Path::new(&input.path))?,
         })
     }
 

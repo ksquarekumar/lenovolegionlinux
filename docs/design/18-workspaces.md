@@ -38,8 +38,17 @@ Replaces the "plan workspaces" section of 12-operator. Sessions (14) and sandbox
   the session works. At session start (new or resumed) the hook binds the session to the last dossier used there,
   when no live session holds it, and tells the agent (`dossier.auto_bind`, default on). Knowing and using the
   dossier is the agent's job; the nudges and the gate step in only when there is none.
-- Next: the operating directory and its git operations (open, new branch, checkpoint, merge, close,
-  reconciliation), then the work graph.
+- Milestone 2 (built 2026-10-13): `workspace` replaces `worktree` (15). A workspace is one git worktree per
+  dossier and repository at `<workspace.root>/<repo>/<dossier>` on `legionctl/<dossier>`, from a recorded base
+  ref, registered in `workspace.db`; `workspace.open` links the dossier as `.agentworkspace` and commits the
+  `/.agentworkspace` ignore line on the dossier branch when it is missing. `status` reports ahead/behind, staged,
+  unstaged, untracked, conflicts and drift (a branch switched outside legionctl, a missing worktree);
+  `checkpoint` commits everything; `branch` starts `legionctl/<dossier>/<topic>`; `merge` rebases onto the base
+  and fast-forwards the base in a clean main checkout (decided 2026-10-13); `close` removes the worktree and keeps
+  the branch. Writes into the main checkout are not blocked (decided 2026-10-13: nudge only): the session-start
+  line names the workspace (with its drift) or says to open one, and the stop hook tells the agent when the main
+  checkout has changes and the dossier has no workspace there (`workspace.nudge`).
+- Next: plain-folder sources (overlay copies, with sandboxes in 14), then the work graph.
 
 ## A session declares two things
 

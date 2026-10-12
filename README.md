@@ -2,7 +2,7 @@
 
 One operator for this machine and the coding agents that run on it. It controls power, firmware, GPU and display
 policy with the in-tree Lenovo drivers (no out-of-tree module), gives developers tools to see and check the system,
-and gives Claude Code and Codex hooks, skills, reminders, worktrees and an MCP server. Design notes:
+and gives Claude Code and Codex hooks, skills, reminders, dossiers, workspaces and an MCP server. Design notes:
 [docs/design](docs/design/README.md) (start with 15-layout).
 
 This repository is for one machine only. It does not guess safe behavior for other models.
@@ -51,6 +51,7 @@ legionctl gpu primary --choice nvidia    # applies at the next login
 legionctl validate                # profile structure, no hardware access
 legionctl config layers           # config files in merge order; `config explain <key>` says which file set a value
 legionctl dossier ls              # agent dossiers in ~/.agentworkspace (agents bind them; see Agents)
+legionctl workspace list          # each dossier's git worktree: path, branch, base
 legionctl tui                     # live dashboard
 legionctl --help                  # every operation; add --json to any of them
 ```
@@ -63,17 +64,19 @@ The policy: AC uses the firmware's `max-power` mode, battery uses `balanced`; po
 Claude Code plugin (`/plugin marketplace add /data/git/lenovolegionlinux`, then
 `/plugin install legionctl@lenovolegionlinux`):
 
-- one MCP tool per operation (status, load, doctor, power, GPU, cleanup, worktrees, setup, reminders, hooks, skills,
+- one MCP tool per operation (status, load, doctor, power, GPU, cleanup, workspaces, setup, reminders, hooks, skills,
   config, dossiers);
 - skills `legionctl:ste100-style`, `legionctl:glanceable-style` and `legionctl:dossier-practice`, kept in force by
   reminders;
 - hooks (`legionctl hook <event>`): reminders, load and setup notices; one dossier per session, bound again at
   session start where the last session worked; the agent is told first when a session has none (`dossier.nudge`),
   prompts are blocked until it has one (`dossier.gate`), and writes into another session's dossier are denied;
-- commands `/legionctl:dossier`, `/legionctl:status`, `/legionctl:worktree`, `/legionctl:act`, `/legionctl:setup`,
+- workspaces: a git worktree per dossier and repository (`/legionctl:workspace`: open, status, checkpoint, branch,
+  merge, close); the agent is told to open one at session start and when it changed the main checkout instead;
+- commands `/legionctl:dossier`, `/legionctl:workspace`, `/legionctl:status`, `/legionctl:act`, `/legionctl:setup`,
   `/legionctl:reminders`, `/legionctl:hooks`, `/legionctl:skills`.
 
-Settings (worktree root, reminders, hook bindings, load thresholds, dossier pattern and gate) are JSONC config:
+Settings (workspace root, reminders, hook bindings, load thresholds, dossier pattern and gate) are JSONC config:
 built-in defaults (`config/defaults.jsonc`), then `/etc/legionctl`, `~/.config/legionctl` and `<repo>/.legionctl`.
 
 Codex: `legionctl setup apply` adds the MCP server to `~/.codex/config.toml` and links the skills.

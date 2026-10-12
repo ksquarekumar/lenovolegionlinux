@@ -1,11 +1,9 @@
-//! Live dashboard: load pressure, machine state, worktrees and agent configs on one screen.
+//! Live dashboard: load pressure, machine state, workspaces and agent configs on one screen.
 
 use std::time::Duration;
 
 use anyhow::Result;
-use legionctl_api::{
-    ClientPath, ConfigFile, ProjectIn, Snapshot, StatusIn, WorktreeListIn, WorktreeStatus, op,
-};
+use legionctl_api::{ClientPath, ConfigFile, Empty, ProjectIn, Snapshot, StatusIn, Workspace, op};
 use legionctl_machine::load::{Level, Pressure};
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -40,34 +38,27 @@ fn pressure_gauge(title: &str, p: Option<&Pressure>) -> Gauge<'static> {
         .label(format!("{pct:.0}%"))
 }
 
-fn worktrees_table(worktrees: &[WorktreeStatus]) -> Table<'_> {
-    let wt_rows = worktrees.iter().map(|w| {
-        let state = if !w.exists {
-            "missing"
-        } else if w.dirty == Some(true) {
-            "dirty"
-        } else {
-            "clean"
-        };
+/// Open workspaces of every dossier.
+fn workspaces_table(workspaces: &[Workspace]) -> Table<'_> {
+    let rows = workspaces.iter().map(|w| {
         Row::new(vec![
-            w.worktree.name.clone(),
-            w.size_bytes
-                .map_or("-".into(), legionctl_machine::human_bytes),
-            state.into(),
-            w.worktree.repo.display().to_string(),
+            w.dossier.clone(),
+            w.branch.clone(),
+            w.base.clone(),
+            w.path.display().to_string(),
         ])
     });
     Table::new(
-        wt_rows,
+        rows,
         [
-            Constraint::Length(18),
+            Constraint::Length(16),
+            Constraint::Length(24),
             Constraint::Length(10),
-            Constraint::Length(8),
             Constraint::Min(10),
         ],
     )
-    .header(Row::new(vec!["name", "size", "state", "repo"]).bold())
-    .block(Block::bordered().title(" worktrees "))
+    .header(Row::new(vec!["dossier", "branch", "base", "path"]).bold())
+    .block(Block::bordered().title(" workspaces "))
 }
 
 /// Agent settings files that exist; invalid ones in red.
@@ -97,7 +88,7 @@ fn configs_table(configs: &[ConfigFile]) -> Table<'_> {
     .block(Block::bordered().title(" agent settings "))
 }
 
-fn draw(f: &mut Frame, s: &Snapshot, worktrees: &[WorktreeStatus], configs: &[ConfigFile]) {
+fn draw(f: &mut Frame, s: &Snapshot, workspaces: &[Workspace], configs: &[ConfigFile]) {
     let [header, gauges, body, footer] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Length(3),
@@ -172,13 +163,12 @@ fn draw(f: &mut Frame, s: &Snapshot, worktrees: &[WorktreeStatus], configs: &[Co
 
     let [wt_area, cfg_area] =
         Layout::vertical([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(right);
-    f.render_widget(worktrees_table(worktrees), wt_area);
+    f.render_widget(workspaces_table(workspaces), wt_area);
 
     f.render_widget(configs_table(configs), cfg_area);
 
     f.render_widget(
-        Paragraph::new(" q quit · r re-measure worktree sizes · state refreshes every second")
-            .dim(),
+        Paragraph::new(" q quit · state refreshes every second").dim(),
         footer,
     );
 }
@@ -193,28 +183,23 @@ pub fn run() -> Result<()> {
     let project = ProjectIn {
         project: ClientPath(std::env::current_dir()?),
     };
-    // sizes walk whole checkouts, so measure on start and on demand, not every frame
-    let sized = WorktreeListIn { sizes: true };
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
-        let mut worktrees = runtime.block_on(client.call::<op::WorktreeList>(&sized))?;
         loop {
-            let (snapshot, configs) = runtime.block_on(async {
+            let (snapshot, configs, workspaces) = runtime.block_on(async {
                 tokio::try_join!(
                     client.call::<op::Status>(&status),
-                    client.call::<op::Agents>(&project)
+                    client.call::<op::Agents>(&project),
+                    client.call::<op::WorkspaceList>(&Empty {})
                 )
             })?;
-            terminal.draw(|f| draw(f, &snapshot, &worktrees, &configs))?;
+            terminal.draw(|f| draw(f, &snapshot, &workspaces, &configs))?;
             if event::poll(Duration::from_secs(1))?
                 && let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
             {
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                    KeyCode::Char('r') => {
-                        worktrees = runtime.block_on(client.call::<op::WorktreeList>(&sized))?;
-                    }
                     _ => {}
                 }
             }
