@@ -46,7 +46,7 @@ class Osd {
     constructor() {
         this._box = new St.BoxLayout({
             style_class: 'osd-window legionctl-osd',
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             opacity: 0,
             visible: false,
         });
