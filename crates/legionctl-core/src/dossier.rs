@@ -211,8 +211,8 @@ impl Workspace {
         match holder {
             Some((holder, _, _)) if holder == session => {
                 tx.execute(
-                    "UPDATE bindings SET updated = ?1 WHERE session = ?2 AND released IS NULL",
-                    params![now, session],
+                    "UPDATE bindings SET updated = ?1, place = coalesce(?3, place) WHERE session = ?2 AND released IS NULL",
+                    params![now, session, place.map(|p| p.to_string_lossy().into_owned())],
                 )?;
                 tx.commit()?;
                 out.push(format!("active dossier: {name} ({})", dir.display()));
