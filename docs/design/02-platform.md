@@ -23,6 +23,10 @@ resource busy") and the values stay 90/135 W: the firmware limits are writable o
 `gpu_*` there; Fn+Q still cycles the firmware modes and is followed. Ranges: `ppt_pl1_spl` 30–140 W, `ppt_pl2_sppt`
 55–190 W (so the Python battery cap of 25/35/45 W cannot be expressed; lowest is 30/55). Custom-mode defaults: 70/119
 W, `ppt_cpu_cl` 55, `ppt_pl1_tau` 56, `gpu_nv_ctgp` 80, `gpu_nv_ppab` 15.
+**Enforcement measured 2026-10-12** (custom mode, stress-ng on 32 threads, reassert timer stopped): `ppt_pl2_sppt`
+55 held the package at 55 W, then `ppt_pl1_spl` 30 took over after 69 s (28–30 W, CPU 79 → 61 °C); with
+`ppt_pl1_spl` 60 and `ppt_pl2_sppt` 55 the package held 55 W (the lower limit wins). Each write sets the MMIO
+RAPL PL1 at once, so the firmware enforces through MMIO; no other writer may touch RAPL.
 
 ## CPU
 
