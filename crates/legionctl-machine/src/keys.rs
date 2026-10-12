@@ -1,6 +1,6 @@
-//! Fn keys that only the platform input device reports. Fn+R (refresh-rate toggle) arrives as a burst of ~10 key
-//! events per press, so presses are debounced. Fn+Q needs no key handling: it changes `platform_profile`, which the
-//! daemon already watches.
+//! Fn keys that only the platform input device reports. One Fn+R tap (refresh-rate toggle) arrives as a burst of 2–6
+//! key events within ~0.3 s (captured 2026-10-12), so a new tap starts only after a short quiet time.
+//! Fn+Q needs no key handling: it changes `platform_profile`, which the daemon already watches.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -13,7 +13,9 @@ const FN_R_CODES: [u16; 2] = [562, 188];
 const EV_KEY: u16 = 1;
 /// `struct input_event` on 64-bit: timeval (16 bytes), type u16, code u16, value i32.
 pub const EVENT_SIZE: usize = 24;
-pub const FN_R_DEBOUNCE: Duration = Duration::from_millis(1500);
+/// Quiet time that ends a tap: longer than the gaps inside one burst (at most 0.12 s measured), shorter than the gaps
+/// between fast deliberate taps (at least 0.66 s measured).
+pub const FN_R_QUIET: Duration = Duration::from_millis(400);
 
 /// `/dev/input/eventN` of the device named `name`, if present.
 pub fn find_device(root: &SysRoot, name: &str) -> Option<PathBuf> {
@@ -33,21 +35,19 @@ pub fn has_fn_r_press(data: &[u8]) -> bool {
     })
 }
 
-/// One action per press: further presses within the window belong to the same burst.
+/// One action per tap: Fn+R events start a new tap only after the key has been quiet for [`FN_R_QUIET`].
 #[derive(Debug, Default)]
 pub struct Debounce {
-    last: Option<Instant>,
+    last_event: Option<Instant>,
 }
 
 impl Debounce {
-    /// Whether a press at `now` starts a new action.
+    /// Whether Fn+R events seen at `now` start a new tap.
     pub fn press(&mut self, now: Instant) -> bool {
         let fresh = self
-            .last
-            .is_none_or(|t| now.duration_since(t) > FN_R_DEBOUNCE);
-        if fresh {
-            self.last = Some(now);
-        }
+            .last_event
+            .is_none_or(|t| now.duration_since(t) > FN_R_QUIET);
+        self.last_event = Some(now);
         fresh
     }
 }
@@ -65,40 +65,49 @@ mod tests {
     }
 
     #[test]
-    fn a_burst_is_one_press_and_a_later_burst_is_another() {
-        // what one Fn+R press looks like on this machine: key-down/up pairs for both codes, plus scan codes (EV_MSC)
-        let burst: Vec<u8> = (0..5)
-            .flat_map(|_| {
-                [
-                    event(4, 4, 0x110),
-                    event(EV_KEY, 562, 1),
-                    event(EV_KEY, 562, 0),
-                    event(EV_KEY, 188, 1),
+    fn each_tap_is_one_action_and_fast_taps_each_count() {
+        // one key event as captured on this machine: scan code, key down, sync, key up, sync
+        let captured = [
+            event(4, 4, 272),
+            event(EV_KEY, 188, 1),
+            event(0, 0, 0),
+            event(EV_KEY, 188, 0),
+            event(0, 0, 0),
+        ]
+        .concat();
+        assert!(has_fn_r_press(&captured));
+        assert!(
+            !has_fn_r_press(
+                &[
+                    event(4, 4, 272),
+                    event(EV_KEY, 188, 0),
+                    event(EV_KEY, 30, 1)
                 ]
-            })
-            .flatten()
-            .collect();
-        assert!(has_fn_r_press(&burst));
-        assert!(!has_fn_r_press(
-            &[
-                event(4, 4, 0x110),
-                event(EV_KEY, 562, 0),
-                event(EV_KEY, 30, 1)
-            ]
-            .concat()
-        ));
+                .concat()
+            ),
+            "key-ups, scan codes and other keys are not Fn+R presses"
+        );
 
-        let start = Instant::now();
-        let mut d = Debounce::default();
-        assert!(d.press(start));
-        assert!(
-            !d.press(start + Duration::from_millis(900)),
-            "rest of the burst"
+        // key-down times (s) captured on this machine: one tap; then five taps in a row
+        let one_tap = [0.0, 0.121];
+        let five_taps = [
+            0.0, 0.085, 0.166, 0.206, 0.256, 1.080, 1.110, 1.201, 1.281, 1.301, 1.382, 2.056,
+            2.116, 2.156, 2.267, 2.318, 2.357, 3.019, 3.101, 9.947, 10.038, 10.128,
+        ];
+        let actions = |times: &[f64]| -> Vec<f64> {
+            let start = Instant::now();
+            let mut d = Debounce::default();
+            times
+                .iter()
+                .copied()
+                .filter(|t| d.press(start + Duration::from_secs_f64(*t)))
+                .collect()
+        };
+        assert_eq!(actions(&one_tap), [0.0], "one tap is one action");
+        assert_eq!(
+            actions(&five_taps),
+            [0.0, 1.080, 2.056, 3.019, 9.947],
+            "fast taps each count"
         );
-        assert!(
-            !d.press(start + Duration::from_millis(1400)),
-            "still the same press"
-        );
-        assert!(d.press(start + Duration::from_millis(1600)), "next press");
     }
 }

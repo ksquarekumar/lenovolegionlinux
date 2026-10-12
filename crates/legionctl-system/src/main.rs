@@ -180,7 +180,9 @@ impl System1 {
         };
         let lines = carry_out(&self.root, |m| Ok(m.apply(source, Options::default())?.1))
             .map_err(failed)?;
-        Self::changed(&emitter, "Apply", &lines).await?;
+        if !lines.is_empty() {
+            Self::changed(&emitter, "Apply", &lines).await?;
+        }
         Ok(lines)
     }
 
@@ -194,11 +196,13 @@ impl System1 {
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.gpu.desktop").await?;
         let lines = carry_out(&self.root, |m| gpu::set_desktop(m, &choice)).map_err(failed)?;
-        Self::changed(&emitter, "SetDesktopGpu", &lines).await?;
+        if !lines.is_empty() {
+            Self::changed(&emitter, "SetDesktopGpu", &lines).await?;
+        }
         Ok(lines)
     }
 
-    /// Something changed the machine: an event or a method (`cause`), with what it did.
+    /// Something changed the machine: an event or a method (`cause`), with what it did. Never sent for no change.
     #[zbus(signal)]
     async fn changed(
         emitter: &SignalEmitter<'_>,
