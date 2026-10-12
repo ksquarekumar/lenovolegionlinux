@@ -30,7 +30,44 @@ pub struct Config {
     pub reminders: BTreeMap<String, ReminderConfig>,
     pub hooks: HooksConfig,
     pub dossier: DossierConfig,
+    pub session: SessionConfig,
+    pub gates: GatesConfig,
     pub load: Thresholds,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionConfig {
+    /// Agent name -> command line; `{id}` is the session id.
+    pub agents: BTreeMap<String, Vec<String>>,
+    /// Writable in the sandbox besides the workspace, the dossier and the repository's .git (`~/` is the home).
+    pub writable: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GatesConfig {
+    pub git: GitGate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GitGate {
+    /// Refused in a session sandbox: a subcommand and its unsafe flags (`reset --hard`, `clean -f`).
+    pub deny: Vec<String>,
+}
+
+/// `~/x` as a path under the home folder; other paths as they are.
+///
+/// # Errors
+/// The path starts with `~/` and HOME is not set.
+pub fn expand_home(path: &str) -> Result<PathBuf> {
+    Ok(match path.strip_prefix("~/") {
+        Some(rest) => {
+            PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?).join(rest)
+        }
+        None => PathBuf::from(path),
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

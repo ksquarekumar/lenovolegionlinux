@@ -11,6 +11,7 @@ pub use legionctl_core::agents::ConfigFile;
 pub use legionctl_core::config::{Explanation, Layer as ConfigLayer};
 pub use legionctl_core::hooks::{Action, Binding};
 pub use legionctl_core::reminders::Reminder;
+pub use legionctl_core::session::{Launch, SessionRecord};
 pub use legionctl_core::setup::Report as SetupReport;
 pub use legionctl_core::skills::SkillInfo;
 pub use legionctl_core::workspace::{Workspace, WorkspaceStatus};
@@ -486,4 +487,44 @@ pub struct GuardIn {
 pub struct Guard {
     /// Set when the write is refused.
     pub refusal: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SessionStartIn {
+    /// Agent to start: claude or codex (config session.agents).
+    pub agent: String,
+    /// Dossier to work in; default: the last one used in this repository.
+    #[serde(default)]
+    pub dossier: Option<String>,
+    /// Create the dossier when it does not exist.
+    #[serde(default)]
+    pub create: bool,
+    /// A folder in the repository to work on.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+/// A session and whether its scope still runs.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SessionState {
+    #[serde(flatten)]
+    pub session: SessionRecord,
+    /// The scope's state from systemd: active, inactive, failed, ...
+    pub state: String,
+}
+
+pub type Sessions = Vec<SessionState>;
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SessionIdIn {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GateIn {
+    /// The git arguments, as the command got them.
+    pub args: Vec<String>,
+    /// Where the command runs; its repository's config layer and aliases apply.
+    #[serde(default = "here")]
+    pub project: ClientPath,
 }

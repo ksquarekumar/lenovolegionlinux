@@ -15,8 +15,9 @@ use legionctl_api::{
 };
 use legionctl_api::{
     DossierAddIn, DossierAppendIn, DossierCheckIn, DossierEditIn, DossierFindings, DossierList,
-    DossierReadIn, DossierSearchIn, DossierUseIn, DossierWriteIn, Guard, GuardIn, HookReply,
-    HookRunIn, Lines, Locks, SessionId, SessionIn,
+    DossierReadIn, DossierSearchIn, DossierUseIn, DossierWriteIn, GateIn, Guard, GuardIn,
+    HookReply, HookRunIn, Launch, Lines, Locks, SessionId, SessionIdIn, SessionIn, SessionStartIn,
+    SessionState, Sessions,
 };
 use legionctl_core::config::{Dirs, Resolved, resolve};
 use legionctl_core::db::Db;
@@ -766,6 +767,77 @@ impl Engine for Operator {
 
     fn skills(&self, _: &Ctx, input: ProjectIn) -> Result<SkillList> {
         Ok(skills::inventory(&home(), &config(Some(&input.project))?))
+    }
+
+    fn session_start(&self, ctx: &Ctx, input: SessionStartIn) -> Result<Launch> {
+        Self::record(ctx, "session.start", &input)?;
+        let dir = input.repo.get()?;
+        let resolved = config(Some(&input.repo))?;
+        let store = Dossiers::open(&resolved.config.dossier)?;
+        let dossier = match input.dossier {
+            Some(d) => d,
+            None => store
+                .last_in(&place_of(dir))?
+                .context("no dossier was used in this repository yet; name one (and pass create for a new one)")?,
+        };
+        store.start_session(&input.agent, &dossier, input.create, dir, &resolved.config)
+    }
+
+    fn session_list(&self, _: &Ctx, _: Empty) -> Result<Sessions> {
+        Ok(dossiers()?
+            .sessions()?
+            .into_iter()
+            .map(|session| {
+                // a scope that ended is gone from systemd: is-active then says inactive
+                let unit = format!("legionctl-session-{}.scope", session.id);
+                let out = Command::new("systemctl")
+                    .args(["--user", "is-active", &unit])
+                    .output();
+                let state = out
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .ok()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "unknown".into());
+                SessionState { state, session }
+            })
+            .collect())
+    }
+
+    fn session_stop(&self, ctx: &Ctx, input: SessionIdIn) -> Result<Lines> {
+        Self::record(ctx, "session.stop", &input)?;
+        let session = dossiers()?.session(&input.id)?;
+        let unit = format!("legionctl-session-{}.scope", session.id);
+        let out = Command::new("systemctl")
+            .args(["--user", "stop", &unit])
+            .output()?;
+        anyhow::ensure!(
+            out.status.success(),
+            "stopping {unit}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        Ok(Lines {
+            lines: vec![format!(
+                "stopped session {} ({})",
+                session.id, session.agent
+            )],
+        })
+    }
+
+    fn gates_check(&self, _: &Ctx, input: GateIn) -> Result<Guard> {
+        let dir = input.project.get()?;
+        let deny = config(Some(&input.project))?.config.gates.git.deny;
+        // an alias is resolved by the real git outside the sandbox, so the agent cannot hide a denied command
+        let is_alias = |sub: &str| {
+            Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(["config", "--get", &format!("alias.{sub}")])
+                .output()
+                .is_ok_and(|o| o.status.success())
+        };
+        Ok(Guard {
+            refusal: legionctl_core::gates::git_refusal(&input.args, &deny, is_alias),
+        })
     }
 
     fn config_show(&self, _: &Ctx, input: ProjectIn) -> Result<ConfigView> {

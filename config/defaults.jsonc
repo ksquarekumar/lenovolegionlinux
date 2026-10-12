@@ -91,6 +91,31 @@
     ]
   },
 
+  // Sessions that legionctl starts (`legionctl session start <agent>`, note 14): the agent runs in a sandbox where
+  // your home is read-only.
+  "session": {
+    // Agent name -> command line; {id} is the session id (Claude Code's hooks then find the session's dossier).
+    "agents": {
+      "claude": ["claude", "--session-id", "{id}"],
+      "codex": ["codex"]
+    },
+    // Writable besides the workspace, the dossier, the repository's .git and the runtime folder (/tmp is private to
+    // the session): the agents' own state.
+    "writable": ["~/.claude", "~/.claude.json", "~/.codex", "~/.cache"]
+  },
+
+  // Gates on commands in a session sandbox. /etc/legionctl can lock them.
+  "gates": {
+    "git": {
+      // Refused: a subcommand and the flags that make it unsafe. Merge goes through workspace_merge; pushes and
+      // history changes stay with the user.
+      "deny": [
+        "push", "fetch", "pull", "remote", "reset --hard", "rebase", "clean -f", "branch -D",
+        "branch --delete --force", "filter-branch", "gc --prune", "update-ref", "reflog expire"
+      ]
+    }
+  },
+
   // When the load counts as busy or overloaded (`legionctl load`). Pressure values are PSI avg10 percentages.
   "load": {
     "disk_busy_percent": 10,

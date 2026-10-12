@@ -343,6 +343,15 @@ operations! {
     dossier_check / DossierCheck = "dossier.check", Read, DossierCheckIn => DossierFindings;
     /// Whether this session may write a path: inside the dossier root only its active dossier (agent hooks use it).
     dossier_guard / DossierGuard = "dossier.guard", Read, GuardIn => Guard;
+    /// Prepare a sandboxed session of an agent on a dossier's workspace; `legionctl session start` then runs it in the
+    /// terminal (systemd scope, bwrap with your home read-only, git gate).
+    session_start / SessionStart = "session.start", Workspace, SessionStartIn => Launch;
+    /// Sessions legionctl started, newest first, with the state of their scope.
+    session_list / SessionList = "session.list", Read, Empty => Sessions;
+    /// Stop a session's scope (the agent and everything it started).
+    session_stop / SessionStop = "session.stop", Workspace, SessionIdIn => Lines;
+    /// Whether a git command may run in a session sandbox (the git gate asks this before every git call).
+    gates_check / GatesCheck = "gates.check", Read, GateIn => Guard;
     /// The merged config (defaults, /etc/legionctl, ~/.config/legionctl, the repository's .legionctl) and the files
     /// or keys that were not used.
     config_show / ConfigShow = "config.show", Read, ProjectIn => ConfigView;

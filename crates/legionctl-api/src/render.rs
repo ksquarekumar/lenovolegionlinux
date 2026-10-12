@@ -4,8 +4,9 @@ use std::collections::BTreeMap;
 
 use crate::io::{
     CapabilityList, Changes, ConfigFile, ConfigView, DossierFindings, DossierInfo, Explanation,
-    Findings, GpuState, Guard, HookReply, HookTable, LayerList, Lines, LoadState, Lock, Reminder,
-    RunEnv, SetupReport, SkillInfo, Snapshot, Text, Validation, Workspace, WorkspaceStatus,
+    Findings, GpuState, Guard, HookReply, HookTable, Launch, LayerList, Lines, LoadState, Lock,
+    Reminder, RunEnv, SessionState, SetupReport, SkillInfo, Snapshot, Text, Validation, Workspace,
+    WorkspaceStatus,
 };
 
 pub trait Render {
@@ -569,5 +570,38 @@ impl Render for Guard {
 
     fn success(&self) -> bool {
         self.refusal.is_none()
+    }
+}
+
+impl Render for Launch {
+    fn text(&self) -> String {
+        format!(
+            "session {}: {}",
+            self.id,
+            [&self.scope[..], &self.sandbox[..], &self.agent[..]]
+                .concat()
+                .join(" ")
+        )
+    }
+}
+
+impl Render for Vec<SessionState> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no sessions".into();
+        }
+        self.iter()
+            .map(|s| {
+                format!(
+                    "{}  {:<8} {:<7} {:<16} {}",
+                    s.session.id,
+                    s.state,
+                    s.session.agent,
+                    s.session.dossier,
+                    s.session.workdir.display()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }

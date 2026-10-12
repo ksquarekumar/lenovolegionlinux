@@ -26,6 +26,7 @@ impl Operator {
         for (name, value) in env.iter().chain(&[
             ("DBUS_SESSION_BUS_ADDRESS", nowhere.clone()),
             ("DBUS_SYSTEM_BUS_ADDRESS", nowhere),
+            ("XDG_RUNTIME_DIR", runtime.clone().into()),
         ]) {
             cmd.arg(format!("--setenv={name}={}", value.to_string_lossy()));
         }

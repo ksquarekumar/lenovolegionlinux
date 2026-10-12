@@ -10,6 +10,23 @@ privileged location.
 Builds on 12-operator (harness, sandbox, gateway) and 13-daemon (one-writer database, event log, sagas). Owner:
 `legionctl-operator` (user); privileged parts through `legionctl-system`.
 
+## Built (2026-10-13, milestone 1: interactive agents in a sandbox)
+
+- `legionctl session start claude|codex [--dossier X] [--create]` binds the dossier to a new session id (Claude Code
+  gets it as `--session-id`, so its hooks find the binding), opens the dossier's workspace (18), records the session
+  in `workspace.db`, and runs the agent in the terminal: `systemd-run --user --scope` (unit
+  `legionctl-session-<id>`), then `bwrap` with `/` read-only (your home too, decided 2026-10-13), a private `/tmp`,
+  and writable: the workspace, the dossier, the repository's `.git`, the runtime folder and `session.writable`
+  (`~/.claude`, `~/.claude.json`, `~/.codex`, `~/.cache`). The network stays on: agents need their model API.
+- The git gate: `/usr/bin/git` in the sandbox is the `legionctl` binary; started as `git`, it asks the operator
+  (`gates.check`, config `gates.git.deny`, lockable from `/etc`) and runs the real git (mounted read-only in the
+  session's runtime folder) or refuses. Default (decided 2026-10-13): local commands run; push, fetch, pull, remote,
+  reset --hard, rebase, clean -f, branch -D, filter-branch, gc --prune, update-ref and reflog expire are refused;
+  git aliases are refused, because an alias could name a denied command.
+- `session list` (state from the scope), `session stop`. Checked live: the scope, the refused push, the read-only
+  home. Not yet: agent permission generation (layer 1 below), overlay copies for plain folders, ACP
+  (pause/offload/resume, sessions as model calls), the tool proxy and cache.
+
 ## Session record
 
 One row per session in the user database (plus child tables), changed only through the event log:

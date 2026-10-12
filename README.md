@@ -52,6 +52,7 @@ legionctl validate                # profile structure, no hardware access
 legionctl config layers           # config files in merge order; `config explain <key>` says which file set a value
 legionctl dossier ls              # agent dossiers in ~/.agentworkspace (agents bind them; see Agents)
 legionctl workspace list          # each dossier's git worktree: path, branch, base
+legionctl session start claude    # Claude Code in a sandbox on the dossier's workspace: home read-only, git gated
 legionctl tui                     # live dashboard
 legionctl --help                  # every operation; add --json to any of them
 ```

@@ -73,13 +73,20 @@ pub struct WorkspaceStatus {
     pub drift: Vec<String>,
 }
 
-/// The repository's main checkout for `dir`, also when `dir` is inside one of its worktrees.
-fn main_checkout(dir: &Path) -> Result<PathBuf> {
-    let common = PathBuf::from(git(
+/// The repository's `.git` folder that its worktrees share (objects, refs): what a commit in a worktree writes.
+///
+/// # Errors
+/// `dir` is not in a git repository.
+pub fn git_common_dir(dir: &Path) -> Result<PathBuf> {
+    Ok(PathBuf::from(git(
         dir,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )?);
-    common
+    )?))
+}
+
+/// The repository's main checkout for `dir`, also when `dir` is inside one of its worktrees.
+pub(crate) fn main_checkout(dir: &Path) -> Result<PathBuf> {
+    git_common_dir(dir)?
         .parent()
         .map(Path::to_path_buf)
         .context("the repository has no main checkout")

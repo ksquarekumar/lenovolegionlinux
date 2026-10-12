@@ -29,7 +29,8 @@ fn claude_hook(event: &str, fields: &Value) -> String {
 
 /// An operator with an empty HOME and the repo's plugin skills.
 fn operator(tag: &str) -> (Operator, PathBuf) {
-    let home = std::env::temp_dir().join(format!("legionctl-e2e-{tag}-{}", std::process::id()));
+    // outside /tmp (private in a session sandbox) and outside any git repository, like a real home
+    let home = Path::new("/var/tmp").join(format!("legionctl-e2e-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
     let skills =
@@ -619,4 +620,107 @@ fn workspace_opens_checkpoints_reports_drift_merges_and_closes_in_a_real_reposit
         run_git(&repo, &["branch", "--list", "legionctl/port"]),
         "legionctl/port"
     );
+}
+
+#[test]
+fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_hold() {
+    let (op, home) = operator("session");
+    let repo = repository(&home);
+    // a stand-in agent that tries what an agent would: commit, push, rewrite history, write home and dossier
+    let probe = "echo x > note.txt && git add note.txt && git commit -qm probe && echo COMMIT_OK; \
+                 git push origin main 2>&1 | grep -q gates.git.deny && echo PUSH_REFUSED; \
+                 git reset --hard HEAD 2>&1 | grep -q gates.git.deny && echo RESET_REFUSED; \
+                 touch \"$HOME/outside\" 2>/dev/null || echo HOME_READONLY; \
+                 touch .agentworkspace/MEMORY/probe.md && echo DOSSIER_WRITABLE; echo \"SESSION=$LEGIONCTL_SESSION\"";
+    write(
+        &home.join(".config/legionctl/session.jsonc"),
+        &json!({"session": {"agents": {"probe": ["sh", "-c", probe]}, "writable": []}}).to_string(),
+    );
+    let started = op.run(
+        &repo,
+        &[("HOME", home.to_str().unwrap())],
+        &[
+            "session",
+            "start",
+            "probe",
+            "--dossier",
+            "port",
+            "--create",
+            "--json",
+        ],
+        "",
+    );
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let launch: Value = serde_json::from_slice(&started.stdout).unwrap();
+    let strings = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap().to_string())
+            .collect()
+    };
+    let gate = [
+        "--ro-bind",
+        env!("CARGO_BIN_EXE_legionctl"),
+        "/usr/bin/git",
+        "--setenv",
+        "LEGIONCTL_REAL_GIT",
+        launch["real_git"].as_str().unwrap(),
+    ]
+    .map(String::from);
+    // the client runs scope + sandbox + gate + agent; CI has no user systemd, so this runs sandbox + gate + agent
+    let argv = [
+        strings(&launch["sandbox"]),
+        gate.to_vec(),
+        strings(&launch["agent"]),
+    ]
+    .concat();
+    let out = Command::new(&argv[0])
+        .args(&argv[1..])
+        .env_clear()
+        .env("HOME", &home)
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .env("XDG_RUNTIME_DIR", &op.runtime)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    for expected in [
+        "COMMIT_OK",
+        "PUSH_REFUSED",
+        "RESET_REFUSED",
+        "HOME_READONLY",
+        "DOSSIER_WRITABLE",
+    ] {
+        assert!(
+            text.contains(expected),
+            "{expected} missing:\n{text}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert!(!home.join("outside").exists());
+    let id = launch["id"].as_str().unwrap();
+    assert!(
+        text.contains(&format!("SESSION={id}")),
+        "the session id reaches the agent: {text}"
+    );
+    let workspace = home.join("worktrees/repo/port");
+    assert_eq!(
+        git(&home, &workspace, &["log", "-1", "--format=%s"]),
+        "probe",
+        "the commit is on the dossier branch"
+    );
+    // the session is recorded, and its id holds the dossier (Claude Code gets it as --session-id)
+    let active = op.run(
+        &repo,
+        &[("LEGIONCTL_SESSION", id)],
+        &["dossier", "active"],
+        "",
+    );
+    assert!(String::from_utf8_lossy(&active.stdout).contains("active dossier port"));
+    let listed = op.run(&repo, &[], &["session", "list"], "");
+    assert!(String::from_utf8_lossy(&listed.stdout).contains(id));
 }

@@ -49,12 +49,21 @@ const SCHEMA: &[&str] = &[
         closed  INTEGER
      );
      CREATE UNIQUE INDEX open_workspace ON workspaces (dossier, repo) WHERE closed IS NULL;",
+    // v4: sessions that legionctl started (note 14)
+    "CREATE TABLE sessions (
+        id      TEXT PRIMARY KEY,
+        agent   TEXT NOT NULL,
+        dossier TEXT NOT NULL,
+        workdir TEXT NOT NULL,
+        started INTEGER NOT NULL
+     );",
 ];
 
 /// Where a session works, for binding the next session there: the repository that contains `dir`, else `dir`.
 #[must_use]
 pub fn place_of(dir: &Path) -> PathBuf {
-    crate::config::repo_root(dir).unwrap_or_else(|| dir.to_path_buf())
+    // a worktree's place is its repository's main checkout, so a session in a workspace finds the same dossier
+    crate::workspace::main_checkout(dir).unwrap_or_else(|_| dir.to_path_buf())
 }
 const DB_FILE: &str = "workspace.db";
 
@@ -147,12 +156,7 @@ impl Dossiers {
     /// # Errors
     /// The root or its database cannot be created.
     pub fn open(config: &DossierConfig) -> Result<Dossiers> {
-        let root = match config.root.strip_prefix("~/") {
-            Some(rest) => {
-                PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?).join(rest)
-            }
-            None => PathBuf::from(&config.root),
-        };
+        let root = crate::config::expand_home(&config.root)?;
         std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
         Ok(Dossiers {
             db: Db::open(&root.join(DB_FILE), SCHEMA)?,

@@ -12,7 +12,7 @@ use std::os::unix::process::CommandExt;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use legionctl_api::{Cores, RunEnvIn, RunGpu, op};
+use legionctl_api::{ClientPath, Cores, GateIn, Launch, RunEnvIn, RunGpu, op};
 
 use crate::client::Client;
 
@@ -131,7 +131,55 @@ fn run(matches: &ArgMatches) -> Result<()> {
     Err(err).with_context(|| format!("running {}", argv[0]))
 }
 
+/// The git gate: this binary is `/usr/bin/git` in a session sandbox. It asks the operator, then runs the real git
+/// (mounted at `LEGIONCTL_REAL_GIT`) or refuses with the reason.
+fn gate_git() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let input = GateIn {
+        args: args.clone(),
+        project: ClientPath(std::env::current_dir()?),
+    };
+    let guard = tokio::runtime::Runtime::new()?
+        .block_on(Client::new("gate")?.call::<op::GatesCheck>(&input))?;
+    if let Some(reason) = guard.refusal {
+        eprintln!("{reason}");
+        std::process::exit(1);
+    }
+    let real = std::env::var_os("LEGIONCTL_REAL_GIT")
+        .context("LEGIONCTL_REAL_GIT is not set (outside a session?)")?;
+    let err = std::process::Command::new(real).args(args).exec();
+    Err(err).context("running the real git")
+}
+
+/// `legionctl session start`: run the prepared session in this terminal, with this binary as the git gate.
+fn start_session(launch: Launch) -> Result<()> {
+    let exe = std::env::current_exe()?.to_string_lossy().into_owned();
+    let real_git = launch.real_git.to_string_lossy().into_owned();
+    let gate = [
+        "--ro-bind".into(),
+        exe,
+        "/usr/bin/git".into(),
+        "--setenv".into(),
+        "LEGIONCTL_REAL_GIT".into(),
+        real_git,
+    ];
+    let argv = [launch.scope, launch.sandbox, gate.to_vec(), launch.agent].concat();
+    eprintln!(
+        "legionctl: session {} (stop it with `legionctl session stop {}`)",
+        launch.id, launch.id
+    );
+    let err = std::process::Command::new(&argv[0]).args(&argv[1..]).exec();
+    Err(err).with_context(|| format!("running {}", argv[0]))
+}
+
 fn main() -> Result<()> {
+    if std::env::args_os()
+        .next()
+        .and_then(|a| std::path::Path::new(&a).file_name().map(|n| n == "git"))
+        == Some(true)
+    {
+        return gate_git();
+    }
     let matches = cli::command(client_only()).get_matches();
     match matches.subcommand() {
         Some(("mcp", _)) => return tokio::runtime::Runtime::new()?.block_on(mcp::serve()),
@@ -148,6 +196,9 @@ fn main() -> Result<()> {
     if matches.get_flag("json") {
         println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(());
+    }
+    if op.name == "session.start" {
+        return start_session(serde_json::from_value(output)?);
     }
     let (text, success) = legionctl_api::render(op.name, output)?;
     if !text.is_empty() {

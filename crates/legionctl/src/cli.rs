@@ -28,6 +28,8 @@ enum Kind {
     Text,
     Path,
     Integer,
+    /// A list of strings: the trailing arguments.
+    List,
     Choice(Vec<String>),
 }
 
@@ -89,6 +91,7 @@ fn fields(input: &Value) -> Vec<Field<'_>> {
                 match kind {
                     Some("boolean") => Kind::Flag,
                     Some("integer") => Kind::Integer,
+                    Some("array") => Kind::List,
                     _ => Kind::Text,
                 }
             };
@@ -121,6 +124,13 @@ fn argument(field: &Field) -> Arg {
     match &field.kind {
         Kind::Flag => return arg.action(ArgAction::SetTrue),
         Kind::Integer => arg = arg.value_parser(clap::value_parser!(i64)),
+        Kind::List => {
+            return Arg::new(field.key.to_string())
+                .num_args(0..)
+                .trailing_var_arg(true)
+                .allow_hyphen_values(true)
+                .action(ArgAction::Append);
+        }
         Kind::Choice(values) => {
             arg = arg.value_parser(clap::builder::PossibleValuesParser::new(values.clone()));
         }
@@ -230,6 +240,13 @@ pub fn operation(matches: &ArgMatches) -> Result<Option<(&'static OpInfo, Value)
         let value = match field.kind {
             Kind::Flag => Some(Value::Bool(at.get_flag(field.key))),
             Kind::Integer => at.get_one::<i64>(field.key).map(|n| Value::from(*n)),
+            Kind::List => Some(Value::from(
+                at.get_many::<String>(field.key)
+                    .into_iter()
+                    .flatten()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )),
             Kind::Text | Kind::Path | Kind::Choice(_) | Kind::Session | Kind::Stdin => at
                 .get_one::<String>(field.key)
                 .map(|s| Value::from(s.as_str())),
