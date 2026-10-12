@@ -122,7 +122,7 @@ trait Actuator: Send + Sync {
 
 | Concern | Path | When it fails |
 | --- | --- | --- |
-| CPU power limits | firmware attributes (`ppt_*`); RAPL is read for watts, never written | safe mode, report |
+| CPU power limits | firmware attributes (`ppt_*`, `gpu_*`) in `custom` mode, the only mode where the firmware accepts them (decided 2026-10-12); RAPL is read for watts, never written | safe mode, report |
 | Change detection | sysfs `POLLPRI` / uevents; drift check only for knobs that cannot notify | report the knob |
 | GPU data | NVML | sensor `failed`, report |
 | Fn keys | evdev on the platform device | report; no key actions |

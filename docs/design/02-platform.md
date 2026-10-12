@@ -18,7 +18,11 @@ Vantage switches to Custom mode to apply them)? Test: write `ppt_pl1_spl` in `ma
 `custom`. The answer decides whether the AC layer uses `max-power` + limits or `custom` + limits.
 
 **Measured 2026-10-12:** in `max-power`, writes to `ppt_pl1_spl` and `ppt_pl2_sppt` fail with `EBUSY` ("Device or
-resource busy") and the values stay 90/135 W: the firmware limits are writable only in `custom` mode.
+resource busy") and the values stay 90/135 W: the firmware limits are writable only in `custom` mode. Decision
+(2026-10-12): when a layer sets power limits, legionctl puts the firmware in `custom` mode and writes `ppt_*` and
+`gpu_*` there; Fn+Q still cycles the firmware modes and is followed. Ranges: `ppt_pl1_spl` 30–140 W, `ppt_pl2_sppt`
+55–190 W (so the Python battery cap of 25/35/45 W cannot be expressed; lowest is 30/55). Custom-mode defaults: 70/119
+W, `ppt_cpu_cl` 55, `ppt_pl1_tau` 56, `gpu_nv_ctgp` 80, `gpu_nv_ppab` 15.
 
 ## CPU
 
