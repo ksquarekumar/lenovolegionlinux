@@ -210,7 +210,9 @@
       "ac_performance.service",
       "firmware_max_power.timer",
       "firmware_max_power.service",
-      "cpupower.service"
+      "cpupower.service",
+      "gpu_performance.service",
+      "prepare_rapl.service"
     ],
     "packages": [
       "lenovolegionlinux-git",
