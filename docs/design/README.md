@@ -19,6 +19,7 @@ the design is explored and are meant to change; decisions and open questions are
 | [13-daemon.md](13-daemon.md) | Operator daemon: processes, one-writer SQLite, event log, outbox and sagas, bootstrap, eBPF toolkit, shared memory, failure isolation |
 | [14-sessions.md](14-sessions.md) | Sessions: COW workdirs, git state, packaged skills/MCP with call proxy and cache, sessions as model calls with quotas, pause/offload/resume, git gates, layered config |
 | [15-layout.md](15-layout.md) | One name, one API, one operator: processes, operation registry, crates, paths, command tree, Python switch, test policy |
+| [16-observability.md](16-observability.md) | Scope vs LenovoLegionLinux; see, check, change, record and replay tools for developers and superusers |
 | [issues.md](issues.md) | Issues found on this machine and cleanups to do |
 
 Evidence for every machine-specific claim was collected on 2026-10-12 (CachyOS, kernel 7.2.9, GNOME 51,

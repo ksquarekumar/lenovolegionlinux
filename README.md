@@ -1,6 +1,12 @@
-# Lenovo Legion Control
+# legionctl
 
-Local control package for this machine:
+One unified, modular operator for this machine and the coding agents that run on it. It replaces
+LenovoLegionLinux here (in-tree drivers, no out-of-tree module), gives developers and superusers tools to see,
+check, tune and record the system, and runs agent sessions with their tools, skills, MCP servers, model access,
+and Claude/Codex accounts and quotas. Design: [docs/design](docs/design/README.md) (start with 15-layout and
+16-observability).
+
+Machine:
 
 - `LENOVO 82WQ`
 - `Legion Pro 7 16IRX8H`
