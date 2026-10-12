@@ -19,7 +19,7 @@ This note is the authority for names, processes, crates and paths. Notes 00–14
  legionctl-app   GPUI desktop                     ├─ api.sock ─▶ legionctl-operator (user) ─ D-Bus + polkit ─▶ legionctl-system (root)
  agent plugin    /legionctl:*                     │              operator.db, approvals,       ◀── events ──────  system.db, firmware, power,
  GNOME extension OSD ◀────────────────────────────┘              agents, sessions, tools,                         GPU, kernel, eBPF, sysctl,
-                                                                 plans, config, event log                         input, display
+                                                                 workspaces, config, event log                     input, display
                                                      legionctl-gateway (user): model API, accounts, quotas, cache
                                                      legionctl-sandbox: per session, bwrap + git shim, MCP proxy
                                                      legionctl-bootstrap (oneshot, system and user): install, upgrade, boot, migrations
@@ -28,7 +28,7 @@ This note is the authority for names, processes, crates and paths. Notes 00–14
 | Process | Runs as | Owns | Interface |
 | --- | --- | --- | --- |
 | `legionctl-system` | root, system service | machine state, firmware, power, GPU, display policy, kernel, eBPF, Fn keys | D-Bus `org.legionctl.System1`, polkit per method |
-| `legionctl-operator` | user service | operator database, operation registry, approvals, agents, sessions, tools, plans, config, OSD and Mutter calls when a graphical session exists | `$XDG_RUNTIME_DIR/legionctl/api.sock` (axum, HTTP + WebSocket) |
+| `legionctl-operator` | user service | operator database, operation registry, approvals, agents, sessions, tools, workspaces, config, OSD and Mutter calls when a graphical session exists | `$XDG_RUNTIME_DIR/legionctl/api.sock` (axum, HTTP + WebSocket) |
 | `legionctl-gateway` | user service | model API, accounts, budgets, model-call cache | `$XDG_RUNTIME_DIR/legionctl/gateway.sock` and a localhost port for agents |
 | `legionctl-sandbox` | user, one per session scope | bwrap sandbox, gated-command shim, MCP proxy | stdio to the agent |
 | `legionctl-bootstrap` | oneshot, system and user | checks, migrations with backup, version marker, safe mode | none |
@@ -70,7 +70,7 @@ crates/
                       disks, boot, windows
   legionctl-bpf       aya programs and loader; observation only; pinned in bpffs
   legionctl-operator  agents (settings, skills, reminders, hooks, setup, accounts), sessions (ACP, workdirs, git state,
-                      lifecycle), tools (package store, MCP proxy, call cache), plans, approvals, sagas, session OSD
+                      lifecycle), tools (package store, MCP proxy, call cache), workspaces (18), approvals, sagas, session OSD
   legionctl-gateway   Anthropic- and OpenAI-compatible proxy, accounting, budgets, exact and semantic cache
   legionctl-ui        view models and disclosure levels for the TUI and GPUI
 bins/
@@ -107,7 +107,7 @@ A module becomes its own crate only when its size or its dependencies require it
 | virtualization | `virt` (status, list, create, start, stop, pause, tune), 17-virtualization | operator, system for kernel parts |
 | config | `config` (layers, explain, edit, lock) | operator, system for `/etc` |
 | agents | `agents`, `skills`, `reminders`, `hooks`, `tools` | operator |
-| work | `sessions`, `worktree`, `plans`, `gateway` | operator, gateway |
+| work | `workspace` (open, list, checkpoint, merge, close; replaces `worktree`), `sessions`, `gateway` | operator, gateway |
 | surfaces | `tui`, `mcp`, `app` | client |
 
 ## Switch from the Python tooling

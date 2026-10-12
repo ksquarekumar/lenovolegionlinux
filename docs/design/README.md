@@ -21,6 +21,7 @@ the design is explored and are meant to change; decisions and open questions are
 | [15-layout.md](15-layout.md) | One name, one API, one operator: processes, operation registry, crates, paths, command tree, Python switch, test policy |
 | [16-observability.md](16-observability.md) | Scope vs LenovoLegionLinux; see, check, change, record and replay tools for developers and superusers |
 | [17-virtualization.md](17-virtualization.md) | VMs, containers and emulation: capability/provider/consumer model, GPU offload, health checks |
+| [18-workspaces.md](18-workspaces.md) | Operating directory, named workspace (`~/.agentworkspace`), dossier, change sets, code graphs, the no-workspace gate |
 | [issues.md](issues.md) | Issues found on this machine and cleanups to do |
 
 Evidence for every machine-specific claim was collected on 2026-10-12 (CachyOS, kernel 7.2.9, GNOME 51,

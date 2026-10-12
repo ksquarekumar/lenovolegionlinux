@@ -12,7 +12,7 @@ system down.
 | --- | --- | --- | --- |
 | `legionctl-bootstrap.service` | system and user (oneshot) | install/upgrade/boot checks, schema migrations, version marker | none; exits |
 | `legionctl-system.service` | system (root) | machine control: power, firmware, sysctl, kernel modules, eBPF, initramfs | `/run/legionctl/system.sock`, D-Bus `org.legionctl.System1` with polkit per method |
-| `legionctl-operator.service` | user (`systemd --user`) | agent harness: worktrees, plans, hooks, reminders, ACP sessions, gateway | `$XDG_RUNTIME_DIR/legionctl/api.sock` (axum: HTTP + WebSocket) |
+| `legionctl-operator.service` | user (`systemd --user`) | agent harness: workspaces, hooks, reminders, ACP sessions, gateway | `$XDG_RUNTIME_DIR/legionctl/api.sock` (axum: HTTP + WebSocket) |
 | clients | user | nothing | CLI, TUI, GPUI app, MCP server, hook dispatcher |
 
 - Clients are thin: they read and write only through the APIs. With a daemon down they show "legionctl-operator is not

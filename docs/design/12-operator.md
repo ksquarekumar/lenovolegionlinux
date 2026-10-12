@@ -62,23 +62,9 @@ clients needing boundaries should apply operating-system sandboxing. So:
 4. Durability: a session registry (agent, account, worktree, plan, ACP session id), health checks, and resume via
    `session/load` after a crash or reboot.
 
-## Plan workspaces (agent task memory)
+## Workspaces
 
-A plan is a folder with a semi-flexible schema; sessions declare which plan they work on and can switch.
-
-```
-plans/<plan-id>/
-  plan.toml            title, status, repos, active items, concurrency limit, owning session
-  code/                objectives.md  goals.md  non-goals.md  accepted-debts.md  where.md (new / changed / where / what)
-  intent/log.jsonl     insights and decisions; read and updated before each work item starts
-  evidence/            proofs/  prototypes/  research/  crawls/
-  verifications/       e2e/  ui/  evals/
-  items/<id>.toml      scope (paths, symbols), dependencies, status, worktree, evidence links
-```
-
-- Search: full-text (tantivy) over intent, evidence and items, with optional local semantic search (fastembed).
-- The harness hook injects the active plan and current item at session start, and nudges an intent-log update
-  before an item is marked done.
+Operating directory, named workspace in `~/.agentworkspace`, dossier and change sets: 18-workspaces.
 
 ## Code graph and work ordering
 
@@ -134,7 +120,7 @@ its own helper agents, such as the work-ordering planner or the intent-log summa
 | 1a (done) | legionctl-core, client CLI/TUI/stdio MCP, Claude Code plugin, Codex MCP snippet |
 | 1b | legionctl-operator with the operation registry on a unix socket; CLI, TUI and MCP as clients; audit log |
 | 2 | Sandboxed ACP sessions (bwrap), session registry and resume, overlay build caches; detail in 14-sessions |
-| 3 | Plan workspaces, intent log, search, session-declared active plan |
+| 3 | Workspaces: `~/.agentworkspace`, dossier, change sets, gate (18-workspaces) |
 | 4 | Code graph mapping and dependency ordering of work items |
 | 5 | Settings editing, plugin/MCP/skill management, accounts and usage |
 | 6 | AI gateway with exact and semantic cache |
