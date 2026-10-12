@@ -32,7 +32,9 @@ RAPL PL1 at once, so the firmware enforces through MMIO; no other writer may tou
 `gpu_nv_ctgp` and `gpu_nv_ppab` (the attributes with no published range) are refused.
 **Battery, measured 2026-10-12:** in `max-power` on battery the firmware itself sets MMIO RAPL PL1 to 45 W (90 W
 on AC; MSR zone 140/190 W); under full load the package runs ~80 W for ~30 s, then 45 W sustained; the battery
-discharges at 78–105 W. The limits of `balanced` on battery are still to be measured.
+discharges at 78–105 W. In `balanced` on battery (measured 2026-10-13, legionctl-system applied it on unplug) the
+limits are the same: MMIO PL1 45 W, ~80 W for ~30 s, then 45 W sustained; the battery discharges at up to 124 W
+during the burst. On battery the firmware caps the CPU at 45 W in both modes.
 
 ## CPU
 
