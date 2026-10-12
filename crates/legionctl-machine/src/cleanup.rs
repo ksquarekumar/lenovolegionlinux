@@ -14,6 +14,10 @@ pub struct Options {
     pub remove_packages: bool,
 }
 
+/// Plan the cleanup that `opts` asks for.
+///
+/// # Errors
+/// The machine does not match the profile and `opts.force` is not set.
 pub fn plan(machine: &Machine, opts: Options) -> Result<Vec<Step>> {
     machine.require_supported_machine(opts.force)?;
     let conflicts = &machine.profile.conflicts;

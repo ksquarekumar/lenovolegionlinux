@@ -1,4 +1,4 @@
-//! The built-in panel through Mutter's DisplayConfig API: its current refresh rate, and the Fn+R toggle between the
+//! The built-in panel through Mutter's `DisplayConfig` API: its current refresh rate, and the Fn+R toggle between the
 //! highest rate and ~60 Hz at the current resolution and VRR state. Changes use the TEMPORARY method, which applies
 //! without GNOME's "Keep these display settings?" dialog; the saved layout returns at the next login or hotplug.
 
@@ -121,11 +121,11 @@ fn built_in(monitors: &[Monitor], logical: &[LogicalMonitor]) -> Option<(String,
         .map(|m| (m.0.0.clone(), m.1.clone()))
 }
 
-/// Current refresh rate of the active built-in panel, rounded to whole Hz.
-pub async fn built_in_rate(mutter: &DisplayConfigProxy<'_>) -> Option<u32> {
+/// Current refresh rate of the active built-in panel in whole Hz, as the log and the OSD show it.
+pub async fn built_in_rate(mutter: &DisplayConfigProxy<'_>) -> Option<String> {
     let (_, monitors, logical, _) = mutter.get_current_state().await.ok()?;
     let (_, modes) = built_in(&monitors, &logical)?;
-    current_mode(&modes).map(|m| m.3.round() as u32)
+    current_mode(&modes).map(|m| format!("{:.0}", m.3))
 }
 
 /// Fn+R: switch the built-in panel to the other rate, keeping every other monitor as it is.

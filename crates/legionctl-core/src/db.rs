@@ -56,10 +56,12 @@ pub fn default_path() -> PathBuf {
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
 impl Db {
+    /// # Errors
+    /// The folder or database cannot be created or opened, or a migration fails.
     pub fn open(path: &Path) -> Result<Db> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -73,6 +75,8 @@ impl Db {
         Ok(Db { conn })
     }
 
+    /// # Errors
+    /// As [`Db::open`].
     pub fn open_default() -> Result<Db> {
         Self::open(&default_path())
     }
@@ -81,6 +85,8 @@ impl Db {
         &self.conn
     }
 
+    /// # Errors
+    /// The database read fails.
     pub fn schema_version(&self) -> Result<i64> {
         Ok(self
             .conn
@@ -88,6 +94,9 @@ impl Db {
     }
 
     /// Append to the event log. `actor` says who caused it (cli, mcp, hook, daemon).
+    ///
+    /// # Errors
+    /// The database write fails.
     pub fn record(&self, actor: &str, kind: &str, payload: &serde_json::Value) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO events (ts, actor, kind, payload) VALUES (?1, ?2, ?3, ?4)",
@@ -99,11 +108,15 @@ impl Db {
 
 fn migrate(conn: &mut Connection) -> Result<()> {
     let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    for (index, sql) in MIGRATIONS.iter().enumerate().skip(current.max(0) as usize) {
+    for (index, sql) in MIGRATIONS
+        .iter()
+        .enumerate()
+        .skip(usize::try_from(current).unwrap_or(0))
+    {
         let tx = conn.transaction()?;
         tx.execute_batch(sql)
             .with_context(|| format!("applying schema migration {}", index + 1))?;
-        tx.pragma_update(None, "user_version", (index + 1) as i64)?;
+        tx.pragma_update(None, "user_version", i64::try_from(index + 1)?)?;
         tx.commit()?;
     }
     Ok(())
@@ -123,7 +136,10 @@ mod tests {
     #[test]
     fn migrates_once_and_reopens_cleanly() {
         let db = temp_db("migrate");
-        assert_eq!(db.schema_version().unwrap(), MIGRATIONS.len() as i64);
+        assert_eq!(
+            db.schema_version().unwrap(),
+            i64::try_from(MIGRATIONS.len()).unwrap()
+        );
         let path = db.conn().path().unwrap().to_owned();
         drop(db);
         let again = Db::open(Path::new(&path)).unwrap();

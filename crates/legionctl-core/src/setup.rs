@@ -1,4 +1,4 @@
-//! Agent setup: make ctx (https://ctx.rs) and legionctl available to Claude Code and Codex out of the box.
+//! Agent setup: make ctx (<https://ctx.rs>) and legionctl available to Claude Code and Codex out of the box.
 //!
 //! - ctx: its bundled skill and MCP server for both agents (`ctx integrations install skill|mcp`).
 //! - Codex: legionctl's MCP server in ~/.codex/config.toml, and the plugin's skills linked into ~/.codex/skills.
@@ -22,7 +22,7 @@ pub struct Item {
     /// e.g. "ctx skill", "ctx mcp", "legionctl mcp", "legionctl skill ste100"
     pub what: String,
     pub agent: String,
-    /// "current" when in place; otherwise what is wrong (missing, outdated, invalid_config, ...)
+    /// "current" when in place; otherwise what is wrong (missing, outdated, `invalid_config`, ...)
     pub status: String,
     pub path: String,
 }
@@ -34,6 +34,7 @@ pub struct Report {
 }
 
 impl Report {
+    #[must_use]
     pub fn needs_attention(&self) -> Vec<&Item> {
         self.items
             .iter()
@@ -75,6 +76,7 @@ fn ctx(args: &[&str]) -> Result<String> {
 }
 
 /// Parse `ctx integrations status <kind> --format json` into items.
+#[must_use]
 pub fn parse_ctx_status(kind: &str, json: &str) -> Vec<Item> {
     let value: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
     value["results"]
@@ -114,6 +116,8 @@ fn codex_config() -> PathBuf {
     home().join(".codex/config.toml")
 }
 
+/// # Errors
+/// `text` is not valid TOML.
 pub fn codex_has_legionctl(text: &str) -> Result<bool> {
     let table: toml::Table = text
         .parse()
@@ -179,6 +183,7 @@ fn codex_items() -> Vec<Item> {
     items
 }
 
+#[must_use]
 pub fn check() -> Report {
     let ctx_version = ctx(&["--version"]).ok().map(|v| v.trim().to_string());
     let mut items = if ctx_version.is_some() {
@@ -211,6 +216,9 @@ fn install_ctx() -> Result<()> {
 }
 
 /// Bring every item to "current". Returns one line per change.
+///
+/// # Errors
+/// A config file or skill link cannot be read, parsed or written, or ctx cannot be installed or run.
 pub fn apply(install_missing_ctx: bool) -> Result<Vec<String>> {
     let mut done = Vec::new();
     if ctx_bin().is_none() {

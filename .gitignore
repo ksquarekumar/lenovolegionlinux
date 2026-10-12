@@ -2,3 +2,4 @@
 pkg/
 *.pkg.tar.*
 target/
+node_modules/

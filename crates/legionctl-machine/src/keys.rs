@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use crate::sysroot::SysRoot;
 
 pub const FN_KEYS_DEVICE: &str = "Ideapad extra buttons";
-/// KEY_REFRESH_RATE_TOGGLE.
+/// `KEY_REFRESH_RATE_TOGGLE`.
 const FN_R_CODE: u16 = 562;
 const EV_KEY: u16 = 1;
 /// `struct input_event` on 64-bit: timeval (16 bytes), type u16, code u16, value i32.
@@ -18,6 +18,7 @@ pub const EVENT_SIZE: usize = 24;
 pub const FN_R_QUIET: Duration = Duration::from_millis(400);
 
 /// `/dev/input/eventN` of the device named `name`, if present.
+#[must_use]
 pub fn find_device(root: &SysRoot, name: &str) -> Option<PathBuf> {
     root.children("/sys/class/input", "event")
         .into_iter()
@@ -26,6 +27,7 @@ pub fn find_device(root: &SysRoot, name: &str) -> Option<PathBuf> {
 }
 
 /// Whether a buffer of raw input events contains an Fn+R key-down.
+#[must_use]
 pub fn has_fn_r_press(data: &[u8]) -> bool {
     data.as_chunks::<EVENT_SIZE>().0.iter().any(|e| {
         let kind = u16::from_ne_bytes([e[16], e[17]]);

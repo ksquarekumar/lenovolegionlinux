@@ -12,6 +12,7 @@ fn output(program: &str, args: &[&str]) -> Option<(bool, String)> {
 }
 
 /// `systemctl is-active|is-enabled`; `unknown` when systemctl is missing or prints nothing.
+#[must_use]
 pub fn unit_state(query: &str, unit: &str) -> String {
     match output("systemctl", &[query, unit]) {
         Some((_, text)) if !text.is_empty() => text,
@@ -19,12 +20,14 @@ pub fn unit_state(query: &str, unit: &str) -> String {
     }
 }
 
+#[must_use]
 pub fn package_installed(package: &str) -> bool {
     output("pacman", &["-Q", package]).is_some_and(|(ok, _)| ok)
 }
 
 /// Current NVIDIA board power limit in W, from `nvidia-smi -q -d POWER` (`--query-gpu=power.limit` prints `[N/A]`
 /// with this driver).
+#[must_use]
 pub fn nvidia_power_limit() -> Option<String> {
     let (ok, text) = output("nvidia-smi", &["-q", "-d", "POWER"])?;
     let line = text

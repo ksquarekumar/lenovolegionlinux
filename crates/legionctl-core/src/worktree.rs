@@ -54,6 +54,10 @@ impl Default for Store {
 }
 
 /// Names arrive from agents over MCP: only allow characters that cannot escape the worktree root.
+///
+/// # Errors
+/// `name` is not 1–64 characters, has characters other than ASCII letters, digits, `-`, `_` and `.`, or starts
+/// with `.` or `-`.
 pub fn validate_name(name: &str) -> Result<()> {
     ensure!(
         (1..=64).contains(&name.len()),
@@ -87,6 +91,7 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+#[must_use]
 pub fn dir_size(path: &Path) -> u64 {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return 0;
@@ -125,6 +130,8 @@ impl Store {
         Ok(())
     }
 
+    /// # Errors
+    /// `name` or `base` is not valid, `repo` is not a git repo, the worktree path exists, or `git worktree add` fails.
     pub fn create(&self, repo: &Path, name: &str, base: Option<&str>) -> Result<Worktree> {
         validate_name(name)?;
         if let Some(base) = base {
@@ -171,6 +178,8 @@ impl Store {
         Ok(wt)
     }
 
+    /// # Errors
+    /// The worktree registry cannot be read.
     pub fn list(&self, with_sizes: bool) -> Result<Vec<WorktreeStatus>> {
         Ok(self
             .load()?
@@ -190,6 +199,9 @@ impl Store {
     }
 
     /// Removes the checkout; the branch stays so committed work is never lost.
+    ///
+    /// # Errors
+    /// `name` is not valid or not known, or `git worktree remove` fails (uncommitted changes need `force`).
     pub fn remove(&self, name: &str, force: bool) -> Result<Worktree> {
         validate_name(name)?;
         let mut items = self.load()?;
@@ -250,7 +262,7 @@ mod tests {
                     .unwrap()
                     .status
                     .success()
-            )
+            );
         };
         run(&["init", "-q"]);
         run(&[

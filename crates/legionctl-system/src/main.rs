@@ -199,7 +199,7 @@ async fn authorize(
     }
 }
 
-fn failed(e: anyhow::Error) -> zbus::fdo::Error {
+fn failed(e: &anyhow::Error) -> zbus::fdo::Error {
     zbus::fdo::Error::Failed(format!("{e:#}"))
 }
 
@@ -229,7 +229,7 @@ impl System1 {
             }
         };
         let lines = carry_out(&self.root, |m| Ok(m.apply(source, Options::default())?.1))
-            .map_err(failed)?;
+            .map_err(|e| failed(&e))?;
         if !lines.is_empty() {
             Self::changed(&emitter, "Apply", &lines).await?;
         }
@@ -245,7 +245,8 @@ impl System1 {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.gpu.desktop").await?;
-        let lines = carry_out(&self.root, |m| gpu::set_desktop(m, &choice)).map_err(failed)?;
+        let lines =
+            carry_out(&self.root, |m| gpu::set_desktop(m, &choice)).map_err(|e| failed(&e))?;
         if !lines.is_empty() {
             Self::changed(&emitter, "SetDesktopGpu", &lines).await?;
         }

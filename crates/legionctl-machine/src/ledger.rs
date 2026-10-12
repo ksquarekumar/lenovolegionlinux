@@ -35,6 +35,9 @@ pub struct Ledger {
 
 impl Ledger {
     /// Open for writing (root), else read-only (a user's status or dry run), else empty.
+    ///
+    /// # Errors
+    /// The boot id is not readable.
     pub fn open(root: &SysRoot) -> Result<Ledger> {
         let boot = root.read(BOOT_ID).context("reading the boot id")?;
         let path = root.path(DB);
@@ -72,6 +75,9 @@ impl Ledger {
     }
 
     /// `None` removes the value.
+    ///
+    /// # Errors
+    /// `system.db` is not open for writing, or the write fails.
     pub fn set(&self, key: Key, value: Option<&str>) -> Result<()> {
         let conn = self.conn.as_ref().context("system.db is not available")?;
         match value {

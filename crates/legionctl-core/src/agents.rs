@@ -16,7 +16,7 @@ pub struct ConfigFile {
     /// None when the file is missing; otherwise whether it parses.
     pub valid: Option<bool>,
     pub error: Option<String>,
-    /// Top-level keys or tables, e.g. permissions, hooks, mcp_servers.
+    /// Top-level keys or tables, e.g. permissions, hooks, `mcp_servers`.
     pub sections: Vec<String>,
 }
 
@@ -51,6 +51,7 @@ fn inspect(agent: &str, scope: &str, path: PathBuf) -> ConfigFile {
 }
 
 /// User-level files plus the project-level ones for `project` (usually the current directory).
+#[must_use]
 pub fn config_files(home: &Path, project: &Path) -> Vec<ConfigFile> {
     vec![
         inspect("claude", "user", home.join(".claude/settings.json")),

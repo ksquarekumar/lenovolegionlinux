@@ -174,6 +174,28 @@ pub fn doctor(machine: &Machine) -> Vec<String> {
         }
     }
 
+    w.extend(conflict_warnings(root, profile));
+
+    w.extend(module_warnings(root, profile));
+    if let Some(reasons) = firmware::logged_throttle_reasons(root)
+        && reasons
+            .iter()
+            .any(|r| ["PROCHOT", "critical temperature"].contains(r))
+    {
+        w.push(format!("CPU throttling logged: {}", reasons.join(", ")));
+    }
+    for volume in dirty_ntfs() {
+        w.push(format!(
+            "NTFS volume {volume} is marked dirty; run chkdsk in Windows (or ntfsfix -d, see docs/design/11-disks.md)"
+        ));
+    }
+    w.extend(gpu_warnings(root, profile, ac));
+    w
+}
+
+/// Units, packages and modules that fight legionctl over the same knobs.
+fn conflict_warnings(root: &SysRoot, profile: &Profile) -> Vec<String> {
+    let mut w = Vec::new();
     for unit in &profile.conflicts.systemd_units {
         let active = system::unit_state("is-active", unit);
         let enabled = system::unit_state("is-enabled", unit);
@@ -203,20 +225,12 @@ pub fn doctor(machine: &Machine) -> Vec<String> {
             "thinkpad_acpi fan control appears enabled; this is not trusted on this machine".into(),
         );
     }
+    w
+}
 
-    w.extend(module_warnings(root, profile));
-    if let Some(reasons) = firmware::logged_throttle_reasons(root)
-        && reasons
-            .iter()
-            .any(|r| ["PROCHOT", "critical temperature"].contains(r))
-    {
-        w.push(format!("CPU throttling logged: {}", reasons.join(", ")));
-    }
-    for volume in dirty_ntfs() {
-        w.push(format!(
-            "NTFS volume {volume} is marked dirty; run chkdsk in Windows (or ntfsfix -d, see docs/design/11-disks.md)"
-        ));
-    }
+/// Desktop GPU wiring and NVIDIA power on AC.
+fn gpu_warnings(root: &SysRoot, profile: &Profile, ac: bool) -> Vec<String> {
+    let mut w = Vec::new();
     let outputs = gpu::outputs(root);
     let external_on_nvidia = outputs
         .iter()

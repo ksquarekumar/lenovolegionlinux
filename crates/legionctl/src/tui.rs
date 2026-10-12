@@ -39,6 +39,63 @@ fn pressure_gauge(title: &str, p: Option<&Pressure>) -> Gauge<'static> {
         .label(format!("{pct:.0}%"))
 }
 
+fn worktrees_table(worktrees: &[WorktreeStatus]) -> Table<'_> {
+    let wt_rows = worktrees.iter().map(|w| {
+        let state = if !w.exists {
+            "missing"
+        } else if w.dirty == Some(true) {
+            "dirty"
+        } else {
+            "clean"
+        };
+        Row::new(vec![
+            w.worktree.name.clone(),
+            w.size_bytes
+                .map_or("-".into(), legionctl_machine::human_bytes),
+            state.into(),
+            w.worktree.repo.display().to_string(),
+        ])
+    });
+    Table::new(
+        wt_rows,
+        [
+            Constraint::Length(18),
+            Constraint::Length(10),
+            Constraint::Length(8),
+            Constraint::Min(10),
+        ],
+    )
+    .header(Row::new(vec!["name", "size", "state", "repo"]).bold())
+    .block(Block::bordered().title(" worktrees "))
+}
+
+/// Agent settings files that exist; invalid ones in red.
+fn configs_table(configs: &[ConfigFile]) -> Table<'_> {
+    let cfg_rows = configs.iter().filter(|c| c.exists).map(|c| {
+        let state = if c.valid == Some(true) {
+            c.sections.join(", ")
+        } else {
+            format!("INVALID: {}", c.error.clone().unwrap_or_default())
+        };
+        let row = Row::new(vec![c.agent.clone(), c.scope.clone(), state]);
+        if c.valid == Some(true) {
+            row
+        } else {
+            row.style(Style::default().fg(Color::Red))
+        }
+    });
+    Table::new(
+        cfg_rows,
+        [
+            Constraint::Length(7),
+            Constraint::Length(14),
+            Constraint::Min(10),
+        ],
+    )
+    .header(Row::new(vec!["agent", "scope", "sections"]).bold())
+    .block(Block::bordered().title(" agent settings "))
+}
+
 fn draw(f: &mut Frame, s: &Snapshot, worktrees: &[WorktreeStatus], configs: &[ConfigFile]) {
     let [header, gauges, body, footer] = Layout::vertical([
         Constraint::Length(3),
@@ -114,59 +171,9 @@ fn draw(f: &mut Frame, s: &Snapshot, worktrees: &[WorktreeStatus], configs: &[Co
 
     let [wt_area, cfg_area] =
         Layout::vertical([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(right);
-    let wt_rows = worktrees.iter().map(|w| {
-        let state = if !w.exists {
-            "missing"
-        } else if w.dirty == Some(true) {
-            "dirty"
-        } else {
-            "clean"
-        };
-        Row::new(vec![
-            w.worktree.name.clone(),
-            w.size_bytes
-                .map_or("-".into(), legionctl_machine::human_bytes),
-            state.into(),
-            w.worktree.repo.display().to_string(),
-        ])
-    });
-    let wt_table = Table::new(
-        wt_rows,
-        [
-            Constraint::Length(18),
-            Constraint::Length(10),
-            Constraint::Length(8),
-            Constraint::Min(10),
-        ],
-    )
-    .header(Row::new(vec!["name", "size", "state", "repo"]).bold())
-    .block(Block::bordered().title(" worktrees "));
-    f.render_widget(wt_table, wt_area);
+    f.render_widget(worktrees_table(worktrees), wt_area);
 
-    let cfg_rows = configs.iter().filter(|c| c.exists).map(|c| {
-        let state = if c.valid == Some(true) {
-            c.sections.join(", ")
-        } else {
-            format!("INVALID: {}", c.error.clone().unwrap_or_default())
-        };
-        let row = Row::new(vec![c.agent.clone(), c.scope.clone(), state]);
-        if c.valid == Some(true) {
-            row
-        } else {
-            row.style(Style::default().fg(Color::Red))
-        }
-    });
-    let cfg_table = Table::new(
-        cfg_rows,
-        [
-            Constraint::Length(7),
-            Constraint::Length(14),
-            Constraint::Min(10),
-        ],
-    )
-    .header(Row::new(vec!["agent", "scope", "sections"]).bold())
-    .block(Block::bordered().title(" agent settings "));
-    f.render_widget(cfg_table, cfg_area);
+    f.render_widget(configs_table(configs), cfg_area);
 
     f.render_widget(
         Paragraph::new(" q quit · r re-measure worktree sizes · state refreshes every second")

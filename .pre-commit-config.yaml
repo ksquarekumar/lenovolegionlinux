@@ -26,6 +26,12 @@ repos:
         additional_dependencies: [shfmt-py==4.2.0]
         entry: shfmt -w -i 2 -ci
         types: [shell]
+      - id: js-lint
+        name: biome and tsc (GNOME Shell extension)
+        language: system
+        entry: make js-lint
+        pass_filenames: false
+        files: ^(gnome-extension/|biome\.json|jsconfig\.json|package\.json)
       - id: legionctl-validate
         name: legionctl validate profiles
         language: system

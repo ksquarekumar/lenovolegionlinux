@@ -91,21 +91,21 @@ impl Mcp {
         };
         mcp.call(
             "initialize",
-            json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "0"}}),
+            &json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "0"}}),
         );
-        mcp.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+        mcp.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
         mcp
     }
 
-    fn send(&mut self, msg: Value) {
+    fn send(&mut self, msg: &Value) {
         let stdin = self.child.stdin.as_mut().unwrap();
         writeln!(stdin, "{msg}").unwrap();
         stdin.flush().unwrap();
     }
 
-    fn call(&mut self, method: &str, params: Value) -> Value {
+    fn call(&mut self, method: &str, params: &Value) -> Value {
         self.next += 1;
-        self.send(json!({"jsonrpc": "2.0", "id": self.next, "method": method, "params": params}));
+        self.send(&json!({"jsonrpc": "2.0", "id": self.next, "method": method, "params": params}));
         let mut line = String::new();
         self.out.read_line(&mut line).unwrap();
         let reply: Value = serde_json::from_str(&line).unwrap();
@@ -125,7 +125,7 @@ fn mcp_server_exposes_every_tool_and_reads_the_plugin_skills() {
     let h = home("mcp");
     let mut mcp = Mcp::start(&h);
 
-    let tools = mcp.call("tools/list", json!({}));
+    let tools = mcp.call("tools/list", &json!({}));
     let names: Vec<&str> = tools["tools"]
         .as_array()
         .unwrap()
@@ -157,7 +157,7 @@ fn mcp_server_exposes_every_tool_and_reads_the_plugin_skills() {
 
     let result = mcp.call(
         "tools/call",
-        json!({"name": "skills_list", "arguments": {}}),
+        &json!({"name": "skills_list", "arguments": {}}),
     );
     assert_ne!(result["isError"], true, "{result}");
     let skills: Value =

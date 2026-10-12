@@ -11,7 +11,7 @@ use legionctl_machine::snapshot::Detail;
 use legionctl_machine::sysroot::SysRoot;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock as Content};
-use rmcp::{ServiceExt, tool, tool_router};
+use rmcp::{ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -92,19 +92,26 @@ pub struct ReminderArgs {
     pub event: Option<Event>,
 }
 
-#[tool_router(server_handler)]
+#[tool_handler]
+#[expect(
+    clippy::unused_async_trait_impl,
+    reason = "rmcp tool_handler generates list_tools as async fn without await"
+)]
+impl ServerHandler for Legion {}
+
+#[tool_router]
 impl Legion {
     #[tool(
         description = "Power source, Fn+Q thermal mode, firmware power limits, CPU policy, temperature, GPU wiring and load of this Lenovo Legion laptop."
     )]
-    fn system_status(&self) -> CallToolResult {
+    fn system_status() -> CallToolResult {
         crate::machine::snapshot(None, Detail::Full).map_or_else(fail, |s| ok(&s))
     }
 
     #[tool(
         description = "Current system load level (idle, normal, busy, overloaded) with reasons from CPU/memory/IO pressure. Check before starting builds, test suites or parallel jobs."
     )]
-    fn system_load(&self) -> CallToolResult {
+    fn system_load() -> CallToolResult {
         let l = load::read_load(&SysRoot::from_env());
         CallToolResult::success(vec![
             Content::text(load::brief(&l)),
@@ -115,7 +122,7 @@ impl Legion {
     #[tool(
         description = "Read-only health checks of power policy, kernel modules, DKMS, GPU placement and conflicts (legionctl doctor)."
     )]
-    fn doctor(&self) -> CallToolResult {
+    fn doctor() -> CallToolResult {
         crate::machine::doctor(None).map_or_else(fail, |(_, report)| {
             CallToolResult::success(vec![Content::text(report)])
         })
@@ -124,7 +131,7 @@ impl Legion {
     #[tool(
         description = "Claude Code and Codex settings files (user and project): present, valid, which top-level sections. Never returns values."
     )]
-    fn agent_configs(&self, Parameters(args): Parameters<ProjectArgs>) -> CallToolResult {
+    fn agent_configs(Parameters(args): Parameters<ProjectArgs>) -> CallToolResult {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default();
@@ -136,7 +143,7 @@ impl Legion {
     }
 
     #[tool(description = "List agent worktrees with branch, dirty state and optional disk usage.")]
-    fn worktree_list(&self, Parameters(args): Parameters<ListArgs>) -> CallToolResult {
+    fn worktree_list(Parameters(args): Parameters<ListArgs>) -> CallToolResult {
         Store::default()
             .list(args.sizes)
             .map_or_else(fail, |list| ok(&list))
@@ -145,7 +152,7 @@ impl Legion {
     #[tool(
         description = "Create an isolated git worktree of a repository on a new branch legionctl/NAME, under /data/worktrees/REPO/NAME. Use one per task so parallel work never collides."
     )]
-    fn worktree_create(&self, Parameters(args): Parameters<CreateArgs>) -> CallToolResult {
+    fn worktree_create(Parameters(args): Parameters<CreateArgs>) -> CallToolResult {
         Store::default()
             .create(&PathBuf::from(args.repo), &args.name, args.base.as_deref())
             .map_or_else(fail, |wt| ok(&wt))
@@ -154,7 +161,7 @@ impl Legion {
     #[tool(
         description = "Remove a worktree's checkout. Its branch is kept. Refuses when there are uncommitted changes unless force is true."
     )]
-    fn worktree_remove(&self, Parameters(args): Parameters<RemoveArgs>) -> CallToolResult {
+    fn worktree_remove(Parameters(args): Parameters<RemoveArgs>) -> CallToolResult {
         Store::default()
             .remove(&args.name, args.force)
             .map_or_else(fail, |wt| ok(&wt))
@@ -163,7 +170,7 @@ impl Legion {
     #[tool(
         description = "Ask to change the machine: apply-power-policy (auto|ac|battery) or set-desktop-gpu (nvidia|intel|auto). A human must approve the polkit dialog on this machine; if they decline, nothing changes and an error is returned."
     )]
-    fn request_action(&self, Parameters(args): Parameters<ActionArgs>) -> CallToolResult {
+    fn request_action(Parameters(args): Parameters<ActionArgs>) -> CallToolResult {
         actions::run_approved(&args.action, &args.value).map_or_else(fail, |text| {
             CallToolResult::success(vec![Content::text(text)])
         })
@@ -172,21 +179,21 @@ impl Legion {
     #[tool(
         description = "Check whether ctx (agent history search) and legionctl are set up for Claude Code and Codex: skills and MCP servers. Read-only."
     )]
-    fn setup_check(&self) -> CallToolResult {
+    fn setup_check() -> CallToolResult {
         ok(&setup::check())
     }
 
     #[tool(
         description = "Set up ctx and legionctl for Claude Code and Codex: install the ctx skill and MCP server for both, add legionctl's MCP server to ~/.codex/config.toml (with a backup) and link legionctl's skills for Codex. Changes user-level config files only."
     )]
-    fn setup_apply(&self) -> CallToolResult {
+    fn setup_apply() -> CallToolResult {
         setup::apply(false).map_or_else(fail, |done| ok(&done))
     }
 
     #[tool(
         description = "List reminders that legionctl's hooks inject into agent sessions (skills to follow, habits), with on/off state and when they fire."
     )]
-    fn reminders_list(&self) -> CallToolResult {
+    fn reminders_list() -> CallToolResult {
         reminders::Store::default()
             .list()
             .map_or_else(fail, |list| ok(&list))
@@ -195,7 +202,7 @@ impl Legion {
     #[tool(
         description = "Change a reminder: turn a built-in or custom one on or off, add a custom one, or remove a custom one. Takes effect at the next session start or prompt."
     )]
-    fn reminders_update(&self, Parameters(args): Parameters<ReminderArgs>) -> CallToolResult {
+    fn reminders_update(Parameters(args): Parameters<ReminderArgs>) -> CallToolResult {
         let store = reminders::Store::default();
         let result = match args.action.as_str() {
             "on" => store.set_enabled(&args.id, true),
@@ -218,7 +225,7 @@ impl Legion {
     #[tool(
         description = "List hook actions (built-in and user-defined commands) and which run, in order, at session start and on every prompt."
     )]
-    fn hooks_list(&self) -> CallToolResult {
+    fn hooks_list() -> CallToolResult {
         let result = Db::open_default().and_then(|db| {
             let hooks = Hooks {
                 db: &db,
@@ -233,7 +240,7 @@ impl Legion {
     #[tool(
         description = "Change hook bindings: bind or unbind an action for an event, define a one-line shell-command action (add), or remove one. Changes are recorded in the operator event log."
     )]
-    fn hooks_update(&self, Parameters(args): Parameters<HookArgs>) -> CallToolResult {
+    fn hooks_update(Parameters(args): Parameters<HookArgs>) -> CallToolResult {
         let result = Db::open_default().and_then(|db| {
             let hooks = Hooks {
                 db: &db,
@@ -263,7 +270,7 @@ impl Legion {
     #[tool(
         description = "List legionctl skills (ste100-style, glanceable-style, ...): description, where Claude Code and Codex have them installed, and whether the reminder that keeps each in force is on."
     )]
-    fn skills_list(&self) -> CallToolResult {
+    fn skills_list() -> CallToolResult {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default();

@@ -83,6 +83,8 @@ pub struct Hooks<'a> {
 }
 
 impl Hooks<'_> {
+    /// # Errors
+    /// The database read fails.
     pub fn actions(&self) -> Result<Vec<Action>> {
         let mut all: Vec<Action> = BUILTIN_ACTIONS
             .iter()
@@ -111,6 +113,8 @@ impl Hooks<'_> {
         Ok(all)
     }
 
+    /// # Errors
+    /// The database read fails.
     pub fn bindings(&self) -> Result<Vec<Binding>> {
         let mut stmt = self.db.conn().prepare(
             "SELECT event, action, position FROM hook_bindings ORDER BY event, position",
@@ -141,6 +145,9 @@ impl Hooks<'_> {
     }
 
     /// Bind an action to an event; it runs after the ones already bound.
+    ///
+    /// # Errors
+    /// `action` does not exist, or the database write fails.
     pub fn bind(&self, event: Event, action: &str) -> Result<()> {
         ensure!(
             self.action_exists(action)?,
@@ -168,6 +175,8 @@ impl Hooks<'_> {
         Ok(())
     }
 
+    /// # Errors
+    /// The database write fails.
     pub fn unbind(&self, event: Event, action: &str) -> Result<()> {
         let changed = self.db.conn().execute(
             "DELETE FROM hook_bindings WHERE event = ?1 AND action = ?2",
@@ -187,6 +196,9 @@ impl Hooks<'_> {
     }
 
     /// Define a shell-command action. It runs as you, with `sh -c`, under a timeout; its stdout goes to the agent.
+    ///
+    /// # Errors
+    /// `id` is not a valid id, or the database write fails.
     pub fn add_command(&self, id: &str, command: &str, timeout_s: u32) -> Result<()> {
         validate_id(id)?;
         ensure!(
@@ -216,6 +228,9 @@ impl Hooks<'_> {
     }
 
     /// Remove a user-defined action and its bindings.
+    ///
+    /// # Errors
+    /// `id` is a built-in action, or the database write fails.
     pub fn remove_action(&self, id: &str) -> Result<()> {
         if BUILTIN_ACTIONS.iter().any(|b| b.0 == id) {
             bail!("{id} is built in; unbind it instead");
@@ -289,6 +304,9 @@ impl Hooks<'_> {
     }
 
     /// Run every action bound to `event`, in order, and return their combined output.
+    ///
+    /// # Errors
+    /// The database read fails. A failed action is reported in the output, not as an error.
     pub fn run(&self, event: Event) -> Result<String> {
         let actions = self.actions()?;
         let mut out = Vec::new();

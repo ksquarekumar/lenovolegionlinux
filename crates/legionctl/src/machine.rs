@@ -55,13 +55,15 @@ fn finish(root: &SysRoot, ledger: &Ledger, steps: &[Step], dry_run: bool, quiet:
     }
 }
 
-pub struct Run<'a> {
+/// How a machine command runs: which profile, and whether to only print the plan.
+#[derive(Clone, Copy)]
+pub struct Invocation<'a> {
     pub profile: Option<&'a Path>,
     pub dry_run: bool,
     pub quiet: bool,
 }
 
-pub fn apply(run: Run, source: Option<Source>, opts: Options) -> Result<()> {
+pub fn apply(run: Invocation, source: Option<Source>, opts: Options) -> Result<()> {
     let (profile, _) = profile::load(run.profile)?;
     let root = SysRoot::from_env();
     let ledger = Ledger::open(&root)?;
@@ -83,7 +85,7 @@ pub fn apply(run: Run, source: Option<Source>, opts: Options) -> Result<()> {
     Ok(())
 }
 
-pub fn follow(run: Run) -> Result<()> {
+pub fn follow(run: Invocation) -> Result<()> {
     let (profile, _) = profile::load(run.profile)?;
     let root = SysRoot::from_env();
     let ledger = Ledger::open(&root)?;
@@ -214,6 +216,11 @@ pub fn print_status(s: &Snapshot) {
                 r.join(", ")
             })
     );
+    print_gpu_and_system(s);
+}
+
+/// GPU wiring, units, modules and load: the second half of `legionctl status`.
+fn print_gpu_and_system(s: &Snapshot) {
     println!(
         "gpu: {} · desktop on {} · NVIDIA limit {}",
         s.gpu_mode,
@@ -246,7 +253,7 @@ pub fn doctor(profile: Option<&Path>) -> Result<(bool, String)> {
     let report = if findings.is_empty() {
         "doctor: no obvious conflicts\n".to_string()
     } else {
-        let lines: String = findings.iter().map(|f| format!("- {f}\n")).collect();
+        let lines: String = findings.iter().flat_map(|f| ["- ", f, "\n"]).collect();
         format!("doctor: warnings\n{lines}")
     };
     Ok((findings.is_empty(), report))
@@ -327,7 +334,7 @@ pub fn run(gpu: &str, cores: &str, nice: Option<i32>, cmd: &[String]) -> Result<
             "-p",
         ];
         argv = [
-            scope.iter().map(|s| s.to_string()).collect(),
+            scope.iter().map(std::string::ToString::to_string).collect(),
             vec![format!("AllowedCPUs={cpus}"), "--".into()],
             argv,
         ]
@@ -340,7 +347,7 @@ pub fn run(gpu: &str, cores: &str, nice: Option<i32>, cmd: &[String]) -> Result<
     Err(err.into())
 }
 
-pub fn cleanup(run: Run, opts: legionctl_machine::cleanup::Options) -> Result<()> {
+pub fn cleanup(run: Invocation, opts: legionctl_machine::cleanup::Options) -> Result<()> {
     let (profile, _) = profile::load(run.profile)?;
     let root = SysRoot::from_env();
     let ledger = Ledger::open(&root)?;

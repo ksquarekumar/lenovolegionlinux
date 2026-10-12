@@ -16,17 +16,16 @@ pub mod snapshot;
 pub mod sysroot;
 pub mod system;
 
+#[must_use]
 pub fn human_bytes(bytes: u64) -> String {
-    let units = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < units.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", units[unit])
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let unit = (1..UNITS.len()).rev().find(|u| bytes >> (10 * u) > 0);
+    match unit {
+        None => format!("{bytes} B"),
+        Some(u) => {
+            // tenths of the unit, rounded, in integers so every u64 is exact
+            let tenths = (u128::from(bytes) * 10 + (1u128 << (10 * u - 1))) >> (10 * u);
+            format!("{}.{} {}", tenths / 10, tenths % 10, UNITS[u])
+        }
     }
 }

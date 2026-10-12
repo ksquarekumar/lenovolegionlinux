@@ -6,6 +6,9 @@ use std::process::Command;
 use anyhow::{Context, Result, ensure};
 
 /// The exact command an approved action runs, shown to the human before they approve.
+///
+/// # Errors
+/// `action` is not on the allow-list, or `value` is not valid for it.
 pub fn approved_command(action: &str, value: &str) -> Result<Vec<String>> {
     let method = match action {
         "apply-power-policy" => {
@@ -39,6 +42,9 @@ pub fn approved_command(action: &str, value: &str) -> Result<Vec<String>> {
 }
 
 /// Runs an action after polkit approves it. Returns what the daemon changed, one line each; a refusal is an error.
+///
+/// # Errors
+/// The action is not allowed, `busctl` does not run, or polkit or the daemon refuses.
 pub fn run_approved(action: &str, value: &str) -> Result<String> {
     let argv = approved_command(action, value)?;
     let out = Command::new(&argv[0])
@@ -56,7 +62,7 @@ pub fn run_approved(action: &str, value: &str) -> Result<String> {
     Ok(if lines.is_empty() {
         "no changes\n".into()
     } else {
-        lines.iter().map(|l| format!("{l}\n")).collect()
+        format!("{}\n", lines.join("\n"))
     })
 }
 

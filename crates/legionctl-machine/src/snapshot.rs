@@ -73,7 +73,7 @@ pub struct Snapshot {
     pub profile_id: String,
     /// Empty when the machine matches the profile's DMI identity.
     pub dmi_mismatches: Vec<DmiMismatch>,
-    /// bios_version, bios_release, ec_firmware_release, board_name.
+    /// `bios_version`, `bios_release`, `ec_firmware_release`, `board_name`.
     pub firmware_versions: BTreeMap<String, Option<String>>,
     /// "ac", "battery" or "unknown".
     pub power_source: String,
@@ -82,12 +82,12 @@ pub struct Snapshot {
     pub platform_profile_choices: Vec<String>,
     /// Set while legionctl follows a mode chosen with Fn+Q.
     pub fn_q_override: Option<String>,
-    /// no_turbo, max_perf_pct (intel_pstate) and ignore_ppc (processor).
+    /// `no_turbo`, `max_perf_pct` (`intel_pstate`) and `ignore_ppc` (processor).
     pub cpu_settings: BTreeMap<String, Option<String>>,
     /// CPU frequency governors and how many policies use each.
     pub governors: BTreeMap<String, usize>,
     pub energy_performance_preference: BTreeMap<String, usize>,
-    /// Lenovo firmware limits (W / °C), e.g. ppt_pl1_spl, ppt_pl2_sppt, cpu_temp.
+    /// Lenovo firmware limits (W / °C), e.g. `ppt_pl1_spl`, `ppt_pl2_sppt`, `cpu_temp`.
     pub firmware_limits: BTreeMap<String, String>,
     /// Package RAPL zones (MSR and MMIO) with their limits; read for watts, never written.
     pub rapl: Vec<RaplZone>,
@@ -108,6 +108,7 @@ pub struct Snapshot {
     pub load: Load,
 }
 
+#[must_use]
 pub fn dmi_mismatches(root: &SysRoot, profile: &Profile) -> Vec<DmiMismatch> {
     profile
         .dmi_match
@@ -123,6 +124,7 @@ pub fn dmi_mismatches(root: &SysRoot, profile: &Profile) -> Vec<DmiMismatch> {
         .collect()
 }
 
+#[must_use]
 pub fn cpufreq_counts(root: &SysRoot, file: &str) -> BTreeMap<String, usize> {
     let mut counts = BTreeMap::new();
     for policy in root.children(CPUFREQ, "policy") {

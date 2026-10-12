@@ -51,6 +51,8 @@ fn reminder_id(skill: &str) -> String {
     skill.trim_end_matches("-style").into()
 }
 
+/// # Errors
+/// The reminder store cannot be read.
 pub fn inventory(home: &Path, reminders: &reminders::Store) -> Result<Vec<SkillInfo>> {
     let claude = claude_plugin_dir(home);
     let known = reminders.list()?;

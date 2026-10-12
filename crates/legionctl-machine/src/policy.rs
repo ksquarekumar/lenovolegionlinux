@@ -55,6 +55,7 @@ pub enum Source {
 }
 
 impl Source {
+    #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             Source::Ac => "ac",
@@ -103,7 +104,9 @@ impl Machine<'_> {
 
     pub fn run(&self, steps: &mut Vec<Step>, argv: &[&str]) {
         if (self.has_command)(argv[0]) {
-            steps.push(Step::Run(argv.iter().map(|s| s.to_string()).collect()));
+            steps.push(Step::Run(
+                argv.iter().map(std::string::ToString::to_string).collect(),
+            ));
         } else {
             steps.push(Step::Warn(format!("missing command: {}", argv[0])));
         }
@@ -140,6 +143,7 @@ impl Machine<'_> {
     }
 
     /// The first firmware mode in `policy`'s preference that this machine offers.
+    #[must_use]
     pub fn platform_choice(&self, policy: &ModePolicy) -> Option<String> {
         let choices = self
             .root
@@ -271,10 +275,13 @@ impl Machine<'_> {
         }
     }
 
+    #[must_use]
     pub fn ac_online(&self) -> bool {
         self.root.read(&self.profile.paths.ac_adapter).as_deref() == Some("1")
     }
 
+    /// # Errors
+    /// The DMI identity does not match the profile and `force` is not set.
     pub fn require_supported_machine(&self, force: bool) -> Result<()> {
         let mismatches: Vec<String> = self
             .profile
@@ -298,6 +305,9 @@ impl Machine<'_> {
     }
 
     /// Plan the policy for `source` (`None`: the current power source).
+    ///
+    /// # Errors
+    /// The machine is not supported (see [`Machine::require_supported_machine`]).
     pub fn apply(&self, source: Option<Source>, opts: Options) -> Result<(Source, Vec<Step>)> {
         let ac = self.ac_online();
         let source = source.unwrap_or(if ac { Source::Ac } else { Source::Battery });
@@ -363,6 +373,9 @@ impl Machine<'_> {
     }
 
     /// Plan the reaction to a `platform_profile` change: our own write is ignored, anything else is an Fn+Q choice.
+    ///
+    /// # Errors
+    /// `platform_profile` is not readable.
     pub fn follow(&self) -> Result<Vec<Step>> {
         let Some(current) = self.root.read(&self.profile.paths.platform_profile) else {
             bail!("platform_profile is not readable");
@@ -393,6 +406,7 @@ impl Machine<'_> {
 }
 
 /// One line per step as a dry run shows it; `None` for steps a dry run does not print.
+#[must_use]
 pub fn describe(step: &Step) -> Option<String> {
     match step {
         Step::Write { path, value } => Some(format!("would write {path}: {value}")),

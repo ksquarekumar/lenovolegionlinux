@@ -132,6 +132,8 @@ impl Store {
         Ok(())
     }
 
+    /// # Errors
+    /// The reminder store cannot be read.
     pub fn list(&self) -> Result<Vec<Reminder>> {
         let state = self.load()?;
         let mut all: Vec<Reminder> = BUILTINS
@@ -154,6 +156,8 @@ impl Store {
         Ok(all)
     }
 
+    /// # Errors
+    /// `id` is not valid or not known, or the store cannot be read or written.
     pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<()> {
         validate_id(id)?;
         let mut state = self.load()?;
@@ -170,6 +174,8 @@ impl Store {
         self.save(&state)
     }
 
+    /// # Errors
+    /// `id` or `text` is not valid, or the store cannot be read or written.
     pub fn add(&self, id: &str, text: &str, event: Event) -> Result<()> {
         validate_id(id)?;
         validate_text(text)?;
@@ -188,6 +194,8 @@ impl Store {
         self.save(&state)
     }
 
+    /// # Errors
+    /// `id` is not valid, or the store cannot be read or written.
     pub fn remove(&self, id: &str) -> Result<()> {
         validate_id(id)?;
         ensure!(
@@ -203,6 +211,9 @@ impl Store {
     }
 
     /// Text for a hook: enabled reminders for this event, one per line, nothing when none apply.
+    ///
+    /// # Errors
+    /// The reminder store cannot be read.
     pub fn emit(&self, event: Event) -> Result<String> {
         Ok(self
             .list()?

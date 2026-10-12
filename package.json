@@ -1,0 +1,15 @@
+{
+  "name": "legionctl-js-checks",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "biome ci .",
+    "fmt": "biome format --write . && biome lint --write .",
+    "typecheck": "tsc -p jsconfig.json"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.14",
+    "@girs/gnome-shell": "50.0.4",
+    "typescript": "7.0.2"
+  }
+}

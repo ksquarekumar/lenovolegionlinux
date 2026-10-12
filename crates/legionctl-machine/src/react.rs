@@ -18,6 +18,10 @@ pub enum Event {
     Tick,
 }
 
+/// Plan the reaction to `event`.
+///
+/// # Errors
+/// The plan for the event fails (see [`Machine::apply`] and [`Machine::follow`]).
 pub fn react(machine: &Machine, event: Event) -> Result<Vec<Step>> {
     Ok(match event {
         Event::Start | Event::PowerSource => machine.apply(None, Options::default())?.1,

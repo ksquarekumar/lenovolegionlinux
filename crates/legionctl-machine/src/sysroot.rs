@@ -14,6 +14,7 @@ impl SysRoot {
     }
 
     /// `LEGIONCTL_SYSROOT`, or `/`.
+    #[must_use]
     pub fn from_env() -> SysRoot {
         SysRoot::new(std::env::var_os("LEGIONCTL_SYSROOT").unwrap_or_else(|| "/".into()))
     }

@@ -76,8 +76,7 @@ impl Machine {
 
     fn file(&self, machine_path: &str) -> String {
         std::fs::read_to_string(self.dir.join("root").join(&machine_path[1..]))
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|_| "<missing>".into())
+            .map_or_else(|_| "<missing>".into(), |s| s.trim().to_string())
     }
 
     fn set(&self, machine_path: &str, value: &str) {

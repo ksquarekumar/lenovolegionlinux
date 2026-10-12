@@ -3,6 +3,8 @@
 //! Pressure stall information (PSI, `/proc/pressure/*`) says how much work is actually waiting on CPU, memory
 //! or I/O, which tells "busy" apart from "many runnable threads" better than the load average alone.
 
+use std::time::Duration;
+
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -30,14 +32,15 @@ pub struct Load {
     pub level: Level,
     pub reasons: Vec<String>,
     pub load1: f64,
-    pub cpus: usize,
+    pub cpus: u32,
     pub cpu: Option<Pressure>,
     pub memory: Option<Pressure>,
     pub io: Option<Pressure>,
-    pub mem_available_mib: u64,
-    pub mem_total_mib: u64,
+    pub mem_available_mib: u32,
+    pub mem_total_mib: u32,
 }
 
+#[must_use]
 pub fn parse_pressure(text: &str) -> Option<Pressure> {
     let (mut some, mut full) = (None, None);
     for line in text.lines() {
@@ -69,16 +72,17 @@ fn meminfo_kib(text: &str, key: &str) -> Option<u64> {
 }
 
 /// Thresholds are deliberately simple and documented in the reasons, so an agent can explain its choice.
+#[must_use]
 pub fn classify(
     load1: f64,
-    cpus: usize,
+    cpus: u32,
     cpu: Option<&Pressure>,
     memory: Option<&Pressure>,
     io: Option<&Pressure>,
     disks_busy: f64,
     mem_available_fraction: f64,
 ) -> (Level, Vec<String>) {
-    let cpus_f = cpus.max(1) as f64;
+    let cpus_f = f64::from(cpus.max(1));
     let cpu_some = cpu.map_or(0.0, |p| p.some_avg10);
     let mem_some = memory.map_or(0.0, |p| p.some_avg10);
     let mem_full = memory.and_then(|p| p.full_avg10).unwrap_or(0.0);
@@ -158,6 +162,7 @@ pub fn classify(
 }
 
 /// One line an agent can act on: the level, why, and what to do about it.
+#[must_use]
 pub fn brief(load: &Load) -> String {
     let advice = match load.level {
         Level::Overloaded => " Avoid builds, test suites and parallel jobs until it settles.",
@@ -174,8 +179,8 @@ pub fn brief(load: &Load) -> String {
         load.level,
         load.load1,
         load.cpus,
-        crate::human_bytes(load.mem_available_mib * 1024 * 1024),
-        crate::human_bytes(load.mem_total_mib * 1024 * 1024)
+        crate::human_bytes(u64::from(load.mem_available_mib) << 20),
+        crate::human_bytes(u64::from(load.mem_total_mib) << 20)
     )
 }
 
@@ -194,14 +199,14 @@ fn disks_busy(root: &SysRoot) -> f64 {
             })
             .collect()
     };
-    const WINDOW_MS: u64 = 100;
+    let window = Duration::from_millis(100);
     let before = ticks();
-    std::thread::sleep(std::time::Duration::from_millis(WINDOW_MS));
+    std::thread::sleep(window);
     ticks()
         .iter()
         .filter_map(|(name, t)| {
             let (_, b) = before.iter().find(|(n, _)| n == name)?;
-            Some(t.saturating_sub(*b) as f64 / WINDOW_MS as f64)
+            Some(Duration::from_millis(t.saturating_sub(*b)).as_secs_f64() / window.as_secs_f64())
         })
         .fold(0.0, f64::max)
 }
@@ -211,7 +216,8 @@ pub fn read_load(root: &SysRoot) -> Load {
         .read("/proc/loadavg")
         .and_then(|t| t.split_whitespace().next()?.parse().ok())
         .unwrap_or(0.0);
-    let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let cpus = std::thread::available_parallelism()
+        .map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX));
     let cpu = root
         .read("/proc/pressure/cpu")
         .as_deref()
@@ -225,10 +231,13 @@ pub fn read_load(root: &SysRoot) -> Load {
         .as_deref()
         .and_then(parse_pressure);
     let meminfo = root.read("/proc/meminfo").unwrap_or_default();
-    let total = meminfo_kib(&meminfo, "MemTotal").unwrap_or(0);
-    let available = meminfo_kib(&meminfo, "MemAvailable").unwrap_or(0);
+    let mib = |key| {
+        meminfo_kib(&meminfo, key).map_or(0, |kib| u32::try_from(kib >> 10).unwrap_or(u32::MAX))
+    };
+    let total = mib("MemTotal");
+    let available = mib("MemAvailable");
     let fraction = if total > 0 {
-        available as f64 / total as f64
+        f64::from(available) / f64::from(total)
     } else {
         1.0
     };
@@ -255,8 +264,8 @@ pub fn read_load(root: &SysRoot) -> Load {
         cpu,
         memory,
         io,
-        mem_available_mib: available / 1024,
-        mem_total_mib: total / 1024,
+        mem_available_mib: available,
+        mem_total_mib: total,
     }
 }
 

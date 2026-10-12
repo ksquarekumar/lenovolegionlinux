@@ -5,7 +5,7 @@ mod machine;
 mod mcp;
 mod tui;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -83,6 +83,16 @@ struct PolicyArgs {
     quiet: bool,
 }
 
+impl PolicyArgs {
+    fn invocation(&self) -> machine::Invocation<'_> {
+        machine::Invocation {
+            profile: self.profile.as_deref(),
+            dry_run: self.dry_run,
+            quiet: self.quiet,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Apply the power policy for ac, battery, or the current power source (auto)
@@ -107,7 +117,7 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// React to a firmware platform_profile change (Fn+Q)
+    /// React to a firmware `platform_profile` change (Fn+Q)
     Follow {
         #[command(flatten)]
         args: PolicyArgs,
@@ -348,11 +358,7 @@ fn main() -> Result<()> {
             force,
             keep_override,
         } => machine::apply(
-            machine::Run {
-                profile: args.profile.as_deref(),
-                dry_run: args.dry_run,
-                quiet: args.quiet,
-            },
+            args.invocation(),
             mode.source(),
             legionctl_machine::policy::Options {
                 force,
@@ -361,11 +367,7 @@ fn main() -> Result<()> {
             },
         )?,
         Command::Reassert { mode, args, force } => machine::apply(
-            machine::Run {
-                profile: args.profile.as_deref(),
-                dry_run: args.dry_run,
-                quiet: args.quiet,
-            },
+            args.invocation(),
             mode.source(),
             legionctl_machine::policy::Options {
                 force,
@@ -373,60 +375,25 @@ fn main() -> Result<()> {
                 keep_override: false,
             },
         )?,
-        Command::Follow { args } => machine::follow(machine::Run {
-            profile: args.profile.as_deref(),
-            dry_run: args.dry_run,
-            quiet: args.quiet,
-        })?,
+        Command::Follow { args } => machine::follow(args.invocation())?,
         Command::Gpu {
             action,
             choice,
             dry_run,
-        } => match (action, choice) {
-            (GpuAction::Status, _) => machine::gpu_status(),
-            (GpuAction::Primary, None) => anyhow::bail!("gpu primary needs nvidia, intel or auto"),
-            (GpuAction::Primary, Some(c)) => machine::gpu_primary(
-                match c {
-                    GpuChoice::Nvidia => "nvidia",
-                    GpuChoice::Intel => "intel",
-                    GpuChoice::Auto => "auto",
-                },
-                dry_run,
-            )?,
-        },
+        } => gpu_cmd(action, choice, dry_run)?,
         Command::Run {
             gpu,
             cores,
             nice,
             cmd,
-        } => {
-            let cmd: Vec<String> = cmd.into_iter().skip_while(|a| a == "--").collect();
-            machine::run(
-                match gpu {
-                    RunGpu::Nvidia => "nvidia",
-                    RunGpu::Intel => "intel",
-                    RunGpu::Default => "default",
-                },
-                match cores {
-                    Cores::P => "p",
-                    Cores::E => "e",
-                    Cores::All => "all",
-                },
-                nice,
-                &cmd,
-            )?
-        }
+        } => run_cmd(gpu, cores, nice, cmd)?,
         Command::Cleanup {
             args,
             force,
             unload_modules,
             remove_packages,
         } => machine::cleanup(
-            machine::Run {
-                profile: args.profile.as_deref(),
-                dry_run: args.dry_run,
-                quiet: args.quiet,
-            },
+            args.invocation(),
             legionctl_machine::cleanup::Options {
                 force,
                 unload_modules,
@@ -439,26 +406,12 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Command::Status { json, profile } => {
-            let s = machine::snapshot(profile.as_deref(), Detail::Full)?;
-            if json {
-                print_json(&s)?;
-            } else {
-                machine::print_status(&s);
-            }
-        }
+        Command::Status { json, profile } => status_cmd(profile.as_deref(), json)?,
         Command::Load {
             json,
             brief: short,
             only_busy,
-        } => {
-            let l = load::read_load(&SysRoot::from_env());
-            if json {
-                print_json(&l)?;
-            } else if !(short && only_busy && l.level < load::Level::Busy) {
-                println!("{}", load::brief(&l));
-            }
-        }
+        } => load_cmd(json, short, only_busy)?,
         Command::Doctor { profile } => {
             let (clean, report) = machine::doctor(profile.as_deref())?;
             print!("{report}");
@@ -466,65 +419,8 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Command::Agents { project, json } => {
-            let home = std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default();
-            let files = agents::config_files(&home, &project);
-            if json {
-                print_json(&files)?;
-            } else {
-                for f in files {
-                    let state = match (f.exists, f.valid) {
-                        (false, _) => "missing".to_string(),
-                        (true, Some(true)) => format!("valid [{}]", f.sections.join(", ")),
-                        (true, _) => format!("INVALID: {}", f.error.unwrap_or_default()),
-                    };
-                    println!(
-                        "{:<7} {:<14} {}  {}",
-                        f.agent,
-                        f.scope,
-                        f.path.display(),
-                        state
-                    );
-                }
-            }
-        }
-        Command::Worktree(cmd) => {
-            let store = Store::default();
-            match cmd {
-                WorktreeCommand::Create { name, repo, base } => {
-                    let wt = store.create(&repo, &name, base.as_deref())?;
-                    println!("created {} on branch {}", wt.path.display(), wt.branch);
-                }
-                WorktreeCommand::List { json: true } => print_json(&store.list(true)?)?,
-                WorktreeCommand::List { json: false } => {
-                    for w in store.list(true)? {
-                        let size = w
-                            .size_bytes
-                            .map_or("-".into(), legionctl_machine::human_bytes);
-                        let state = if !w.exists {
-                            "missing"
-                        } else if w.dirty == Some(true) {
-                            "dirty"
-                        } else {
-                            "clean"
-                        };
-                        println!(
-                            "{:<20} {:>10}  {:<7} {}",
-                            w.worktree.name,
-                            size,
-                            state,
-                            w.worktree.path.display()
-                        );
-                    }
-                }
-                WorktreeCommand::Rm { name, force } => {
-                    let wt = store.remove(&name, force)?;
-                    println!("removed {} (branch {} kept)", wt.path.display(), wt.branch);
-                }
-            }
-        }
+        Command::Agents { project, json } => agents_cmd(&project, json)?,
+        Command::Worktree(cmd) => worktree_cmd(cmd)?,
         Command::Act { action, value } => {
             println!(
                 "requesting approval for: {}",
@@ -537,184 +433,327 @@ fn main() -> Result<()> {
             brief,
             json,
             ..
-        } => {
-            let report = setup::check();
-            let todo = report.needs_attention();
-            if json {
-                print_json(&report)?;
-            } else if brief {
-                if !todo.is_empty() {
-                    let names: Vec<String> = todo
-                        .iter()
-                        .map(|i| format!("{} for {}", i.what, i.agent))
-                        .collect();
-                    println!(
-                        "legionctl setup: {} need attention ({}). Run /legionctl:setup or `legionctl setup`.",
-                        todo.len(),
-                        names.join(", ")
-                    );
-                }
-            } else {
-                println!(
-                    "ctx: {}",
-                    report.ctx_version.as_deref().unwrap_or("not installed")
-                );
-                for i in &report.items {
-                    println!("{:<26} {:<12} {:<14} {}", i.what, i.agent, i.status, i.path);
-                }
-            }
-        }
+        } => setup_check_cmd(brief, json)?,
         Command::Setup {
             check: false,
             install_ctx,
             ..
-        } => {
-            for line in setup::apply(install_ctx)? {
-                println!("{line}");
-            }
-            let left = setup::check();
-            let todo = left.needs_attention();
+        } => setup_apply_cmd(install_ctx)?,
+        Command::Reminders { command } => reminders_cmd(command)?,
+        Command::Hooks { command } => hooks_cmd(command)?,
+        Command::Skills { json } => skills_cmd(json)?,
+        Command::Mcp => tokio::runtime::Runtime::new()?.block_on(mcp::serve())?,
+        Command::Tui => tui::run()?,
+    }
+    Ok(())
+}
+
+/// `legionctl agents`: agent settings files, present and valid.
+fn agents_cmd(project: &Path, json: bool) -> Result<()> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let files = agents::config_files(&home, project);
+    if json {
+        print_json(&files)?;
+    } else {
+        for f in files {
+            let state = match (f.exists, f.valid) {
+                (false, _) => "missing".to_string(),
+                (true, Some(true)) => format!("valid [{}]", f.sections.join(", ")),
+                (true, _) => format!("INVALID: {}", f.error.unwrap_or_default()),
+            };
             println!(
-                "{}",
-                if todo.is_empty() {
-                    "all set up".to_string()
+                "{:<7} {:<14} {}  {}",
+                f.agent,
+                f.scope,
+                f.path.display(),
+                state
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `legionctl worktree`.
+fn worktree_cmd(cmd: WorktreeCommand) -> Result<()> {
+    let store = Store::default();
+    match cmd {
+        WorktreeCommand::Create { name, repo, base } => {
+            let wt = store.create(&repo, &name, base.as_deref())?;
+            println!("created {} on branch {}", wt.path.display(), wt.branch);
+        }
+        WorktreeCommand::List { json: true } => print_json(&store.list(true)?)?,
+        WorktreeCommand::List { json: false } => {
+            for w in store.list(true)? {
+                let size = w
+                    .size_bytes
+                    .map_or("-".into(), legionctl_machine::human_bytes);
+                let state = if !w.exists {
+                    "missing"
+                } else if w.dirty == Some(true) {
+                    "dirty"
                 } else {
-                    format!(
-                        "{} items still need attention; run `legionctl setup --check`",
-                        todo.len()
-                    )
+                    "clean"
+                };
+                println!(
+                    "{:<20} {:>10}  {:<7} {}",
+                    w.worktree.name,
+                    size,
+                    state,
+                    w.worktree.path.display()
+                );
+            }
+        }
+        WorktreeCommand::Rm { name, force } => {
+            let wt = store.remove(&name, force)?;
+            println!("removed {} (branch {} kept)", wt.path.display(), wt.branch);
+        }
+    }
+    Ok(())
+}
+
+/// `legionctl reminders`.
+fn reminders_cmd(command: Option<ReminderCommand>) -> Result<()> {
+    let store = reminders::Store::default();
+    match command.unwrap_or(ReminderCommand::List { json: false }) {
+        ReminderCommand::List { json: true } => print_json(&store.list()?)?,
+        ReminderCommand::List { json: false } => {
+            for r in store.list()? {
+                let kind = if r.builtin { "built-in" } else { "custom" };
+                println!(
+                    "{:<3} {:<20} {:<14} {:<9} {}",
+                    if r.enabled { "on" } else { "off" },
+                    r.id,
+                    format!("{:?}", r.event),
+                    kind,
+                    r.text
+                );
+            }
+        }
+        ReminderCommand::On { id } => {
+            store.set_enabled(&id, true)?;
+            println!("{id}: on");
+        }
+        ReminderCommand::Off { id } => {
+            store.set_enabled(&id, false)?;
+            println!("{id}: off");
+        }
+        ReminderCommand::Add { id, text, event } => {
+            store.add(&id, &text, event.into())?;
+            println!("{id}: added and on");
+        }
+        ReminderCommand::Rm { id } => {
+            store.remove(&id)?;
+            println!("{id}: removed");
+        }
+        ReminderCommand::Emit { event } => {
+            let text = store.emit(event.into())?;
+            if !text.is_empty() {
+                println!("{text}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `legionctl hooks`.
+fn hooks_cmd(command: Option<HookCommand>) -> Result<()> {
+    let db = Db::open_default()?;
+    let hooks = Hooks {
+        db: &db,
+        reminders: reminders::Store::default(),
+        actor: "cli",
+    };
+    match command.unwrap_or(HookCommand::List { json: false }) {
+        HookCommand::List { json: true } => print_json(
+            &serde_json::json!({"actions": hooks.actions()?, "bindings": hooks.bindings()?}),
+        )?,
+        HookCommand::List { json: false } => {
+            println!("bindings (in order):");
+            for b in hooks.bindings()? {
+                println!("  {:<14} {}", format!("{:?}", b.event), b.action);
+            }
+            println!("actions:");
+            for a in hooks.actions()? {
+                let kind = if a.builtin {
+                    "built-in".to_string()
+                } else {
+                    format!("command, {}s", a.timeout_s)
+                };
+                println!("  {:<16} {:<14} {}", a.id, kind, a.detail);
+            }
+        }
+        HookCommand::Bind { event, action } => {
+            hooks.bind(event.into(), &action)?;
+            println!("{action}: bound");
+        }
+        HookCommand::Unbind { event, action } => {
+            hooks.unbind(event.into(), &action)?;
+            println!("{action}: unbound");
+        }
+        HookCommand::Add {
+            id,
+            command,
+            timeout,
+        } => {
+            hooks.add_command(&id, &command, timeout)?;
+            println!("{id}: defined; bind it with `legionctl hooks bind <event> {id}`");
+        }
+        HookCommand::Rm { id } => {
+            hooks.remove_action(&id)?;
+            println!("{id}: removed");
+        }
+        HookCommand::Run { event } => {
+            let text = hooks.run(event.into())?;
+            if !text.is_empty() {
+                println!("{text}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `legionctl skills`.
+fn skills_cmd(json: bool) -> Result<()> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let list = skills::inventory(&home, &reminders::Store::default())?;
+    if json {
+        print_json(&list)?;
+    } else {
+        for s in list {
+            let reminder = match (&s.reminder, s.reminder_on) {
+                (Some(id), Some(true)) => format!("reminder {id}: on"),
+                (Some(id), _) => format!("reminder {id}: off"),
+                _ => "no reminder".into(),
+            };
+            println!("legionctl:{}  ({reminder})", s.name);
+            println!(
+                "  claude: {}",
+                s.claude
+                    .map_or("plugin not installed".into(), |p| p.display().to_string())
+            );
+            println!(
+                "  codex:  {} ({})",
+                s.codex.display(),
+                if s.codex_linked {
+                    "linked"
+                } else {
+                    "missing; run `legionctl setup`"
                 }
             );
         }
-        Command::Reminders { command } => {
-            let store = reminders::Store::default();
-            match command.unwrap_or(ReminderCommand::List { json: false }) {
-                ReminderCommand::List { json: true } => print_json(&store.list()?)?,
-                ReminderCommand::List { json: false } => {
-                    for r in store.list()? {
-                        let kind = if r.builtin { "built-in" } else { "custom" };
-                        println!(
-                            "{:<3} {:<20} {:<14} {:<9} {}",
-                            if r.enabled { "on" } else { "off" },
-                            r.id,
-                            format!("{:?}", r.event),
-                            kind,
-                            r.text
-                        );
-                    }
-                }
-                ReminderCommand::On { id } => {
-                    store.set_enabled(&id, true)?;
-                    println!("{id}: on");
-                }
-                ReminderCommand::Off { id } => {
-                    store.set_enabled(&id, false)?;
-                    println!("{id}: off");
-                }
-                ReminderCommand::Add { id, text, event } => {
-                    store.add(&id, &text, event.into())?;
-                    println!("{id}: added and on");
-                }
-                ReminderCommand::Rm { id } => {
-                    store.remove(&id)?;
-                    println!("{id}: removed");
-                }
-                ReminderCommand::Emit { event } => {
-                    let text = store.emit(event.into())?;
-                    if !text.is_empty() {
-                        println!("{text}");
-                    }
-                }
-            }
+    }
+    Ok(())
+}
+
+/// `legionctl setup --check`: what needs attention, in full, brief (for a hook) or as JSON.
+fn setup_check_cmd(brief: bool, json: bool) -> Result<()> {
+    let report = setup::check();
+    let todo = report.needs_attention();
+    if json {
+        print_json(&report)?;
+    } else if brief {
+        if !todo.is_empty() {
+            let names: Vec<String> = todo
+                .iter()
+                .map(|i| format!("{} for {}", i.what, i.agent))
+                .collect();
+            println!(
+                "legionctl setup: {} need attention ({}). Run /legionctl:setup or `legionctl setup`.",
+                todo.len(),
+                names.join(", ")
+            );
         }
-        Command::Hooks { command } => {
-            let db = Db::open_default()?;
-            let hooks = Hooks {
-                db: &db,
-                reminders: reminders::Store::default(),
-                actor: "cli",
-            };
-            match command.unwrap_or(HookCommand::List { json: false }) {
-                HookCommand::List { json: true } => print_json(
-                    &serde_json::json!({"actions": hooks.actions()?, "bindings": hooks.bindings()?}),
-                )?,
-                HookCommand::List { json: false } => {
-                    println!("bindings (in order):");
-                    for b in hooks.bindings()? {
-                        println!("  {:<14} {}", format!("{:?}", b.event), b.action);
-                    }
-                    println!("actions:");
-                    for a in hooks.actions()? {
-                        let kind = if a.builtin {
-                            "built-in".to_string()
-                        } else {
-                            format!("command, {}s", a.timeout_s)
-                        };
-                        println!("  {:<16} {:<14} {}", a.id, kind, a.detail);
-                    }
-                }
-                HookCommand::Bind { event, action } => {
-                    hooks.bind(event.into(), &action)?;
-                    println!("{action}: bound");
-                }
-                HookCommand::Unbind { event, action } => {
-                    hooks.unbind(event.into(), &action)?;
-                    println!("{action}: unbound");
-                }
-                HookCommand::Add {
-                    id,
-                    command,
-                    timeout,
-                } => {
-                    hooks.add_command(&id, &command, timeout)?;
-                    println!("{id}: defined; bind it with `legionctl hooks bind <event> {id}`");
-                }
-                HookCommand::Rm { id } => {
-                    hooks.remove_action(&id)?;
-                    println!("{id}: removed");
-                }
-                HookCommand::Run { event } => {
-                    let text = hooks.run(event.into())?;
-                    if !text.is_empty() {
-                        println!("{text}");
-                    }
-                }
-            }
+    } else {
+        println!(
+            "ctx: {}",
+            report.ctx_version.as_deref().unwrap_or("not installed")
+        );
+        for i in &report.items {
+            println!("{:<26} {:<12} {:<14} {}", i.what, i.agent, i.status, i.path);
         }
-        Command::Skills { json } => {
-            let home = std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default();
-            let list = skills::inventory(&home, &reminders::Store::default())?;
-            if json {
-                print_json(&list)?;
-            } else {
-                for s in list {
-                    let reminder = match (&s.reminder, s.reminder_on) {
-                        (Some(id), Some(true)) => format!("reminder {id}: on"),
-                        (Some(id), _) => format!("reminder {id}: off"),
-                        _ => "no reminder".into(),
-                    };
-                    println!("legionctl:{}  ({reminder})", s.name);
-                    println!(
-                        "  claude: {}",
-                        s.claude
-                            .map_or("plugin not installed".into(), |p| p.display().to_string())
-                    );
-                    println!(
-                        "  codex:  {} ({})",
-                        s.codex.display(),
-                        if s.codex_linked {
-                            "linked"
-                        } else {
-                            "missing; run `legionctl setup`"
-                        }
-                    );
-                }
-            }
+    }
+    Ok(())
+}
+
+/// `legionctl setup`: bring every item to current, then say what is left.
+fn setup_apply_cmd(install_ctx: bool) -> Result<()> {
+    for line in setup::apply(install_ctx)? {
+        println!("{line}");
+    }
+    let left = setup::check();
+    let todo = left.needs_attention();
+    println!(
+        "{}",
+        if todo.is_empty() {
+            "all set up".to_string()
+        } else {
+            format!(
+                "{} items still need attention; run `legionctl setup --check`",
+                todo.len()
+            )
         }
-        Command::Mcp => tokio::runtime::Runtime::new()?.block_on(mcp::serve())?,
-        Command::Tui => tui::run()?,
+    );
+    Ok(())
+}
+
+/// `legionctl run`: replaces this process with `cmd` on the chosen GPU and cores.
+fn run_cmd(gpu: RunGpu, cores: Cores, nice: Option<i32>, cmd: Vec<String>) -> Result<()> {
+    let cmd: Vec<String> = cmd.into_iter().skip_while(|a| a == "--").collect();
+    machine::run(
+        match gpu {
+            RunGpu::Nvidia => "nvidia",
+            RunGpu::Intel => "intel",
+            RunGpu::Default => "default",
+        },
+        match cores {
+            Cores::P => "p",
+            Cores::E => "e",
+            Cores::All => "all",
+        },
+        nice,
+        &cmd,
+    )
+}
+
+/// `legionctl gpu`.
+fn gpu_cmd(action: GpuAction, choice: Option<GpuChoice>, dry_run: bool) -> Result<()> {
+    match (action, choice) {
+        (GpuAction::Status, _) => machine::gpu_status(),
+        (GpuAction::Primary, None) => anyhow::bail!("gpu primary needs nvidia, intel or auto"),
+        (GpuAction::Primary, Some(c)) => machine::gpu_primary(
+            match c {
+                GpuChoice::Nvidia => "nvidia",
+                GpuChoice::Intel => "intel",
+                GpuChoice::Auto => "auto",
+            },
+            dry_run,
+        )?,
+    }
+    Ok(())
+}
+
+/// `legionctl load`: `--brief --only-busy` prints nothing below busy, for hooks.
+fn load_cmd(json: bool, brief: bool, only_busy: bool) -> Result<()> {
+    let l = load::read_load(&SysRoot::from_env());
+    if json {
+        print_json(&l)?;
+    } else if !(brief && only_busy && l.level < load::Level::Busy) {
+        println!("{}", load::brief(&l));
+    }
+    Ok(())
+}
+
+/// `legionctl status`.
+fn status_cmd(profile: Option<&Path>, json: bool) -> Result<()> {
+    let s = machine::snapshot(profile, Detail::Full)?;
+    if json {
+        print_json(&s)?;
+    } else {
+        machine::print_status(&s);
     }
     Ok(())
 }

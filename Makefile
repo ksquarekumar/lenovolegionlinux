@@ -14,18 +14,23 @@ help: ## list targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
 
 .PHONY: tools
-tools: ## install dev tooling (pre-commit; hooks fetch shellcheck, shfmt, actionlint)
+tools: ## install dev tooling (pre-commit and its hooks, Biome and tsc through bun, cargo-machete, cargo-deny)
 	@command -v uv >/dev/null || { echo "uv is required: https://docs.astral.sh/uv/getting-started/installation/"; exit 1; }
+	@command -v bun >/dev/null || { echo "bun is required: https://bun.sh"; exit 1; }
 	uv tool install --upgrade pre-commit
 	$(PRE_COMMIT) install-hooks
+	bun install --frozen-lockfile
+	command -v cargo-machete >/dev/null || cargo install --locked cargo-machete
+	command -v cargo-deny >/dev/null || cargo install --locked cargo-deny
 
 .PHONY: hooks
 hooks: tools ## install the git pre-commit hook
 	$(PRE_COMMIT) install
 
 .PHONY: fmt
-fmt: ## format rust and shell in place
+fmt: ## format rust, js, css, json and shell in place
 	cargo fmt --all
+	bun run fmt
 	-$(PRE_COMMIT) run shfmt --all-files
 
 .PHONY: lint
@@ -33,9 +38,16 @@ lint: ## run every pre-commit hook on all files
 	$(PRE_COMMIT) run --all-files --show-diff-on-failure
 
 .PHONY: rust-lint
-rust-lint: ## rustfmt check and clippy with warnings as errors
+rust-lint: ## rustfmt check, clippy (pedantic, from Cargo.toml) with warnings as errors, unused and audited dependencies
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets --locked -- -D warnings
+	cargo machete
+	cargo deny check
+
+.PHONY: js-lint
+js-lint: ## Biome lint and format check, tsc type check of the GNOME Shell extension
+	bun run lint
+	bun run typecheck
 
 .PHONY: build
 build: ## build legionctl, legionctl-system and legionctl-operator (release)
@@ -50,7 +62,7 @@ test: ## end-to-end and behavior tests (no hardware access)
 	cargo test --workspace --locked
 
 .PHONY: ci
-ci: lint rust-lint validate test ## what CI runs
+ci: lint rust-lint js-lint validate test ## what CI runs
 
 .PHONY: package
 package: ## build and install the Arch package (pacman tracks every file)

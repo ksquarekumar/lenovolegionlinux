@@ -4,9 +4,13 @@ description = "The user-session operator: Fn+R refresh toggle through Mutter and
 edition.workspace = true
 license.workspace = true
 version.workspace = true
+publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
 tokio = { version = "1.53.2", features = ["macros", "rt", "signal"] }
 zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }
 futures-util = "0.3.34"
+
+[lints]
+workspace = true

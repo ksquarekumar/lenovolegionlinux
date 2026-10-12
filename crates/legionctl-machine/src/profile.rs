@@ -121,6 +121,7 @@ pub struct Nvidia {
 }
 
 /// Text written to a sysfs file for a profile value: strings as they are, numbers in decimal.
+#[must_use]
 pub fn text(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
@@ -135,6 +136,9 @@ fn read_jsonc(path: &Path) -> Result<Value> {
 }
 
 /// The profile at `path`, or at [`DEFAULT_PATH`].
+///
+/// # Errors
+/// The file is not readable or is not a valid profile.
 pub fn load(path: Option<&Path>) -> Result<(Profile, PathBuf)> {
     let path = path.map_or_else(|| PathBuf::from(DEFAULT_PATH), Path::to_path_buf);
     let profile = serde_json::from_value(read_jsonc(&path)?)
@@ -145,6 +149,9 @@ pub fn load(path: Option<&Path>) -> Result<(Profile, PathBuf)> {
 const PPD_PROFILES: [&str; 3] = ["performance", "balanced", "power-saver"];
 
 /// Structure and ac/battery consistency checks that typed parsing cannot express. No hardware access.
+///
+/// # Errors
+/// The file is not readable JSONC. Profile faults are findings, not errors.
 pub fn validate(path: &Path) -> Result<Vec<String>> {
     let raw = read_jsonc(path)?;
     let mut errors = Vec::new();

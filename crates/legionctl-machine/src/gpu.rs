@@ -31,6 +31,7 @@ fn driver(root: &SysRoot, card: &str) -> String {
 }
 
 /// Every DRM connector, sorted by name.
+#[must_use]
 pub fn outputs(root: &SysRoot) -> Vec<Output> {
     root.children(DRM, "card")
         .into_iter()
@@ -48,6 +49,7 @@ pub fn outputs(root: &SysRoot) -> Vec<Output> {
 }
 
 /// `hybrid`: built-in panel on the iGPU; `discrete`: panel wired to NVIDIA (MUX); `unknown`: no connected panel.
+#[must_use]
 pub fn mode(outputs: &[Output]) -> &'static str {
     match outputs
         .iter()
@@ -62,6 +64,7 @@ pub fn mode(outputs: &[Output]) -> &'static str {
 const PRIMARY_DRIVERS: [(&str, &str); 2] = [("nvidia", "nvidia"), ("intel", "i915")];
 
 /// The GPU Mutter draws the desktop on (`nvidia`, `intel`), or `auto` without a rule.
+#[must_use]
 pub fn desktop_preference(root: &SysRoot) -> &'static str {
     let rule = root.read(PRIMARY_GPU_RULE).unwrap_or_default();
     PRIMARY_DRIVERS
@@ -70,6 +73,7 @@ pub fn desktop_preference(root: &SysRoot) -> &'static str {
         .map_or("auto", |(name, _)| name)
 }
 
+#[must_use]
 pub fn primary_rule(choice: &str) -> Option<String> {
     let (_, driver) = PRIMARY_DRIVERS.iter().find(|(name, _)| *name == choice)?;
     Some(format!(
@@ -79,6 +83,7 @@ pub fn primary_rule(choice: &str) -> Option<String> {
 }
 
 /// CPU list of the performance (`p`) or efficiency (`e`) cores on hybrid Intel CPUs.
+#[must_use]
 pub fn core_class_cpus(root: &SysRoot, class: &str) -> Option<String> {
     let dir = match class {
         "p" => "cpu_core",
@@ -89,6 +94,7 @@ pub fn core_class_cpus(root: &SysRoot, class: &str) -> Option<String> {
 }
 
 /// Environment that makes a program render on `gpu` (`nvidia`, `intel`); empty for the default.
+#[must_use]
 pub fn render_env(root: &SysRoot, gpu: &str) -> BTreeMap<&'static str, String> {
     let mut env = BTreeMap::new();
     match gpu {
@@ -125,6 +131,9 @@ pub fn render_env(root: &SysRoot, gpu: &str) -> BTreeMap<&'static str, String> {
 }
 
 /// Plan the desktop GPU choice (`nvidia`, `intel`, `auto`); Mutter reads it at the next login.
+///
+/// # Errors
+/// `choice` is not `nvidia`, `intel` or `auto`.
 pub fn set_desktop(machine: &Machine, choice: &str) -> Result<Vec<Step>> {
     let mut steps = match choice {
         "auto" => vec![

@@ -94,8 +94,8 @@ async fn main() -> Result<()> {
     let mut rate = display::built_in_rate(&mutter).await;
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     eprintln!(
-        "operator: session module running (built-in panel at {})",
-        rate.map_or("?".into(), |r| format!("{r} Hz"))
+        "operator: session module running (built-in panel at {} Hz)",
+        rate.as_deref().unwrap_or("?")
     );
 
     loop {
@@ -110,10 +110,10 @@ async fn main() -> Result<()> {
             }
             Some(_) = monitors.next() => {
                 let now = display::built_in_rate(&mutter).await;
-                if let (Some(before), Some(after)) = (rate, now)
+                if let (Some(before), Some(after)) = (&rate, &now)
                     && before != after
                 {
-                    osd.show("refresh", &after.to_string(), "Built-in display").await;
+                    osd.show("refresh", after, "Built-in display").await;
                 }
                 rate = now;
             }
