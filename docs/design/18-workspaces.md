@@ -16,8 +16,9 @@ Replaces the "plan workspaces" section of 12-operator. Sessions (14) and sandbox
 | **Named workspace** | The agent's own space for one piece of work: dossier, plans, evidence, scratch files. Never part of the product. | `~/.agentworkspace/<name>/` |
 
 The named workspace appears in the operating directory's root as a symlink, `.agentworkspace → ~/.agentworkspace/<name>`.
-In a git operating directory, `.agentworkspace` goes into `.git/info/exclude` (local to the clone, not a commit), so
-it never shows in `git status` and never reaches the product.
+In a git operating directory, `/.agentworkspace` is a committed line in the repo's `.gitignore` (decided
+2026-10-12), so every clone and worktree ignores it. Workspace open adds the line if it is missing, as its own
+commit on the base branch, after approval.
 
 ## `~/.agentworkspace`
 
@@ -65,11 +66,11 @@ directory:
 
 - Both known (from the session, or the current directory is an operating directory): the agent goes ahead, and
   the hook injects the dossier summary and the current change set.
-- Not known: the agent is told to start or choose a workspace and confirm the operating directory
-  (`/legionctl:workspace`), and every tool that writes or runs commands is denied until then. Reading and the
-  workspace commands stay allowed.
+- Not known: the prompt is blocked (decided 2026-10-12: everything, not only writes). The block message tells the
+  user to open or choose a workspace and confirm the operating directory with `/legionctl:workspace`, which is
+  the one command that passes the gate.
 
-Claude Code enforces this with its `PreToolUse` hook (deny). For Codex and other agents, enforcement is the
+Claude Code enforces this with its `UserPromptSubmit` hook (block). For Codex and other agents, enforcement is the
 session launch itself (14): the harness starts the agent only inside a confirmed operating directory.
 
 ## Sandboxed instances
