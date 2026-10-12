@@ -31,6 +31,15 @@ pub enum Step {
     Run(Vec<String>),
     /// Run and ignore failure (for example `systemctl reset-failed` of a unit that may not exist).
     Try(Vec<String>),
+    /// Create or replace a whole file (configuration we own, such as a udev rule).
+    Create {
+        path: String,
+        content: String,
+    },
+    /// Remove a file we own, if it exists.
+    Remove {
+        path: String,
+    },
     /// Ledger file content; `None` removes it.
     Record {
         path: &'static str,
@@ -387,6 +396,8 @@ pub fn describe(step: &Step) -> Option<String> {
     match step {
         Step::Write { path, value } => Some(format!("would write {path}: {value}")),
         Step::Run(argv) | Step::Try(argv) => Some(format!("would run: {}", argv.join(" "))),
+        Step::Create { path, content } => Some(format!("would write {path}:\n{content}")),
+        Step::Remove { path } => Some(format!("would remove {path}")),
         Step::Info(text) => Some(text.clone()),
         Step::Warn(text) => Some(format!("warning: {text}")),
         Step::Record { .. } => None,
@@ -428,6 +439,15 @@ pub fn execute(root: &SysRoot, steps: &[Step]) -> Vec<String> {
                     ));
                 }
                 Err(e) => out.push(format!("warning: command failed: {}: {e}", argv.join(" "))),
+            },
+            Step::Create { path, content } => match std::fs::write(root.path(path), content) {
+                Ok(()) => out.push(format!("wrote {path}")),
+                Err(e) => out.push(format!("warning: could not write {path}: {e}")),
+            },
+            Step::Remove { path } => match std::fs::remove_file(root.path(path)) {
+                Ok(()) => out.push(format!("removed {path}")),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => out.push(format!("warning: could not remove {path}: {e}")),
             },
             Step::Try(argv) => {
                 let _ = Command::new(&argv[0]).args(&argv[1..]).output();

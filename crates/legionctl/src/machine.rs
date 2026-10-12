@@ -268,31 +268,10 @@ pub fn gpu_status() {
 
 /// Which GPU Mutter draws the desktop on (`nvidia`, `intel`, `auto`); takes effect at the next login.
 pub fn gpu_primary(choice: &str, dry_run: bool) -> Result<()> {
-    use legionctl_machine::gpu::{PRIMARY_GPU_RULE, primary_rule};
-    let root = SysRoot::from_env();
-    let rule_path = root.path(PRIMARY_GPU_RULE);
-    if choice == "auto" {
-        if rule_path.exists() && !dry_run {
-            std::fs::remove_file(&rule_path)?;
-        }
-        println!("removed {PRIMARY_GPU_RULE}; Mutter picks the GPU of the built-in panel");
-    } else {
-        let rule = primary_rule(choice)
-            .ok_or_else(|| anyhow::anyhow!("gpu primary needs nvidia, intel or auto"))?;
-        if dry_run {
-            println!("would write {PRIMARY_GPU_RULE}:\n{rule}");
-        } else {
-            std::fs::write(&rule_path, rule)?;
-            println!("wrote {PRIMARY_GPU_RULE}");
-        }
-    }
     let (profile, _) = profile::load(None)?;
-    let m = machine(&root, &profile);
-    let mut steps = Vec::new();
-    m.run(&mut steps, &["udevadm", "control", "--reload"]);
-    m.run(&mut steps, &["udevadm", "trigger", "--subsystem-match=drm"]);
+    let root = SysRoot::from_env();
+    let steps = legionctl_machine::gpu::set_desktop(&machine(&root, &profile), choice)?;
     finish(&root, &steps, dry_run, false);
-    println!("log out and back in for GNOME to draw the desktop on the new GPU");
     Ok(())
 }
 

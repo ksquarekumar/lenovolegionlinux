@@ -7,6 +7,9 @@ use std::path::Path;
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use anyhow::{Result, bail};
+
+use crate::policy::{Machine, Step};
 use crate::sysroot::SysRoot;
 
 const DRM: &str = "/sys/class/drm";
@@ -119,4 +122,29 @@ pub fn render_env(root: &SysRoot, gpu: &str) -> BTreeMap<&'static str, String> {
         _ => {}
     }
     env
+}
+
+/// Plan the desktop GPU choice (`nvidia`, `intel`, `auto`); Mutter reads it at the next login.
+pub fn set_desktop(machine: &Machine, choice: &str) -> Result<Vec<Step>> {
+    let mut steps = match choice {
+        "auto" => vec![
+            Step::Remove {
+                path: PRIMARY_GPU_RULE.into(),
+            },
+            Step::Info("Mutter picks the GPU of the built-in panel".into()),
+        ],
+        _ => match primary_rule(choice) {
+            Some(content) => vec![Step::Create {
+                path: PRIMARY_GPU_RULE.into(),
+                content,
+            }],
+            None => bail!("desktop GPU must be nvidia, intel or auto"),
+        },
+    };
+    machine.run(&mut steps, &["udevadm", "control", "--reload"]);
+    machine.run(&mut steps, &["udevadm", "trigger", "--subsystem-match=drm"]);
+    steps.push(Step::Info(
+        "log out and back in for GNOME to draw the desktop on the new GPU".into(),
+    ));
+    Ok(steps)
 }
