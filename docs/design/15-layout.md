@@ -107,7 +107,7 @@ A module becomes its own crate only when its size or its dependencies require it
 | virtualization | `virt` (status, list, create, start, stop, pause, tune), 17-virtualization | operator, system for kernel parts |
 | config | `config` (layers, explain, edit, lock) | operator, system for `/etc` |
 | agents | `agents`, `skills`, `reminders`, `hooks`, `tools` | operator |
-| work | `workspace` (open, list, checkpoint, merge, close; replaces `worktree`), `sessions`, `gateway` | operator, gateway |
+| work | `dossier` (use, add, read, edit, search, check, graph), `workspace` (open, new branch, checkpoint, merge, close, pack, run; replaces `worktree`), `sessions`, `gateway` | operator, gateway |
 | surfaces | `tui`, `mcp`, `app` | client |
 
 ## Switch from the Python tooling
