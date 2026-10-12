@@ -173,3 +173,28 @@ make lint-pkg   # namcap the PKGBUILD (Arch only)
 
 Measure before changing sustained CPU power: `sudo ./scripts/rapl-sweep.sh` sweeps RAPL PL1 and
 writes a CSV of throughput, package power, temperature, clocks and fan speed per step.
+
+## Operator CLI, TUI and agent plugin
+
+`legion` (Rust) shows this machine's state and load, manages isolated git worktrees, checks Claude Code and Codex
+settings, and requests machine changes that a human approves in a polkit dialog. The same functions are exposed to
+agents as an MCP server.
+
+```bash
+make build && sudo make install      # builds and installs /usr/bin/legion with the rest
+legion status                        # power, thermal mode, limits, GPU wiring, load
+legion load --brief                  # one-line load level for scripts and agent hooks
+legion worktree create my-task --repo ~/code/project
+legion agents                        # Claude Code / Codex settings: present, valid, sections
+legion act set-desktop-gpu nvidia    # asks for approval first
+legion tui                           # live dashboard
+```
+
+Claude Code plugin (MCP tools, load hooks, `/legion:status`, `/legion:worktree`, `/legion:act`):
+
+```
+/plugin marketplace add /data/git/lenovolegionlinux
+/plugin install legion@lenovolegionlinux
+```
+
+Codex: append `integrations/codex/config.toml` to `~/.codex/config.toml`.

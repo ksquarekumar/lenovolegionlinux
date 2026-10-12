@@ -24,7 +24,8 @@ hooks: tools ## install the git pre-commit hook
 	$(PRE_COMMIT) install
 
 .PHONY: fmt
-fmt: ## format python and shell in place
+fmt: ## format python, shell and rust in place
+	cargo fmt --all
 	-$(PRE_COMMIT) run ruff-check --all-files
 	-$(PRE_COMMIT) run ruff-format --all-files
 	-$(PRE_COMMIT) run shfmt --all-files
@@ -33,6 +34,15 @@ fmt: ## format python and shell in place
 lint: ## run every pre-commit hook on all files
 	$(PRE_COMMIT) run --all-files --show-diff-on-failure
 
+.PHONY: rust-lint
+rust-lint: ## rustfmt check and clippy with warnings as errors
+	cargo fmt --all --check
+	cargo clippy --workspace --all-targets --locked -- -D warnings
+
+.PHONY: build
+build: ## build the legion CLI/TUI/MCP binary (run as your user, before install)
+	cargo build --release --locked
+
 .PHONY: validate
 validate: ## check profile structure and ac/battery consistency (no hardware access)
 	$(LEGIONCTL) validate
@@ -40,6 +50,7 @@ validate: ## check profile structure and ac/battery consistency (no hardware acc
 .PHONY: test
 test: ## unit tests (no hardware access)
 	$(PYTHON) -m unittest discover -s tests -v
+	cargo test --workspace --locked
 
 .PHONY: package
 package: ## build and install the Arch package (pacman tracks every file)
@@ -50,11 +61,14 @@ lint-pkg: ## namcap the PKGBUILD (Arch only)
 	namcap packaging/arch/PKGBUILD
 
 .PHONY: ci
-ci: lint validate test ## what CI runs
+ci: lint rust-lint validate test ## what CI runs
 
 .PHONY: install
 install: ## install legionctl, profile, units, udev and tuning (needs root)
 	install -Dm755 src/legionctl/legionctl "$(DESTDIR)$(BINDIR)/legionctl"
+	@test -x target/release/legion || { echo "target/release/legion missing: run 'make build' as your user first"; exit 1; }
+	install -Dm755 target/release/legion "$(DESTDIR)$(BINDIR)/legion"
+	install -d "$(DESTDIR)$(DATADIR)" && cp -r integrations/agent-plugin "$(DESTDIR)$(DATADIR)/"
 	install -Dm755 src/legion-refresh-toggle/legion-refresh-toggle "$(DESTDIR)$(BINDIR)/legion-refresh-toggle"
 	install -Dm755 src/legion-osd/legion-osd "$(DESTDIR)$(BINDIR)/legion-osd"
 	install -Dm644 systemd/user/legion-osd.service "$(DESTDIR)$(PREFIX)/lib/systemd/user/legion-osd.service"

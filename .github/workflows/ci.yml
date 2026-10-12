@@ -13,6 +13,8 @@ jobs:
         with:
           python-version: "3.14"
       - uses: astral-sh/setup-uv@v6
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal -c clippy,rustfmt && rustup default stable
       - name: Install tools
         run: make tools
       # legion-osd and legion-refresh-toggle import PyGObject (gi), a system package; run tests with the system Python

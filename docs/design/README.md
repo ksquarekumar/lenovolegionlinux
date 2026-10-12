@@ -15,6 +15,7 @@ the design is explored and are meant to change; decisions and open questions are
 | [07-plan.md](07-plan.md) | Phased migration from the Python tooling, with parity gates |
 | [08-kernel.md](08-kernel.md) | Kernel module and DKMS inventory, drift found, validation and repair |
 | [09-ux.md](09-ux.md) | UI structure: progressive disclosure levels, views, interaction model |
+| [12-operator.md](12-operator.md) | Operator and agent harness: one core and API for CLI, TUI, GPUI app, MCP and plugins; worktrees, sandboxes, ACP, plans, accounts, gateway |
 | [issues.md](issues.md) | Issues found on this machine and cleanups to do |
 
 Evidence for every machine-specific claim was collected on 2026-10-12 (CachyOS, kernel 7.2.9, GNOME 51,

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "lenovolegionlinux",
+  "description": "Local operator tooling for this Lenovo Legion laptop",
+  "owner": { "name": "ksquarekumar", "url": "https://github.com/ksquarekumar" },
+  "plugins": [
+    {
+      "name": "legion",
+      "description": "System state and load, isolated worktrees, agent settings and human-approved machine actions over the legion MCP server",
+      "source": "./integrations/agent-plugin",
+      "category": "productivity"
+    }
+  ]
+}

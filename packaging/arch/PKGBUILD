@@ -9,7 +9,7 @@ url="https://github.com/ksquarekumar/lenovolegionlinux"
 install=legion-control.install
 license=("MIT")
 depends=("python" "systemd" "cpupower" "nvidia-utils")
-makedepends=("git")
+makedepends=("git" "cargo")
 optdepends=(
   "dkms: future optional local Lenovo Legion kernel module work"
   "scx-scheds: sched_ext schedulers (scx_lavd) for tuning/scx_loader.toml"
@@ -25,6 +25,10 @@ sha256sums=()
 pkgver() {
   local repo_root="${startdir}/../.."
   printf '0.1.0.r%s.g%s' "$(git -C "${repo_root}" rev-list --count HEAD)" "$(git -C "${repo_root}" rev-parse --short HEAD)"
+}
+
+build() {
+  make -C "${startdir}/../.." build
 }
 
 package() {

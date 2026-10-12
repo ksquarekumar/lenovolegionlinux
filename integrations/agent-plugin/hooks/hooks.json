@@ -1,0 +1,11 @@
+{
+  "description": "Tell the agent when this machine is under load, so it scales builds and parallel work accordingly",
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "legion load --brief", "timeout": 5 }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "legion load --brief --only-busy", "timeout": 5 }] }
+    ]
+  }
+}
