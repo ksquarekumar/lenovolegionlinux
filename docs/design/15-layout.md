@@ -19,7 +19,7 @@ This note is the authority for names, processes, crates and paths. Notes 00–14
  legionctl-app   GPUI desktop                     ├─ api.sock ─▶ legionctl-operator (user) ─ D-Bus + polkit ─▶ legionctl-system (root)
  agent plugin    /legionctl:*                     │              operator.db, approvals,       ◀── events ──────  system.db, firmware, power,
  GNOME extension OSD ◀────────────────────────────┘              agents, sessions, tools,                         GPU, kernel, eBPF, sysctl,
-                                                                 workspaces, config, event log                     input, display
+                                                                 workspaces, config, event log                    input, display
                                                      legionctl-gateway (user): model API, accounts, quotas, cache
                                                      legionctl-sandbox: per session, bwrap + git shim, MCP proxy
                                                      legionctl-bootstrap (oneshot, system and user): install, upgrade, boot, migrations
