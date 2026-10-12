@@ -36,7 +36,15 @@ const SCHEMA: &[&str] = &[
         kind    TEXT NOT NULL,
         path    TEXT NOT NULL
      );",
+    // v2: where the session worked (repository root, else its folder), for binding the next session there
+    "ALTER TABLE bindings ADD COLUMN place TEXT;",
 ];
+
+/// Where a session works, for binding the next session there: the repository that contains `dir`, else `dir`.
+#[must_use]
+pub fn place_of(dir: &Path) -> PathBuf {
+    crate::config::repo_root(dir).unwrap_or_else(|| dir.to_path_buf())
+}
 const DB_FILE: &str = "workspace.db";
 
 fn now() -> i64 {
@@ -174,6 +182,7 @@ impl Workspace {
         name: &str,
         create: bool,
         steal: bool,
+        place: Option<&Path>,
     ) -> Result<Vec<String>> {
         ensure!(
             valid_name(name),
@@ -246,8 +255,8 @@ impl Workspace {
             out.insert(0, format!("released {previous}"));
         }
         tx.execute(
-            "INSERT INTO bindings (session, tool, dossier, acquired, updated) VALUES (?1, ?2, ?3, ?4, ?4)",
-            params![session, tool, name, now],
+            "INSERT INTO bindings (session, tool, dossier, acquired, updated, place) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+            params![session, tool, name, now, place.map(|p| p.to_string_lossy().into_owned())],
         )?;
         tx.commit()?;
         out.push(format!("active dossier: {name} ({})", dir.display()));
@@ -257,6 +266,23 @@ impl Workspace {
             out.extend(memory.into_iter().map(|m| format!("  {m}")));
         }
         Ok(out)
+    }
+
+    /// The dossier the last session in `place` bound, if it still exists.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn last_in(&self, place: &Path) -> Result<Option<String>> {
+        let last: Option<String> = self
+            .db
+            .conn()
+            .query_row(
+                "SELECT dossier FROM bindings WHERE place = ?1 ORDER BY acquired DESC LIMIT 1",
+                [place.to_string_lossy()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(last.filter(|d| self.root.join(d).is_dir()))
     }
 
     /// # Errors
@@ -755,7 +781,7 @@ mod tests {
         let mut dossier = config.dossier;
         dossier.root = dir.join("ws").display().to_string();
         let ws = Workspace::open(&dossier).unwrap();
-        ws.bind("s1", "test", "port", true, false).unwrap();
+        ws.bind("s1", "test", "port", true, false, None).unwrap();
         ws.write("s1", "port/MEMORY/01-a.md", "alpha\nbeta\ngamma", false)
             .unwrap();
         let read = ws.read("port/MEMORY/01-a.md", 1, None).unwrap();
@@ -788,7 +814,7 @@ mod tests {
 
         // a second session cannot write or bind the held dossier; numbers continue per folder
         assert!(ws.write("s2", "port/MEMORY/02-b.md", "x", false).is_err());
-        assert!(ws.bind("s2", "test", "port", false, false).is_err());
+        assert!(ws.bind("s2", "test", "port", false, false, None).is_err());
         assert_eq!(
             ws.add("s1", "MEMORY", "b", "# B").unwrap(),
             "port/MEMORY/02-b.md"

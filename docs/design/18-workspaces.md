@@ -34,6 +34,10 @@ Replaces the "plan workspaces" section of 12-operator. Sessions (14) and sandbox
   agent first, the user after (decided 2026-10-13); milestone 2 adds the operating directory, branch and copy to
   the `stop` check. Config `dossier.nudge` (default `["session-start", "stop"]`) names the events at which the
   agent is told; at `session-start` it is an instruction in the agent's context before the first prompt.
+- Binding follows the place (decided 2026-10-13): each binding records the repository root (else the folder) where
+  the session works. At session start (new or resumed) the hook binds the session to the last dossier used there,
+  when no live session holds it, and tells the agent (`dossier.auto_bind`, default on). Knowing and using the
+  dossier is the agent's job; the nudges and the gate step in only when there is none.
 - Next: the operating directory and its git operations (open, new branch, checkpoint, merge, close,
   reconciliation), then the work graph.
 

@@ -344,6 +344,9 @@ pub struct DossierUseIn {
     pub steal: bool,
     #[serde(default)]
     pub session: SessionId,
+    /// Where the session works; the next session there is bound to this dossier.
+    #[serde(default = "here")]
+    pub project: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

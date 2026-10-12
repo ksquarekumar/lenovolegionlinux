@@ -39,6 +39,9 @@ pub struct DossierConfig {
     /// `~/` is the home folder.
     pub root: String,
     pub gate: bool,
+    /// At session start, bind the session to the last dossier used in its repository (or folder) when no live
+    /// session holds it.
+    pub auto_bind: bool,
     /// Hook events at which the agent is told to set up a session that has no dossier.
     pub nudge: Vec<Event>,
     pub stale_hours: u64,
@@ -142,7 +145,7 @@ impl Dirs {
 }
 
 /// The repository that contains `dir`, if any.
-fn repo_root(dir: &Path) -> Option<PathBuf> {
+pub(crate) fn repo_root(dir: &Path) -> Option<PathBuf> {
     dir.ancestors()
         .find(|d| d.join(".git").exists())
         .map(Path::to_path_buf)

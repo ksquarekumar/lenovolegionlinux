@@ -20,7 +20,7 @@ use legionctl_api::{
 };
 use legionctl_core::config::{Dirs, Resolved, resolve};
 use legionctl_core::db::Db;
-use legionctl_core::dossier::Workspace;
+use legionctl_core::dossier::{Workspace, place_of};
 use legionctl_core::reminders::Event;
 use legionctl_core::{agents, hooks, reminders, setup, skills, worktree};
 use legionctl_machine::ledger::Ledger;
@@ -153,6 +153,19 @@ fn session(id: &SessionId) -> Result<&str> {
         "no session id: set LEGIONCTL_SESSION (Claude Code sets CLAUDE_CODE_SESSION_ID)"
     );
     Ok(&id.0)
+}
+
+/// What the agent hears at session start when its session has no dossier.
+fn nudge_line(resolved: &Resolved) -> String {
+    format!(
+        "legionctl: this session has no dossier yet. Set it up first, before other work: bind one with the legionctl \
+         MCP tool dossier_use (create: true for a new one; ask the user for the name if it is not clear).{}",
+        if resolved.config.dossier.gate {
+            " Until then, legionctl blocks the user's prompts except /legionctl:dossier."
+        } else {
+            ""
+        }
+    )
 }
 
 /// What a blocked prompt shows: why, and the commands that pass the gate, with the most recent dossiers.
@@ -414,10 +427,37 @@ impl Engine for Operator {
     fn hooks_run(&self, _: &Ctx, input: HookRunIn) -> Result<HookReply> {
         let resolved = config(Some(&input.project))?;
         let session = input.session.as_ref().filter(|s| !s.0.is_empty());
-        let active = match session {
-            Some(s) => Workspace::open(&resolved.config.dossier)?.active(&s.0)?,
+        let ws = Workspace::open(&resolved.config.dossier)?;
+        let mut active = match session {
+            Some(s) => ws.active(&s.0)?,
             None => None,
         };
+        // a new or resumed session takes the dossier last used where it works, so nobody has to bind it again
+        let mut rebound = None;
+        if input.event == Event::SessionStart
+            && resolved.config.dossier.auto_bind
+            && active.is_none()
+            && let Some(s) = session
+        {
+            let place = place_of(&input.project.0);
+            if let Some(last) = ws.last_in(&place)? {
+                rebound = Some(
+                    match ws.bind(&s.0, "hook", &last, false, false, Some(&place)) {
+                        Ok(_) => {
+                            active = Some(last.clone());
+                            format!(
+                                "legionctl dossier: {last} (bound at session start: the last dossier used in {}; read its \
+                             plan.md and newest MEMORY, and use another with dossier_use if this work needs one)",
+                                place.display()
+                            )
+                        }
+                        Err(e) => {
+                            format!("legionctl: the last dossier here could not be bound: {e}")
+                        }
+                    },
+                );
+            }
+        }
         // the gate: a session without a dossier gets no prompt through, except the one that binds a dossier
         let runs_dossier = input
             .prompt
@@ -451,19 +491,12 @@ impl Engine for Operator {
         if input.event == Event::SessionStart
             && let Some(s) = session
         {
-            let line = match &active {
-                Some(d) => format!("legionctl dossier: {d} (session {})", s.0),
-                None if nudge => format!(
-                    "legionctl: this session has no dossier yet. Set it up first, before other work: bind one with the \
-                     legionctl MCP tool dossier_use (create: true for a new one; ask the user for the name if it is \
-                     not clear).{}",
-                    if resolved.config.dossier.gate {
-                        " Until then, legionctl blocks the user's prompts except /legionctl:dossier."
-                    } else {
-                        ""
-                    }
-                ),
-                None => "legionctl dossier: none".into(),
+            let line = match (&active, rebound) {
+                (Some(_), Some(line)) => line,
+                (Some(d), None) => format!("legionctl dossier: {d} (session {})", s.0),
+                (None, Some(failed)) if nudge => format!("{failed}\n{}", nudge_line(&resolved)),
+                (None, _) if nudge => nudge_line(&resolved),
+                (None, _) => "legionctl dossier: none".into(),
             };
             text = if text.is_empty() {
                 line
@@ -482,6 +515,7 @@ impl Engine for Operator {
             &input.name,
             input.create,
             input.steal,
+            Some(&place_of(&input.project.0)),
         )?;
         Ok(Lines { lines })
     }

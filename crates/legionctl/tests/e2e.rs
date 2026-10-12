@@ -358,6 +358,30 @@ fn dossier_gate_and_stop_hook_hold_the_agent_until_the_session_has_a_dossier() {
         as_session("s1", &["dossier", "check"], ""),
         "port/plan.md has every ledger section"
     );
+
+    // the next session where s1 worked is bound at session start, so nobody binds again by hand
+    hook("session-end", json!({"session_id": "s1"}));
+    let next = hook(
+        "session-start",
+        json!({"session_id": "s3", "cwd": home, "source": "resume"}),
+    );
+    assert!(
+        next.starts_with("legionctl dossier: port (bound at session start"),
+        "{next}"
+    );
+    let prompt = hook(
+        "prompt",
+        json!({"session_id": "s3", "cwd": home, "prompt": "go on"}),
+    );
+    assert!(!prompt.contains("\"decision\""), "{prompt}");
+    // a session elsewhere is not bound to it
+    let other = home.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let elsewhere = hook("session-start", json!({"session_id": "s4", "cwd": other}));
+    assert!(
+        elsewhere.starts_with("legionctl: this session has no dossier yet"),
+        "{elsewhere}"
+    );
 }
 
 #[test]
