@@ -435,7 +435,8 @@ impl Engine for Operator {
             });
         }
         // before the reply ends, the agent (not the user) hears what is not set up, and sets it up first
-        if input.event == Event::Stop && session.is_some() && active.is_none() {
+        let nudge = resolved.config.dossier.nudge.contains(&input.event);
+        if input.event == Event::Stop && nudge && session.is_some() && active.is_none() {
             return Ok(HookReply {
                 text: String::new(),
                 block: Some(
@@ -452,9 +453,16 @@ impl Engine for Operator {
         {
             let line = match &active {
                 Some(d) => format!("legionctl dossier: {d} (session {})", s.0),
-                None if resolved.config.dossier.gate => {
-                    "legionctl dossier: none; prompts are blocked until `/legionctl:dossier use <name>` (add --create for a new one)".into()
-                }
+                None if nudge => format!(
+                    "legionctl: this session has no dossier yet. Set it up first, before other work: bind one with the \
+                     legionctl MCP tool dossier_use (create: true for a new one; ask the user for the name if it is \
+                     not clear).{}",
+                    if resolved.config.dossier.gate {
+                        " Until then, legionctl blocks the user's prompts except /legionctl:dossier."
+                    } else {
+                        ""
+                    }
+                ),
                 None => "legionctl dossier: none".into(),
             };
             text = if text.is_empty() {

@@ -316,7 +316,12 @@ fn dossier_gate_and_stop_hook_hold_the_agent_until_the_session_has_a_dossier() {
     );
     assert!(passing.starts_with("Reminder:"), "{passing}");
 
-    // before the reply ends, the agent is told to set up the session; once only, so the agent cannot loop
+    // the agent hears it first: at session start, and before the reply ends (once, so the agent cannot loop)
+    let start = hook("session-start", json!({"session_id": "s1", "cwd": home}));
+    assert!(
+        start.starts_with("legionctl: this session has no dossier yet. Set it up first"),
+        "{start}"
+    );
     let stop: Value =
         serde_json::from_str(&hook("stop", json!({"session_id": "s1", "cwd": home}))).unwrap();
     assert_eq!(stop["decision"], "block");

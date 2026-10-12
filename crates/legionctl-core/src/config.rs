@@ -39,6 +39,8 @@ pub struct DossierConfig {
     /// `~/` is the home folder.
     pub root: String,
     pub gate: bool,
+    /// Hook events at which the agent is told to set up a session that has no dossier.
+    pub nudge: Vec<Event>,
     pub stale_hours: u64,
     /// Class name -> purpose.
     pub classes: BTreeMap<String, String>,

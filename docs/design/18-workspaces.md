@@ -32,7 +32,8 @@ Replaces the "plan workspaces" section of 12-operator. Sessions (14) and sandbox
   is not the session's, `stop` (before the agent ends a reply) sends a session without a dossier back to set it
   up first, once per reply (`stop_hook_active`), and `session-end` releases the binding. Hook output is for the
   agent first, the user after (decided 2026-10-13); milestone 2 adds the operating directory, branch and copy to
-  the `stop` check.
+  the `stop` check. Config `dossier.nudge` (default `["session-start", "stop"]`) names the events at which the
+  agent is told; at `session-start` it is an instruction in the agent's context before the first prompt.
 - Next: the operating directory and its git operations (open, new branch, checkpoint, merge, close,
   reconciliation), then the work graph.
 
