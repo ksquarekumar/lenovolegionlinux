@@ -561,12 +561,19 @@ mod daemon_process {
         let lines: Vec<String> = system.call("Apply", &("ac",)).await.unwrap();
         assert!(lines.iter().any(|l| l.contains("max-power")), "{lines:?}");
         assert_eq!(m.file(PROFILE_PATH), "max-power");
-        let signal = tokio::time::timeout(Duration::from_secs(5), changes.next())
-            .await
-            .unwrap()
-            .unwrap();
-        let (cause, announced): (String, Vec<String>) = signal.body().deserialize().unwrap();
-        assert_eq!((cause.as_str(), announced), ("Apply", lines));
+        // the daemon owns its name before it handles Start, so a Start signal may come first
+        let announced = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let signal = changes.next().await.unwrap();
+                let (cause, lines): (String, Vec<String>) = signal.body().deserialize().unwrap();
+                if cause == "Apply" {
+                    return lines;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(announced, lines);
 
         // resume (logind PrepareForSleep(false)) repairs what drifted while asleep, for the real power source:
         // still battery, so Apply("ac") lasts until the next event
