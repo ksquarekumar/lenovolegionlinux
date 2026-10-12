@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
 
 /// Ordered schema migrations; index + 1 is the schema version after applying it. Never edit a released entry.
-const MIGRATIONS: &[&str] = &[
+const OPERATOR: &[&str] = &[
     // v1: event log, hook actions and bindings, with the default bindings the agent plugin relies on
     "CREATE TABLE events (
         id      INTEGER PRIMARY KEY,
@@ -63,9 +63,11 @@ fn now() -> i64 {
 }
 
 impl Db {
+    /// Open the database at `path` and apply the `migrations` it has not run yet (index + 1 is the schema version).
+    ///
     /// # Errors
     /// The folder or database cannot be created or opened, or a migration fails.
-    pub fn open(path: &Path) -> Result<Db> {
+    pub fn open(path: &Path, migrations: &[&str]) -> Result<Db> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
@@ -74,14 +76,14 @@ impl Db {
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        migrate(&mut conn)?;
+        migrate(&mut conn, migrations)?;
         Ok(Db { conn })
     }
 
     /// # Errors
     /// As [`Db::open`].
     pub fn open_default() -> Result<Db> {
-        Self::open(&default_path())
+        Self::open(&default_path(), OPERATOR)
     }
 
     pub fn conn(&self) -> &Connection {
@@ -109,9 +111,9 @@ impl Db {
     }
 }
 
-fn migrate(conn: &mut Connection) -> Result<()> {
+fn migrate(conn: &mut Connection, migrations: &[&str]) -> Result<()> {
     let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    for (index, sql) in MIGRATIONS
+    for (index, sql) in migrations
         .iter()
         .enumerate()
         .skip(usize::try_from(current).unwrap_or(0))
@@ -129,7 +131,7 @@ fn migrate(conn: &mut Connection) -> Result<()> {
 pub(crate) fn temp_db(tag: &str) -> Db {
     let dir = std::env::temp_dir().join(format!("legionctl-db-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    Db::open(&dir.join("operator.db")).unwrap()
+    Db::open(&dir.join("operator.db"), OPERATOR).unwrap()
 }
 
 #[cfg(test)]
@@ -141,12 +143,12 @@ mod tests {
         let db = temp_db("migrate");
         assert_eq!(
             db.schema_version().unwrap(),
-            i64::try_from(MIGRATIONS.len()).unwrap()
+            i64::try_from(OPERATOR.len()).unwrap()
         );
         let path = db.conn().path().unwrap().to_owned();
         drop(db);
         // a second run of v2 would fail on DROP TABLE: reopening must not migrate again
-        let again = Db::open(Path::new(&path)).unwrap();
+        let again = Db::open(Path::new(&path), OPERATOR).unwrap();
         let hook_tables: i64 = again
             .conn()
             .query_row(

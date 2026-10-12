@@ -4,6 +4,7 @@
 pub mod agents;
 pub mod config;
 pub mod db;
+pub mod dossier;
 pub mod hooks;
 pub mod reminders;
 pub mod setup;

@@ -1,0 +1,100 @@
+//! `legionctl hook <event>`: the adapter between Claude Code's hooks and the operator. It reads the hook's JSON from
+//! stdin (`session_id`, `cwd`, `prompt`, `tool_input`) and answers in Claude Code's hook protocol:
+//!
+//! | Event | Operation | Answer |
+//! | --- | --- | --- |
+//! | session-start | `hooks.run` | stdout: added to the context |
+//! | prompt | `hooks.run` | stdout, or `{"decision":"block","reason":...}` from the dossier gate |
+//! | pre-tool | `dossier.guard` | `permissionDecision: deny` for a write into another dossier |
+//! | session-end | `dossier.release` | nothing |
+//!
+//! A hook must never stop the agent because legionctl is down: errors go to stderr and the exit code stays 0.
+
+use anyhow::{Context, Result};
+use legionctl_api::{
+    ClientPath, Event, Guard, GuardIn, HookReply, HookRunIn, SessionId, SessionIn, op,
+};
+use serde_json::{Value, json};
+
+use crate::client::Client;
+
+pub const EVENTS: [&str; 4] = ["session-start", "prompt", "pre-tool", "session-end"];
+
+async fn answer(event: &str, input: &Value) -> Result<Option<String>> {
+    let client = Client::new("hook")?;
+    let session = input["session_id"]
+        .as_str()
+        .map(|s| SessionId(s.to_string()));
+    let project = ClientPath(input["cwd"].as_str().map_or_else(|| ".".into(), Into::into));
+    let run = |event: Event| HookRunIn {
+        event,
+        project: project.clone(),
+        session: session.clone(),
+        prompt: input["prompt"].as_str().map(String::from),
+    };
+    Ok(match event {
+        "session-start" => Some(
+            client
+                .call::<op::HooksRun>(&run(Event::SessionStart))
+                .await?
+                .text,
+        ),
+        "prompt" => {
+            let HookReply { text, block } =
+                client.call::<op::HooksRun>(&run(Event::Prompt)).await?;
+            Some(match block {
+                Some(reason) => json!({"decision": "block", "reason": reason}).to_string(),
+                None => text,
+            })
+        }
+        "pre-tool" => {
+            let tool = &input["tool_input"];
+            let Some(path) = tool["file_path"]
+                .as_str()
+                .or(tool["notebook_path"].as_str())
+            else {
+                return Ok(None);
+            };
+            let Some(session) = session else {
+                return Ok(None);
+            };
+            let Guard { refusal } = client
+                .call::<op::DossierGuard>(&GuardIn {
+                    path: path.to_string(),
+                    session,
+                })
+                .await?;
+            refusal.map(|reason| {
+                json!({"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }})
+                .to_string()
+            })
+        }
+        "session-end" => {
+            if let Some(session) = session {
+                client
+                    .call::<op::DossierRelease>(&SessionIn { session })
+                    .await?;
+            }
+            None
+        }
+        other => anyhow::bail!("unknown hook event {other}"),
+    })
+}
+
+pub fn run(event: &str) -> Result<()> {
+    let input: Value = serde_json::from_reader(std::io::stdin()).unwrap_or(Value::Null);
+    let runtime = tokio::runtime::Runtime::new()?;
+    match runtime
+        .block_on(answer(event, &input))
+        .context("legionctl hook")
+    {
+        Ok(Some(text)) if !text.is_empty() => println!("{text}"),
+        Ok(_) => {}
+        Err(e) => eprintln!("{e:#}"),
+    }
+    Ok(())
+}

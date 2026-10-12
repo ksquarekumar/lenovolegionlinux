@@ -1,10 +1,11 @@
 //! Inputs and outputs of the operations. A field's doc comment is its help text on every surface.
 
-use legionctl_core::reminders::Event;
+pub use legionctl_core::reminders::Event;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::ClientPath;
+use crate::{ClientPath, SessionId, StdinText};
+pub use legionctl_core::dossier::{DossierInfo, EditMode, Lock};
 
 pub use legionctl_core::agents::ConfigFile;
 pub use legionctl_core::config::{Explanation, Layer as ConfigLayer};
@@ -22,6 +23,8 @@ pub type ConfigFiles = Vec<ConfigFile>;
 pub type Worktrees = Vec<WorktreeStatus>;
 pub type Reminders = Vec<Reminder>;
 pub type SkillList = Vec<SkillInfo>;
+pub type Locks = Vec<Lock>;
+pub type Dossiers = Vec<DossierInfo>;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct Empty {}
@@ -294,4 +297,163 @@ pub struct HookTable {
     pub actions: Vec<Action>,
     /// In the order they run.
     pub bindings: Vec<Binding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HookRunIn {
+    pub event: Event,
+    /// Project directory; its repository's .legionctl layer applies.
+    #[serde(default = "here")]
+    pub project: ClientPath,
+    /// The agent session; without one the dossier gate does not apply.
+    #[serde(default)]
+    pub session: Option<SessionId>,
+    /// The prompt text (prompt event): a prompt that runs /legionctl:dossier passes the gate.
+    #[serde(default)]
+    pub prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct HookReply {
+    pub text: String,
+    /// Set when the prompt is blocked: the reason the user sees.
+    pub block: Option<String>,
+}
+
+/// Lines of output (dossier rows, messages).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct Lines {
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SessionIn {
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DossierUseIn {
+    /// Dossier name: a-z, 0-9 and '-'.
+    pub name: String,
+    /// Create it from the pattern when it does not exist.
+    #[serde(default)]
+    pub create: bool,
+    /// Take it over from another live session (with the user's agreement).
+    #[serde(default)]
+    pub steal: bool,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DossierReadIn {
+    /// <dossier>/<file>, relative to the dossier root.
+    pub path: String,
+    /// First line (1-based).
+    #[serde(default = "one")]
+    pub first: u32,
+    /// Last line; default: the end.
+    #[serde(default)]
+    pub last: Option<u32>,
+}
+
+fn one() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DossierSearchIn {
+    /// Text to find (not a regular expression).
+    pub pattern: String,
+    /// Only this dossier.
+    #[serde(default)]
+    pub dossier: Option<String>,
+    #[serde(default)]
+    pub ignore_case: bool,
+    #[serde(default = "two_hundred")]
+    pub limit: u32,
+}
+
+fn two_hundred() -> u32 {
+    200
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DossierWriteIn {
+    /// <dossier>/<file>, relative to the dossier root.
+    pub path: String,
+    pub content: StdinText,
+    /// Replace an existing file.
+    #[serde(default)]
+    pub overwrite: bool,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DossierAppendIn {
+    /// <dossier>/<file>, relative to the dossier root.
+    pub path: String,
+    pub content: StdinText,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DossierEditIn {
+    /// <dossier>/<file>, relative to the dossier root.
+    pub path: String,
+    pub mode: EditMode,
+    /// Anchor <line>:<hash> from a read.
+    pub start: String,
+    /// End anchor for replace and delete; default: the start line.
+    #[serde(default)]
+    pub end: Option<String>,
+    /// New lines for replace and insert-after.
+    #[serde(default)]
+    pub content: StdinText,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DossierAddIn {
+    /// Artifact class, optionally with a subfolder: MEMORY, DESIGN, EVIDENCE/validation, ...
+    pub class: String,
+    /// a-z, 0-9 and '-'.
+    pub slug: String,
+    pub content: StdinText,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct DossierCheckIn {
+    /// Dossier to check; default: this session's.
+    #[serde(default)]
+    pub dossier: Option<String>,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DossierFindings {
+    pub dossier: String,
+    /// Empty when the ledger is complete.
+    pub problems: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GuardIn {
+    /// Absolute path that a tool is about to write.
+    pub path: String,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct Guard {
+    /// Set when the write is refused.
+    pub refusal: Option<String>,
 }

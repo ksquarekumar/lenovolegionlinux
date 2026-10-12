@@ -31,6 +31,11 @@
       "event": "prompt",
       "enabled": true
     },
+    "dossier-practice": {
+      "text": "Keep this session's dossier current in the same turn: state in plan.md, detail in MEMORY, DESIGN and EVIDENCE (skill legionctl:dossier-practice).",
+      "event": "prompt",
+      "enabled": true
+    },
     "load-aware": {
       "text": "Check the legionctl load (MCP tool `load`) before builds, test suites or parallel jobs, and scale them down when busy.",
       "event": "session-start",
@@ -52,6 +57,29 @@
       "session-start": ["reminders", "load", "setup-check"],
       "prompt": ["reminders", "load-if-busy"]
     }
+  },
+
+  // Dossiers (note 18): one writable dossier per agent session, in <root>/<dossier>/.
+  "dossier": {
+    "root": "~/.agentworkspace",
+    // Block every prompt of a session that has no dossier; prompts that run /legionctl:dossier pass.
+    "gate": true,
+    // A binding with no activity for this long can be taken over.
+    "stale_hours": 12,
+    // Artifact classes: <CLASS>/NN-<slug>.md. A layer may add classes; the canonical four stay.
+    "classes": {
+      "MEMORY": "Working memory: intake, source reads, decision and ambiguity registers, context from chat",
+      "DESIGN": "Intended design, separate from plan status and evidence",
+      "EVIDENCE": "Proof from real output: validation logs, reports, inventories, comparisons",
+      "SPIKE": "Disposable prototypes and reproducible experiments"
+    },
+    // plan.md: the ledger; `legionctl dossier check` reports a missing section.
+    "plan_sections": [
+      "Purpose", "Requested Outcome", "Scope Fence", "Governing Principles", "Instruction Inventory",
+      "Current Behavior / Findings", "Open Questions / Decision Points", "Complexity / Trade-offs",
+      "Options / Recommendation", "User Decisions / Approval", "Design", "Acceptance Criteria",
+      "Requirement-to-Change Map", "Done", "ToDo", "Deferred", "Rejected", "Validation / Evidence Status"
+    ]
   },
 
   // When the load counts as busy or overloaded (`legionctl load`). Pressure values are PSI avg10 percentages.

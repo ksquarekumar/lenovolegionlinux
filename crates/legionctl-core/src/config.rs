@@ -29,7 +29,20 @@ pub struct Config {
     pub worktree: WorktreeConfig,
     pub reminders: BTreeMap<String, ReminderConfig>,
     pub hooks: HooksConfig,
+    pub dossier: DossierConfig,
     pub load: Thresholds,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DossierConfig {
+    /// `~/` is the home folder.
+    pub root: String,
+    pub gate: bool,
+    pub stale_hours: u64,
+    /// Class name -> purpose.
+    pub classes: BTreeMap<String, String>,
+    pub plan_sections: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

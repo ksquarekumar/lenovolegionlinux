@@ -3,9 +3,9 @@
 use std::collections::BTreeMap;
 
 use crate::io::{
-    CapabilityList, Changes, ConfigFile, ConfigView, Explanation, Findings, GpuState, HookTable,
-    LayerList, LoadState, Reminder, RunEnv, SetupReport, SkillInfo, Snapshot, Text, Validation,
-    Worktree, WorktreeStatus,
+    CapabilityList, Changes, ConfigFile, ConfigView, DossierFindings, DossierInfo, Explanation,
+    Findings, GpuState, Guard, HookReply, HookTable, LayerList, Lines, LoadState, Lock, Reminder,
+    RunEnv, SetupReport, SkillInfo, Snapshot, Text, Validation, Worktree, WorktreeStatus,
 };
 
 pub trait Render {
@@ -483,5 +483,81 @@ impl Render for LayerList {
 
     fn success(&self) -> bool {
         self.problems.is_empty()
+    }
+}
+
+impl Render for HookReply {
+    fn text(&self) -> String {
+        self.block.clone().unwrap_or_else(|| self.text.clone())
+    }
+
+    fn success(&self) -> bool {
+        self.block.is_none()
+    }
+}
+
+impl Render for Lines {
+    fn text(&self) -> String {
+        self.lines.join("\n")
+    }
+}
+
+impl Render for Vec<Lock> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no dossier is active in any session".into();
+        }
+        self.iter()
+            .map(|l| {
+                format!(
+                    "{}  session={}  tool={}  updated={}{}",
+                    l.dossier,
+                    l.session,
+                    l.tool,
+                    l.updated,
+                    if l.stale { "  STALE" } else { "" }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+impl Render for Vec<DossierInfo> {
+    fn text(&self) -> String {
+        self.iter()
+            .map(|d| {
+                if d.has_plan {
+                    d.name.clone()
+                } else {
+                    format!("{}  (no plan.md)", d.name)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+impl Render for DossierFindings {
+    fn text(&self) -> String {
+        if self.problems.is_empty() {
+            format!("{}/plan.md has every ledger section", self.dossier)
+        } else {
+            self.problems.join("\n")
+        }
+    }
+
+    fn success(&self) -> bool {
+        self.problems.is_empty()
+    }
+}
+
+impl Render for Guard {
+    fn text(&self) -> String {
+        self.refusal.clone().unwrap_or_else(|| "allowed".into())
+    }
+
+    fn success(&self) -> bool {
+        self.refusal.is_none()
     }
 }

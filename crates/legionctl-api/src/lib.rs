@@ -93,6 +93,45 @@ impl JsonSchema for ClientPath {
     }
 }
 
+/// The agent session that makes a call. Clients fill it from `LEGIONCTL_SESSION`, else `CLAUDE_CODE_SESSION_ID`;
+/// its schema has `"format": "session"`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SessionId(pub String);
+
+impl JsonSchema for SessionId {
+    fn schema_name() -> Cow<'static, str> {
+        "SessionId".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "string", "format": "session", "description": "Agent session id; the client fills it."})
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+}
+
+/// Text that a CLI reads from stdin when it is not given; its schema has `"format": "stdin"`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct StdinText(pub String);
+
+impl JsonSchema for StdinText {
+    fn schema_name() -> Cow<'static, str> {
+        "StdinText".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "string", "format": "stdin"})
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+}
+
 /// A typed operation: its name and its input and output types.
 pub trait Op {
     const NAME: &'static str;
@@ -247,10 +286,37 @@ operations! {
     hooks_add / HooksAdd = "hooks.add", Workspace, HookAddIn => HookTable;
     /// Remove an action you defined, and its bindings.
     hooks_rm / HooksRm = "hooks.rm", Workspace, IdIn => HookTable;
-    /// Run everything bound to an event and return the combined output (the agent plugin calls this).
-    hooks_run / HooksRun = "hooks.run", Workspace, EventIn => Text;
+    /// Run everything bound to an event and return the combined output, or the reason the dossier gate blocks the
+    /// prompt (the agent plugin calls this through `legionctl hook`).
+    hooks_run / HooksRun = "hooks.run", Workspace, HookRunIn => HookReply;
     /// legionctl skills: where each agent has them and whether the reminder that keeps each in force is on.
     skills / Skills = "skills", Read, ProjectIn => SkillList;
+    /// Bind this session to a dossier (one writable dossier per session); create it from the pattern with create.
+    dossier_use / DossierUse = "dossier.use", Workspace, DossierUseIn => Lines;
+    /// This session's active dossier.
+    dossier_active / DossierActive = "dossier.active", Read, SessionIn => Lines;
+    /// Give up this session's dossier.
+    dossier_release / DossierRelease = "dossier.release", Workspace, SessionIn => Lines;
+    /// Which session holds which dossier, and stale bindings.
+    dossier_locks / DossierLocks = "dossier.locks", Read, Empty => Locks;
+    /// Dossiers, most recently changed first.
+    dossier_ls / DossierLs = "dossier.ls", Read, Empty => Dossiers;
+    /// Read a dossier file; each line prints as <line>:<hash>|<text>, the anchors that edit takes.
+    dossier_read / DossierRead = "dossier.read", Read, DossierReadIn => Lines;
+    /// Search every dossier (or one) for a text; rows are <path>:<line>:<hash>|<text>.
+    dossier_search / DossierSearch = "dossier.search", Read, DossierSearchIn => Lines;
+    /// Write a new file in this session's dossier (content from stdin); overwrite replaces an existing one.
+    dossier_write / DossierWrite = "dossier.write", Workspace, DossierWriteIn => Lines;
+    /// Append to a file in this session's dossier (content from stdin).
+    dossier_append / DossierAppend = "dossier.append", Workspace, DossierAppendIn => Lines;
+    /// Change anchored lines of a file in this session's dossier; an anchor from an outdated read is refused.
+    dossier_edit / DossierEdit = "dossier.edit", Workspace, DossierEditIn => Lines;
+    /// Create the next numbered artifact <CLASS>/NN-<slug>.md in this session's dossier (content from stdin).
+    dossier_add / DossierAdd = "dossier.add", Workspace, DossierAddIn => Lines;
+    /// Ledger findings for a dossier (default: this session's): a missing plan.md or plan section.
+    dossier_check / DossierCheck = "dossier.check", Read, DossierCheckIn => DossierFindings;
+    /// Whether this session may write a path: inside the dossier root only its active dossier (agent hooks use it).
+    dossier_guard / DossierGuard = "dossier.guard", Read, GuardIn => Guard;
     /// The merged config (defaults, /etc/legionctl, ~/.config/legionctl, the repository's .legionctl) and the files
     /// or keys that were not used.
     config_show / ConfigShow = "config.show", Read, ProjectIn => ConfigView;

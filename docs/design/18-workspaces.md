@@ -14,6 +14,25 @@ plan entry a node in a graph that links to objectives, evidence and code-graph s
 
 Replaces the "plan workspaces" section of 12-operator. Sessions (14) and sandboxes (14, 17) use these concepts.
 
+## Built (2026-10-13, milestone 1: dossier, binding, gate)
+
+- `legionctl-core::dossier` follows `safecoder dossier` (studied in the source repo): rows `<line>:<hash>|<text>`
+  with a BLAKE2b 2-byte hash of the line text (same anchors as safecoder), `replace`, `insert-after` and `delete`
+  edits that refuse an outdated anchor, `NN-<slug>.md` numbering per class folder with exclusive create, atomic
+  writes, SQLite bindings in `workspace.db` (one open binding per dossier and per session, 12-hour stale rule,
+  `steal`), and the 18 ledger sections in `plan.md`. Search is literal text (no regular expressions).
+- Format JSONC (decided 2026-10-13). The pattern (artifact classes, plan sections, gate, root, stale time) is the
+  `dossier.*` config keys, so it has the layers and locks of 14; each dossier keeps its data (title, entities,
+  objectives) in `<dossier>/dossier.jsonc`. There is no separate global pattern file.
+- Session id: hooks read `session_id` from Claude Code's hook JSON; CLI and MCP calls take `LEGIONCTL_SESSION`, else
+  `CLAUDE_CODE_SESSION_ID`, which Claude Code sets for the commands it starts.
+- `legionctl hook <event>` adapts Claude Code's hooks: `session-start` adds the dossier line to the context, `prompt`
+  blocks (`{"decision":"block"}`) when `dossier.gate` is on and the session has no dossier (a prompt that contains
+  `legionctl:dossier` passes), `pre-tool` denies `Write`, `Edit`, `MultiEdit` and `NotebookEdit` into a dossier that
+  is not the session's, and `session-end` releases the binding.
+- Next: the operating directory and its git operations (open, new branch, checkpoint, merge, close,
+  reconciliation), then the work graph.
+
 ## A session declares two things
 
 | Declared | Default | What legionctl does with it |
@@ -72,11 +91,10 @@ back after a diff and approval.
 
 ```
 ~/.agentworkspace/
-  dossier.toml                 global default: artifact classes, plan sections, routing rules, statuses, hooks
   workspace.db                 SQLite (WAL): bindings, locks, artifact index, work graph (graph tables, 13), events
   codegraphs/<repo-id>.db      one ctx graph per unique repo (ctx graph index --db ...), updated at each checkpoint
   <dossier>/
-    dossier.toml               this dossier only: title, entities, objectives; may add artifact classes
+    dossier.jsonc              this dossier only: title, entities, objectives
     plan.md                    PLAN: the ledger
     MEMORY/NN-<topic>.md       working memory, numbered in creation order
     DESIGN/                    PRD.md, HLD.md, LLD.md or scope-appropriate names

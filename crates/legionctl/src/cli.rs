@@ -2,6 +2,8 @@
 //! field becomes an argument: a required plain string is positional, a bool is a flag, the rest are `--options`
 //! (enum values and defaults come from the schema). Paths are resolved against this process's working directory.
 
+use std::io::IsTerminal;
+
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use legionctl_api::{OPS, OpInfo};
@@ -18,6 +20,10 @@ struct Field<'a> {
 
 #[derive(PartialEq)]
 enum Kind {
+    /// The agent session: filled from the environment when not given.
+    Session,
+    /// Text the CLI reads from stdin when not given.
+    Stdin,
     Flag,
     Text,
     Path,
@@ -73,6 +79,10 @@ fn fields(input: &Value) -> Vec<Field<'_>> {
             let (schema, kind) = base(prop);
             let kind = if schema["format"] == "path" {
                 Kind::Path
+            } else if schema["format"] == "session" {
+                Kind::Session
+            } else if schema["format"] == "stdin" {
+                Kind::Stdin
             } else if let Some(values) = choices(schema) {
                 Kind::Choice(values)
             } else {
@@ -114,6 +124,7 @@ fn argument(field: &Field) -> Arg {
         Kind::Choice(values) => {
             arg = arg.value_parser(clap::builder::PossibleValuesParser::new(values.clone()));
         }
+        Kind::Session | Kind::Stdin => return arg,
         Kind::Text | Kind::Path => {}
     }
     match &field.default {
@@ -199,7 +210,10 @@ pub fn command(client_only: Vec<Command>) -> Command {
 }
 
 /// The operation a parsed command line names, and its input.
-pub fn operation(matches: &ArgMatches) -> Option<(&'static OpInfo, Value)> {
+///
+/// # Errors
+/// A client-filled field cannot be filled (see [`fill_client_fields`]).
+pub fn operation(matches: &ArgMatches) -> Result<Option<(&'static OpInfo, Value)>> {
     let mut words = Vec::new();
     let mut at = matches;
     while let Some((word, sub)) = at.subcommand() {
@@ -207,14 +221,16 @@ pub fn operation(matches: &ArgMatches) -> Option<(&'static OpInfo, Value)> {
         at = sub;
     }
     let name = words.join(".");
-    let op = OPS.iter().find(|op| op.name == name)?;
+    let Some(op) = OPS.iter().find(|op| op.name == name) else {
+        return Ok(None);
+    };
     let schema = (op.input)();
     let mut input = Map::new();
     for field in fields(&schema) {
         let value = match field.kind {
             Kind::Flag => Some(Value::Bool(at.get_flag(field.key))),
             Kind::Integer => at.get_one::<i64>(field.key).map(|n| Value::from(*n)),
-            Kind::Text | Kind::Path | Kind::Choice(_) => at
+            Kind::Text | Kind::Path | Kind::Choice(_) | Kind::Session | Kind::Stdin => at
                 .get_one::<String>(field.key)
                 .map(|s| Value::from(s.as_str())),
         };
@@ -223,20 +239,46 @@ pub fn operation(matches: &ArgMatches) -> Option<(&'static OpInfo, Value)> {
         }
     }
     let mut input = Value::Object(input);
-    resolve_paths(op, &mut input).ok()?;
-    Some((op, input))
+    fill_client_fields(op, &mut input, true)?;
+    Ok(Some((op, input)))
 }
 
-/// Make the path fields of `input` absolute against this process's working directory, filling path defaults
-/// (such as `.`) that the caller left out.
+/// The agent session of this process: `LEGIONCTL_SESSION`, else Claude Code's `CLAUDE_CODE_SESSION_ID`.
+#[must_use]
+pub fn session_from_env() -> Option<String> {
+    ["LEGIONCTL_SESSION", "CLAUDE_CODE_SESSION_ID"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+}
+
+/// Fill what only the calling process knows: path fields become absolute against its working directory (with path
+/// defaults such as `.`), session fields come from its environment, and with `stdin` a missing text field is read
+/// from stdin (always when the field is required; when optional, only from a pipe).
 ///
 /// # Errors
-/// The working directory cannot be read.
-pub fn resolve_paths(op: &OpInfo, input: &mut Value) -> Result<()> {
+/// The working directory or stdin cannot be read.
+pub fn fill_client_fields(op: &OpInfo, input: &mut Value, stdin: bool) -> Result<()> {
     let schema = (op.input)();
     let Some(map) = input.as_object_mut() else {
         return Ok(());
     };
+    for field in fields(&schema) {
+        if map.contains_key(field.key) && field.kind != Kind::Path {
+            continue;
+        }
+        match field.kind {
+            Kind::Session => {
+                if let Some(id) = session_from_env() {
+                    map.insert(field.key.to_string(), Value::from(id));
+                }
+            }
+            Kind::Stdin if stdin && (field.required || !std::io::stdin().is_terminal()) => {
+                let text = std::io::read_to_string(std::io::stdin()).context("reading stdin")?;
+                map.insert(field.key.to_string(), Value::from(text));
+            }
+            _ => {}
+        }
+    }
     for field in fields(&schema).into_iter().filter(|f| f.kind == Kind::Path) {
         let given = map.get(field.key).and_then(Value::as_str).map(String::from);
         if let Some(path) = given.or(field.default) {

@@ -3,8 +3,9 @@
 //! module stops and machine changes cannot reach a daemon.
 
 use std::ffi::OsString;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 pub struct Operator {
@@ -45,16 +46,32 @@ impl Operator {
         Operator { runtime, child }
     }
 
-    /// `legionctl` with only `XDG_RUNTIME_DIR` (to find the socket), `PATH` and the working directory `cwd`.
-    pub fn cli_in(&self, cwd: &Path, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_legionctl"))
+    /// `legionctl` with only `XDG_RUNTIME_DIR` (to find the socket), `PATH`, `env`, the working directory `cwd` and
+    /// `stdin` as its input.
+    pub fn run(&self, cwd: &Path, env: &[(&str, &str)], args: &[&str], stdin: &str) -> Output {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_legionctl"))
             .args(args)
             .current_dir(cwd)
             .env_clear()
             .env("XDG_RUNTIME_DIR", &self.runtime)
             .env("PATH", std::env::var_os("PATH").unwrap())
-            .output()
+            .envs(env.iter().copied())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
             .unwrap()
+            .write_all(stdin.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    }
+
+    pub fn cli_in(&self, cwd: &Path, args: &[&str]) -> Output {
+        self.run(cwd, &[], args, "")
     }
 
     pub fn cli(&self, args: &[&str]) -> Output {

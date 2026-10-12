@@ -13,8 +13,15 @@ use legionctl_api::{
     Snapshot, StatusIn, Text, Validation, Worktree, WorktreeCreateIn, WorktreeListIn, WorktreeRmIn,
     Worktrees,
 };
+use legionctl_api::{
+    DossierAddIn, DossierAppendIn, DossierCheckIn, DossierEditIn, DossierFindings, DossierReadIn,
+    DossierSearchIn, DossierUseIn, DossierWriteIn, Dossiers, Guard, GuardIn, HookReply, HookRunIn,
+    Lines, Locks, SessionId, SessionIn,
+};
 use legionctl_core::config::{Dirs, Resolved, resolve};
 use legionctl_core::db::Db;
+use legionctl_core::dossier::Workspace;
+use legionctl_core::reminders::Event;
 use legionctl_core::{agents, hooks, reminders, setup, skills, worktree};
 use legionctl_machine::ledger::Ledger;
 use legionctl_machine::policy::{self, Machine, Options, Source};
@@ -134,6 +141,37 @@ impl Operator {
             bindings: hooks::bindings(config),
         }
     }
+}
+
+fn workspace() -> Result<Workspace> {
+    Workspace::open(&config(None)?.config.dossier)
+}
+
+fn session(id: &SessionId) -> Result<&str> {
+    anyhow::ensure!(
+        !id.0.is_empty(),
+        "no session id: set LEGIONCTL_SESSION (Claude Code sets CLAUDE_CODE_SESSION_ID)"
+    );
+    Ok(&id.0)
+}
+
+/// What a blocked prompt shows: why, and the commands that pass the gate, with the most recent dossiers.
+fn gate_message(resolved: &Resolved) -> Result<String> {
+    let recent: Vec<String> = Workspace::open(&resolved.config.dossier)?
+        .list()
+        .into_iter()
+        .take(5)
+        .map(|d| d.name)
+        .collect();
+    Ok(format!(
+        "legionctl: this session has no dossier, so the prompt was not sent. Run `/legionctl:dossier use <name>` \
+         (or `/legionctl:dossier use <name> --create` for a new one), then send the prompt again.{}",
+        if recent.is_empty() {
+            String::new()
+        } else {
+            format!(" Recent dossiers: {}.", recent.join(", "))
+        }
+    ))
 }
 
 /// The config for work in `project` (its repository layer applies), or without a repository.
@@ -373,9 +411,168 @@ impl Engine for Operator {
         Ok(Self::hook_table(&config(Some(&input.project))?))
     }
 
-    fn hooks_run(&self, _: &Ctx, input: EventIn) -> Result<Text> {
-        Ok(Text {
-            text: hooks::run(&config(Some(&input.project))?, input.event),
+    fn hooks_run(&self, _: &Ctx, input: HookRunIn) -> Result<HookReply> {
+        let resolved = config(Some(&input.project))?;
+        let session = input.session.as_ref().filter(|s| !s.0.is_empty());
+        let active = match session {
+            Some(s) => Workspace::open(&resolved.config.dossier)?.active(&s.0)?,
+            None => None,
+        };
+        // the gate: a session without a dossier gets no prompt through, except the one that binds a dossier
+        let runs_dossier = input
+            .prompt
+            .as_deref()
+            .is_some_and(|p| p.contains("legionctl:dossier"));
+        if input.event == Event::Prompt
+            && resolved.config.dossier.gate
+            && session.is_some()
+            && active.is_none()
+            && !runs_dossier
+        {
+            return Ok(HookReply {
+                text: String::new(),
+                block: Some(gate_message(&resolved)?),
+            });
+        }
+        let mut text = hooks::run(&resolved, input.event);
+        if input.event == Event::SessionStart
+            && let Some(s) = session
+        {
+            let line = match &active {
+                Some(d) => format!("legionctl dossier: {d} (session {})", s.0),
+                None if resolved.config.dossier.gate => {
+                    "legionctl dossier: none; prompts are blocked until `/legionctl:dossier use <name>` (add --create for a new one)".into()
+                }
+                None => "legionctl dossier: none".into(),
+            };
+            text = if text.is_empty() {
+                line
+            } else {
+                format!("{line}\n{text}")
+            };
+        }
+        Ok(HookReply { text, block: None })
+    }
+
+    fn dossier_use(&self, ctx: &Ctx, input: DossierUseIn) -> Result<Lines> {
+        Self::record(ctx, "dossier.use", &input)?;
+        let lines = workspace()?.bind(
+            session(&input.session)?,
+            &ctx.actor,
+            &input.name,
+            input.create,
+            input.steal,
+        )?;
+        Ok(Lines { lines })
+    }
+
+    fn dossier_active(&self, _: &Ctx, input: SessionIn) -> Result<Lines> {
+        let id = session(&input.session)?;
+        let active = workspace()?.active(id)?;
+        Ok(Lines {
+            lines: vec![format!(
+                "session {id}: active dossier {}",
+                active.as_deref().unwrap_or("(none)")
+            )],
+        })
+    }
+
+    fn dossier_release(&self, ctx: &Ctx, input: SessionIn) -> Result<Lines> {
+        Self::record(ctx, "dossier.release", &input)?;
+        let released = workspace()?.release(session(&input.session)?)?;
+        Ok(Lines {
+            lines: vec![
+                released.map_or_else(|| "no active dossier".into(), |d| format!("released {d}")),
+            ],
+        })
+    }
+
+    fn dossier_locks(&self, _: &Ctx, _: Empty) -> Result<Locks> {
+        workspace()?.locks()
+    }
+
+    fn dossier_ls(&self, _: &Ctx, _: Empty) -> Result<Dossiers> {
+        Ok(workspace()?.list())
+    }
+
+    fn dossier_read(&self, _: &Ctx, input: DossierReadIn) -> Result<Lines> {
+        let lines = workspace()?.read(
+            &input.path,
+            input.first as usize,
+            input.last.map(|l| l as usize),
+        )?;
+        Ok(Lines { lines })
+    }
+
+    fn dossier_search(&self, _: &Ctx, input: DossierSearchIn) -> Result<Lines> {
+        let lines = workspace()?.search(
+            &input.pattern,
+            input.dossier.as_deref(),
+            input.ignore_case,
+            input.limit as usize,
+        );
+        Ok(Lines { lines })
+    }
+
+    fn dossier_write(&self, _: &Ctx, input: DossierWriteIn) -> Result<Lines> {
+        let path = workspace()?.write(
+            session(&input.session)?,
+            &input.path,
+            &input.content.0,
+            input.overwrite,
+        )?;
+        Ok(Lines {
+            lines: vec![path.display().to_string()],
+        })
+    }
+
+    fn dossier_append(&self, _: &Ctx, input: DossierAppendIn) -> Result<Lines> {
+        let path = workspace()?.append(session(&input.session)?, &input.path, &input.content.0)?;
+        Ok(Lines {
+            lines: vec![path.display().to_string()],
+        })
+    }
+
+    fn dossier_edit(&self, _: &Ctx, input: DossierEditIn) -> Result<Lines> {
+        let lines = workspace()?.edit(
+            session(&input.session)?,
+            &input.path,
+            input.mode,
+            &input.start,
+            input.end.as_deref(),
+            &input.content.0,
+        )?;
+        Ok(Lines { lines })
+    }
+
+    fn dossier_add(&self, _: &Ctx, input: DossierAddIn) -> Result<Lines> {
+        let rel = workspace()?.add(
+            session(&input.session)?,
+            &input.class,
+            &input.slug,
+            &input.content.0,
+        )?;
+        Ok(Lines { lines: vec![rel] })
+    }
+
+    fn dossier_check(&self, _: &Ctx, input: DossierCheckIn) -> Result<DossierFindings> {
+        let ws = workspace()?;
+        let dossier = match input.dossier {
+            Some(d) => d,
+            None => ws
+                .active(session(&input.session)?)?
+                .context("this session has no active dossier; name one")?,
+        };
+        Ok(DossierFindings {
+            problems: ws.check(&dossier),
+            dossier,
+        })
+    }
+
+    fn dossier_guard(&self, _: &Ctx, input: GuardIn) -> Result<Guard> {
+        Ok(Guard {
+            refusal: workspace()?
+                .write_refusal(session(&input.session)?, Path::new(&input.path))?,
         })
     }
 

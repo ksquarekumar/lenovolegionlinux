@@ -13,7 +13,7 @@ use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use serde_json::Value;
 
-use crate::cli::resolve_paths;
+use crate::cli::fill_client_fields;
 use crate::client::Client;
 
 fn tool_name(op: &OpInfo) -> String {
@@ -31,7 +31,7 @@ impl Legion {
         arguments: Option<rmcp::model::JsonObject>,
     ) -> anyhow::Result<String> {
         let mut input = Value::Object(arguments.unwrap_or_default());
-        resolve_paths(op, &mut input)?;
+        fill_client_fields(op, &mut input, false)?;
         let output = self.client.call_value(op.name, &input).await?;
         Ok(serde_json::to_string_pretty(&output)?)
     }
