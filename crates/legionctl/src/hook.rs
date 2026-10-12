@@ -6,6 +6,7 @@
 //! | session-start | `hooks.run` | stdout: added to the context |
 //! | prompt | `hooks.run` | stdout, or `{"decision":"block","reason":...}` from the dossier gate |
 //! | pre-tool | `dossier.guard` | `permissionDecision: deny` for a write into another dossier |
+//! | stop | `hooks.run` | `{"decision":"block","reason":...}` to the agent when the session is not set up; once per reply |
 //! | session-end | `dossier.release` | nothing |
 //!
 //! A hook must never stop the agent because legionctl is down: errors go to stderr and the exit code stays 0.
@@ -18,7 +19,7 @@ use serde_json::{Value, json};
 
 use crate::client::Client;
 
-pub const EVENTS: [&str; 4] = ["session-start", "prompt", "pre-tool", "session-end"];
+pub const EVENTS: [&str; 5] = ["session-start", "prompt", "pre-tool", "stop", "session-end"];
 
 async fn answer(event: &str, input: &Value) -> Result<Option<String>> {
     let client = Client::new("hook")?;
@@ -73,6 +74,13 @@ async fn answer(event: &str, input: &Value) -> Result<Option<String>> {
                 .to_string()
             })
         }
+        // Claude Code sets stop_hook_active when this hook already made the agent continue: never block twice
+        "stop" if input["stop_hook_active"] == true => None,
+        "stop" => client
+            .call::<op::HooksRun>(&run(Event::Stop))
+            .await?
+            .block
+            .map(|reason| json!({"decision": "block", "reason": reason}).to_string()),
         "session-end" => {
             if let Some(session) = session {
                 client

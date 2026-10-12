@@ -29,7 +29,10 @@ Replaces the "plan workspaces" section of 12-operator. Sessions (14) and sandbox
 - `legionctl hook <event>` adapts Claude Code's hooks: `session-start` adds the dossier line to the context, `prompt`
   blocks (`{"decision":"block"}`) when `dossier.gate` is on and the session has no dossier (a prompt that contains
   `legionctl:dossier` passes), `pre-tool` denies `Write`, `Edit`, `MultiEdit` and `NotebookEdit` into a dossier that
-  is not the session's, and `session-end` releases the binding.
+  is not the session's, `stop` (before the agent ends a reply) sends a session without a dossier back to set it
+  up first, once per reply (`stop_hook_active`), and `session-end` releases the binding. Hook output is for the
+  agent first, the user after (decided 2026-10-13); milestone 2 adds the operating directory, branch and copy to
+  the `stop` check.
 - Next: the operating directory and its git operations (open, new branch, checkpoint, merge, close,
   reconciliation), then the work graph.
 

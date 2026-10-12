@@ -18,6 +18,9 @@ pub enum Event {
     SessionStart,
     /// With every user prompt. Keep these few and short: they cost tokens on each turn.
     Prompt,
+    /// When the agent is about to end its reply; what runs here goes to the agent, which continues before the user
+    /// sees the reply.
+    Stop,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

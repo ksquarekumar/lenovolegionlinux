@@ -3,7 +3,7 @@
 //! Pressure stall information (PSI, `/proc/pressure/*`) says how much work is actually waiting on CPU, memory
 //! or I/O, which tells "busy" apart from "many runnable threads" better than the load average alone.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use schemars::JsonSchema;
@@ -229,10 +229,10 @@ pub fn brief(load: &Load) -> String {
 
 const CGROUPS: &str = "/sys/fs/cgroup";
 
-/// The cgroup that explains the I/O stall, as `path (N%)`: from the root, go down to the child that stalls most while
-/// it has at least 90% of its parent's pressure (values read moments apart differ a little). Container ids are cut
-/// to 12 characters as `docker ps` shows them.
-fn io_stall_source(root: &SysRoot) -> Option<String> {
+/// The cgroup that explains the I/O stall and its "some" pressure: from the root, go down to the child that stalls
+/// most while it has at least 90% of its parent's pressure (values read moments apart differ a little). `None` when
+/// no single cgroup below the root explains it.
+fn stall_cgroup(root: &SysRoot) -> Option<(PathBuf, f64)> {
     let pressure = |cgroup: &PathBuf| {
         root.read(cgroup.join("io.pressure"))
             .as_deref()
@@ -251,9 +251,15 @@ fn io_stall_source(root: &SysRoot) -> Option<String> {
         path = child;
         some = child_some;
     }
+    (path != Path::new(CGROUPS)).then_some((path, some))
+}
+
+/// `docker/09bd9c9baa5f (77%)`: the path below the cgroup root, container ids cut to 12 characters as `docker ps`
+/// shows them.
+fn cgroup_name(path: &Path, some: f64) -> String {
     let name: Vec<String> = path
         .strip_prefix(CGROUPS)
-        .ok()?
+        .unwrap_or(path)
         .iter()
         .map(|part| {
             let part = part.to_string_lossy();
@@ -264,11 +270,23 @@ fn io_stall_source(root: &SysRoot) -> Option<String> {
             }
         })
         .collect();
-    Some(format!("{} ({some:.0}%)", name.join("/")))
+    format!("{} ({some:.0}%)", name.join("/"))
 }
 
-/// Busiest whole disk's share of a short window, from `io_ticks` (ms spent doing I/O) in /proc/diskstats.
-fn disks_busy(root: &SysRoot) -> f64 {
+/// Read and write operations a cgroup has done on every device, from its `io.stat`.
+fn cgroup_ios(root: &SysRoot, cgroup: &Path) -> Option<u64> {
+    let stat = root.read(cgroup.join("io.stat"))?;
+    Some(
+        stat.split_whitespace()
+            .filter_map(|f| f.strip_prefix("rios=").or_else(|| f.strip_prefix("wios=")))
+            .filter_map(|n| n.parse::<u64>().ok())
+            .sum(),
+    )
+}
+
+/// Over one short window: the busiest whole disk's share of it (from `io_ticks`, ms spent doing I/O, in
+/// /proc/diskstats), and how many I/O operations `cgroup` did in it.
+fn sample_io(root: &SysRoot, cgroup: Option<&Path>) -> (f64, Option<u64>) {
     let ticks = || -> Vec<(String, u64)> {
         root.read("/proc/diskstats")
             .unwrap_or_default()
@@ -283,15 +301,20 @@ fn disks_busy(root: &SysRoot) -> f64 {
             .collect()
     };
     let window = Duration::from_millis(100);
-    let before = ticks();
+    let before = (ticks(), cgroup.and_then(|c| cgroup_ios(root, c)));
     std::thread::sleep(window);
-    ticks()
+    let busy = ticks()
         .iter()
         .filter_map(|(name, t)| {
-            let (_, b) = before.iter().find(|(n, _)| n == name)?;
+            let (_, b) = before.0.iter().find(|(n, _)| n == name)?;
             Some(Duration::from_millis(t.saturating_sub(*b)).as_secs_f64() / window.as_secs_f64())
         })
-        .fold(0.0, f64::max)
+        .fold(0.0, f64::max);
+    let ios = before
+        .1
+        .zip(cgroup.and_then(|c| cgroup_ios(root, c)))
+        .map(|(b, a)| a.saturating_sub(b));
+    (busy, ios)
 }
 
 pub fn read_load(root: &SysRoot, thresholds: &Thresholds) -> Load {
@@ -331,7 +354,16 @@ pub fn read_load(root: &SysRoot, thresholds: &Thresholds) -> Load {
             .busy
             .io_pressure
             .min(thresholds.overloaded.io_pressure);
-    let disks = if io_counts { disks_busy(root) } else { 0.0 };
+    // I/O pressure that one cgroup explains while it does no I/O itself is iowait without disk work (a VM's
+    // threads, seen here: WinBoat); it does not count even when another process uses a disk at that moment
+    let source = io_counts.then(|| stall_cgroup(root)).flatten();
+    let (busy, source_ios) = if io_counts {
+        sample_io(root, source.as_ref().map(|s| s.0.as_path()))
+    } else {
+        (0.0, None)
+    };
+    let phantom = source_ios == Some(0);
+    let disks = if phantom { 0.0 } else { busy };
     let sample = Sample {
         load1,
         cpus,
@@ -352,9 +384,9 @@ pub fn read_load(root: &SysRoot, thresholds: &Thresholds) -> Load {
         io,
         mem_available_mib: available,
         mem_total_mib: total,
-        io_stall_source: (io_counts && disks * 100.0 < thresholds.disk_busy_percent)
-            .then(|| io_stall_source(root))
-            .flatten(),
+        io_stall_source: source
+            .filter(|_| phantom || disks * 100.0 < thresholds.disk_busy_percent)
+            .map(|(path, some)| cgroup_name(&path, some)),
     }
 }
 
@@ -417,8 +449,16 @@ mod tests {
             )
             .unwrap();
         }
-        let source = io_stall_source(&SysRoot::new(&dir));
+        let root = SysRoot::new(&dir);
+        let (path, some) = stall_cgroup(&root).unwrap();
+        assert_eq!(cgroup_name(&path, some), "docker/09bd9c9baa5f (77%)");
+        // the container did no I/O in the window: its stall is not load, whatever the disks do
+        std::fs::write(
+            dir.join("sys/fs/cgroup/docker").join(id).join("io.stat"),
+            "259:6 rios=44630 wios=13264\n",
+        )
+        .unwrap();
+        assert_eq!(sample_io(&root, Some(&path)).1, Some(0));
         std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(source.as_deref(), Some("docker/09bd9c9baa5f (77%)"));
     }
 }

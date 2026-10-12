@@ -9,6 +9,7 @@
         "hooks": [{ "type": "command", "command": "legionctl hook pre-tool", "timeout": 10 }]
       }
     ],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "legionctl hook stop", "timeout": 30 }] }],
     "SessionEnd": [{ "hooks": [{ "type": "command", "command": "legionctl hook session-end", "timeout": 10 }] }]
   }
 }

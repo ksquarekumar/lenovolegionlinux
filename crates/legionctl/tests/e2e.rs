@@ -281,7 +281,7 @@ fn config_layers_merge_in_order_and_etc_locks_win() {
 }
 
 #[test]
-fn dossier_gate_binding_and_write_guard_work_through_the_claude_code_hooks() {
+fn dossier_gate_and_stop_hook_hold_the_agent_until_the_session_has_a_dossier() {
     let (op, home) = operator("dossier");
     let out = |o: std::process::Output| String::from_utf8_lossy(&o.stdout).trim().to_string();
     let hook =
@@ -316,12 +316,33 @@ fn dossier_gate_binding_and_write_guard_work_through_the_claude_code_hooks() {
     );
     assert!(passing.starts_with("Reminder:"), "{passing}");
 
+    // before the reply ends, the agent is told to set up the session; once only, so the agent cannot loop
+    let stop: Value =
+        serde_json::from_str(&hook("stop", json!({"session_id": "s1", "cwd": home}))).unwrap();
+    assert_eq!(stop["decision"], "block");
+    assert!(
+        stop["reason"].as_str().unwrap().contains("dossier_use"),
+        "{stop}"
+    );
+    assert_eq!(
+        hook(
+            "stop",
+            json!({"session_id": "s1", "cwd": home, "stop_hook_active": true})
+        ),
+        ""
+    );
+
     // bind, add a numbered artifact from stdin, and the gate opens
     let bound = as_session("s1", &["dossier", "use", "port", "--create"], "");
     assert!(bound.contains("active dossier: port"), "{bound}");
     assert_eq!(
         as_session("s1", &["dossier", "add", "MEMORY", "intake"], "# Intake\n"),
         "port/MEMORY/01-intake.md"
+    );
+    assert_eq!(
+        hook("stop", json!({"session_id": "s1", "cwd": home})),
+        "",
+        "a set-up session ends its reply"
     );
     let open = hook(
         "prompt",
@@ -332,6 +353,26 @@ fn dossier_gate_binding_and_write_guard_work_through_the_claude_code_hooks() {
         as_session("s1", &["dossier", "check"], ""),
         "port/plan.md has every ledger section"
     );
+}
+
+#[test]
+fn dossier_write_guard_and_takeover_work_through_the_claude_code_hooks() {
+    let (op, home) = operator("guard");
+    let out = |o: std::process::Output| String::from_utf8_lossy(&o.stdout).trim().to_string();
+    let hook =
+        |event: &str, input: Value| out(op.run(&home, &[], &["hook", event], &input.to_string()));
+    let as_session = |session: &str, args: &[&str], stdin: &str| {
+        let o = op.run(&home, &[("LEGIONCTL_SESSION", session)], args, stdin);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        out(o)
+    };
+
+    as_session("s1", &["dossier", "use", "port", "--create"], "");
+    as_session("s1", &["dossier", "add", "MEMORY", "intake"], "# Intake\n");
 
     // the write guard: only the holder writes into the dossier; other paths are not legionctl's business
     let plan = home.join(".agentworkspace/port/plan.md");

@@ -434,6 +434,18 @@ impl Engine for Operator {
                 block: Some(gate_message(&resolved)?),
             });
         }
+        // before the reply ends, the agent (not the user) hears what is not set up, and sets it up first
+        if input.event == Event::Stop && session.is_some() && active.is_none() {
+            return Ok(HookReply {
+                text: String::new(),
+                block: Some(
+                    "legionctl: this session has no dossier. Before you end this reply, bind one with the \
+                     legionctl MCP tool dossier_use (create: true for a new one; ask the user for the name if it is \
+                     not clear), record the state in its plan.md and MEMORY, then finish."
+                        .into(),
+                ),
+            });
+        }
         let mut text = hooks::run(&resolved, input.event);
         if input.event == Event::SessionStart
             && let Some(s) = session

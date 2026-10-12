@@ -54,6 +54,7 @@ fn event_key(event: Event) -> &'static str {
     match event {
         Event::SessionStart => "session-start",
         Event::Prompt => "prompt",
+        Event::Stop => "stop",
     }
 }
 
