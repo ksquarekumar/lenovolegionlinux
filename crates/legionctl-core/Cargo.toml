@@ -6,6 +6,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+legionctl-machine = { path = "../legionctl-machine" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

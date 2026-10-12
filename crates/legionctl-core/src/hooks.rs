@@ -13,7 +13,8 @@ use serde::Serialize;
 
 use crate::db::Db;
 use crate::reminders::{self, Event};
-use crate::{load, setup};
+use crate::setup;
+use legionctl_machine::{load, sysroot::SysRoot};
 
 /// (id, what it does)
 pub const BUILTIN_ACTIONS: &[(&str, &str)] = &[
@@ -238,9 +239,9 @@ impl Hooks<'_> {
     fn run_action(&self, action: &Action, event: Event) -> String {
         let result: Result<String> = match action.id.as_str() {
             "reminders" => self.reminders.emit(event),
-            "load" => Ok(load::brief(&load::read_load())),
+            "load" => Ok(load::brief(&load::read_load(&SysRoot::from_env()))),
             "load-if-busy" => {
-                let l = load::read_load();
+                let l = load::read_load(&SysRoot::from_env());
                 Ok(if l.level >= load::Level::Busy {
                     load::brief(&l)
                 } else {

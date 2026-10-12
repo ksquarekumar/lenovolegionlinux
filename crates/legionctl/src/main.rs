@@ -10,8 +10,11 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use legionctl_core::reminders::{self, Event};
-use legionctl_core::{actions, agents, load, setup, snapshot::Snapshot, worktree::Store};
+use legionctl_core::{actions, agents, setup, worktree::Store};
 use legionctl_core::{db::Db, hooks::Hooks, skills};
+use legionctl_machine::load;
+use legionctl_machine::snapshot::Detail;
+use legionctl_machine::sysroot::SysRoot;
 
 #[derive(Parser)]
 #[command(
@@ -309,45 +312,20 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Command::Status { json: true } => print_json(&Snapshot::read())?,
-        Command::Status { json: false } => {
-            let s = Snapshot::read();
-            println!(
-                "power: {}  mode: {}{}",
-                s.power_source,
-                s.platform_profile.as_deref().unwrap_or("?"),
-                s.fn_q_override
-                    .as_ref()
-                    .map_or(String::new(), |o| format!(" (Fn+Q: {o})"))
-            );
-            println!(
-                "cpu: governors {:?}  EPP {:?}",
-                s.governors, s.energy_performance_preference
-            );
-            println!(
-                "limits: RAPL {:.0}/{:.0} W  firmware {:?}",
-                s.rapl_sustained_w.unwrap_or(0.0),
-                s.rapl_burst_w.unwrap_or(0.0),
-                s.firmware_limits
-            );
-            println!(
-                "temp: {}  gpu: {} (desktop on {})",
-                s.package_temp_c
-                    .map_or("?".into(), |t| format!("{t:.0} °C")),
-                s.gpu_mode,
-                s.desktop_gpu
-            );
-            for d in &s.displays {
-                println!("  {} on {} ({})", d.connector, d.card, d.driver);
+        Command::Status { json } => {
+            let s = machine::snapshot(None, Detail::Full)?;
+            if json {
+                print_json(&s)?;
+            } else {
+                machine::print_status(&s);
             }
-            println!("{}", load::brief(&s.load));
         }
         Command::Load {
             json,
             brief: short,
             only_busy,
         } => {
-            let l = load::read_load();
+            let l = load::read_load(&SysRoot::from_env());
             if json {
                 print_json(&l)?;
             } else if !(short && only_busy && l.level < load::Level::Busy) {
@@ -389,7 +367,9 @@ fn main() -> Result<()> {
                 WorktreeCommand::List { json: true } => print_json(&store.list(true)?)?,
                 WorktreeCommand::List { json: false } => {
                     for w in store.list(true)? {
-                        let size = w.size_bytes.map_or("-".into(), legionctl_core::human_bytes);
+                        let size = w
+                            .size_bytes
+                            .map_or("-".into(), legionctl_machine::human_bytes);
                         let state = if !w.exists {
                             "missing"
                         } else if w.dirty == Some(true) {

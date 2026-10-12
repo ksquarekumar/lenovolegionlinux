@@ -4,8 +4,11 @@
 use std::path::PathBuf;
 
 use legionctl_core::reminders::{self, Event};
-use legionctl_core::{actions, agents, load, setup, snapshot::Snapshot, worktree::Store};
+use legionctl_core::{actions, agents, setup, worktree::Store};
 use legionctl_core::{db::Db, hooks::Hooks, skills};
+use legionctl_machine::load;
+use legionctl_machine::snapshot::Detail;
+use legionctl_machine::sysroot::SysRoot;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock as Content};
 use rmcp::{ServiceExt, tool, tool_router};
@@ -95,14 +98,14 @@ impl Legion {
         description = "Power source, Fn+Q thermal mode, firmware power limits, CPU policy, temperature, GPU wiring and load of this Lenovo Legion laptop."
     )]
     fn system_status(&self) -> CallToolResult {
-        ok(&Snapshot::read())
+        crate::machine::snapshot(None, Detail::Full).map_or_else(fail, |s| ok(&s))
     }
 
     #[tool(
         description = "Current system load level (idle, normal, busy, overloaded) with reasons from CPU/memory/IO pressure. Check before starting builds, test suites or parallel jobs."
     )]
     fn system_load(&self) -> CallToolResult {
-        let l = load::read_load();
+        let l = load::read_load(&SysRoot::from_env());
         CallToolResult::success(vec![
             Content::text(load::brief(&l)),
             Content::text(serde_json::to_string_pretty(&l).unwrap_or_default()),

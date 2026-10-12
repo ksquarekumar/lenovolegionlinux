@@ -6,7 +6,7 @@
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::read;
+use crate::sysroot::SysRoot;
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct Pressure {
@@ -180,9 +180,9 @@ pub fn brief(load: &Load) -> String {
 }
 
 /// Busiest whole disk's share of a short window, from `io_ticks` (ms spent doing I/O) in /proc/diskstats.
-fn disks_busy() -> f64 {
-    fn ticks() -> Vec<(String, u64)> {
-        read("/proc/diskstats")
+fn disks_busy(root: &SysRoot) -> f64 {
+    let ticks = || -> Vec<(String, u64)> {
+        root.read("/proc/diskstats")
             .unwrap_or_default()
             .lines()
             .filter_map(|l| {
@@ -193,7 +193,7 @@ fn disks_busy() -> f64 {
                 whole.then(|| Some((name.to_string(), f.get(12)?.parse().ok()?)))?
             })
             .collect()
-    }
+    };
     const WINDOW_MS: u64 = 100;
     let before = ticks();
     std::thread::sleep(std::time::Duration::from_millis(WINDOW_MS));
@@ -206,21 +206,25 @@ fn disks_busy() -> f64 {
         .fold(0.0, f64::max)
 }
 
-pub fn read_load() -> Load {
-    let load1 = read("/proc/loadavg")
+pub fn read_load(root: &SysRoot) -> Load {
+    let load1 = root
+        .read("/proc/loadavg")
         .and_then(|t| t.split_whitespace().next()?.parse().ok())
         .unwrap_or(0.0);
     let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let cpu = read("/proc/pressure/cpu")
+    let cpu = root
+        .read("/proc/pressure/cpu")
         .as_deref()
         .and_then(parse_pressure);
-    let memory = read("/proc/pressure/memory")
+    let memory = root
+        .read("/proc/pressure/memory")
         .as_deref()
         .and_then(parse_pressure);
-    let io = read("/proc/pressure/io")
+    let io = root
+        .read("/proc/pressure/io")
         .as_deref()
         .and_then(parse_pressure);
-    let meminfo = read("/proc/meminfo").unwrap_or_default();
+    let meminfo = root.read("/proc/meminfo").unwrap_or_default();
     let total = meminfo_kib(&meminfo, "MemTotal").unwrap_or(0);
     let available = meminfo_kib(&meminfo, "MemAvailable").unwrap_or(0);
     let fraction = if total > 0 {
@@ -230,7 +234,7 @@ pub fn read_load() -> Load {
     };
     // sample the disks only when I/O pressure could matter, so the usual call stays instant
     let disks = if io.as_ref().is_some_and(|p| p.some_avg10 >= 20.0) {
-        disks_busy()
+        disks_busy(root)
     } else {
         0.0
     };

@@ -5,9 +5,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use legionctl_core::agents::{self, ConfigFile};
-use legionctl_core::load::{Level, Pressure};
-use legionctl_core::snapshot::Snapshot;
 use legionctl_core::worktree::{Store, WorktreeStatus};
+use legionctl_machine::load::{Level, Pressure};
+use legionctl_machine::snapshot::{Detail, Snapshot};
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};
@@ -63,11 +63,15 @@ fn draw(f: &mut Frame, s: &Snapshot, worktrees: &[WorktreeStatus], configs: &[Co
             .fg(level_color(s.load.level))
             .bold(),
         format!(
-            "({:.1} on {} CPUs)  CPU {temp}  RAPL {:.0}/{:.0} W",
+            "({:.1} on {} CPUs)  CPU {temp}  limits {}/{} W",
             s.load.load1,
             s.load.cpus,
-            s.rapl_sustained_w.unwrap_or(0.0),
-            s.rapl_burst_w.unwrap_or(0.0)
+            s.firmware_limits
+                .get("ppt_pl1_spl")
+                .map_or("?", String::as_str),
+            s.firmware_limits
+                .get("ppt_pl2_sppt")
+                .map_or("?", String::as_str)
         )
         .into(),
     ]);
@@ -98,8 +102,9 @@ fn draw(f: &mut Frame, s: &Snapshot, worktrees: &[WorktreeStatus], configs: &[Co
     machine.push("".into());
     machine.push("displays".bold().into());
     machine.extend(
-        s.displays
+        s.outputs
             .iter()
+            .filter(|o| o.connected)
             .map(|d| Line::from(format!("  {} on {} ({})", d.connector, d.card, d.driver))),
     );
     f.render_widget(
@@ -119,7 +124,8 @@ fn draw(f: &mut Frame, s: &Snapshot, worktrees: &[WorktreeStatus], configs: &[Co
         };
         Row::new(vec![
             w.worktree.name.clone(),
-            w.size_bytes.map_or("-".into(), legionctl_core::human_bytes),
+            w.size_bytes
+                .map_or("-".into(), legionctl_machine::human_bytes),
             state.into(),
             w.worktree.repo.display().to_string(),
         ])
@@ -175,12 +181,14 @@ pub fn run() -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_default();
     let project = std::env::current_dir().unwrap_or_default();
+    let (profile, _) = legionctl_machine::profile::load(None)?;
+    let root = legionctl_machine::sysroot::SysRoot::from_env();
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
         // sizes walk whole checkouts, so measure on start and on demand, not every frame
         let mut worktrees = store.list(true)?;
         loop {
-            let snapshot = Snapshot::read();
+            let snapshot = Snapshot::read(&root, &profile, Detail::Fast);
             let configs = agents::config_files(&home, &project);
             terminal.draw(|f| draw(f, &snapshot, &worktrees, &configs))?;
             if event::poll(Duration::from_secs(1))?
