@@ -1,4 +1,4 @@
-//! `legion`: operator CLI, TUI and MCP server for this machine. Every subcommand goes through legion-core, so the
+//! `legionctl` (binary `legion` until the switch in docs/design/15-layout.md): operator CLI, TUI and MCP server for this machine. Every subcommand goes through legionctl-core, so the
 //! terminal, the TUI and agents (over MCP) see the same state and hit the same guard rails.
 
 mod mcp;
@@ -8,9 +8,9 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use legion_core::reminders::{self, Event};
-use legion_core::{actions, agents, load, setup, snapshot::Snapshot, worktree::Store};
-use legion_core::{db::Db, hooks::Hooks, skills};
+use legionctl_core::reminders::{self, Event};
+use legionctl_core::{actions, agents, load, setup, snapshot::Snapshot, worktree::Store};
+use legionctl_core::{db::Db, hooks::Hooks, skills};
 
 #[derive(Parser)]
 #[command(
@@ -59,7 +59,7 @@ enum Command {
         /// auto|ac|battery for apply-power-policy, nvidia|intel|auto for set-desktop-gpu
         value: String,
     },
-    /// Set up ctx and legion for Claude Code and Codex (skills, MCP servers)
+    /// Set up ctx and legionctl for Claude Code and Codex (skills, MCP servers)
     Setup {
         /// Only report what is missing; change nothing
         #[arg(long)]
@@ -83,7 +83,7 @@ enum Command {
         #[command(subcommand)]
         command: Option<HookCommand>,
     },
-    /// legion skills: where each agent has them and whether their reminder is on
+    /// legionctl skills: where each agent has them and whether their reminder is on
     Skills {
         #[arg(long)]
         json: bool,
@@ -175,7 +175,7 @@ impl From<EventArg> for Event {
 
 #[derive(Subcommand)]
 enum WorktreeCommand {
-    /// Create a worktree of REPO on a new branch legion/NAME
+    /// Create a worktree of REPO on a new branch legionctl/NAME
     Create {
         name: String,
         #[arg(long, default_value = ".")]
@@ -285,7 +285,7 @@ fn main() -> Result<()> {
                 WorktreeCommand::List { json: true } => print_json(&store.list(true)?)?,
                 WorktreeCommand::List { json: false } => {
                     for w in store.list(true)? {
-                        let size = w.size_bytes.map_or("-".into(), legion_core::human_bytes);
+                        let size = w.size_bytes.map_or("-".into(), legionctl_core::human_bytes);
                         let state = if !w.exists {
                             "missing"
                         } else if w.dirty == Some(true) {
@@ -332,7 +332,7 @@ fn main() -> Result<()> {
                         .map(|i| format!("{} for {}", i.what, i.agent))
                         .collect();
                     println!(
-                        "legion setup: {} need attention ({}). Run /legion:setup or `legion setup`.",
+                        "legionctl setup: {} need attention ({}). Run /legionctl:setup or `legion setup`.",
                         todo.len(),
                         names.join(", ")
                     );
@@ -478,7 +478,7 @@ fn main() -> Result<()> {
                         (Some(id), _) => format!("reminder {id}: off"),
                         _ => "no reminder".into(),
                     };
-                    println!("legion:{}  ({reminder})", s.name);
+                    println!("legionctl:{}  ({reminder})", s.name);
                     println!(
                         "  claude: {}",
                         s.claude

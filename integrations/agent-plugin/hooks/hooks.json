@@ -1,5 +1,5 @@
 {
-  "description": "Run the legion hook actions bound to each event (manage them with /legion:hooks or `legion hooks`)",
+  "description": "Run the legionctl hook actions bound to each event (manage them with /legionctl:hooks or `legion hooks`)",
   "hooks": {
     "SessionStart": [
       {

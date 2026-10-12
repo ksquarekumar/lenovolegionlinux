@@ -5,8 +5,8 @@
   "owner": { "name": "ksquarekumar", "url": "https://github.com/ksquarekumar" },
   "plugins": [
     {
-      "name": "legion",
-      "description": "System state and load, isolated worktrees, agent settings and human-approved machine actions over the legion MCP server",
+      "name": "legionctl",
+      "description": "System state and load, isolated worktrees, agent settings and human-approved machine actions over the legionctl MCP server",
       "source": "./integrations/agent-plugin",
       "category": "productivity"
     }

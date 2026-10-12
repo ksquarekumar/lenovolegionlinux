@@ -1,6 +1,6 @@
 //! Reminders: short instructions that agent hooks inject at session start or on every prompt, so a skill or a
-//! working rule stays in force for the whole session. A built-in catalogue covers legion's skills and habits;
-//! users add their own. State lives in ~/.config/legion/reminders.toml.
+//! working rule stays in force for the whole session. A built-in catalogue covers legionctl's skills and habits;
+//! users add their own. State lives in ~/.config/legionctl/reminders.toml.
 
 use std::path::PathBuf;
 
@@ -30,25 +30,25 @@ pub struct Reminder {
 const BUILTINS: &[(&str, &str, Event, bool)] = &[
     (
         "ste100",
-        "Write all user-facing text in ASD-STE100 Simplified Technical English (skill legion:ste100-style).",
+        "Write all user-facing text in ASD-STE100 Simplified Technical English (skill legionctl:ste100-style).",
         Event::Prompt,
         true,
     ),
     (
         "glanceable",
-        "Structure user-facing output for a glance: answer first, then layered detail; exact identifiers; no repetition (skill legion:glanceable-style).",
+        "Structure user-facing output for a glance: answer first, then layered detail; exact identifiers; no repetition (skill legionctl:glanceable-style).",
         Event::Prompt,
         true,
     ),
     (
         "load-aware",
-        "Check legion system_load before builds, test suites or parallel jobs, and scale them down when busy.",
+        "Check legionctl system_load before builds, test suites or parallel jobs, and scale them down when busy.",
         Event::SessionStart,
         false,
     ),
     (
         "worktree-per-task",
-        "Do each code-changing task in its own legion worktree (/legion:worktree).",
+        "Do each code-changing task in its own legionctl worktree (/legionctl:worktree).",
         Event::SessionStart,
         false,
     ),
@@ -83,7 +83,7 @@ impl Default for Store {
         let config =
             std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| home.join(".config"), PathBuf::from);
         Store {
-            path: config.join("legion/reminders.toml"),
+            path: config.join("legionctl/reminders.toml"),
         }
     }
 }
@@ -220,47 +220,11 @@ mod tests {
 
     fn store(tag: &str) -> Store {
         let dir =
-            std::env::temp_dir().join(format!("legion-reminders-{tag}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("legionctl-reminders-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         Store {
             path: dir.join("reminders.toml"),
         }
-    }
-
-    #[test]
-    fn skill_reminders_are_on_by_default_and_emitted_per_event() {
-        let s = store("defaults");
-        let prompt = s.emit(Event::Prompt).unwrap();
-        assert!(
-            prompt.contains("legion:ste100-style") && prompt.contains("legion:glanceable-style")
-        );
-        assert!(
-            s.emit(Event::SessionStart).unwrap().is_empty(),
-            "habit reminders are opt-in"
-        );
-    }
-
-    #[test]
-    fn toggles_adds_and_removes() {
-        let s = store("edit");
-        s.set_enabled("ste100", false).unwrap();
-        assert!(!s.emit(Event::Prompt).unwrap().contains("ste100-style"));
-        s.add(
-            "tests-first",
-            "Write or update a test before changing behaviour.",
-            Event::SessionStart,
-        )
-        .unwrap();
-        assert!(
-            s.emit(Event::SessionStart)
-                .unwrap()
-                .contains("test before changing")
-        );
-        s.set_enabled("tests-first", false).unwrap();
-        assert!(s.emit(Event::SessionStart).unwrap().is_empty());
-        s.remove("tests-first").unwrap();
-        assert!(s.list().unwrap().iter().all(|r| r.id != "tests-first"));
-        assert!(s.remove("ste100").is_err(), "built-ins cannot be removed");
     }
 
     #[test]

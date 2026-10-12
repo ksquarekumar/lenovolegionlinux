@@ -1,4 +1,4 @@
-//! Shared core for the legion CLI, TUI and MCP server: machine state, load, worktrees and approved actions.
+//! Shared core for the legionctl CLI, TUI and MCP server: machine state, load, worktrees and approved actions.
 //! Every surface calls these functions, so humans and agents see the same data and the same guard rails.
 
 pub mod actions;

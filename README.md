@@ -176,7 +176,8 @@ writes a CSV of throughput, package power, temperature, clocks and fan speed per
 
 ## Operator CLI, TUI and agent plugin
 
-`legion` (Rust) shows this machine's state and load, manages isolated git worktrees, checks Claude Code and Codex
+The Rust `legionctl` client (binary `legion` until it replaces the Python `legionctl`; see
+docs/design/15-layout.md) shows this machine's state and load, manages isolated git worktrees, checks Claude Code and Codex
 settings, and requests machine changes that a human approves in a polkit dialog. The same functions are exposed to
 agents as an MCP server.
 
@@ -190,18 +191,18 @@ legion act set-desktop-gpu nvidia    # asks for approval first
 legion tui                           # live dashboard
 ```
 
-Claude Code plugin: MCP tools; skills `legion:ste100-style` (ASD-STE100 writing) and `legion:glanceable-style`
-(glanceable, agent-readable output); hooks that inject reminders, load and setup notices; commands `/legion:status`,
-`/legion:worktree`, `/legion:act`, `/legion:setup`, `/legion:reminders` (guided), and `/legion:skills`
+Claude Code plugin: MCP tools; skills `legionctl:ste100-style` (ASD-STE100 writing) and `legionctl:glanceable-style`
+(glanceable, agent-readable output); hooks that inject reminders, load and setup notices; commands `/legionctl:status`,
+`/legionctl:worktree`, `/legionctl:act`, `/legionctl:setup`, `/legionctl:reminders` (guided), and `/legionctl:skills`
 (list skills and where they are installed, load one, turn its reminder on or off; also `legion skills`). Reminders also work from the shell:
 `legion reminders`, `legion reminders on|off <id>`, `legion reminders add <id> "<text>" [--event prompt]`.
-What the hooks run is configurable: `/legion:hooks` (guided) or `legion hooks`, `legion hooks bind|unbind <event> <action>`,
+What the hooks run is configurable: `/legionctl:hooks` (guided) or `legion hooks`, `legion hooks bind|unbind <event> <action>`,
 `legion hooks add <id> "<command>" [--timeout N]`. Bindings and an event log of every change live in
-`~/.local/state/legion/legion.db` (SQLite, WAL).
+`~/.local/state/legionctl/operator.db` (SQLite, WAL).
 
 ```
 /plugin marketplace add /data/git/lenovolegionlinux
-/plugin install legion@lenovolegionlinux
+/plugin install legionctl@lenovolegionlinux
 ```
 
 Codex: append `integrations/codex/config.toml` to `~/.codex/config.toml`.

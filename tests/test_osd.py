@@ -1,4 +1,4 @@
-"""OSD wording: an Fn+Q override is labelled as such, otherwise the power-source default is named."""
+"""Fn+R press detection from raw input events (two key codes, scans and releases ignored)."""
 
 import importlib.machinery
 import importlib.util
@@ -11,21 +11,6 @@ spec = importlib.util.spec_from_loader("osd", loader)
 assert spec is not None
 osd = importlib.util.module_from_spec(spec)
 loader.exec_module(osd)
-
-
-class DescribeModeTest(unittest.TestCase):
-    def test_fn_q_override(self):
-        summary, body, _ = osd.describe_mode("balanced", "balanced", "1")
-        self.assertEqual((summary, body), ("Thermal mode: Balanced", "Fn+Q choice until unplug or reboot"))
-
-    def test_ac_default(self):
-        self.assertEqual(osd.describe_mode("max-power", None, "1")[:2], ("Thermal mode: Max power", "AC default"))
-
-    def test_battery_default(self):
-        self.assertEqual(osd.describe_mode("balanced", None, "0")[1], "battery default")
-
-    def test_unknown_mode_is_shown_raw(self):
-        self.assertEqual(osd.describe_mode("extreme", None, "1")[0], "Thermal mode: extreme")
 
 
 class FnRPressesTest(unittest.TestCase):

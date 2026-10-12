@@ -84,7 +84,7 @@ Each knob declares how to treat an external change:
 
 ## Ownership ledger
 
-Generalises today's `/run/legion-control/firmware-written`: for every knob the reconciler records the last value
+Generalises today's `/run/legionctl/firmware-written`: for every knob the reconciler records the last value
 it wrote and when. On a change event:
 
 - observed == last written → our own write, ignore;

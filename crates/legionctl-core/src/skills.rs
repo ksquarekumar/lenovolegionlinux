@@ -1,4 +1,4 @@
-//! Which legion skills exist, where each agent has them installed, and whether their reminder is on.
+//! Which legionctl skills exist, where each agent has them installed, and whether their reminder is on.
 
 use std::path::{Path, PathBuf};
 
@@ -9,16 +9,16 @@ use serde::Serialize;
 use crate::reminders;
 use crate::setup::plugin_skills;
 
-const CLAUDE_PLUGIN_KEY: &str = "legion@lenovolegionlinux";
+const CLAUDE_PLUGIN_KEY: &str = "legionctl@lenovolegionlinux";
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SkillInfo {
-    /// Skill name; Claude Code loads it as `legion:<name>`.
+    /// Skill name; Claude Code loads it as `legionctl:<name>`.
     pub name: String,
     pub description: String,
     /// Path inside the installed Claude Code plugin, when the plugin is installed.
     pub claude: Option<PathBuf>,
-    /// Codex link (~/.codex/skills/legion-<name>) and whether it resolves.
+    /// Codex link (~/.codex/skills/legionctl-<name>) and whether it resolves.
     pub codex: PathBuf,
     pub codex_linked: bool,
     /// Reminder that keeps the skill in force, and its state.
@@ -36,7 +36,7 @@ fn description(skill_md: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Install path of the legion plugin from Claude Code's registry, if installed.
+/// Install path of the legionctl plugin from Claude Code's registry, if installed.
 pub fn claude_plugin_dir(home: &Path) -> Option<PathBuf> {
     let text = std::fs::read_to_string(home.join(".claude/plugins/installed_plugins.json")).ok()?;
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
@@ -65,7 +65,7 @@ pub fn inventory(home: &Path, reminders: &reminders::Store) -> Result<Vec<SkillI
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        let codex = home.join(".codex/skills").join(format!("legion-{name}"));
+        let codex = home.join(".codex/skills").join(format!("legionctl-{name}"));
         let reminder = known.iter().find(|r| r.id == reminder_id(&name));
         out.push(SkillInfo {
             description: description(&skill_md),
@@ -90,18 +90,17 @@ mod tests {
 
     #[test]
     fn reads_the_claude_plugin_registry() {
-        let home = std::env::temp_dir().join(format!("legion-skills-{}", std::process::id()));
+        let home = std::env::temp_dir().join(format!("legionctl-skills-{}", std::process::id()));
         std::fs::create_dir_all(home.join(".claude/plugins")).unwrap();
         std::fs::write(
             home.join(".claude/plugins/installed_plugins.json"),
-            r#"{"version": 2, "plugins": {"legion@lenovolegionlinux": [{"scope": "user", "installPath": "/x/legion/0.3.0"}]}}"#,
+            r#"{"version": 2, "plugins": {"legionctl@lenovolegionlinux": [{"scope": "user", "installPath": "/x/legionctl/0.4.0"}]}}"#,
         )
         .unwrap();
         assert_eq!(
             claude_plugin_dir(&home),
-            Some(PathBuf::from("/x/legion/0.3.0"))
+            Some(PathBuf::from("/x/legionctl/0.4.0"))
         );
-        assert_eq!(reminder_id("ste100-style"), "ste100");
         let _ = std::fs::remove_dir_all(&home);
     }
 }

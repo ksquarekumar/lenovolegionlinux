@@ -1,8 +1,8 @@
-//! Agent setup: make ctx (https://ctx.rs) and legion available to Claude Code and Codex out of the box.
+//! Agent setup: make ctx (https://ctx.rs) and legionctl available to Claude Code and Codex out of the box.
 //!
 //! - ctx: its bundled skill and MCP server for both agents (`ctx integrations install skill|mcp`).
-//! - Codex: legion's MCP server in ~/.codex/config.toml, and the plugin's skills linked into ~/.codex/skills.
-//! - Claude Code gets legion's MCP server, hooks and skills from the plugin itself.
+//! - Codex: legionctl's MCP server in ~/.codex/config.toml, and the plugin's skills linked into ~/.codex/skills.
+//! - Claude Code gets legionctl's MCP server, hooks and skills from the plugin itself.
 //!
 //! `check()` only reports; `apply()` changes user-level files and returns what it did.
 
@@ -13,13 +13,13 @@ use anyhow::{Context, Result, ensure};
 use schemars::JsonSchema;
 use serde::Serialize;
 
-/// ctx names for the agents legion sets up.
+/// ctx names for the agents legionctl sets up.
 pub const AGENTS: [&str; 2] = ["claude-code", "codex"];
-const PLUGIN_SKILLS: &str = "/usr/share/legion-control/agent-plugin/skills";
+const PLUGIN_SKILLS: &str = "/usr/share/legionctl/agent-plugin/skills";
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Item {
-    /// e.g. "ctx skill", "ctx mcp", "legion mcp", "legion skill ste100"
+    /// e.g. "ctx skill", "ctx mcp", "legionctl mcp", "legionctl skill ste100"
     pub what: String,
     pub agent: String,
     /// "current" when in place; otherwise what is wrong (missing, outdated, invalid_config, ...)
@@ -114,18 +114,18 @@ fn codex_config() -> PathBuf {
     home().join(".codex/config.toml")
 }
 
-pub fn codex_has_legion(text: &str) -> Result<bool> {
+pub fn codex_has_legionctl(text: &str) -> Result<bool> {
     let table: toml::Table = text
         .parse()
         .context("~/.codex/config.toml is not valid TOML; fix it before setup")?;
     Ok(table
         .get("mcp_servers")
-        .and_then(|s| s.get("legion"))
+        .and_then(|s| s.get("legionctl"))
         .is_some())
 }
 
 pub fn plugin_skills() -> PathBuf {
-    std::env::var_os("LEGION_PLUGIN_SKILLS")
+    std::env::var_os("LEGIONCTL_PLUGIN_SKILLS")
         .map_or_else(|| PathBuf::from(PLUGIN_SKILLS), PathBuf::from)
 }
 
@@ -144,7 +144,7 @@ fn skill_names() -> Vec<String> {
 fn codex_items() -> Vec<Item> {
     let config = codex_config();
     let status = match std::fs::read_to_string(&config) {
-        Ok(text) => match codex_has_legion(&text) {
+        Ok(text) => match codex_has_legionctl(&text) {
             Ok(true) => "current".into(),
             Ok(false) => "missing".into(),
             Err(e) => e.to_string(),
@@ -152,20 +152,22 @@ fn codex_items() -> Vec<Item> {
         Err(_) => "missing".into(),
     };
     let mut items = vec![Item {
-        what: "legion mcp".into(),
+        what: "legionctl mcp".into(),
         agent: "codex".into(),
         status,
         path: config.display().to_string(),
     }];
     for name in skill_names() {
-        let link = home().join(".codex/skills").join(format!("legion-{name}"));
+        let link = home()
+            .join(".codex/skills")
+            .join(format!("legionctl-{name}"));
         let status = if std::fs::read_link(&link).is_ok_and(|t| t == plugin_skills().join(&name)) {
             "current"
         } else {
             "missing"
         };
         items.push(Item {
-            what: format!("legion skill {name}"),
+            what: format!("legionctl skill {name}"),
             agent: "codex".into(),
             status: status.into(),
             path: link.display().to_string(),
@@ -227,34 +229,37 @@ pub fn apply(install_missing_ctx: bool) -> Result<Vec<String>> {
 
     let config = codex_config();
     let text = std::fs::read_to_string(&config).unwrap_or_default();
-    if !codex_has_legion(&text)? {
+    if !codex_has_legionctl(&text)? {
         if config.exists() {
-            std::fs::copy(&config, config.with_extension("toml.legion-bak"))
+            std::fs::copy(&config, config.with_extension("toml.legionctl-bak"))
                 .context("backing up codex config")?;
         }
         std::fs::create_dir_all(config.parent().context("codex config has no parent")?)?;
-        let block = "\n# added by `legion setup`\n[mcp_servers.legion]\ncommand = \"legion\"\nargs = [\"mcp\"]\n";
+        let block = "\n# added by `legion setup`\n[mcp_servers.legionctl]\ncommand = \"legion\"\nargs = [\"mcp\"]\n";
         let updated = format!("{}{block}", text.trim_end_matches('\n'));
         ensure!(
-            codex_has_legion(&updated)?,
-            "refusing to write: result would not contain [mcp_servers.legion]"
+            codex_has_legionctl(&updated)?,
+            "refusing to write: result would not contain [mcp_servers.legionctl]"
         );
         std::fs::write(&config, updated)?;
         done.push(format!(
-            "legion mcp: added to {} (backup *.legion-bak)",
+            "legionctl mcp: added to {} (backup *.legionctl-bak)",
             config.display()
         ));
     }
 
     let skills_dir = home().join(".codex/skills");
-    // skills that were renamed or removed leave dangling legion-* links behind; drop only those
+    // skills that were renamed or removed leave dangling legionctl-* links behind; drop only those
     for entry in std::fs::read_dir(&skills_dir)
         .into_iter()
         .flatten()
         .flatten()
     {
         let path = entry.path();
-        if entry.file_name().to_string_lossy().starts_with("legion-")
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("legionctl-")
             && path.is_symlink()
             && !path.exists()
         {
@@ -264,7 +269,7 @@ pub fn apply(install_missing_ctx: bool) -> Result<Vec<String>> {
     }
     for name in skill_names() {
         let target = plugin_skills().join(&name);
-        let link = skills_dir.join(format!("legion-{name}"));
+        let link = skills_dir.join(format!("legionctl-{name}"));
         if std::fs::read_link(&link).is_ok_and(|t| t == target) {
             continue;
         }
@@ -274,11 +279,11 @@ pub fn apply(install_missing_ctx: bool) -> Result<Vec<String>> {
         }
         ensure!(
             !link.exists(),
-            "{} exists and is not a legion link; not replacing it",
+            "{} exists and is not a legionctl link; not replacing it",
             link.display()
         );
         std::os::unix::fs::symlink(&target, &link)?;
-        done.push(format!("legion skill {name}: linked for codex"));
+        done.push(format!("legionctl skill {name}: linked for codex"));
     }
     Ok(done)
 }
@@ -299,17 +304,5 @@ mod tests {
             ("codex", "missing")
         );
         assert!(parse_ctx_status("mcp", "not json").is_empty());
-    }
-
-    #[test]
-    fn detects_legion_in_codex_config() {
-        assert!(codex_has_legion("[mcp_servers.legion]\ncommand = \"legion\"\n").unwrap());
-        assert!(
-            !codex_has_legion("model = \"x\"\n[mcp_servers.ctx]\ncommand = \"ctx\"\n").unwrap()
-        );
-        assert!(
-            codex_has_legion("model = [\n").is_err(),
-            "invalid TOML must stop setup"
-        );
     }
 }

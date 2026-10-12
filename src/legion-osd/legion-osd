@@ -29,7 +29,7 @@ except ImportError:
 PLATFORM_PROFILE = Path("/sys/firmware/acpi/platform_profile")
 FN_LOCK = Path("/sys/bus/platform/devices/VPC2004:00/fn_lock")
 AC_ONLINE = Path("/sys/class/power_supply/ADP0/online")
-OVERRIDE = Path("/run/legion-control/firmware-override")
+OVERRIDE = Path("/run/legionctl/firmware-override")
 SETTLE_MS = 400  # coalesce rapid presses and give `legionctl follow` time to record an override
 POLL_S = 2  # fallback in case an attribute never raises POLLPRI
 TIMEOUT_MS = 2500

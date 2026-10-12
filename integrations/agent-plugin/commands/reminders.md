@@ -1,8 +1,8 @@
 ---
-description: Manage the reminders legion's hooks inject into every session or prompt (guided)
+description: Manage the reminders legionctl's hooks inject into every session or prompt (guided)
 argument-hint: [on|off|add|remove] [id] [text]
 ---
-Help the user manage legion reminders. Request: $ARGUMENTS
+Help the user manage legionctl reminders. Request: $ARGUMENTS
 
 1. Call `reminders_list` and show a compact table: on/off, id, when (session start or every prompt), built-in or
    custom, text.

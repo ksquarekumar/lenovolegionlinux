@@ -4,10 +4,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
-use legion_core::agents::{self, ConfigFile};
-use legion_core::load::{Level, Pressure};
-use legion_core::snapshot::Snapshot;
-use legion_core::worktree::{Store, WorktreeStatus};
+use legionctl_core::agents::{self, ConfigFile};
+use legionctl_core::load::{Level, Pressure};
+use legionctl_core::snapshot::Snapshot;
+use legionctl_core::worktree::{Store, WorktreeStatus};
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};
@@ -72,7 +72,7 @@ fn draw(f: &mut Frame, s: &Snapshot, worktrees: &[WorktreeStatus], configs: &[Co
         .into(),
     ]);
     f.render_widget(
-        Paragraph::new(status).block(Block::bordered().title(" legion ")),
+        Paragraph::new(status).block(Block::bordered().title(" legionctl ")),
         header,
     );
 
@@ -119,7 +119,7 @@ fn draw(f: &mut Frame, s: &Snapshot, worktrees: &[WorktreeStatus], configs: &[Co
         };
         Row::new(vec![
             w.worktree.name.clone(),
-            w.size_bytes.map_or("-".into(), legion_core::human_bytes),
+            w.size_bytes.map_or("-".into(), legionctl_core::human_bytes),
             state.into(),
             w.worktree.repo.display().to_string(),
         ])

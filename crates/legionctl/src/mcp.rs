@@ -3,9 +3,9 @@
 
 use std::path::PathBuf;
 
-use legion_core::reminders::{self, Event};
-use legion_core::{actions, agents, load, setup, snapshot::Snapshot, worktree::Store};
-use legion_core::{db::Db, hooks::Hooks, skills};
+use legionctl_core::reminders::{self, Event};
+use legionctl_core::{actions, agents, load, setup, snapshot::Snapshot, worktree::Store};
+use legionctl_core::{db::Db, hooks::Hooks, skills};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock as Content};
 use rmcp::{ServiceExt, tool, tool_router};
@@ -42,7 +42,7 @@ pub struct ListArgs {
 pub struct CreateArgs {
     /// Absolute path of the git repository to branch from.
     pub repo: String,
-    /// Worktree name: letters, digits, '-', '_', '.'; becomes branch legion/NAME.
+    /// Worktree name: letters, digits, '-', '_', '.'; becomes branch legionctl/NAME.
     pub name: String,
     /// Git ref to start from; defaults to the repo's HEAD.
     pub base: Option<String>,
@@ -140,7 +140,7 @@ impl Legion {
     }
 
     #[tool(
-        description = "Create an isolated git worktree of a repository on a new branch legion/NAME, under /data/worktrees/REPO/NAME. Use one per task so parallel work never collides."
+        description = "Create an isolated git worktree of a repository on a new branch legionctl/NAME, under /data/worktrees/REPO/NAME. Use one per task so parallel work never collides."
     )]
     fn worktree_create(&self, Parameters(args): Parameters<CreateArgs>) -> CallToolResult {
         Store::default()
@@ -167,21 +167,21 @@ impl Legion {
     }
 
     #[tool(
-        description = "Check whether ctx (agent history search) and legion are set up for Claude Code and Codex: skills and MCP servers. Read-only."
+        description = "Check whether ctx (agent history search) and legionctl are set up for Claude Code and Codex: skills and MCP servers. Read-only."
     )]
     fn setup_check(&self) -> CallToolResult {
         ok(&setup::check())
     }
 
     #[tool(
-        description = "Set up ctx and legion for Claude Code and Codex: install the ctx skill and MCP server for both, add legion's MCP server to ~/.codex/config.toml (with a backup) and link legion's skills for Codex. Changes user-level config files only."
+        description = "Set up ctx and legionctl for Claude Code and Codex: install the ctx skill and MCP server for both, add legionctl's MCP server to ~/.codex/config.toml (with a backup) and link legionctl's skills for Codex. Changes user-level config files only."
     )]
     fn setup_apply(&self) -> CallToolResult {
         setup::apply(false).map_or_else(fail, |done| ok(&done))
     }
 
     #[tool(
-        description = "List reminders that legion's hooks inject into agent sessions (skills to follow, habits), with on/off state and when they fire."
+        description = "List reminders that legionctl's hooks inject into agent sessions (skills to follow, habits), with on/off state and when they fire."
     )]
     fn reminders_list(&self) -> CallToolResult {
         reminders::Store::default()
@@ -258,7 +258,7 @@ impl Legion {
     }
 
     #[tool(
-        description = "List legion skills (ste100-style, glanceable-style, ...): description, where Claude Code and Codex have them installed, and whether the reminder that keeps each in force is on."
+        description = "List legionctl skills (ste100-style, glanceable-style, ...): description, where Claude Code and Codex have them installed, and whether the reminder that keeps each in force is on."
     )]
     fn skills_list(&self) -> CallToolResult {
         let home = std::env::var_os("HOME")

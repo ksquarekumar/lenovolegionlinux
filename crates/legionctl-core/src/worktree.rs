@@ -46,9 +46,9 @@ impl Default for Store {
         let state = std::env::var_os("XDG_STATE_HOME")
             .map_or_else(|| home.join(".local/state"), PathBuf::from);
         Store {
-            root: std::env::var_os("LEGION_WORKTREES")
+            root: std::env::var_os("LEGIONCTL_WORKTREES")
                 .map_or_else(|| PathBuf::from("/data/worktrees"), PathBuf::from),
-            registry: state.join("legion/worktrees.json"),
+            registry: state.join("legionctl/worktrees.json"),
         }
     }
 }
@@ -143,7 +143,7 @@ impl Store {
         let path = self.root.join(repo_name).join(name);
         ensure!(!path.exists(), "{} already exists", path.display());
         std::fs::create_dir_all(path.parent().context("worktree path has no parent")?)?;
-        let branch = format!("legion/{name}");
+        let branch = format!("legionctl/{name}");
         let path_str = path.to_str().context("worktree path is not UTF-8")?;
         git(
             &top,
@@ -219,7 +219,7 @@ mod tests {
     use super::*;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("legion-test-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("legionctl-test-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -271,7 +271,7 @@ mod tests {
         };
         let wt = store.create(&repo, "task-1", None).unwrap();
         assert!(wt.path.ends_with("repo/task-1") && wt.path.is_dir());
-        assert_eq!(wt.branch, "legion/task-1");
+        assert_eq!(wt.branch, "legionctl/task-1");
         assert!(
             store.create(&repo, "task-1", None).is_err(),
             "duplicate names are refused"

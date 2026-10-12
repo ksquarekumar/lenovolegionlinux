@@ -11,7 +11,7 @@ use crate::read;
 
 const AC_ADAPTER: &str = "/sys/class/power_supply/ADP0/online";
 const PLATFORM_PROFILE: &str = "/sys/firmware/acpi/platform_profile";
-const FIRMWARE_OVERRIDE: &str = "/run/legion-control/firmware-override";
+const FIRMWARE_OVERRIDE: &str = "/run/legionctl/firmware-override";
 const FIRMWARE_ATTRIBUTES: &str = "/sys/class/firmware-attributes/lenovo-wmi-other-0/attributes";
 const CPUFREQ: &str = "/sys/devices/system/cpu/cpufreq";
 const RAPL: &str = "/sys/class/powercap/intel-rapl:0";

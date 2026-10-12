@@ -1,12 +1,12 @@
 # Maintainer: ksquare
 # shellcheck shell=bash disable=SC2034,SC2154  # makepkg reads these variables and provides $pkgdir
-pkgname=legion-control
+pkgname=legionctl
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Local Lenovo Legion 82WQ power and firmware policy"
 arch=("any")
 url="https://github.com/ksquarekumar/lenovolegionlinux"
-install=legion-control.install
+install=legionctl.install
 license=("MIT")
 depends=("python" "systemd" "cpupower" "nvidia-utils")
 makedepends=("git" "cargo")
@@ -18,7 +18,7 @@ optdepends=(
   "acpi_call-dkms: firmware fan RPM through Lenovo WMI"
 )
 conflicts=("LenovoLegion" "lenovolegionlinux-git" "lenovolegionlinux-dkms-git" "lenovo-legion-wmi-dkms-git")
-backup=("etc/udev/rules.d/99-legion-control.rules" "etc/udev/hwdb.d/90-legion-keys.hwdb" "etc/scx_loader.toml")
+backup=("etc/udev/rules.d/99-legionctl.rules" "etc/udev/hwdb.d/90-legion-keys.hwdb" "etc/scx_loader.toml")
 source=()
 sha256sums=()
 
@@ -34,8 +34,8 @@ build() {
 package() {
   local repo_root="${startdir}/../.."
   make -C "${repo_root}" DESTDIR="${pkgdir}" install
-  install -Dm644 "${repo_root}/README.md" "${pkgdir}/usr/share/doc/legion-control/README.md"
-  install -Dm644 "${repo_root}/docs/ARCHITECTURE.md" "${pkgdir}/usr/share/doc/legion-control/ARCHITECTURE.md"
-  install -Dm644 "${repo_root}/docs/UPSTREAMS.md" "${pkgdir}/usr/share/doc/legion-control/UPSTREAMS.md"
-  install -Dm644 "${repo_root}/LICENSE" "${pkgdir}/usr/share/licenses/legion-control/LICENSE"
+  install -Dm644 "${repo_root}/README.md" "${pkgdir}/usr/share/doc/legionctl/README.md"
+  install -Dm644 "${repo_root}/docs/ARCHITECTURE.md" "${pkgdir}/usr/share/doc/legionctl/ARCHITECTURE.md"
+  install -Dm644 "${repo_root}/docs/UPSTREAMS.md" "${pkgdir}/usr/share/doc/legionctl/UPSTREAMS.md"
+  install -Dm644 "${repo_root}/LICENSE" "${pkgdir}/usr/share/licenses/legionctl/LICENSE"
 }

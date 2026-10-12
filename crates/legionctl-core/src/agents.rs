@@ -72,7 +72,7 @@ mod tests {
 
     #[test]
     fn reports_validity_and_sections_without_values() {
-        let dir = std::env::temp_dir().join(format!("legion-agents-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("legionctl-agents-{}", std::process::id()));
         std::fs::create_dir_all(dir.join(".claude")).unwrap();
         std::fs::create_dir_all(dir.join(".codex")).unwrap();
         std::fs::write(
@@ -82,7 +82,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             dir.join(".codex/config.toml"),
-            "model = 'x'\n[mcp_servers.legion]\ncommand = 'legion'\n",
+            "model = 'x'\n[mcp_servers.legionctl]\ncommand = 'legion'\n",
         )
         .unwrap();
         std::fs::write(dir.join(".mcp.json"), "{ not json").unwrap();

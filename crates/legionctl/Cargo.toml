@@ -1,12 +1,12 @@
 [package]
-name = "legion"
+name = "legionctl"
 description = "Operator CLI, TUI and MCP server for this Lenovo Legion machine"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 
 [dependencies]
-legion-core = { path = "../legion-core" }
+legionctl-core = { path = "../legionctl-core" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -15,3 +15,9 @@ clap = { version = "4.6.7", features = ["derive"] }
 ratatui = "0.30.2"
 rmcp = { version = "3.5.1", features = ["server", "macros", "transport-io"] }
 tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "io-std"] }
+
+# shortcut: the binary keeps the name `legion` while the Python `legionctl` is installed; the switch in
+# docs/design/15-layout.md removes this section.
+[[bin]]
+name = "legion"
+path = "src/main.rs"

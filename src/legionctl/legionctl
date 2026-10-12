@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-DEFAULT_PROFILE = Path("/usr/share/legion-control/profiles/lenovo-82wq-legion-pro-7-16irx8h.json")
+DEFAULT_PROFILE = Path("/usr/share/legionctl/profiles/lenovo-82wq-legion-pro-7-16irx8h.json")
 REPO_PROFILE = Path(__file__).resolve().parents[2] / "profiles" / "lenovo-82wq-legion-pro-7-16irx8h.json"
 DMI_ROOT = Path("/sys/class/dmi/id")
 POWERCAP_ROOT = Path("/sys/class/powercap")
@@ -274,7 +274,7 @@ def fan_mode_paths(profile):
 # Fn+Q changes platform_profile in firmware and emits the same uevent as our own writes. We record every
 # value we write; a change to anything else is the user's choice, kept as an override until the power
 # source changes, the machine reboots (/run is tmpfs), or `apply` runs.
-STATE_DIR = Path("/run/legion-control")
+STATE_DIR = Path("/run/legionctl")
 WRITTEN_FILE = STATE_DIR / "firmware-written"
 OVERRIDE_FILE = STATE_DIR / "firmware-override"
 

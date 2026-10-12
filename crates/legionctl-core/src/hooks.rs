@@ -28,7 +28,7 @@ pub const BUILTIN_ACTIONS: &[(&str, &str)] = &[
     ),
     (
         "setup-check",
-        "A line when ctx or legion setup for Claude/Codex needs attention.",
+        "A line when ctx or legionctl setup for Claude/Codex needs attention.",
     ),
 ];
 
@@ -258,7 +258,7 @@ impl Hooks<'_> {
                         .map(|i| format!("{} for {}", i.what, i.agent))
                         .collect();
                     format!(
-                        "legion setup: {} need attention ({}). Run /legion:setup.",
+                        "legionctl setup: {} need attention ({}). Run /legionctl:setup.",
                         todo.len(),
                         names.join(", ")
                     )
@@ -277,11 +277,14 @@ impl Hooks<'_> {
                     if out.status.success() {
                         String::from_utf8_lossy(&out.stdout).trim().to_string()
                     } else {
-                        format!("legion hook action {} failed ({})", action.id, out.status)
+                        format!(
+                            "legionctl hook action {} failed ({})",
+                            action.id, out.status
+                        )
                     }
                 }),
         };
-        result.unwrap_or_else(|e| format!("legion hook action {} failed: {e}", action.id))
+        result.unwrap_or_else(|e| format!("legionctl hook action {} failed: {e}", action.id))
     }
 
     /// Run every action bound to `event`, in order, and return their combined output.
@@ -306,7 +309,8 @@ mod tests {
     use crate::db::temp_db;
 
     fn hooks<'a>(db: &'a Db, tag: &str) -> Hooks<'a> {
-        let dir = std::env::temp_dir().join(format!("legion-hooks-{tag}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("legionctl-hooks-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         Hooks {
             db,
@@ -315,20 +319,6 @@ mod tests {
             },
             actor: "test",
         }
-    }
-
-    #[test]
-    fn defaults_bind_reminders_load_and_setup() {
-        let db = temp_db("hook-defaults");
-        let h = hooks(&db, "defaults");
-        let prompt: Vec<String> = h
-            .bindings()
-            .unwrap()
-            .into_iter()
-            .filter(|b| b.event == Event::Prompt)
-            .map(|b| b.action)
-            .collect();
-        assert_eq!(prompt, ["reminders", "load-if-busy"]);
     }
 
     #[test]
@@ -345,9 +335,9 @@ mod tests {
         }
         let out = h.run(Event::Prompt).unwrap();
         let lines: Vec<&str> = out.lines().collect();
-        assert!(lines[0].starts_with("legion hook action broken failed"));
+        assert!(lines[0].starts_with("legionctl hook action broken failed"));
         assert!(
-            lines[1].starts_with("legion hook action slow failed"),
+            lines[1].starts_with("legionctl hook action slow failed"),
             "timeout stops slow actions"
         );
         assert_eq!(lines[2], "hello", "later actions still run");

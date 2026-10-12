@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "legion": {
+    "legionctl": {
       "command": "legion",
       "args": ["mcp"]
     }

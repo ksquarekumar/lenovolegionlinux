@@ -1,6 +1,6 @@
 [package]
-name = "legion-core"
-description = "State, load, worktree and action primitives shared by the legion CLI, TUI and MCP server"
+name = "legionctl-core"
+description = "State, load, worktree and action primitives shared by the legionctl CLI, TUI and MCP server"
 edition.workspace = true
 license.workspace = true
 version.workspace = true

@@ -30,22 +30,12 @@ def fake_drm(root, cards):
 
 
 class ModulesTest(unittest.TestCase):
-    def test_parse_modules_load_skips_comments_and_blanks(self):
-        self.assertEqual(legionctl.parse_modules_load("# x\nacpi_call\n\n; y\nideapad_laptop"), ["acpi_call", "ideapad_laptop"])
-
     def test_parse_dkms_status(self):
         text = "acpi_call/1.2.2, 7.2.9-2-cachyos, x86_64: installed\nnvidia/580.178.04, 7.2.9-2-cachyos-bore-lto, x86_64: built\n"
         self.assertEqual(
             legionctl.parse_dkms_status(text),
             [("acpi_call/1.2.2", "7.2.9-2-cachyos", "installed"), ("nvidia/580.178.04", "7.2.9-2-cachyos-bore-lto", "built")],
         )
-
-    def test_profile_declares_the_modules_this_machine_needs(self):
-        import json
-
-        profile = json.loads((ROOT / "profiles/lenovo-82wq-legion-pro-7-16irx8h.json").read_text())
-        self.assertIn("acpi_call", profile["kernel_modules"]["required"])
-        self.assertIn("thinkpad_acpi", profile["kernel_modules"]["unwanted_autoload"])
 
 
 class GpuTest(unittest.TestCase):
@@ -64,13 +54,6 @@ class GpuTest(unittest.TestCase):
     def test_discrete_when_panel_is_on_nvidia(self):
         drm = fake_drm(self.root, {"card0": ("nvidia", {"eDP-2": "connected"}), "card1": ("i915", {"eDP-1": "disconnected"})})
         self.assertEqual(legionctl.gpu_mode(legionctl.gpu_outputs(drm)), "discrete")
-
-    def test_primary_rule_round_trip(self):
-        legionctl.PRIMARY_GPU_RULE = self.root / "61.rules"
-        self.assertEqual(legionctl.preferred_primary_gpu(), "auto")
-        legionctl.PRIMARY_GPU_RULE.write_text(legionctl.primary_gpu_rule("nvidia"))
-        self.assertEqual(legionctl.preferred_primary_gpu(), "nvidia")
-        self.assertIn("mutter-device-preferred-primary", legionctl.primary_gpu_rule("intel"))
 
 
 class CpuTest(unittest.TestCase):

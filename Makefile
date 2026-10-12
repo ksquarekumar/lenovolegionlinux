@@ -2,7 +2,7 @@ PREFIX ?= /usr
 SYSCONFDIR ?= /etc
 UNITDIR ?= $(PREFIX)/lib/systemd/system
 UDEVDIR ?= $(SYSCONFDIR)/udev/rules.d
-DATADIR ?= $(PREFIX)/share/legion-control
+DATADIR ?= $(PREFIX)/share/legionctl
 BINDIR ?= $(PREFIX)/bin
 PROFILE ?= profiles/lenovo-82wq-legion-pro-7-16irx8h.json
 PRE_COMMIT ?= pre-commit
@@ -40,7 +40,7 @@ rust-lint: ## rustfmt check and clippy with warnings as errors
 	cargo clippy --workspace --all-targets --locked -- -D warnings
 
 .PHONY: build
-build: ## build the legion CLI/TUI/MCP binary (run as your user, before install)
+build: ## build the legionctl client binary (named legion until the switch) (run as your user, before install)
 	cargo build --release --locked
 
 .PHONY: validate
@@ -82,7 +82,7 @@ install: ## install legionctl, profile, units, udev and tuning (needs root)
 	install -Dm644 systemd/legion-reassert-ac.timer "$(DESTDIR)$(UNITDIR)/legion-reassert-ac.timer"
 	install -Dm644 systemd/legion-follow.service "$(DESTDIR)$(UNITDIR)/legion-follow.service"
 	install -Dm755 systemd/system-sleep/legion "$(DESTDIR)$(PREFIX)/lib/systemd/system-sleep/legion"
-	install -Dm644 udev/99-legion-control.rules "$(DESTDIR)$(UDEVDIR)/99-legion-control.rules"
+	install -Dm644 udev/99-legionctl.rules "$(DESTDIR)$(UDEVDIR)/99-legionctl.rules"
 	install -Dm644 hwdb/90-legion-keys.hwdb "$(DESTDIR)$(SYSCONFDIR)/udev/hwdb.d/90-legion-keys.hwdb"
 	install -Dm644 systemd/power-profiles-daemon.service.d/10-legion.conf "$(DESTDIR)$(UNITDIR)/power-profiles-daemon.service.d/10-legion.conf"
 	install -Dm644 tuning/scx_loader.toml "$(DESTDIR)$(SYSCONFDIR)/scx_loader.toml"

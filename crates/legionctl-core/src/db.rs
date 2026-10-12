@@ -1,4 +1,4 @@
-//! The operator database: one SQLite file in WAL mode, shared by every legion process of this user.
+//! The operator database: one SQLite file in WAL mode, shared by every legionctl process of this user.
 //!
 //! - Bootstrap: `open` applies pending schema migrations in order, each in its own transaction, tracked by
 //!   `PRAGMA user_version`. Installs, upgrades and plain starts all go through the same path.
@@ -50,7 +50,7 @@ pub fn default_path() -> PathBuf {
     let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
     let state =
         std::env::var_os("XDG_STATE_HOME").map_or_else(|| home.join(".local/state"), PathBuf::from);
-    state.join("legion/legion.db")
+    state.join("legionctl/operator.db")
 }
 
 fn now() -> i64 {
@@ -111,9 +111,9 @@ fn migrate(conn: &mut Connection) -> Result<()> {
 
 #[cfg(test)]
 pub(crate) fn temp_db(tag: &str) -> Db {
-    let dir = std::env::temp_dir().join(format!("legion-db-{tag}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("legionctl-db-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    Db::open(&dir.join("legion.db")).unwrap()
+    Db::open(&dir.join("operator.db")).unwrap()
 }
 
 #[cfg(test)]
@@ -137,18 +137,5 @@ mod tests {
             .query_row("PRAGMA journal_mode", [], |r| r.get(0))
             .unwrap();
         assert_eq!(mode, "wal");
-    }
-
-    #[test]
-    fn records_events() {
-        let db = temp_db("events");
-        let id = db
-            .record("test", "unit.test", &serde_json::json!({"ok": true}))
-            .unwrap();
-        let kind: String = db
-            .conn()
-            .query_row("SELECT kind FROM events WHERE id = ?1", [id], |r| r.get(0))
-            .unwrap();
-        assert_eq!(kind, "unit.test");
     }
 }

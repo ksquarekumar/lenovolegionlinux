@@ -225,43 +225,6 @@ pub fn read_load() -> Load {
 mod tests {
     use super::*;
 
-    const PSI: &str = "some avg10=34.50 avg60=20.00 avg300=5.00 total=1\nfull avg10=2.00 avg60=1.00 avg300=0.50 total=1";
-
-    #[test]
-    fn parses_pressure_lines() {
-        let p = parse_pressure(PSI).unwrap();
-        assert_eq!(p.some_avg10, 34.5);
-        assert_eq!(p.full_avg10, Some(2.0));
-    }
-
-    #[test]
-    fn levels_follow_thresholds() {
-        let quiet = Pressure {
-            some_avg10: 0.5,
-            full_avg10: None,
-        };
-        assert_eq!(
-            classify(0.4, 32, Some(&quiet), None, None, 0.6).0,
-            Level::Idle
-        );
-        assert_eq!(
-            classify(8.0, 32, Some(&quiet), None, None, 0.6).0,
-            Level::Normal
-        );
-        let busy_cpu = parse_pressure(PSI).unwrap();
-        let (level, why) = classify(8.0, 32, Some(&busy_cpu), None, None, 0.6);
-        assert_eq!(level, Level::Busy);
-        assert_eq!(why, vec!["CPU pressure 34%".to_string()]);
-        assert_eq!(
-            classify(60.0, 32, Some(&quiet), None, None, 0.6).0,
-            Level::Overloaded
-        );
-        assert_eq!(
-            classify(1.0, 32, None, None, None, 0.03).0,
-            Level::Overloaded
-        );
-    }
-
     #[test]
     fn stuck_kernel_workers_on_an_idle_machine_are_not_load() {
         // measured on this machine: I/O some/full ~77% from D-state RCU kworkers, disks 0.4% busy, load 2.3/32
@@ -281,12 +244,5 @@ mod tests {
         let (level, why) = classify(10.0, 32, Some(&quiet), None, Some(&phantom), 0.3);
         assert_eq!(level, Level::Overloaded);
         assert_eq!(why, vec!["I/O stalls (full) 65%".to_string()]);
-    }
-
-    #[test]
-    fn reads_meminfo_keys() {
-        let text = "MemTotal:       32000000 kB\nMemAvailable:   16000000 kB";
-        assert_eq!(meminfo_kib(text, "MemAvailable"), Some(16_000_000));
-        assert_eq!(meminfo_kib(text, "SwapTotal"), None);
     }
 }

@@ -829,12 +829,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 
 [[package]]
-name = "legion"
+name = "legionctl"
 version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
- "legion-core",
+ "legionctl-core",
  "ratatui",
  "rmcp",
  "schemars",
@@ -844,7 +844,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "legion-core"
+name = "legionctl-core"
 version = "0.2.0"
 dependencies = [
  "anyhow",

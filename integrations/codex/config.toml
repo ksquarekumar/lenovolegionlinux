@@ -1,4 +1,4 @@
-# Add to ~/.codex/config.toml to give Codex the same legion MCP tools as the Claude Code plugin.
-[mcp_servers.legion]
+# Add to ~/.codex/config.toml to give Codex the same legionctl MCP tools as the Claude Code plugin.
+[mcp_servers.legionctl]
 command = "legion"
 args = ["mcp"]
