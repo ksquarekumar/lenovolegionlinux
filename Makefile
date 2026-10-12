@@ -54,7 +54,7 @@ ci: lint rust-lint validate test ## what CI runs
 
 .PHONY: package
 package: ## build and install the Arch package (pacman tracks every file)
-	cd packaging/arch && makepkg -sfi
+	cd packaging/arch && makepkg -sfi --noconfirm
 
 .PHONY: lint-pkg
 lint-pkg: ## namcap the PKGBUILD (Arch only)
