@@ -992,6 +992,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "legionctl-operator"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
 name = "legionctl-system"
 version = "0.2.0"
 dependencies = [

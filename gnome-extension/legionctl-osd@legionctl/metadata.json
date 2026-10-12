@@ -1,0 +1,7 @@
+{
+  "uuid": "legionctl-osd@legionctl",
+  "name": "legionctl OSD",
+  "description": "On-screen display for legionctl: thermal mode (Fn+Q), panel refresh rate (Fn+R) and Fn lock, with animations.",
+  "shell-version": ["51"],
+  "url": "https://github.com/ksquarekumar/lenovolegionlinux"
+}

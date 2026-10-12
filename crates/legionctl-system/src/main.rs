@@ -9,8 +9,9 @@
 //! | tick | every 30 s | `legion-reassert-ac.timer` |
 //!
 //! It serves `org.legionctl.System1` on the system bus: methods change the machine after polkit authorizes the
-//! caller, and signals tell the session what changed (`Changed`) and which Fn key was pressed (`Key`). Decisions
-//! come from `legionctl_machine`; this file only wires event sources and the bus to it.
+//! caller, and signals tell the session what changed (`Changed`), the firmware mode after a change (`ModeChanged`),
+//! Fn lock (`FnLock`) and which Fn key was pressed (`Key`). Decisions come from `legionctl_machine`; this file only
+//! wires event sources and the bus to it.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -24,6 +25,7 @@ use legionctl_machine::react::{Event, react};
 use legionctl_machine::sysroot::SysRoot;
 use legionctl_machine::{gpu, profile};
 use tokio::io::unix::AsyncFd;
+use tokio::io::{Interest, Ready};
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::Value;
 
@@ -32,6 +34,9 @@ const BUS_NAME: &str = "org.legionctl.System1";
 const OBJECT_PATH: &str = "/org/legionctl/System1";
 /// How long to wait before looking for the Fn-key device again after it went away (resume, udev remove).
 const REOPEN: Duration = Duration::from_secs(3);
+/// Written by the kernel when the firmware toggles Fn lock (Fn+Esc); readable only after the first change.
+const FN_LOCK_CHANGED: &str = "/sys/class/leds/platform::fnlock/brightness_hw_changed";
+const LEDGER_OVERRIDE: &str = "/run/legionctl/firmware-override";
 
 #[zbus::proxy(
     default_service = "org.freedesktop.login1",
@@ -96,8 +101,37 @@ fn carry_out(
     Ok(policy::execute(root, &plan(&machine)?))
 }
 
-/// One event: log what happened (every event but the tick leaves a line) and tell the session if anything changed.
-async fn handle(root: &SysRoot, emitter: &SignalEmitter<'_>, event: Event) {
+/// What the session shows about the firmware mode: the mode, whether it is the user's Fn+Q choice, and the power
+/// source whose default it is otherwise.
+#[derive(Debug, Clone, PartialEq)]
+struct ModeState {
+    mode: String,
+    fn_q_choice: bool,
+    source: &'static str,
+}
+
+fn mode(root: &SysRoot) -> Option<ModeState> {
+    let (profile, _) = profile::load(None).ok()?;
+    let mode = root.read(&profile.paths.platform_profile)?;
+    Some(ModeState {
+        fn_q_choice: root.read(LEDGER_OVERRIDE).as_deref() == Some(mode.as_str()),
+        source: if root.read(&profile.paths.ac_adapter).as_deref() == Some("1") {
+            "ac"
+        } else {
+            "battery"
+        },
+        mode,
+    })
+}
+
+/// One event: log what happened (every event but the tick leaves a line), tell the session if anything changed, and
+/// announce the firmware mode when it differs from the last one announced.
+async fn handle(
+    root: &SysRoot,
+    emitter: &SignalEmitter<'_>,
+    event: Event,
+    announced: &mut Option<ModeState>,
+) {
     match carry_out(root, |m| react(m, event)) {
         Ok(lines) if lines.is_empty() => {
             if event != Event::Tick {
@@ -114,6 +148,20 @@ async fn handle(root: &SysRoot, emitter: &SignalEmitter<'_>, event: Event) {
         }
         Err(e) => eprintln!("{event:?}: error: {e:#}"),
     }
+    let now = mode(root);
+    if now != *announced
+        && let Some(m) = &now
+    {
+        eprintln!(
+            "{event:?}: mode {}{}",
+            m.mode,
+            if m.fn_q_choice { " (Fn+Q choice)" } else { "" }
+        );
+        if let Err(e) = System1::mode_changed(emitter, &m.mode, m.fn_q_choice, m.source).await {
+            eprintln!("{event:?}: cannot send ModeChanged: {e}");
+        }
+    }
+    *announced = now;
 }
 
 /// Ask polkit whether the caller of this method may perform `action`; polkit may show an authentication dialog.
@@ -213,6 +261,20 @@ impl System1 {
     /// An Fn key that the session acts on was pressed (`refresh-rate`), once per press.
     #[zbus(signal)]
     async fn key(emitter: &SignalEmitter<'_>, name: &str) -> zbus::Result<()>;
+
+    /// The firmware mode changed; `fn_q_choice` is true when it is the user's Fn+Q choice, otherwise it is the
+    /// default of `source` (`ac` or `battery`).
+    #[zbus(signal)]
+    async fn mode_changed(
+        emitter: &SignalEmitter<'_>,
+        mode: &str,
+        fn_q_choice: bool,
+        source: &str,
+    ) -> zbus::Result<()>;
+
+    /// Fn lock (Fn+Esc) was turned on or off.
+    #[zbus(signal)]
+    async fn fn_lock(emitter: &SignalEmitter<'_>, on: bool) -> zbus::Result<()>;
 }
 
 /// Read the Fn-key device on a thread (blocking reads) and send one message per debounced Fn+R press. The device is
@@ -248,6 +310,25 @@ fn watch_fn_keys(root: SysRoot, presses: tokio::sync::mpsc::UnboundedSender<()>)
             std::thread::sleep(REOPEN);
         }
     });
+}
+
+/// The Fn-lock change attribute, watched for sysfs notifications (POLLPRI). Sysfs signals a change only to a handle
+/// that has read the attribute, so it is read once here and again after every notification.
+fn fn_lock_watch(root: &SysRoot) -> Result<AsyncFd<std::fs::File>> {
+    let file = std::fs::File::open(root.path(FN_LOCK_CHANGED))
+        .with_context(|| format!("opening {FN_LOCK_CHANGED}"))?;
+    // empty (ENODATA) until the first change
+    let _ = reread(&file);
+    Ok(AsyncFd::with_interest(file, Interest::PRIORITY)?)
+}
+
+/// Read a sysfs attribute again through the same handle (this also re-arms its change notification).
+fn reread(mut file: &std::fs::File) -> std::io::Result<String> {
+    use std::io::Seek;
+    file.seek(std::io::SeekFrom::Start(0))?;
+    let mut value = String::new();
+    file.read_to_string(&mut value)?;
+    Ok(value.trim().to_string())
 }
 
 /// The udev events this daemon reacts to, or `None` for anything else on the socket.
@@ -288,7 +369,10 @@ async fn main() -> Result<()> {
     tick.tick().await;
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
-    handle(&root, &emitter, Event::Start).await;
+    let fn_lock = fn_lock_watch(&root)?;
+    // announce later changes only; the session asks for the current state when it starts
+    let mut announced = mode(&root);
+    handle(&root, &emitter, Event::Start, &mut announced).await;
     notify(sd_notify::NotifyState::Ready);
 
     loop {
@@ -298,12 +382,12 @@ async fn main() -> Result<()> {
                 let events: Vec<Event> = guard.get_inner().iter().filter_map(|e| udev_event(&e)).collect();
                 guard.clear_ready();
                 for event in events {
-                    handle(&root, &emitter, event).await;
+                    handle(&root, &emitter, event, &mut announced).await;
                 }
             }
             Some(signal) = sleep.next() => {
                 if !signal.args()?.start {
-                    handle(&root, &emitter, Event::Resume).await;
+                    handle(&root, &emitter, Event::Resume, &mut announced).await;
                 }
             }
             Some(()) = presses.recv() => {
@@ -312,7 +396,16 @@ async fn main() -> Result<()> {
                     eprintln!("Key: cannot send: {e}");
                 }
             }
-            _ = tick.tick() => handle(&root, &emitter, Event::Tick).await,
+            ready = fn_lock.ready(Interest::PRIORITY) => {
+                let mut guard = ready?;
+                let on = reread(guard.get_inner()).is_ok_and(|v| v == "1");
+                guard.clear_ready_matching(Ready::PRIORITY);
+                eprintln!("FnLock: {}", if on { "on" } else { "off" });
+                if let Err(e) = System1::fn_lock(&emitter, on).await {
+                    eprintln!("FnLock: cannot send: {e}");
+                }
+            }
+            _ = tick.tick() => handle(&root, &emitter, Event::Tick, &mut announced).await,
             _ = term.recv() => {
                 notify(sd_notify::NotifyState::Stopping);
                 return Ok(());

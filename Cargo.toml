@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/legionctl-core", "crates/legionctl-machine", "crates/legionctl-system", "crates/legionctl"]
+members = ["crates/legionctl-core", "crates/legionctl-machine", "crates/legionctl-system", "crates/legionctl-operator", "crates/legionctl"]
 resolver = "3"
 
 [workspace.package]

@@ -1,0 +1,46 @@
+.legionctl-osd {
+  padding: 18px 24px;
+  spacing: 10px;
+  min-width: 280px;
+}
+
+.legionctl-osd-title {
+  font-weight: bold;
+  font-size: 1.15em;
+  text-align: center;
+}
+
+.legionctl-osd-detail {
+  font-size: 0.9em;
+  text-align: center;
+}
+
+.legionctl-osd-strip {
+  spacing: 16px;
+}
+
+.legionctl-osd-mode {
+  icon-size: 32px;
+  opacity: 0.45;
+}
+
+.legionctl-osd-mode.selected {
+  opacity: 1;
+  color: -st-accent-color;
+}
+
+.legionctl-osd-big {
+  font-size: 2.6em;
+  font-weight: bold;
+  text-align: center;
+}
+
+.legionctl-osd-sweep {
+  height: 3px;
+  background-color: -st-accent-color;
+  border-radius: 2px;
+}
+
+.legionctl-osd-lock {
+  icon-size: 48px;
+}
