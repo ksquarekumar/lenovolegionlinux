@@ -22,6 +22,8 @@ the design is explored and are meant to change; decisions and open questions are
 | [16-observability.md](16-observability.md) | Scope vs LenovoLegionLinux; see, check, change, record and replay tools for developers and superusers |
 | [17-virtualization.md](17-virtualization.md) | VMs, containers and emulation: capability/provider/consumer model, GPU offload, health checks |
 | [18-workspaces.md](18-workspaces.md) | Operating directory and dossier per session, git handled by legionctl, scope-dossier artifact classes linked into a work graph and code graphs, the no-dossier gate |
+| [19-gateway.md](19-gateway.md) | Gateway in the operator: model addressing (`account/model` or the pool), quotas, budgets, exact and semantic cache, durable ACP, session environment images |
+| [20-images.md](20-images.md) | Distributables: Dockerfiles and images mapped to services and cache JSON, VM format, packing a repo's images into a VM |
 | [issues.md](issues.md) | Issues found on this machine and cleanups to do |
 
 Evidence for every machine-specific claim was collected on 2026-10-12 (CachyOS, kernel 7.2.9, GNOME 51,

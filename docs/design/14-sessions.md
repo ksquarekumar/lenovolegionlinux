@@ -73,14 +73,7 @@ Snapshots go to the event log, so the UIs show history ("conflict at 14:02, reso
 
 ## Model calls, accounts and quotas
 
-- Agents send model traffic through the gateway (12-operator): `ANTHROPIC_BASE_URL` for Claude Code, a
-  `model_provider` with `base_url` for Codex. The gateway attributes each request to session and account, counts
-  tokens from responses, reads rate-limit headers, and enforces per-account and per-session budgets (soft: warn;
-  hard: pause the session).
-- **Session as a model call:** the API also offers `POST /v1/runs` (and an OpenAI/Anthropic-compatible adapter): a
-  prompt plus a session template (agent, workdir, tools, policy) starts or resumes a session and streams its output
-  as a completion. Other subsystems (plan ordering, intent-log summaries, the GPUI app) use this instead of calling
-  providers directly, so every call has an account, a quota and an audit record.
+19-gateway.
 
 ## Lifecycle: run, pause, offload, resume
 

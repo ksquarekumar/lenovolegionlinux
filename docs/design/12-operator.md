@@ -87,11 +87,7 @@ Operating directory, named workspace in `~/.agentworkspace`, dossier and change 
 
 ## AI gateway
 
-- axum service on localhost exposing OpenAI- and Anthropic-compatible endpoints, forwarding to the real providers.
-- Exact cache (hash of the normalised request) and semantic cache (local embeddings plus nearest-neighbour search,
-  similarity threshold per model), stored in redb; per-model TTL.
-- UI: a table of cache entries with filters (model, age, size, hit count, prompt text) and bulk delete.
-- Local only by default; prompts can contain secrets, so the cache is per user and excluded from backups unless chosen.
+Models, accounts, quotas, budgets, cache and replay, over HTTP and ACP: 19-gateway.
 
 ## Crates
 

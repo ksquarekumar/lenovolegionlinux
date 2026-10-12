@@ -20,7 +20,6 @@ This note is the authority for names, processes, crates and paths. Notes 00–14
  agent plugin    /legionctl:*                     │              operator.db, approvals,       ◀── events ──────  system.db, firmware, power,
  GNOME extension OSD ◀────────────────────────────┘              agents, sessions, tools,                         GPU, kernel, eBPF, sysctl,
                                                                  workspaces, config, event log                    input, display
-                                                     legionctl-gateway (user): model API, accounts, quotas, cache
                                                      legionctl-sandbox: per session, bwrap + git shim, MCP proxy
                                                      legionctl-bootstrap (oneshot, system and user): install, upgrade, boot, migrations
 ```
@@ -29,7 +28,6 @@ This note is the authority for names, processes, crates and paths. Notes 00–14
 | --- | --- | --- | --- |
 | `legionctl-system` | root, system service | machine state, firmware, power, GPU, display policy, kernel, eBPF, Fn keys | D-Bus `org.legionctl.System1`, polkit per method |
 | `legionctl-operator` | user service | operator database, operation registry, approvals, agents, sessions, tools, workspaces, config, OSD and Mutter calls when a graphical session exists | `$XDG_RUNTIME_DIR/legionctl/api.sock` (axum, HTTP + WebSocket) |
-| `legionctl-gateway` | user service | model API, accounts, budgets, model-call cache | `$XDG_RUNTIME_DIR/legionctl/gateway.sock` and a localhost port for agents |
 | `legionctl-sandbox` | user, one per session scope | bwrap sandbox, gated-command shim, MCP proxy | stdio to the agent |
 | `legionctl-bootstrap` | oneshot, system and user | checks, migrations with backup, version marker, safe mode | none |
 | `legionctl` | user | nothing | CLI, `legionctl tui`, `legionctl mcp`, `legionctl hooks run` |
@@ -69,12 +67,11 @@ crates/
                       cpufreq, PPD, sched_ext, GPU, display, fans, input, sysctl, kernel modules, DKMS, initramfs,
                       disks, boot, windows
   legionctl-bpf       aya programs and loader; observation only; pinned in bpffs
-  legionctl-operator  agents (settings, skills, reminders, hooks, setup, accounts), sessions (ACP, workdirs, git state,
+  legionctl-operator  gateway (19), agents (settings, skills, reminders, hooks, setup, accounts), sessions (ACP, workdirs, git state,
                       lifecycle), tools (package store, MCP proxy, call cache), workspaces (18), approvals, sagas, session OSD
-  legionctl-gateway   Anthropic- and OpenAI-compatible proxy, accounting, budgets, exact and semantic cache
   legionctl-ui        view models and disclosure levels for the TUI and GPUI
 bins/
-  legionctl  legionctl-system  legionctl-operator  legionctl-gateway  legionctl-bootstrap  legionctl-sandbox  legionctl-app
+  legionctl  legionctl-system  legionctl-operator  legionctl-bootstrap  legionctl-sandbox  legionctl-app
 ```
 
 A module becomes its own crate only when its size or its dependencies require it. Until then it stays a module.
@@ -83,9 +80,9 @@ A module becomes its own crate only when its size or its dependencies require it
 
 | Kind | Name |
 | --- | --- |
-| binaries | `/usr/bin/legionctl`, `/usr/bin/legionctl-app`; `/usr/lib/legionctl/legionctl-{system,operator,gateway,bootstrap,sandbox}` |
+| binaries | `/usr/bin/legionctl`, `/usr/bin/legionctl-app`; `/usr/lib/legionctl/legionctl-{system,operator,bootstrap,sandbox}` |
 | system units | `legionctl-system.service`, `legionctl-bootstrap.service`, `legionctl-safe.service` |
-| user units | `legionctl-operator.service`, `legionctl-gateway.service`, `legionctl-session-<id>.scope`, `legionctl-session-<id>.timer` |
+| user units | `legionctl-operator.service`, `legionctl-session-<id>.scope`, `legionctl-session-<id>.timer` |
 | D-Bus, polkit | `org.legionctl.System1`, actions `org.legionctl.<operation>` |
 | config layers | `/usr/share/legionctl/defaults` → `/etc/legionctl` → `~/.config/legionctl` → `<repo>/.legionctl` → session |
 | state | `/var/lib/legionctl/system.db`, `~/.local/state/legionctl/operator.db`, `~/.local/share/legionctl/{store,sessions}`, `~/.cache/legionctl/{gateway,tools}` |
