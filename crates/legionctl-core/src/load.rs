@@ -75,6 +75,7 @@ pub fn classify(
     cpu: Option<&Pressure>,
     memory: Option<&Pressure>,
     io: Option<&Pressure>,
+    disks_busy: f64,
     mem_available_fraction: f64,
 ) -> (Level, Vec<String>) {
     let cpus_f = cpus.max(1) as f64;
@@ -84,9 +85,9 @@ pub fn classify(
     let io_some = io.map_or(0.0, |p| p.some_avg10);
     let io_full = io.and_then(|p| p.full_avg10).unwrap_or(0.0);
     // Kernel workers stuck in uninterruptible sleep (seen here: RCU grace-period kworkers) count as I/O stalls with
-    // the disks idle, and a single stalled task maxes out "full" on a quiet machine. Memory and I/O pressure only
-    // mean the machine is loaded once it is actually doing work.
-    // shortcut: gates on load average; upgrade to sampling disk busy time (/proc/diskstats io_ticks) in the daemon
+    // the disks idle, and a single stalled task maxes out "full". I/O pressure counts only while a disk does I/O;
+    // the load average cannot gate it, because it stays high for minutes after heavy CPU work ends.
+    let disks_working = disks_busy >= 0.10;
     let working = load1 >= 0.10 * cpus_f;
     let heavily_working = load1 >= 0.25 * cpus_f;
 
@@ -97,7 +98,7 @@ pub fn classify(
             format!("memory stalls (full) {mem_full:.0}%"),
         ),
         (
-            heavily_working && io_full >= 30.0,
+            disks_working && io_full >= 30.0,
             format!("I/O stalls (full) {io_full:.0}%"),
         ),
         (
@@ -119,7 +120,7 @@ pub fn classify(
             format!("memory pressure {mem_some:.0}%"),
         ),
         (
-            working && io_some >= 20.0,
+            disks_working && io_some >= 20.0,
             format!("I/O pressure {io_some:.0}%"),
         ),
         (
@@ -178,6 +179,33 @@ pub fn brief(load: &Load) -> String {
     )
 }
 
+/// Busiest whole disk's share of a short window, from `io_ticks` (ms spent doing I/O) in /proc/diskstats.
+fn disks_busy() -> f64 {
+    fn ticks() -> Vec<(String, u64)> {
+        read("/proc/diskstats")
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| {
+                let f: Vec<&str> = l.split_whitespace().collect();
+                let name = *f.get(2)?;
+                let whole = name.starts_with("nvme") && !name.contains('p')
+                    || name.starts_with("sd") && !name.ends_with(|c: char| c.is_ascii_digit());
+                whole.then(|| Some((name.to_string(), f.get(12)?.parse().ok()?)))?
+            })
+            .collect()
+    }
+    const WINDOW_MS: u64 = 100;
+    let before = ticks();
+    std::thread::sleep(std::time::Duration::from_millis(WINDOW_MS));
+    ticks()
+        .iter()
+        .filter_map(|(name, t)| {
+            let (_, b) = before.iter().find(|(n, _)| n == name)?;
+            Some(t.saturating_sub(*b) as f64 / WINDOW_MS as f64)
+        })
+        .fold(0.0, f64::max)
+}
+
 pub fn read_load() -> Load {
     let load1 = read("/proc/loadavg")
         .and_then(|t| t.split_whitespace().next()?.parse().ok())
@@ -200,12 +228,19 @@ pub fn read_load() -> Load {
     } else {
         1.0
     };
+    // sample the disks only when I/O pressure could matter, so the usual call stays instant
+    let disks = if io.as_ref().is_some_and(|p| p.some_avg10 >= 20.0) {
+        disks_busy()
+    } else {
+        0.0
+    };
     let (level, reasons) = classify(
         load1,
         cpus,
         cpu.as_ref(),
         memory.as_ref(),
         io.as_ref(),
+        disks,
         fraction,
     );
     Load {
@@ -226,8 +261,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stuck_kernel_workers_on_an_idle_machine_are_not_load() {
-        // measured on this machine: I/O some/full ~77% from D-state RCU kworkers, disks 0.4% busy, load 2.3/32
+    fn stalled_kernel_workers_are_not_io_load_while_the_disks_are_idle() {
+        // measured on this machine: I/O some/full ~77% from one D-state RCU kworker, disks 0 ms busy
         let phantom = Pressure {
             some_avg10: 77.0,
             full_avg10: Some(65.0),
@@ -236,13 +271,14 @@ mod tests {
             some_avg10: 1.0,
             full_avg10: None,
         };
-        assert_eq!(
-            classify(2.3, 32, Some(&quiet), None, Some(&phantom), 0.3).0,
-            Level::Idle
-        );
-        // the same pressure while really working is reported
-        let (level, why) = classify(10.0, 32, Some(&quiet), None, Some(&phantom), 0.3);
-        assert_eq!(level, Level::Overloaded);
+        let level =
+            |load1, disks| classify(load1, 32, Some(&quiet), None, Some(&phantom), disks, 0.3);
+        assert_eq!(level(2.3, 0.0).0, Level::Idle);
+        // just after a full CPU + GPU load test: load average still 10, disks idle (2026-10-12 false "Overloaded")
+        assert_eq!(level(10.0, 0.0).0, Level::Normal);
+        // the same pressure while a disk really works is reported
+        let (busy, why) = level(2.3, 0.6);
+        assert_eq!(busy, Level::Overloaded);
         assert_eq!(why, vec!["I/O stalls (full) 65%".to_string()]);
     }
 }
