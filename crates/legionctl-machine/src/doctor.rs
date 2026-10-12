@@ -240,7 +240,7 @@ fn gpu_warnings(root: &SysRoot, profile: &Profile, ac: bool) -> Vec<String> {
         && gpu::desktop_preference(root) != "nvidia"
     {
         w.push(
-            "an external display runs on NVIDIA but the desktop may be drawn on Intel; try `legionctl gpu primary nvidia`"
+            "an external display runs on NVIDIA but the desktop may be drawn on Intel; try `legionctl gpu primary --choice nvidia`"
                 .into(),
         );
     }

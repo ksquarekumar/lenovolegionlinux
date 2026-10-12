@@ -1,44 +1,38 @@
 //! End-to-end: the binary as the agent plugin uses it (hook dispatch, MCP over stdio), in an isolated HOME.
 
+mod common;
+
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use common::Operator;
 use serde_json::{Value, json};
 
-fn home(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("legionctl-e2e-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn legion(home: &Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_legionctl"));
-    cmd.env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap())
-        .env("HOME", home)
-        .env(
-            "LEGIONCTL_PLUGIN_SKILLS",
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integrations/agent-plugin/skills"),
-        );
-    cmd
-}
-
-fn run(home: &Path, args: &[&str]) -> String {
-    let out = legion(home).args(args).output().unwrap();
-    assert!(
-        out.status.success(),
-        "{args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
+/// An operator with an empty HOME and the repo's plugin skills.
+fn operator(tag: &str) -> (Operator, PathBuf) {
+    let home = std::env::temp_dir().join(format!("legionctl-e2e-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let skills =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integrations/agent-plugin/skills");
+    let operator = Operator::start(
+        tag,
+        &[
+            ("HOME", home.clone().into()),
+            ("PATH", std::env::var_os("PATH").unwrap()),
+            ("LEGIONCTL_PLUGIN_SKILLS", OsString::from(skills)),
+        ],
     );
-    String::from_utf8(out.stdout).unwrap()
+    (operator, home)
 }
 
 #[test]
 fn prompt_hook_injects_skill_reminders_and_user_actions_as_configured() {
-    let h = home("hooks");
-    let fresh = run(&h, &["hooks", "run", "--event", "prompt"]);
+    let (op, _home) = operator("hooks");
+    let run = |args: &[&str]| op.ok(args);
+    let fresh = run(&["hooks", "run", "--event", "prompt"]);
     assert!(
         fresh.contains("legionctl:ste100-style"),
         "fresh install: {fresh}"
@@ -48,10 +42,10 @@ fn prompt_hook_injects_skill_reminders_and_user_actions_as_configured() {
         "fresh install: {fresh}"
     );
 
-    run(&h, &["reminders", "off", "ste100"]);
-    run(&h, &["hooks", "add", "branch", "echo on-branch-main"]);
-    run(&h, &["hooks", "bind", "prompt", "branch"]);
-    let changed = run(&h, &["hooks", "run", "--event", "prompt"]);
+    run(&["reminders", "off", "ste100"]);
+    run(&["hooks", "add", "branch", "echo on-branch-main"]);
+    run(&["hooks", "bind", "--event", "prompt", "branch"]);
+    let changed = run(&["hooks", "run", "--event", "prompt"]);
     assert!(
         !changed.contains("ste100"),
         "reminder turned off: {changed}"
@@ -62,7 +56,7 @@ fn prompt_hook_injects_skill_reminders_and_user_actions_as_configured() {
         "user action runs after built-ins: {changed}"
     );
 
-    let start = run(&h, &["hooks", "run", "--event", "session-start"]);
+    let start = run(&["hooks", "run", "--event", "session-start"]);
     assert!(
         !start.contains("on-branch-main"),
         "bound to prompt only: {start}"
@@ -76,9 +70,11 @@ struct Mcp {
 }
 
 impl Mcp {
-    fn start(home: &Path) -> Mcp {
-        let mut child = legion(home)
+    fn start(operator: &Operator) -> Mcp {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_legionctl"))
             .arg("mcp")
+            .env_clear()
+            .env("XDG_RUNTIME_DIR", &operator.runtime)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -121,9 +117,9 @@ impl Drop for Mcp {
 }
 
 #[test]
-fn mcp_server_exposes_every_tool_and_reads_the_plugin_skills() {
-    let h = home("mcp");
-    let mut mcp = Mcp::start(&h);
+fn mcp_server_has_one_tool_per_operation_and_calls_the_operator() {
+    let (op, _home) = operator("mcp");
+    let mut mcp = Mcp::start(&op);
 
     let tools = mcp.call("tools/list", &json!({}));
     let names: Vec<&str> = tools["tools"]
@@ -132,33 +128,13 @@ fn mcp_server_exposes_every_tool_and_reads_the_plugin_skills() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    for expected in [
-        "system_status",
-        "system_load",
-        "doctor",
-        "agent_configs",
-        "worktree_list",
-        "worktree_create",
-        "worktree_remove",
-        "request_action",
-        "setup_check",
-        "setup_apply",
-        "reminders_list",
-        "reminders_update",
-        "hooks_list",
-        "hooks_update",
-        "skills_list",
-    ] {
-        assert!(
-            names.contains(&expected),
-            "missing tool {expected}; have {names:?}"
-        );
-    }
+    let expected: Vec<String> = legionctl_api::OPS
+        .iter()
+        .map(|o| o.name.replace(['.', '-'], "_"))
+        .collect();
+    assert_eq!(names, expected, "the registry is the tool list");
 
-    let result = mcp.call(
-        "tools/call",
-        &json!({"name": "skills_list", "arguments": {}}),
-    );
+    let result = mcp.call("tools/call", &json!({"name": "skills", "arguments": {}}));
     assert_ne!(result["isError"], true, "{result}");
     let skills: Value =
         serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
@@ -178,4 +154,19 @@ fn mcp_server_exposes_every_tool_and_reads_the_plugin_skills() {
             "no plugin registry in a fresh HOME: {s}"
         );
     }
+
+    // an agent's relative path is its own working directory, not the operator's
+    let result = mcp.call(
+        "tools/call",
+        &json!({"name": "worktree_create", "arguments": {"name": "x", "repo": "no-such-repo"}}),
+    );
+    assert_eq!(result["isError"], true, "{result}");
+    let message = result["content"][0]["text"].as_str().unwrap();
+    assert!(
+        message.contains(&format!(
+            "{}/no-such-repo",
+            std::env::current_dir().unwrap().display()
+        )),
+        "{message}"
+    );
 }

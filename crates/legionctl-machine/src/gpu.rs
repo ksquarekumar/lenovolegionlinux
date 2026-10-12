@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use anyhow::{Result, bail};
 
@@ -15,7 +15,7 @@ use crate::sysroot::SysRoot;
 const DRM: &str = "/sys/class/drm";
 pub const PRIMARY_GPU_RULE: &str = "/etc/udev/rules.d/61-legionctl-mutter-primary.rules";
 
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Output {
     pub connector: String,
     pub card: String,

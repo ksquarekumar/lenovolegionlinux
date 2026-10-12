@@ -4,14 +4,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::reminders;
 use crate::setup::plugin_skills;
 
 const CLAUDE_PLUGIN_KEY: &str = "legionctl@lenovolegionlinux";
 
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SkillInfo {
     /// Skill name; Claude Code loads it as `legionctl:<name>`.
     pub name: String,

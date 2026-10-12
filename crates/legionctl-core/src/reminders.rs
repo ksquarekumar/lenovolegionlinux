@@ -17,7 +17,7 @@ pub enum Event {
     Prompt,
 }
 
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Reminder {
     pub id: String,
     pub text: String,
@@ -42,7 +42,7 @@ const BUILTINS: &[(&str, &str, Event, bool)] = &[
     ),
     (
         "load-aware",
-        "Check legionctl system_load before builds, test suites or parallel jobs, and scale them down when busy.",
+        "Check the legionctl load (MCP tool `load`) before builds, test suites or parallel jobs, and scale them down when busy.",
         Event::SessionStart,
         false,
     ),

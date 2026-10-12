@@ -1,759 +1,153 @@
-//! `legionctl`: operator CLI, TUI and MCP server for this machine. Every subcommand goes through legionctl-core, so the
-//! terminal, the TUI and agents (over MCP) see the same state and hit the same guard rails.
+//! `legionctl`: the CLI, TUI and MCP server of legionctl. Every command is an operation of `legionctl-operator`
+//! (see `legionctl-api`); only `mcp`, `tui` and `run` are local, because they are surfaces or must run in this
+//! process.
 
-mod machine;
+mod cli;
+mod client;
 mod mcp;
 mod tui;
 
-use std::path::{Path, PathBuf};
+use std::os::unix::process::CommandExt;
 
-use anyhow::Result;
-use clap::{Parser, Subcommand};
-use legionctl_core::reminders::{self, Event};
-use legionctl_core::{actions, agents, setup, worktree::Store};
-use legionctl_core::{db::Db, hooks::Hooks, skills};
-use legionctl_machine::load;
-use legionctl_machine::snapshot::Detail;
-use legionctl_machine::sysroot::SysRoot;
+use anyhow::{Context, Result, ensure};
+use clap::{Arg, ArgAction, ArgMatches, Command};
+use legionctl_api::{Cores, RunEnvIn, RunGpu, op};
 
-#[derive(Parser)]
-#[command(
-    version,
-    about = "Operate this Legion: state, load, worktrees, agent configs and approved actions"
-)]
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
+use crate::client::Client;
+
+fn client_only() -> Vec<Command> {
+    vec![
+        Command::new("mcp").about("MCP server over stdio, for Claude Code, Codex and other agents"),
+        Command::new("tui").about("Live dashboard"),
+        Command::new("run")
+            .about("Run a program on a chosen GPU, core class and priority")
+            .arg(
+                Arg::new("gpu")
+                    .long("gpu")
+                    .value_parser(["nvidia", "intel", "default"])
+                    .default_value("default"),
+            )
+            .arg(
+                Arg::new("cores")
+                    .long("cores")
+                    .value_parser(["p", "e", "all"])
+                    .default_value("all")
+                    .help("Core class: p (performance), e (efficiency) or all"),
+            )
+            .arg(
+                Arg::new("nice")
+                    .long("nice")
+                    .allow_hyphen_values(true)
+                    .value_parser(clap::value_parser!(i32))
+                    .help("Absolute niceness for the program"),
+            )
+            .arg(
+                Arg::new("cmd")
+                    .num_args(1..)
+                    .trailing_var_arg(true)
+                    .allow_hyphen_values(true)
+                    .required(true)
+                    .action(ArgAction::Append),
+            ),
+    ]
 }
 
-#[derive(Clone, Copy, clap::ValueEnum)]
-enum SourceArg {
-    Ac,
-    Battery,
-    Auto,
+/// Niceness of this process, from /proc/self/stat (field 19).
+fn current_nice() -> i32 {
+    std::fs::read_to_string("/proc/self/stat")
+        .ok()
+        .and_then(|s| {
+            s.rsplit_once(')')?
+                .1
+                .split_whitespace()
+                .nth(16)?
+                .parse()
+                .ok()
+        })
+        .unwrap_or(0)
 }
 
-impl SourceArg {
-    fn source(self) -> Option<legionctl_machine::policy::Source> {
-        use legionctl_machine::policy::Source;
-        match self {
-            SourceArg::Ac => Some(Source::Ac),
-            SourceArg::Battery => Some(Source::Battery),
-            SourceArg::Auto => None,
-        }
+/// `legionctl run`: replace this process with the program, with the GPU environment and CPU list from the
+/// operator, at an absolute niceness.
+fn run(matches: &ArgMatches) -> Result<()> {
+    let choice = |key: &str| matches.get_one::<String>(key).map_or("", String::as_str);
+    let input = RunEnvIn {
+        gpu: match choice("gpu") {
+            "nvidia" => RunGpu::Nvidia,
+            "intel" => RunGpu::Intel,
+            _ => RunGpu::Default,
+        },
+        cores: match choice("cores") {
+            "p" => Cores::P,
+            "e" => Cores::E,
+            _ => Cores::All,
+        },
+    };
+    let env = tokio::runtime::Runtime::new()?
+        .block_on(Client::new("cli")?.call::<op::GpuRunEnv>(&input))?;
+    let mut argv: Vec<String> = matches
+        .get_many::<String>("cmd")
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect();
+    ensure!(
+        !argv.is_empty(),
+        "usage: legionctl run [--gpu nvidia|intel] [--cores p|e] [--nice N] -- command ..."
+    );
+    if let Some(n) = matches.get_one::<i32>("nice") {
+        // `nice -n` is relative to the caller's niceness; make --nice the absolute value the program gets
+        argv = [
+            vec!["nice".into(), "-n".into(), (n - current_nice()).to_string()],
+            argv,
+        ]
+        .concat();
     }
-}
-
-#[derive(Clone, Copy, clap::ValueEnum)]
-enum GpuAction {
-    Status,
-    Primary,
-}
-
-#[derive(Clone, Copy, clap::ValueEnum)]
-enum GpuChoice {
-    Nvidia,
-    Intel,
-    Auto,
-}
-
-#[derive(Clone, Copy, clap::ValueEnum)]
-enum RunGpu {
-    Nvidia,
-    Intel,
-    Default,
-}
-
-#[derive(Clone, Copy, clap::ValueEnum)]
-enum Cores {
-    P,
-    E,
-    All,
-}
-
-#[derive(clap::Args)]
-struct PolicyArgs {
-    /// Profile (JSONC); default: the installed one
-    #[arg(long)]
-    profile: Option<PathBuf>,
-    /// Print what would change; change nothing
-    #[arg(long)]
-    dry_run: bool,
-    #[arg(long)]
-    quiet: bool,
-}
-
-impl PolicyArgs {
-    fn invocation(&self) -> machine::Invocation<'_> {
-        machine::Invocation {
-            profile: self.profile.as_deref(),
-            dry_run: self.dry_run,
-            quiet: self.quiet,
-        }
+    if let Some(cpus) = env.cpus {
+        // a transient scope pins the program and everything it starts; keep `$` in the command literal
+        let scope = [
+            "systemd-run",
+            "--user",
+            "--scope",
+            "--quiet",
+            "--expand-environment=no",
+            "-p",
+        ];
+        argv = [
+            scope.iter().map(ToString::to_string).collect(),
+            vec![format!("AllowedCPUs={cpus}"), "--".into()],
+            argv,
+        ]
+        .concat();
     }
-}
-
-#[derive(Subcommand)]
-enum Command {
-    /// Apply the power policy for ac, battery, or the current power source (auto)
-    Apply {
-        #[arg(value_enum)]
-        mode: SourceArg,
-        #[command(flatten)]
-        args: PolicyArgs,
-        /// Apply even if the machine's DMI does not match the profile
-        #[arg(long)]
-        force: bool,
-        /// Keep an Fn+Q choice (used after resume)
-        #[arg(long)]
-        keep_override: bool,
-    },
-    /// Restore firmware mode, PPD, governor and EPP only
-    Reassert {
-        #[arg(value_enum)]
-        mode: SourceArg,
-        #[command(flatten)]
-        args: PolicyArgs,
-        #[arg(long)]
-        force: bool,
-    },
-    /// React to a firmware `platform_profile` change (Fn+Q)
-    Follow {
-        #[command(flatten)]
-        args: PolicyArgs,
-    },
-    /// Show GPU wiring, or choose which GPU draws the desktop (at the next login)
-    Gpu {
-        #[arg(value_enum, default_value = "status")]
-        action: GpuAction,
-        #[arg(value_enum)]
-        choice: Option<GpuChoice>,
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Run a program on a chosen GPU, core class and priority
-    Run {
-        #[arg(long, value_enum, default_value = "default")]
-        gpu: RunGpu,
-        #[arg(long, value_enum, default_value = "all")]
-        cores: Cores,
-        /// Absolute niceness for the program
-        #[arg(long, allow_hyphen_values = true)]
-        nice: Option<i32>,
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        cmd: Vec<String>,
-    },
-    /// Disable conflicting units from earlier Legion tooling; optionally unload modules and remove packages
-    Cleanup {
-        #[command(flatten)]
-        args: PolicyArgs,
-        #[arg(long)]
-        force: bool,
-        #[arg(long)]
-        unload_modules: bool,
-        #[arg(long)]
-        remove_packages: bool,
-    },
-    /// Known and planned capability coverage from the profile
-    Capabilities {
-        #[arg(long)]
-        profile: Option<PathBuf>,
-    },
-    /// Check the profile's structure and ac/battery consistency (no hardware access)
-    Validate {
-        #[arg(long)]
-        profile: Option<PathBuf>,
-    },
-    /// Power, firmware, GPU and load state
-    Status {
-        #[arg(long)]
-        json: bool,
-        /// Profile (JSONC); default: the installed one
-        #[arg(long)]
-        profile: Option<PathBuf>,
-    },
-    /// System load level and why
-    Load {
-        #[arg(long)]
-        json: bool,
-        /// One line for agent hooks
-        #[arg(long)]
-        brief: bool,
-        /// With --brief: print nothing unless the machine is busy or overloaded
-        #[arg(long)]
-        only_busy: bool,
-    },
-    /// Read-only health checks (legionctl doctor)
-    Doctor {
-        /// Profile (JSONC); default: the installed one
-        #[arg(long)]
-        profile: Option<PathBuf>,
-    },
-    /// Claude Code and Codex settings files: present, valid, which sections
-    Agents {
-        #[arg(long, default_value = ".")]
-        project: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Isolated git worktrees for agents and experiments
-    #[command(subcommand)]
-    Worktree(WorktreeCommand),
-    /// Change the machine; each action asks a human to approve in the polkit dialog
-    Act {
-        /// apply-power-policy or set-desktop-gpu
-        action: String,
-        /// auto|ac|battery for apply-power-policy, nvidia|intel|auto for set-desktop-gpu
-        value: String,
-    },
-    /// Set up ctx and legionctl for Claude Code and Codex (skills, MCP servers)
-    Setup {
-        /// Only report what is missing; change nothing
-        #[arg(long)]
-        check: bool,
-        /// With --check: one line, and only when something needs attention (for agent hooks)
-        #[arg(long)]
-        brief: bool,
-        /// Install ctx with its signed installer if it is missing
-        #[arg(long)]
-        install_ctx: bool,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Reminders that agent hooks inject (skills to follow, working habits)
-    Reminders {
-        #[command(subcommand)]
-        command: Option<ReminderCommand>,
-    },
-    /// What agent hooks run: bind built-in or your own actions to hook events
-    Hooks {
-        #[command(subcommand)]
-        command: Option<HookCommand>,
-    },
-    /// legionctl skills: where each agent has them and whether their reminder is on
-    Skills {
-        #[arg(long)]
-        json: bool,
-    },
-    /// MCP server over stdio, for Claude Code, Codex and other agents
-    Mcp,
-    /// Live dashboard
-    Tui,
-}
-
-#[derive(Subcommand)]
-enum ReminderCommand {
-    /// Show all reminders and whether they are on
-    List {
-        #[arg(long)]
-        json: bool,
-    },
-    /// Turn a reminder on
-    On { id: String },
-    /// Turn a reminder off
-    Off { id: String },
-    /// Add your own reminder (one line, 300 characters max)
-    Add {
-        id: String,
-        text: String,
-        /// When to inject it: session-start (default) or prompt (every turn; keep it short)
-        #[arg(long, value_enum, default_value = "session-start")]
-        event: EventArg,
-    },
-    /// Remove a reminder you added
-    Rm { id: String },
-    /// Print enabled reminders for a hook event (used by the agent plugin)
-    Emit {
-        #[arg(long, value_enum)]
-        event: EventArg,
-    },
-}
-
-#[derive(Subcommand)]
-enum HookCommand {
-    /// Show actions and what is bound to each event
-    List {
-        #[arg(long)]
-        json: bool,
-    },
-    /// Run an action when an event fires (after the ones already bound)
-    Bind {
-        #[arg(value_enum)]
-        event: EventArg,
-        action: String,
-    },
-    /// Stop running an action for an event
-    Unbind {
-        #[arg(value_enum)]
-        event: EventArg,
-        action: String,
-    },
-    /// Define your own action: a one-line shell command whose output goes to the agent
-    Add {
-        id: String,
-        command: String,
-        /// Seconds before it is stopped (1-30); the agent waits for hooks
-        #[arg(long, default_value_t = 5)]
-        timeout: u32,
-    },
-    /// Remove an action you defined, and its bindings
-    Rm { id: String },
-    /// Run everything bound to an event (the agent plugin calls this)
-    Run {
-        #[arg(long, value_enum)]
-        event: EventArg,
-    },
-}
-
-#[derive(Clone, Copy, clap::ValueEnum)]
-enum EventArg {
-    SessionStart,
-    Prompt,
-}
-
-impl From<EventArg> for Event {
-    fn from(e: EventArg) -> Self {
-        match e {
-            EventArg::SessionStart => Event::SessionStart,
-            EventArg::Prompt => Event::Prompt,
-        }
-    }
-}
-
-#[derive(Subcommand)]
-enum WorktreeCommand {
-    /// Create a worktree of REPO on a new branch legionctl/NAME
-    Create {
-        name: String,
-        #[arg(long, default_value = ".")]
-        repo: PathBuf,
-        /// Start from this ref instead of HEAD
-        #[arg(long)]
-        base: Option<String>,
-    },
-    /// List worktrees with size and dirty state
-    List {
-        #[arg(long)]
-        json: bool,
-    },
-    /// Remove a worktree (its branch is kept)
-    Rm {
-        name: String,
-        /// Discard uncommitted changes
-        #[arg(long)]
-        force: bool,
-    },
-}
-
-fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
-    println!("{}", serde_json::to_string_pretty(value)?);
-    Ok(())
+    let err = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .envs(env.env)
+        .exec();
+    Err(err).with_context(|| format!("running {}", argv[0]))
 }
 
 fn main() -> Result<()> {
-    match Cli::parse().command {
-        Command::Apply {
-            mode,
-            args,
-            force,
-            keep_override,
-        } => machine::apply(
-            args.invocation(),
-            mode.source(),
-            legionctl_machine::policy::Options {
-                force,
-                reassert: false,
-                keep_override,
-            },
-        )?,
-        Command::Reassert { mode, args, force } => machine::apply(
-            args.invocation(),
-            mode.source(),
-            legionctl_machine::policy::Options {
-                force,
-                reassert: true,
-                keep_override: false,
-            },
-        )?,
-        Command::Follow { args } => machine::follow(args.invocation())?,
-        Command::Gpu {
-            action,
-            choice,
-            dry_run,
-        } => gpu_cmd(action, choice, dry_run)?,
-        Command::Run {
-            gpu,
-            cores,
-            nice,
-            cmd,
-        } => run_cmd(gpu, cores, nice, cmd)?,
-        Command::Cleanup {
-            args,
-            force,
-            unload_modules,
-            remove_packages,
-        } => machine::cleanup(
-            args.invocation(),
-            legionctl_machine::cleanup::Options {
-                force,
-                unload_modules,
-                remove_packages,
-            },
-        )?,
-        Command::Capabilities { profile } => machine::capabilities(profile.as_deref())?,
-        Command::Validate { profile } => {
-            if !machine::validate(profile.as_deref())? {
-                std::process::exit(1);
-            }
-        }
-        Command::Status { json, profile } => status_cmd(profile.as_deref(), json)?,
-        Command::Load {
-            json,
-            brief: short,
-            only_busy,
-        } => load_cmd(json, short, only_busy)?,
-        Command::Doctor { profile } => {
-            let (clean, report) = machine::doctor(profile.as_deref())?;
-            print!("{report}");
-            if !clean {
-                std::process::exit(1);
-            }
-        }
-        Command::Agents { project, json } => agents_cmd(&project, json)?,
-        Command::Worktree(cmd) => worktree_cmd(cmd)?,
-        Command::Act { action, value } => {
-            println!(
-                "requesting approval for: {}",
-                actions::approved_command(&action, &value)?.join(" ")
-            );
-            print!("{}", actions::run_approved(&action, &value)?);
-        }
-        Command::Setup {
-            check: true,
-            brief,
-            json,
-            ..
-        } => setup_check_cmd(brief, json)?,
-        Command::Setup {
-            check: false,
-            install_ctx,
-            ..
-        } => setup_apply_cmd(install_ctx)?,
-        Command::Reminders { command } => reminders_cmd(command)?,
-        Command::Hooks { command } => hooks_cmd(command)?,
-        Command::Skills { json } => skills_cmd(json)?,
-        Command::Mcp => tokio::runtime::Runtime::new()?.block_on(mcp::serve())?,
-        Command::Tui => tui::run()?,
+    let matches = cli::command(client_only()).get_matches();
+    match matches.subcommand() {
+        Some(("mcp", _)) => return tokio::runtime::Runtime::new()?.block_on(mcp::serve()),
+        Some(("tui", _)) => return tui::run(),
+        Some(("run", sub)) => return run(sub),
+        _ => {}
     }
-    Ok(())
-}
-
-/// `legionctl agents`: agent settings files, present and valid.
-fn agents_cmd(project: &Path, json: bool) -> Result<()> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    let files = agents::config_files(&home, project);
-    if json {
-        print_json(&files)?;
-    } else {
-        for f in files {
-            let state = match (f.exists, f.valid) {
-                (false, _) => "missing".to_string(),
-                (true, Some(true)) => format!("valid [{}]", f.sections.join(", ")),
-                (true, _) => format!("INVALID: {}", f.error.unwrap_or_default()),
-            };
-            println!(
-                "{:<7} {:<14} {}  {}",
-                f.agent,
-                f.scope,
-                f.path.display(),
-                state
-            );
-        }
+    let (op, input) = cli::operation(&matches).context("not an operation")?;
+    let output = tokio::runtime::Runtime::new()?
+        .block_on(Client::new("cli")?.call_value(op.name, &input))?;
+    if matches.get_flag("json") {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
     }
-    Ok(())
-}
-
-/// `legionctl worktree`.
-fn worktree_cmd(cmd: WorktreeCommand) -> Result<()> {
-    let store = Store::default();
-    match cmd {
-        WorktreeCommand::Create { name, repo, base } => {
-            let wt = store.create(&repo, &name, base.as_deref())?;
-            println!("created {} on branch {}", wt.path.display(), wt.branch);
-        }
-        WorktreeCommand::List { json: true } => print_json(&store.list(true)?)?,
-        WorktreeCommand::List { json: false } => {
-            for w in store.list(true)? {
-                let size = w
-                    .size_bytes
-                    .map_or("-".into(), legionctl_machine::human_bytes);
-                let state = if !w.exists {
-                    "missing"
-                } else if w.dirty == Some(true) {
-                    "dirty"
-                } else {
-                    "clean"
-                };
-                println!(
-                    "{:<20} {:>10}  {:<7} {}",
-                    w.worktree.name,
-                    size,
-                    state,
-                    w.worktree.path.display()
-                );
-            }
-        }
-        WorktreeCommand::Rm { name, force } => {
-            let wt = store.remove(&name, force)?;
-            println!("removed {} (branch {} kept)", wt.path.display(), wt.branch);
-        }
+    let (text, success) = legionctl_api::render(op.name, output)?;
+    if !text.is_empty() {
+        println!("{text}");
     }
-    Ok(())
-}
-
-/// `legionctl reminders`.
-fn reminders_cmd(command: Option<ReminderCommand>) -> Result<()> {
-    let store = reminders::Store::default();
-    match command.unwrap_or(ReminderCommand::List { json: false }) {
-        ReminderCommand::List { json: true } => print_json(&store.list()?)?,
-        ReminderCommand::List { json: false } => {
-            for r in store.list()? {
-                let kind = if r.builtin { "built-in" } else { "custom" };
-                println!(
-                    "{:<3} {:<20} {:<14} {:<9} {}",
-                    if r.enabled { "on" } else { "off" },
-                    r.id,
-                    format!("{:?}", r.event),
-                    kind,
-                    r.text
-                );
-            }
-        }
-        ReminderCommand::On { id } => {
-            store.set_enabled(&id, true)?;
-            println!("{id}: on");
-        }
-        ReminderCommand::Off { id } => {
-            store.set_enabled(&id, false)?;
-            println!("{id}: off");
-        }
-        ReminderCommand::Add { id, text, event } => {
-            store.add(&id, &text, event.into())?;
-            println!("{id}: added and on");
-        }
-        ReminderCommand::Rm { id } => {
-            store.remove(&id)?;
-            println!("{id}: removed");
-        }
-        ReminderCommand::Emit { event } => {
-            let text = store.emit(event.into())?;
-            if !text.is_empty() {
-                println!("{text}");
-            }
-        }
-    }
-    Ok(())
-}
-
-/// `legionctl hooks`.
-fn hooks_cmd(command: Option<HookCommand>) -> Result<()> {
-    let db = Db::open_default()?;
-    let hooks = Hooks {
-        db: &db,
-        reminders: reminders::Store::default(),
-        actor: "cli",
-    };
-    match command.unwrap_or(HookCommand::List { json: false }) {
-        HookCommand::List { json: true } => print_json(
-            &serde_json::json!({"actions": hooks.actions()?, "bindings": hooks.bindings()?}),
-        )?,
-        HookCommand::List { json: false } => {
-            println!("bindings (in order):");
-            for b in hooks.bindings()? {
-                println!("  {:<14} {}", format!("{:?}", b.event), b.action);
-            }
-            println!("actions:");
-            for a in hooks.actions()? {
-                let kind = if a.builtin {
-                    "built-in".to_string()
-                } else {
-                    format!("command, {}s", a.timeout_s)
-                };
-                println!("  {:<16} {:<14} {}", a.id, kind, a.detail);
-            }
-        }
-        HookCommand::Bind { event, action } => {
-            hooks.bind(event.into(), &action)?;
-            println!("{action}: bound");
-        }
-        HookCommand::Unbind { event, action } => {
-            hooks.unbind(event.into(), &action)?;
-            println!("{action}: unbound");
-        }
-        HookCommand::Add {
-            id,
-            command,
-            timeout,
-        } => {
-            hooks.add_command(&id, &command, timeout)?;
-            println!("{id}: defined; bind it with `legionctl hooks bind <event> {id}`");
-        }
-        HookCommand::Rm { id } => {
-            hooks.remove_action(&id)?;
-            println!("{id}: removed");
-        }
-        HookCommand::Run { event } => {
-            let text = hooks.run(event.into())?;
-            if !text.is_empty() {
-                println!("{text}");
-            }
-        }
-    }
-    Ok(())
-}
-
-/// `legionctl skills`.
-fn skills_cmd(json: bool) -> Result<()> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    let list = skills::inventory(&home, &reminders::Store::default())?;
-    if json {
-        print_json(&list)?;
-    } else {
-        for s in list {
-            let reminder = match (&s.reminder, s.reminder_on) {
-                (Some(id), Some(true)) => format!("reminder {id}: on"),
-                (Some(id), _) => format!("reminder {id}: off"),
-                _ => "no reminder".into(),
-            };
-            println!("legionctl:{}  ({reminder})", s.name);
-            println!(
-                "  claude: {}",
-                s.claude
-                    .map_or("plugin not installed".into(), |p| p.display().to_string())
-            );
-            println!(
-                "  codex:  {} ({})",
-                s.codex.display(),
-                if s.codex_linked {
-                    "linked"
-                } else {
-                    "missing; run `legionctl setup`"
-                }
-            );
-        }
-    }
-    Ok(())
-}
-
-/// `legionctl setup --check`: what needs attention, in full, brief (for a hook) or as JSON.
-fn setup_check_cmd(brief: bool, json: bool) -> Result<()> {
-    let report = setup::check();
-    let todo = report.needs_attention();
-    if json {
-        print_json(&report)?;
-    } else if brief {
-        if !todo.is_empty() {
-            let names: Vec<String> = todo
-                .iter()
-                .map(|i| format!("{} for {}", i.what, i.agent))
-                .collect();
-            println!(
-                "legionctl setup: {} need attention ({}). Run /legionctl:setup or `legionctl setup`.",
-                todo.len(),
-                names.join(", ")
-            );
-        }
-    } else {
-        println!(
-            "ctx: {}",
-            report.ctx_version.as_deref().unwrap_or("not installed")
-        );
-        for i in &report.items {
-            println!("{:<26} {:<12} {:<14} {}", i.what, i.agent, i.status, i.path);
-        }
-    }
-    Ok(())
-}
-
-/// `legionctl setup`: bring every item to current, then say what is left.
-fn setup_apply_cmd(install_ctx: bool) -> Result<()> {
-    for line in setup::apply(install_ctx)? {
-        println!("{line}");
-    }
-    let left = setup::check();
-    let todo = left.needs_attention();
-    println!(
-        "{}",
-        if todo.is_empty() {
-            "all set up".to_string()
-        } else {
-            format!(
-                "{} items still need attention; run `legionctl setup --check`",
-                todo.len()
-            )
-        }
-    );
-    Ok(())
-}
-
-/// `legionctl run`: replaces this process with `cmd` on the chosen GPU and cores.
-fn run_cmd(gpu: RunGpu, cores: Cores, nice: Option<i32>, cmd: Vec<String>) -> Result<()> {
-    let cmd: Vec<String> = cmd.into_iter().skip_while(|a| a == "--").collect();
-    machine::run(
-        match gpu {
-            RunGpu::Nvidia => "nvidia",
-            RunGpu::Intel => "intel",
-            RunGpu::Default => "default",
-        },
-        match cores {
-            Cores::P => "p",
-            Cores::E => "e",
-            Cores::All => "all",
-        },
-        nice,
-        &cmd,
-    )
-}
-
-/// `legionctl gpu`.
-fn gpu_cmd(action: GpuAction, choice: Option<GpuChoice>, dry_run: bool) -> Result<()> {
-    match (action, choice) {
-        (GpuAction::Status, _) => machine::gpu_status(),
-        (GpuAction::Primary, None) => anyhow::bail!("gpu primary needs nvidia, intel or auto"),
-        (GpuAction::Primary, Some(c)) => machine::gpu_primary(
-            match c {
-                GpuChoice::Nvidia => "nvidia",
-                GpuChoice::Intel => "intel",
-                GpuChoice::Auto => "auto",
-            },
-            dry_run,
-        )?,
-    }
-    Ok(())
-}
-
-/// `legionctl load`: `--brief --only-busy` prints nothing below busy, for hooks.
-fn load_cmd(json: bool, brief: bool, only_busy: bool) -> Result<()> {
-    let l = load::read_load(&SysRoot::from_env());
-    if json {
-        print_json(&l)?;
-    } else if !(brief && only_busy && l.level < load::Level::Busy) {
-        println!("{}", load::brief(&l));
-    }
-    Ok(())
-}
-
-/// `legionctl status`.
-fn status_cmd(profile: Option<&Path>, json: bool) -> Result<()> {
-    let s = machine::snapshot(profile, Detail::Full)?;
-    if json {
-        print_json(&s)?;
-    } else {
-        machine::print_status(&s);
+    if !success {
+        std::process::exit(1);
     }
     Ok(())
 }

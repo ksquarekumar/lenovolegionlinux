@@ -1,288 +1,91 @@
-//! MCP server over stdio. Read-only tools answer immediately; `request_action` makes the change only after a
-//! human approves the polkit dialog on this machine, so an agent can propose but never silently apply.
+//! MCP server over stdio: one tool per operation of the registry (`worktree.create` is `worktree_create`), each a
+//! call to `legionctl-operator`. Machine changes need a human's approval in the polkit dialog on this machine, so an
+//! agent can propose them but never apply them silently.
 
-use std::path::PathBuf;
+use std::sync::Arc;
 
-use legionctl_core::reminders::{self, Event};
-use legionctl_core::{actions, agents, setup, worktree::Store};
-use legionctl_core::{db::Db, hooks::Hooks, skills};
-use legionctl_machine::load;
-use legionctl_machine::snapshot::Detail;
-use legionctl_machine::sysroot::SysRoot;
-use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock as Content};
-use rmcp::{ServerHandler, ServiceExt, tool, tool_handler, tool_router};
-use schemars::JsonSchema;
-use serde::Deserialize;
+use legionctl_api::{OPS, OpInfo};
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
+    PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+};
+use rmcp::service::RequestContext;
+use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
+use serde_json::Value;
 
-pub struct Legion;
+use crate::cli::resolve_paths;
+use crate::client::Client;
 
-fn ok<T: serde::Serialize>(value: &T) -> CallToolResult {
-    match serde_json::to_string_pretty(value) {
-        Ok(text) => CallToolResult::success(vec![Content::text(text)]),
-        Err(e) => fail(e),
-    }
+fn tool_name(op: &OpInfo) -> String {
+    op.name.replace(['.', '-'], "_")
 }
 
-fn fail(error: impl std::fmt::Display) -> CallToolResult {
-    CallToolResult::error(vec![Content::text(error.to_string())])
+struct Legion {
+    client: Client,
 }
 
-#[derive(Deserialize, JsonSchema)]
-pub struct ProjectArgs {
-    /// Project directory whose .claude/.codex settings to include; defaults to the server's working directory.
-    pub project: Option<String>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-pub struct ListArgs {
-    /// Measure disk usage of each worktree (slower on large checkouts).
-    #[serde(default)]
-    pub sizes: bool,
-}
-
-#[derive(Deserialize, JsonSchema)]
-pub struct CreateArgs {
-    /// Absolute path of the git repository to branch from.
-    pub repo: String,
-    /// Worktree name: letters, digits, '-', '_', '.'; becomes branch legionctl/NAME.
-    pub name: String,
-    /// Git ref to start from; defaults to the repo's HEAD.
-    pub base: Option<String>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-pub struct RemoveArgs {
-    pub name: String,
-    /// Discard uncommitted changes in the worktree.
-    #[serde(default)]
-    pub force: bool,
-}
-
-#[derive(Deserialize, JsonSchema)]
-pub struct ActionArgs {
-    /// "apply-power-policy" (value: auto|ac|battery) or "set-desktop-gpu" (value: nvidia|intel|auto).
-    pub action: String,
-    pub value: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
-pub struct HookArgs {
-    /// "bind", "unbind", "add" (define a command action) or "remove" (delete a command action).
-    pub action: String,
-    /// Hook event for bind/unbind: session-start or prompt.
-    pub event: Option<Event>,
-    /// Action id: a built-in (reminders, load, load-if-busy, setup-check) or one you defined.
-    pub id: String,
-    /// For "add": a one-line shell command; its stdout goes to the agent.
-    pub command: Option<String>,
-    /// For "add": seconds before it is stopped (1-30, default 5).
-    pub timeout_s: Option<u32>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-pub struct ReminderArgs {
-    /// "on", "off", "add" or "remove".
-    pub action: String,
-    /// Reminder id: a-z, 0-9 and '-', 32 characters max. Built-ins: ste100, glanceable, load-aware, worktree-per-task.
-    pub id: String,
-    /// For "add": one line, 300 characters max.
-    pub text: Option<String>,
-    /// For "add": session-start (default) or prompt (every turn; keep it short).
-    pub event: Option<Event>,
-}
-
-#[tool_handler]
-#[expect(
-    clippy::unused_async_trait_impl,
-    reason = "rmcp tool_handler generates list_tools as async fn without await"
-)]
-impl ServerHandler for Legion {}
-
-#[tool_router]
 impl Legion {
-    #[tool(
-        description = "Power source, Fn+Q thermal mode, firmware power limits, CPU policy, temperature, GPU wiring and load of this Lenovo Legion laptop."
-    )]
-    fn system_status() -> CallToolResult {
-        crate::machine::snapshot(None, Detail::Full).map_or_else(fail, |s| ok(&s))
+    async fn run(
+        &self,
+        op: &OpInfo,
+        arguments: Option<rmcp::model::JsonObject>,
+    ) -> anyhow::Result<String> {
+        let mut input = Value::Object(arguments.unwrap_or_default());
+        resolve_paths(op, &mut input)?;
+        let output = self.client.call_value(op.name, &input).await?;
+        Ok(serde_json::to_string_pretty(&output)?)
+    }
+}
+
+impl ServerHandler for Legion {
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
     }
 
-    #[tool(
-        description = "Current system load level (idle, normal, busy, overloaded) with reasons from CPU/memory/IO pressure. Check before starting builds, test suites or parallel jobs."
-    )]
-    fn system_load() -> CallToolResult {
-        let l = load::read_load(&SysRoot::from_env());
-        CallToolResult::success(vec![
-            Content::text(load::brief(&l)),
-            Content::text(serde_json::to_string_pretty(&l).unwrap_or_default()),
-        ])
+    fn list_tools(
+        &self,
+        _: Option<PaginatedRequestParams>,
+        _: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + Send + '_ {
+        let tools = OPS
+            .iter()
+            .map(|op| {
+                let schema = match (op.input)() {
+                    Value::Object(schema) => schema,
+                    _ => rmcp::model::JsonObject::new(),
+                };
+                Tool::new(tool_name(op), op.text(), Arc::new(schema))
+            })
+            .collect();
+        std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
     }
 
-    #[tool(
-        description = "Read-only health checks of power policy, kernel modules, DKMS, GPU placement and conflicts (legionctl doctor)."
-    )]
-    fn doctor() -> CallToolResult {
-        crate::machine::doctor(None).map_or_else(fail, |(_, report)| {
-            CallToolResult::success(vec![Content::text(report)])
-        })
-    }
-
-    #[tool(
-        description = "Claude Code and Codex settings files (user and project): present, valid, which top-level sections. Never returns values."
-    )]
-    fn agent_configs(Parameters(args): Parameters<ProjectArgs>) -> CallToolResult {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default();
-        let project = args.project.map_or_else(
-            || std::env::current_dir().unwrap_or_default(),
-            PathBuf::from,
-        );
-        ok(&agents::config_files(&home, &project))
-    }
-
-    #[tool(description = "List agent worktrees with branch, dirty state and optional disk usage.")]
-    fn worktree_list(Parameters(args): Parameters<ListArgs>) -> CallToolResult {
-        Store::default()
-            .list(args.sizes)
-            .map_or_else(fail, |list| ok(&list))
-    }
-
-    #[tool(
-        description = "Create an isolated git worktree of a repository on a new branch legionctl/NAME, under /data/worktrees/REPO/NAME. Use one per task so parallel work never collides."
-    )]
-    fn worktree_create(Parameters(args): Parameters<CreateArgs>) -> CallToolResult {
-        Store::default()
-            .create(&PathBuf::from(args.repo), &args.name, args.base.as_deref())
-            .map_or_else(fail, |wt| ok(&wt))
-    }
-
-    #[tool(
-        description = "Remove a worktree's checkout. Its branch is kept. Refuses when there are uncommitted changes unless force is true."
-    )]
-    fn worktree_remove(Parameters(args): Parameters<RemoveArgs>) -> CallToolResult {
-        Store::default()
-            .remove(&args.name, args.force)
-            .map_or_else(fail, |wt| ok(&wt))
-    }
-
-    #[tool(
-        description = "Ask to change the machine: apply-power-policy (auto|ac|battery) or set-desktop-gpu (nvidia|intel|auto). A human must approve the polkit dialog on this machine; if they decline, nothing changes and an error is returned."
-    )]
-    fn request_action(Parameters(args): Parameters<ActionArgs>) -> CallToolResult {
-        actions::run_approved(&args.action, &args.value).map_or_else(fail, |text| {
-            CallToolResult::success(vec![Content::text(text)])
-        })
-    }
-
-    #[tool(
-        description = "Check whether ctx (agent history search) and legionctl are set up for Claude Code and Codex: skills and MCP servers. Read-only."
-    )]
-    fn setup_check() -> CallToolResult {
-        ok(&setup::check())
-    }
-
-    #[tool(
-        description = "Set up ctx and legionctl for Claude Code and Codex: install the ctx skill and MCP server for both, add legionctl's MCP server to ~/.codex/config.toml (with a backup) and link legionctl's skills for Codex. Changes user-level config files only."
-    )]
-    fn setup_apply() -> CallToolResult {
-        setup::apply(false).map_or_else(fail, |done| ok(&done))
-    }
-
-    #[tool(
-        description = "List reminders that legionctl's hooks inject into agent sessions (skills to follow, habits), with on/off state and when they fire."
-    )]
-    fn reminders_list() -> CallToolResult {
-        reminders::Store::default()
-            .list()
-            .map_or_else(fail, |list| ok(&list))
-    }
-
-    #[tool(
-        description = "Change a reminder: turn a built-in or custom one on or off, add a custom one, or remove a custom one. Takes effect at the next session start or prompt."
-    )]
-    fn reminders_update(Parameters(args): Parameters<ReminderArgs>) -> CallToolResult {
-        let store = reminders::Store::default();
-        let result = match args.action.as_str() {
-            "on" => store.set_enabled(&args.id, true),
-            "off" => store.set_enabled(&args.id, false),
-            "add" => store.add(
-                &args.id,
-                args.text.as_deref().unwrap_or(""),
-                args.event.unwrap_or(Event::SessionStart),
-            ),
-            "remove" => store.remove(&args.id),
-            other => Err(anyhow::anyhow!(
-                "unknown action {other}; use on, off, add or remove"
-            )),
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        _: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let Some(op) = OPS.iter().find(|op| tool_name(op) == request.name) else {
+            return Err(ErrorData::invalid_params(
+                format!("unknown tool {}", request.name),
+                None,
+            ));
         };
-        result
-            .and_then(|()| store.list())
-            .map_or_else(fail, |list| ok(&list))
-    }
-
-    #[tool(
-        description = "List hook actions (built-in and user-defined commands) and which run, in order, at session start and on every prompt."
-    )]
-    fn hooks_list() -> CallToolResult {
-        let result = Db::open_default().and_then(|db| {
-            let hooks = Hooks {
-                db: &db,
-                reminders: reminders::Store::default(),
-                actor: "mcp",
-            };
-            Ok(serde_json::json!({"actions": hooks.actions()?, "bindings": hooks.bindings()?}))
-        });
-        result.map_or_else(fail, |v| ok(&v))
-    }
-
-    #[tool(
-        description = "Change hook bindings: bind or unbind an action for an event, define a one-line shell-command action (add), or remove one. Changes are recorded in the operator event log."
-    )]
-    fn hooks_update(Parameters(args): Parameters<HookArgs>) -> CallToolResult {
-        let result = Db::open_default().and_then(|db| {
-            let hooks = Hooks {
-                db: &db,
-                reminders: reminders::Store::default(),
-                actor: "mcp",
-            };
-            let event = || {
-                args.event
-                    .ok_or_else(|| anyhow::anyhow!("event is required: session-start or prompt"))
-            };
-            match args.action.as_str() {
-                "bind" => hooks.bind(event()?, &args.id)?,
-                "unbind" => hooks.unbind(event()?, &args.id)?,
-                "add" => hooks.add_command(
-                    &args.id,
-                    args.command.as_deref().unwrap_or(""),
-                    args.timeout_s.unwrap_or(5),
-                )?,
-                "remove" => hooks.remove_action(&args.id)?,
-                other => anyhow::bail!("unknown action {other}; use bind, unbind, add or remove"),
-            }
-            Ok(serde_json::json!({"actions": hooks.actions()?, "bindings": hooks.bindings()?}))
-        });
-        result.map_or_else(fail, |v| ok(&v))
-    }
-
-    #[tool(
-        description = "List legionctl skills (ste100-style, glanceable-style, ...): description, where Claude Code and Codex have them installed, and whether the reminder that keeps each in force is on."
-    )]
-    fn skills_list() -> CallToolResult {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default();
-        skills::inventory(&home, &reminders::Store::default()).map_or_else(fail, |list| ok(&list))
+        Ok(match self.run(op, request.arguments).await {
+            Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
+            Err(e) => CallToolResult::error(vec![ContentBlock::text(format!("{e:#}"))]),
+        }
+        .into())
     }
 }
 
 pub async fn serve() -> anyhow::Result<()> {
-    Legion
-        .serve(rmcp::transport::stdio())
-        .await?
-        .waiting()
-        .await?;
+    Legion {
+        client: Client::new("mcp")?,
+    }
+    .serve(rmcp::transport::stdio())
+    .await?
+    .waiting()
+    .await?;
     Ok(())
 }

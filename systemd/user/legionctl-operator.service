@@ -1,7 +1,9 @@
 [Unit]
-Description=legionctl operator (session module: Fn+R refresh toggle, OSD)
+Description=legionctl operator (operation API; in a graphical session also Fn+R and the OSD)
+Requires=legionctl-operator.socket
+After=legionctl-operator.socket graphical-session.target
+# stop at logout so the next login starts the session module again
 PartOf=graphical-session.target
-After=graphical-session.target
 
 [Service]
 ExecStart=/usr/lib/legionctl/legionctl-operator
@@ -10,3 +12,4 @@ RestartSec=2
 
 [Install]
 WantedBy=graphical-session.target
+Also=legionctl-operator.socket

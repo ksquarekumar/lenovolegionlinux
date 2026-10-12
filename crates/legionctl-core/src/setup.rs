@@ -11,13 +11,13 @@ use std::process::Command;
 
 use anyhow::{Context, Result, ensure};
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// ctx names for the agents legionctl sets up.
 pub const AGENTS: [&str; 2] = ["claude-code", "codex"];
 const PLUGIN_SKILLS: &str = "/usr/share/legionctl/agent-plugin/skills";
 
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Item {
     /// e.g. "ctx skill", "ctx mcp", "legionctl mcp", "legionctl skill ste100"
     pub what: String,
@@ -27,7 +27,7 @@ pub struct Item {
     pub path: String,
 }
 
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Report {
     pub ctx_version: Option<String>,
     pub items: Vec<Item>,
@@ -61,7 +61,8 @@ fn ctx_bin() -> Option<PathBuf> {
 }
 
 fn ctx(args: &[&str]) -> Result<String> {
-    let bin = ctx_bin().context("ctx is not installed; run `legionctl setup --install-ctx`")?;
+    let bin =
+        ctx_bin().context("ctx is not installed; run `legionctl setup apply --install-ctx`")?;
     let out = Command::new(bin)
         .args(args)
         .output()

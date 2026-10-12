@@ -1,5 +1,6 @@
-//! Disable what earlier Legion tooling left behind: conflicting units always, and loaded modules and installed
-//! packages only when asked.
+//! Disable what earlier Legion tooling left behind: conflicting units always, loaded modules only when asked.
+//! Installed conflicting packages are reported with the command that removes them: pacman asks questions and writes
+//! `/usr`, so a human runs it.
 
 use anyhow::Result;
 
@@ -11,7 +12,6 @@ use crate::system;
 pub struct Options {
     pub force: bool,
     pub unload_modules: bool,
-    pub remove_packages: bool,
 }
 
 /// Plan the cleanup that `opts` asks for.
@@ -42,25 +42,21 @@ pub fn plan(machine: &Machine, opts: Options) -> Result<Vec<Step>> {
             machine.run(&mut steps, &["modprobe", "-r", module]);
         } else {
             steps.push(Step::Warn(format!(
-                "obsolete module is loaded but was not unloaded without --unload-modules: {module}"
+                "obsolete module is loaded but was not unloaded without unload_modules: {module}"
             )));
         }
     }
-    let installed: Vec<&String> = conflicts
+    let installed: Vec<&str> = conflicts
         .packages
         .iter()
         .filter(|p| system::package_installed(p))
+        .map(String::as_str)
         .collect();
-    if opts.remove_packages && !installed.is_empty() {
-        let mut argv = vec!["pacman", "-Rns"];
-        argv.extend(installed.iter().map(|p| p.as_str()));
-        machine.run(&mut steps, &argv);
-    } else {
-        for package in installed {
-            steps.push(Step::Warn(format!(
-                "conflicting package is installed but was not removed without --remove-packages: {package}"
-            )));
-        }
+    if !installed.is_empty() {
+        steps.push(Step::Warn(format!(
+            "conflicting packages are installed; remove them with: sudo pacman -Rns {}",
+            installed.join(" ")
+        )));
     }
     Ok(steps)
 }

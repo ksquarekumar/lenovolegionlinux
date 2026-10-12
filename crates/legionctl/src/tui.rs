@@ -1,19 +1,20 @@
 //! Live dashboard: load pressure, machine state, worktrees and agent configs on one screen.
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
-use legionctl_core::agents::{self, ConfigFile};
-use legionctl_core::worktree::{Store, WorktreeStatus};
+use legionctl_api::{
+    ClientPath, ConfigFile, ProjectIn, Snapshot, StatusIn, WorktreeListIn, WorktreeStatus, op,
+};
 use legionctl_machine::load::{Level, Pressure};
-use legionctl_machine::snapshot::{Detail, Snapshot};
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Gauge, Paragraph, Row, Table};
+
+use crate::client::Client;
 
 fn level_color(level: Level) -> Color {
     match level {
@@ -183,20 +184,27 @@ fn draw(f: &mut Frame, s: &Snapshot, worktrees: &[WorktreeStatus], configs: &[Co
 }
 
 pub fn run() -> Result<()> {
-    let store = Store::default();
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    let project = std::env::current_dir().unwrap_or_default();
-    let (profile, _) = legionctl_machine::profile::load(None)?;
-    let root = legionctl_machine::sysroot::SysRoot::from_env();
+    let client = Client::new("tui")?;
+    let runtime = tokio::runtime::Runtime::new()?;
+    let status = StatusIn {
+        profile: None,
+        fast: true,
+    };
+    let project = ProjectIn {
+        project: ClientPath(std::env::current_dir()?),
+    };
+    // sizes walk whole checkouts, so measure on start and on demand, not every frame
+    let sized = WorktreeListIn { sizes: true };
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
-        // sizes walk whole checkouts, so measure on start and on demand, not every frame
-        let mut worktrees = store.list(true)?;
+        let mut worktrees = runtime.block_on(client.call::<op::WorktreeList>(&sized))?;
         loop {
-            let snapshot = Snapshot::read(&root, &profile, Detail::Fast);
-            let configs = agents::config_files(&home, &project);
+            let (snapshot, configs) = runtime.block_on(async {
+                tokio::try_join!(
+                    client.call::<op::Status>(&status),
+                    client.call::<op::Agents>(&project)
+                )
+            })?;
             terminal.draw(|f| draw(f, &snapshot, &worktrees, &configs))?;
             if event::poll(Duration::from_secs(1))?
                 && let Event::Key(key) = event::read()?
@@ -204,7 +212,9 @@ pub fn run() -> Result<()> {
             {
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                    KeyCode::Char('r') => worktrees = store.list(true)?,
+                    KeyCode::Char('r') => {
+                        worktrees = runtime.block_on(client.call::<op::WorktreeList>(&sized))?;
+                    }
                     _ => {}
                 }
             }

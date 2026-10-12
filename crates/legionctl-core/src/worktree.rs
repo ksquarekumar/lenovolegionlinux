@@ -21,7 +21,7 @@ pub struct Worktree {
     pub created_unix: u64,
 }
 
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorktreeStatus {
     #[serde(flatten)]
     pub worktree: Worktree,

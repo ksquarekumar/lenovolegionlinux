@@ -5,9 +5,9 @@
 use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigFile {
     pub agent: String,
     pub scope: String,

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::gpu::{self, Output};
 use crate::ledger::{Key, Ledger};
@@ -33,27 +33,27 @@ const MODULES: [&str; 6] = [
     "lenovo_legion",
 ];
 
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DmiMismatch {
     pub key: String,
     pub expected: String,
     pub actual: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RaplConstraint {
     pub name: String,
     pub limit_w: Option<f64>,
     pub window_us: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RaplZone {
     pub zone: String,
     pub constraints: Vec<RaplConstraint>,
 }
 
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct UnitState {
     pub unit: String,
     pub active: String,
@@ -68,7 +68,7 @@ pub enum Detail {
     Full,
 }
 
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Snapshot {
     pub profile_id: String,
     /// Empty when the machine matches the profile's DMI identity.

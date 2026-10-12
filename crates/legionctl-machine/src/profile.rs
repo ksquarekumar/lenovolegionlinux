@@ -7,8 +7,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
 
-pub const DEFAULT_PATH: &str =
-    "/usr/share/legionctl/profiles/lenovo-82wq-legion-pro-7-16irx8h.json";
+const DEFAULT_PATH: &str = "/usr/share/legionctl/profiles/lenovo-82wq-legion-pro-7-16irx8h.json";
 
 #[derive(Debug, Deserialize)]
 pub struct Profile {
@@ -49,7 +48,7 @@ pub struct KernelModules {
     pub unwanted_autoload: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct Capability {
     pub id: String,
     pub name: String,
@@ -135,12 +134,18 @@ fn read_jsonc(path: &Path) -> Result<Value> {
         .with_context(|| format!("parsing {}", path.display()))
 }
 
-/// The profile at `path`, or at [`DEFAULT_PATH`].
+/// The installed profile, under the sysroot like every machine path (tests use a recorded machine).
+#[must_use]
+pub fn default_path() -> PathBuf {
+    crate::sysroot::SysRoot::from_env().path(DEFAULT_PATH)
+}
+
+/// The profile at `path`, or the installed one ([`default_path`]).
 ///
 /// # Errors
 /// The file is not readable or is not a valid profile.
 pub fn load(path: Option<&Path>) -> Result<(Profile, PathBuf)> {
-    let path = path.map_or_else(|| PathBuf::from(DEFAULT_PATH), Path::to_path_buf);
+    let path = path.map_or_else(default_path, Path::to_path_buf);
     let profile = serde_json::from_value(read_jsonc(&path)?)
         .with_context(|| format!("reading profile {}", path.display()))?;
     Ok((profile, path))

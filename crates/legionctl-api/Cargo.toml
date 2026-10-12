@@ -1,0 +1,18 @@
+[package]
+name = "legionctl-api"
+description = "Operation registry of legionctl: one declaration per operation; the HTTP routes, MCP tools, CLI and the operator's Engine trait come from it"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+legionctl-core = { path = "../legionctl-core" }
+legionctl-machine = { path = "../legionctl-machine" }
+
+[lints]
+workspace = true

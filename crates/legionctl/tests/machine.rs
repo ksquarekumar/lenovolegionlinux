@@ -1,13 +1,21 @@
-//! End-to-end: the power policy commands against a recorded sysroot of this machine (2026-10-12, on AC with the AC
-//! policy applied), with logging stand-ins for powerprofilesctl, cpupower, systemctl and nvidia-smi.
+//! The machine side against a recorded sysroot of this machine (2026-10-12, on AC with the AC policy applied):
+//! reads and plans through the real operator, with stand-ins for powerprofilesctl, cpupower, systemctl and
+//! nvidia-smi; and the daemon's event reactions, whose file and ledger writes run against the recorded tree.
+
+mod common;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
+
+use common::Operator;
 
 const FIXTURE: &str = "../../tests/fixtures/sysroot-82wq-2026-10-12";
 const PROFILE: &str = "../../profiles/lenovo-82wq-legion-pro-7-16irx8h.json";
+const INSTALLED_PROFILE: &str =
+    "usr/share/legionctl/profiles/lenovo-82wq-legion-pro-7-16irx8h.json";
 
 struct Machine {
+    tag: &'static str,
     dir: PathBuf,
 }
 
@@ -28,7 +36,7 @@ fn copy_tree(from: &Path, to: &Path) {
 }
 
 impl Machine {
-    fn new(tag: &str) -> Machine {
+    fn new(tag: &'static str) -> Machine {
         let dir =
             std::env::temp_dir().join(format!("legionctl-machine-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -36,35 +44,24 @@ impl Machine {
             &Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE),
             &dir.join("root"),
         );
+        let installed = dir.join("root").join(INSTALLED_PROFILE);
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(PROFILE),
+            installed,
+        )
+        .unwrap();
         let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        let log = dir.join("calls.log");
-        let ppd = dir.join("ppd");
-        std::fs::write(&ppd, "performance\n").unwrap();
         for name in ["cpupower", "systemctl", "nvidia-smi"] {
-            Self::script(
-                &bin,
-                name,
-                &format!("echo \"{name} $*\" >> {}", log.display()),
-            );
+            Self::script(&bin, name, "exit 0");
         }
         Self::script(
             &bin,
             "powerprofilesctl",
-            // like the real daemon: intel_pstate refuses EPP changes while the governor is performance
-            &format!(
-                "if [ \"$1\" = get ]; then read -r p < {ppd}; echo \"$p\"; exit 0; fi\n\
-                 if [ \"$2\" != performance ] && {{ read -r g < {gov}; [ \"$g\" = performance ]; }}; then\n\
-                 echo \"Failed to activate CPU driver intel_pstate: Device or resource busy\" >&2; exit 1; fi\n\
-                 echo \"powerprofilesctl $*\" >> {log}; echo \"$2\" > {ppd}",
-                ppd = ppd.display(),
-                log = log.display(),
-                gov = dir
-                    .join("root/sys/devices/system/cpu/cpufreq/policy0/scaling_governor")
-                    .display()
-            ),
+            "[ \"$1\" = get ] && echo performance",
         );
-        Machine { dir }
+        Machine { tag, dir }
     }
 
     fn script(bin: &Path, name: &str, body: &str) {
@@ -85,39 +82,24 @@ impl Machine {
         std::fs::write(path, format!("{value}\n")).unwrap();
     }
 
+    /// The operator on this machine; it runs the stand-in commands.
+    fn operator(&self) -> Operator {
+        Operator::start(
+            self.tag,
+            &[
+                ("PATH", self.dir.join("bin").into()),
+                ("HOME", self.dir.join("home").into()),
+                ("LEGIONCTL_SYSROOT", self.dir.join("root").into()),
+            ],
+        )
+    }
+
     fn legion(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_legionctl"))
-            .args(args)
-            .args([
-                "--profile",
-                &Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join(PROFILE)
-                    .display()
-                    .to_string(),
-            ])
-            .env_clear()
-            .env("PATH", self.dir.join("bin"))
-            .env("LEGIONCTL_SYSROOT", self.dir.join("root"))
-            .output()
-            .unwrap()
+        self.operator().cli(args)
     }
 
     fn ok(&self, args: &[&str]) -> String {
-        let out = self.legion(args);
-        assert!(
-            out.status.success(),
-            "{args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8(out.stdout).unwrap() + &String::from_utf8_lossy(&out.stderr)
-    }
-
-    /// Calls made to the stand-in commands since the last check.
-    fn calls(&self) -> Vec<String> {
-        let log = self.dir.join("calls.log");
-        let text = std::fs::read_to_string(&log).unwrap_or_default();
-        let _ = std::fs::remove_file(&log);
-        text.lines().map(String::from).collect()
+        self.operator().ok(args)
     }
 
     fn governors(&self) -> Vec<String> {
@@ -158,66 +140,26 @@ impl Machine {
     }
 }
 
+/// `make validate` and the pre-commit hook run this for the profiles in the repo.
 #[test]
-fn a_machine_already_in_ac_policy_gets_no_writes() {
-    let m = Machine::new("steady");
-    let out = m.ok(&["apply", "auto", "--dry-run"]);
-    assert!(!out.contains("would write"), "{out}");
-    assert!(out.ends_with("applied ac policy\n"), "{out}");
+fn repo_profiles_are_valid() {
+    let m = Machine::new("profiles");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../profiles");
+    for profile in std::fs::read_dir(dir).unwrap().flatten() {
+        let path = profile.path();
+        let out = m.ok(&["validate", "--profile", path.to_str().unwrap()]);
+        assert!(
+            out.ends_with(&format!("validate: ok ({})\n", path.display())),
+            "{out}"
+        );
+    }
 }
 
 #[test]
-fn unplug_fn_q_resume_and_replug_follow_the_policy_and_the_users_choice() {
-    let m = Machine::new("cycle");
-
-    // unplug: battery policy, firmware balanced, recorded as our own write
-    m.set("/sys/class/power_supply/ADP0/online", "0");
-    let out = m.ok(&["apply", "auto", "--quiet"]);
-    assert!(!out.contains("warning"), "unplug applies cleanly: {out}");
-    assert_eq!(m.file(PROFILE_PATH), "balanced");
-    assert_eq!(m.recorded(Key::Written), "balanced");
-    assert_eq!(m.governors(), ["powersave"]);
-    assert_eq!(
-        m.file("/sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference"),
-        "balance_power"
-    );
-    let calls = m.calls();
-    assert!(
-        calls.contains(&"powerprofilesctl set balanced".into()),
-        "{calls:?}"
-    );
-    assert!(
-        !calls.iter().any(|c| c.contains("nvidia")),
-        "no NVIDIA services on battery: {calls:?}"
-    );
-
-    // our own write produces the same uevent as Fn+Q; following it must change nothing
-    assert!(m.ok(&["follow"]).contains("nothing to follow"));
-
-    // Fn+Q: the firmware switches to performance; that is the user's choice
-    m.set(PROFILE_PATH, "performance");
-    m.ok(&["follow", "--quiet"]);
-    assert_eq!(m.recorded(Key::Override), "performance");
-    assert_eq!(m.governors(), ["performance"]);
-    assert_eq!(m.calls(), ["powerprofilesctl set performance"]);
-
-    // reassert and resume keep the choice; neither writes the firmware mode back
-    m.ok(&["reassert", "battery", "--quiet"]);
-    m.ok(&["apply", "auto", "--keep-override", "--quiet"]);
-    assert_eq!(m.file(PROFILE_PATH), "performance");
-    assert_eq!(m.recorded(Key::Override), "performance");
-
-    // plug in: a power-source change starts from the profile again
-    m.set("/sys/class/power_supply/ADP0/online", "1");
-    let out = m.ok(&["apply", "auto"]);
-    assert!(
-        out.contains("clearing firmware override 'performance'"),
-        "{out}"
-    );
-    assert_eq!(m.recorded(Key::Override), "<missing>");
-    assert_eq!(m.file(PROFILE_PATH), "max-power");
-    assert_eq!(m.recorded(Key::Written), "max-power");
-    assert!(m.calls().contains(&"nvidia-smi -i 0 -pm 1".into()));
+fn a_machine_already_in_ac_policy_gets_no_writes() {
+    let m = Machine::new("steady");
+    let out = m.ok(&["power", "apply", "--source", "auto", "--dry-run"]);
+    assert!(!out.contains("would write"), "{out}");
 }
 
 #[test]
@@ -225,12 +167,11 @@ fn refuses_to_apply_on_a_machine_that_is_not_this_model() {
     let m = Machine::new("dmi");
     m.set("/sys/class/dmi/id/product_name", "82WK");
     m.set("/sys/class/power_supply/ADP0/online", "0");
-    let out = m.legion(&["apply", "auto"]);
+    let out = m.legion(&["power", "apply", "--dry-run"]);
     assert!(!out.status.success());
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("product_name: expected '82WQ', got '82WK'")
     );
-    assert_eq!(m.file(PROFILE_PATH), "max-power", "nothing written");
 }
 
 #[test]
@@ -286,65 +227,131 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
             "- /etc/modules-load.d/acpi.conf autoloads acpi_call, which does not exist for 7.2.9-2-cachyos-bore-lto (fails every boot)",
             "- DKMS module acpi_call/1.2.2 is not built for kernel 7.2.9-2-cachyos-bore-lto",
             "- NTFS volume nvme0n1p3 is marked dirty; run chkdsk in Windows (or ntfsfix -d, see docs/design/11-disks.md)",
-            "- an external display runs on NVIDIA but the desktop may be drawn on Intel; try `legionctl gpu primary nvidia`",
+            "- an external display runs on NVIDIA but the desktop may be drawn on Intel; try `legionctl gpu primary --choice nvidia`",
         ]
     );
 }
 
 #[test]
-fn cleanup_disables_running_conflicts_and_only_warns_about_packages_unless_asked() {
+fn cleanup_plans_to_disable_running_conflicts_and_leaves_packages_to_the_human() {
     let m = Machine::new("cleanup");
     let bin = m.dir.join("bin");
     Machine::script(
         &bin,
         "systemctl",
-        &format!(
-            "echo \"systemctl $*\" >> {log}; \
-             if [ \"$1\" = is-active ] && [ \"$2\" = legiond.service ]; then echo active; \
-             elif [ \"$1\" = is-active ]; then echo inactive; elif [ \"$1\" = is-enabled ]; then echo disabled; fi",
-            log = m.dir.join("calls.log").display()
-        ),
+        "if [ \"$1\" = is-active ] && [ \"$2\" = legiond.service ]; then echo active; \
+         elif [ \"$1\" = is-active ]; then echo inactive; elif [ \"$1\" = is-enabled ]; then echo disabled; fi",
     );
-    Machine::script(
-        &bin,
-        "pacman",
-        &format!(
-            "echo \"pacman $*\" >> {}; [ \"$2\" = lenovolegionlinux-git ]",
-            m.dir.join("calls.log").display()
-        ),
-    );
+    Machine::script(&bin, "pacman", "[ \"$2\" = lenovolegionlinux-git ]");
 
-    let out = m.ok(&["cleanup"]);
-    assert!(out.contains("conflicting package is installed but was not removed without --remove-packages: lenovolegionlinux-git"), "{out}");
-    let calls = m.calls();
-    assert!(
-        calls.contains(&"systemctl disable --now legiond.service".into()),
-        "{calls:?}"
-    );
-    assert!(
-        !calls
-            .iter()
-            .any(|c| c.starts_with("systemctl disable --now powersaver")),
-        "quiet units stay: {calls:?}"
-    );
-    assert!(
-        !calls.iter().any(|c| c.starts_with("pacman -Rns")),
-        "{calls:?}"
-    );
-
-    m.ok(&["cleanup", "--remove-packages", "--quiet"]);
-    assert!(
-        m.calls()
-            .contains(&"pacman -Rns lenovolegionlinux-git".into())
+    let out = m.ok(&["cleanup", "--dry-run"]);
+    let lines: Vec<&str> = out
+        .lines()
+        .filter(|l| !l.contains("reset-failed"))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "would run: systemctl disable --now legiond.service",
+            "warning: conflicting packages are installed; remove them with: sudo pacman -Rns lenovolegionlinux-git",
+        ],
+        "quiet units stay; packages are the human's: {out}"
     );
 }
 
-/// The daemon's decisions per event, planned (not executed) against the recorded machine.
+/// The daemon's reactions to events against the recorded machine. `react` is what legionctl-system runs per event.
 mod daemon_events {
     use super::*;
     use legionctl_machine::policy::{self, Machine as Planner, Step};
     use legionctl_machine::react::{Event, react};
     use legionctl_machine::sysroot::SysRoot;
+
+    /// The daemon's reaction: every step as a line; file and ledger steps really run against the recorded tree,
+    /// commands (powerprofilesctl, systemctl, nvidia-smi) only as planned lines, so no test touches this machine.
+    fn react_and_write(m: &Machine, event: Event) -> Vec<String> {
+        let (profile, _) = legionctl_machine::profile::load(Some(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join(PROFILE),
+        ))
+        .unwrap();
+        let root = SysRoot::new(m.dir.join("root"));
+        let ledger = m.ledger();
+        let planner = Planner {
+            root: &root,
+            profile: &profile,
+            ledger: &ledger,
+            ppd_current: Some("performance".into()),
+            has_command: &|_| true,
+        };
+        let steps = react(&planner, event).unwrap();
+        let files: Vec<Step> = steps
+            .iter()
+            .filter(|s| !matches!(s, Step::Run(_) | Step::Try(_)))
+            .cloned()
+            .collect();
+        policy::execute(&root, &ledger, &files);
+        steps.iter().filter_map(policy::describe).collect()
+    }
+
+    #[test]
+    fn unplug_fn_q_resume_and_replug_follow_the_policy_and_the_users_choice() {
+        let m = Machine::new("cycle");
+
+        // unplug: battery policy, firmware balanced, recorded as our own write
+        m.set("/sys/class/power_supply/ADP0/online", "0");
+        let lines = react_and_write(&m, Event::PowerSource);
+        assert!(!lines.iter().any(|l| l.starts_with("warning")), "{lines:?}");
+        assert_eq!(m.file(PROFILE_PATH), "balanced");
+        assert_eq!(m.recorded(Key::Written), "balanced");
+        assert_eq!(m.governors(), ["powersave"]);
+        assert_eq!(
+            m.file("/sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference"),
+            "balance_power"
+        );
+        // intel_pstate refuses PPD's EPP change while the governor is performance: governors go first (and again after)
+        let ppd = lines
+            .iter()
+            .position(|l| l == "would run: powerprofilesctl set balanced")
+            .expect("PPD set");
+        let first_governor = lines
+            .iter()
+            .position(|l| l.contains("scaling_governor"))
+            .unwrap();
+        assert!(first_governor < ppd, "{lines:?}");
+        assert!(
+            !lines.iter().any(|l| l.contains("nvidia")),
+            "no NVIDIA services on battery: {lines:?}"
+        );
+
+        // our own write produces the same uevent as Fn+Q; following it changes nothing
+        let lines = react_and_write(&m, Event::PlatformProfile);
+        assert!(
+            lines.iter().any(|l| l.contains("nothing to follow")),
+            "{lines:?}"
+        );
+
+        // Fn+Q: the firmware switches to performance; that is the user's choice
+        m.set(PROFILE_PATH, "performance");
+        react_and_write(&m, Event::PlatformProfile);
+        assert_eq!(m.recorded(Key::Override), "performance");
+        assert_eq!(m.governors(), ["performance"]);
+
+        // resume keeps the choice and does not write the firmware mode back
+        react_and_write(&m, Event::Resume);
+        assert_eq!(m.file(PROFILE_PATH), "performance");
+        assert_eq!(m.recorded(Key::Override), "performance");
+
+        // plug in: a power-source change starts from the profile again
+        m.set("/sys/class/power_supply/ADP0/online", "1");
+        let lines = react_and_write(&m, Event::PowerSource);
+        assert_eq!(lines[0], "clearing firmware override 'performance'");
+        assert_eq!(m.recorded(Key::Override), "<missing>");
+        assert_eq!(m.file(PROFILE_PATH), "max-power");
+        assert_eq!(m.recorded(Key::Written), "max-power");
+        assert!(
+            lines.contains(&"would run: nvidia-smi -i 0 -pm 1".into()),
+            "{lines:?}"
+        );
+    }
 
     fn plan(m: &Machine, event: Event) -> Vec<String> {
         let (profile, _) = legionctl_machine::profile::load(Some(

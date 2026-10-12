@@ -1,0 +1,10 @@
+[Unit]
+Description=legionctl operator API socket
+
+[Socket]
+ListenStream=%t/legionctl/api.sock
+SocketMode=0600
+DirectoryMode=0700
+
+[Install]
+WantedBy=sockets.target

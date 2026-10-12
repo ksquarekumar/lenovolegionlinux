@@ -9,7 +9,7 @@ use std::process::Command;
 use anyhow::{Result, bail, ensure};
 use rusqlite::params;
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::db::Db;
 use crate::reminders::{self, Event};
@@ -33,7 +33,7 @@ pub const BUILTIN_ACTIONS: &[(&str, &str)] = &[
     ),
 ];
 
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Action {
     pub id: String,
     pub builtin: bool,
@@ -42,7 +42,7 @@ pub struct Action {
     pub timeout_s: u32,
 }
 
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Binding {
     pub event: Event,
     pub action: String,

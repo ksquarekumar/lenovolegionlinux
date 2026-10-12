@@ -24,7 +24,7 @@ use legionctl_machine::ledger::{Key, Ledger};
 use legionctl_machine::policy::{self, Machine, Options, Source, Step};
 use legionctl_machine::react::{Event, react};
 use legionctl_machine::sysroot::SysRoot;
-use legionctl_machine::{gpu, profile};
+use legionctl_machine::{cleanup, gpu, profile};
 use tokio::io::unix::AsyncFd;
 use tokio::io::{Interest, Ready};
 use zbus::object_server::SignalEmitter;
@@ -249,6 +249,27 @@ impl System1 {
             carry_out(&self.root, |m| gpu::set_desktop(m, &choice)).map_err(|e| failed(&e))?;
         if !lines.is_empty() {
             Self::changed(&emitter, "SetDesktopGpu", &lines).await?;
+        }
+        Ok(lines)
+    }
+
+    /// Disable conflicting units and, with `unload_modules`, unload conflicting kernel modules. Conflicting packages
+    /// are reported with the command that removes them.
+    async fn cleanup(
+        &self,
+        unload_modules: bool,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.cleanup").await?;
+        let opts = cleanup::Options {
+            force: false,
+            unload_modules,
+        };
+        let lines = carry_out(&self.root, |m| cleanup::plan(m, opts)).map_err(|e| failed(&e))?;
+        if !lines.is_empty() {
+            Self::changed(&emitter, "Cleanup", &lines).await?;
         }
         Ok(lines)
     }

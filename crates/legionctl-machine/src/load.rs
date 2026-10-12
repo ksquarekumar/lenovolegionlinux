@@ -7,11 +7,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::sysroot::SysRoot;
 
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Pressure {
     /// Percent of the last 10 s in which at least one task stalled on this resource.
     pub some_avg10: f64,
@@ -19,7 +19,9 @@ pub struct Pressure {
     pub full_avg10: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Level {
     Idle,
@@ -28,7 +30,7 @@ pub enum Level {
     Overloaded,
 }
 
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Load {
     pub level: Level,
     pub reasons: Vec<String>,

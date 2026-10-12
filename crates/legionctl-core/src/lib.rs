@@ -1,8 +1,6 @@
-//! Shared core for the legionctl CLI, TUI and MCP server: agents, hooks, reminders, worktrees and approved actions.
-//! Machine state and load live in legionctl-machine.
-//! Every surface calls these functions, so humans and agents see the same data and the same guard rails.
+//! Agent-side core of legionctl: agent settings, hooks, reminders, skills, setup, worktrees and the operator
+//! database. `legionctl-operator` calls it; machine state and load live in legionctl-machine.
 
-pub mod actions;
 pub mod agents;
 pub mod db;
 pub mod hooks;

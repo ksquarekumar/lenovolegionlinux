@@ -21,9 +21,20 @@ flowchart LR
 - **Today (Phase 1a, built):** `legionctl-core` plus one client binary (named `legion` until the switch in
   15-layout) that is CLI, TUI and stdio MCP server, and the `legionctl` Claude Code plugin. Every surface calls
   `legionctl-core` directly.
-- **Next (Phase 1b):** `legionctl-operator` owns state and long-running work (sessions, indexing) and exposes the
-  operation registry on `$XDG_RUNTIME_DIR/legionctl/api.sock`. The CLI, TUI and MCP server become clients of it,
-  in the same change; they have no direct path after that.
+- **Phase 1b (decided 2026-10-13):**
+  - `legionctl-api` declares every operation once (name, permission class, input type, output type; the doc comment
+    is the help). From that list it generates the HTTP routes, the MCP tools, the CLI (clap builder, from the input
+    JSON schemas) and the `Engine` trait that `legionctl-operator` must implement, so a missing handler does not
+    compile.
+  - Transport: HTTP/JSON on `$XDG_RUNTIME_DIR/legionctl/api.sock`, owned by `legionctl-operator.socket` (systemd
+    socket activation; the first request starts the operator). `POST /v1/ops/<name>`, `GET /v1/ops`.
+  - The operator reads machine state as the user (status, load, doctor, plans); fan RPM and throttle reasons stay
+    `unknown` without root. Machine changes go to `legionctl-system` over D-Bus with polkit (`Apply`,
+    `SetDesktopGpu`, `Cleanup`).
+  - Client-only commands: `legionctl mcp` and `legionctl tui` (surfaces), and `legionctl run` (it must exec in the
+    caller's process; it gets the GPU environment and CPU list from the `gpu.run-env` operation).
+  - Paths in inputs (`profile`, `project`, `repo`) are resolved by the client against its own working directory.
+  - Every call that is not a read is recorded in the operator event log with the actor (cli, mcp, tui).
 
 ## Approvals
 
@@ -77,7 +88,7 @@ Operating directory, named workspace in `~/.agentworkspace`, dossier and change 
 ## Agents, plugins and settings
 
 - **Settings:** read and validate Claude Code and Codex user/project settings (built: `legion agents`,
-  `agent_configs`). Editing: schema-checked (Claude's published settings schema; TOML parse plus known-keys check for
+  `agents`). Editing: schema-checked (Claude's published settings schema; TOML parse plus known-keys check for
   Codex), shown as a diff, backed up, then written.
 - **Plugins, MCP servers and skills:** an allowlist of authorised marketplaces and items; install into Claude Code
   (`claude plugin …`) and Codex (`~/.codex/config.toml`) from one place, and show what each agent has loaded.

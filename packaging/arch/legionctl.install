@@ -1,11 +1,12 @@
 post_install() {
   systemctl daemon-reload
   echo ":: enable the daemon:    systemctl enable --now legionctl-system.service scx_loader.service"
-  echo ":: per user:             systemctl --user enable --now legionctl-operator.service"
+  echo ":: per user:             systemctl --user enable --now legionctl-operator.socket legionctl-operator.service"
   echo ":: OSD (next login):     gnome-extensions enable legionctl-osd@legionctl"
 }
 
 post_upgrade() {
   systemctl daemon-reload
   systemctl try-restart legionctl-system.service
+  echo ":: per user:             systemctl --user daemon-reload && systemctl --user restart legionctl-operator.service"
 }

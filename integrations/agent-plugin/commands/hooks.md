@@ -6,7 +6,8 @@ Help the user manage legionctl hook bindings. Request: $ARGUMENTS
 
 1. Call `hooks_list`. Show the bindings per event in run order, then the available actions (built-in with a
    one-line description; user-defined with their command and timeout).
-2. If the request already says what to do, do it with `hooks_update` and show the new bindings.
+2. If the request already says what to do, do it with `hooks_bind`, `hooks_unbind`, `hooks_add` or `hooks_rm`
+   and show the new bindings.
 3. Otherwise guide the user:
    - Offer built-in actions that are not bound yet, and explain the cost: every action bound to "prompt" runs on
      every turn, so it adds delay and tokens.
