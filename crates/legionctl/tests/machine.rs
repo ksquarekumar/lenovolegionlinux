@@ -1161,7 +1161,7 @@ mod operator_and_daemon {
         .unwrap();
         let efibootmgr = |fail: &str| {
             format!(
-                "if [ $# -eq 0 ]; then while IFS= read -r l; do echo \"$l\"; done < {}; exit 0; fi; \
+                "if [ $# -eq 0 ]; then while IFS= read -r l; do printf '%s\\n' \"$l\"; done < {}; exit 0; fi; \
                  echo \"efibootmgr $*\" >> {}; {fail}",
                 m.dir.join("efibootmgr.txt").display(),
                 log.display()
