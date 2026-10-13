@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use legionctl_api::{ClientPath, ConfigFile, Empty, ProjectIn, Snapshot, StatusIn, Workspace, op};
-use legionctl_machine::load::{Level, Pressure};
+use legionctl_api::{Level, Pressure};
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};

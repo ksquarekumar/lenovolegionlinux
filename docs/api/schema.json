@@ -305,7 +305,8 @@
                 "normal",
                 "busy",
                 "overloaded"
-              ]
+              ],
+              "description": "How busy the machine is."
             },
             "reasons": {
               "type": "array",
@@ -394,14 +395,14 @@
                 "some_avg10"
               ]
             },
-            "mem_available_mib": {
+            "mem_available_bytes": {
               "type": "integer",
-              "format": "uint32",
+              "format": "uint64",
               "minimum": 0
             },
-            "mem_total_mib": {
+            "mem_total_bytes": {
               "type": "integer",
-              "format": "uint32",
+              "format": "uint64",
               "minimum": 0
             },
             "io_stall_source": {
@@ -417,8 +418,8 @@
             "reasons",
             "load1",
             "cpus",
-            "mem_available_mib",
-            "mem_total_mib"
+            "mem_available_bytes",
+            "mem_total_bytes"
           ]
         }
       },
@@ -462,7 +463,8 @@
             "normal",
             "busy",
             "overloaded"
-          ]
+          ],
+          "description": "How busy the machine is."
         },
         "reasons": {
           "type": "array",
@@ -551,14 +553,14 @@
             "some_avg10"
           ]
         },
-        "mem_available_mib": {
+        "mem_available_bytes": {
           "type": "integer",
-          "format": "uint32",
+          "format": "uint64",
           "minimum": 0
         },
-        "mem_total_mib": {
+        "mem_total_bytes": {
           "type": "integer",
-          "format": "uint32",
+          "format": "uint64",
           "minimum": 0
         },
         "io_stall_source": {
@@ -574,10 +576,10 @@
         "reasons",
         "load1",
         "cpus",
-        "mem_available_mib",
-        "mem_total_mib"
+        "mem_available_bytes",
+        "mem_total_bytes"
       ],
-      "title": "Load",
+      "title": "LoadState",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
@@ -1944,7 +1946,7 @@
       "required": [
         "items"
       ],
-      "title": "Report",
+      "title": "SetupReport",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
@@ -2013,6 +2015,7 @@
             "type": "string"
           },
           "event": {
+            "description": "Hook event: session-start, prompt or stop.",
             "oneOf": [
               {
                 "description": "Once, when a session starts.",
@@ -2086,6 +2089,7 @@
             "type": "string"
           },
           "event": {
+            "description": "Hook event: session-start, prompt or stop.",
             "oneOf": [
               {
                 "description": "Once, when a session starts.",
@@ -2159,6 +2163,7 @@
             "type": "string"
           },
           "event": {
+            "description": "Hook event: session-start, prompt or stop.",
             "oneOf": [
               {
                 "description": "Once, when a session starts.",
@@ -2258,6 +2263,7 @@
             "type": "string"
           },
           "event": {
+            "description": "Hook event: session-start, prompt or stop.",
             "oneOf": [
               {
                 "description": "Once, when a session starts.",
@@ -2331,6 +2337,7 @@
             "type": "string"
           },
           "event": {
+            "description": "Hook event: session-start, prompt or stop.",
             "oneOf": [
               {
                 "description": "Once, when a session starts.",
@@ -2423,6 +2430,7 @@
             "type": "object",
             "properties": {
               "event": {
+                "description": "Hook event: session-start, prompt or stop.",
                 "oneOf": [
                   {
                     "description": "Once, when a session starts.",
@@ -2549,6 +2557,7 @@
             "type": "object",
             "properties": {
               "event": {
+                "description": "Hook event: session-start, prompt or stop.",
                 "oneOf": [
                   {
                     "description": "Once, when a session starts.",
@@ -2675,6 +2684,7 @@
             "type": "object",
             "properties": {
               "event": {
+                "description": "Hook event: session-start, prompt or stop.",
                 "oneOf": [
                   {
                     "description": "Once, when a session starts.",
@@ -2733,7 +2743,7 @@
           "type": "string",
           "description": "One-line shell command; it runs as you with `sh -c`, and its stdout goes to the agent."
         },
-        "timeout": {
+        "timeout_s": {
           "type": "integer",
           "format": "uint32",
           "minimum": 0,
@@ -2792,6 +2802,7 @@
             "type": "object",
             "properties": {
               "event": {
+                "description": "Hook event: session-start, prompt or stop.",
                 "oneOf": [
                   {
                     "description": "Once, when a session starts.",
@@ -2897,6 +2908,7 @@
             "type": "object",
             "properties": {
               "event": {
+                "description": "Hook event: session-start, prompt or stop.",
                 "oneOf": [
                   {
                     "description": "Once, when a session starts.",
@@ -3115,7 +3127,7 @@
         "description": "What only root can read; `legionctl-system` answers it over D-Bus (`Sample`).",
         "type": "object",
         "properties": {
-          "ts_ms": {
+          "at_ms": {
             "description": "Milliseconds since the epoch at the end of the window.",
             "type": "integer",
             "format": "uint64",
@@ -3347,7 +3359,7 @@
           }
         },
         "required": [
-          "ts_ms"
+          "at_ms"
         ]
       },
       "title": "Array_of_Sample",
@@ -3387,7 +3399,7 @@
             "type": "integer",
             "format": "int64"
           },
-          "ts": {
+          "at": {
             "description": "Seconds since the epoch.",
             "type": "integer",
             "format": "int64"
@@ -3402,7 +3414,7 @@
         },
         "required": [
           "id",
-          "ts",
+          "at",
           "actor",
           "kind",
           "payload"
@@ -3476,6 +3488,7 @@
             }
           },
           "policy": {
+            "description": "What legionctl does with a knob: set it, follow the firmware, or only read it.",
             "type": "string",
             "enum": [
               "enforce",
@@ -3578,7 +3591,8 @@
                 "enforce",
                 "follow",
                 "observe"
-              ]
+              ],
+              "description": "What legionctl does with a knob: set it, follow the firmware, or only read it."
             }
           },
           "required": [
@@ -3598,7 +3612,7 @@
                 "type": "integer",
                 "format": "int64"
               },
-              "ts": {
+              "at": {
                 "description": "Seconds since the epoch.",
                 "type": "integer",
                 "format": "int64"
@@ -3613,7 +3627,7 @@
             },
             "required": [
               "id",
-              "ts",
+              "at",
               "actor",
               "kind",
               "payload"
@@ -3647,6 +3661,7 @@
             "type": "string"
           },
           "kind": {
+            "description": "Where a package comes from.",
             "oneOf": [
               {
                 "type": "string",
@@ -3684,6 +3699,7 @@
                 "type": "string"
               },
               "kind": {
+                "description": "Where a package comes from.",
                 "oneOf": [
                   {
                     "type": "string",
@@ -3711,7 +3727,7 @@
                 "description": "BLAKE2b-256 of the installed tree, hex.",
                 "type": "string"
               },
-              "fetched": {
+              "fetched_at": {
                 "description": "Seconds since the epoch.",
                 "type": "integer",
                 "format": "int64"
@@ -3723,7 +3739,7 @@
               "source",
               "version",
               "hash",
-              "fetched"
+              "fetched_at"
             ]
           },
           "intact": {
@@ -3790,7 +3806,8 @@
               "const": "path",
               "description": "A local file or folder, copied in."
             }
-          ]
+          ],
+          "description": "Where a package comes from."
         },
         "source": {
           "type": "string"
@@ -3802,7 +3819,7 @@
           "type": "string",
           "description": "BLAKE2b-256 of the installed tree, hex."
         },
-        "fetched": {
+        "fetched_at": {
           "type": "integer",
           "format": "int64",
           "description": "Seconds since the epoch."
@@ -3814,7 +3831,7 @@
         "source",
         "version",
         "hash",
-        "fetched"
+        "fetched_at"
       ],
       "description": "What the store recorded at fetch time.",
       "title": "Manifest",
@@ -3930,7 +3947,7 @@
             "type": "integer",
             "format": "int64"
           },
-          "ts": {
+          "at": {
             "description": "Seconds since the epoch.",
             "type": "integer",
             "format": "int64"
@@ -3972,7 +3989,7 @@
         },
         "required": [
           "id",
-          "ts",
+          "at",
           "account",
           "model",
           "tokens_in",
@@ -4081,7 +4098,7 @@
             "type": "integer",
             "format": "int64"
           },
-          "ts": {
+          "at": {
             "type": "integer",
             "format": "int64"
           },
@@ -4146,7 +4163,7 @@
         },
         "required": [
           "id",
-          "ts",
+          "at",
           "server",
           "tool",
           "args_hash",
@@ -4974,6 +4991,7 @@
                 }
               },
               "policy": {
+                "description": "What legionctl does with a knob: set it, follow the firmware, or only read it.",
                 "type": "string",
                 "enum": [
                   "enforce",
@@ -5000,7 +5018,7 @@
                 "type": "integer",
                 "format": "int64"
               },
-              "ts": {
+              "at": {
                 "description": "Seconds since the epoch.",
                 "type": "integer",
                 "format": "int64"
@@ -5015,7 +5033,7 @@
             },
             "required": [
               "id",
-              "ts",
+              "at",
               "actor",
               "kind",
               "payload"
@@ -5125,6 +5143,7 @@
                 }
               },
               "policy": {
+                "description": "What legionctl does with a knob: set it, follow the firmware, or only read it.",
                 "type": "string",
                 "enum": [
                   "enforce",
@@ -5151,7 +5170,7 @@
                 "type": "integer",
                 "format": "int64"
               },
-              "ts": {
+              "at": {
                 "description": "Seconds since the epoch.",
                 "type": "integer",
                 "format": "int64"
@@ -5166,7 +5185,7 @@
             },
             "required": [
               "id",
-              "ts",
+              "at",
               "actor",
               "kind",
               "payload"
@@ -5231,7 +5250,7 @@
           "format": "int64",
           "description": "The event id of the run; `bench compare` takes two."
         },
-        "ts": {
+        "at": {
           "type": "integer",
           "format": "int64",
           "description": "Seconds since the epoch."
@@ -5242,7 +5261,8 @@
             "cpu",
             "gpu",
             "mixed"
-          ]
+          ],
+          "description": "The workload of a bench or tune step."
         },
         "label": {
           "type": [
@@ -5363,7 +5383,7 @@
       },
       "required": [
         "id",
-        "ts",
+        "at",
         "scenario",
         "seconds",
         "scores",
@@ -5395,12 +5415,13 @@
             "type": "integer",
             "format": "int64"
           },
-          "ts": {
+          "at": {
             "description": "Seconds since the epoch.",
             "type": "integer",
             "format": "int64"
           },
           "scenario": {
+            "description": "The workload of a bench or tune step.",
             "type": "string",
             "enum": [
               "cpu",
@@ -5527,7 +5548,7 @@
         },
         "required": [
           "id",
-          "ts",
+          "at",
           "scenario",
           "seconds",
           "scores",
@@ -5608,7 +5629,8 @@
             "cpu",
             "gpu",
             "mixed"
-          ]
+          ],
+          "description": "The workload of a bench or tune step."
         },
         "original": {
           "type": "string",
@@ -5806,7 +5828,7 @@
               "format": "int64",
               "description": "The event id of the run; `bench compare` takes two."
             },
-            "ts": {
+            "at": {
               "type": "integer",
               "format": "int64",
               "description": "Seconds since the epoch."
@@ -5817,7 +5839,8 @@
                 "cpu",
                 "gpu",
                 "mixed"
-              ]
+              ],
+              "description": "The workload of a bench or tune step."
             },
             "label": {
               "type": [
@@ -5938,7 +5961,7 @@
           },
           "required": [
             "id",
-            "ts",
+            "at",
             "scenario",
             "seconds",
             "scores",
@@ -5956,7 +5979,7 @@
               "format": "int64",
               "description": "The event id of the run; `bench compare` takes two."
             },
-            "ts": {
+            "at": {
               "type": "integer",
               "format": "int64",
               "description": "Seconds since the epoch."
@@ -5967,7 +5990,8 @@
                 "cpu",
                 "gpu",
                 "mixed"
-              ]
+              ],
+              "description": "The workload of a bench or tune step."
             },
             "label": {
               "type": [
@@ -6088,7 +6112,7 @@
           },
           "required": [
             "id",
-            "ts",
+            "at",
             "scenario",
             "seconds",
             "scores",
@@ -6239,6 +6263,7 @@
     "output": {
       "type": "array",
       "items": {
+        "description": "Which session holds a dossier.",
         "type": "object",
         "properties": {
           "dossier": {
@@ -6248,14 +6273,16 @@
             "type": "string"
           },
           "tool": {
+            "description": "What bound it: hook (a Claude Code session), an agent name (a legionctl session), cli or mcp.",
             "type": "string"
           },
-          "updated": {
+          "updated_at": {
             "description": "Seconds since the epoch.",
             "type": "integer",
             "format": "int64"
           },
           "stale": {
+            "description": "No longer live: the next session that uses the dossier takes it.",
             "type": "boolean"
           }
         },
@@ -6263,7 +6290,7 @@
           "dossier",
           "session",
           "tool",
-          "updated",
+          "updated_at",
           "stale"
         ]
       },
@@ -6784,7 +6811,7 @@
             "description": "A node's status changed in a write through legionctl (null: the node did not exist or had no status).",
             "type": "object",
             "properties": {
-              "ts": {
+              "at": {
                 "description": "Seconds since the epoch.",
                 "type": "integer",
                 "format": "int64"
@@ -6809,7 +6836,7 @@
               }
             },
             "required": [
-              "ts",
+              "at",
               "session",
               "node"
             ]
@@ -6853,7 +6880,7 @@
             "type": "integer",
             "format": "int64"
           },
-          "ts": {
+          "at": {
             "description": "Seconds since the epoch.",
             "type": "integer",
             "format": "int64"
@@ -6868,7 +6895,7 @@
         },
         "required": [
           "id",
-          "ts",
+          "at",
           "actor",
           "kind",
           "payload"
@@ -7130,7 +7157,7 @@
             "description": "The workspace the agent works in.",
             "type": "string"
           },
-          "started": {
+          "started_at": {
             "description": "Seconds since the epoch.",
             "type": "integer",
             "format": "int64"
@@ -7152,7 +7179,7 @@
           "agent",
           "dossier",
           "workdir",
-          "started",
+          "started_at",
           "state"
         ]
       },
@@ -7218,7 +7245,7 @@
         "description": "A program that a process in an agent session started (the eBPF sensor in legionctl-system).",
         "type": "object",
         "properties": {
-          "ts": {
+          "at": {
             "description": "Seconds since the epoch.",
             "type": "integer",
             "format": "int64"
@@ -7237,7 +7264,7 @@
           }
         },
         "required": [
-          "ts",
+          "at",
           "pid",
           "argv"
         ]

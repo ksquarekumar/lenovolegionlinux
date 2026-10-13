@@ -10,6 +10,7 @@
 pub mod client;
 mod io;
 mod render;
+mod wire;
 
 use std::borrow::Cow;
 use std::path::PathBuf;
@@ -23,6 +24,7 @@ use serde_json::Value;
 
 pub use io::*;
 pub use render::Render;
+pub use wire::*;
 
 /// Socket path relative to `$XDG_RUNTIME_DIR`.
 pub const SOCKET: &str = "legionctl/api.sock";

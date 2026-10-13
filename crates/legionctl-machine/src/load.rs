@@ -39,8 +39,8 @@ pub struct Load {
     pub cpu: Option<Pressure>,
     pub memory: Option<Pressure>,
     pub io: Option<Pressure>,
-    pub mem_available_mib: u32,
-    pub mem_total_mib: u32,
+    pub mem_available_bytes: u64,
+    pub mem_total_bytes: u64,
     /// With I/O pressure while no disk works: the cgroup that stalls most, and its pressure. Not counted in `level`.
     pub io_stall_source: Option<String>,
 }
@@ -206,26 +206,41 @@ pub fn classify(s: &Sample, t: &Thresholds) -> (Level, Vec<String>) {
 /// One line an agent can act on: the level, why, and what to do about it.
 #[must_use]
 pub fn brief(load: &Load) -> String {
-    let advice = match load.level {
+    brief_of(
+        load.level,
+        &load.reasons,
+        (load.load1, load.cpus),
+        (load.mem_available_bytes, load.mem_total_bytes),
+        load.io_stall_source.as_deref(),
+    )
+}
+
+/// The one-line load text from its parts (the operator's wire type gives the same parts).
+#[must_use]
+pub fn brief_of(
+    level: Level,
+    reasons: &[String],
+    (load1, cpus): (f64, u32),
+    (available, total): (u64, u64),
+    stall: Option<&str>,
+) -> String {
+    let advice = match level {
         Level::Overloaded => " Avoid builds, test suites and parallel jobs until it settles.",
         Level::Busy => " Prefer light commands; limit parallelism (e.g. -j4).",
         _ => "",
     };
-    let why = if load.reasons.is_empty() {
+    let why = if reasons.is_empty() {
         String::new()
     } else {
-        format!(" ({})", load.reasons.join(", "))
+        format!(" ({})", reasons.join(", "))
     };
-    let stall = load.io_stall_source.as_ref().map_or(String::new(), |src| {
+    let stall = stall.map_or(String::new(), |src| {
         format!(" I/O wait without disk I/O from {src}; not counted.")
     });
     format!(
-        "System load: {:?}{why}; load {:.1} on {} CPUs, {} of {} free.{advice}{stall}",
-        load.level,
-        load.load1,
-        load.cpus,
-        crate::human_bytes(u64::from(load.mem_available_mib) << 20),
-        crate::human_bytes(u64::from(load.mem_total_mib) << 20)
+        "System load: {level:?}{why}; load {load1:.1} on {cpus} CPUs, {} of {} free.{advice}{stall}",
+        crate::human_bytes(available),
+        crate::human_bytes(total)
     )
 }
 
@@ -339,13 +354,13 @@ pub fn read_load(root: &SysRoot, thresholds: &Thresholds) -> Load {
         .as_deref()
         .and_then(parse_pressure);
     let meminfo = root.read("/proc/meminfo").unwrap_or_default();
-    let mib = |key| {
-        meminfo_kib(&meminfo, key).map_or(0, |kib| u32::try_from(kib >> 10).unwrap_or(u32::MAX))
-    };
-    let total = mib("MemTotal");
-    let available = mib("MemAvailable");
+    let bytes = |key| meminfo_kib(&meminfo, key).map_or(0, |kib| kib << 10);
+    let total = bytes("MemTotal");
+    let available = bytes("MemAvailable");
+    // whole MiB keep the ratio exact in an f64
     let fraction = if total > 0 {
-        f64::from(available) / f64::from(total)
+        f64::from(u32::try_from(available >> 20).unwrap_or(u32::MAX))
+            / f64::from(u32::try_from(total >> 20).unwrap_or(u32::MAX).max(1))
     } else {
         1.0
     };
@@ -384,8 +399,8 @@ pub fn read_load(root: &SysRoot, thresholds: &Thresholds) -> Load {
         cpu,
         memory,
         io,
-        mem_available_mib: available,
-        mem_total_mib: total,
+        mem_available_bytes: available,
+        mem_total_bytes: total,
         io_stall_source: source
             .filter(|_| phantom || disks * 100.0 < thresholds.disk_busy_percent)
             .map(|(path, some)| cgroup_name(&path, some)),

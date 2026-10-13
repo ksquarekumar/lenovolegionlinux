@@ -190,6 +190,7 @@ async fn events(
             loop {
                 if let Some(row) = pending.pop_front() {
                     last = row.id;
+                    let row: legionctl_api::EventRow = legionctl_api::IntoWire::into_wire(row);
                     let event = axum::response::sse::Event::default()
                         .id(row.id.to_string())
                         .data(serde_json::to_string(&row).unwrap_or_default());

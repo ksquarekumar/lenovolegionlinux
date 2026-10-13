@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::io::{
+use crate::{
     BenchCompare, BenchRun, CapabilityList, Changes, ConfigFile, ConfigView, DossierFindings,
     DossierInfo, Empty, EventRow, Explanation, Findings, GpuState, Guard, HookReply, HookTable,
     Knob, KnobDetail, Launch, LayerList, Lines, LoadState, Lock, Manifest, PackageState, Recording,
@@ -152,13 +152,19 @@ fn system_lines(s: &Snapshot) -> Vec<String> {
         .map(|(m, loaded)| format!("{m}{}", if *loaded { "" } else { " (not loaded)" }))
         .collect();
     out.push(format!("modules: {}", modules.join(", ")));
-    out.push(legionctl_machine::load::brief(&s.load));
+    out.push(s.load.text());
     out
 }
 
 impl Render for LoadState {
     fn text(&self) -> String {
-        legionctl_machine::load::brief(self)
+        legionctl_machine::load::brief_of(
+            self.level.into(),
+            &self.reasons,
+            (self.load1, self.cpus),
+            (self.mem_available_bytes, self.mem_total_bytes),
+            self.io_stall_source.as_deref(),
+        )
     }
 }
 
@@ -281,7 +287,7 @@ impl Render for Vec<ConfigFile> {
 
 impl Render for Workspace {
     fn text(&self) -> String {
-        if self.is_folder() {
+        if self.branch.is_empty() {
             return format!(
                 "{}: {} through a layer at {} (sessions see the changes; merge applies them)",
                 self.dossier,
@@ -317,7 +323,7 @@ impl Render for Vec<WorkspaceStatus> {
         let mut out = Vec::new();
         for s in self {
             out.push(s.workspace.text());
-            if s.workspace.is_folder() {
+            if s.workspace.branch.is_empty() {
                 out.push(format!(
                     "  {} changes over {}",
                     s.files.len(),
@@ -351,7 +357,7 @@ impl Render for SetupReport {
                 .iter()
                 .map(|i| format!("{:<26} {:<12} {:<14} {}", i.what, i.agent, i.status, i.path)),
         );
-        let todo = self.needs_attention().len();
+        let todo = self.items.iter().filter(|i| i.status != "current").count();
         out.push(if todo == 0 {
             "all set up".into()
         } else {
@@ -361,7 +367,7 @@ impl Render for SetupReport {
     }
 
     fn success(&self) -> bool {
-        self.needs_attention().is_empty()
+        self.items.iter().all(|i| i.status == "current")
     }
 }
 
@@ -537,7 +543,7 @@ impl Render for Vec<Lock> {
                     l.dossier,
                     l.session,
                     l.tool,
-                    l.updated,
+                    l.updated_at,
                     if l.stale { "  STALE" } else { "" }
                 )
             })
@@ -663,7 +669,7 @@ impl Render for Vec<EventRow> {
             .map(|e| {
                 format!(
                     "{:>6} {} {:<16} {:<28} {}",
-                    e.id, e.ts, e.actor, e.kind, e.payload
+                    e.id, e.at, e.actor, e.kind, e.payload
                 )
             })
             .collect::<Vec<_>>()
@@ -962,7 +968,7 @@ impl Render for Vec<ToolCallRow> {
                 format!(
                     "{:>6} {} {:<10} {}.{:<24} {:<8} {:>6} ms {:>8} B  {}",
                     r.id,
-                    r.ts,
+                    r.at,
                     &c.session.0[..c.session.0.len().min(8)],
                     c.server,
                     c.tool,
@@ -1016,13 +1022,13 @@ impl Render for Manifest {
     }
 }
 
-impl Render for crate::io::CacheValue {
+impl Render for crate::CacheValue {
     fn text(&self) -> String {
         self.value.clone().unwrap_or_default()
     }
 }
 
-impl Render for crate::io::RunOutput {
+impl Render for crate::RunOutput {
     fn text(&self) -> String {
         let mut out = vec![self.text.clone()];
         out.extend(self.permissions.iter().map(|p| format!("permission: {p}")));
@@ -1031,7 +1037,7 @@ impl Render for crate::io::RunOutput {
     }
 }
 
-impl Render for crate::io::Graph {
+impl Render for crate::Graph {
     fn text(&self) -> String {
         let mut out: Vec<String> = self
             .nodes
@@ -1053,7 +1059,7 @@ impl Render for crate::io::Graph {
         out.extend(self.history.iter().map(|h| {
             format!(
                 "  {} {}: {} -> {}",
-                h.ts,
+                h.at,
                 h.session,
                 h.from.as_deref().unwrap_or("-"),
                 h.to.as_deref().unwrap_or("-")
@@ -1063,14 +1069,14 @@ impl Render for crate::io::Graph {
     }
 }
 
-impl Render for Vec<crate::io::GatewayUsage> {
+impl Render for Vec<crate::GatewayUsage> {
     fn text(&self) -> String {
         self.iter()
             .map(|u| {
                 format!(
                     "{:>6} {} {:<14} {:<24} in {:>7} out {:>7} ${:.4} {} {} {} ms",
                     u.id,
-                    u.ts,
+                    u.at,
                     u.account,
                     u.model,
                     u.tokens_in,
@@ -1086,7 +1092,7 @@ impl Render for Vec<crate::io::GatewayUsage> {
     }
 }
 
-impl Render for crate::io::Edit {
+impl Render for crate::Edit {
     fn text(&self) -> String {
         let mut out = vec![format!(
             "{}{}",
@@ -1109,7 +1115,7 @@ impl Render for crate::io::Edit {
     }
 }
 
-impl Render for crate::io::UsageReport {
+impl Render for crate::UsageReport {
     fn text(&self) -> String {
         let mut out: Vec<String> = self
             .rows
@@ -1130,7 +1136,7 @@ impl Render for crate::io::UsageReport {
     }
 }
 
-impl Render for crate::io::VirtStatus {
+impl Render for crate::VirtStatus {
     fn text(&self) -> String {
         let mut out: Vec<String> = self
             .capabilities
@@ -1173,7 +1179,7 @@ impl Render for crate::io::VirtStatus {
     }
 }
 
-impl Render for crate::io::Scan {
+impl Render for crate::Scan {
     fn text(&self) -> String {
         if self.services.is_empty() {
             return "no Dockerfile or compose file in this repository".into();
@@ -1220,7 +1226,7 @@ impl Render for crate::io::Scan {
     }
 }
 
-impl Render for Vec<crate::io::ServiceState> {
+impl Render for Vec<crate::ServiceState> {
     fn text(&self) -> String {
         if self.is_empty() {
             return "no containers of this repository".into();
@@ -1245,19 +1251,19 @@ impl Render for Vec<crate::io::ServiceState> {
     }
 }
 
-impl Render for Vec<crate::io::SessionExec> {
+impl Render for Vec<crate::SessionExec> {
     fn text(&self) -> String {
         if self.is_empty() {
             return "no programs recorded for this session".into();
         }
         self.iter()
-            .map(|e| format!("{} {:>7} {}", e.ts, e.pid, e.argv.join(" ")))
+            .map(|e| format!("{} {:>7} {}", e.at, e.pid, e.argv.join(" ")))
             .collect::<Vec<_>>()
             .join("\n")
     }
 }
 
-impl Render for Vec<crate::io::Plugin> {
+impl Render for Vec<crate::Plugin> {
     fn text(&self) -> String {
         if self.is_empty() {
             return "no Claude Code plugins".into();
@@ -1282,7 +1288,7 @@ impl Render for Vec<crate::io::Plugin> {
     }
 }
 
-impl Render for Vec<crate::io::Account> {
+impl Render for Vec<crate::Account> {
     fn text(&self) -> String {
         if self.is_empty() {
             return "no account profiles (legionctl agents accounts add <name>)".into();

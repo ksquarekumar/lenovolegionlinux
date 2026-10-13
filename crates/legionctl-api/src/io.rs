@@ -1,35 +1,14 @@
 //! Inputs and outputs of the operations. A field's doc comment is its help text on every surface.
 
-pub use legionctl_core::reminders::Event;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::wire::{
+    Action, BenchResult, Binding, Capability, ConfigFile, ConfigLayer, DesktopGpu, DossierInfo,
+    EditMode, Event, EventRow, GpuMode, Knob, Lock, Output, PackageState, Reminder, Sample,
+    Scenario, SessionRecord, SkillInfo, Workspace, WorkspaceStatus,
+};
 use crate::{ClientPath, SessionId, StdinText};
-pub use legionctl_core::dossier::{DossierInfo, EditMode, Lock};
-
-pub use legionctl_core::agents::ConfigFile;
-pub use legionctl_core::agents::{Edit, UsageReport};
-pub use legionctl_core::config::{Explanation, Layer as ConfigLayer};
-pub use legionctl_core::db::EventRow;
-pub use legionctl_core::db::GatewayUsage;
-pub use legionctl_core::graph::Graph;
-pub use legionctl_core::hooks::{Action, Binding};
-pub use legionctl_core::images::Scan;
-pub use legionctl_core::packages::{Manifest, PackageState};
-pub use legionctl_core::reminders::Reminder;
-pub use legionctl_core::session::{Launch, SessionRecord};
-pub use legionctl_core::setup::Report as SetupReport;
-pub use legionctl_core::skills::SkillInfo;
-pub use legionctl_core::workspace::{Workspace, WorkspaceStatus};
-pub use legionctl_machine::bench::{BenchResult, Scenario};
-pub use legionctl_machine::gpu::{DesktopGpu, GpuMode, Output};
-pub use legionctl_machine::knobs::Knob;
-pub use legionctl_machine::load::Load as LoadState;
-pub use legionctl_machine::profile::Capability;
-pub use legionctl_machine::snapshot::Snapshot;
-pub use legionctl_machine::telemetry::Sample;
-pub use legionctl_machine::tune::TuneReport;
-pub use legionctl_machine::windows::WindowsState;
 
 pub type ConfigFiles = Vec<ConfigFile>;
 pub type Workspaces = Vec<Workspace>;
@@ -209,7 +188,7 @@ pub struct HookAddIn {
     pub command: String,
     /// Seconds before it is stopped (1-30); the agent waits for hooks.
     #[serde(default = "five")]
-    pub timeout: u32,
+    pub timeout_s: u32,
     /// Project directory; its repository's .legionctl layer applies.
     #[serde(default = "here")]
     pub project: ClientPath,
@@ -589,7 +568,7 @@ pub struct SessionIdIn {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionExec {
     /// Seconds since the epoch.
-    pub ts: i64,
+    pub at: i64,
     pub pid: u32,
     /// The arguments, cut at 512 bytes.
     pub argv: Vec<String>,
@@ -711,7 +690,7 @@ pub struct BenchRun {
     /// The event id of the run; `bench compare` takes two.
     pub id: i64,
     /// Seconds since the epoch.
-    pub ts: i64,
+    pub at: i64,
     #[serde(flatten)]
     pub result: BenchResult,
 }
@@ -1046,7 +1025,7 @@ pub struct ToolCallsIn {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ToolCallRow {
     pub id: i64,
-    pub ts: i64,
+    pub at: i64,
     #[serde(flatten)]
     pub call: ToolCall,
 }

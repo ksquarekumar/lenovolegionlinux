@@ -6,13 +6,13 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use legionctl_api::{
-    Account, BenchCompare, BenchCompareIn, BenchIn, BenchResult, BenchRun, BenchRuns, Code,
-    DossierAddIn, DossierAppendIn, DossierCheckIn, DossierEditIn, DossierFindings, DossierList,
-    DossierReadIn, DossierSearchIn, DossierUseIn, DossierWriteIn, DryRunIn, Events, EventsIn,
-    GateIn, Guard, GuardIn, HookReply, HookRunIn, InspectIn, KnobDetail, Knobs, Launch, Lines,
-    Locks, MonitorIn, RecordIn, Recording, ReplayIn, Sample, Samples, SessionExec, SessionId,
-    SessionIdIn, SessionIn, SessionResumeIn, SessionStartIn, SessionState, Sessions, ToolCall,
-    ToolCallRow, ToolCalls, ToolCallsIn, TuneIn, TuneReport, WindowsState, coded,
+    Account, BenchCompare, BenchCompareIn, BenchIn, BenchRun, BenchRuns, Code, DossierAddIn,
+    DossierAppendIn, DossierCheckIn, DossierEditIn, DossierFindings, DossierList, DossierReadIn,
+    DossierSearchIn, DossierUseIn, DossierWriteIn, DryRunIn, Events, EventsIn, GateIn, Guard,
+    GuardIn, HookReply, HookRunIn, InspectIn, IntoWire, KnobDetail, Knobs, Launch, Lines, Locks,
+    MonitorIn, RecordIn, Recording, ReplayIn, Samples, SessionExec, SessionId, SessionIdIn,
+    SessionIn, SessionResumeIn, SessionStartIn, SessionState, Sessions, ToolCall, ToolCallRow,
+    ToolCalls, ToolCallsIn, TuneIn, TuneReport, WindowsState, coded,
 };
 use legionctl_api::{
     AccountAddIn, BranchIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath, CloseIn,
@@ -75,11 +75,11 @@ fn path(p: Option<&ClientPath>) -> Result<Option<&Path>> {
     p.map(ClientPath::get).transpose()
 }
 
-fn bench_run_of(e: legionctl_api::EventRow) -> Result<BenchRun> {
+fn bench_run_of(e: legionctl_core::db::EventRow) -> Result<BenchRun> {
     Ok(BenchRun {
         id: e.id,
-        ts: e.ts,
-        result: serde_json::from_value(e.payload)?,
+        at: e.ts,
+        result: serde_json::from_value::<bench::BenchResult>(e.payload)?.into_wire(),
     })
 }
 
@@ -187,7 +187,7 @@ impl Plan {
             paths: 0,
             plan: dry_run(&machine.apply(None, Options::default())?.1).lines,
             findings: legionctl_machine::doctor::doctor(&machine),
-            knobs: knobs::catalog(&machine),
+            knobs: knobs::catalog(&machine).into_wire(),
             events,
         })
     }
@@ -234,8 +234,8 @@ impl Operator {
 
     fn hook_table(config: &Resolved) -> HookTable {
         HookTable {
-            actions: hooks::actions(config),
-            bindings: hooks::bindings(config),
+            actions: hooks::actions(config).into_wire(),
+            bindings: hooks::bindings(config).into_wire(),
         }
     }
 }
@@ -329,7 +329,7 @@ fn blocking_reason(
         .prompt
         .as_deref()
         .is_some_and(|p| p.contains("legionctl:dossier"));
-    if input.event == Event::Prompt
+    if Event::from(input.event) == Event::Prompt
         && config.dossier.gate
         && has_session
         && active.is_none()
@@ -337,7 +337,7 @@ fn blocking_reason(
     {
         return gate_message(resolved).map(Some);
     }
-    if input.event != Event::Stop {
+    if Event::from(input.event) != Event::Stop {
         return Ok(None);
     }
     // before the reply ends, the agent (not the user) hears what is not set up, and sets it up first
@@ -494,7 +494,7 @@ fn config(project: Option<&ClientPath>) -> Result<Resolved> {
 impl Operator {
     /// One telemetry sample over `window`; the root-only part comes from `legionctl-system`, and stays unknown when
     /// the daemon does not answer.
-    pub fn sample(&self, window: std::time::Duration) -> Sample {
+    pub fn sample(&self, window: std::time::Duration) -> telemetry::Sample {
         let root_part = || {
             self.runtime
                 .block_on(async {
@@ -516,19 +516,17 @@ impl Engine for Operator {
         } else {
             Detail::Full
         };
-        Ok(Snapshot::read(
+        Ok(legionctl_machine::snapshot::Snapshot::read(
             &plan.root,
             &plan.profile,
             detail,
             &config(None)?.config.load,
-        ))
+        )
+        .into_wire())
     }
 
     fn load(&self, _: &Ctx, _: Empty) -> Result<LoadState> {
-        Ok(load::read_load(
-            &SysRoot::from_env(),
-            &config(None)?.config.load,
-        ))
+        Ok(load::read_load(&SysRoot::from_env(), &config(None)?.config.load).into_wire())
     }
 
     fn doctor(&self, _: &Ctx, input: ProfileIn) -> Result<Findings> {
@@ -552,7 +550,7 @@ impl Engine for Operator {
         let (profile, _) = profile::load(path(input.profile.as_ref())?)?;
         Ok(CapabilityList {
             profile_id: profile.id,
-            capabilities: profile.capabilities,
+            capabilities: profile.capabilities.into_wire(),
         })
     }
 
@@ -569,9 +567,9 @@ impl Engine for Operator {
         let root = SysRoot::from_env();
         let outputs = gpu::outputs(&root);
         Ok(GpuState {
-            mode: gpu::mode(&outputs),
-            desktop_gpu: gpu::desktop_preference(&root),
-            outputs,
+            mode: gpu::mode(&outputs).into_wire(),
+            desktop_gpu: gpu::desktop_preference(&root).into_wire(),
+            outputs: outputs.into_wire(),
         })
     }
 
@@ -623,10 +621,13 @@ impl Engine for Operator {
         let choice = input.choice;
         if input.dry_run {
             let plan = Plan::load(None)?;
-            return Ok(dry_run(&gpu::set_desktop(&plan.machine(), choice)?));
+            return Ok(dry_run(&gpu::set_desktop(&plan.machine(), choice.into())?));
         }
         Ok(Changes {
-            lines: self.system(async move |p| p.set_desktop_gpu(choice.as_str()).await)?,
+            lines: self.system(async move |p| {
+                p.set_desktop_gpu(gpu::DesktopGpu::from(choice).as_str())
+                    .await
+            })?,
             dry_run: false,
         })
     }
@@ -647,7 +648,7 @@ impl Engine for Operator {
     }
 
     fn agents_list(&self, _: &Ctx, input: ProjectIn) -> Result<ConfigFiles> {
-        Ok(agents::config_files(&home(), input.project.get()?))
+        Ok(agents::config_files(&home(), input.project.get()?).into_wire())
     }
 
     fn agents_set(&self, _: &Ctx, input: AgentSetIn) -> Result<Edit> {
@@ -664,12 +665,13 @@ impl Engine for Operator {
                 anyhow::bail!("Codex has no project-local settings; use --scope user")
             }
         };
-        agents::set(
+        Ok(agents::set(
             &path,
             &input.key,
             agents::value_of(&input.value),
             input.dry_run,
-        )
+        )?
+        .into_wire())
     }
 
     fn agents_usage(&self, _: &Ctx, input: AgentUsageIn) -> Result<UsageReport> {
@@ -680,7 +682,7 @@ impl Engine for Operator {
             }
             None => (home().join(".claude"), home().join(".codex")),
         };
-        Ok(agents::usage(&claude, &codex, input.days))
+        Ok(agents::usage(&claude, &codex, input.days).into_wire())
     }
 
     fn agents_plugins_list(&self, _: &Ctx, _: Empty) -> Result<Vec<Plugin>> {
@@ -790,12 +792,14 @@ impl Engine for Operator {
 
     fn workspace_open(&self, _: &Ctx, input: WorkspaceOpenIn) -> Result<Workspace> {
         let root = config(None)?.config.workspace.root;
-        dossiers()?.open_workspace(
-            session(&input.session)?,
-            input.repo.get()?,
-            input.base.as_deref(),
-            &root,
-        )
+        Ok(dossiers()?
+            .open_workspace(
+                session(&input.session)?,
+                input.repo.get()?,
+                input.base.as_deref(),
+                &root,
+            )?
+            .into_wire())
     }
 
     fn workspace_status(&self, _: &Ctx, input: WorkspaceIn) -> Result<WorkspaceStates> {
@@ -809,11 +813,13 @@ impl Engine for Operator {
                 .context("this session has no active dossier")?;
             store.workspaces(Some(&dossier))?
         };
-        open.iter().map(|ws| store.workspace_status(ws)).collect()
+        open.iter()
+            .map(|ws| Ok(store.workspace_status(ws)?.into_wire()))
+            .collect()
     }
 
     fn workspace_list(&self, _: &Ctx, _: Empty) -> Result<Workspaces> {
-        dossiers()?.workspaces(None)
+        Ok(dossiers()?.workspaces(None)?.into_wire())
     }
 
     fn workspace_checkpoint(&self, _: &Ctx, input: CheckpointIn) -> Result<Lines> {
@@ -852,7 +858,7 @@ impl Engine for Operator {
     }
 
     fn setup_check(&self, _: &Ctx, _: Empty) -> Result<SetupReport> {
-        Ok(setup::check())
+        Ok(setup::check().into_wire())
     }
 
     fn setup_apply(&self, _: &Ctx, input: SetupApplyIn) -> Result<Changes> {
@@ -863,17 +869,17 @@ impl Engine for Operator {
     }
 
     fn reminders_list(&self, _: &Ctx, input: ProjectIn) -> Result<Reminders> {
-        Ok(reminders::list(&config(Some(&input.project))?))
+        Ok(reminders::list(&config(Some(&input.project))?).into_wire())
     }
 
     fn reminders_on(&self, _: &Ctx, input: IdIn) -> Result<Reminders> {
         reminders::set_enabled(&config(Some(&input.project))?, &input.id, true)?;
-        Ok(reminders::list(&config(Some(&input.project))?))
+        Ok(reminders::list(&config(Some(&input.project))?).into_wire())
     }
 
     fn reminders_off(&self, _: &Ctx, input: IdIn) -> Result<Reminders> {
         reminders::set_enabled(&config(Some(&input.project))?, &input.id, false)?;
-        Ok(reminders::list(&config(Some(&input.project))?))
+        Ok(reminders::list(&config(Some(&input.project))?).into_wire())
     }
 
     fn reminders_add(&self, _: &Ctx, input: ReminderAddIn) -> Result<Reminders> {
@@ -881,14 +887,14 @@ impl Engine for Operator {
             &config(Some(&input.project))?,
             &input.id,
             &input.text,
-            input.event,
+            input.event.into(),
         )?;
-        Ok(reminders::list(&config(Some(&input.project))?))
+        Ok(reminders::list(&config(Some(&input.project))?).into_wire())
     }
 
     fn reminders_rm(&self, _: &Ctx, input: IdIn) -> Result<Reminders> {
         reminders::remove(&config(Some(&input.project))?, &input.id)?;
-        Ok(reminders::list(&config(Some(&input.project))?))
+        Ok(reminders::list(&config(Some(&input.project))?).into_wire())
     }
 
     fn hooks_list(&self, _: &Ctx, input: ProjectIn) -> Result<HookTable> {
@@ -896,12 +902,20 @@ impl Engine for Operator {
     }
 
     fn hooks_bind(&self, _: &Ctx, input: HookBindIn) -> Result<HookTable> {
-        hooks::bind(&config(Some(&input.project))?, input.event, &input.action)?;
+        hooks::bind(
+            &config(Some(&input.project))?,
+            input.event.into(),
+            &input.action,
+        )?;
         Ok(Self::hook_table(&config(Some(&input.project))?))
     }
 
     fn hooks_unbind(&self, _: &Ctx, input: HookBindIn) -> Result<HookTable> {
-        hooks::unbind(&config(Some(&input.project))?, input.event, &input.action)?;
+        hooks::unbind(
+            &config(Some(&input.project))?,
+            input.event.into(),
+            &input.action,
+        )?;
         Ok(Self::hook_table(&config(Some(&input.project))?))
     }
 
@@ -910,7 +924,7 @@ impl Engine for Operator {
             &config(Some(&input.project))?,
             &input.id,
             &input.command,
-            input.timeout,
+            input.timeout_s,
         )?;
         Ok(Self::hook_table(&config(Some(&input.project))?))
     }
@@ -934,7 +948,7 @@ impl Engine for Operator {
         }
         let rebound = match session {
             Some(s)
-                if input.event == Event::SessionStart
+                if Event::from(input.event) == Event::SessionStart
                     && active.is_none()
                     && resolved.config.dossier.auto_bind =>
             {
@@ -960,7 +974,8 @@ impl Engine for Operator {
         }
         let mut lines = Vec::new();
         if let (Some(s), Some(d), Some(p)) = (session, active.as_deref(), place.as_ref())
-            && let Some(told) = dossier_nudge(ctx, &resolved, &store, (&s.0, d, p), input.event)?
+            && let Some(told) =
+                dossier_nudge(ctx, &resolved, &store, (&s.0, d, p), input.event.into())?
         {
             match told {
                 Told::Line(line) => lines.push(line),
@@ -972,7 +987,7 @@ impl Engine for Operator {
                 }
             }
         }
-        if input.event == Event::SessionStart
+        if Event::from(input.event) == Event::SessionStart
             && let Some(s) = session
         {
             lines.extend(start_lines(
@@ -984,7 +999,7 @@ impl Engine for Operator {
                 place.as_ref(),
             ));
         }
-        let ran = hooks::run(&resolved, input.event);
+        let ran = hooks::run(&resolved, input.event.into());
         if !ran.is_empty() {
             lines.push(ran);
         }
@@ -1026,11 +1041,11 @@ impl Engine for Operator {
     }
 
     fn dossier_locks(&self, _: &Ctx, _: Empty) -> Result<Locks> {
-        dossiers()?.locks()
+        Ok(dossiers()?.locks()?.into_wire())
     }
 
     fn dossier_list(&self, _: &Ctx, _: Empty) -> Result<DossierList> {
-        Ok(dossiers()?.list())
+        Ok(dossiers()?.list().into_wire())
     }
 
     fn dossier_read(&self, _: &Ctx, input: DossierReadIn) -> Result<Lines> {
@@ -1075,7 +1090,7 @@ impl Engine for Operator {
         let lines = dossiers()?.edit(
             session(&input.session)?,
             &input.path,
-            input.mode,
+            input.mode.into(),
             &input.start,
             input.end.as_deref(),
             &input.content.0,
@@ -1104,7 +1119,7 @@ impl Engine for Operator {
                 .is_none_or(|s| e.payload["session"] == s)
         });
         rows.sort_by_key(|e| e.id);
-        Ok(rows)
+        Ok(rows.into_wire())
     }
 
     fn dossier_graph(&self, _: &Ctx, input: DossierGraphIn) -> Result<Graph> {
@@ -1115,7 +1130,7 @@ impl Engine for Operator {
                 .active(session(&input.session)?)?
                 .context("this session has no active dossier; add --dossier <name>")?,
         };
-        ws.graph(&dossier, input.node.as_deref())
+        Ok(ws.graph(&dossier, input.node.as_deref())?.into_wire())
     }
 
     fn dossier_check(&self, _: &Ctx, input: DossierCheckIn) -> Result<DossierFindings> {
@@ -1139,7 +1154,7 @@ impl Engine for Operator {
     }
 
     fn skills(&self, _: &Ctx, input: ProjectIn) -> Result<SkillList> {
-        Ok(skills::inventory(&home(), &config(Some(&input.project))?))
+        Ok(skills::inventory(&home(), &config(Some(&input.project))?).into_wire())
     }
 
     fn monitor(&self, _: &Ctx, input: MonitorIn) -> Result<Samples> {
@@ -1149,15 +1164,21 @@ impl Engine for Operator {
             "--interval-ms must be 100-60000"
         );
         let window = std::time::Duration::from_millis(u64::from(input.interval_ms));
-        Ok((0..input.count).map(|_| self.sample(window)).collect())
+        Ok((0..input.count)
+            .map(|_| self.sample(window).into_wire())
+            .collect())
     }
 
     fn events(&self, _: &Ctx, input: EventsIn) -> Result<Events> {
-        Db::open_default()?.events(input.since, input.limit)
+        Ok(Db::open_default()?
+            .events(input.since, input.limit)?
+            .into_wire())
     }
 
     fn packages_list(&self, _: &Ctx, _: Empty) -> Result<Packages> {
-        Store::new(Store::default_root()).list(&config(None)?.config.packages)
+        Ok(Store::new(Store::default_root())
+            .list(&config(None)?.config.packages)?
+            .into_wire())
     }
 
     fn packages_fetch(&self, _: &Ctx, input: PackageFetchIn) -> Result<Manifest> {
@@ -1167,16 +1188,18 @@ impl Engine for Operator {
             .packages
             .get(&input.name)
             .with_context(|| format!("no package {} in the config (packages)", input.name))?;
-        Store::new(Store::default_root()).fetch(
-            &input.name,
-            package,
-            input.force,
-            &resolved.config.session.hidden,
-        )
+        Ok(Store::new(Store::default_root())
+            .fetch(
+                &input.name,
+                package,
+                input.force,
+                &resolved.config.session.hidden,
+            )?
+            .into_wire())
     }
 
     fn gateway_usage(&self, _: &Ctx, input: GatewayUsageIn) -> Result<Vec<GatewayUsage>> {
-        Db::open_default()?.gateway_usage(input.since)
+        Ok(Db::open_default()?.gateway_usage(input.since)?.into_wire())
     }
 
     fn cache_get(&self, _: &Ctx, input: CacheGetIn) -> Result<CacheValue> {
@@ -1202,7 +1225,7 @@ impl Engine for Operator {
             .map(|e| {
                 Ok(ToolCallRow {
                     id: e.id,
-                    ts: e.ts,
+                    at: e.ts,
                     call: serde_json::from_value(e.payload["input"].clone())?,
                 })
             })
@@ -1232,7 +1255,7 @@ impl Engine for Operator {
                 serde_json::to_string_pretty(&scan.cache)? + "\n",
             )?;
         }
-        Ok(scan)
+        Ok(scan.into_wire())
     }
 
     fn images_build(&self, _: &Ctx, input: RepoIn) -> Result<Lines> {
@@ -1376,7 +1399,7 @@ impl Engine for Operator {
     }
 
     fn windows_status(&self, _: &Ctx, _: Empty) -> Result<WindowsState> {
-        windows::state()
+        Ok(windows::state()?.into_wire())
     }
 
     fn windows_reboot(&self, _: &Ctx, input: DryRunIn) -> Result<Changes> {
@@ -1408,9 +1431,10 @@ impl Engine for Operator {
             .events_from(since)?
             .into_iter()
             .filter(|e| e.actor == "legionctl-system" || MACHINE_OPS.contains(&e.kind.as_str()))
-            .collect();
+            .collect::<Vec<_>>()
+            .into_wire();
         // status reads more files than the decisions do; recording them lets every read operation replay
-        Snapshot::read(
+        legionctl_machine::snapshot::Snapshot::read(
             &plan.root,
             &plan.profile,
             Detail::Full,
@@ -1447,8 +1471,7 @@ impl Engine for Operator {
             .into_iter()
             .map(|k| (k.id, k.value))
             .collect();
-        let runs = input
-            .scenario
+        let runs = bench::Scenario::from(input.scenario)
             .commands(input.seconds)
             .into_iter()
             .map(|argv| {
@@ -1486,8 +1509,9 @@ impl Engine for Operator {
                     .push(format!("{program} exited with {}", out.status));
             }
         }
-        let result = BenchResult {
-            scenario: input.scenario,
+        // the log keeps the domain value; the answer is its wire form (bench_run_of)
+        let result = bench::BenchResult {
+            scenario: input.scenario.into(),
             label: input.label,
             seconds: input.seconds,
             scores: scores.scores,
@@ -1513,8 +1537,7 @@ impl Engine for Operator {
             load.reasons.join("; ")
         );
         // the daemon has its own PATH: give it the programs' full paths
-        let workloads = input
-            .scenario
+        let workloads = bench::Scenario::from(input.scenario)
             .commands(input.seconds)
             .into_iter()
             .map(|mut argv| {
@@ -1528,13 +1551,13 @@ impl Engine for Operator {
         let spec = serde_json::to_string(&legionctl_machine::tune::TuneSpec {
             attribute: input.attribute,
             values: input.values,
-            scenario: input.scenario,
+            scenario: input.scenario.into(),
             seconds: input.seconds,
             cooldown_s: input.cooldown_s,
             workloads,
         })?;
         let report = self.system(async move |p| p.tune(&spec).await)?;
-        Ok(serde_json::from_str(&report)?)
+        Ok(serde_json::from_str::<legionctl_machine::tune::TuneReport>(&report)?.into_wire())
     }
 
     fn bench_list(&self, _: &Ctx, _: Empty) -> Result<BenchRuns> {
@@ -1561,9 +1584,7 @@ impl Engine for Operator {
     }
 
     fn knobs(&self, _: &Ctx, input: ProfileIn) -> Result<Knobs> {
-        Ok(knobs::catalog(
-            &Plan::load(path(input.profile.as_ref())?)?.machine(),
-        ))
+        Ok(knobs::catalog(&Plan::load(path(input.profile.as_ref())?)?.machine()).into_wire())
     }
 
     fn inspect(&self, _: &Ctx, input: InspectIn) -> Result<KnobDetail> {
@@ -1575,7 +1596,10 @@ impl Engine for Operator {
             )
         })?;
         let history = Db::open_default()?.events_naming(&knob.path, input.limit)?;
-        Ok(KnobDetail { knob, history })
+        Ok(KnobDetail {
+            knob: knob.into_wire(),
+            history: history.into_wire(),
+        })
     }
 
     fn session_start(&self, _: &Ctx, input: SessionStartIn) -> Result<Launch> {
@@ -1600,7 +1624,7 @@ impl Engine for Operator {
         };
         let launch = store.start_session(&start, &resolved.config)?;
         Db::open_default()?.issue_token(&launch.id, &token)?;
-        Ok(launch)
+        Ok(launch.into_wire())
     }
 
     fn session_run(&self, _: &Ctx, input: SessionRunIn) -> Result<RunOutput> {
@@ -1635,7 +1659,10 @@ impl Engine for Operator {
             .into_iter()
             .map(|session| {
                 let state = legionctl_core::session::scope_state(&session.id);
-                SessionState { state, session }
+                SessionState {
+                    state,
+                    session: session.into_wire(),
+                }
             })
             .collect())
     }
@@ -1651,7 +1678,7 @@ impl Engine for Operator {
             .filter(|e| e.payload["session"] == input.id.as_str())
             .filter_map(|e| {
                 Some(SessionExec {
-                    ts: e.ts,
+                    at: e.ts,
                     pid: u32::try_from(e.payload["pid"].as_u64()?).ok()?,
                     argv: serde_json::from_value(e.payload["argv"].clone()).ok()?,
                 })
@@ -1679,7 +1706,7 @@ impl Engine for Operator {
             &token,
         )?;
         Db::open_default()?.issue_token(&launch.id, &token)?;
-        Ok(launch)
+        Ok(launch.into_wire())
     }
 
     fn gates_check(&self, _: &Ctx, input: GateIn) -> Result<Guard> {
@@ -1708,13 +1735,15 @@ impl Engine for Operator {
     }
 
     fn config_explain(&self, _: &Ctx, input: ExplainIn) -> Result<Explanation> {
-        Ok(config(Some(&input.project))?.explain(&input.key))
+        Ok(config(Some(&input.project))?
+            .explain(&input.key)
+            .into_wire())
     }
 
     fn config_layers(&self, _: &Ctx, input: ProjectIn) -> Result<LayerList> {
         let resolved = config(Some(&input.project))?;
         Ok(LayerList {
-            layers: resolved.layers,
+            layers: resolved.layers.into_wire(),
             locked: resolved.config.config.locked,
             problems: resolved.problems,
         })
