@@ -229,7 +229,7 @@ pub fn command(client_only: Vec<Command>) -> Command {
                 .help("Print the operation's JSON output"),
         );
     let mut tree = Node::default();
-    for op in OPS {
+    for op in OPS.iter().filter(|op| !op.internal()) {
         let words: Vec<&'static str> = op.name.split('.').collect();
         tree.insert(&words, op);
     }

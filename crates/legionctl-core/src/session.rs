@@ -36,6 +36,8 @@ pub struct Start<'a> {
     pub dossier: &'a str,
     /// Take the dossier over from another live session.
     pub steal: bool,
+    /// The sandbox's token (`LEGIONCTL_TOKEN`), which the operator maps to this session.
+    pub token: &'a str,
     /// A folder in the repository (or the plain folder) to work on.
     pub dir: &'a Path,
     /// The agent's ACP adapter (`session run`) instead of its interactive command.
@@ -132,6 +134,27 @@ fn size(dir: &Path) -> u64 {
             Err(_) => 0,
         })
         .sum()
+}
+
+/// The files of session `id` in `<runtime>/legionctl/sessions/<id>`: the mount point of the real git, Claude Code's
+/// settings and the MCP config.
+fn session_files(
+    runtime: &Path,
+    id: &str,
+    config: &Config,
+    mcp_json: &serde_json::Value,
+) -> Result<[PathBuf; 3]> {
+    let dir = runtime.join("legionctl/sessions").join(id);
+    std::fs::create_dir_all(&dir)?;
+    let files = [
+        dir.join("git"),
+        dir.join("claude-settings.json"),
+        dir.join("mcp.json"),
+    ];
+    std::fs::write(&files[0], "")?;
+    std::fs::write(&files[1], claude_settings(config).to_string())?;
+    std::fs::write(&files[2], mcp_json.to_string())?;
+    Ok(files)
 }
 
 fn new_id() -> Result<String> {
@@ -444,7 +467,7 @@ impl Dossiers {
         )?;
         self.launch(
             id,
-            (&ws, bound),
+            (&ws, bound, start.token),
             config,
             (command, start.account),
             (mcp_json, skills.as_deref()),
@@ -461,6 +484,7 @@ impl Dossiers {
         id: &str,
         config: &Config,
         account: Option<&str>,
+        token: &str,
     ) -> Result<Launch> {
         let mut record = self.session(id)?;
         let command = config.session.resume.get(&record.agent).with_context(|| {
@@ -489,7 +513,7 @@ impl Dossiers {
         let ws = self.open_workspace(id, &record.workdir, None, &config.workspace.root)?;
         self.launch(
             id.to_string(),
-            (&ws, bound),
+            (&ws, bound, token),
             config,
             (command, record.account.as_deref()),
             (mcp_json, skills.as_deref()),
@@ -500,7 +524,7 @@ impl Dossiers {
     fn launch(
         &self,
         id: String,
-        (ws, bound): (&crate::workspace::Workspace, Vec<String>),
+        (ws, bound, token): (&crate::workspace::Workspace, Vec<String>, &str),
         config: &Config,
         (command, account): (&[String], Option<&str>),
         (mcp_json, skills): (serde_json::Value, Option<&[(String, PathBuf)]>),
@@ -509,14 +533,7 @@ impl Dossiers {
         let runtime = PathBuf::from(
             std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?,
         );
-        let session_dir = runtime.join("legionctl/sessions").join(&id);
-        std::fs::create_dir_all(&session_dir)?;
-        let real_git = session_dir.join("git");
-        std::fs::write(&real_git, "")?;
-        let settings = session_dir.join("claude-settings.json");
-        std::fs::write(&settings, claude_settings(config).to_string())?;
-        let mcp = session_dir.join("mcp.json");
-        std::fs::write(&mcp, mcp_json.to_string())?;
+        let [real_git, settings, mcp] = session_files(&runtime, &id, config, &mcp_json)?;
 
         // paths under /tmp (tests, other runtimes) are bound after the private /tmp, so they stay visible
         let mut sandbox: Vec<String> = [
@@ -573,7 +590,17 @@ impl Dossiers {
             "/usr/bin/git".into(),
             real_git.to_string_lossy().into_owned(),
         ]);
-        sandbox.extend(["--setenv".into(), "LEGIONCTL_SESSION".into(), id.clone()]);
+        sandbox.extend(
+            [
+                "--setenv",
+                "LEGIONCTL_SESSION",
+                &id,
+                "--setenv",
+                "LEGIONCTL_TOKEN",
+                token,
+            ]
+            .map(String::from),
+        );
         if let Some(account) = account {
             account_binds(&mut sandbox, account)?;
         }
@@ -583,14 +610,10 @@ impl Dossiers {
         sandbox.extend(["--chdir".into(), workdir.to_string_lossy().into_owned()]);
         Ok(Launch {
             scope: if config.session.scope {
-                vec![
-                    "systemd-run".into(),
-                    "--user".into(),
-                    "--scope".into(),
-                    "--quiet".into(),
-                    format!("--unit=legionctl-session-{id}"),
-                    "--".into(),
-                ]
+                let unit = format!("--unit=legionctl-session-{id}");
+                ["systemd-run", "--user", "--scope", "--quiet", &unit, "--"]
+                    .map(String::from)
+                    .to_vec()
             } else {
                 Vec::new()
             },
@@ -600,6 +623,7 @@ impl Dossiers {
                 .map(|a| {
                     a.replace("{id}", &id)
                         .replace("{settings}", &settings.to_string_lossy())
+                        .replace("{mcp}", &mcp.to_string_lossy())
                 })
                 .collect(),
             real_git,

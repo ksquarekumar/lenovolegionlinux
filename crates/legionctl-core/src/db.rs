@@ -76,6 +76,12 @@ const OPERATOR: &[&str] = &[
         scope  TEXT NOT NULL,
         vector BLOB NOT NULL
      );",
+    // v7: session tokens (DESIGN/03): the hash of each sandbox's token and its session; the user token is a file
+    "CREATE TABLE tokens (
+        hash    TEXT PRIMARY KEY,
+        session TEXT NOT NULL,
+        created INTEGER NOT NULL
+     );",
 ];
 
 pub struct Db {
@@ -87,6 +93,13 @@ pub fn default_path() -> PathBuf {
     let state =
         std::env::var_os("XDG_STATE_HOME").map_or_else(|| home.join(".local/state"), PathBuf::from);
     state.join("legionctl/operator.db")
+}
+
+/// BLAKE2b-256 of a token, as hex.
+#[must_use]
+pub fn token_hash(token: &str) -> String {
+    use blake2::{Blake2b, Digest, digest::consts::U32};
+    format!("{:x}", Blake2b::<U32>::digest(token.as_bytes()))
 }
 
 pub(crate) fn now() -> i64 {
@@ -117,6 +130,35 @@ impl Db {
     /// As [`Db::open`].
     pub fn open_default() -> Result<Db> {
         Self::open(&default_path(), OPERATOR)
+    }
+
+    /// A new token for `session`, which replaces its earlier one; only its hash is kept.
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn issue_token(&self, session: &str, token: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM tokens WHERE session = ?1", [session])?;
+        self.conn.execute(
+            "INSERT INTO tokens (hash, session, created) VALUES (?1, ?2, ?3)",
+            params![token_hash(token), session, now()],
+        )?;
+        Ok(())
+    }
+
+    /// The session whose sandbox holds `token`, if any.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn token_session(&self, token: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT session FROM tokens WHERE hash = ?1",
+                [token_hash(token)],
+                |r| r.get(0),
+            )
+            .optional()?)
     }
 
     pub fn conn(&self) -> &Connection {
@@ -439,9 +481,10 @@ fn migrate(conn: &mut Connection, migrations: &[&str], path: &Path) -> Result<()
     let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if current > 0 && usize::try_from(current).unwrap_or(usize::MAX) < migrations.len() {
         let backup = PathBuf::from(format!("{}.v{current}.bak", path.display()));
-        let _ = std::fs::remove_file(&backup);
-        // another process that opens the database now makes the same backup: one is enough
-        if let Err(e) = conn.execute("VACUUM INTO ?1", params![backup.to_string_lossy()])
+        // a backup of this version that exists is kept: another process that opens the database now makes the same
+        // one, and deleting it under that process breaks its write
+        if !backup.exists()
+            && let Err(e) = conn.execute("VACUUM INTO ?1", params![backup.to_string_lossy()])
             && !backup.exists()
         {
             return Err(e)

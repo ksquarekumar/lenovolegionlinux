@@ -27,6 +27,17 @@ fn claude_hook(event: &str, fields: &Value) -> String {
     payload.to_string()
 }
 
+/// What an agent gets from `legionctl hook <event>` (Claude Code's hook JSON, the fixture session) in `cwd`.
+fn hook_out(op: &Operator, cwd: &Path, event: &str) -> String {
+    let out = op.run(
+        cwd,
+        &[],
+        &["hook", event],
+        &claude_hook(event, &json!({"cwd": cwd})),
+    );
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
 /// An operator with an empty HOME and the repo's plugin skills.
 /// `PATH` with this build's binaries first: the operator finds this `legionctl` (the git gate), not an installed one.
 fn path_with_build() -> OsString {
@@ -66,9 +77,20 @@ fn operator(tag: &str) -> (Operator, PathBuf) {
 
 #[test]
 fn prompt_hook_injects_skill_reminders_and_user_actions_as_configured() {
-    let (op, _home) = operator("hooks");
+    let (op, home) = operator("hooks");
     let run = |args: &[&str]| op.ok(args);
-    let fresh = run(&["hooks", "run", "--event", "prompt"]);
+    // the session of the hook fixtures has a dossier, so the dossier gate lets its prompts through
+    assert!(
+        op.run(
+            &home,
+            &[("LEGIONCTL_SESSION", "SESSION")],
+            &["dossier", "use", "hooks"],
+            ""
+        )
+        .status
+        .success()
+    );
+    let fresh = hook_out(&op, &home, "prompt");
     assert!(
         fresh.contains("legionctl:ste100-style"),
         "fresh install: {fresh}"
@@ -81,18 +103,18 @@ fn prompt_hook_injects_skill_reminders_and_user_actions_as_configured() {
     run(&["reminders", "off", "ste100"]);
     run(&["hooks", "add", "branch", "echo on-branch-main"]);
     run(&["hooks", "bind", "--event", "prompt", "branch"]);
-    let changed = run(&["hooks", "run", "--event", "prompt"]);
+    let changed = hook_out(&op, &home, "prompt");
     assert!(
         !changed.contains("ste100"),
         "reminder turned off: {changed}"
     );
     assert!(changed.contains("glanceable-style"));
     assert!(
-        changed.ends_with("on-branch-main\n"),
+        changed.trim_end().ends_with("on-branch-main"),
         "user action runs after built-ins: {changed}"
     );
 
-    let start = run(&["hooks", "run", "--event", "session-start"]);
+    let start = hook_out(&op, &home, "session-start");
     assert!(
         !start.contains("on-branch-main"),
         "bound to prompt only: {start}"
@@ -166,9 +188,13 @@ fn mcp_server_has_one_tool_per_operation_and_calls_the_operator() {
         .collect();
     let expected: Vec<String> = legionctl_api::OPS
         .iter()
+        .filter(|o| !o.internal())
         .map(|o| o.name.replace(['.', '-'], "_"))
         .collect();
-    assert_eq!(names, expected, "the registry is the tool list");
+    assert_eq!(
+        names, expected,
+        "the registry's public operations are the tool list"
+    );
 
     let result = mcp.call("tools/call", &json!({"name": "skills", "arguments": {}}));
     assert_ne!(result["isError"], true, "{result}");
@@ -251,9 +277,20 @@ fn config_layers_merge_in_order_and_etc_locks_win() {
     };
 
     // the repository layer applies anywhere inside the repository, and only there
-    let (_, inside) = cli(&sub, &["reminders", "emit", "--event", "prompt"]);
+    // the session of the hook fixtures has a dossier, so the dossier gate lets its prompts through
+    assert!(
+        op.run(
+            &home,
+            &[("LEGIONCTL_SESSION", "SESSION")],
+            &["dossier", "use", "layers"],
+            ""
+        )
+        .status
+        .success()
+    );
+    let inside = hook_out(&op, &sub, "prompt");
     assert!(inside.contains("Use the make targets."), "{inside}");
-    let (_, outside) = cli(&home, &["reminders", "emit", "--event", "prompt"]);
+    let outside = hook_out(&op, &home, "prompt");
     assert!(!outside.contains("make targets"), "{outside}");
     assert_eq!(
         json(&repo, &["config", "explain", "hooks.bindings.prompt"])["value"],
@@ -702,13 +739,14 @@ fn every_change_is_audited_with_its_outcome_and_errors_have_codes() {
     );
 }
 
-/// The body of `GET <path>` on the operator's socket.
+/// The body of `GET <path>` on the operator's socket, with the user token.
 fn get(op: &Operator, path: &str) -> String {
+    let token = std::fs::read_to_string(op.runtime.join(legionctl_api::USER_TOKEN)).unwrap();
     let mut stream =
         std::os::unix::net::UnixStream::connect(op.runtime.join("legionctl/api.sock")).unwrap();
     write!(
         stream,
-        "GET {path} HTTP/1.1\r\nhost: l\r\nconnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nhost: l\r\nconnection: close\r\nauthorization: Bearer {token}\r\n\r\n"
     )
     .unwrap();
     let mut response = String::new();
@@ -1475,6 +1513,89 @@ fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
     assert!(String::from_utf8_lossy(&events.stdout).contains("session.permission"));
 }
 
+/// Callers and their tokens (DESIGN/03): `{mcp}` in the agent's command is the session's MCP config; a session's
+/// sandbox has its own token and cannot read the user's; without its
+/// token it is denied (a token it makes up is not the user's); and a call that names another session still acts for
+/// the sandbox's own session, so another session's dossier stays where it is.
+#[test]
+fn a_sandbox_acts_only_as_its_own_session() {
+    let (op, home) = operator("tokens");
+    let repo = repository(&home);
+    let cli = env!("CARGO_BIN_EXE_legionctl");
+    let probe = format!(
+        "grep -q mcpServers \"$0\" && echo mcp-config; \
+         cat \"$XDG_RUNTIME_DIR/legionctl.token\" >/dev/null 2>&1 && echo token-visible || echo token-hidden; \
+         env -u LEGIONCTL_TOKEN {cli} dossier ls >/dev/null 2>/tmp/err && echo user-allowed; \
+         grep -o 'the token is not valid' /tmp/err; \
+         LEGIONCTL_SESSION=victim {cli} dossier release"
+    );
+    write(
+        &home.join(".config/legionctl/session.jsonc"),
+        &json!({"session": {"agents": {"probe": ["sh", "-c", probe, "{mcp}"]}, "scope": false, "writable": []}}).to_string(),
+    );
+    let env = [("HOME", home.to_str().unwrap())];
+    let victim = op.run(
+        &repo,
+        &[
+            ("HOME", home.to_str().unwrap()),
+            ("LEGIONCTL_SESSION", "victim"),
+        ],
+        &["dossier", "use", "loot"],
+        "",
+    );
+    assert!(
+        victim.status.success(),
+        "{}",
+        String::from_utf8_lossy(&victim.stderr)
+    );
+    let started = op.run(
+        &repo,
+        &env,
+        &["session", "start", "probe", "--dossier", "box", "--json"],
+        "",
+    );
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let launch: Value = serde_json::from_slice(&started.stdout).unwrap();
+    let out = run_launch(&op, &home, &launch);
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        said.lines().take(3).collect::<Vec<_>>(),
+        ["mcp-config", "token-hidden", "the token is not valid"],
+        "{said}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        said.contains("released box"),
+        "the release acted for the sandbox's own session: {said}"
+    );
+
+    let locks: Value = serde_json::from_slice(
+        &op.run(&repo, &env, &["dossier", "locks", "--json"], "")
+            .stdout,
+    )
+    .unwrap();
+    let held: Vec<(&str, &str)> = locks
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            (
+                l["dossier"].as_str().unwrap(),
+                l["session"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        held,
+        [("loot", "victim")],
+        "the other session keeps its dossier"
+    );
+}
+
 /// Resume: an ended session starts again with the same id, dossier and workspace through the agent's resume command;
 /// an agent without one cannot resume.
 #[test]
@@ -2144,12 +2265,13 @@ fn images_scan_describes_services_and_their_build_cache() {
 fn an_unknown_operation_from_another_build_says_to_restart_the_operator() {
     let (op, _home) = operator("build");
     op.ok(&["load"]);
+    let token = std::fs::read_to_string(op.runtime.join(legionctl_api::USER_TOKEN)).unwrap();
     let ask = |fingerprint: &str| {
         let mut stream =
             std::os::unix::net::UnixStream::connect(op.runtime.join("legionctl/api.sock")).unwrap();
         let request = format!(
             "POST /v1/ops/packages.newer HTTP/1.1\r\nhost: l\r\nconnection: close\r\ncontent-type: application/json\r\n\
-             x-legionctl-api: {fingerprint}\r\ncontent-length: 2\r\n\r\n{{}}"
+             x-legionctl-api: {fingerprint}\r\nauthorization: Bearer {token}\r\ncontent-length: 2\r\n\r\n{{}}"
         );
         stream.write_all(request.as_bytes()).unwrap();
         let mut response = String::new();

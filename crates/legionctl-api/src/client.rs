@@ -2,7 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{ACTOR_HEADER, API_HEADER, ApiError, Code, Op, SOCKET, api_fingerprint, coded};
+use crate::{
+    ACTOR_HEADER, API_HEADER, ApiError, Code, Op, SOCKET, TOKEN_ENV, api_fingerprint, coded,
+    user_token,
+};
 use anyhow::{Context, Result};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
@@ -12,6 +15,7 @@ pub struct Client {
     /// Which surface calls: cli, mcp or tui. The operator records it with every change.
     actor: &'static str,
     socket: PathBuf,
+    runtime: PathBuf,
 }
 
 impl Client {
@@ -28,6 +32,7 @@ impl Client {
         Client {
             actor,
             socket: runtime.join(SOCKET),
+            runtime: runtime.to_path_buf(),
         }
     }
 
@@ -48,6 +53,11 @@ impl Client {
                     ),
                 )
             })?;
+        // a session's sandbox has its own token; everywhere else the user's
+        let token = match std::env::var(TOKEN_ENV) {
+            Ok(t) if !t.is_empty() => t,
+            _ => user_token(&self.runtime)?,
+        };
         let (mut sender, connection) =
             hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream)).await?;
         tokio::spawn(connection);
@@ -56,6 +66,7 @@ impl Client {
             .header("content-type", "application/json")
             .header(ACTOR_HEADER, self.actor)
             .header(API_HEADER, api_fingerprint())
+            .header("authorization", format!("Bearer {token}"))
             .body(Full::new(Bytes::from(serde_json::to_vec(input)?)))?;
         let response = sender.send_request(request).await?;
         let status = response.status();

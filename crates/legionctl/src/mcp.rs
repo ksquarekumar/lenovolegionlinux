@@ -49,6 +49,7 @@ impl ServerHandler for Legion {
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + Send + '_ {
         let tools = OPS
             .iter()
+            .filter(|op| !op.internal())
             .map(|op| {
                 let schema = match (op.input)() {
                     Value::Object(schema) => schema,
@@ -65,7 +66,10 @@ impl ServerHandler for Legion {
         request: CallToolRequestParams,
         _: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let Some(op) = OPS.iter().find(|op| tool_name(op) == request.name) else {
+        let Some(op) = OPS
+            .iter()
+            .find(|op| !op.internal() && tool_name(op) == request.name)
+        else {
             return Err(ErrorData::invalid_params(
                 format!("unknown tool {}", request.name),
                 None,

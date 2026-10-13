@@ -181,14 +181,6 @@ fn session_start() -> Event {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct EventIn {
-    pub event: Event,
-    /// Project directory; its repository's .legionctl layer applies.
-    #[serde(default = "here")]
-    pub project: ClientPath,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HookBindIn {
     pub event: Event,
     /// Action id: a built-in (reminders, load, load-if-busy, setup-check) or one you defined.
@@ -325,11 +317,6 @@ pub struct RunEnv {
     pub env: Vec<(String, String)>,
     /// CPU list for `AllowedCPUs=`; none for all cores.
     pub cpus: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-pub struct Text {
-    pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -766,8 +753,9 @@ pub struct PackageFetchIn {
 /// One MCP tool call through `legionctl mcp-proxy`, as the event log keeps it (no arguments, only their hash).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ToolCall {
-    /// The agent session (`LEGIONCTL_SESSION`).
-    pub session: String,
+    /// The agent session (`LEGIONCTL_SESSION`); a sandbox's own, whatever it sends.
+    #[serde(default)]
+    pub session: SessionId,
     pub server: String,
     pub tool: String,
     /// BLAKE2b-128 of the arguments' JSON, hex.

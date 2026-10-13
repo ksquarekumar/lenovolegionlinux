@@ -6,7 +6,7 @@ use crate::io::{
     BenchCompare, BenchRun, CapabilityList, Changes, ConfigFile, ConfigView, DossierFindings,
     DossierInfo, Empty, EventRow, Explanation, Findings, GpuState, Guard, HookReply, HookTable,
     Knob, KnobDetail, Launch, LayerList, Lines, LoadState, Lock, Manifest, PackageState, Recording,
-    Reminder, RunEnv, Sample, SessionState, SetupReport, SkillInfo, Snapshot, Text, ToolCallRow,
+    Reminder, RunEnv, Sample, SessionState, SetupReport, SkillInfo, Snapshot, ToolCallRow,
     TuneReport, Validation, WindowsState, Workspace, WorkspaceStatus,
 };
 
@@ -383,12 +383,6 @@ impl Render for Vec<Reminder> {
             })
             .collect::<Vec<_>>()
             .join("\n")
-    }
-}
-
-impl Render for Text {
-    fn text(&self) -> String {
-        self.text.clone()
     }
 }
 
@@ -969,7 +963,7 @@ impl Render for Vec<ToolCallRow> {
                     "{:>6} {} {:<10} {}.{:<24} {:<8} {:>6} ms {:>8} B  {}",
                     r.id,
                     r.ts,
-                    &c.session[..c.session.len().min(8)],
+                    &c.session.0[..c.session.0.len().min(8)],
                     c.server,
                     c.tool,
                     c.outcome,

@@ -1,6 +1,6 @@
 //! `legionctl mcp-proxy`: the only way a session's agent reaches an MCP server (note 14). It starts the server as its
 //! child, offers the agent only the allowed tools, refuses the others, and logs every call to the operator
-//! (`tools.record`): session, server, tool, a hash of the arguments, duration, result size and outcome. Tools its
+//! (`internal.tools.record`): session, server, tool, a hash of the arguments, duration, result size and outcome. Tools its
 //! config lets it cache are answered from the operator's cache while the result is valid (T2).
 
 use std::time::Instant;
@@ -91,7 +91,7 @@ impl Proxy {
         outcome: &str,
     ) {
         let call = ToolCall {
-            session: self.session.clone(),
+            session: legionctl_api::SessionId(self.session.clone()),
             server: self.server.clone(),
             tool: tool.to_string(),
             args_hash,

@@ -31,7 +31,7 @@ flowchart LR
     `unknown` without root. Machine changes go to `legionctl-system` over D-Bus with polkit (`Apply`,
     `SetDesktopGpu`, `Cleanup`).
   - Client-only commands: `legionctl mcp` and `legionctl tui` (surfaces), and `legionctl run` (it must exec in the
-    caller's process; it gets the GPU environment and CPU list from the `gpu.run-env` operation).
+    caller's process; it gets the GPU environment and CPU list from the `internal.gpu.run-env` operation).
   - Paths in inputs (`profile`, `project`, `repo`) are resolved by the client against its own working directory.
   - Every call that is not a read is recorded in the operator event log with the actor (cli, mcp, tui).
 
@@ -53,6 +53,14 @@ become their size), outcome code (null on success) and ms. Every error, on the s
 envelope `{"error": {"code", "message", "op"}}` with the codes not_found, invalid_input, conflict, denied,
 unavailable, version_mismatch, failed and internal (HTTP 404, 400, 409, 403, 503, 412, 422, 500). `/v1/metrics`
 adds calls, errors by code and total ms of each op.
+
+Built (2026-10-13, DESIGN/03 slice 2): every call carries `authorization: Bearer <token>`. The user token is
+`$XDG_RUNTIME_DIR/legionctl.token` (0600, made by the first client or the operator); a session's sandbox cannot see
+it (its runtime folder is a private tmpfs) and gets its own token as `LEGIONCTL_TOKEN`, which the operator maps to
+the session (`tokens` in operator.db, the hash only; a resume issues a new one). A call with a session token has
+that session's id in every session field of its input, whatever it sent. Operations named `internal.*` (hooks run,
+dossier guard, gates check, tools record, cache get/put, gpu run-env) are for legionctl's own parts and are not in
+the CLI or MCP.
 
 ## Worktrees and sandboxes
 

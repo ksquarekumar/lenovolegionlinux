@@ -26,6 +26,61 @@ pub use render::Render;
 
 /// Socket path relative to `$XDG_RUNTIME_DIR`.
 pub const SOCKET: &str = "legionctl/api.sock";
+/// The user token, relative to `$XDG_RUNTIME_DIR`: beside the socket's folder, not in it, because a session's
+/// sandbox gets that folder back and must not see this file (DESIGN/03).
+pub const USER_TOKEN: &str = "legionctl.token";
+/// The token of a session's sandbox, in the environment of everything that runs in it.
+pub const TOKEN_ENV: &str = "LEGIONCTL_TOKEN";
+
+/// The user token in the runtime folder `runtime`, made (random, 0600) by the first client or operator that needs
+/// it.
+///
+/// # Errors
+/// The file cannot be read or made.
+pub fn user_token(runtime: &std::path::Path) -> Result<String> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let path = runtime.join(USER_TOKEN);
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            let token = random_token()?;
+            file.write_all(token.as_bytes())?;
+            Ok(token)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // the maker may still be writing it
+            for _ in 0..50 {
+                let token = std::fs::read_to_string(&path)?;
+                if !token.is_empty() {
+                    return Ok(token);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            anyhow::bail!("{} is empty", path.display())
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// 32 random bytes as hex.
+///
+/// # Errors
+/// `/dev/urandom` cannot be read.
+pub fn random_token() -> Result<String> {
+    use std::fmt::Write as _;
+    use std::io::Read as _;
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(bytes.iter().fold(String::new(), |mut hex, b| {
+        let _ = write!(hex, "{b:02x}");
+        hex
+    }))
+}
 /// HTTP header that says which surface made a call: cli, mcp or tui.
 pub const ACTOR_HEADER: &str = "x-legionctl-actor";
 /// The fingerprint of the operation registry a client and the operator were built with ([`api_fingerprint`]).
@@ -72,6 +127,13 @@ pub struct OpInfo {
 }
 
 impl OpInfo {
+    /// An internal operation (`internal.*`): for legionctl's own parts (hooks, git gate, MCP proxy, `run`); not in
+    /// the CLI or MCP.
+    #[must_use]
+    pub fn internal(&self) -> bool {
+        self.name.starts_with("internal.")
+    }
+
     /// The help text without the leading space of each doc line.
     #[must_use]
     pub fn text(&self) -> &'static str {
@@ -89,7 +151,19 @@ impl OpInfo {
 /// Who made a call; the operator records it with every call that is not a read.
 #[derive(Debug, Clone)]
 pub struct Ctx {
+    /// The surface: cli, mcp, tui, app, hook, gate, mcp-proxy.
     pub actor: String,
+    pub principal: Principal,
+}
+
+/// Whose token a call carries (DESIGN/03).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Principal {
+    /// The user token: the CLI, TUI and app, and the hooks and MCP of agents that are not sandboxed.
+    User,
+    /// The token of a session's sandbox: the agent and everything it starts.
+    Session(String),
 }
 
 /// A filesystem path in an input. Clients resolve a relative path against their own working directory before they
@@ -296,7 +370,7 @@ operations! {
     /// GPU wiring: which GPU drives each display and which GPU draws the desktop.
     gpu_status / GpuStatus = "gpu.status", Read, Empty => GpuState;
     /// Environment and CPU list that run a program on a chosen GPU and core class (`legionctl run` uses it).
-    gpu_run_env / GpuRunEnv = "gpu.run-env", Read, RunEnvIn => RunEnv;
+    gpu_run_env / GpuRunEnv = "internal.gpu.run-env", Read, RunEnvIn => RunEnv;
     /// Apply the power policy for ac, battery or the current power source (auto). A human approves it in the
     /// polkit dialog. Clears an Fn+Q choice.
     power_apply / PowerApply = "power.apply", Machine, PowerApplyIn => Changes;
@@ -353,8 +427,6 @@ operations! {
     reminders_add / RemindersAdd = "reminders.add", Workspace, ReminderAddIn => Reminders;
     /// Remove a reminder you added.
     reminders_rm / RemindersRm = "reminders.rm", Workspace, IdIn => Reminders;
-    /// Enabled reminders for a hook event, one per line.
-    reminders_emit / RemindersEmit = "reminders.emit", Read, EventIn => Text;
     /// Hook actions (built-in and your commands) and what runs, in order, for each event.
     hooks_list / HooksList = "hooks.list", Read, ProjectIn => HookTable;
     /// Run an action when an event fires, after the ones already bound.
@@ -367,7 +439,7 @@ operations! {
     hooks_rm / HooksRm = "hooks.rm", Workspace, IdIn => HookTable;
     /// Run everything bound to an event and return the combined output, or the reason the dossier gate blocks the
     /// prompt (the agent plugin calls this through `legionctl hook`).
-    hooks_run / HooksRun = "hooks.run", Workspace, HookRunIn => HookReply;
+    hooks_run / HooksRun = "internal.hooks.run", Workspace, HookRunIn => HookReply;
     /// legionctl skills: where each agent has them and whether the reminder that keeps each in force is on.
     skills / Skills = "skills", Read, ProjectIn => SkillList;
     /// Telemetry: package and GPU power, temperatures, clocks, PSI, fan RPM and throttle reasons, one line per sample.
@@ -385,13 +457,13 @@ operations! {
     /// Fetch a package into the store (network, scratch home) and pin its content hash.
     packages_fetch / PackagesFetch = "packages.fetch", Workspace, PackageFetchIn => Manifest;
     /// Log one MCP tool call (legionctl mcp-proxy calls this for each call it forwards or refuses).
-    tools_record / ToolsRecord = "tools.record", Workspace, ToolCall => Empty;
+    tools_record / ToolsRecord = "internal.tools.record", Workspace, ToolCall => Empty;
     /// Calls through the model gateway: account, model, tokens in and out, replayed or not, status, duration.
     gateway_usage / GatewayUsageOp = "gateway.usage", Read, GatewayUsageIn => Vec<GatewayUsage>;
     /// A reusable MCP tool result (legionctl mcp-proxy asks before it calls a tool its config lets it cache).
-    cache_get / CacheGet = "cache.get", Read, CacheGetIn => CacheValue;
+    cache_get / CacheGet = "internal.cache.get", Read, CacheGetIn => CacheValue;
     /// Keep an MCP tool result for reuse.
-    cache_put / CachePut = "cache.put", Workspace, CachePutIn => Empty;
+    cache_put / CachePut = "internal.cache.put", Workspace, CachePutIn => Empty;
     /// MCP tool calls of session agents through legionctl mcp-proxy, oldest first.
     tools_calls / ToolsCalls = "tools.calls", Read, ToolCallsIn => ToolCalls;
     /// A repository's Dockerfiles as a services description (build, entrypoints, ports) and a build-cache description
@@ -464,7 +536,7 @@ operations! {
     /// changed the workspace, and each answer (a dossier write).
     dossier_nudges / DossierNudges = "dossier.nudges", Read, DossierNudgesIn => Events;
     /// Whether this session may write a path: inside the dossier root only its active dossier (agent hooks use it).
-    dossier_guard / DossierGuard = "dossier.guard", Read, GuardIn => Guard;
+    dossier_guard / DossierGuard = "internal.dossier.guard", Read, GuardIn => Guard;
     /// Prepare a sandboxed session of an agent on a dossier's workspace; `legionctl session start` then runs it in the
     /// terminal (systemd scope, bwrap with your home read-only, git gate).
     session_start / SessionStart = "session.start", Workspace, SessionStartIn => Launch;
@@ -484,7 +556,7 @@ operations! {
     /// Continue an ended session: the same id, dossier and workspace, and the agent's resume command.
     session_resume / SessionResume = "session.resume", Workspace, SessionResumeIn => Launch;
     /// Whether a git command may run in a session sandbox (the git gate asks this before every git call).
-    gates_check / GatesCheck = "gates.check", Read, GateIn => Guard;
+    gates_check / GatesCheck = "internal.gates.check", Read, GateIn => Guard;
     /// The merged config (defaults, /etc/legionctl, ~/.config/legionctl, the repository's .legionctl) and the files
     /// or keys that were not used.
     config_show / ConfigShow = "config.show", Read, ProjectIn => ConfigView;

@@ -16,11 +16,11 @@ use legionctl_api::{
 };
 use legionctl_api::{
     BranchIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath, CloseIn, ConfigFiles,
-    ConfigView, Ctx, DesktopGpu, Empty, Engine, EventIn, ExplainIn, Explanation, Findings,
-    GpuPrimaryIn, GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LayerList, LoadState,
-    PowerApplyIn, PowerSource, ProfileIn, ProjectIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn,
-    SetupApplyIn, SetupReport, SkillList, Snapshot, StatusIn, Text, Validation, Workspace,
-    WorkspaceIn, WorkspaceOpenIn, WorkspaceStates, Workspaces,
+    ConfigView, Ctx, DesktopGpu, Empty, Engine, ExplainIn, Explanation, Findings, GpuPrimaryIn,
+    GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LayerList, LoadState, PowerApplyIn,
+    PowerSource, ProfileIn, ProjectIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn, SetupApplyIn,
+    SetupReport, SkillList, Snapshot, StatusIn, Validation, Workspace, WorkspaceIn,
+    WorkspaceOpenIn, WorkspaceStates, Workspaces,
 };
 use legionctl_core::config::{Dirs, Resolved, resolve};
 
@@ -895,12 +895,6 @@ impl Engine for Operator {
         Ok(reminders::list(&config(Some(&input.project))?))
     }
 
-    fn reminders_emit(&self, _: &Ctx, input: EventIn) -> Result<Text> {
-        Ok(Text {
-            text: reminders::emit(&config(Some(&input.project))?, input.event),
-        })
-    }
-
     fn hooks_list(&self, _: &Ctx, input: ProjectIn) -> Result<HookTable> {
         Ok(Self::hook_table(&config(Some(&input.project))?))
     }
@@ -1207,7 +1201,7 @@ impl Engine for Operator {
 
     fn tools_calls(&self, _: &Ctx, input: ToolCallsIn) -> Result<ToolCalls> {
         Db::open_default()?
-            .events_of("tools.record")?
+            .events_of("internal.tools.record")?
             .into_iter()
             .map(|e| {
                 Ok(ToolCallRow {
@@ -1218,7 +1212,10 @@ impl Engine for Operator {
             })
             .filter(|row: &Result<ToolCallRow>| {
                 row.as_ref().map_or(true, |r| {
-                    input.session.as_ref().is_none_or(|s| *s == r.call.session)
+                    input
+                        .session
+                        .as_ref()
+                        .is_none_or(|s| *s == r.call.session.0)
                 })
             })
             .collect()
@@ -1595,15 +1592,19 @@ impl Engine for Operator {
                 "no dossier was used in this repository yet; add --dossier <name> --create",
             )?,
         };
+        let token = legionctl_api::random_token()?;
         let start = Start {
             agent: &input.agent,
             dossier: &dossier,
             steal: input.steal,
+            token: &token,
             dir,
             headless: false,
             account: input.account.as_deref(),
         };
-        store.start_session(&start, &resolved.config)
+        let launch = store.start_session(&start, &resolved.config)?;
+        Db::open_default()?.issue_token(&launch.id, &token)?;
+        Ok(launch)
     }
 
     fn session_run(&self, _: &Ctx, input: SessionRunIn) -> Result<RunOutput> {
@@ -1616,15 +1617,18 @@ impl Engine for Operator {
                 "no dossier was used in this repository yet; add --dossier <name> --create",
             )?,
         };
+        let token = legionctl_api::random_token()?;
         let start = Start {
             agent: &input.agent,
             dossier: &dossier,
             steal: input.steal,
+            token: &token,
             dir,
             headless: true,
             account: input.account.as_deref(),
         };
         let launch = store.start_session(&start, &resolved.config)?;
+        Db::open_default()?.issue_token(&launch.id, &token)?;
         self.runtime
             .block_on(crate::acp::run(launch, &input.prompt))
     }
@@ -1671,7 +1675,15 @@ impl Engine for Operator {
         // the repository's own config layer applies, as at session start
         let session = dossiers()?.session(&input.id)?;
         let resolved = resolve(&Dirs::from_env(), Some(&place_of(&session.workdir)))?;
-        dossiers()?.resume_session(&input.id, &resolved.config, input.account.as_deref())
+        let token = legionctl_api::random_token()?;
+        let launch = dossiers()?.resume_session(
+            &input.id,
+            &resolved.config,
+            input.account.as_deref(),
+            &token,
+        )?;
+        Db::open_default()?.issue_token(&launch.id, &token)?;
+        Ok(launch)
     }
 
     fn gates_check(&self, _: &Ctx, input: GateIn) -> Result<Guard> {

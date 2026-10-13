@@ -4,10 +4,10 @@
 //!
 //! | Event | Operation | Answer |
 //! | --- | --- | --- |
-//! | session-start | `hooks.run` | stdout: added to the context |
-//! | prompt | `hooks.run` | stdout, or `{"decision":"block","reason":...}` from the dossier gate |
-//! | pre-tool | `dossier.guard` | `permissionDecision: deny` for a write into another dossier |
-//! | stop | `hooks.run` | `{"decision":"block","reason":...}` to the agent when the session is not set up; once per reply |
+//! | session-start | `internal.hooks.run` | stdout: added to the context |
+//! | prompt | `internal.hooks.run` | stdout, or `{"decision":"block","reason":...}` from the dossier gate |
+//! | pre-tool | `internal.dossier.guard` | `permissionDecision: deny` for a write into another dossier |
+//! | stop | `internal.hooks.run` | `{"decision":"block","reason":...}` to the agent when the session is not set up; once per reply |
 //! | session-end | `dossier.release` | nothing |
 //!
 //! A hook must never stop the agent because legionctl is down: errors go to stderr and the exit code stays 0.

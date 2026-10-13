@@ -12,8 +12,8 @@ use axum::routing::{get, post};
 use std::fmt::Write as _;
 
 use legionctl_api::{
-    ACTOR_HEADER, API_HEADER, ApiError, Class, Code, Ctx, DispatchError, OPS, OpInfo,
-    api_fingerprint,
+    ACTOR_HEADER, API_HEADER, ApiError, Class, Code, Ctx, DispatchError, OPS, OpInfo, Principal,
+    api_fingerprint, user_token,
 };
 use legionctl_core::db::Db;
 use serde_json::{Value, json};
@@ -42,16 +42,74 @@ pub fn router(operator: Arc<Operator>) -> axum::Router {
         .with_state(operator)
 }
 
-async fn list() -> Json<Value> {
-    Json(Value::Array(
+/// The principal of a call's bearer token: the user token file, else a session's token; no valid token is denied.
+fn principal(headers: &HeaderMap) -> Result<Principal, ApiError> {
+    let denied = |message: &str| ApiError {
+        code: Code::Denied,
+        message: message.to_string(),
+        op: String::new(),
+    };
+    let token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(|| denied("no token: a call needs `authorization: Bearer <token>` (the legionctl client sends it)"))?;
+    let runtime =
+        std::env::var_os("XDG_RUNTIME_DIR").ok_or_else(|| denied("XDG_RUNTIME_DIR is not set"))?;
+    let user = user_token(std::path::Path::new(&runtime))
+        .map_err(|e| denied(&format!("the user token: {e:#}")))?;
+    // hashes, so the comparison takes the same time for every token
+    if legionctl_core::db::token_hash(token) == legionctl_core::db::token_hash(&user) {
+        return Ok(Principal::User);
+    }
+    match Db::open_default().and_then(|db| db.token_session(token)) {
+        Ok(Some(session)) => Ok(Principal::Session(session)),
+        Ok(None) => Err(denied("the token is not valid (an ended session?)")),
+        Err(e) => Err(denied(&format!("checking the token: {e:#}"))),
+    }
+}
+
+/// For a session's call, its own id in every session field of the input: a sandbox cannot act as another session.
+fn own_session(op: &OpInfo, principal: &Principal, input: &mut Value) {
+    let (Principal::Session(id), Some(map)) = (principal, input.as_object_mut()) else {
+        return;
+    };
+    let schema = (op.input)();
+    for (field, prop) in schema["properties"].as_object().into_iter().flatten() {
+        let is_session = prop["format"] == "session"
+            || prop["anyOf"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|s| s["format"] == "session"));
+        if is_session {
+            map.insert(field.clone(), Value::String(id.clone()));
+        }
+    }
+}
+
+async fn list(headers: HeaderMap) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    principal(&headers).map_err(|e| refusal(&e))?;
+    Ok(Json(Value::Array(
         OPS.iter()
             .map(|op| json!({"name": op.name, "help": op.help, "class": op.class, "input": (op.input)()}))
             .collect(),
-    ))
+    )))
+}
+
+fn refusal(error: &ApiError) -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::from_u16(error.code.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+        Json(json!({"error": error})),
+    )
 }
 
 /// One telemetry sample in `OpenMetrics` text, for Prometheus or Grafana.
-async fn metrics(State(operator): State<Arc<Operator>>) -> (StatusCode, String) {
+async fn metrics(
+    State(operator): State<Arc<Operator>>,
+    headers: HeaderMap,
+) -> (StatusCode, String) {
+    if let Err(e) = principal(&headers) {
+        return (StatusCode::FORBIDDEN, format!("{}\n", e.message));
+    }
     let sample =
         tokio::task::spawn_blocking(move || operator.sample(std::time::Duration::from_millis(250)))
             .await;
@@ -81,19 +139,34 @@ async fn run(
     operator: Arc<Operator>,
     name: String,
     headers: &HeaderMap,
-    input: Value,
+    mut input: Value,
 ) -> (StatusCode, Json<Value>) {
+    let principal = match principal(headers) {
+        Ok(p) => p,
+        Err(mut e) => {
+            e.op.clone_from(&name);
+            return refusal(&e);
+        }
+    };
+    let op = OPS.iter().find(|op| op.name == name);
+    if let Some(op) = op {
+        own_session(op, &principal, &mut input);
+    }
     let ctx = Ctx {
         actor: headers
             .get(ACTOR_HEADER)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("unknown")
             .to_string(),
+        principal,
     };
-    let op = OPS.iter().find(|op| op.name == name);
-    let audit = op
-        .filter(|op| op.class != Class::Read)
-        .map(|op| (ctx.actor.clone(), redacted(op, &input)));
+    let audit = op.filter(|op| op.class != Class::Read).map(|op| {
+        (
+            ctx.actor.clone(),
+            ctx.principal.clone(),
+            redacted(op, &input),
+        )
+    });
     let started = std::time::Instant::now();
     // engine methods read files and run programs; keep them off the async threads
     let call = name.clone();
@@ -128,18 +201,15 @@ async fn run(
     };
     let code = answer.as_ref().err().map(|e| e.code);
     count(op.map_or("unknown", |op| op.name), code, ms);
-    if let Some((actor, input)) = audit {
-        let payload = json!({"input": input, "outcome": code, "ms": ms});
+    if let Some((actor, principal, input)) = audit {
+        let payload = json!({"principal": principal, "input": input, "outcome": code, "ms": ms});
         if let Err(e) = Db::open_default().and_then(|db| db.record(&actor, &name, &payload)) {
             eprintln!("operator: audit of {name} not recorded: {e:#}");
         }
     }
     match answer {
         Ok(output) => (StatusCode::OK, Json(output)),
-        Err(error) => (
-            StatusCode::from_u16(error.code.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-            Json(json!({"error": error})),
-        ),
+        Err(error) => refusal(&error),
     }
 }
 

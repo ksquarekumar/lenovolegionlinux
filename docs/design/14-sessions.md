@@ -21,7 +21,7 @@ Builds on 12-operator (harness, sandbox, gateway) and 13-daemon (one-writer data
   and writable: the workspace, the dossier, the repository's `.git`, the runtime folder and `session.writable`
   (`~/.claude`, `~/.claude.json`, `~/.codex`, `~/.cache`). The network stays on: agents need their model API.
 - The git gate: `/usr/bin/git` in the sandbox is the `legionctl` binary; started as `git`, it asks the operator
-  (`gates.check`, config `gates.git.deny`, lockable from `/etc`) and runs the real git (mounted read-only in the
+  (`internal.gates.check`, config `gates.git.deny`, lockable from `/etc`) and runs the real git (mounted read-only in the
   session's runtime folder) or refuses. Default (decided 2026-10-13): local commands run; push, fetch, pull, remote,
   reset --hard, rebase, clean -f, branch -D, filter-branch, gc --prune, update-ref and reflog expire are refused;
   git aliases are refused, because an alias could name a denied command.
@@ -40,7 +40,7 @@ Built (2026-10-13, S2b): the MCP proxy. `mcp.servers` (config) names each server
 `legionctl mcp-proxy --server <name> --allow <tool>... -- <command>`; the `claude` template passes it with
 `--mcp-config {mcp} --strict-mcp-config`, so the agent has no other servers. The proxy (rmcp server to the agent,
 rmcp client to the server it starts) lists only the allowed tools, refuses others, and logs each call through the
-operator (`tools.record`, whose audit row is the record: session, server, tool, BLAKE2b-128 of the arguments, ms, bytes,
+operator (`internal.tools.record`, whose audit row is the record: session, server, tool, BLAKE2b-128 of the arguments, ms, bytes,
 outcome ok/error/failed/refused); `legionctl tools calls [--session]` lists them. A log that fails (operator down)
 does not stop the call; the proxy says so on stderr.
 
@@ -82,7 +82,7 @@ Built (2026-10-13, T2): the call cache. `mcp.servers.<name>.cache` lists the too
 each with `ttl_s` and `workspace` (the tool reads the working copy). Nothing else is cached; a tool error is never
 kept. The proxy's key is a BLAKE2b-128 of the server's command (for a package, its store version), the tool, the
 arguments and, with `workspace`, the git state of its folder (HEAD, `status --porcelain=v2`, `diff HEAD`). Entries
-live in the operator database (`tool_cache`, migration v3) through `cache.get` and `cache.put`; a hit is logged as
+live in the operator database (`tool_cache`, migration v3) through `internal.cache.get` and `internal.cache.put`; a hit is logged as
 outcome `cached`. The e2e test sees ok, cached, then ok again after a file in the working copy changes.
 
 Built (2026-10-13, S3): headless runs. `legionctl session run <agent> <prompt>` prepares the session as `session
