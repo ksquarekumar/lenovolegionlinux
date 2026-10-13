@@ -145,7 +145,10 @@
     "pool": { "*": ["anthropic", "openai"] },
     "cache_ttl_s": 86400,
     "budgets": {},
-    "prices": {}
+    "prices": {},
+    // The semantic cache (x-legionctl-cache: semantic): { "account": an openai account (a local model works), "model":
+    // its embedding model, "threshold": cosine similarity 0-1 at which a kept answer replays }; null is off.
+    "semantic": null
   },
 
   // Agent plugins legionctl may install (legionctl agents plugin-install <plugin>@<marketplace>): marketplace name

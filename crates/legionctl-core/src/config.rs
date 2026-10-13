@@ -92,6 +92,19 @@ pub struct GatewayConfig {
     pub budgets: BTreeMap<String, Budget>,
     /// Model -> price, for the cost of each call and for budgets.
     pub prices: BTreeMap<String, Price>,
+    /// The semantic cache: off when null.
+    pub semantic: Option<SemanticConfig>,
+}
+
+/// Semantic replay (`x-legionctl-cache: semantic`): the prompt's embedding from `account` (an `OpenAI`-API account:
+/// `/v1/embeddings`, its keyring key or none for a local model), nearest kept answer at or above `threshold`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticConfig {
+    pub account: String,
+    pub model: String,
+    /// Cosine similarity (0-1) at which a kept answer replays.
+    pub threshold: f64,
 }
 
 impl GatewayConfig {
@@ -100,6 +113,19 @@ impl GatewayConfig {
     /// # Errors
     /// A budget that cannot be counted.
     pub fn check(&self) -> Result<()> {
+        if let Some(semantic) = &self.semantic {
+            ensure!(
+                self.accounts
+                    .get(&semantic.account)
+                    .is_some_and(|a| a.provider == "openai"),
+                "gateway.semantic.account: {} is not an openai gateway account (embeddings use /v1/embeddings)",
+                semantic.account
+            );
+            ensure!(
+                semantic.threshold > 0.0 && semantic.threshold <= 1.0,
+                "gateway.semantic.threshold: between 0 and 1"
+            );
+        }
         for key in self.budgets.keys() {
             let (account, model) = key
                 .split_once('/')

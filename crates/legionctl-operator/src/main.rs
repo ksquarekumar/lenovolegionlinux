@@ -7,6 +7,7 @@ mod display;
 mod engine;
 mod gateway;
 mod recorder;
+mod semantic;
 mod server;
 mod session;
 mod system1;

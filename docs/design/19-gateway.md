@@ -25,8 +25,8 @@ per `account/model` (G2 part 1, below). Exact cache in `operator.db`
 (`gateway_cache`, key = BLAKE2b of the path and the request) with replay of JSON and SSE bodies, `x-legionctl-cache:
 off|refresh`; a usage row per call (`gateway_usage`; `legionctl gateway usage`). The usage row is written before the
 caller's stream ends, so a budget check right after sees it. Upstream TLS is native (OpenSSL): rustls would bring
-ISC-licensed crates that cargo-deny does not allow yet. Not built: the semantic cache, translation of the OpenAI
-Responses API, durable ACP sessions, session environments. Tests: a stand-in provider
+ISC-licensed crates that cargo-deny does not allow yet. Not built: translation of the OpenAI Responses API, durable
+ACP sessions, session environments. Tests: a stand-in provider
 (`tests/fixtures/fake-provider.py`) in `crates/legionctl/tests/gateway.rs`.
 
 ## Built (2026-10-13, G2 part 1: money budgets)
@@ -54,6 +54,17 @@ the caller's own key is for the other provider. Usage and cost count the provide
 hide tokens. The cache keeps and replays the caller's shape. The OpenAI Responses API (`/v1/responses`) is not
 translated yet: refused with the reason. Tests: both directions, JSON and streams, with tool calls, against the
 stand-in provider (`crates/legionctl/tests/gateway.rs`).
+
+## Built (2026-10-13, G2 part 3: semantic cache)
+
+`gateway.semantic`: `{ "account", "model", "threshold" }`, null (off) by default. The account speaks the OpenAI API
+(`/v1/embeddings`; its keyring key, or none for a local model). A caller that sends `x-legionctl-cache: semantic`
+gets the exact cache first; on a miss the prompt text (system, instructions, each message's role and text) is
+embedded, and the kept answer with the nearest prompt (cosine, same API path and model) replays when it reaches the
+threshold (`x-legionctl-cache: semantic`). On a miss the embedding is kept with the new answer and expires with it.
+Each embedding call is a usage row of the embedding account (with its cost when `gateway.prices` has the model). An
+embedding failure is logged and the call goes on without the semantic cache. Embeddings are kept in `operator.db`
+(`gateway_semantic`) and searched in full: the cache holds one row per kept answer, which stays small.
 
 ## Model addressing
 

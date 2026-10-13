@@ -225,7 +225,7 @@ fn candidates(
     Ok(accounts)
 }
 
-async fn key(account: &str) -> Result<String> {
+pub(crate) async fn key(account: &str) -> Result<String> {
     let out = tokio::process::Command::new("secret-tool")
         .args(["lookup", "legionctl-account", account])
         .output()
@@ -320,8 +320,8 @@ fn blocked(
     })
 }
 
-/// The kept answer for `key`, recorded as a cached call of `model`.
-fn replay(key: &str, model: &str) -> Option<Response> {
+/// The kept answer for `key`, recorded as a cached call of `model`; `label` is the cache header (hit, semantic).
+fn replay(key: &str, model: &str, label: &'static str) -> Option<Response> {
     let (status, content_type, body) = Db::open_default()
         .and_then(|db| db.gateway_cached(key))
         .ok()??;
@@ -344,7 +344,7 @@ fn replay(key: &str, model: &str) -> Option<Response> {
     );
     response
         .headers_mut()
-        .insert("x-legionctl-cache", HeaderValue::from_static("hit"));
+        .insert("x-legionctl-cache", HeaderValue::from_static(label));
     Some(response)
 }
 
@@ -372,17 +372,18 @@ async fn call(State(gw): State<Gateway>, api: Api, headers: HeaderMap, body: Byt
         .and_then(|v| v.to_str().ok())
         .unwrap_or("on")
         .to_string();
-    // the key: the API and the request (keys sorted), not the account: any account's answer replays
-    let key = format!(
-        "{:x}",
-        Blake2b::<U16>::digest(format!("{}{request}", api.path()).as_bytes())
-    );
-    if cache_mode == "on"
-        && config.cache_ttl_s > 0
-        && let Some(response) = replay(&key, &accounts[0].1)
+    let (key, semantic) = match cached(
+        &gw,
+        &config,
+        &cache_mode,
+        (api, &model, &accounts[0].1),
+        &request,
+    )
+    .await
     {
-        return response;
-    }
+        Ok(response) => return response,
+        Err(keep) => keep,
+    };
     let explicit = model.contains('/');
     let mut refusals = Vec::new();
     for (name, bare, direction) in accounts {
@@ -440,10 +441,20 @@ async fn call(State(gw): State<Gateway>, api: Api, headers: HeaderMap, body: Byt
             },
             price,
             direction.map(|d| Translator::new(d, &request)),
-            (key, config.cache_ttl_s, cache_mode != "off"),
+            Keep {
+                key,
+                ttl_s: config.cache_ttl_s,
+                exact: cache_mode != "off",
+                semantic,
+            },
             started,
         );
     }
+    no_account(&model, &refusals)
+}
+
+/// No account served the call: 401 when a key needed the gateway token, else 429; every account's reason.
+fn no_account(model: &str, refusals: &[String]) -> Response {
     let status = if refusals.iter().any(|r| r.contains("gateway token")) {
         StatusCode::UNAUTHORIZED
     } else {
@@ -455,13 +466,84 @@ async fn call(State(gw): State<Gateway>, api: Api, headers: HeaderMap, body: Byt
     )
 }
 
+/// What to keep of an answer: under the exact key for `ttl_s` (unless the caller said off), and the prompt's
+/// embedding within its scope for semantic replay.
+struct Keep {
+    key: String,
+    ttl_s: u64,
+    exact: bool,
+    semantic: Option<(String, Vec<f64>)>,
+}
+
+/// The exact key of `request`, and the scope and embedding to keep with a new answer.
+type ToKeep = (String, Option<(String, Vec<f64>)>);
+
+/// A kept answer as `Ok`: the exact one, else (with `x-legionctl-cache: semantic` and `gateway.semantic` set) the
+/// nearest by the prompt's embedding; else `Err` with what to keep with the new answer. An embedding failure is
+/// logged and skips the semantic cache; the call goes on.
+async fn cached(
+    gw: &Gateway,
+    config: &GatewayConfig,
+    cache_mode: &str,
+    (api, model, served): (Api, &str, &str),
+    request: &Value,
+) -> Result<Response, ToKeep> {
+    // the key: the API and the request (keys sorted), not the account: any account's answer replays
+    let key = format!(
+        "{:x}",
+        Blake2b::<U16>::digest(format!("{}{request}", api.path()).as_bytes())
+    );
+    if (cache_mode == "on" || cache_mode == "semantic")
+        && config.cache_ttl_s > 0
+        && let Some(response) = replay(&key, served, "hit")
+    {
+        return Ok(response);
+    }
+    let Some(semantic) = config
+        .semantic
+        .as_ref()
+        .filter(|_| cache_mode == "semantic" && config.cache_ttl_s > 0)
+    else {
+        return Err((key, None));
+    };
+    let (vector, row) = match crate::semantic::embed(
+        &gw.http,
+        config,
+        semantic,
+        &crate::semantic::prompt_text(request),
+    )
+    .await
+    {
+        Ok(found) => found,
+        Err(e) => {
+            eprintln!("operator: semantic cache skipped: {e:#}");
+            return Err((key, None));
+        }
+    };
+    record(&row);
+    let scope = format!("{}{model}", api.path());
+    let nearest = Db::open_default()
+        .and_then(|db| db.gateway_semantic_nearest(&scope, &vector, semantic.threshold))
+        .ok()
+        .flatten();
+    match nearest.and_then(|kept| replay(&kept, served, "semantic")) {
+        Some(response) => Ok(response),
+        None => Err((key, Some((scope, vector)))),
+    }
+}
+
 /// Stream the provider's answer to the caller; at its end, record usage and keep it for replay.
 fn respond(
     upstream: reqwest::Response,
     mut row: GatewayUsage,
     price: Option<Price>,
     mut translator: Option<Translator>,
-    (key, ttl_s, keep): (String, u64, bool),
+    Keep {
+        key,
+        ttl_s,
+        exact,
+        semantic,
+    }: Keep,
     started: Instant,
 ) -> Response {
     let status = row.status;
@@ -517,12 +599,17 @@ fn respond(
         row.cost_usd = price.map_or(0.0, |p| p.cost(row.tokens_in, row.tokens_out));
         row.ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
         record(&row);
-        if keep
+        if exact
             && complete
             && ttl_s > 0
             && (200..300).contains(&status)
-            && let Err(e) = Db::open_default()
-                .and_then(|db| db.gateway_keep(&key, status, &content_type_kept, &body, ttl_s))
+            && let Err(e) = Db::open_default().and_then(|db| {
+                db.gateway_keep(&key, status, &content_type_kept, &body, ttl_s)?;
+                match &semantic {
+                    Some((scope, vector)) => db.gateway_semantic_keep(&key, scope, vector),
+                    None => Ok(()),
+                }
+            })
         {
             eprintln!("operator: gateway response not kept: {e:#}");
         }

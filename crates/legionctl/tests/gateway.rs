@@ -133,8 +133,11 @@ fn setup(tag: &str) -> Setup {
                 "keyed": {"provider": "anthropic", "base_url": base("ok"), "keyring": true},
                 // keyring accounts of each API: a caller of the other API reaches them translated
                 "oa": {"provider": "openai", "base_url": base("ok"), "keyring": true},
-                "an": {"provider": "anthropic", "base_url": base("ok"), "keyring": true}
+                "an": {"provider": "anthropic", "base_url": base("ok"), "keyring": true},
+                // embeddings for the semantic cache, as from a local model (no key)
+                "emb": {"provider": "openai", "base_url": base("ok")}
             },
+            "semantic": {"account": "emb", "model": "embed-x", "threshold": 0.99},
             "pool": {"claude-x": ["limited", "main"], "*": ["main"]},
             // 10 tokens in and 5 out at these prices cost $2: one call uses the day
             "prices": {"claude-y": {"input": 100_000.0, "output": 200_000.0}},
@@ -555,5 +558,54 @@ fn an_openai_caller_reaches_an_anthropic_model_translated() {
     assert!(
         status == 400 && body.contains("max_tokens is needed"),
         "{body}"
+    );
+}
+
+/// The semantic cache, when the caller asks for it: a reworded prompt (same letters, so the stand-in's embeddings
+/// match) replays the kept answer without a model call; without the header only the exact cache applies; a
+/// different prompt is a miss. Each embedding call is a usage row of the embedding account.
+#[test]
+fn a_reworded_prompt_replays_semantically_only_when_asked() {
+    let s = setup("gw-semantic");
+    let semantic = [CALLER[0], CALLER[1], ("x-legionctl-cache", "semantic")];
+    let messages = |headers: &[(&str, &str)], text: &str| {
+        post(s.port, "/v1/messages", headers, &ask("claude-z", text))
+    };
+    let (status, cache, kept) = messages(&semantic, "What is the capital of France?");
+    assert_eq!((status, cache.as_str()), (200, "miss"), "{kept}");
+    assert_eq!(
+        messages(&semantic, "what is the capital of france"),
+        (200, "semantic".into(), kept)
+    );
+    assert_eq!(messages(&CALLER, "what is the capital of france").1, "miss");
+    assert_eq!(messages(&semantic, "Tell me a joke about cats").1, "miss");
+    let calls = provider_calls(&s.log);
+    let (embedding, model): (Vec<&String>, Vec<&String>) =
+        calls.iter().partition(|c| c.starts_with("ok embed-x"));
+    assert_eq!((embedding.len(), model.len()), (3, 3), "{calls:?}");
+    let usage: Value = serde_json::from_str(&s.op.ok(&["gateway", "usage", "--json"])).unwrap();
+    let rows: Vec<(String, bool, i64)> = usage
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| {
+            (
+                u["account"].as_str().unwrap().into(),
+                u["cached"].as_bool().unwrap(),
+                u["tokens_in"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("emb".into(), false, 7),
+            ("main".into(), false, 10),
+            ("emb".into(), false, 7),
+            ("cache".into(), true, 10),
+            ("main".into(), false, 10),
+            ("emb".into(), false, 7),
+            ("main".into(), false, 10),
+        ]
     );
 }

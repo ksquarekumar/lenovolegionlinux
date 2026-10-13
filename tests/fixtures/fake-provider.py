@@ -4,7 +4,8 @@
 Base URLs pick the behaviour: http://127.0.0.1:<port>/ok answers (JSON, or an SSE stream when the request asks for
 one) with usage 10 in / 5 out; /limited answers 429. /v1/messages answers as Anthropic, /v1/chat/completions as
 OpenAI. With tools in the request the answer also calls tool `lookup` with {"q": 1}, its arguments split over two
-stream events. Each call appends `<prefix> <model> <key>` to the log (the x-api-key or authorization header) and
+stream events. /v1/embeddings answers a vector of the input's letter counts (a-z, case ignored), so a reworded
+prompt with the same letters is near. Each call appends `<prefix> <model> <key>` to the log (the x-api-key or authorization header) and
 `{"path", "body"}` to `<log>.bodies`.
 """
 
@@ -57,6 +58,18 @@ def anthropic(body, text):
     return "text/event-stream", sse(events, True)
 
 
+def embeddings(body, _text):
+    letters = [0] * 26
+    for c in body.get("input", "").lower():
+        if "a" <= c <= "z":
+            letters[ord(c) - ord("a")] += 1
+    words = len(body.get("input", "").split())
+    return "application/json", json.dumps({
+        "data": [{"embedding": letters, "index": 0}], "model": body.get("model"),
+        "usage": {"prompt_tokens": words, "total_tokens": words},
+    }).encode()
+
+
 def openai(body, text):
     tools = bool(body.get("tools"))
     base = {"id": "chatcmpl-1", "created": 1, "model": body.get("model")}
@@ -107,7 +120,11 @@ class Provider(BaseHTTPRequestHandler):
             self.wfile.write(b'{"type":"error","error":{"type":"rate_limit_error"}}')
             return
         text = f"model={body.get('model')} key={key}"
-        api = openai if self.path.endswith("/chat/completions") else anthropic
+        api = (
+            embeddings if self.path.endswith("/embeddings")
+            else openai if self.path.endswith("/chat/completions")
+            else anthropic
+        )
         content_type, payload = api(body, text)
         self.send_response(200)
         self.send_header("content-type", content_type)

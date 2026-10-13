@@ -70,6 +70,12 @@ const OPERATOR: &[&str] = &[
      );",
     // v5: the cost of each gateway call, from gateway.prices (money budgets)
     "ALTER TABLE gateway_usage ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0;",
+    // v6: the semantic cache: the prompt's embedding for each kept answer (gateway.semantic)
+    "CREATE TABLE gateway_semantic (
+        key    TEXT PRIMARY KEY,
+        scope  TEXT NOT NULL,
+        vector BLOB NOT NULL
+     );",
 ];
 
 pub struct Db {
@@ -211,10 +217,62 @@ impl Db {
             params![now()],
         )?;
         self.conn.execute(
+            "DELETE FROM gateway_semantic WHERE key NOT IN (SELECT key FROM gateway_cache)",
+            [],
+        )?;
+        self.conn.execute(
             "INSERT OR REPLACE INTO gateway_cache (key, status, content_type, body, expires) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![key, status, content_type, body, expires],
         )?;
         Ok(())
+    }
+
+    /// Keep the prompt embedding of the answer kept under `key`, for semantic replay within `scope` (API and model).
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn gateway_semantic_keep(&self, key: &str, scope: &str, vector: &[f64]) -> Result<()> {
+        let bytes: Vec<u8> = vector.iter().flat_map(|f| f.to_le_bytes()).collect();
+        self.conn.execute(
+            "INSERT OR REPLACE INTO gateway_semantic (key, scope, vector) VALUES (?1, ?2, ?3)",
+            params![key, scope, bytes],
+        )?;
+        Ok(())
+    }
+
+    /// The key of the kept answer in `scope` whose prompt embedding is nearest to `vector` (cosine), if it reaches
+    /// `threshold`.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn gateway_semantic_nearest(
+        &self,
+        scope: &str,
+        vector: &[f64],
+        threshold: f64,
+    ) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.key, s.vector FROM gateway_semantic s JOIN gateway_cache c ON c.key = s.key
+             WHERE s.scope = ?1 AND c.expires > ?2",
+        )?;
+        let rows = stmt.query_map(params![scope, now()], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?;
+        let mut best: Option<(f64, String)> = None;
+        for row in rows {
+            let (key, bytes) = row?;
+            let kept: Vec<f64> = bytes
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|c| f64::from_le_bytes(*c))
+                .collect();
+            let similarity = cosine(vector, &kept);
+            if similarity >= threshold && best.as_ref().is_none_or(|(b, _)| similarity > *b) {
+                best = Some((similarity, key));
+            }
+        }
+        Ok(best.map(|(_, key)| key))
     }
 
     /// One usage row for a gateway call.
@@ -324,6 +382,24 @@ impl Db {
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+}
+
+/// Cosine similarity; 0 for vectors of different length or without length.
+fn cosine(a: &[f64], b: &[f64]) -> f64 {
+    if a.len() != b.len() {
+        return 0.0;
+    }
+    let (mut dot, mut na, mut nb) = (0.0_f64, 0.0_f64, 0.0_f64);
+    for (x, y) in a.iter().zip(b) {
+        dot += x * y;
+        na += x * x;
+        nb += y * y;
+    }
+    if na == 0.0 || nb == 0.0 {
+        0.0
+    } else {
+        dot / (na.sqrt() * nb.sqrt())
     }
 }
 
