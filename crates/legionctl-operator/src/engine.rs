@@ -134,7 +134,7 @@ impl Plan {
 
 fn dry_run(steps: &[policy::Step]) -> Changes {
     Changes {
-        lines: steps.iter().filter_map(policy::describe).collect(),
+        lines: policy::grouped(steps),
         dry_run: true,
     }
 }

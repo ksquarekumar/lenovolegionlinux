@@ -303,12 +303,11 @@ fn a_recording_replays_to_the_same_decisions_and_status() {
     let replayed = json(&op, &["replay", "--dir", dir]);
 
     assert!(
-        recorded["plan"]
-            .as_array()
+        recorded["plan"].as_array().unwrap().iter().any(|l| l
+            .as_str()
             .unwrap()
-            .iter()
-            .any(|l| l.as_str().unwrap().contains("policy3")),
-        "the plan puts the CPU back: {}",
+            .contains("policy*/energy_performance_preference")),
+        "the plan sets the EPP of every CPU: {}",
         recorded["plan"]
     );
     for part in ["plan", "findings", "knobs"] {
@@ -538,6 +537,11 @@ mod daemon_events {
         react_and_write(&m, Event::Resume);
         assert_eq!(m.file(PROFILE_PATH), "performance");
         assert_eq!(m.recorded(Key::Override), "performance");
+        assert_eq!(
+            m.governors(),
+            ["performance"],
+            "the Fn+Q mode's governor stays after resume"
+        );
 
         // plug in: a power-source change starts from the profile again
         m.set("/sys/class/power_supply/ADP0/online", "1");

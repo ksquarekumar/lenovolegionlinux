@@ -217,7 +217,9 @@ impl Machine<'_> {
         }
     }
 
-    fn cpu_policy(&self, steps: &mut Vec<Step>, policy: &ModePolicy) {
+    /// The CPU knobs of `policy`. While legionctl follows an Fn+Q choice (`following`), the governor and EPP stay
+    /// as `firmware_follow` and power-profiles-daemon set them.
+    fn cpu_policy(&self, steps: &mut Vec<Step>, policy: &ModePolicy, following: bool) {
         let cpu = &policy.cpu;
         for (path, value) in [
             (
@@ -237,12 +239,14 @@ impl Machine<'_> {
                 self.write(steps, path, value);
             }
         }
-        self.cpufreq(steps, "scaling_governor", cpu.governor.as_deref());
-        self.cpufreq(
-            steps,
-            "energy_performance_preference",
-            cpu.energy_performance_preference.as_deref(),
-        );
+        if !following {
+            self.cpufreq(steps, "scaling_governor", cpu.governor.as_deref());
+            self.cpufreq(
+                steps,
+                "energy_performance_preference",
+                cpu.energy_performance_preference.as_deref(),
+            );
+        }
         if let Some(bias) = &cpu.energy_perf_bias {
             for dir in self.root.children("/sys/devices/system/cpu", "cpu") {
                 if self.root.exists(dir.join("power/energy_perf_bias")) {
@@ -364,7 +368,7 @@ impl Machine<'_> {
         self.firmware_attributes(&mut steps, policy);
         if !opts.reassert {
             self.sysctl(&mut steps, policy);
-            self.cpu_policy(&mut steps, policy);
+            self.cpu_policy(&mut steps, policy, override_mode.is_some());
             if source == Source::Ac {
                 self.nvidia(&mut steps, policy);
             }
@@ -403,6 +407,56 @@ impl Machine<'_> {
         self.follow_policy(&mut steps, &current);
         Ok(steps)
     }
+}
+
+/// A dry run's lines with the per-CPU ones grouped: consecutive writes of the same value to `policy0` ...
+/// `policy31` are one line, `.../policy*/scaling_governor: powersave (32 CPUs)`; the order stays.
+#[must_use]
+pub fn grouped(steps: &[Step]) -> Vec<String> {
+    let mut groups: Vec<(String, usize)> = Vec::new();
+    for line in steps.iter().filter_map(describe) {
+        let key = per_cpu(&line);
+        match groups.last_mut() {
+            Some((last, n)) if *last == key => *n += 1,
+            _ => groups.push((key, 1)),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(line, n)| {
+            if n > 1 {
+                format!("{line} ({n} CPUs)")
+            } else {
+                line
+            }
+        })
+        .collect()
+}
+
+/// `policy12/` and `cpu12/` as `policy*/` and `cpu*/`.
+fn per_cpu(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(at) = ["/policy", "/cpu"]
+        .iter()
+        .filter_map(|p| rest.find(p).map(|i| (i, p.len())))
+        .min()
+    {
+        let (i, len) = at;
+        let digits = rest[i + len..]
+            .bytes()
+            .take_while(u8::is_ascii_digit)
+            .count();
+        out.push_str(&rest[..i + len]);
+        if digits > 0 && rest[i + len + digits..].starts_with('/') {
+            out.push('*');
+        } else {
+            out.push_str(&rest[i + len..i + len + digits]);
+        }
+        rest = &rest[i + len + digits..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// One line per step as a dry run shows it; `None` for steps a dry run does not print.
