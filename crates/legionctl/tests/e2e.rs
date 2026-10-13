@@ -1814,6 +1814,158 @@ fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
     assert!(String::from_utf8_lossy(&events.stdout).contains("session.permission"));
 }
 
+/// A repository whose own image (its Dockerfile) has Python, with the stand-in ACP agent in it (a container sees only
+/// the mounted folders), and a config for sessions in a container with the static client of `make static`; the
+/// interactive agent `probe` tries what an agent would.
+fn container_repository(home: &Path) -> PathBuf {
+    let probe = "echo x > note.txt && git add note.txt && git commit -qm probe && echo COMMIT_OK; \
+                 git push origin main 2>&1 | grep -q gates.git.deny && echo PUSH_REFUSED; \
+                 touch \"$HOME/outside\" && touch .agentworkspace/MEMORY/probe.md && echo WROTE; \
+                 [ -f /.dockerenv ] && echo IN_CONTAINER; echo \"SESSION=$LEGIONCTL_SESSION\"";
+    let client =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/static/release/legionctl");
+    assert!(
+        client.is_file(),
+        "{} is missing: run `make static`",
+        client.display()
+    );
+    let repo = repository(home);
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-acp-agent.py"),
+        repo.join("fake-acp-agent.py"),
+    )
+    .unwrap();
+    write(
+        &repo.join("Dockerfile"),
+        "FROM public.ecr.aws/docker/library/python:3.12-slim\n",
+    );
+    git(home, &repo, &["add", "."]);
+    git(home, &repo, &["commit", "--quiet", "-m", "agent and image"]);
+    write(
+        &home.join(".config/legionctl/run.jsonc"),
+        &json!({"session": {
+            "acp": {"fake": ["python3", "fake-acp-agent.py"]},
+            "agents": {"probe": ["sh", "-c", probe]},
+            "scope": false,
+            "writable": [],
+            "container": {"base": "unused", "npm": [], "client": client},
+        }})
+        .to_string(),
+    );
+    repo
+}
+
+/// W5 (note 18): `workspace pack` puts the agent layer on the repository's own image (its Dockerfile, built by I1),
+/// and sessions `--in container` run there, headless and interactive (through the real client): the workspace, its
+/// git data and the dossier are mounted at their own paths, so the agent's commits land in the workspace on the host;
+/// the image's `/usr/bin/git` is the static client, which asks the operator through the mounted socket and refuses
+/// the push; the home is private; the sessions are recorded as containers'. Without a packed image, a run says how
+/// to make one. Needs docker and `make static`.
+#[test]
+fn sessions_in_a_container_work_on_the_mounted_workspace_behind_the_git_gate() {
+    let (op, home) = operator("container");
+    let repo = container_repository(&home);
+    let run = |args: &[&str]| op.run(&repo, &[("HOME", home.to_str().unwrap())], args, "");
+    let in_container: Vec<&str> = "session run fake fix --dossier port --in container --json"
+        .split(' ')
+        .collect();
+    let image = "localhost/repo/legionctl-agent:latest";
+    let rmi = || {
+        std::process::Command::new("docker")
+            .args(["rmi", "-f", image])
+            .output()
+    };
+    let _ = rmi();
+
+    let unpacked = run(&in_container);
+    assert!(
+        String::from_utf8_lossy(&unpacked.stderr)
+            .contains("make it with `legionctl workspace pack`"),
+        "{}",
+        String::from_utf8_lossy(&unpacked.stderr)
+    );
+    let packed = run(&["workspace", "pack"]);
+    assert!(
+        String::from_utf8_lossy(&packed.stdout)
+            .contains(&format!("packed {image} from localhost/repo/repo:")),
+        "the agent layer goes on the repository's own image: {}",
+        String::from_utf8_lossy(&packed.stderr)
+    );
+
+    let out = run(&in_container);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = serde_json::from_slice::<Value>(&out.stdout).unwrap()["text"].to_string();
+    for expected in [
+        "prompt: fix",
+        "inside: container",
+        "COMMIT_OK",
+        "PUSH_REFUSED",
+    ] {
+        assert!(text.contains(expected), "{expected} missing:\n{text}");
+    }
+    assert_eq!(
+        git(
+            &home,
+            &home.join("worktrees/repo/port"),
+            &["log", "-1", "--format=%s"]
+        ),
+        "headless",
+        "the commit is in the workspace on the host"
+    );
+
+    let started = run(&[
+        "session",
+        "start",
+        "probe",
+        "--dossier",
+        "talk",
+        "--in",
+        "container",
+    ]);
+    let text = String::from_utf8_lossy(&started.stdout);
+    for expected in [
+        "COMMIT_OK",
+        "PUSH_REFUSED",
+        "WROTE",
+        "IN_CONTAINER",
+        "SESSION=",
+    ] {
+        assert!(
+            text.contains(expected),
+            "{expected} missing:\n{text}\n{}",
+            String::from_utf8_lossy(&started.stderr)
+        );
+    }
+    assert!(
+        !home.join("outside").exists(),
+        "the container's home is its own"
+    );
+    let workspace = home.join("worktrees/repo/talk");
+    assert_eq!(
+        git(&home, &workspace, &["log", "-1", "--format=%s"]),
+        "probe"
+    );
+    assert!(
+        workspace.join(".agentworkspace/MEMORY/probe.md").exists(),
+        "the dossier is mounted"
+    );
+
+    let sessions: Value =
+        serde_json::from_slice(&run(&["session", "list", "--json"]).stdout).unwrap();
+    for session in sessions.as_array().unwrap() {
+        assert_eq!(
+            (&session["inside"], &session["state"]),
+            (&json!("container"), &json!("inactive")),
+            "a container's session, and the container is gone: {sessions}"
+        );
+    }
+    let _ = rmi();
+}
+
 /// Jobs (DESIGN/02): a headless run is a job; when the operator stops in the middle of it, the next operator goes on
 /// with it in the same session (a new ACP session, told that it was cut off) and records how it ended.
 #[test]

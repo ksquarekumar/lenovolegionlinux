@@ -115,6 +115,13 @@ macro_rules! wire_enum {
 }
 
 wire_enum! {
+    /// Where a session runs.
+    enum Inside from core::session::Inside as "lowercase" {
+        /// On this machine, in a bwrap sandbox.
+        Host,
+        /// In a container of the repository's agent image (`legionctl workspace pack`).
+        Container,
+    }
     /// Hook event: session-start, prompt or stop.
     enum Event from core::reminders::Event as "kebab-case" {
         /// Once, when a session starts.
@@ -454,8 +461,10 @@ wire! {
         id: String,
         /// `systemd-run --user --scope ...`: the session's cgroup, for `session stop` and limits.
         scope: Vec<String>,
-        /// `bwrap ...`: what the agent can write. The client adds the git gate (its own binary over `/usr/bin/git`).
+        /// `bwrap ...` (the client adds the git gate: its own binary over `/usr/bin/git`), or `docker run ...` of the
+        /// agent image, whose `/usr/bin/git` is the gate already.
         sandbox: Vec<String>,
+        inside: Inside,
         agent: Vec<String>,
         /// Where the real git is inside the sandbox, for the gate.
         real_git: PathBuf,
@@ -479,6 +488,7 @@ wire! {
         started_at: i64 = started,
         /// The account profile (`agents accounts add`), if one was chosen.
         account: Option<String>,
+        inside: Inside,
     }
 
     struct SetupItem from core::setup::Item {

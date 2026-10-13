@@ -1,7 +1,9 @@
 //! Sessions (note 14, milestone 1): an agent that legionctl starts itself, so it runs where the dossier's work is and
 //! inside a sandbox: `systemd-run --user --scope` (unit `legionctl-session-<id>`), then `bwrap` with the real home
 //! read-only and only the workspace, the dossier, the repository's `.git` and the agent's own folders writable,
-//! then the agent. `/usr/bin/git` in the sandbox is the git gate (gates.rs).
+//! then the agent. `/usr/bin/git` in the sandbox is the git gate (gates.rs). A session can also run in a container
+//! (W5, note 18): `docker run` of the repository's agent image (`workspace pack`) with the same folders mounted at
+//! their own paths; the container is then what pause, unpause, stop and the session's state act on.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -27,6 +29,35 @@ pub struct SessionRecord {
     pub started: i64,
     /// The account profile (`agents accounts add`), if one was chosen.
     pub account: Option<String>,
+    pub inside: Inside,
+}
+
+/// Where a session runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Inside {
+    /// On this machine, in a bwrap sandbox.
+    #[default]
+    Host,
+    /// In a container of the repository's agent image (`legionctl workspace pack`).
+    Container,
+}
+
+impl Inside {
+    fn as_str(self) -> &'static str {
+        match self {
+            Inside::Host => "host",
+            Inside::Container => "container",
+        }
+    }
+
+    pub(crate) fn from_db(text: &str) -> Inside {
+        if text == "container" {
+            Inside::Container
+        } else {
+            Inside::Host
+        }
+    }
 }
 
 /// What `session start` and `session run` ask for.
@@ -43,6 +74,7 @@ pub struct Start<'a> {
     /// The agent's ACP adapter (`session run`) instead of its interactive command.
     pub headless: bool,
     pub account: Option<&'a str>,
+    pub inside: Inside,
 }
 
 /// Where account profiles live: `~/.local/share/legionctl/accounts/<name>/{claude,codex}`.
@@ -57,8 +89,10 @@ pub struct Launch {
     pub id: String,
     /// `systemd-run --user --scope ...`: the session's cgroup, for `session stop` and limits.
     pub scope: Vec<String>,
-    /// `bwrap ...`: what the agent can write. The client adds the git gate (its own binary over `/usr/bin/git`).
+    /// `bwrap ...` (the client adds the git gate: its own binary over `/usr/bin/git`), or `docker run ...` of the
+    /// agent image, whose `/usr/bin/git` is the gate already.
     pub sandbox: Vec<String>,
+    pub inside: Inside,
     pub agent: Vec<String>,
     /// Where the real git is inside the sandbox, for the gate.
     pub real_git: PathBuf,
@@ -77,10 +111,29 @@ fn now() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
-/// The state of a session's scope (`systemctl --user is-active`): active, frozen (paused), inactive (also when it
-/// ended and is gone), failed, or unknown when systemctl cannot answer.
+/// The container of session `id`.
+fn container_name(id: &str) -> String {
+    format!("legionctl-session-{id}")
+}
+
+/// The state of session `id` where it runs: active, frozen (paused), inactive (also when it is gone), or the scope's
+/// own word; unknown without systemd.
 #[must_use]
-pub fn scope_state(id: &str) -> String {
+pub fn state(id: &str, inside: Inside) -> String {
+    if inside == Inside::Container {
+        let status = std::process::Command::new("docker")
+            .args(["inspect", "-f", "{{.State.Status}}", &container_name(id)])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        return match status.as_deref() {
+            Some("running") => "active",
+            Some("paused") => "frozen",
+            _ => "inactive",
+        }
+        .into();
+    }
     let unit = format!("legionctl-session-{id}.scope");
     let systemctl = |args: &[&str]| {
         std::process::Command::new("systemctl")
@@ -104,13 +157,58 @@ pub fn scope_state(id: &str) -> String {
     }
 }
 
-/// Whether a session's scope still runs (a paused scope is frozen, and still active).
+/// Whether session `id` still runs (a paused one is frozen, and still runs).
 #[must_use]
-pub fn scope_active(id: &str) -> bool {
+pub fn active(id: &str, inside: Inside) -> bool {
     matches!(
-        scope_state(id).as_str(),
+        state(id, inside).as_str(),
         "active" | "frozen" | "activating" | "reloading"
     )
+}
+
+/// What `control` does to a running session.
+#[derive(Debug, Clone, Copy)]
+pub enum Control {
+    Pause,
+    Unpause,
+    Stop,
+}
+
+/// Pause, unpause or stop session `id` where it runs: its systemd scope, or its container.
+///
+/// # Errors
+/// systemctl or docker refuses (no such scope or container, or it is not in a state for this).
+pub fn control(id: &str, inside: Inside, what: Control) -> Result<()> {
+    let (program, args) = match inside {
+        Inside::Host => {
+            let verb = match what {
+                Control::Pause => "freeze",
+                Control::Unpause => "thaw",
+                Control::Stop => "stop",
+            };
+            let unit = format!("legionctl-session-{id}.scope");
+            ("systemctl", vec!["--user".to_string(), verb.into(), unit])
+        }
+        Inside::Container => {
+            let verb = match what {
+                Control::Pause => "pause",
+                Control::Unpause => "unpause",
+                Control::Stop => "stop",
+            };
+            ("docker", vec![verb.to_string(), container_name(id)])
+        }
+    };
+    let out = std::process::Command::new(program)
+        .args(&args)
+        .output()
+        .with_context(|| format!("running {program}"))?;
+    anyhow::ensure!(
+        out.status.success(),
+        "{program} {}: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(())
 }
 
 /// The session's dossier lines from the bind (`created ...` for a new one), then its workspace with branch and size,
@@ -313,8 +411,8 @@ fn copy_transcript(from: &Path, to: &Path, id: &str) -> Result<()> {
 }
 
 /// The skills folders of Claude Code and Codex (the account's, or the home's) as exactly `skills`, read-only.
-fn skill_binds(
-    sandbox: &mut Vec<String>,
+fn skill_mounts(
+    mounts: &mut Vec<Mount>,
     account: Option<&str>,
     skills: &[(String, PathBuf)],
 ) -> Result<()> {
@@ -322,13 +420,9 @@ fn skill_binds(
         // the mount point must exist: the home is read-only in the sandbox
         let dir = home.join("skills");
         std::fs::create_dir_all(&dir)?;
-        sandbox.extend(["--tmpfs".into(), dir.to_string_lossy().into_owned()]);
+        mounts.push(Mount::Empty(dir.clone()));
         for (name, source) in skills {
-            sandbox.extend([
-                "--ro-bind".into(),
-                source.to_string_lossy().into_owned(),
-                dir.join(name).to_string_lossy().into_owned(),
-            ]);
+            mounts.push(Mount::ReadOnly(source.clone(), dir.join(name)));
         }
     }
     Ok(())
@@ -336,6 +430,197 @@ fn skill_binds(
 
 /// The account's own logins and transcripts instead of `~/.claude` and `~/.codex`: its folders, writable, and the
 /// variables that point the agents there.
+fn account_mounts(
+    mounts: &mut Vec<Mount>,
+    env: &mut Vec<(String, String)>,
+    account: &str,
+) -> Result<()> {
+    for (agent, variable) in [("claude", "CLAUDE_CONFIG_DIR"), ("codex", "CODEX_HOME")] {
+        let dir = accounts_root().join(account).join(agent);
+        std::fs::create_dir_all(&dir)?;
+        env.push((variable.into(), dir.to_string_lossy().into_owned()));
+        mounts.push(Mount::Writable(dir));
+    }
+    Ok(())
+}
+
+/// What a session's agent sees besides the host's root (read-only) or its image, in order: later mounts go over
+/// earlier ones.
+enum Mount {
+    /// Writable, at its own path.
+    Writable(PathBuf),
+    /// A file or folder, read-only, at another path.
+    ReadOnly(PathBuf, PathBuf),
+    /// A private empty folder.
+    Empty(PathBuf),
+    /// A plain folder seen at its own path, every write into the dossier's layer (`upper`, `work`): bwrap only.
+    Overlay {
+        folder: PathBuf,
+        upper: PathBuf,
+        work: PathBuf,
+    },
+}
+
+/// `bwrap` arguments of `mounts` and `env`.
+fn bwrap_args(args: &mut Vec<String>, mounts: &[Mount], env: &[(String, String)]) {
+    let text = |p: &Path| p.to_string_lossy().into_owned();
+    for mount in mounts {
+        match mount {
+            Mount::Writable(p) => args.extend(["--bind".into(), text(p), text(p)]),
+            Mount::ReadOnly(from, to) => args.extend(["--ro-bind".into(), text(from), text(to)]),
+            Mount::Empty(p) => args.extend(["--tmpfs".into(), text(p)]),
+            Mount::Overlay {
+                folder,
+                upper,
+                work,
+            } => args.extend([
+                "--overlay-src".into(),
+                text(folder),
+                "--overlay".into(),
+                text(upper),
+                text(work),
+                text(folder),
+            ]),
+        }
+    }
+    for (name, value) in env {
+        args.extend(["--setenv".into(), name.clone(), value.clone()]);
+    }
+}
+
+/// `docker run` arguments of `mounts` and `env`.
+///
+/// # Errors
+/// An overlay (a plain folder's workspace), which a container cannot mount.
+fn docker_args(args: &mut Vec<String>, mounts: &[Mount], env: &[(String, String)]) -> Result<()> {
+    let text = |p: &Path| p.to_string_lossy().into_owned();
+    for mount in mounts {
+        match mount {
+            Mount::Writable(p) => args.extend(["-v".into(), format!("{}:{}", text(p), text(p))]),
+            Mount::ReadOnly(from, to) => {
+                args.extend(["-v".into(), format!("{}:{}:ro", text(from), text(to))]);
+            }
+            Mount::Empty(p) => args.extend(["--tmpfs".into(), text(p)]),
+            Mount::Overlay { folder, .. } => anyhow::bail!(
+                "a plain folder's workspace ({}) cannot run in a container: use a git repository",
+                folder.display()
+            ),
+        }
+    }
+    for (name, value) in env {
+        args.extend(["-e".into(), format!("{name}={value}")]);
+    }
+    Ok(())
+}
+
+/// `bwrap ...` over the host's root, read-only, with the ways out hidden, then `mounts` and `env`.
+fn bwrap_sandbox(
+    ws: &crate::workspace::Workspace,
+    runtime: &Path,
+    hidden: &[String],
+    mounts: &[Mount],
+    env: &[(String, String)],
+) -> Result<Vec<String>> {
+    // paths under /tmp (tests, other runtimes) are bound after the private /tmp, so they stay visible
+    let mut args: Vec<String> = [
+        "bwrap",
+        "--die-with-parent",
+        "--ro-bind",
+        "/",
+        "/",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        // a private /tmp: the agent cannot change the host's
+        "--tmpfs",
+        "/tmp",
+    ]
+    .map(String::from)
+    .to_vec();
+    hide(&mut args, runtime, hidden);
+    if ws.is_folder() {
+        let help = std::process::Command::new("bwrap").arg("--help").output()?;
+        anyhow::ensure!(
+            String::from_utf8_lossy(&help.stdout).contains("--overlay-src"),
+            "a plain folder's session needs bubblewrap 0.10 or newer (overlays); this bwrap has none"
+        );
+    }
+    bwrap_args(&mut args, mounts, env);
+    args.extend([
+        "--chdir".into(),
+        agent_dir(ws).to_string_lossy().into_owned(),
+    ]);
+    Ok(args)
+}
+
+/// `docker run ...` of `image` as this user, with a private home, then `mounts` and `env`. The client adds `-t` when
+/// it runs the session in a terminal.
+fn docker_sandbox(
+    id: &str,
+    image: &str,
+    (runtime, workdir): (&Path, &Path),
+    mut mounts: Vec<Mount>,
+    env: &[(String, String)],
+) -> Result<Vec<String>> {
+    let me = std::fs::metadata("/proc/self")?;
+    let (uid, gid) = (
+        std::os::unix::fs::MetadataExt::uid(&me),
+        std::os::unix::fs::MetadataExt::gid(&me),
+    );
+    let home = std::env::var("HOME").context("HOME is not set")?;
+    let mut args: Vec<String> = ["docker", "run", "--rm", "--init", "-i"]
+        .map(String::from)
+        .to_vec();
+    args.extend([
+        "--name".into(),
+        container_name(id),
+        "--user".into(),
+        format!("{uid}:{gid}"),
+        // the agent's home is private; its folders come back as mounts
+        "--tmpfs".into(),
+        format!("{home}:uid={uid},gid={gid},mode=0700"),
+        "-e".into(),
+        format!("HOME={home}"),
+        "-e".into(),
+        format!("XDG_RUNTIME_DIR={}", runtime.display()),
+        "-w".into(),
+        workdir.to_string_lossy().into_owned(),
+    ]);
+    // who commits: the user's git identity, read-only
+    let gitconfig = PathBuf::from(&home).join(".gitconfig");
+    if gitconfig.is_file() {
+        mounts.push(Mount::ReadOnly(gitconfig.clone(), gitconfig));
+    }
+    docker_args(&mut args, &mounts, env)?;
+    args.push(image.into());
+    Ok(args)
+}
+
+/// The agent image of the repository that holds `dir` (`legionctl workspace pack` makes it).
+#[must_use]
+pub fn agent_image(dir: &Path) -> String {
+    crate::images::image(
+        &crate::images::project(&place_of(dir)).0,
+        "legionctl-agent",
+        "latest",
+    )
+}
+
+/// Session `id`'s agent image, or the error that says how to make it.
+fn packed(dir: &Path) -> Result<String> {
+    let image = agent_image(dir);
+    let found = std::process::Command::new("docker")
+        .args(["image", "inspect", "-f", "{{.Id}}", &image])
+        .output()
+        .context("running docker")?;
+    anyhow::ensure!(
+        found.status.success(),
+        "no agent image {image}: make it with `legionctl workspace pack` in the repository"
+    );
+    Ok(image)
+}
+
 /// Each agent's login file in an account profile (A1, decided 2026-10-13): at rest in the keyring
 /// (`legionctl-login <account>/<agent>`), in the profile only while a session of the account runs.
 const LOGINS: [(&str, &str); 2] = [("claude", ".credentials.json"), ("codex", "auth.json")];
@@ -406,7 +691,7 @@ impl Dossiers {
         let live: Vec<String> = self
             .sessions()?
             .into_iter()
-            .filter(|s| scope_active(&s.id))
+            .filter(|s| active(&s.id, s.inside))
             .filter_map(|s| s.account)
             .collect();
         for entry in std::fs::read_dir(accounts_root())
@@ -431,25 +716,6 @@ impl Dossiers {
         }
         Ok(())
     }
-}
-
-fn account_binds(sandbox: &mut Vec<String>, account: &str) -> Result<()> {
-    for (agent, variable) in [("claude", "CLAUDE_CONFIG_DIR"), ("codex", "CODEX_HOME")] {
-        let dir = accounts_root().join(account).join(agent);
-        std::fs::create_dir_all(&dir)?;
-        bind(sandbox, &dir);
-        sandbox.extend([
-            "--setenv".into(),
-            variable.into(),
-            dir.to_string_lossy().into_owned(),
-        ]);
-    }
-    Ok(())
-}
-
-fn bind(args: &mut Vec<String>, path: &Path) {
-    let path = path.to_string_lossy().into_owned();
-    args.extend(["--bind".into(), path.clone(), path]);
 }
 
 /// Claude Code settings for a session (layer 1 of the gates, note 14): the git gate's refusals as `permissions.deny`,
@@ -566,13 +832,18 @@ impl Dossiers {
         let store = crate::packages::Store::new(crate::packages::Store::default_root());
         let mcp_json = mcp_config(config, &store)?;
         let skills = skills(config, &store)?;
+        let image = match start.inside {
+            Inside::Host => None,
+            Inside::Container => Some(packed(start.dir)?),
+        };
         let id = new_id()?;
         let place = place_of(start.dir);
         let bound = self.bind(&id, agent, start.dossier, start.steal, Some(&place))?;
         let ws = self.open_workspace(&id, start.dir, None, &config.workspace.root)?;
         self.db().execute(
-            "INSERT INTO sessions (id, agent, dossier, workdir, started, account, scoped) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![id, agent, start.dossier, agent_dir(&ws).to_string_lossy(), now(), start.account, config.session.scope],
+            "INSERT INTO sessions (id, agent, dossier, workdir, started, account, scoped, inside) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            // a container tells whether its session is live, as a scope does
+            params![id, agent, start.dossier, agent_dir(&ws).to_string_lossy(), now(), start.account, config.session.scope || image.is_some(), start.inside.as_str()],
         )?;
         self.launch(
             id,
@@ -580,6 +851,7 @@ impl Dossiers {
             config,
             (command, start.account),
             (mcp_json, skills.as_deref()),
+            image.as_deref(),
         )
     }
 
@@ -609,6 +881,10 @@ impl Dossiers {
         let store = crate::packages::Store::new(crate::packages::Store::default_root());
         let mcp_json = mcp_config(config, &store)?;
         let skills = skills(config, &store)?;
+        let image = match record.inside {
+            Inside::Host => None,
+            Inside::Container => Some(packed(&record.workdir)?),
+        };
         let place = place_of(&record.workdir);
         let bound = self.bind(id, &record.agent, &record.dossier, false, Some(&place))?;
         // after the bind: a refused resume leaves the session on its account
@@ -634,10 +910,11 @@ impl Dossiers {
             config,
             (command, record.account.as_deref()),
             (mcp_json, skills.as_deref()),
+            image.as_deref(),
         )
     }
 
-    /// The sandbox and agent command of session `id` working in workspace `ws`.
+    /// The sandbox (bwrap, or `docker run` of `image`) and agent command of session `id` working in workspace `ws`.
     fn launch(
         &self,
         id: String,
@@ -645,88 +922,55 @@ impl Dossiers {
         config: &Config,
         (command, account): (&[String], Option<&str>),
         (mcp_json, skills): (serde_json::Value, Option<&[(String, PathBuf)]>),
+        image: Option<&str>,
     ) -> Result<Launch> {
         let dossier = ws.dossier.as_str();
         let runtime = PathBuf::from(
             std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?,
         );
         let [real_git, settings, mcp] = session_files(&runtime, &id, config, &mcp_json)?;
-
-        // paths under /tmp (tests, other runtimes) are bound after the private /tmp, so they stay visible
-        let mut sandbox: Vec<String> = [
-            "bwrap",
-            "--die-with-parent",
-            "--ro-bind",
-            "/",
-            "/",
-            "--dev",
-            "/dev",
-            "--proc",
-            "/proc",
-            // a private /tmp: the agent cannot change the host's
-            "--tmpfs",
-            "/tmp",
-        ]
-        .map(String::from)
-        .to_vec();
-        hide(&mut sandbox, &runtime, &config.session.hidden);
         let workdir = agent_dir(ws);
-        bind(&mut sandbox, &runtime.join("legionctl"));
-        bind(&mut sandbox, &self.root.join(dossier));
+
+        let mut mounts = vec![
+            Mount::Writable(runtime.join("legionctl")),
+            Mount::Writable(self.root.join(dossier)),
+        ];
         if ws.is_folder() {
-            let help = std::process::Command::new("bwrap").arg("--help").output()?;
-            anyhow::ensure!(
-                String::from_utf8_lossy(&help.stdout).contains("--overlay-src"),
-                "a plain folder's session needs bubblewrap 0.10 or newer (overlays); this bwrap has none"
-            );
-            // the folder at its own path, every write into the dossier's layer
-            sandbox.extend([
-                "--overlay-src".into(),
-                workdir.to_string_lossy().into_owned(),
-                "--overlay".into(),
-            ]);
-            for path in [
-                crate::folder::upper(&ws.path),
-                crate::folder::work(&ws.path),
-                workdir.clone(),
-            ] {
-                sandbox.push(path.to_string_lossy().into_owned());
-            }
+            mounts.push(Mount::Overlay {
+                folder: workdir.clone(),
+                upper: crate::folder::upper(&ws.path),
+                work: crate::folder::work(&ws.path),
+            });
         } else {
-            bind(&mut sandbox, &workdir);
-            bind(&mut sandbox, &git_common_dir(&workdir)?);
+            mounts.push(Mount::Writable(workdir.clone()));
+            mounts.push(Mount::Writable(git_common_dir(&workdir)?));
         }
         for writable in &config.session.writable {
             let path = expand_home(writable)?;
             if path.exists() {
-                bind(&mut sandbox, &path);
+                mounts.push(Mount::Writable(path));
             }
         }
-        sandbox.extend([
-            "--ro-bind".into(),
-            "/usr/bin/git".into(),
-            real_git.to_string_lossy().into_owned(),
-        ]);
-        sandbox.extend(
-            [
-                "--setenv",
-                "LEGIONCTL_SESSION",
-                &id,
-                "--setenv",
-                "LEGIONCTL_TOKEN",
-                token,
-            ]
-            .map(String::from),
-        );
+        let mut env = vec![
+            ("LEGIONCTL_SESSION".to_string(), id.clone()),
+            ("LEGIONCTL_TOKEN".to_string(), token.to_string()),
+        ];
         if let Some(account) = account {
-            account_binds(&mut sandbox, account)?;
+            account_mounts(&mut mounts, &mut env, account)?;
         }
         if let Some(skills) = skills {
-            skill_binds(&mut sandbox, account, skills)?;
+            skill_mounts(&mut mounts, account, skills)?;
         }
-        sandbox.extend(["--chdir".into(), workdir.to_string_lossy().into_owned()]);
+
+        let sandbox = match image {
+            None => {
+                mounts.push(Mount::ReadOnly("/usr/bin/git".into(), real_git.clone()));
+                bwrap_sandbox(ws, &runtime, &config.session.hidden, &mounts, &env)?
+            }
+            Some(image) => docker_sandbox(&id, image, (&runtime, &workdir), mounts, &env)?,
+        };
         Ok(Launch {
-            scope: if config.session.scope {
+            scope: if config.session.scope && image.is_none() {
                 let unit = format!("--unit=legionctl-session-{id}");
                 ["systemd-run", "--user", "--scope", "--quiet", &unit, "--"]
                     .map(String::from)
@@ -735,6 +979,11 @@ impl Dossiers {
                 Vec::new()
             },
             sandbox,
+            inside: if image.is_some() {
+                Inside::Container
+            } else {
+                Inside::Host
+            },
             agent: command
                 .iter()
                 .map(|a| {
@@ -755,7 +1004,7 @@ impl Dossiers {
     /// The database read fails.
     pub fn sessions(&self) -> Result<Vec<SessionRecord>> {
         let mut stmt = self.db().prepare(
-            "SELECT id, agent, dossier, workdir, started, account FROM sessions ORDER BY started DESC",
+            "SELECT id, agent, dossier, workdir, started, account, inside FROM sessions ORDER BY started DESC",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(SessionRecord {
@@ -765,6 +1014,7 @@ impl Dossiers {
                 workdir: PathBuf::from(r.get::<_, String>(3)?),
                 started: r.get(4)?,
                 account: r.get(5)?,
+                inside: Inside::from_db(&r.get::<_, String>(6)?),
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -776,7 +1026,7 @@ impl Dossiers {
         let found = self
             .db()
             .query_row(
-                "SELECT id, agent, dossier, workdir, started, account FROM sessions WHERE id = ?1",
+                "SELECT id, agent, dossier, workdir, started, account, inside FROM sessions WHERE id = ?1",
                 [id],
                 |r| {
                     Ok(SessionRecord {
@@ -786,6 +1036,7 @@ impl Dossiers {
                         workdir: PathBuf::from(r.get::<_, String>(3)?),
                         started: r.get(4)?,
                         account: r.get(5)?,
+                        inside: Inside::from_db(&r.get::<_, String>(6)?),
                     })
                 },
             )

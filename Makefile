@@ -50,8 +50,18 @@ js-lint: ## Biome lint and format check, tsc type check of the GNOME Shell exten
 	bun run typecheck
 
 .PHONY: build
-build: ## build legionctl, legionctl-system, legionctl-operator and legionctl-app (release)
+build: static ## build legionctl, legionctl-system, legionctl-operator and legionctl-app (release)
 	cargo build --release --locked
+
+# the toolchain of the static client: the same rustc as the host's, from a mirror that needs no Docker Hub login
+RUST_IMAGE := public.ecr.aws/docker/library/rust:1.99-alpine
+
+.PHONY: static
+static: ## build the static legionctl (musl) that `workspace pack` puts into agent images, in rust:alpine (docker)
+	mkdir -p "$$HOME/.cargo/registry"
+	docker run --rm --user "$$(id -u):$$(id -g)" -e CARGO_HOME=/cargo -v "$$HOME/.cargo/registry:/cargo/registry" \
+	  -v "$(CURDIR):/src" -w /src -e CARGO_TARGET_DIR=/src/target/static $(RUST_IMAGE) \
+	  cargo build --release --locked -p legionctl --bin legionctl
 
 .PHONY: validate
 validate: ## check every profile's structure and ac/battery consistency through the operator (no hardware access)
@@ -59,7 +69,7 @@ validate: ## check every profile's structure and ac/battery consistency through 
 	cargo test -q --locked -p legionctl --test machine repo_profiles_are_valid
 
 .PHONY: test
-test: ## end-to-end and behavior tests (no hardware access); the CLI tests start the real operator
+test: static ## end-to-end and behavior tests (no hardware access); the CLI tests start the real operator
 	cargo build --workspace --bins --locked
 	cargo test --workspace --locked
 
@@ -89,6 +99,7 @@ install: ## install into DESTDIR; the PKGBUILD calls this (on this machine: `mak
 	install -Dm644 desktop/legionctl.desktop "$(DESTDIR)$(PREFIX)/share/applications/legionctl.desktop"
 	install -Dm755 target/release/legionctl-system "$(DESTDIR)$(LIBDIR)/legionctl-system"
 	install -Dm755 target/release/legionctl-operator "$(DESTDIR)$(LIBDIR)/legionctl-operator"
+	install -Dm755 target/static/release/legionctl "$(DESTDIR)$(LIBDIR)/legionctl-static"
 	install -Dm644 $(PROFILE) "$(DESTDIR)$(DATADIR)/profiles/$(notdir $(PROFILE))"
 	install -d "$(DESTDIR)$(DATADIR)" && cp -r integrations/agent-plugin "$(DESTDIR)$(DATADIR)/"
 	install -Dm644 systemd/legionctl-system.service "$(DESTDIR)$(UNITDIR)/legionctl-system.service"

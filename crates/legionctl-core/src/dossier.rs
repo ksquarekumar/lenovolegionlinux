@@ -78,6 +78,8 @@ const SCHEMA: &[&str] = &[
         turns   INTEGER NOT NULL DEFAULT 0,
         level   TEXT
      );",
+    // v9: where a session runs: host (a bwrap sandbox) or container (W5)
+    "ALTER TABLE sessions ADD COLUMN inside TEXT NOT NULL DEFAULT 'host';",
 ];
 
 /// Where a session works, for binding the next session there: the repository that contains `dir`, else `dir`.
@@ -367,18 +369,24 @@ impl Dossiers {
         if now - updated > self.stale_after() {
             return false;
         }
-        let scoped: Option<bool> = self
+        let scoped: Option<(bool, String)> = self
             .db
             .conn()
             .query_row(
-                "SELECT scoped FROM sessions WHERE id = ?1",
+                "SELECT scoped, inside FROM sessions WHERE id = ?1",
                 [session],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
             .ok()
             .flatten();
-        scoped != Some(true) || now - updated <= 60 || crate::session::scope_active(session)
+        match scoped {
+            Some((true, inside)) => {
+                now - updated <= 60
+                    || crate::session::active(session, crate::session::Inside::from_db(&inside))
+            }
+            _ => true,
+        }
     }
 
     /// Count a reply of `session` that ended with the workspace content `work`: the reply counts when the content

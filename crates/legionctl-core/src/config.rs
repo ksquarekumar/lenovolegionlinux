@@ -284,6 +284,19 @@ pub struct SessionConfig {
     pub skills: Option<Vec<String>>,
     /// What legionctl does by itself with sessions (S4, decided 2026-10-13); off by default.
     pub policy: SessionPolicy,
+    /// The agent image of a repository (`workspace pack`) for sessions in a container (W5).
+    pub container: ContainerConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerConfig {
+    /// The image a repository without its own image (no Dockerfile) starts from.
+    pub base: String,
+    /// npm packages of the agents and their ACP adapters, installed in the agent layer.
+    pub npm: Vec<String>,
+    /// A static `legionctl` (musl) for the image: the MCP server, the hook client and the git gate there.
+    pub client: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

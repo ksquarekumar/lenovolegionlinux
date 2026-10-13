@@ -422,6 +422,9 @@ operations! {
     workspace_merge / WorkspaceMerge = "workspace.merge", Workspace, WorkspaceIn => Lines;
     /// Remove the worktree; the branch and the dossier stay. Refuses uncommitted changes unless `--force`.
     workspace_close / WorkspaceClose = "workspace.close", Session, CloseIn => Lines;
+    /// Make the repository's agent image (`localhost/<repo>/legionctl-agent:latest`) for sessions `--in container`:
+    /// the repository's own image (else `session.container.base`) plus git, Node.js, the agents and a static legionctl.
+    workspace_pack / WorkspacePack = "workspace.pack", Workspace, PackIn => Lines;
     /// Whether ctx and legionctl are set up for Claude Code and Codex (skills, MCP servers).
     setup_check / SetupCheck = "setup.check", Read, Empty => SetupReport;
     /// Set up ctx and legionctl for Claude Code and Codex. Changes user-level config files only, with backups.

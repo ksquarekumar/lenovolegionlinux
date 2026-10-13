@@ -288,8 +288,40 @@ Processes (bwrap), containers and VMs (17) get the same layout: the operating di
 working directory, the dossier mounted at `<operating directory>/.agentworkspace`, nothing else writable. A
 container or VM for a dossier is recorded in `workspace.db` and reused when the dossier is opened again.
 
-`legionctl workspace pack <dossier> --as container|vm` builds a copy-on-write image (an OCI image with the
-operating directory and the dossier as layers, or a qcow2 overlay over a base VM image) together with the session
-spec (agent, tools, skills, MCP servers, policy; 14). `legionctl workspace run <dossier>` starts it with the same
-mounts, gates and accounting as a local session; changes come back only through the normal merge with approval.
-A packed workspace can move to another machine or run several copies in parallel from one base.
+### W5: containers and VMs (decided 2026-10-13/14: D5 and round 5)
+
+The agent's changes come back through bind mounts: the operating directory, the repository's `.git` and the dossier
+are mounted read-write at their own paths, so the agent writes the worktree directly and the gates (git gate, merge
+with approval) stay on the host. Headless runs and interactive sessions both can run inside (`--in container|vm`);
+the operator records where each session runs, and pause, unpause, stop and `session list` act on the container or VM
+instead of the systemd scope.
+
+`legionctl workspace pack <dossier> [--as container|vm]` makes the image of the dossier's repository:
+
+- Container: the repository's own image (I1 builds its Dockerfile; a repository without one starts from
+  `session.container.base`), plus one agent layer: git, Node.js and npm from the image's package manager (apt, apk,
+  dnf or pacman), the agents and their ACP adapters from npm (`session.container.npm`), and a static `legionctl`
+  (`session.container.client`; the package builds it for musl in `rust:<version>-alpine`) as the MCP server, the
+  hook client and the git gate (`/usr/bin/git` is the client; the real git moves to
+  `/usr/local/libexec/legionctl/git`). Tag: `legionctl-pack/<project>:<dossier>`.
+- VM: a qcow2 overlay over `session.vm.base` (a cloud image) per dossier; cloud-init installs the same agent layer.
+  The operating directory, `.git` and the dossier are shared with virtiofs at their own paths; the guest reaches the
+  operator through a QEMU user-network forward to the operator socket (`guestfwd` to the unix socket), so the guest
+  client uses a TCP address; the ACP adapter runs over the VM's serial port (headless) or the console (interactive).
+
+`session run|start --in container` starts `docker run` with: the session's user and group; a private tmpfs home with
+the agent's account folders (A1: login files written in at start, copied back at end) and `session.writable` paths;
+the runtime folder `legionctl/` (operator socket, session files); `LEGIONCTL_SESSION`, `LEGIONCTL_TOKEN`; the normal
+bridge network. A plain-folder workspace (an overlay in bwrap) cannot run in a container. GPU only on request per run.
+
+Parts: 1) container pack and headless runs; 2) interactive container sessions and resume; 3) VMs.
+
+Built (2026-10-14, parts 1 and 2): `workspace pack [--service <name>]` makes one image per repository (the agent
+layer does not depend on the dossier, since D5 mounts the work), `localhost/<repo>/legionctl-agent:latest`, as a job
+(resumed after a restart); `session run|start --in container`; the sessions table records `inside`, and pause,
+unpause, stop, `session list`, binding liveness and the idle freeze use the container. The client adds `-t` when it
+runs in a terminal. Not built yet: the gateway from a container (it listens on 127.0.0.1), GPU per run, part 3 (VMs).
+Test (e2e, docker): the repository's Dockerfile image gets the layer; a headless run and an interactive session
+through the real client commit into their workspaces on the host, the gate in the image refuses the push (an agent
+layer without the gate fails the test), the dossier is writable, the home is private, and a run without a pack says
+how to make one.

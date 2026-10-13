@@ -22,17 +22,22 @@ pub async fn run(
     stop: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<RunOutput> {
     let started = Instant::now();
-    let legionctl = crate::engine::which("legionctl")
-        .context("legionctl is not on PATH (the git gate is its binary)")?;
-    let gate = [
-        "--ro-bind".to_string(),
-        legionctl.display().to_string(),
-        "/usr/bin/git".into(),
-        "--setenv".into(),
-        "LEGIONCTL_REAL_GIT".into(),
-        launch.real_git.display().to_string(),
-    ];
-    let argv = [launch.scope, launch.sandbox, gate.to_vec(), launch.agent].concat();
+    // in a container, the image's /usr/bin/git is the gate already
+    let gate = if launch.inside == legionctl_core::session::Inside::Host {
+        let legionctl = crate::engine::which("legionctl")
+            .context("legionctl is not on PATH (the git gate is its binary)")?;
+        vec![
+            "--ro-bind".to_string(),
+            legionctl.display().to_string(),
+            "/usr/bin/git".into(),
+            "--setenv".into(),
+            "LEGIONCTL_REAL_GIT".into(),
+            launch.real_git.display().to_string(),
+        ]
+    } else {
+        Vec::new()
+    };
+    let argv = [launch.scope, launch.sandbox, gate, launch.agent].concat();
     // the JSON form of a stdio server: the argv as it is, no shell quoting
     let command =
         serde_json::json!({ "name": "agent", "command": argv[0], "args": argv[1..], "env": [] });

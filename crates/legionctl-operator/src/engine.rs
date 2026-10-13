@@ -26,7 +26,7 @@ use legionctl_api::{
     CachePurgeIn, CacheStat, CachedCall, EventRow, JobIdIn, Page, PageIn, Principal,
     SessionActivityIn,
 };
-use legionctl_api::{KnobHoldIn, KnobIn, UndoIn};
+use legionctl_api::{KnobHoldIn, KnobIn, PackIn, UndoIn};
 use legionctl_core::cache::Cache;
 use legionctl_core::config::{Dirs, Resolved, resolve};
 
@@ -240,20 +240,116 @@ pub(crate) fn which(program: &str) -> Option<PathBuf> {
 }
 
 /// `systemctl --user <verb>` on a session's scope (stop, freeze, thaw).
-fn scope_control(verb: &str, id: &str, done: &str) -> Result<Lines> {
+fn session_control(what: legionctl_core::session::Control, id: &str, done: &str) -> Result<Lines> {
     let session = dossiers()?.session(id)?;
-    let unit = format!("legionctl-session-{}.scope", session.id);
-    let out = Command::new("systemctl")
-        .args(["--user", verb, &unit])
-        .output()?;
-    anyhow::ensure!(
-        out.status.success(),
-        "{verb} {unit}: {}",
-        String::from_utf8_lossy(&out.stderr).trim()
-    );
+    legionctl_core::session::control(&session.id, session.inside, what)?;
     Ok(Lines {
         lines: vec![format!("session {} ({}) {done}", session.id, session.agent)],
     })
+}
+
+/// The agent layer of a repository's image (W5, note 18): git and, for the agents, Node.js from the image's own
+/// package manager; the agents and their adapters from npm; the static client as `legionctl` and as the git gate,
+/// with the real git kept for it.
+fn agent_layer(base: &str, npm: &[String]) -> String {
+    let node = if npm.is_empty() { "" } else { " nodejs npm" };
+    let mut text = format!(
+        "FROM {base}\n\
+         USER root\n\
+         RUN set -e; \\\n\
+         if command -v apt-get >/dev/null; then apt-get update && apt-get install -y --no-install-recommends git ca-certificates{node} && rm -rf /var/lib/apt/lists/*; \\\n\
+         elif command -v apk >/dev/null; then apk add --no-cache git ca-certificates{node}; \\\n\
+         elif command -v dnf >/dev/null; then dnf install -y git ca-certificates{node} && dnf clean all; \\\n\
+         elif command -v pacman >/dev/null; then pacman -Sy --noconfirm git ca-certificates{node} && pacman -Scc --noconfirm; \\\n\
+         else echo 'the image has none of apt-get, apk, dnf and pacman, so legionctl cannot add git' >&2; exit 1; fi\n"
+    );
+    if !npm.is_empty() {
+        text.push_str("RUN npm install -g --no-fund --no-audit ");
+        text.push_str(&npm.join(" "));
+        text.push('\n');
+    }
+    text.push_str(
+        "COPY legionctl /usr/local/bin/legionctl\n\
+         RUN mkdir -p /usr/local/libexec/legionctl && mv \"$(command -v git)\" /usr/local/libexec/legionctl/git \\\n\
+         && ln -s /usr/local/bin/legionctl /usr/bin/git\n\
+         ENV LEGIONCTL_REAL_GIT=/usr/local/libexec/legionctl/git\n\
+         ENTRYPOINT []\n",
+    );
+    text
+}
+
+/// Make the agent image of the repository that holds `dir`: its service's image (built with `images build`), else
+/// the configured base, plus the agent layer.
+fn pack(
+    dir: &Path,
+    service: Option<&str>,
+    container: &legionctl_core::config::ContainerConfig,
+) -> Result<Lines> {
+    let repo = place_of(dir);
+    let built: Vec<String> = legionctl_core::images::scan_repository(&repo)?
+        .services
+        .into_iter()
+        .filter(|(_, s)| s.build.is_some())
+        .map(|(name, _)| name)
+        .collect();
+    let chosen = match (service, built.as_slice()) {
+        (None, []) => None,
+        (Some(name), _) => {
+            anyhow::ensure!(
+                built.iter().any(|b| b == name),
+                "no service {name} with a Dockerfile; the repository builds {built:?}"
+            );
+            Some(name.to_string())
+        }
+        (None, [one]) => Some(one.clone()),
+        (None, many) => anyhow::bail!(
+            "the repository builds {many:?}: choose the one for the agent with --service <name>"
+        ),
+    };
+    let mut lines = Vec::new();
+    let base = match chosen {
+        Some(name) => {
+            lines.extend(build_images(&repo)?.lines);
+            let (project, tag) = legionctl_core::images::project(&repo);
+            legionctl_core::images::image(&project, &name, &tag)
+        }
+        None => container.base.clone(),
+    };
+    let context = legionctl_core::cache::default_path()
+        .with_file_name("pack")
+        .join(legionctl_core::images::project(&repo).0);
+    std::fs::create_dir_all(&context)?;
+    std::fs::copy(&container.client, context.join("legionctl")).with_context(|| {
+        format!(
+            "no static legionctl at {} (session.container.client): the package installs it; in a checkout, `make static`",
+            container.client
+        )
+    })?;
+    std::fs::write(
+        context.join("Dockerfile"),
+        agent_layer(&base, &container.npm),
+    )?;
+    let image = legionctl_core::session::agent_image(&repo);
+    let out = Command::new("docker")
+        .args(["buildx", "build", "--load", "-t", &image])
+        .arg(&context)
+        .output()
+        .context("running docker buildx")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "building {image}: {}",
+        String::from_utf8_lossy(&out.stderr)
+            .lines()
+            .rev()
+            .take(15)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    lines.push(format!("packed {image} from {base}"));
+    Ok(Lines { lines })
 }
 
 /// The CPU list of a core class: the P-cores, the E-cores or every online CPU.
@@ -682,6 +778,17 @@ impl Operator {
                     "images.build" => {
                         let repo = PathBuf::from(job.input["repo"].as_str().unwrap_or_default());
                         end_job(&db, job.id, &build_images(&repo))
+                    }
+                    "workspace.pack" => {
+                        let repo = PathBuf::from(job.input["repo"].as_str().unwrap_or_default());
+                        let out = config(Some(&ClientPath(repo.clone()))).and_then(|r| {
+                            pack(
+                                &repo,
+                                job.input["service"].as_str(),
+                                &r.config.session.container,
+                            )
+                        });
+                        end_job(&db, job.id, &out)
                     }
                     other => db.job_end(job.id, &Err(format!("no way to resume a {other} job"))),
                 };
@@ -1520,6 +1627,19 @@ impl Engine for Operator {
         out
     }
 
+    fn workspace_pack(&self, _: &Ctx, input: PackIn) -> Result<Lines> {
+        let repo = input.repo.get()?;
+        let container = config(Some(&input.repo))?.config.session.container;
+        let db = Db::open_default()?;
+        let job = db.job_begin(
+            "workspace.pack",
+            &serde_json::json!({"repo": repo, "service": input.service}),
+        )?;
+        let out = pack(repo, input.service.as_deref(), &container);
+        end_job(&db, job, &out)?;
+        out
+    }
+
     fn jobs_list(&self, _: &Ctx, input: PageIn) -> Result<Page<legionctl_api::Job>> {
         let (after, limit) = page_of(input.cursor.as_deref(), input.limit)?;
         Ok(page(Db::open_default()?.jobs_page(after, limit)?))
@@ -1911,6 +2031,7 @@ impl Engine for Operator {
             dir,
             headless: false,
             account: input.account.as_deref(),
+            inside: input.inside.into(),
         };
         let launch = store.start_session(&start, &resolved.config)?;
         Db::open_default()?.issue_token(&launch.id, &token)?;
@@ -1936,6 +2057,7 @@ impl Engine for Operator {
             dir,
             headless: true,
             account: input.account.as_deref(),
+            inside: input.inside.into(),
         };
         let launch = store.start_session(&start, &resolved.config)?;
         let db = Db::open_default()?;
@@ -1960,7 +2082,7 @@ impl Engine for Operator {
             .sessions()?
             .into_iter()
             .map(|session| {
-                let state = legionctl_core::session::scope_state(&session.id);
+                let state = legionctl_core::session::state(&session.id, session.inside);
                 SessionState {
                     state,
                     session: session.into_wire(),
@@ -1970,7 +2092,7 @@ impl Engine for Operator {
     }
 
     fn session_stop(&self, _: &Ctx, input: SessionIdIn) -> Result<Lines> {
-        scope_control("stop", &input.id, "stopped")
+        session_control(legionctl_core::session::Control::Stop, &input.id, "stopped")
     }
 
     fn session_activity(&self, _: &Ctx, input: SessionActivityIn) -> Result<Page<SessionExec>> {
@@ -1997,11 +2119,15 @@ impl Engine for Operator {
     }
 
     fn session_pause(&self, _: &Ctx, input: SessionIdIn) -> Result<Lines> {
-        scope_control("freeze", &input.id, "paused")
+        session_control(legionctl_core::session::Control::Pause, &input.id, "paused")
     }
 
     fn session_unpause(&self, _: &Ctx, input: SessionIdIn) -> Result<Lines> {
-        scope_control("thaw", &input.id, "running again")
+        session_control(
+            legionctl_core::session::Control::Unpause,
+            &input.id,
+            "running again",
+        )
     }
 
     fn session_resume(&self, _: &Ctx, input: SessionResumeIn) -> Result<Launch> {

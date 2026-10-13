@@ -1897,6 +1897,48 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "workspace.pack": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "The repository.",
+          "default": "."
+        },
+        "service": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The service whose image the agent layer goes on, when the repository builds more than one.",
+          "default": null
+        }
+      },
+      "title": "PackIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "setup.check": {
     "class": "read",
     "internal": false,
@@ -7599,6 +7641,22 @@
           ],
           "description": "An account profile (`agents accounts add`): its logins and transcripts instead of `~/.claude` and `~/.codex`.",
           "default": null
+        },
+        "in": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "host",
+              "description": "On this machine, in a bwrap sandbox."
+            },
+            {
+              "type": "string",
+              "const": "container",
+              "description": "In a container of the repository's agent image (`legionctl workspace pack`)."
+            }
+          ],
+          "description": "Where the session runs: host (a bwrap sandbox) or container (the repository's agent image from `legionctl\nworkspace pack`, with the workspace and the dossier mounted).",
+          "default": "host"
         }
       },
       "required": [
@@ -7625,7 +7683,22 @@
           "items": {
             "type": "string"
           },
-          "description": "`bwrap ...`: what the agent can write. The client adds the git gate (its own binary over `/usr/bin/git`)."
+          "description": "`bwrap ...` (the client adds the git gate: its own binary over `/usr/bin/git`), or `docker run ...` of the\nagent image, whose `/usr/bin/git` is the gate already."
+        },
+        "inside": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "host",
+              "description": "On this machine, in a bwrap sandbox."
+            },
+            {
+              "type": "string",
+              "const": "container",
+              "description": "In a container of the repository's agent image (`legionctl workspace pack`)."
+            }
+          ],
+          "description": "Where a session runs."
         },
         "agent": {
           "type": "array",
@@ -7656,6 +7729,7 @@
         "id",
         "scope",
         "sandbox",
+        "inside",
         "agent",
         "real_git",
         "workdir",
@@ -7707,6 +7781,22 @@
           ],
           "description": "An account profile (`agents accounts add`): its logins and transcripts instead of `~/.claude` and `~/.codex`.",
           "default": null
+        },
+        "in": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "host",
+              "description": "On this machine, in a bwrap sandbox."
+            },
+            {
+              "type": "string",
+              "const": "container",
+              "description": "In a container of the repository's agent image (`legionctl workspace pack`)."
+            }
+          ],
+          "description": "Where the session runs: host (a bwrap sandbox) or container (the repository's agent image from `legionctl\nworkspace pack`, with the workspace and the dossier mounted).",
+          "default": "host"
         }
       },
       "required": [
@@ -7789,6 +7879,21 @@
               "null"
             ]
           },
+          "inside": {
+            "description": "Where a session runs.",
+            "oneOf": [
+              {
+                "description": "On this machine, in a bwrap sandbox.",
+                "type": "string",
+                "const": "host"
+              },
+              {
+                "description": "In a container of the repository's agent image (`legionctl workspace pack`).",
+                "type": "string",
+                "const": "container"
+              }
+            ]
+          },
           "state": {
             "description": "The scope's state from systemd: active, inactive, failed, ...",
             "type": "string"
@@ -7800,6 +7905,7 @@
           "dossier",
           "workdir",
           "started_at",
+          "inside",
           "state"
         ]
       },
@@ -8036,7 +8142,22 @@
           "items": {
             "type": "string"
           },
-          "description": "`bwrap ...`: what the agent can write. The client adds the git gate (its own binary over `/usr/bin/git`)."
+          "description": "`bwrap ...` (the client adds the git gate: its own binary over `/usr/bin/git`), or `docker run ...` of the\nagent image, whose `/usr/bin/git` is the gate already."
+        },
+        "inside": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "host",
+              "description": "On this machine, in a bwrap sandbox."
+            },
+            {
+              "type": "string",
+              "const": "container",
+              "description": "In a container of the repository's agent image (`legionctl workspace pack`)."
+            }
+          ],
+          "description": "Where a session runs."
         },
         "agent": {
           "type": "array",
@@ -8067,6 +8188,7 @@
         "id",
         "scope",
         "sandbox",
+        "inside",
         "agent",
         "real_git",
         "workdir",

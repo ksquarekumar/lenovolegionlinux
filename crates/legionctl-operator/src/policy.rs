@@ -10,7 +10,7 @@ use anyhow::Result;
 use legionctl_core::config::{Dirs, resolve};
 use legionctl_core::db::{Db, EventFilter};
 use legionctl_core::dossier::Dossiers;
-use legionctl_core::session::scope_state;
+use legionctl_core::session::{Control, control, state};
 
 use crate::Ready;
 
@@ -74,7 +74,7 @@ fn freeze_idle() -> Result<Vec<(String, u32)>> {
     )?;
     let mut frozen = Vec::new();
     for session in Dossiers::open(&resolved.config.dossier)?.sessions()? {
-        if scope_state(&session.id) != "active" {
+        if state(&session.id, session.inside) != "active" {
             continue;
         }
         let filter = EventFilter {
@@ -100,22 +100,16 @@ fn freeze_idle() -> Result<Vec<(String, u32)>> {
         if after("session.freeze", "$.session")? || after("session.unpause", "$.input.id")? {
             continue;
         }
-        let unit = format!("legionctl-session-{}.scope", session.id);
-        let out = std::process::Command::new("systemctl")
-            .args(["--user", "freeze", &unit])
-            .output()?;
-        if out.status.success() {
-            db.record(
-                "legionctl",
-                "session.freeze",
-                &serde_json::json!({"session": session.id, "idle_minutes": minutes}),
-            )?;
-            frozen.push((session.id, minutes));
-        } else {
-            eprintln!(
-                "operator: {unit} not frozen: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
+        match control(&session.id, session.inside, Control::Pause) {
+            Ok(()) => {
+                db.record(
+                    "legionctl",
+                    "session.freeze",
+                    &serde_json::json!({"session": session.id, "idle_minutes": minutes}),
+                )?;
+                frozen.push((session.id, minutes));
+            }
+            Err(e) => eprintln!("operator: session {} not frozen: {e:#}", session.id),
         }
     }
     Ok(frozen)

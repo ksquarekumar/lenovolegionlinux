@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::wire::{
     Action, BenchResult, Binding, Capability, ConfigFile, ConfigLayer, DesktopGpu, DossierInfo,
-    EditMode, Event, EventRow, GpuMode, Knob, Lock, Output, PackageState, Reminder, Sample,
+    EditMode, Event, EventRow, GpuMode, Inside, Knob, Lock, Output, PackageState, Reminder, Sample,
     Scenario, SessionRecord, SkillInfo, Workspace, WorkspaceStatus,
 };
 use crate::{ClientPath, SessionId, StdinText};
@@ -66,6 +66,10 @@ pub struct LayerList {
     pub layers: Vec<ConfigLayer>,
     pub locked: Vec<String>,
     pub problems: Vec<String>,
+}
+
+fn on_host() -> Inside {
+    Inside::Host
 }
 
 fn here() -> ClientPath {
@@ -518,6 +522,10 @@ pub struct SessionStartIn {
     /// An account profile (`agents accounts add`): its logins and transcripts instead of `~/.claude` and `~/.codex`.
     #[serde(default)]
     pub account: Option<String>,
+    /// Where the session runs: host (a bwrap sandbox) or container (the repository's agent image from `legionctl
+    /// workspace pack`, with the workspace and the dossier mounted).
+    #[serde(default = "on_host", rename = "in")]
+    pub inside: Inside,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -539,6 +547,10 @@ pub struct SessionRunIn {
     /// An account profile (`agents accounts add`): its logins and transcripts instead of `~/.claude` and `~/.codex`.
     #[serde(default)]
     pub account: Option<String>,
+    /// Where the session runs: host (a bwrap sandbox) or container (the repository's agent image from `legionctl
+    /// workspace pack`, with the workspace and the dossier mounted).
+    #[serde(default = "on_host", rename = "in")]
+    pub inside: Inside,
 }
 
 /// What a headless run gave back.
@@ -906,6 +918,16 @@ pub struct ServiceState {
     pub state: String,
     /// healthy, unhealthy or starting, when the service has a health check.
     pub health: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PackIn {
+    /// The repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+    /// The service whose image the agent layer goes on, when the repository builds more than one.
+    #[serde(default)]
+    pub service: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

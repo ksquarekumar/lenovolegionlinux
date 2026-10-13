@@ -124,6 +124,14 @@
     // offload_headless: stop headless runs while memory is under pressure (the load.busy limits) and go on with
     // them in their sessions when it eases (`legionctl jobs list` shows them offloaded).
     "policy": { "idle_freeze_minutes": 0, "offload_headless": false },
+    // Sessions in a container (`--in container`) run the repository's agent image, made by `legionctl workspace
+    // pack`: the repository's own image (else `base`) plus git, Node.js, these npm packages (the agents and their ACP
+    // adapters) and `client`, a static legionctl (the package installs it) as MCP server, hook client and git gate.
+    "container": {
+      "base": "public.ecr.aws/docker/library/debian:trixie-slim",
+      "npm": ["@anthropic-ai/claude-code", "@zed-industries/claude-code-acp", "@openai/codex", "@zed-industries/codex-acp"],
+      "client": "/usr/lib/legionctl/legionctl-static"
+    },
     // Writable besides the workspace, the dossier, the repository's .git and the runtime folder (/tmp is private to
     // the session): the agents' own state.
     "writable": ["~/.claude", "~/.claude.json", "~/.codex", "~/.cache"],

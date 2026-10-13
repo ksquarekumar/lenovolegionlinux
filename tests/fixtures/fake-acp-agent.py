@@ -8,6 +8,7 @@ test that stops the operator in the middle of one).
 """
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -64,6 +65,7 @@ def prompt(params):
         f"permission: {outcome.get('optionId', outcome.get('outcome'))}",
         "COMMIT_OK" if committed else "COMMIT_FAILED",
         "PUSH_REFUSED" if (not pushed and "gates.git.deny" in push_output) else "PUSH_NOT_REFUSED",
+        "inside: " + ("container" if os.path.exists("/.dockerenv") else "host"),
     ]
     send({
         "jsonrpc": "2.0",

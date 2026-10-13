@@ -10,7 +10,7 @@ install=legionctl.install
 license=("MIT")
 depends=("systemd" "systemd-libs" "dbus" "polkit" "power-profiles-daemon" "cpupower" "nvidia-utils" "bubblewrap"
   "libxkbcommon" "libxkbcommon-x11" "libxcb" "wayland" "vulkan-icd-loader" "fontconfig")
-makedepends=("git" "cargo" "clang")
+makedepends=("git" "cargo" "clang" "docker")
 optdepends=(
   "gnome-shell: the legionctl-osd OSD extension"
   "acpi_call-dkms: firmware fan RPM through Lenovo WMI"

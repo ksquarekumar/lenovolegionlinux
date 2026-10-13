@@ -183,19 +183,28 @@ fn trace() -> Result<()> {
     }))
 }
 
-/// `legionctl session start`: run the prepared session in this terminal, with this binary as the git gate.
-fn start_session(launch: Launch) -> Result<()> {
-    let exe = std::env::current_exe()?.to_string_lossy().into_owned();
-    let real_git = launch.real_git.to_string_lossy().into_owned();
-    let gate = [
-        "--ro-bind".into(),
-        exe,
-        "/usr/bin/git".into(),
-        "--setenv".into(),
-        "LEGIONCTL_REAL_GIT".into(),
-        real_git,
-    ];
-    let argv = [launch.scope, launch.sandbox, gate.to_vec(), launch.agent].concat();
+/// `legionctl session start`: run the prepared session in this terminal, with this binary as the git gate (a
+/// container's image has its own).
+fn start_session(mut launch: Launch) -> Result<()> {
+    // a container gets a terminal when there is one: docker refuses -t without it
+    if launch.inside == legionctl_api::Inside::Container
+        && std::io::IsTerminal::is_terminal(&std::io::stdin())
+    {
+        launch.sandbox.insert(2, "-t".into());
+    }
+    let gate = if launch.inside == legionctl_api::Inside::Host {
+        vec![
+            "--ro-bind".into(),
+            std::env::current_exe()?.to_string_lossy().into_owned(),
+            "/usr/bin/git".into(),
+            "--setenv".into(),
+            "LEGIONCTL_REAL_GIT".into(),
+            launch.real_git.to_string_lossy().into_owned(),
+        ]
+    } else {
+        Vec::new()
+    };
+    let argv = [launch.scope, launch.sandbox, gate, launch.agent].concat();
     for line in &launch.lines {
         eprintln!("legionctl: {line}");
     }
