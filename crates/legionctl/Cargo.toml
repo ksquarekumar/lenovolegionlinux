@@ -7,14 +7,11 @@ version.workspace = true
 publish.workspace = true
 
 [dependencies]
-legionctl-api = { path = "../legionctl-api" }
+legionctl-api = { path = "../legionctl-api", features = ["client"] }
 legionctl-machine = { path = "../legionctl-machine" }
 anyhow.workspace = true
 serde_json.workspace = true
 clap = { version = "4.6.7", features = ["string"] }
-hyper = { version = "1.12.0", features = ["client", "http1"] }
-hyper-util = { version = "0.1.21", features = ["tokio"] }
-http-body-util = "0.1.5"
 ratatui = "0.30.2"
 rmcp = { version = "3.5.1", features = ["server", "transport-io"] }
 tokio = { version = "1.53.2", features = ["macros", "net", "rt-multi-thread", "io-std"] }

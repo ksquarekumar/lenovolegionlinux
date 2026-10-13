@@ -13,6 +13,14 @@ serde_json.workspace = true
 schemars.workspace = true
 legionctl-core = { path = "../legionctl-core" }
 legionctl-machine = { path = "../legionctl-machine" }
+hyper = { version = "1.12.0", features = ["client", "http1"], optional = true }
+hyper-util = { version = "0.1.21", features = ["tokio"], optional = true }
+http-body-util = { version = "0.1.5", optional = true }
+tokio = { version = "1.53.2", features = ["net", "rt"], optional = true }
+
+[features]
+# the operator client, for the CLI and the app
+client = ["dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio"]
 
 [lints]
 workspace = true

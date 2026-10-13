@@ -1134,9 +1134,6 @@ dependencies = [
  "anyhow",
  "clap",
  "futures-util",
- "http-body-util",
- "hyper",
- "hyper-util",
  "legionctl-api",
  "legionctl-machine",
  "ratatui",
@@ -1151,11 +1148,15 @@ name = "legionctl-api"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "legionctl-core",
  "legionctl-machine",
  "schemars",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

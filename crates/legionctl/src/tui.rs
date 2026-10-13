@@ -12,7 +12,7 @@ use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Gauge, Paragraph, Row, Table};
 
-use crate::client::Client;
+use legionctl_api::client::Client;
 
 fn level_color(level: Level) -> Color {
     match level {

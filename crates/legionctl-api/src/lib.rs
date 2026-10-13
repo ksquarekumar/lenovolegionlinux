@@ -6,6 +6,8 @@
 //!   compile), and [`dispatch`], which routes a call by name;
 //! - one marker type per operation in [`op`], for typed client calls, and [`render`] for the text a CLI prints.
 
+#[cfg(feature = "client")]
+pub mod client;
 mod io;
 mod render;
 

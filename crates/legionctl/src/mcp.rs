@@ -14,7 +14,7 @@ use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use serde_json::Value;
 
 use crate::cli::fill_client_fields;
-use crate::client::Client;
+use legionctl_api::client::Client;
 
 fn tool_name(op: &OpInfo) -> String {
     op.name.replace(['.', '-'], "_")

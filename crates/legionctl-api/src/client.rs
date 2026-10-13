@@ -2,10 +2,10 @@
 
 use std::path::PathBuf;
 
+use crate::{ACTOR_HEADER, Op, SOCKET};
 use anyhow::{Context, Result, bail};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
-use legionctl_api::{ACTOR_HEADER, Op, SOCKET};
 use serde_json::Value;
 
 pub struct Client {
@@ -15,6 +15,8 @@ pub struct Client {
 }
 
 impl Client {
+    /// # Errors
+    /// `XDG_RUNTIME_DIR` is not set.
     pub fn new(actor: &'static str) -> Result<Client> {
         let runtime = std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?;
         Ok(Client {
@@ -23,7 +25,10 @@ impl Client {
         })
     }
 
-    /// Run the operation `name`; an error carries the operator's message.
+    /// Run the operation `name`.
+    ///
+    /// # Errors
+    /// The operator does not answer, or refuses: the error carries its message.
     pub async fn call_value(&self, name: &str, input: &Value) -> Result<Value> {
         let stream = tokio::net::UnixStream::connect(&self.socket)
             .await
@@ -52,6 +57,10 @@ impl Client {
         Ok(body)
     }
 
+    /// Run the typed operation `O`.
+    ///
+    /// # Errors
+    /// As [`Client::call_value`], or the answer does not fit `O::Out`.
     pub async fn call<O: Op>(&self, input: &O::In) -> Result<O::Out> {
         let output = self
             .call_value(O::NAME, &serde_json::to_value(input)?)

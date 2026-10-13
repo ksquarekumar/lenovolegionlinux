@@ -3,7 +3,6 @@
 //! process.
 
 mod cli;
-mod client;
 mod hook;
 mod mcp;
 mod tui;
@@ -14,7 +13,7 @@ use anyhow::{Context, Result, ensure};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use legionctl_api::{ClientPath, Cores, EventsIn, GateIn, Launch, RunEnvIn, RunGpu, op};
 
-use crate::client::Client;
+use legionctl_api::client::Client;
 
 fn client_only() -> Vec<Command> {
     vec![

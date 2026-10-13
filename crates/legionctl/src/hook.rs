@@ -17,7 +17,7 @@ use legionctl_api::{
 };
 use serde_json::{Value, json};
 
-use crate::client::Client;
+use legionctl_api::client::Client;
 
 pub const EVENTS: [&str; 5] = ["session-start", "prompt", "pre-tool", "stop", "session-end"];
 
