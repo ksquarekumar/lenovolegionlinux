@@ -1235,7 +1235,7 @@ mod operator_and_daemon {
         assert_eq!(apply["payload"]["lines"], serde_json::json!(lines));
 
         // the knob sums up every CPU; its history finds the per-CPU write through the policy* path
-        let epp = json(&["inspect", "cpu.epp"]);
+        let epp = json(&["knobs", "show", "cpu.epp"]);
         assert_eq!(epp["knob"]["value"], "performance", "{epp}");
         assert_eq!(
             epp["knob"]["desired"], "balance_power",
@@ -1249,7 +1249,7 @@ mod operator_and_daemon {
             "{epp}"
         );
         // a knob the daemon did not touch has no history from that apply
-        let untouched = json(&["inspect", "firmware.ppt_pl1_spl"]);
+        let untouched = json(&["knobs", "show", "firmware.ppt_pl1_spl"]);
         assert!(
             untouched["history"]["items"]
                 .as_array()
@@ -1634,6 +1634,90 @@ mod operator_and_daemon {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         };
         assert!(!status.success(), "{status}");
+    }
+
+    /// Undo (D1, decided 2026-10-13: a user override layer): `undo <event>` turns the writes of a machine change back
+    /// to what they replaced and holds them there; the policy leaves held files alone (an apply says so) until
+    /// `knobs release`, which gives them back to the policy. Real daemon on the private bus, polkit allows.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn undo_holds_what_a_change_replaced_until_released() {
+        let m = Machine::new("undo");
+        // on battery, so that applying the AC policy changes the CPUs' EPP
+        m.set("/sys/class/power_supply/ADP0/online", "0");
+        let (stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "undo");
+        let epp0 = "/sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference";
+        let before = m.file(epp0);
+        op.ok(&["events"]);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        op.ok(&["power", "apply", "--source", "ac"]);
+        let applied = m.file(epp0);
+        assert_ne!(applied, before, "the AC policy changes the EPP");
+        let json = |args: &[&str]| -> Value {
+            serde_json::from_str(&op.ok(&[args, &["--json"]].concat())).unwrap()
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let event = loop {
+            let found = json(&["events"])["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["kind"] == "machine.apply-power")
+                .cloned();
+            if let Some(e) = found {
+                break e;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the change was not recorded"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        };
+        assert!(
+            event["payload"]["lines"]
+                .to_string()
+                .contains(&format!("(was {before})")),
+            "a write says what it replaced: {event}"
+        );
+
+        op.ok(&["undo", &event["id"].to_string()]);
+        assert_eq!(m.file(epp0), before, "undone");
+        assert_eq!(
+            json(&["knobs", "show", "cpu.epp"])["knob"]["held"],
+            before.as_str()
+        );
+        let again = op.ok(&["power", "apply", "--source", "ac"]);
+        assert!(again.contains("is held at"), "{again}");
+        assert_eq!(m.file(epp0), before, "the policy leaves a held file alone");
+
+        op.ok(&["knobs", "release", "cpu.epp"]);
+        let knob = json(&["knobs", "show", "cpu.epp"])["knob"].clone();
+        assert_eq!(knob["held"], Value::Null);
+        assert_eq!(
+            m.file(epp0),
+            knob["desired"].as_str().unwrap(),
+            "released: the policy of the current power source (battery) takes it again"
+        );
+
+        // the daemon writes as root: a path that is no knob and no file of the policy is refused
+        let refused = zbus::Proxy::new(
+            &stand_ins,
+            "org.legionctl.System1",
+            "/org/legionctl/System1",
+            "org.legionctl.System1",
+        )
+        .await
+        .unwrap()
+        .call::<_, _, Vec<String>>(
+            "Hold",
+            &(std::collections::BTreeMap::from([(
+                "/etc/passwd".to_string(),
+                "x".to_string(),
+            )]),),
+        )
+        .await
+        .unwrap_err();
+        assert!(refused.to_string().contains("neither a knob"), "{refused}");
     }
 
     /// The D-Bus contract is reviewed: the running daemon's interface is `dbus/org.legionctl.System1.xml`, word for

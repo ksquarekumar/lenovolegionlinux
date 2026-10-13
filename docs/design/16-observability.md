@@ -18,8 +18,8 @@ app and MCP. An agent can diagnose the machine with the same tools as a person.
 
 | Operation | Shows |
 | --- | --- |
-| `legionctl knobs` | catalog of every knob: path, type, firmware min/max, current value, writable, policy (enforce / follow / observe) |
-| `legionctl inspect <knob>` | value, desired value, the configset layer that set it ("because" chain), last writer from the ledger (legionctl, firmware, another process), write history |
+| `legionctl knobs list` | catalog of every knob: path, type, firmware min/max, current value, writable, policy (enforce / follow / observe) |
+| `legionctl knobs show <knob>` | value, desired value, the configset layer that set it ("because" chain), last writer from the ledger (legionctl, firmware, another process), write history |
 | `legionctl trace` | live stream of the event log (`GET /v1/events`, server-sent events with Durable Streams semantics: `offset=<id>` or `now`, catch-up then live, `Last-Event-ID` to go on; for the user token only): machine daemon changes, Fn keys, operator audit, agent tool calls |
 | `legionctl monitor` | telemetry ring: package/GPU power, temperatures, clocks, fan RPM, PSI, throttle reasons, run-queue latency (1–10 Hz) |
 | `legionctl events [--since]` | the event log of both engines, with actor and payload |
@@ -67,6 +67,13 @@ lines; checks as data with fix operations come with `approve` (M3g).
 
 - `legionctl plan` shows the exact writes a change makes; `apply` refuses values outside firmware min/max.
 - `legionctl undo <event-id>` applies the recorded inverse of a change from the event log.
+  Built (2026-10-14, D1 decided 2026-10-13: a user override layer): each write the daemon does is the line
+  `wrote <path>: <new> (was <old>)`; `legionctl undo <event-id>` holds each written file at what it replaced
+  (`Hold` on D-Bus, polkit `org.legionctl.knobs.hold`), and the daemon's plans leave held files alone (a plan says
+  `<path> is held at ...`) until `legionctl knobs release <knob>`, which gives them back to the policy of the current
+  power source. `knobs hold <knob> <value>` holds one directly (within its choices or range). Only knobs and files the
+  policy itself writes can be held: the daemon writes them as root. Holds live in `system.db` across boots;
+  `knobs list` and `knobs show` (were `knobs` and `inspect`) show them.
 - `legionctl bench <scenario>`: repeatable workloads (CPU, GPU with gpu-burn, mixed) with telemetry captured and
   stored; `bench compare` shows two runs side by side (for example two scx modes, two power limits).
   Built (2026-10-13, M3d): `bench run cpu|gpu|mixed --seconds N [--label L]` runs stress-ng

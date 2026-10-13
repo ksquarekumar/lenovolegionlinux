@@ -600,6 +600,7 @@ wire! {
         max: Option<String>,
         choices: Vec<String>,
         policy: KnobPolicy,
+        held: Option<String>,
     }
 
     struct Pressure from machine::load::Pressure {

@@ -24,6 +24,16 @@
     </defaults>
   </action>
 
+  <action id="org.legionctl.knobs.hold">
+    <description>Hold a machine setting at a value, or release it</description>
+    <message>Authentication is required to hold or release a machine setting</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
   <action id="org.legionctl.cleanup">
     <description>Disable conflicting services and unload conflicting kernel modules</description>
     <message>Authentication is required to disable conflicting services and modules</message>

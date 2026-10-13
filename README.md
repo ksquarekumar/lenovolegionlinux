@@ -42,8 +42,8 @@ gnome-extensions enable legionctl-osd@legionctl    # takes effect at the next lo
 legionctl-app                     # the desktop app: glance, policy preview, GPU wiring, health, bench
 legionctl status                  # power, mode, CPU, limits, GPU wiring, units, modules, load (fans and throttle: root)
 legionctl doctor                  # drift, conflicts, kernel modules and DKMS, NTFS, GPU placement, failed units, OSD, agent setup
-legionctl knobs                   # every knob: value, what the profile wants now, firmware range, policy
-legionctl inspect cpu.epp         # one knob and the events that changed it
+legionctl knobs list              # every knob: value, what the profile wants now, firmware range, policy
+legionctl knobs show cpu.epp      # one knob and the events that changed it
 legionctl record ~/rec-bios       # the files legionctl reads, the profile and machine events: a bug report or fixture
 legionctl replay ~/rec-bios       # what the daemon and doctor decide on that recording
 legionctl bench run cpu --seconds 30 --label pl1-90   # stress-ng/gpu-burn with telemetry; bench compare <earlier> <later>

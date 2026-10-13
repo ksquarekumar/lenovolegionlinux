@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ledger::Key;
 use crate::policy::Machine;
+use crate::policy::Step;
 use crate::profile::{Follow, ModePolicy, text};
 
 const FIRMWARE_ATTRIBUTES: &str = "/sys/class/firmware-attributes/lenovo-wmi-other-0/attributes";
@@ -37,6 +38,8 @@ pub struct Knob {
     pub max: Option<String>,
     pub choices: Vec<String>,
     pub policy: KnobPolicy,
+    /// The value the user holds it at (`knobs hold`, `undo`); the policy leaves it alone until released.
+    pub held: Option<String>,
 }
 
 impl Knob {
@@ -55,6 +58,7 @@ impl Knob {
             max: None,
             choices: Vec::new(),
             policy,
+            held: None,
         }
     }
 
@@ -252,7 +256,102 @@ pub fn catalog(m: &Machine) -> Vec<Knob> {
             ),
         );
     }
+    let holds = m.ledger.holds();
+    for knob in &mut knobs {
+        // a hold on the knob's path, or on one CPU's file of a per-CPU knob
+        knob.held = holds
+            .iter()
+            .find(|(path, _)| crate::policy::held_by(&knob.path, path))
+            .map(|(_, value)| value.clone());
+    }
     knobs
+}
+
+/// Hold each path (a knob's path, or one of the files of a per-CPU knob) at its value against the policy (D1): the
+/// writes now, then the holds. A value outside the knob's choices or range is refused.
+///
+/// # Errors
+/// A path is no knob of this machine, or a value is out of range.
+pub fn hold_plan(
+    m: &Machine,
+    values: &std::collections::BTreeMap<String, String>,
+) -> anyhow::Result<Vec<Step>> {
+    let knobs = catalog(m);
+    // besides the knobs, the files the policy itself writes for either power source: only these may be held, since
+    // the daemon writes them as root
+    let mut policy_files = std::collections::BTreeSet::new();
+    let all = crate::policy::Options {
+        force: true,
+        ..crate::policy::Options::default()
+    };
+    for source in [crate::policy::Source::Ac, crate::policy::Source::Battery] {
+        for step in m.apply(Some(source), all)?.1 {
+            if let Step::Write { path, .. } = step {
+                policy_files.insert(path);
+            }
+        }
+    }
+    let mut steps = Vec::new();
+    for (path, value) in values {
+        let Some(knob) = knobs.iter().find(|k| crate::policy::held_by(&k.path, path)) else {
+            anyhow::ensure!(
+                policy_files.contains(path),
+                "{path} is neither a knob of this machine nor a file its policy writes (see legionctl knobs list)"
+            );
+            steps.push(Step::Write {
+                path: path.clone(),
+                value: value.clone(),
+            });
+            steps.push(Step::Hold {
+                path: path.clone(),
+                value: Some(value.clone()),
+            });
+            continue;
+        };
+        anyhow::ensure!(
+            knob.choices.is_empty() || knob.choices.contains(value),
+            "{}: {value} is not one of {}",
+            knob.id,
+            knob.choices.join(", ")
+        );
+        let number = value.parse::<f64>().ok();
+        for (bound, below) in [(&knob.min, true), (&knob.max, false)] {
+            if let (Some(bound), Some(n)) =
+                (bound.as_ref().and_then(|b| b.parse::<f64>().ok()), number)
+            {
+                anyhow::ensure!(
+                    if below { n >= bound } else { n <= bound },
+                    "{}: {value} is outside {}..{}",
+                    knob.id,
+                    knob.min.as_deref().unwrap_or("?"),
+                    knob.max.as_deref().unwrap_or("?")
+                );
+            }
+        }
+        // a per-CPU knob: each CPU policy's file
+        if let Some((head, tail)) = path.split_once('*') {
+            for policy in m.root.children(
+                head.trim_end_matches("policy").trim_end_matches('/'),
+                "policy",
+            ) {
+                let file = format!("{}{}", policy.display(), tail);
+                steps.push(Step::Write {
+                    path: file,
+                    value: value.clone(),
+                });
+            }
+        } else {
+            steps.push(Step::Write {
+                path: path.clone(),
+                value: value.clone(),
+            });
+        }
+        steps.push(Step::Hold {
+            path: path.clone(),
+            value: Some(value.clone()),
+        });
+    }
+    Ok(steps)
 }
 
 /// The knob `id` (or its path), if this machine has it.

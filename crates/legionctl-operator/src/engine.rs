@@ -26,6 +26,7 @@ use legionctl_api::{
     CachePurgeIn, CacheStat, CachedCall, EventRow, JobIdIn, Page, PageIn, Principal,
     SessionActivityIn,
 };
+use legionctl_api::{KnobHoldIn, KnobIn, UndoIn};
 use legionctl_core::cache::Cache;
 use legionctl_core::config::{Dirs, Resolved, resolve};
 
@@ -178,6 +179,19 @@ fn end_job<T: serde::Serialize>(db: &Db, job: i64, out: &Result<T>) -> Result<()
         Err(e) => Err(format!("{e:#}")),
     };
     db.job_end(job, &outcome)
+}
+
+/// The path of the knob `knob` (an id or a path) on this machine.
+fn knob_path(profile: Option<&ClientPath>, knob: &str) -> Result<String> {
+    let plan = Plan::load(path(profile)?)?;
+    Ok(knobs::find(&plan.machine(), knob)
+        .ok_or_else(|| {
+            coded(
+                Code::NotFound,
+                format!("no knob {knob} on this machine (see legionctl knobs list)"),
+            )
+        })?
+        .path)
 }
 
 /// The event id a page cursor stands for (0 without one), and the page length.
@@ -1805,11 +1819,58 @@ impl Engine for Operator {
         })
     }
 
-    fn knobs(&self, _: &Ctx, input: ProfileIn) -> Result<Knobs> {
+    fn knobs_list(&self, _: &Ctx, input: ProfileIn) -> Result<Knobs> {
         Ok(knobs::catalog(&Plan::load(path(input.profile.as_ref())?)?.machine()).into_wire())
     }
 
-    fn inspect(&self, _: &Ctx, input: InspectIn) -> Result<KnobDetail> {
+    fn knobs_hold(&self, _: &Ctx, input: KnobHoldIn) -> Result<Changes> {
+        let path = knob_path(input.profile.as_ref(), &input.knob)?;
+        let values = std::collections::BTreeMap::from([(path, input.value)]);
+        Ok(Changes {
+            lines: self.system(async move |p| p.hold(values).await)?,
+            dry_run: false,
+        })
+    }
+
+    fn knobs_release(&self, _: &Ctx, input: KnobIn) -> Result<Changes> {
+        let path = knob_path(input.profile.as_ref(), &input.knob)?;
+        Ok(Changes {
+            lines: self.system(async move |p| p.release(&path).await)?,
+            dry_run: false,
+        })
+    }
+
+    fn undo(&self, _: &Ctx, input: UndoIn) -> Result<Changes> {
+        let event = Db::open_default()?.event(input.event)?.ok_or_else(|| {
+            coded(
+                Code::NotFound,
+                format!("no event {}; see legionctl events", input.event),
+            )
+        })?;
+        let values: std::collections::BTreeMap<String, String> = event.payload["lines"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|l| legionctl_machine::policy::parse_write(l.as_str()?))
+            .filter(|(_, _, before)| !before.is_empty())
+            .map(|(path, _, before)| (path, before))
+            .collect();
+        if values.is_empty() {
+            return Err(coded(
+                Code::InvalidInput,
+                format!(
+                    "event {} ({}) has no writes to turn back",
+                    input.event, event.kind
+                ),
+            ));
+        }
+        Ok(Changes {
+            lines: self.system(async move |p| p.hold(values).await)?,
+            dry_run: false,
+        })
+    }
+
+    fn knobs_show(&self, _: &Ctx, input: InspectIn) -> Result<KnobDetail> {
         let plan = Plan::load(path(input.profile.as_ref())?)?;
         let knob = knobs::find(&plan.machine(), &input.knob).with_context(|| {
             format!(

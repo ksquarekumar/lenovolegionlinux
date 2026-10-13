@@ -1123,3 +1123,27 @@ pub struct JobIdIn {
     /// Job id (`jobs list`).
     pub id: i64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct KnobHoldIn {
+    /// Knob id (`cpu.epp`, `firmware.ppt_pl1_spl`, ...) or its path.
+    pub knob: String,
+    /// The value to hold it at; within the knob's choices or range (`knobs show`).
+    pub value: String,
+    /// Profile (JSONC); default: the installed one.
+    pub profile: Option<ClientPath>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct KnobIn {
+    /// Knob id (`cpu.epp`, `firmware.ppt_pl1_spl`, ...) or its path.
+    pub knob: String,
+    /// Profile (JSONC); default: the installed one.
+    pub profile: Option<ClientPath>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UndoIn {
+    /// The event of the change (`events`): a machine change with writes (`machine.apply-power`, ...).
+    pub event: i64,
+}

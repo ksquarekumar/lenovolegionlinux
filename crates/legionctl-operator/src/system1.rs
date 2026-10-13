@@ -10,6 +10,11 @@ pub trait System1 {
     fn set_primary_gpu(&self, choice: &str) -> zbus::Result<Vec<String>>;
     fn cleanup(&self, unload_modules: bool) -> zbus::Result<Vec<String>>;
     fn reboot_windows(&self) -> zbus::Result<Vec<String>>;
+    /// Hold knobs at values against the policy (path -> value).
+    fn hold(&self, values: std::collections::BTreeMap<String, String>)
+    -> zbus::Result<Vec<String>>;
+    /// Release a held knob; the policy takes it again.
+    fn release(&self, path: &str) -> zbus::Result<Vec<String>>;
     /// The hash of the interface the daemon was built from (`dbus/org.legionctl.System1.xml`).
     #[zbus(property)]
     fn version(&self) -> zbus::Result<String>;

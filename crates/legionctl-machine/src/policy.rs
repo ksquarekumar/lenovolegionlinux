@@ -44,6 +44,11 @@ pub enum Step {
         key: Key,
         value: Option<String>,
     },
+    /// The user's hold on a path (D1); `None` releases it.
+    Hold {
+        path: String,
+        value: Option<String>,
+    },
     Info(String),
     Warn(String),
 }
@@ -308,7 +313,24 @@ impl Machine<'_> {
         Ok(())
     }
 
-    /// Plan the policy for `source` (`None`: the current power source).
+    /// The plan with each write to a path the user holds replaced by a note (D1: a hold pauses the policy there).
+    fn without_held(&self, steps: Vec<Step>) -> Vec<Step> {
+        let holds = self.ledger.holds();
+        steps
+            .into_iter()
+            .map(|step| match &step {
+                Step::Write { path, .. } => match holds.iter().find(|(p, _)| held_by(p, path)) {
+                    Some((_, value)) => {
+                        Step::Info(format!("{path} is held at {} by the user", quoted(value)))
+                    }
+                    None => step,
+                },
+                _ => step,
+            })
+            .collect()
+    }
+
+    /// Plan the policy for `source` (`None`: the current power source); the user's holds stay as they are.
     ///
     /// # Errors
     /// The machine is not supported (see [`Machine::require_supported_machine`]).
@@ -373,7 +395,7 @@ impl Machine<'_> {
                 self.nvidia(&mut steps, policy);
             }
         }
-        Ok((source, steps))
+        Ok((source, self.without_held(steps)))
     }
 
     /// Plan the reaction to a `platform_profile` change: our own write is ignored, anything else is an Fn+Q choice.
@@ -470,6 +492,34 @@ pub fn describe(step: &Step) -> Option<String> {
         Step::Info(text) => Some(text.clone()),
         Step::Warn(text) => Some(format!("warning: {text}")),
         Step::Record { .. } => None,
+        Step::Hold {
+            path,
+            value: Some(v),
+        } => Some(format!("would hold {path} at {}", quoted(v))),
+        Step::Hold { path, value: None } => Some(format!("would release {path}")),
+    }
+}
+
+/// A write that `undo` can turn back: the file, what it wrote, and what it replaced.
+#[must_use]
+pub fn parse_write(line: &str) -> Option<(String, String, String)> {
+    let rest = line.strip_prefix("wrote ")?;
+    let (path, rest) = rest.split_once(": ")?;
+    let (value, before) = rest.strip_suffix(')')?.rsplit_once(" (was ")?;
+    Some((path.into(), value.into(), before.into()))
+}
+
+/// Whether `path` is one of the files that a hold on `pattern` keeps (a `*` stands for one CPU policy folder).
+#[must_use]
+pub fn held_by(pattern: &str, path: &str) -> bool {
+    match pattern.split_once('*') {
+        Some((head, tail)) => {
+            path.len() >= head.len() + tail.len()
+                && path.starts_with(head)
+                && path.ends_with(tail)
+                && !path[head.len()..path.len() - tail.len()].contains('/')
+        }
+        None => pattern == path,
     }
 }
 
@@ -479,11 +529,13 @@ pub fn execute(root: &SysRoot, ledger: &Ledger, steps: &[Step]) -> Vec<String> {
     for step in steps {
         match step {
             Step::Write { path, value } => {
+                let before = root.read(path).unwrap_or_default();
                 if let Err(e) = std::fs::write(root.path(path), format!("{value}\n")) {
                     out.push(format!("warning: path is not writable: {path} ({e})"));
                     continue;
                 }
-                out.push(format!("wrote {path}: {value}"));
+                // the D-Bus contract (note 13): `undo` reads what a write replaced from this line
+                out.push(format!("wrote {path}: {value} (was {before})"));
                 let after = root.read(path).unwrap_or_default();
                 if after != *value {
                     out.push(format!(
@@ -526,6 +578,13 @@ pub fn execute(root: &SysRoot, ledger: &Ledger, steps: &[Step]) -> Vec<String> {
                     out.push(format!("warning: {e:#}"));
                 }
             }
+            Step::Hold { path, value } => match ledger.hold(path, value.as_deref()) {
+                Ok(()) => out.push(match value {
+                    Some(v) => format!("held {path} at {}", quoted(v)),
+                    None => format!("released {path}"),
+                }),
+                Err(e) => out.push(format!("warning: {e:#}")),
+            },
             Step::Info(text) => out.push(text.clone()),
             Step::Warn(text) => out.push(format!("warning: {text}")),
         }

@@ -457,9 +457,17 @@ operations! {
     events / EventsOp = "events", Read, EventsIn => Page<EventRow>;
     /// Every knob legionctl reads or sets: current value, the profile's value for the current power source, the
     /// firmware range and choices, and the policy (enforce, follow, observe).
-    knobs / KnobsOp = "knobs", Read, ProfileIn => Knobs;
+    knobs_list / KnobsList = "knobs.list", Read, ProfileIn => Knobs;
     /// One knob and its history from the event log.
-    inspect / Inspect = "inspect", Read, InspectIn => KnobDetail;
+    knobs_show / KnobsShow = "knobs.show", Read, InspectIn => KnobDetail;
+    /// Hold a knob at a value against the policy (D1): it is written now, and the policy leaves it alone until
+    /// `knobs release`. A human approves it in the polkit dialog.
+    knobs_hold / KnobsHold = "knobs.hold", Machine, KnobHoldIn => Changes;
+    /// Release a held knob: the policy for the current power source takes it again.
+    knobs_release / KnobsRelease = "knobs.release", Machine, KnobIn => Changes;
+    /// Turn back the writes of a machine change in the event log: each file goes back to what it was before and is
+    /// held there (`knobs release` gives it back to the policy).
+    undo / Undo = "undo", Machine, UndoIn => Changes;
     /// The package store: each configured package, its pin, and whether its folder still has the hash recorded at
     /// fetch time.
     packages_list / PackagesList = "packages.list", Read, Empty => Packages;

@@ -10,6 +10,21 @@
       <arg type="as" direction="out"/>
     </method>
     <!--
+     Hold knobs at values against the policy (path -> value; a `*` path holds every CPU of a per-CPU knob): writes
+     them now; the policy leaves them alone until `Release`.
+     -->
+    <method name="Hold">
+      <arg name="values" type="a{ss}" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
+     Release a held knob: the policy for the current power source takes it again.
+     -->
+    <method name="Release">
+      <arg name="path" type="s" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
      Choose the GPU GNOME draws the desktop on: `nvidia`, `intel` or `auto`; takes effect at the next login.
      -->
     <method name="SetPrimaryGpu">

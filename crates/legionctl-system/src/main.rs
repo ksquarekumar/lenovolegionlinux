@@ -32,7 +32,7 @@ use legionctl_machine::ledger::{Key, Ledger};
 use legionctl_machine::policy::{self, Machine, Options, Source, Step};
 use legionctl_machine::react::{Event, react};
 use legionctl_machine::sysroot::SysRoot;
-use legionctl_machine::{cleanup, gpu, profile, telemetry, tune, windows};
+use legionctl_machine::{cleanup, gpu, knobs, profile, telemetry, tune, windows};
 use tokio::io::unix::AsyncFd;
 use tokio::io::{Interest, Ready};
 use zbus::object_server::SignalEmitter;
@@ -327,6 +327,56 @@ impl System1 {
         if !lines.is_empty() {
             Self::changed(&emitter, "ApplyPower", &lines).await?;
         }
+        Ok(lines)
+    }
+
+    /// Hold knobs at values against the policy (path -> value; a `*` path holds every CPU of a per-CPU knob): writes
+    /// them now; the policy leaves them alone until `Release`.
+    async fn hold(
+        &self,
+        values: std::collections::BTreeMap<String, String>,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.knobs.hold").await?;
+        let lines = carry_out(&self.root, |m| knobs::hold_plan(m, &values))
+            .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("{e:#}")))?;
+        Self::changed(&emitter, "Hold", &lines).await?;
+        Ok(lines)
+    }
+
+    /// Release a held knob: the policy for the current power source takes it again.
+    async fn release(
+        &self,
+        path: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.knobs.hold").await?;
+        // the hold on the path, and the holds on the files it covers (one CPU's file of a per-CPU knob)
+        let mut lines = carry_out(&self.root, |m| {
+            Ok(m.ledger
+                .holds()
+                .into_keys()
+                .filter(|held| *held == path || policy::held_by(&path, held))
+                .map(|held| policy::Step::Hold {
+                    path: held,
+                    value: None,
+                })
+                .collect())
+        })
+        .map_err(|e| failed(&e))?;
+        // the whole policy for the current power source, keeping a Fn+Q choice
+        let again = Options {
+            keep_override: true,
+            ..Options::default()
+        };
+        lines.extend(
+            carry_out(&self.root, |m| Ok(m.apply(None, again)?.1)).map_err(|e| failed(&e))?,
+        );
+        Self::changed(&emitter, "Release", &lines).await?;
         Ok(lines)
     }
 

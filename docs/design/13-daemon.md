@@ -129,7 +129,7 @@ API and the database; no shared mutable state between processes outside SQLite.
 `Introspect` output, word for word, and the machine tests call each method the operator uses against the real
 daemon on a private bus. Method names match the operations: `ApplyPower` (power apply), `SetPrimaryGpu` (gpu
 primary; polkit `org.legionctl.gpu.primary`), `Cleanup`, `Tune`, `RebootWindows` (windows reboot), `Sample`,
-`WatchSessions`. The `Version` property is the hash of the committed file; `doctor` says when the daemon and the
+`WatchSessions`, `Hold` and `Release` (D1, polkit `org.legionctl.knobs.hold`). The `Version` property is the hash of the committed file; `doctor` says when the daemon and the
 operator come from different files. Change events are `machine.<cause in kebab case>` (`machine.apply-power`).
 Not done, on purpose: a `SafeMode` property (in safe mode the daemon does not run, so the marker file
 `/run/legionctl/safe-mode` stays the channel), the Fn+Q ledger through D-Bus (the operator's dry runs read the same

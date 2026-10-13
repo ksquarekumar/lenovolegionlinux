@@ -52,7 +52,13 @@ impl Ledger {
                         key     TEXT PRIMARY KEY,
                         value   TEXT NOT NULL,
                         boot_id TEXT NOT NULL
-                     )",
+                     );
+                     -- the user's holds (D1, decided 2026-10-13): a path the policy leaves at this value until released;
+                     -- a * matches the CPU policies of a per-CPU knob
+                     CREATE TABLE IF NOT EXISTS holds (
+                        path  TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                     );",
                 )
                 .is_ok()
             });
@@ -72,6 +78,36 @@ impl Ledger {
             .optional()
             .ok()
             .flatten()
+    }
+
+    /// The user's holds: path (a `*` for the CPUs of a per-CPU knob) -> the value it keeps.
+    #[must_use]
+    pub fn holds(&self) -> std::collections::BTreeMap<String, String> {
+        let Some(conn) = self.conn.as_ref() else {
+            return std::collections::BTreeMap::new();
+        };
+        conn.prepare("SELECT path, value FROM holds")
+            .and_then(|mut stmt| {
+                stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<rusqlite::Result<_>>()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Keep `path` at `value` against the policy, until released; `None` releases it.
+    ///
+    /// # Errors
+    /// `system.db` is not open for writing, or the write fails.
+    pub fn hold(&self, path: &str, value: Option<&str>) -> Result<()> {
+        let conn = self.conn.as_ref().context("system.db is not available")?;
+        match value {
+            Some(v) => conn.execute(
+                "INSERT INTO holds (path, value) VALUES (?1, ?2) ON CONFLICT(path) DO UPDATE SET value = excluded.value",
+                params![path, v],
+            ),
+            None => conn.execute("DELETE FROM holds WHERE path = ?1", [path]),
+        }?;
+        Ok(())
     }
 
     /// `None` removes the value.

@@ -3442,7 +3442,7 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
-  "knobs": {
+  "knobs.list": {
     "class": "read",
     "internal": false,
     "input": {
@@ -3513,6 +3513,12 @@
               "follow",
               "observe"
             ]
+          },
+          "held": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -3526,7 +3532,7 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
-  "inspect": {
+  "knobs.show": {
     "class": "read",
     "internal": false,
     "input": {
@@ -3619,6 +3625,12 @@
                 "observe"
               ],
               "description": "What legionctl does with a knob: set it, follow the firmware, or only read it."
+            },
+            "held": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -3682,6 +3694,145 @@
         "history"
       ],
       "title": "KnobDetail",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "knobs.hold": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "knob": {
+          "type": "string",
+          "description": "Knob id (`cpu.epp`, `firmware.ppt_pl1_spl`, ...) or its path."
+        },
+        "value": {
+          "type": "string",
+          "description": "The value to hold it at; within the knob's choices or range (`knobs show`)."
+        },
+        "profile": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "path",
+          "description": "Profile (JSONC); default: the installed one."
+        }
+      },
+      "required": [
+        "knob",
+        "value"
+      ],
+      "title": "KnobHoldIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "knobs.release": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "knob": {
+          "type": "string",
+          "description": "Knob id (`cpu.epp`, `firmware.ppt_pl1_spl`, ...) or its path."
+        },
+        "profile": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "path",
+          "description": "Profile (JSONC); default: the installed one."
+        }
+      },
+      "required": [
+        "knob"
+      ],
+      "title": "KnobIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "undo": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "event": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The event of the change (`events`): a machine change with writes (`machine.apply-power`, ...)."
+        }
+      },
+      "required": [
+        "event"
+      ],
+      "title": "UndoIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
@@ -5370,6 +5521,12 @@
                   "follow",
                   "observe"
                 ]
+              },
+              "held": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -5521,6 +5678,12 @@
                   "enforce",
                   "follow",
                   "observe"
+                ]
+              },
+              "held": {
+                "type": [
+                  "string",
+                  "null"
                 ]
               }
             },
