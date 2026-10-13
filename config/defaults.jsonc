@@ -106,11 +106,15 @@
     "writable": ["~/.claude", "~/.claude.json", "~/.codex", "~/.cache"]
   },
 
-  // MCP servers for session agents: name -> { "command": [...], "allow": [tools] }. The agent reaches each only
+  // MCP servers for session agents: name -> { "command": [...] or "package": name, "allow": [tools] }. The agent reaches each only
   // through legionctl mcp-proxy, which offers the allowed tools and logs every call (legionctl tools calls).
   "mcp": {
     "servers": {}
   },
+
+  // The package store: name -> { "kind": npm|pypi|cargo|git|path, "source", "version" (the pin), "run" (the MCP
+  // server's command, {dir} = the package folder), "network" (default false) }. legionctl packages fetch installs one.
+  "packages": {},
 
   // Gates on commands in a session sandbox. /etc/legionctl can lock them.
   "gates": {

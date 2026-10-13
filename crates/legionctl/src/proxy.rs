@@ -130,9 +130,31 @@ impl ServerHandler for Proxy {
 ///
 /// # Errors
 /// The server does not start, or the stdio transport fails.
-pub async fn serve(server: String, allow: Vec<String>, command: Vec<String>) -> anyhow::Result<()> {
-    let mut child = tokio::process::Command::new(&command[0]);
-    child.args(&command[1..]);
+pub async fn serve(
+    server: String,
+    allow: Vec<String>,
+    no_network: bool,
+    command: Vec<String>,
+) -> anyhow::Result<()> {
+    let mut child = if no_network {
+        // the same files, no network namespace: only loopback, and unix sockets still reach the operator
+        let mut c = tokio::process::Command::new("bwrap");
+        c.args([
+            "--die-with-parent",
+            "--dev-bind",
+            "/",
+            "/",
+            "--unshare-net",
+            "--",
+        ])
+        .args(&command);
+        c
+    } else {
+        let mut c = tokio::process::Command::new(&command[0]);
+        c.args(&command[1..]);
+        c
+    };
+    child.kill_on_drop(true);
     let upstream = ().serve(TokioChildProcess::new(child)?).await?;
     let proxy = Proxy {
         server,

@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use crate::io::{
     BenchCompare, BenchRun, CapabilityList, Changes, ConfigFile, ConfigView, DossierFindings,
     DossierInfo, Empty, EventRow, Explanation, Findings, GpuState, Guard, HookReply, HookTable,
-    Knob, KnobDetail, Launch, LayerList, Lines, LoadState, Lock, Recording, Reminder, RunEnv,
-    Sample, SessionState, SetupReport, SkillInfo, Snapshot, Text, ToolCallRow, TuneReport,
-    Validation, WindowsState, Workspace, WorkspaceStatus,
+    Knob, KnobDetail, Launch, LayerList, Lines, LoadState, Lock, Manifest, PackageState, Recording,
+    Reminder, RunEnv, Sample, SessionState, SetupReport, SkillInfo, Snapshot, Text, ToolCallRow,
+    TuneReport, Validation, WindowsState, Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -969,5 +969,38 @@ impl Render for Vec<ToolCallRow> {
 impl Render for Empty {
     fn text(&self) -> String {
         String::new()
+    }
+}
+
+impl Render for Vec<PackageState> {
+    fn text(&self) -> String {
+        self.iter()
+            .map(|p| {
+                let state = match (&p.manifest, p.intact) {
+                    (None, _) => "not fetched".to_string(),
+                    (Some(m), Some(true)) => format!("ok {}", &m.hash[..16]),
+                    (Some(_), _) => "CHANGED since fetch".to_string(),
+                };
+                format!(
+                    "{:<20} {:<6} {}@{}  {state}",
+                    p.name,
+                    format!("{:?}", p.kind).to_lowercase(),
+                    p.source,
+                    p.version
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A changed package fails the command.
+    fn success(&self) -> bool {
+        self.iter().all(|p| p.intact != Some(false))
+    }
+}
+
+impl Render for Manifest {
+    fn text(&self) -> String {
+        format!("{} {} pinned: {}", self.name, self.version, self.hash)
     }
 }

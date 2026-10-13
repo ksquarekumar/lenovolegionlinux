@@ -11,6 +11,7 @@ pub use legionctl_core::agents::ConfigFile;
 pub use legionctl_core::config::{Explanation, Layer as ConfigLayer};
 pub use legionctl_core::db::EventRow;
 pub use legionctl_core::hooks::{Action, Binding};
+pub use legionctl_core::packages::{Manifest, PackageState};
 pub use legionctl_core::reminders::Reminder;
 pub use legionctl_core::session::{Launch, SessionRecord};
 pub use legionctl_core::setup::Report as SetupReport;
@@ -674,6 +675,17 @@ pub struct TuneIn {
 
 fn sixty() -> u32 {
     60
+}
+
+pub type Packages = Vec<PackageState>;
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PackageFetchIn {
+    /// A package from the config (`packages`).
+    pub name: String,
+    /// Fetch again even when this version is in the store (after `packages` shows it changed).
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// One MCP tool call through `legionctl mcp-proxy`, as the event log keeps it (no arguments, only their hash).

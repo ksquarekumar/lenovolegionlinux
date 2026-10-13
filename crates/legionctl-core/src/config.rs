@@ -33,7 +33,26 @@ pub struct Config {
     pub session: SessionConfig,
     pub gates: GatesConfig,
     pub mcp: McpConfig,
+    pub packages: BTreeMap<String, PackageConfig>,
     pub load: Thresholds,
+}
+
+/// A package in the store: fetched once, pinned to `version` and a content hash (`legionctl packages`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PackageConfig {
+    pub kind: crate::packages::PackageKind,
+    /// The npm, `PyPI` or crates.io name, the git URL, or a local file or folder (`~/` is the home).
+    pub source: String,
+    /// The pin: a version, or a git tag or branch. A local path has none.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// How to run its MCP server; `{dir}` is the package's folder in the store.
+    #[serde(default)]
+    pub run: Vec<String>,
+    /// Its server may use the network; without this it runs with no network.
+    #[serde(default)]
+    pub network: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -46,8 +65,12 @@ pub struct McpConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct McpServer {
-    /// The stdio server's command line.
+    /// The stdio server's command line; empty when `package` gives it.
+    #[serde(default)]
     pub command: Vec<String>,
+    /// A package from the store: its `run` line, from the hash-checked folder, without network unless it allows it.
+    #[serde(default)]
+    pub package: Option<String>,
     /// Tools the agent may call; empty: every tool the server offers.
     #[serde(default)]
     pub allow: Vec<String>,

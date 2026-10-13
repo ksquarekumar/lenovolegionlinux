@@ -329,6 +329,11 @@ operations! {
     knobs / KnobsOp = "knobs", Read, ProfileIn => Knobs;
     /// One knob and its history from the event log.
     inspect / Inspect = "inspect", Read, InspectIn => KnobDetail;
+    /// The package store: each configured package, its pin, and whether its folder still has the hash recorded at
+    /// fetch time.
+    packages_list / PackagesList = "packages.list", Read, Empty => Packages;
+    /// Fetch a package into the store (network, scratch home) and pin its content hash.
+    packages_fetch / PackagesFetch = "packages.fetch", Workspace, PackageFetchIn => Manifest;
     /// Log one MCP tool call (legionctl mcp-proxy calls this for each call it forwards or refuses).
     tools_record / ToolsRecord = "tools.record", Workspace, ToolCall => Empty;
     /// MCP tool calls of session agents through legionctl mcp-proxy, oldest first.

@@ -25,8 +25,10 @@ use legionctl_api::{
 use legionctl_core::config::{Dirs, Resolved, resolve};
 
 use crate::system1::System1Proxy;
+use legionctl_api::{Manifest, PackageFetchIn, Packages};
 use legionctl_core::db::Db;
 use legionctl_core::dossier::{Dossiers, place_of};
+use legionctl_core::packages::Store;
 use legionctl_core::reminders::Event;
 use legionctl_core::workspace::Place;
 use legionctl_core::{agents, hooks, reminders, setup, skills};
@@ -883,6 +885,21 @@ impl Engine for Operator {
 
     fn events(&self, _: &Ctx, input: EventsIn) -> Result<Events> {
         Db::open_default()?.events(input.since, input.limit)
+    }
+
+    fn packages_list(&self, _: &Ctx, _: Empty) -> Result<Packages> {
+        Store::new(Store::default_root()).list(&config(None)?.config.packages)
+    }
+
+    fn packages_fetch(&self, ctx: &Ctx, input: PackageFetchIn) -> Result<Manifest> {
+        Self::record(ctx, "packages.fetch", &input)?;
+        let resolved = config(None)?;
+        let package = resolved
+            .config
+            .packages
+            .get(&input.name)
+            .with_context(|| format!("no package {} in the config (packages)", input.name))?;
+        Store::new(Store::default_root()).fetch(&input.name, package, input.force)
     }
 
     fn tools_record(&self, ctx: &Ctx, input: ToolCall) -> Result<Empty> {

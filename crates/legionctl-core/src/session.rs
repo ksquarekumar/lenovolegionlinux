@@ -73,9 +73,12 @@ pub fn claude_settings(config: &Config) -> serde_json::Value {
 }
 
 /// The session's MCP config: legionctl's own server, and every configured server behind `legionctl mcp-proxy` with
-/// its allowlist, as resolved now.
-#[must_use]
-pub fn mcp_config(config: &Config) -> serde_json::Value {
+/// its allowlist, as resolved now. A package server runs from its hash-checked store folder, without network unless
+/// the package allows it.
+///
+/// # Errors
+/// A server names a package that is missing, not fetched or changed since it was fetched.
+pub fn mcp_config(config: &Config, store: &crate::packages::Store) -> Result<serde_json::Value> {
     let mut servers = serde_json::Map::new();
     servers.insert(
         "legionctl".into(),
@@ -86,14 +89,31 @@ pub fn mcp_config(config: &Config) -> serde_json::Value {
         for tool in &server.allow {
             args.extend(["--allow".into(), tool.clone()]);
         }
+        let command = match &server.package {
+            Some(package) => {
+                let p = config
+                    .packages
+                    .get(package)
+                    .with_context(|| format!("mcp.servers.{name}: no package {package}"))?;
+                if !p.network {
+                    args.push("--no-network".into());
+                }
+                store.command(package, p)?
+            }
+            None => server.command.clone(),
+        };
+        anyhow::ensure!(
+            !command.is_empty(),
+            "mcp.servers.{name} has neither a command nor a package"
+        );
         args.push("--".into());
-        args.extend(server.command.iter().cloned());
+        args.extend(command);
         servers.insert(
             name.clone(),
             serde_json::json!({ "command": "legionctl", "args": args }),
         );
     }
-    serde_json::json!({ "mcpServers": servers })
+    Ok(serde_json::json!({ "mcpServers": servers }))
 }
 
 impl Dossiers {
@@ -117,6 +137,11 @@ impl Dossiers {
                 config.session.agents.keys()
             )
         })?;
+        // a server whose package is missing or changed stops the session before anything is bound
+        let mcp_json = mcp_config(
+            config,
+            &crate::packages::Store::new(crate::packages::Store::default_root()),
+        )?;
         let id = new_id()?;
         let place = place_of(dir);
         self.bind(&id, agent, dossier, create, false, Some(&place))?;
@@ -136,7 +161,7 @@ impl Dossiers {
         let settings = session_dir.join("claude-settings.json");
         std::fs::write(&settings, claude_settings(config).to_string())?;
         let mcp = session_dir.join("mcp.json");
-        std::fs::write(&mcp, mcp_config(config).to_string())?;
+        std::fs::write(&mcp, mcp_json.to_string())?;
 
         // paths under /tmp (tests, other runtimes) are bound after the private /tmp, so they stay visible
         let mut sandbox: Vec<String> = [

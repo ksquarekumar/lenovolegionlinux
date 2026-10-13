@@ -40,8 +40,18 @@ Built (2026-10-13, S2b): the MCP proxy. `mcp.servers` (config) names each server
 rmcp client to the server it starts) lists only the allowed tools, refuses others, and logs each call through the
 operator (`tools.record`, event `tool.call`: session, server, tool, BLAKE2b-128 of the arguments, ms, bytes,
 outcome ok/error/failed/refused); `legionctl tools calls [--session]` lists them. A log that fails (operator down)
-does not stop the call; the proxy says so on stderr. Not yet: remote servers with keyring credentials, the package
-store (T1) for the server binaries, the cache (T2).
+does not stop the call; the proxy says so on stderr.
+
+Built (2026-10-13, T1): the package store. `packages` (config) gives each package a kind (npm, pypi, cargo, git,
+path), a source, a pin (`version`), its server's `run` line (`{dir}` = its folder) and `network` (default false).
+`legionctl packages fetch <name>` installs it into `~/.local/share/legionctl/store/<name>/<version>/` inside bwrap
+with network but a scratch home and /tmp (npm with `--ignore-scripts`; git without its history), then records a
+manifest with the BLAKE2b-256 hash of the tree; `legionctl packages list` checks every hash again. An MCP server
+can name a package: `session start` checks the hash (a changed package stops the session before a dossier is bound)
+and writes the store command into `mcp.json`; the proxy runs it in `bwrap --unshare-net` unless the package allows
+network. The e2e test fetches a git package, runs it through the generated proxy command (only loopback, only the
+allowed tool), changes a store file and sees the refusal. Not yet: skills from the store (Claude Code reads skills
+from the real home), remote servers with keyring credentials, the cache (T2).
 
 ## Session record
 

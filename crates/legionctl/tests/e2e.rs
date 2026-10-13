@@ -768,6 +768,151 @@ fn the_mcp_proxy_offers_only_allowed_tools_and_logs_every_call() {
     assert!(calls[0]["bytes"].as_u64().unwrap() > 0, "{calls}");
 }
 
+/// A git repository with tag v1: a server that notes the network it sees, then serves legionctl's own MCP tools;
+/// configured as package `probe` and as MCP server `probe` allowing only `load`.
+fn probe_package(home: &Path) {
+    let source = home.join("probe-server");
+    std::fs::create_dir_all(&source).unwrap();
+    write(
+        &source.join("server.sh"),
+        // /proc/net/dev follows the reader's network namespace (/sys/class/net would show the host's)
+        "cut -d: -f1 /proc/net/dev | tail -n +3 | tr -d ' ' > \"$HOME/net.txt\"\nexec legionctl mcp\n",
+    );
+    for args in [
+        &["init", "--quiet"][..],
+        &["add", "."],
+        &["commit", "--quiet", "-m", "v1"],
+        &["tag", "v1"],
+    ] {
+        git(home, &source, args);
+    }
+    write(
+        &home.join(".config/legionctl/store.jsonc"),
+        &json!({
+            "packages": {"probe": {"kind": "git", "source": source, "version": "v1", "run": ["sh", "{dir}/server.sh"]}},
+            "mcp": {"servers": {"probe": {"package": "probe", "allow": ["load"]}}}
+        })
+        .to_string(),
+    );
+}
+
+/// Start `legionctl <args>` as an agent would start an MCP server, and list its tools.
+fn mcp_tools(op: &Operator, home: &Path, args: &[String]) -> Vec<String> {
+    use rmcp::ServiceExt;
+    let exe = Path::new(env!("CARGO_BIN_EXE_legionctl"));
+    let path = std::env::join_paths(
+        [exe.parent().unwrap().to_path_buf()]
+            .into_iter()
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let mut proxy = tokio::process::Command::new(exe);
+        proxy
+            .args(args)
+            .env("XDG_RUNTIME_DIR", &op.runtime)
+            .env("HOME", home)
+            .env("PATH", &path);
+        let agent =
+            ().serve(rmcp::transport::TokioChildProcess::new(proxy).unwrap())
+                .await
+                .unwrap();
+        agent
+            .peer()
+            .list_all_tools()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect()
+    })
+}
+
+/// A package from the store behind the proxy: fetched and pinned, run from the store without network by the command
+/// that `session start` wrote, offering only the allowed tool; a changed store file is reported and stops the next
+/// session before anything is bound.
+#[test]
+fn a_store_package_runs_pinned_and_offline_and_a_changed_one_is_refused() {
+    let (op, home) = operator("store");
+    let repo = repository(&home);
+    let env = [("HOME", home.to_str().unwrap())];
+    let cli = |args: &[&str]| op.run(&repo, &env, args, "");
+    probe_package(&home);
+    assert!(String::from_utf8_lossy(&cli(&["packages", "list"]).stdout).contains("not fetched"));
+    let fetched = cli(&["packages", "fetch", "probe"]);
+    assert!(
+        fetched.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fetched.stderr)
+    );
+    assert!(String::from_utf8_lossy(&cli(&["packages", "list"]).stdout).contains(" ok "));
+
+    let started = cli(&[
+        "session",
+        "start",
+        "claude",
+        "--dossier",
+        "port",
+        "--create",
+        "--json",
+    ]);
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let id = serde_json::from_slice::<Value>(&started.stdout).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mcp: Value = serde_json::from_slice(
+        &std::fs::read(op.runtime.join(format!("legionctl/sessions/{id}/mcp.json"))).unwrap(),
+    )
+    .unwrap();
+    let args: Vec<String> = mcp["mcpServers"]["probe"]["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap().into())
+        .collect();
+    assert!(
+        args.contains(&"--no-network".into()) && args.iter().any(|a| a.contains("store/probe/v1")),
+        "{args:?}"
+    );
+    assert_eq!(mcp_tools(&op, &home, &args), ["load"]);
+    assert_eq!(
+        std::fs::read_to_string(home.join("net.txt")).unwrap(),
+        "lo\n",
+        "the server has no network"
+    );
+
+    // a changed store file: reported, and the next session stops before it binds a dossier
+    write(
+        &home.join(".local/share/legionctl/store/probe/v1/server.sh"),
+        "exec legionctl mcp # changed\n",
+    );
+    let listed = cli(&["packages", "list"]);
+    assert!(
+        !listed.status.success()
+            && String::from_utf8_lossy(&listed.stdout).contains("CHANGED since fetch")
+    );
+    let refused = cli(&[
+        "session",
+        "start",
+        "claude",
+        "--dossier",
+        "other",
+        "--create",
+    ]);
+    assert!(
+        String::from_utf8_lossy(&refused.stderr)
+            .contains("package probe changed since it was fetched"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&cli(&["dossier", "locks"]).stdout).contains("other"));
+}
+
 #[test]
 fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_hold() {
     let (op, home) = operator("session");
