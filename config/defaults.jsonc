@@ -103,6 +103,10 @@
     },
     // Writable besides the workspace, the dossier, the repository's .git and the runtime folder (/tmp is private to
     // the session): the agents' own state.
+    // Agent name -> the command that continues an ended session (legionctl session resume <id>).
+    "resume": {
+      "claude": ["claude", "--resume", "{id}", "--settings", "{settings}", "--mcp-config", "{mcp}", "--strict-mcp-config"]
+    },
     // Agent name -> its ACP adapter, for headless runs (legionctl session run): Zed's adapters for Claude Code and
     // Codex. The adapter gets the session's MCP servers (legionctl's own and the proxied ones) at session/new.
     "acp": {

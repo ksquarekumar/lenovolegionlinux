@@ -67,8 +67,16 @@ adk-rust's ACP client (`adk-acp` 2.2.0, protocol v1). The adapter gets the sessi
 Permission asks are allowed, because the sandbox and the gates are the boundary; each is logged as
 `session.permission` and returned. `session.scope` (default true) runs it in the systemd user scope. The e2e test
 drives a stand-in ACP agent (`tests/fixtures/fake-acp-agent.py`): it gets the MCP servers, its permission is
-answered, its commit lands in the workspace and the gate refuses its push. Not yet: pause, offload and resume
-(S4), streaming the answer while it runs, the real adapters live (they need the user's logins).
+answered, its commit lands in the workspace and the gate refuses its push. Not yet: streaming the answer while it
+runs, the real adapters live (they need the user's logins).
+
+Built (2026-10-13, S4): `session pause|thaw <id>` freeze and thaw the session's scope (cgroup freezer;
+`systemctl --user freeze|thaw`), `session stop <id>` stops it, `session resume <id>` prepares an ended session
+again (same id, dossier binding and workspace; the sandbox anew) with the agent's resume command (`session.resume`:
+`claude --resume {id} ...`; Codex has none by id). The e2e test resumes a session and sees the same id and folder,
+and a refusal for an agent without a resume command; pause and thaw were checked live (active, frozen, running,
+inactive), as CI has no user systemd. Not yet: the idle and memory-pressure policies that pause and offload on
+their own, and ACP `session/load` for headless runs.
 
 Fixed (2026-10-13): the sandbox bound the whole `$XDG_RUNTIME_DIR`, and `--ro-bind / /` does not stop a connect to a
 socket. The agent could reach the session bus and systemd's user manager (`systemd-run --user` runs outside the

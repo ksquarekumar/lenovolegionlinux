@@ -88,6 +88,23 @@ pub(crate) fn which(program: &str) -> Option<PathBuf> {
         })
 }
 
+/// `systemctl --user <verb>` on a session's scope (stop, freeze, thaw).
+fn scope_control(verb: &str, id: &str, done: &str) -> Result<Lines> {
+    let session = dossiers()?.session(id)?;
+    let unit = format!("legionctl-session-{}.scope", session.id);
+    let out = Command::new("systemctl")
+        .args(["--user", verb, &unit])
+        .output()?;
+    anyhow::ensure!(
+        out.status.success(),
+        "{verb} {unit}: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(Lines {
+        lines: vec![format!("session {} ({}) {done}", session.id, session.agent)],
+    })
+}
+
 /// Operations that change the machine (or record it): their events go into a recording.
 const MACHINE_OPS: [&str; 5] = [
     "power.apply",
@@ -1220,22 +1237,25 @@ impl Engine for Operator {
 
     fn session_stop(&self, ctx: &Ctx, input: SessionIdIn) -> Result<Lines> {
         Self::record(ctx, "session.stop", &input)?;
+        scope_control("stop", &input.id, "stopped")
+    }
+
+    fn session_pause(&self, ctx: &Ctx, input: SessionIdIn) -> Result<Lines> {
+        Self::record(ctx, "session.pause", &input)?;
+        scope_control("freeze", &input.id, "paused")
+    }
+
+    fn session_thaw(&self, ctx: &Ctx, input: SessionIdIn) -> Result<Lines> {
+        Self::record(ctx, "session.thaw", &input)?;
+        scope_control("thaw", &input.id, "running again")
+    }
+
+    fn session_resume(&self, ctx: &Ctx, input: SessionIdIn) -> Result<Launch> {
+        Self::record(ctx, "session.resume", &input)?;
+        // the repository's own config layer applies, as at session start
         let session = dossiers()?.session(&input.id)?;
-        let unit = format!("legionctl-session-{}.scope", session.id);
-        let out = Command::new("systemctl")
-            .args(["--user", "stop", &unit])
-            .output()?;
-        anyhow::ensure!(
-            out.status.success(),
-            "stopping {unit}: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-        Ok(Lines {
-            lines: vec![format!(
-                "stopped session {} ({})",
-                session.id, session.agent
-            )],
-        })
+        let resolved = resolve(&Dirs::from_env(), Some(&place_of(&session.workdir)))?;
+        dossiers()?.resume_session(&input.id, &resolved.config)
     }
 
     fn gates_check(&self, _: &Ctx, input: GateIn) -> Result<Guard> {

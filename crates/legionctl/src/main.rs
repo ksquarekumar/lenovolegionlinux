@@ -261,7 +261,7 @@ fn main() -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(());
     }
-    if op.name == "session.start" {
+    if op.name == "session.start" || op.name == "session.resume" {
         return start_session(serde_json::from_value(output)?);
     }
     let (text, success) = legionctl_api::render(op.name, output)?;

@@ -1047,6 +1047,68 @@ fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
     assert!(String::from_utf8_lossy(&events.stdout).contains("session.permission"));
 }
 
+/// Resume: an ended session starts again with the same id, dossier and workspace through the agent's resume command;
+/// an agent without one cannot resume.
+#[test]
+fn an_ended_session_resumes_with_its_id_dossier_and_workspace() {
+    let (op, home) = operator("resume");
+    let repo = repository(&home);
+    let report = "echo \"$0 SESSION=$LEGIONCTL_SESSION DIR=$(pwd)\"";
+    write(
+        &home.join(".config/legionctl/session.jsonc"),
+        &json!({"session": {
+            "agents": {"probe": ["sh", "-c", report, "first"], "noresume": ["true"]},
+            "resume": {"probe": ["sh", "-c", report, "again"]},
+            "scope": false,
+            "writable": []
+        }})
+        .to_string(),
+    );
+    let env = [("HOME", home.to_str().unwrap())];
+    let launch = |args: &[&str]| -> Value {
+        let out = op.run(&repo, &env, &[args, &["--json"]].concat(), "");
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let first = launch(&["session", "start", "probe", "--dossier", "port", "--create"]);
+    let id = first["id"].as_str().unwrap();
+    let workspace = home.join("worktrees/repo/port");
+    let expected = |word: &str| format!("{word} SESSION={id} DIR={}\n", workspace.display());
+    assert_eq!(
+        String::from_utf8_lossy(&run_launch(&op, &home, &first).stdout),
+        expected("first")
+    );
+
+    let again = launch(&["session", "resume", id]);
+    assert_eq!(again["id"], first["id"]);
+    assert_eq!(
+        String::from_utf8_lossy(&run_launch(&op, &home, &again).stdout),
+        expected("again")
+    );
+
+    let other = launch(&[
+        "session",
+        "start",
+        "noresume",
+        "--dossier",
+        "other",
+        "--create",
+    ]);
+    let refused = op.run(
+        &repo,
+        &env,
+        &["session", "resume", other["id"].as_str().unwrap()],
+        "",
+    );
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("agent noresume cannot resume a session")
+    );
+}
+
 /// Run a `session start` launch as the client does, without the systemd scope (CI has no user systemd): the
 /// sandbox, this binary bound over git as the gate, then the agent.
 fn run_launch(op: &Operator, home: &Path, launch: &Value) -> std::process::Output {

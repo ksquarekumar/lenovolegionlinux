@@ -187,7 +187,56 @@ impl Dossiers {
             "INSERT INTO sessions (id, agent, dossier, workdir, started) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![id, agent, dossier, ws.path.to_string_lossy(), now()],
         )?;
+        self.launch(id, dossier, &ws.path, config, command, mcp_json)
+    }
 
+    /// Prepare an ended session again: the same id, dossier and workspace, and the agent's resume command
+    /// (`session.resume`), so the agent continues its conversation.
+    ///
+    /// # Errors
+    /// No such session, its agent cannot resume, or its dossier is held by another live session.
+    pub fn resume_session(&self, id: &str, config: &Config) -> Result<Launch> {
+        let record = self.session(id)?;
+        let command = config.session.resume.get(&record.agent).with_context(|| {
+            format!(
+                "agent {} cannot resume a session (session.resume)",
+                record.agent
+            )
+        })?;
+        let mcp_json = mcp_config(
+            config,
+            &crate::packages::Store::new(crate::packages::Store::default_root()),
+        )?;
+        let place = place_of(&record.workdir);
+        self.bind(
+            id,
+            &record.agent,
+            &record.dossier,
+            false,
+            false,
+            Some(&place),
+        )?;
+        let ws = self.open_workspace(id, &record.workdir, None, &config.workspace.root)?;
+        self.launch(
+            id.to_string(),
+            &record.dossier,
+            &ws.path,
+            config,
+            command,
+            mcp_json,
+        )
+    }
+
+    /// The sandbox and agent command of session `id` working in `workdir`.
+    fn launch(
+        &self,
+        id: String,
+        dossier: &str,
+        workdir: &Path,
+        config: &Config,
+        command: &[String],
+        mcp_json: serde_json::Value,
+    ) -> Result<Launch> {
         let runtime = PathBuf::from(
             std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?,
         );
@@ -220,9 +269,9 @@ impl Dossiers {
         hide(&mut sandbox, &runtime, &config.session.hidden);
         for path in [
             &runtime.join("legionctl"),
-            &ws.path,
+            &workdir.to_path_buf(),
             &self.root.join(dossier),
-            &git_common_dir(&ws.path)?,
+            &git_common_dir(workdir)?,
         ] {
             bind(&mut sandbox, path);
         }
@@ -238,7 +287,7 @@ impl Dossiers {
             real_git.to_string_lossy().into_owned(),
         ]);
         sandbox.extend(["--setenv".into(), "LEGIONCTL_SESSION".into(), id.clone()]);
-        sandbox.extend(["--chdir".into(), ws.path.to_string_lossy().into_owned()]);
+        sandbox.extend(["--chdir".into(), workdir.to_string_lossy().into_owned()]);
         Ok(Launch {
             scope: if config.session.scope {
                 vec![
@@ -261,7 +310,7 @@ impl Dossiers {
                 })
                 .collect(),
             real_git,
-            workdir: ws.path.clone(),
+            workdir: workdir.to_path_buf(),
             mcp: mcp_json,
             id,
         })

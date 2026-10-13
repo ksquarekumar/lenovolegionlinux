@@ -398,6 +398,12 @@ operations! {
     session_list / SessionList = "session.list", Read, Empty => Sessions;
     /// Stop a session's scope (the agent and everything it started).
     session_stop / SessionStop = "session.stop", Workspace, SessionIdIn => Lines;
+    /// Freeze a session's processes (cgroup freezer): memory stays, the agent does nothing until thawed.
+    session_pause / SessionPause = "session.pause", Workspace, SessionIdIn => Lines;
+    /// Let a paused session run again.
+    session_thaw / SessionThaw = "session.thaw", Workspace, SessionIdIn => Lines;
+    /// Continue an ended session: the same id, dossier and workspace, and the agent's resume command.
+    session_resume / SessionResume = "session.resume", Workspace, SessionIdIn => Launch;
     /// Whether a git command may run in a session sandbox (the git gate asks this before every git call).
     gates_check / GatesCheck = "gates.check", Read, GateIn => Guard;
     /// The merged config (defaults, /etc/legionctl, ~/.config/legionctl, the repository's .legionctl) and the files

@@ -98,6 +98,8 @@ pub struct SessionConfig {
     pub agents: BTreeMap<String, Vec<String>>,
     /// Writable in the sandbox besides the workspace, the dossier and the repository's .git (`~/` is the home).
     pub writable: Vec<String>,
+    /// Agent name -> the command that continues an ended session (`session resume`); placeholders as in `agents`.
+    pub resume: BTreeMap<String, Vec<String>>,
     /// Agent name -> the command of its ACP adapter, for headless runs (`session run`).
     pub acp: BTreeMap<String, Vec<String>>,
     /// Run sessions in a systemd user scope (`legionctl-session-<id>`); off where there is no user systemd.
