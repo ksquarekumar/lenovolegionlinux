@@ -32,7 +32,7 @@ use legionctl_api::{
 use legionctl_api::{
     CacheGetIn, CachePutIn, CacheValue, Manifest, PackageFetchIn, Packages, RunOutput, SessionRunIn,
 };
-use legionctl_api::{ImagesScanIn, Scan, VirtStatus};
+use legionctl_api::{ImagesScanIn, RepoIn, Scan, ServiceState, VirtStatus};
 use legionctl_core::db::Db;
 use legionctl_core::dossier::{Dossiers, place_of};
 use legionctl_core::packages::Store;
@@ -1029,6 +1029,77 @@ impl Engine for Operator {
             )?;
         }
         Ok(scan)
+    }
+
+    fn images_build(&self, ctx: &Ctx, input: RepoIn) -> Result<Lines> {
+        Self::record(ctx, "images.build", &input)?;
+        let repo = input.repo.get()?;
+        let (project, tag) = legionctl_core::images::project(repo);
+        let mut lines = Vec::new();
+        for (name, service) in legionctl_core::images::scan(repo).services {
+            let image = legionctl_core::images::image(&project, &name, &tag);
+            let mut build = Command::new("docker");
+            build.current_dir(repo).args([
+                "buildx",
+                "build",
+                "--load",
+                "-t",
+                &image,
+                "-f",
+                &service.build.dockerfile,
+            ]);
+            if let Some(target) = &service.build.target {
+                build.args(["--target", target]);
+            }
+            let out = build
+                .arg(&service.build.context)
+                .output()
+                .context("running docker buildx")?;
+            anyhow::ensure!(
+                out.status.success(),
+                "building {name}: {}",
+                String::from_utf8_lossy(&out.stderr)
+                    .lines()
+                    .rev()
+                    .take(5)
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            );
+            lines.push(format!("built {image}"));
+        }
+        Ok(Lines { lines })
+    }
+
+    fn images_run(&self, ctx: &Ctx, input: RepoIn) -> Result<Lines> {
+        Self::record(ctx, "images.run", &input)?;
+        let repo = input.repo.get()?;
+        let (project, tag) = legionctl_core::images::project(repo);
+        let compose =
+            legionctl_core::images::compose(&legionctl_core::images::scan(repo), &project, &tag);
+        let file = repo.join(".legionctl/compose.json");
+        std::fs::create_dir_all(file.parent().context("no parent")?)?;
+        std::fs::write(&file, serde_json::to_string_pretty(&compose)? + "\n")?;
+        let out = Command::new("docker")
+            .current_dir(repo)
+            .args(["compose", "-p", &project, "-f"])
+            .arg(&file)
+            .args(["up", "-d", "--no-build"])
+            .output()
+            .context("running docker compose")?;
+        anyhow::ensure!(
+            out.status.success(),
+            "docker compose up: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        Ok(Lines {
+            lines: vec![format!("started project {project} from {}", file.display())],
+        })
+    }
+
+    fn images_status(&self, _: &Ctx, input: RepoIn) -> Result<Vec<ServiceState>> {
+        let (project, _) = legionctl_core::images::project(input.repo.get()?);
+        self.runtime
+            .block_on(crate::virt::project_containers(&project))
     }
 
     fn virt_status(&self, _: &Ctx, _: Empty) -> Result<VirtStatus> {

@@ -1196,3 +1196,28 @@ impl Render for crate::io::Scan {
         out.join("\n")
     }
 }
+
+impl Render for Vec<crate::io::ServiceState> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no containers of this repository".into();
+        }
+        self.iter()
+            .map(|s| {
+                let health = s
+                    .health
+                    .as_deref()
+                    .map(|h| format!(" ({h})"))
+                    .unwrap_or_default();
+                format!("{:<16} {:<28} {}{health}", s.service, s.container, s.state)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// An unhealthy or stopped service fails the command.
+    fn success(&self) -> bool {
+        self.iter()
+            .all(|s| s.state == "running" && s.health.as_deref() != Some("unhealthy"))
+    }
+}

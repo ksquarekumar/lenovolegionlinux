@@ -66,8 +66,14 @@ services with docker compose, offline. The overlay is copy-on-write over the bas
 or `<name>`), the last stage as the target, ports from `EXPOSE`, `ENTRYPOINT` + `CMD` as the run entrypoint (the
 shell form through `/bin/sh -c`), `HEALTHCHECK CMD` as health; the cache description lists the external bases (not
 earlier stages, not `scratch`) and the lockfiles in each build context. `--write` puts both descriptions into the
-repository's `.legionctl/`. Not yet: compose files (through `docker compose config --format json`; serde_yaml is
-unmaintained), mounts and resources, `build`, `run`, `status`, `pack-vm`.
+repository's `.legionctl/`.
+
+Built (2026-10-13, I1 part 2): `images build` builds each service with `docker buildx build --load` as
+`localhost/<repo>/<service>:<short commit>` (`dev` outside git); `images run` writes `.legionctl/compose.json`
+(JSON is YAML to compose: image, build, exposed ports, health check) and runs `docker compose -p <repo> up -d
+--no-build`, passing compose's error on; `images status` reads the project's containers and their health from the
+Engine API. Checked live (build, run, `running (healthy)`). Not yet: reading existing compose files, mounts and
+resources, the buildx cache export (the docker driver cannot export a cache), `pack-vm`.
 
 ## Operations
 

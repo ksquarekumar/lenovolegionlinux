@@ -204,3 +204,69 @@ pub fn scan(repo: &Path) -> Scan {
     }
     out
 }
+
+/// The project name and image tag of a repository: its folder name, and its short commit (`dev` outside git).
+#[must_use]
+pub fn project(repo: &Path) -> (String, String) {
+    let name: String = repo
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let tag = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map_or_else(
+            || "dev".into(),
+            |o| String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        );
+    (name, tag)
+}
+
+/// The image reference of `service`: `localhost/<project>/<service>:<tag>`.
+#[must_use]
+pub fn image(project: &str, service: &str, tag: &str) -> String {
+    format!("localhost/{project}/{service}:{tag}")
+}
+
+/// The compose file legionctl runs (JSON, which compose reads as YAML): each service's image, build, exposed ports
+/// and health check. An output, never edited by hand.
+#[must_use]
+pub fn compose(scan: &Scan, project: &str, tag: &str) -> serde_json::Value {
+    let services: serde_json::Map<String, serde_json::Value> = scan
+        .services
+        .iter()
+        .map(|(name, s)| {
+            let mut service = serde_json::json!({
+                "image": image(project, name, tag),
+                "build": {"context": s.build.context, "dockerfile": s.build.dockerfile},
+            });
+            if let Some(target) = &s.build.target {
+                service["build"]["target"] = target.clone().into();
+            }
+            if !s.ports.is_empty() {
+                service["expose"] = s.ports.clone().into();
+            }
+            if let Some(health) = s.entrypoints.get("health") {
+                let test: Vec<String> = std::iter::once("CMD".to_string())
+                    .chain(health.iter().cloned())
+                    .collect();
+                service["healthcheck"] = serde_json::json!({ "test": test });
+            }
+            (name.clone(), service)
+        })
+        .collect();
+    serde_json::json!({ "name": project, "services": services })
+}

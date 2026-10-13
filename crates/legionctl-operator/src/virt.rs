@@ -19,7 +19,7 @@ fn docker_socket() -> PathBuf {
 }
 
 /// One GET on the Docker Engine API.
-async fn docker(path: &str) -> Result<Value> {
+pub async fn docker(path: &str) -> Result<Value> {
     let socket = docker_socket();
     let stream = tokio::net::UnixStream::connect(&socket)
         .await
@@ -250,4 +250,43 @@ pub async fn status(root: &SysRoot) -> VirtStatus {
     }
     vms(&mut status);
     status
+}
+
+/// The containers of compose project `project`, with their health when they have a check.
+pub async fn project_containers(project: &str) -> Result<Vec<legionctl_api::ServiceState>> {
+    let filter = serde_json::json!({ "label": [format!("com.docker.compose.project={project}")] })
+        .to_string();
+    let encoded: String = filter
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect();
+    let list = docker(&format!("/containers/json?all=1&filters={encoded}")).await?;
+    let mut out = Vec::new();
+    for c in list.as_array().cloned().unwrap_or_default() {
+        let id = c["Id"].as_str().unwrap_or_default();
+        let inspect = docker(&format!("/containers/{id}/json")).await?;
+        out.push(legionctl_api::ServiceState {
+            service: c["Labels"]["com.docker.compose.service"]
+                .as_str()
+                .unwrap_or("?")
+                .into(),
+            container: c["Names"][0]
+                .as_str()
+                .unwrap_or("?")
+                .trim_start_matches('/')
+                .into(),
+            state: inspect["State"]["Status"].as_str().unwrap_or("?").into(),
+            health: inspect["State"]["Health"]["Status"]
+                .as_str()
+                .map(String::from),
+        });
+    }
+    out.sort_by(|a, b| a.service.cmp(&b.service));
+    Ok(out)
 }

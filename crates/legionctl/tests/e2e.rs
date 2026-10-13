@@ -1609,6 +1609,73 @@ fn an_unknown_operation_from_another_build_says_to_restart_the_operator() {
     );
 }
 
+/// Images with the real Docker (CI has it; no registry pull: the image builds `FROM scratch`): build tags it
+/// `localhost/<repo>/<service>:<commit>`, run writes the compose file and passes compose's refusal on (a scratch
+/// image has no command), status lists the repository's containers.
+#[test]
+fn images_build_tags_by_commit_and_run_reports_what_compose_says() {
+    let (op, home) = operator("imgbuild");
+    let repo = repository(&home);
+    write(
+        &repo.join("svc/Dockerfile"),
+        "FROM scratch\nCOPY note /note\nHEALTHCHECK CMD [\"/check\"]\n",
+    );
+    write(&repo.join("svc/note"), "x\n");
+    git(&home, &repo, &["add", "."]);
+    git(&home, &repo, &["commit", "--quiet", "-m", "svc"]);
+    let commit = git(&home, &repo, &["rev-parse", "--short", "HEAD"]);
+    let env = [("HOME", home.to_str().unwrap())];
+    let built = op.run(&repo, &env, &["images", "build"], "");
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let image = format!("localhost/repo/svc:{commit}");
+    assert_eq!(
+        String::from_utf8_lossy(&built.stdout).trim(),
+        format!("built {image}")
+    );
+    assert!(
+        Command::new("docker")
+            .args(["image", "inspect", &image])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    let run = op.run(&repo, &env, &["images", "run"], "");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        !run.status.success() && stderr.contains("docker compose up"),
+        "{stderr}"
+    );
+    let compose: Value = serde_json::from_str(
+        &std::fs::read_to_string(repo.join(".legionctl/compose.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        compose,
+        json!({"name": "repo", "services": {"svc": {
+            "image": image, "build": {"context": "svc", "dockerfile": "svc/Dockerfile"},
+            "healthcheck": {"test": ["CMD", "/check"]}
+        }}})
+    );
+    let _ = Command::new("docker")
+        .args(["compose", "-p", "repo", "-f"])
+        .arg(repo.join(".legionctl/compose.json"))
+        .arg("down")
+        .output();
+    let status: Value = serde_json::from_slice(
+        &op.run(&repo, &env, &["images", "status", "--json"], "")
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(status, json!([]), "down removed the container");
+    let _ = Command::new("docker").args(["rmi", &image]).output();
+}
+
 /// Run a `session start` launch as the client does, without the systemd scope (CI has no user systemd): the
 /// sandbox, this binary bound over git as the gate, then the agent.
 fn run_launch(op: &Operator, home: &Path, launch: &Value) -> std::process::Output {

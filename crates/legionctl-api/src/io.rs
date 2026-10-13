@@ -780,6 +780,24 @@ pub struct ImagesScanIn {
     pub write: bool,
 }
 
+/// A compose service's container and its health.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ServiceState {
+    pub service: String,
+    pub container: String,
+    /// created, running, exited, ...
+    pub state: String,
+    /// healthy, unhealthy or starting, when the service has a health check.
+    pub health: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RepoIn {
+    /// The repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
 /// One capability of the machine (note 17) and the provider that gives it.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct VirtCapability {

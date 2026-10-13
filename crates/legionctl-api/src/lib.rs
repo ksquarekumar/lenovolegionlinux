@@ -369,6 +369,12 @@ operations! {
     /// A repository's Dockerfiles as a services description (build, entrypoints, ports) and a build-cache description
     /// (base images, lockfiles); with write, into the repository's `.legionctl/`.
     images_scan / ImagesScan = "images.scan", Workspace, ImagesScanIn => Scan;
+    /// Build every service's image (`localhost/<repo>/<service>:<commit>`) with docker buildx.
+    images_build / ImagesBuild = "images.build", Workspace, RepoIn => Lines;
+    /// Write `.legionctl/compose.json` from the scan and start the services with docker compose.
+    images_run / ImagesRun = "images.run", Workspace, RepoIn => Lines;
+    /// The repository's compose containers: state and health.
+    images_status / ImagesStatus = "images.status", Read, RepoIn => Vec<ServiceState>;
     /// Virtualization, containers and emulation: each capability with its provider and health, the containers and VMs
     /// (`WinBoat` recognized), and what is wrong.
     virt_status / VirtStatusOp = "virt.status", Read, Empty => VirtStatus;
