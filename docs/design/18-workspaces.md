@@ -91,7 +91,7 @@ For a git source, legionctl does the git work around the agent; the agent edits 
 | Operation | What legionctl does |
 | --- | --- |
 | open | A worktree from a recorded base ref on the dossier's active branch `legionctl/<dossier>` (created on first open, reused after). If the session started inside the source checkout, the agent is moved to the worktree path. |
-| new branch | Another branch for the same dossier (`legionctl/<dossier>--<topic>`); it becomes the active branch. |
+| branch | Switch to another branch of the same dossier (`legionctl/<dossier>--<topic>`, created the first time) or back to `legionctl/<dossier>`; it becomes the active branch. Uncommitted changes stop it. |
 | checkpoint | Stage and commit the change set's files with a message from the plan entry; update the code graph. |
 | merge | With approval: rebase or merge the active branch into the base ref; conflicts become git state (14) that the agent resolves in the worktree. |
 | close | Remove the worktree; keep the branch until merged; the dossier stays. |

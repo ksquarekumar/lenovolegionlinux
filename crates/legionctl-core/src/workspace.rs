@@ -366,18 +366,48 @@ impl Dossiers {
         git(&ws.path, &["log", "-1", "--format=%h %s"])
     }
 
-    /// Start `legionctl/<dossier>--<topic>` from the current branch; it becomes the active branch.
+    /// Switch to `legionctl/<dossier>--<topic>`, created from the current branch the first time; without a topic,
+    /// back to `legionctl/<dossier>`. It becomes the active branch. Uncommitted changes stop it, so that work does
+    /// not move between branches unseen.
     ///
     /// # Errors
-    /// The topic is not valid, or git refuses.
-    pub fn new_branch(&self, ws: &Workspace, topic: &str) -> Result<String> {
-        ensure!(
-            crate::dossier::valid_name(topic),
-            "topic must be a-z, 0-9 and '-', starting with a letter or digit"
-        );
+    /// The topic is not valid, the workspace has uncommitted changes, or git refuses.
+    pub fn switch_branch(&self, ws: &Workspace, topic: Option<&str>) -> Result<String> {
         // not legionctl/<dossier>/<topic>: git cannot nest a ref under the existing branch legionctl/<dossier>
-        let branch = format!("legionctl/{}--{topic}", ws.dossier);
-        git(&ws.path, &["switch", "--quiet", "-c", &branch])?;
+        let branch = match topic {
+            Some(topic) => {
+                ensure!(
+                    crate::dossier::valid_name(topic),
+                    "topic must be a-z, 0-9 and '-', starting with a letter or digit"
+                );
+                format!("legionctl/{}--{topic}", ws.dossier)
+            }
+            None => format!("legionctl/{}", ws.dossier),
+        };
+        ensure!(
+            git(&ws.path, &["status", "--porcelain"])?.is_empty(),
+            "the workspace has uncommitted changes; checkpoint first"
+        );
+        let exists = git(
+            &ws.path,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ],
+        )
+        .is_ok();
+        let create = if exists { None } else { Some("-c") };
+        git(
+            &ws.path,
+            &[
+                &["switch", "--quiet"][..],
+                create.as_slice(),
+                &[branch.as_str()],
+            ]
+            .concat(),
+        )?;
         self.db().execute(
             "UPDATE workspaces SET branch = ?1 WHERE dossier = ?2 AND repo = ?3 AND closed IS NULL",
             params![branch, ws.dossier, ws.repo.to_string_lossy()],

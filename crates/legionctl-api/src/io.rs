@@ -121,8 +121,9 @@ pub struct CheckpointIn {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct BranchIn {
-    /// The branch becomes legionctl/<dossier>--<topic>.
-    pub topic: String,
+    /// The branch becomes legionctl/<dossier>--<topic> (created the first time); without it, legionctl/<dossier>.
+    #[serde(default)]
+    pub topic: Option<String>,
     #[serde(default)]
     pub repo: Option<ClientPath>,
     #[serde(default)]

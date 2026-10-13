@@ -572,7 +572,10 @@ impl Engine for Operator {
         let store = dossiers()?;
         let ws = store.workspace_of(session(&input.session)?, path(input.repo.as_ref())?)?;
         Ok(Lines {
-            lines: vec![format!("on {}", store.new_branch(&ws, &input.topic)?)],
+            lines: vec![format!(
+                "on {}",
+                store.switch_branch(&ws, input.topic.as_deref())?
+            )],
         })
     }
 

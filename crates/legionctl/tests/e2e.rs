@@ -598,11 +598,6 @@ fn workspace_opens_checkpoints_reports_drift_merges_and_closes_in_a_real_reposit
     );
     run_git(&ws, &["switch", "--quiet", "legionctl/port"]);
 
-    // a topic branch of the same dossier becomes the active branch (git cannot nest it under legionctl/port)
-    assert!(ok(&repo, &["workspace", "branch", "polish"]).contains("legionctl/port--polish"));
-    write(&ws.join("polish.txt"), "x");
-    ok(&repo, &["workspace", "checkpoint", "polish the feature"]);
-
     // merge: rebase onto main, then main moves forward; close keeps the branch
     run_git(
         &repo,
@@ -611,19 +606,74 @@ fn workspace_opens_checkpoints_reports_drift_merges_and_closes_in_a_real_reposit
     ok(&repo, &["workspace", "merge"]);
     assert_eq!(
         run_git(&repo, &["log", "-1", "--format=%s"]),
-        "polish the feature",
+        "add feature",
         "main has the dossier's work on top"
     );
     assert_eq!(
         run_git(&repo, &["rev-list", "--count", "HEAD"]),
-        "5",
-        "linear: start, main moved, ignore line, feature, polish"
+        "4",
+        "linear: start, main moved, ignore line, feature"
     );
-    assert!(ok(&repo, &["workspace", "close"]).contains("branch legionctl/port--polish kept"));
+    assert!(ok(&repo, &["workspace", "close"]).contains("branch legionctl/port kept"));
     assert!(!ws.exists());
     assert_eq!(
         run_git(&repo, &["branch", "--list", "legionctl/port"]),
         "legionctl/port"
+    );
+}
+
+/// Topic branches of one dossier: created on first use, switched to later with their work, and back to the dossier's
+/// branch; uncommitted work stops a switch; merge takes the active branch.
+#[test]
+fn workspace_topic_branches_keep_their_work_and_the_active_one_merges() {
+    let (op, home) = operator("topics");
+    let repo = repository(&home);
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", "s1"),
+    ];
+    let run = |args: &[&str]| op.run(&repo, &env, args, "");
+    let ok = |args: &[&str]| {
+        let o = run(args);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    ok(&["dossier", "use", "port", "--create"]);
+    ok(&["workspace", "open"]);
+    let ws = home.join("worktrees/repo/port");
+
+    assert_eq!(
+        ok(&["workspace", "branch", "--topic", "polish"]),
+        "on legionctl/port--polish"
+    );
+    write(&ws.join("polish.txt"), "x");
+    let refused = run(&["workspace", "branch"]);
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("uncommitted changes; checkpoint first"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    ok(&["workspace", "checkpoint", "polish the feature"]);
+
+    assert_eq!(ok(&["workspace", "branch"]), "on legionctl/port");
+    assert!(
+        !ws.join("polish.txt").exists(),
+        "the topic's work stays on the topic branch"
+    );
+    assert_eq!(
+        ok(&["workspace", "branch", "--topic", "polish"]),
+        "on legionctl/port--polish"
+    );
+    assert!(ws.join("polish.txt").exists());
+
+    ok(&["workspace", "merge"]);
+    assert_eq!(
+        git(&home, &repo, &["log", "-1", "--format=%s"]),
+        "polish the feature"
     );
 }
 

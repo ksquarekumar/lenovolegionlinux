@@ -12,7 +12,7 @@ dossier linked in as `.agentworkspace`. Make code changes there, never in the re
   say what happened and propose the fix (for example `workspace_branch`, or open the workspace again).
 - `checkpoint "<message>"`: call `workspace_checkpoint` with a message from the plan entry; record the commit in the
   dossier's plan.md.
-- `branch <topic>`: call `workspace_branch`.
+- `branch [topic]`: call `workspace_branch` (switch to the topic branch, created the first time; without a topic, back to `legionctl/<dossier>`).
 - `merge`: ask the user first, then call `workspace_merge`. On conflicts, resolve them in the workspace path, run
   `git rebase --continue`, and merge again.
 - `close`: call `workspace_close`; with uncommitted changes it refuses: show them and ask before passing `force`.
