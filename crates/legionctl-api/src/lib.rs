@@ -282,7 +282,7 @@ operations! {
     workspace_list / WorkspaceList = "workspace.list", Read, Empty => Workspaces;
     /// Stage everything in the workspace and commit it with the message.
     workspace_checkpoint / WorkspaceCheckpoint = "workspace.checkpoint", Workspace, CheckpointIn => Lines;
-    /// Start legionctl/<dossier>/<topic> from the current branch; it becomes the active branch.
+    /// Start legionctl/<dossier>--<topic> from the current branch; it becomes the active branch.
     workspace_branch / WorkspaceBranch = "workspace.branch", Workspace, BranchIn => Lines;
     /// Rebase the branch onto the base, then fast-forward the base in the main checkout (which must be clean).
     workspace_merge / WorkspaceMerge = "workspace.merge", Workspace, WorkspaceIn => Lines;

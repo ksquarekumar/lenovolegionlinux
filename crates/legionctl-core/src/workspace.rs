@@ -51,7 +51,7 @@ pub struct Workspace {
     pub repo: PathBuf,
     /// The operating directory: work here, not in the main checkout.
     pub path: PathBuf,
-    /// The active branch: `legionctl/<dossier>` or `legionctl/<dossier>/<topic>`.
+    /// The active branch: `legionctl/<dossier>` or `legionctl/<dossier>--<topic>`.
     pub branch: String,
     /// The ref the branch started from and merges into.
     pub base: String,
@@ -366,7 +366,7 @@ impl Dossiers {
         git(&ws.path, &["log", "-1", "--format=%h %s"])
     }
 
-    /// Start `legionctl/<dossier>/<topic>` from the current branch; it becomes the active branch.
+    /// Start `legionctl/<dossier>--<topic>` from the current branch; it becomes the active branch.
     ///
     /// # Errors
     /// The topic is not valid, or git refuses.
@@ -375,7 +375,8 @@ impl Dossiers {
             crate::dossier::valid_name(topic),
             "topic must be a-z, 0-9 and '-', starting with a letter or digit"
         );
-        let branch = format!("legionctl/{}/{topic}", ws.dossier);
+        // not legionctl/<dossier>/<topic>: git cannot nest a ref under the existing branch legionctl/<dossier>
+        let branch = format!("legionctl/{}--{topic}", ws.dossier);
         git(&ws.path, &["switch", "--quiet", "-c", &branch])?;
         self.db().execute(
             "UPDATE workspaces SET branch = ?1 WHERE dossier = ?2 AND repo = ?3 AND closed IS NULL",

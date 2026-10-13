@@ -598,6 +598,11 @@ fn workspace_opens_checkpoints_reports_drift_merges_and_closes_in_a_real_reposit
     );
     run_git(&ws, &["switch", "--quiet", "legionctl/port"]);
 
+    // a topic branch of the same dossier becomes the active branch (git cannot nest it under legionctl/port)
+    assert!(ok(&repo, &["workspace", "branch", "polish"]).contains("legionctl/port--polish"));
+    write(&ws.join("polish.txt"), "x");
+    ok(&repo, &["workspace", "checkpoint", "polish the feature"]);
+
     // merge: rebase onto main, then main moves forward; close keeps the branch
     run_git(
         &repo,
@@ -606,15 +611,15 @@ fn workspace_opens_checkpoints_reports_drift_merges_and_closes_in_a_real_reposit
     ok(&repo, &["workspace", "merge"]);
     assert_eq!(
         run_git(&repo, &["log", "-1", "--format=%s"]),
-        "add feature",
+        "polish the feature",
         "main has the dossier's work on top"
     );
     assert_eq!(
         run_git(&repo, &["rev-list", "--count", "HEAD"]),
-        "4",
-        "linear: start, main moved, ignore line, feature"
+        "5",
+        "linear: start, main moved, ignore line, feature, polish"
     );
-    assert!(ok(&repo, &["workspace", "close"]).contains("branch legionctl/port kept"));
+    assert!(ok(&repo, &["workspace", "close"]).contains("branch legionctl/port--polish kept"));
     assert!(!ws.exists());
     assert_eq!(
         run_git(&repo, &["branch", "--list", "legionctl/port"]),

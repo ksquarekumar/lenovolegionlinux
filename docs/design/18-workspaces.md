@@ -43,7 +43,7 @@ Replaces the "plan workspaces" section of 12-operator. Sessions (14) and sandbox
   ref, registered in `workspace.db`; `workspace.open` links the dossier as `.agentworkspace` and commits the
   `/.agentworkspace` ignore line on the dossier branch when it is missing. `status` reports ahead/behind, staged,
   unstaged, untracked, conflicts and drift (a branch switched outside legionctl, a missing worktree);
-  `checkpoint` commits everything; `branch` starts `legionctl/<dossier>/<topic>`; `merge` rebases onto the base
+  `checkpoint` commits everything; `branch` starts `legionctl/<dossier>--<topic>`; `merge` rebases onto the base
   and fast-forwards the base in a clean main checkout (decided 2026-10-13); `close` removes the worktree and keeps
   the branch. Writes into the main checkout are not blocked (decided 2026-10-13: nudge only): the session-start
   line names the workspace (with its drift) or says to open one, and the stop hook tells the agent when the main
@@ -91,7 +91,7 @@ For a git source, legionctl does the git work around the agent; the agent edits 
 | Operation | What legionctl does |
 | --- | --- |
 | open | A worktree from a recorded base ref on the dossier's active branch `legionctl/<dossier>` (created on first open, reused after). If the session started inside the source checkout, the agent is moved to the worktree path. |
-| new branch | Another branch for the same dossier (`legionctl/<dossier>/<topic>`); it becomes the active branch. |
+| new branch | Another branch for the same dossier (`legionctl/<dossier>--<topic>`); it becomes the active branch. |
 | checkpoint | Stage and commit the change set's files with a message from the plan entry; update the code graph. |
 | merge | With approval: rebase or merge the active branch into the base ref; conflicts become git state (14) that the agent resolves in the worktree. |
 | close | Remove the worktree; keep the branch until merged; the dossier stays. |
