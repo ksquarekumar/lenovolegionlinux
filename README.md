@@ -39,6 +39,7 @@ gnome-extensions enable legionctl-osd@legionctl    # takes effect at the next lo
 ## Commands
 
 ```bash
+legionctl-app                     # the desktop app: glance, policy preview, GPU wiring, health, bench
 legionctl status                  # power, mode, CPU, limits, GPU wiring, units, modules, load (fans and throttle: root)
 legionctl doctor                  # drift, conflicts, kernel modules and DKMS, NTFS, GPU placement, failed units, OSD, agent setup
 legionctl knobs                   # every knob: value, what the profile wants now, firmware range, policy

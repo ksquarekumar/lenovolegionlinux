@@ -50,7 +50,7 @@ js-lint: ## Biome lint and format check, tsc type check of the GNOME Shell exten
 	bun run typecheck
 
 .PHONY: build
-build: ## build legionctl, legionctl-system and legionctl-operator (release)
+build: ## build legionctl, legionctl-system, legionctl-operator and legionctl-app (release)
 	cargo build --release --locked
 
 .PHONY: validate
@@ -85,6 +85,8 @@ lint-pkg: ## namcap the PKGBUILD (Arch only)
 install: ## install into DESTDIR; the PKGBUILD calls this (on this machine: `make package install-package`)
 	@test -x target/release/legionctl || { echo "target/release/legionctl missing: run 'make build' first"; exit 1; }
 	install -Dm755 target/release/legionctl "$(DESTDIR)$(BINDIR)/legionctl"
+	install -Dm755 target/release/legionctl-app "$(DESTDIR)$(BINDIR)/legionctl-app"
+	install -Dm644 desktop/legionctl.desktop "$(DESTDIR)$(PREFIX)/share/applications/legionctl.desktop"
 	install -Dm755 target/release/legionctl-system "$(DESTDIR)$(LIBDIR)/legionctl-system"
 	install -Dm755 target/release/legionctl-operator "$(DESTDIR)$(LIBDIR)/legionctl-operator"
 	install -Dm644 $(PROFILE) "$(DESTDIR)$(DATADIR)/profiles/$(notdir $(PROFILE))"
