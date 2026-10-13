@@ -68,11 +68,31 @@ fn operator(tag: &str) -> (Operator, PathBuf) {
         &[
             ("LEGIONCTL_SYSROOT", root.into()),
             ("HOME", home.clone().into()),
-            ("PATH", path_with_build()),
+            ("PATH", path_with_keyring(&home)),
             ("LEGIONCTL_PLUGIN_SKILLS", OsString::from(skills)),
         ],
     );
     (operator, home)
+}
+
+/// This build's `PATH` behind a stand-in `secret-tool` that keeps entries as files in `home/keyring`
+/// (`<attribute value with / as _>`): no test reaches the user's real keyring.
+fn path_with_keyring(home: &Path) -> OsString {
+    let bin = home.join("keyring-bin");
+    write(
+        &bin.join("secret-tool"),
+        &format!(
+            "#!/bin/sh\nk={}; mkdir -p \"$k\"\ncase \"$1\" in\n  lookup) cat \"$k/$(printf %s \"$3\" | tr / _)\" 2>/dev/null || exit 1;;\n  store) cat > \"$k/$(printf %s \"$4\" | tr / _)\";;\nesac\n",
+            home.join("keyring").display()
+        ),
+    );
+    std::fs::set_permissions(
+        bin.join("secret-tool"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path_with_build())))
+        .unwrap()
 }
 
 #[test]
@@ -2995,6 +3015,89 @@ fn profile_listed_and_counted(op: &Operator, repo: &Path) {
     );
     let usage = String::from_utf8_lossy(&usage.stdout);
     assert!(usage.contains("claude-x") && usage.contains('7'), "{usage}");
+}
+
+/// Account logins rest in the keyring (A1): a login made in a profile moves into the keyring when no session of the
+/// account runs; a session gets it in the profile; the token the agent refreshed goes back to the keyring, and off
+/// the disk, when the operator next looks (another session's start, or the operator's start). A stand-in
+/// `secret-tool` keeps entries as files.
+#[test]
+fn account_logins_rest_in_the_keyring_and_come_back_refreshed() {
+    let home = Path::new("/var/tmp").join(format!("legionctl-e2e-keyring-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let keyring = home.join("keyring");
+    let path = path_with_keyring(&home);
+    std::fs::create_dir_all(home.join("root")).unwrap();
+    let env = |tag: &str| {
+        Operator::start(
+            tag,
+            &[
+                ("HOME", home.clone().into()),
+                ("LEGIONCTL_SYSROOT", home.join("root").into()),
+                ("PATH", path.clone()),
+            ],
+        )
+    };
+    let op = env("keyring");
+    let repo = repository(&home);
+    // the agent prints the login it got, then "refreshes" it
+    let probe = "f=\"$CLAUDE_CONFIG_DIR/.credentials.json\"; cat \"$f\"; echo; printf 'r%s' \"$(cat \"$f\")\" > \"$f\"";
+    write(
+        &home.join(".config/legionctl/session.jsonc"),
+        &json!({"session": {"agents": {"probe": ["sh", "-c", probe]}, "writable": []}}).to_string(),
+    );
+    assert!(
+        op.run(&repo, &[], &["agents", "accounts", "add", "work"], "")
+            .status
+            .success()
+    );
+    let login = home.join(".local/share/legionctl/accounts/work/claude/.credentials.json");
+    write(&login, "login-1");
+    let session = |op: &Operator, dossier: &str| -> String {
+        let started = op.run(
+            &repo,
+            &[("HOME", home.to_str().unwrap())],
+            &[
+                "session",
+                "start",
+                "probe",
+                "--dossier",
+                dossier,
+                "--account",
+                "work",
+                "--json",
+            ],
+            "",
+        );
+        assert!(
+            started.status.success(),
+            "{}",
+            String::from_utf8_lossy(&started.stderr)
+        );
+        let launch: Value = serde_json::from_slice(&started.stdout).unwrap();
+        String::from_utf8_lossy(&run_launch(op, &home, &launch).stdout)
+            .trim()
+            .to_string()
+    };
+    let kept = || std::fs::read_to_string(keyring.join("work_claude")).unwrap_or_default();
+    assert_eq!(session(&op, "keys-1"), "login-1");
+    assert_eq!(
+        kept(),
+        "login-1",
+        "the login made in the profile went into the keyring first"
+    );
+    assert_eq!(
+        session(&op, "keys-2"),
+        "rlogin-1",
+        "the next session gets the refreshed token"
+    );
+    assert_eq!(kept(), "rlogin-1");
+    drop(op);
+    // the first call starts the operator (socket activation), which settles the logins before it serves
+    env("keyring2").ok(&["dossier", "list"]);
+    assert!(!login.exists(), "at rest the login is not on the disk");
+    assert_eq!(kept(), "rrlogin-1");
 }
 
 #[test]

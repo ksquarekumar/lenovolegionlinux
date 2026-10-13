@@ -87,6 +87,12 @@ the least recently used until the namespace fits. The operator builds the keys: 
 tool, arguments, the folder for a tool that reads the working copy), and the key holds the caller's session, so one
 sandbox cannot get or plant another session's entries. `legionctl cache stats` and `cache purge [--ns]`.
 
+Built (2026-10-14, A1 decided 2026-10-13): account logins rest in the keyring. Each agent's login file in a profile
+(`claude/.credentials.json`, `codex/auth.json`) is the keyring entry `legionctl-login <account>/<agent>`. A session of
+the account gets it in the profile (0600); when no live session of the account runs (at the next session start, or
+at the operator's start), a login file in the profile (a new login, or a token the agent refreshed) goes into the
+keyring and off the disk.
+
 ## Worktrees and sandboxes
 
 - **Copy-on-write:** this machine's disks are ext4, which cannot reflink. A worktree is a `git worktree` (shares the

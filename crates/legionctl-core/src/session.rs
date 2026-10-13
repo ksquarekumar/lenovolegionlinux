@@ -326,6 +326,103 @@ fn skill_binds(
 
 /// The account's own logins and transcripts instead of `~/.claude` and `~/.codex`: its folders, writable, and the
 /// variables that point the agents there.
+/// Each agent's login file in an account profile (A1, decided 2026-10-13): at rest in the keyring
+/// (`legionctl-login <account>/<agent>`), in the profile only while a session of the account runs.
+const LOGINS: [(&str, &str); 2] = [("claude", ".credentials.json"), ("codex", "auth.json")];
+
+fn keyring_get(entry: &str) -> Result<Option<Vec<u8>>> {
+    let out = std::process::Command::new("secret-tool")
+        .args(["lookup", "legionctl-login", entry])
+        .output()
+        .context("running secret-tool")?;
+    Ok((out.status.success() && !out.stdout.is_empty()).then_some(out.stdout))
+}
+
+fn keyring_put(entry: &str, secret: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    let mut child = std::process::Command::new("secret-tool")
+        .args([
+            "store",
+            &format!("--label=legionctl login {entry}"),
+            "legionctl-login",
+            entry,
+        ])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .context("running secret-tool")?;
+    child
+        .stdin
+        .take()
+        .context("secret-tool stdin")?
+        .write_all(secret)?;
+    anyhow::ensure!(
+        child.wait()?.success(),
+        "secret-tool could not store {entry}"
+    );
+    Ok(())
+}
+
+/// Write the account's logins from the keyring into its profile (0600) for a session; a file already there is newer
+/// (a session of the account runs) and stays.
+fn logins_out(account: &str) -> Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    for (agent, file) in LOGINS {
+        let path = accounts_root().join(account).join(agent).join(file);
+        if path.exists() {
+            continue;
+        }
+        if let Some(secret) = keyring_get(&format!("{account}/{agent}"))? {
+            std::fs::create_dir_all(path.parent().context("no profile folder")?)?;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)?
+                .write_all(&secret)?;
+        }
+    }
+    Ok(())
+}
+
+impl Dossiers {
+    /// For each account no live session uses: a login file in its profile (a new login, or tokens an agent refreshed)
+    /// goes into the keyring and off the disk. shortcut: a session without a scope (`session.scope` false) counts as
+    /// not live, so its login can go while it runs; keep scopes on with accounts.
+    ///
+    /// # Errors
+    /// The keyring or the sessions table fails.
+    pub fn settle_logins(&self) -> Result<()> {
+        let live: Vec<String> = self
+            .sessions()?
+            .into_iter()
+            .filter(|s| scope_active(&s.id))
+            .filter_map(|s| s.account)
+            .collect();
+        for entry in std::fs::read_dir(accounts_root())
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let account = entry.file_name().to_string_lossy().into_owned();
+            if live.contains(&account) {
+                continue;
+            }
+            for (agent, file) in LOGINS {
+                let path = entry.path().join(agent).join(file);
+                let Ok(secret) = std::fs::read(&path) else {
+                    continue;
+                };
+                if !secret.is_empty() {
+                    keyring_put(&format!("{account}/{agent}"), &secret)?;
+                }
+                std::fs::remove_file(&path)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 fn account_binds(sandbox: &mut Vec<String>, account: &str) -> Result<()> {
     for (agent, variable) in [("claude", "CLAUDE_CONFIG_DIR"), ("codex", "CODEX_HOME")] {
         let dir = accounts_root().join(account).join(agent);
@@ -452,6 +549,8 @@ impl Dossiers {
         })?;
         if let Some(account) = start.account {
             account_dir(account)?;
+            self.settle_logins()?;
+            logins_out(account)?;
         }
         // a server whose package is missing or changed stops the session before anything is bound
         let store = crate::packages::Store::new(crate::packages::Store::default_root());
@@ -509,6 +608,10 @@ impl Dossiers {
                 params![new, id],
             )?;
             record.account = Some(new.to_string());
+        }
+        if let Some(account) = record.account.as_deref() {
+            self.settle_logins()?;
+            logins_out(account)?;
         }
         let ws = self.open_workspace(id, &record.workdir, None, &config.workspace.root)?;
         self.launch(

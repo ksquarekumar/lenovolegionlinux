@@ -101,6 +101,15 @@ async fn main() -> Result<()> {
             Ok(rows) => eprintln!("operator: {rows} old log rows removed (events.keep_days)"),
             Err(e) => eprintln!("operator: old log rows not removed: {e:#}"),
         }
+        // account logins left in profiles (a new login, a session that ended) go into the keyring
+        let settled =
+            legionctl_core::config::resolve(&legionctl_core::config::Dirs::from_env(), None)
+                .and_then(|r| {
+                    legionctl_core::dossier::Dossiers::open(&r.config.dossier)?.settle_logins()
+                });
+        if let Err(e) = settled {
+            eprintln!("operator: account logins not moved to the keyring: {e:#}");
+        }
     })
     .await;
     if let Err(e) = pruned {
