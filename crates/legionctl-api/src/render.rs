@@ -966,7 +966,7 @@ impl Render for Vec<ToolCallRow> {
                     &c.session.0[..c.session.0.len().min(8)],
                     c.server,
                     c.tool,
-                    c.outcome,
+                    wire_name(&c.outcome),
                     c.ms,
                     c.bytes,
                     c.args_hash
@@ -1157,7 +1157,10 @@ impl Render for crate::io::VirtStatus {
                 .unwrap_or_default();
             format!(
                 "  {:<9} {}{consumer}: {} {}{memory}",
-                i.kind, i.name, i.state, i.image
+                wire_name(&i.kind),
+                i.name,
+                i.state,
+                i.image
             )
         }));
         out.extend(self.findings.iter().map(|f| format!("- {f}")));
@@ -1298,4 +1301,12 @@ impl Render for Vec<crate::io::Account> {
             .collect::<Vec<_>>()
             .join("\n")
     }
+}
+
+/// An enum value as the wire names it (`cached`, `vm`).
+fn wire_name<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default()
 }

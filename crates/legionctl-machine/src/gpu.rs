@@ -49,32 +49,92 @@ pub fn outputs(root: &SysRoot) -> Vec<Output> {
 
 /// `hybrid`: built-in panel on the iGPU; `discrete`: panel wired to NVIDIA (MUX); `unknown`: no connected panel.
 #[must_use]
-pub fn mode(outputs: &[Output]) -> &'static str {
+pub fn mode(outputs: &[Output]) -> GpuMode {
     match outputs
         .iter()
         .find(|o| o.connector.starts_with("eDP") && o.connected)
     {
-        Some(panel) if panel.driver == "nvidia" => "discrete",
-        Some(_) => "hybrid",
-        None => "unknown",
+        Some(panel) if panel.driver == "nvidia" => GpuMode::Discrete,
+        Some(_) => GpuMode::Hybrid,
+        None => GpuMode::Unknown,
     }
 }
 
-const PRIMARY_DRIVERS: [(&str, &str); 2] = [("nvidia", "nvidia"), ("intel", "i915")];
+/// Which GPU drives the built-in panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum GpuMode {
+    /// The panel is on the iGPU.
+    Hybrid,
+    /// The panel is on NVIDIA.
+    Discrete,
+    Unknown,
+}
 
-/// The GPU Mutter draws the desktop on (`nvidia`, `intel`), or `auto` without a rule.
+/// The GPU Mutter draws the desktop on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum DesktopGpu {
+    Nvidia,
+    Intel,
+    /// No rule: Mutter picks the GPU of the built-in panel.
+    Auto,
+}
+
+impl DesktopGpu {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DesktopGpu::Nvidia => "nvidia",
+            DesktopGpu::Intel => "intel",
+            DesktopGpu::Auto => "auto",
+        }
+    }
+}
+
+impl std::str::FromStr for DesktopGpu {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        [DesktopGpu::Nvidia, DesktopGpu::Intel, DesktopGpu::Auto]
+            .into_iter()
+            .find(|g| g.as_str() == s)
+            .ok_or_else(|| anyhow::anyhow!("desktop GPU must be nvidia, intel or auto"))
+    }
+}
+
+impl std::fmt::Display for DesktopGpu {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::fmt::Display for GpuMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            GpuMode::Hybrid => "hybrid",
+            GpuMode::Discrete => "discrete",
+            GpuMode::Unknown => "unknown",
+        })
+    }
+}
+
+const PRIMARY_DRIVERS: [(DesktopGpu, &str); 2] =
+    [(DesktopGpu::Nvidia, "nvidia"), (DesktopGpu::Intel, "i915")];
+
+/// The GPU Mutter draws the desktop on, from the udev rule; `auto` without one.
 #[must_use]
-pub fn desktop_preference(root: &SysRoot) -> &'static str {
+pub fn desktop_preference(root: &SysRoot) -> DesktopGpu {
     let rule = root.read(PRIMARY_GPU_RULE).unwrap_or_default();
     PRIMARY_DRIVERS
         .iter()
         .find(|(_, driver)| rule.contains(&format!("DRIVERS==\"{driver}\"")))
-        .map_or("auto", |(name, _)| name)
+        .map_or(DesktopGpu::Auto, |(gpu, _)| *gpu)
 }
 
 #[must_use]
-pub fn primary_rule(choice: &str) -> Option<String> {
-    let (_, driver) = PRIMARY_DRIVERS.iter().find(|(name, _)| *name == choice)?;
+pub fn primary_rule(choice: DesktopGpu) -> Option<String> {
+    let (_, driver) = PRIMARY_DRIVERS.iter().find(|(gpu, _)| *gpu == choice)?;
     Some(format!(
         "# legionctl: GPU that Mutter uses to draw the desktop (read at login)\n\
          SUBSYSTEM==\"drm\", KERNEL==\"card*\", DRIVERS==\"{driver}\", TAG+=\"mutter-device-preferred-primary\"\n"
@@ -129,13 +189,13 @@ pub fn render_env(root: &SysRoot, gpu: &str) -> BTreeMap<&'static str, String> {
     env
 }
 
-/// Plan the desktop GPU choice (`nvidia`, `intel`, `auto`); Mutter reads it at the next login.
+/// Plan the desktop GPU choice; Mutter reads it at the next login.
 ///
 /// # Errors
-/// `choice` is not `nvidia`, `intel` or `auto`.
-pub fn set_desktop(machine: &Machine, choice: &str) -> Result<Vec<Step>> {
+/// The plan cannot be made.
+pub fn set_desktop(machine: &Machine, choice: DesktopGpu) -> Result<Vec<Step>> {
     let mut steps = match choice {
-        "auto" => vec![
+        DesktopGpu::Auto => vec![
             Step::Remove {
                 path: PRIMARY_GPU_RULE.into(),
             },

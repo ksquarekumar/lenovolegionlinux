@@ -86,14 +86,15 @@ pub const ACTOR_HEADER: &str = "x-legionctl-actor";
 /// The fingerprint of the operation registry a client and the operator were built with ([`api_fingerprint`]).
 pub const API_HEADER: &str = "x-legionctl-api";
 
-/// FNV-1a over every operation's name and input schema: equal for a client and an operator of the same build, and
-/// different after an upgrade until the running operator restarts.
+/// FNV-1a over every operation's name, class, input schema and output schema: equal for a client and an operator of
+/// the same build, and different after a change of the wire format until the running operator restarts.
 pub fn api_fingerprint() -> &'static str {
     static FINGERPRINT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     FINGERPRINT.get_or_init(|| {
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         for op in OPS {
-            for byte in op.name.bytes().chain((op.input)().to_string().into_bytes()) {
+            let wire = format!("{}{:?}{}{}", op.name, op.class, (op.input)(), (op.output)());
+            for byte in wire.bytes() {
                 hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
             }
         }
@@ -127,6 +128,8 @@ pub struct OpInfo {
     pub class: Class,
     /// JSON schema of the input, with every subschema inline.
     pub input: fn() -> Value,
+    /// JSON schema of the output, the same way.
+    pub output: fn() -> Value,
 }
 
 impl OpInfo {
@@ -251,7 +254,7 @@ pub trait Op {
     type Out: Serialize + DeserializeOwned + Render;
 }
 
-fn input_schema<T: JsonSchema>() -> Value {
+fn schema_of<T: JsonSchema>() -> Value {
     let schema = SchemaSettings::draft2020_12()
         .with(|s| s.inline_subschemas = true)
         .into_generator()
@@ -299,7 +302,8 @@ macro_rules! operations {
             name: $name,
             help: concat!($($doc),+),
             class: Class::$class,
-            input: input_schema::<$in>,
+            input: schema_of::<$in>,
+            output: schema_of::<$out>,
         }),*];
 
         /// What `legionctl-operator` implements: one method per operation.

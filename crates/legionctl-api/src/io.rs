@@ -22,7 +22,7 @@ pub use legionctl_core::setup::Report as SetupReport;
 pub use legionctl_core::skills::SkillInfo;
 pub use legionctl_core::workspace::{Workspace, WorkspaceStatus};
 pub use legionctl_machine::bench::{BenchResult, Scenario};
-pub use legionctl_machine::gpu::Output;
+pub use legionctl_machine::gpu::{DesktopGpu, GpuMode, Output};
 pub use legionctl_machine::knobs::Knob;
 pub use legionctl_machine::load::Load as LoadState;
 pub use legionctl_machine::profile::Capability;
@@ -237,14 +237,6 @@ pub struct PowerApplyIn {
     pub dry_run: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum DesktopGpu {
-    Nvidia,
-    Intel,
-    Auto,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GpuPrimaryIn {
     /// The GPU that draws the desktop: nvidia, intel, or auto (Mutter decides).
@@ -318,10 +310,9 @@ pub struct Validation {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GpuState {
-    /// hybrid (panel on the iGPU), discrete (panel on NVIDIA) or unknown.
-    pub mode: String,
-    /// GPU GNOME draws the desktop on (nvidia, intel or auto); Mutter reads it at login.
-    pub desktop_gpu: String,
+    pub mode: GpuMode,
+    /// GPU GNOME draws the desktop on; Mutter reads it at login.
+    pub desktop_gpu: DesktopGpu,
     pub outputs: Vec<Output>,
 }
 
@@ -788,9 +779,7 @@ pub struct ToolCall {
     pub ms: u64,
     /// Size of the result's JSON.
     pub bytes: u64,
-    /// ok, cached (an earlier result was reused), error (the tool reported one), failed (the server did not answer)
-    /// or refused (not allowed).
-    pub outcome: String,
+    pub outcome: Outcome,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -913,11 +902,33 @@ pub struct VirtCapability {
     pub detail: String,
 }
 
+/// How a proxied tool call ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Outcome {
+    Ok,
+    /// An earlier result was reused.
+    Cached,
+    /// The tool reported an error.
+    Error,
+    /// The server did not answer.
+    Failed,
+    /// The tool is not allowed.
+    Refused,
+}
+
+/// A container or a virtual machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum VirtKind {
+    Container,
+    Vm,
+}
+
 /// A container or VM.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct VirtInstance {
-    /// container or vm.
-    pub kind: String,
+    pub kind: VirtKind,
     pub name: String,
     pub image: String,
     pub state: String,

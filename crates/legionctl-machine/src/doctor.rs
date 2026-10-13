@@ -250,12 +250,12 @@ fn gpu_warnings(root: &SysRoot, profile: &Profile, ac: bool) -> Vec<String> {
     let external_on_nvidia = outputs
         .iter()
         .any(|o| o.connected && o.driver == "nvidia" && !o.connector.starts_with("eDP"));
-    if gpu::mode(&outputs) == "hybrid"
+    if gpu::mode(&outputs) == gpu::GpuMode::Hybrid
         && external_on_nvidia
-        && gpu::desktop_preference(root) != "nvidia"
+        && gpu::desktop_preference(root) != gpu::DesktopGpu::Nvidia
     {
         w.push(
-            "an external display runs on NVIDIA but the desktop may be drawn on Intel; try `legionctl gpu primary --choice nvidia`"
+            "an external display runs on NVIDIA but the desktop may be drawn on Intel; try `legionctl gpu primary nvidia`"
                 .into(),
         );
     }

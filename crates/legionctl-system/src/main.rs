@@ -331,8 +331,11 @@ impl System1 {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.gpu.desktop").await?;
+        let choice: gpu::DesktopGpu = choice
+            .parse()
+            .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("{e}")))?;
         let lines =
-            carry_out(&self.root, |m| gpu::set_desktop(m, &choice)).map_err(|e| failed(&e))?;
+            carry_out(&self.root, |m| gpu::set_desktop(m, choice)).map_err(|e| failed(&e))?;
         if !lines.is_empty() {
             Self::changed(&emitter, "SetDesktopGpu", &lines).await?;
         }

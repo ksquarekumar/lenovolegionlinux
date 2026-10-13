@@ -16,10 +16,10 @@ use legionctl_api::{
 };
 use legionctl_api::{
     AccountAddIn, BranchIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath, CloseIn,
-    ConfigFiles, ConfigView, Ctx, DesktopGpu, Empty, Engine, ExplainIn, Explanation, Findings,
-    GpuPrimaryIn, GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LayerList, LoadState,
-    PowerApplyIn, PowerSource, ProfileIn, ProjectIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn,
-    SetupApplyIn, SetupReport, SkillList, Snapshot, StatusIn, Validation, Workspace, WorkspaceIn,
+    ConfigFiles, ConfigView, Ctx, Empty, Engine, ExplainIn, Explanation, Findings, GpuPrimaryIn,
+    GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LayerList, LoadState, PowerApplyIn,
+    PowerSource, ProfileIn, ProjectIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn, SetupApplyIn,
+    SetupReport, SkillList, Snapshot, StatusIn, Validation, Workspace, WorkspaceIn,
     WorkspaceOpenIn, WorkspaceStates, Workspaces,
 };
 use legionctl_core::config::{Dirs, Resolved, resolve};
@@ -569,8 +569,8 @@ impl Engine for Operator {
         let root = SysRoot::from_env();
         let outputs = gpu::outputs(&root);
         Ok(GpuState {
-            mode: gpu::mode(&outputs).into(),
-            desktop_gpu: gpu::desktop_preference(&root).into(),
+            mode: gpu::mode(&outputs),
+            desktop_gpu: gpu::desktop_preference(&root),
             outputs,
         })
     }
@@ -620,17 +620,13 @@ impl Engine for Operator {
     }
 
     fn gpu_primary(&self, _: &Ctx, input: GpuPrimaryIn) -> Result<Changes> {
-        let choice = match input.choice {
-            DesktopGpu::Nvidia => "nvidia",
-            DesktopGpu::Intel => "intel",
-            DesktopGpu::Auto => "auto",
-        };
+        let choice = input.choice;
         if input.dry_run {
             let plan = Plan::load(None)?;
             return Ok(dry_run(&gpu::set_desktop(&plan.machine(), choice)?));
         }
         Ok(Changes {
-            lines: self.system(async move |p| p.set_desktop_gpu(choice).await)?,
+            lines: self.system(async move |p| p.set_desktop_gpu(choice.as_str()).await)?,
             dry_run: false,
         })
     }

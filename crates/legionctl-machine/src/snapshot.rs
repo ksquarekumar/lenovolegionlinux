@@ -98,10 +98,9 @@ pub struct Snapshot {
     pub throttle_reasons: Option<Vec<String>>,
     pub package_temp_c: Option<f64>,
     pub outputs: Vec<Output>,
-    /// "hybrid" (panel on the iGPU), "discrete" (panel on NVIDIA) or "unknown".
-    pub gpu_mode: String,
-    /// GPU GNOME draws the desktop on: nvidia, intel or auto.
-    pub desktop_gpu: String,
+    pub gpu_mode: gpu::GpuMode,
+    /// GPU GNOME draws the desktop on.
+    pub desktop_gpu: gpu::DesktopGpu,
     pub units: Vec<UnitState>,
     /// Modules that matter on this machine, and whether each is loaded.
     pub modules: BTreeMap<String, bool>,
@@ -253,9 +252,9 @@ impl Snapshot {
             throttle_reasons: firmware::logged_throttle_reasons(root)
                 .map(|r| r.into_iter().map(String::from).collect()),
             package_temp_c: package_temp(root),
-            gpu_mode: gpu::mode(&outputs).into(),
+            gpu_mode: gpu::mode(&outputs),
             outputs,
-            desktop_gpu: gpu::desktop_preference(root).into(),
+            desktop_gpu: gpu::desktop_preference(root),
             units: UNITS
                 .iter()
                 .filter(|_| full)

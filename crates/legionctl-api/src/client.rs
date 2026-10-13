@@ -11,6 +11,9 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use serde_json::Value;
 
+/// The build warning is printed once per process.
+static BUILD_WARNED: std::sync::Once = std::sync::Once::new();
+
 pub struct Client {
     /// Which surface calls: cli, mcp or tui. The operator records it with every change.
     actor: &'static str,
@@ -127,8 +130,15 @@ impl Client {
             .get(API_HEADER)
             .is_some_and(|b| b.as_bytes() != api_fingerprint().as_bytes())
         {
-            static WARNED: std::sync::Once = std::sync::Once::new();
-            WARNED.call_once(|| {
+            // legionctl's own parts must not guess at another build's wire format; a person gets the warning
+            if matches!(self.actor, "hook" | "gate" | "mcp-proxy") {
+                return Err(coded(
+                    Code::VersionMismatch,
+                    "the running legionctl-operator is a different build than this client; restart it \
+                     (systemctl --user restart legionctl-operator)",
+                ));
+            }
+            BUILD_WARNED.call_once(|| {
                 eprintln!(
                     "legionctl: the running operator is a different build than this client; restart it \
                      (systemctl --user restart legionctl-operator)"

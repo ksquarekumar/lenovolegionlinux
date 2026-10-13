@@ -453,22 +453,16 @@ impl LegionApp {
                                 "gpu-nvidia",
                                 "Draw the desktop on NVIDIA",
                                 DesktopGpu::Nvidia,
-                                "nvidia",
                             ),
-                            (
-                                "gpu-intel",
-                                "Draw the desktop on Intel",
-                                DesktopGpu::Intel,
-                                "intel",
-                            ),
-                            ("gpu-auto", "Let GNOME choose", DesktopGpu::Auto, "auto"),
+                            ("gpu-intel", "Draw the desktop on Intel", DesktopGpu::Intel),
+                            ("gpu-auto", "Let GNOME choose", DesktopGpu::Auto),
                         ]
-                        .map(|(id, label, choice, name)| {
+                        .map(|(id, label, choice)| {
                             let current = self
                                 .state
                                 .gpu
                                 .as_ref()
-                                .is_some_and(|g| g.desktop_gpu == name);
+                                .is_some_and(|g| g.desktop_gpu == choice);
                             Button::new(id)
                                 .label(label)
                                 .selected(current)

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
-use legionctl_api::{VirtCapability, VirtInstance, VirtStatus};
+use legionctl_api::{VirtCapability, VirtInstance, VirtKind, VirtStatus};
 use legionctl_machine::sysroot::SysRoot;
 use serde_json::Value;
 
@@ -138,7 +138,7 @@ fn libvirt_vms() -> Vec<VirtInstance> {
             let mut parts = line.split_whitespace();
             let (_, name) = (parts.next()?, parts.next()?);
             Some(VirtInstance {
-                kind: "vm".into(),
+                kind: VirtKind::Vm,
                 name: name.into(),
                 image: String::new(),
                 state: parts.collect::<Vec<_>>().join(" "),
@@ -247,7 +247,7 @@ async fn containers(root: &SysRoot, status: &mut VirtStatus) {
         };
         status.instances.push(VirtInstance {
             memory_bytes,
-            kind: "container".into(),
+            kind: VirtKind::Container,
             name: c["Names"][0]
                 .as_str()
                 .unwrap_or("?")

@@ -8,7 +8,7 @@ use std::time::Instant;
 use blake2::digest::consts::U16;
 use blake2::{Blake2b, Digest};
 use legionctl_api::client::Client;
-use legionctl_api::{CacheGetIn, CachePutIn, ToolCall, op};
+use legionctl_api::{CacheGetIn, CachePutIn, Outcome, ToolCall, op};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
     PaginatedRequestParams, ServerCapabilities, ServerConfig,
@@ -88,7 +88,7 @@ impl Proxy {
         args_hash: String,
         started: Instant,
         bytes: usize,
-        outcome: &str,
+        outcome: Outcome,
     ) {
         let call = ToolCall {
             session: legionctl_api::SessionId(self.session.clone()),
@@ -97,7 +97,7 @@ impl Proxy {
             args_hash,
             ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             bytes: u64::try_from(bytes).unwrap_or(u64::MAX),
-            outcome: outcome.into(),
+            outcome,
         };
         // shortcut: a call is not refused when the log fails (the operator is down); the failure goes to stderr,
         // which the agent shows in its MCP log
@@ -144,7 +144,8 @@ impl ServerHandler for Proxy {
         let args = serde_json::to_vec(&request.arguments).unwrap_or_default();
         let args_hash = format!("{:x}", Blake2b::<U16>::digest(&args));
         if !self.allowed(&tool) {
-            self.log(&tool, args_hash, started, 0, "refused").await;
+            self.log(&tool, args_hash, started, 0, Outcome::Refused)
+                .await;
             return Err(ErrorData::invalid_params(
                 format!(
                     "{tool} is not allowed for {} in this session (mcp.servers.{}.allow)",
@@ -176,19 +177,25 @@ impl ServerHandler for Proxy {
                 .value
                 .and_then(|v| serde_json::from_str::<CallToolResult>(&v).ok())
         {
-            self.log(&tool, args_hash, started, hit_size(&result), "cached")
-                .await;
+            self.log(
+                &tool,
+                args_hash,
+                started,
+                hit_size(&result),
+                Outcome::Cached,
+            )
+            .await;
             return Ok(result.into());
         }
         match self.upstream.peer().call_tool(request).await {
             Ok(result) => {
                 let bytes = hit_size(&result);
                 let outcome = if result.is_error == Some(true) {
-                    "error"
+                    Outcome::Error
                 } else {
-                    "ok"
+                    Outcome::Ok
                 };
-                if let (Some(key), Some(rule), "ok") = (key, rule, outcome) {
+                if let (Some(key), Some(rule), Outcome::Ok) = (key, rule, outcome) {
                     let put = CachePutIn {
                         key,
                         value: serde_json::to_string(&result).unwrap_or_default(),
@@ -205,7 +212,8 @@ impl ServerHandler for Proxy {
                 Ok(result.into())
             }
             Err(e) => {
-                self.log(&tool, args_hash, started, 0, "failed").await;
+                self.log(&tool, args_hash, started, 0, Outcome::Failed)
+                    .await;
                 Ok(
                     CallToolResult::error(vec![ContentBlock::text(format!(
                         "{}: {e}",

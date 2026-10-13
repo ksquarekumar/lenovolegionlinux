@@ -251,7 +251,7 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
             "- /etc/modules-load.d/acpi.conf autoloads acpi_call, which does not exist for 7.2.9-2-cachyos-bore-lto (fails every boot)",
             "- DKMS module acpi_call/1.2.2 is not built for kernel 7.2.9-2-cachyos-bore-lto",
             "- NTFS volume nvme0n1p3 is marked dirty; run chkdsk in Windows (or ntfsfix -d, see docs/design/11-disks.md)",
-            "- an external display runs on NVIDIA but the desktop may be drawn on Intel; try `legionctl gpu primary --choice nvidia`",
+            "- an external display runs on NVIDIA but the desktop may be drawn on Intel; try `legionctl gpu primary nvidia`",
             "- unit tlp.service failed; see systemctl status tlp.service",
             "- user unit app-ghostty.service failed; see systemctl --user status app-ghostty.service",
             "- the OSD extension legionctl-osd@legionctl is ERROR; Fn+Q, Fn+R and Fn lock show no OSD (see journalctl --user -b /usr/bin/gnome-shell)",
