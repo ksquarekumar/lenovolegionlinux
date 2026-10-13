@@ -391,6 +391,9 @@ operations! {
     /// Prepare a sandboxed session of an agent on a dossier's workspace; `legionctl session start` then runs it in the
     /// terminal (systemd scope, bwrap with your home read-only, git gate).
     session_start / SessionStart = "session.start", Workspace, SessionStartIn => Launch;
+    /// Run an agent headless on a task through its ACP adapter, in the same sandbox, gates and MCP servers as an
+    /// interactive session; returns its answer.
+    session_run / SessionRun = "session.run", Workspace, SessionRunIn => RunOutput;
     /// Sessions legionctl started, newest first, with the state of their scope.
     session_list / SessionList = "session.list", Read, Empty => Sessions;
     /// Stop a session's scope (the agent and everything it started).

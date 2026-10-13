@@ -512,6 +512,35 @@ pub struct SessionStartIn {
     pub repo: ClientPath,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SessionRunIn {
+    /// Agent: claude or codex (config session.acp: its ACP adapter).
+    pub agent: String,
+    /// The task for the agent.
+    pub prompt: String,
+    /// Dossier to work in; default: the last one used in this repository.
+    #[serde(default)]
+    pub dossier: Option<String>,
+    /// Create the dossier when it does not exist.
+    #[serde(default)]
+    pub create: bool,
+    /// A folder in the repository to work on.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+/// What a headless run gave back.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RunOutput {
+    pub id: String,
+    /// The agent's answer.
+    pub text: String,
+    pub ms: u64,
+    /// Each permission the agent asked for, and the answer (the sandbox and the gates are the boundary, so asks
+    /// inside it are allowed).
+    pub permissions: Vec<String>,
+}
+
 /// A session and whether its scope still runs.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionState {

@@ -103,6 +103,14 @@
     },
     // Writable besides the workspace, the dossier, the repository's .git and the runtime folder (/tmp is private to
     // the session): the agents' own state.
+    // Agent name -> its ACP adapter, for headless runs (legionctl session run): Zed's adapters for Claude Code and
+    // Codex. The adapter gets the session's MCP servers (legionctl's own and the proxied ones) at session/new.
+    "acp": {
+      "claude": ["claude-code-acp"],
+      "codex": ["codex-acp"]
+    },
+    // Each session in its own systemd user scope (legionctl-session-<id>), for limits, pause and stop.
+    "scope": true,
     "writable": ["~/.claude", "~/.claude.json", "~/.codex", "~/.cache"],
     // Hidden in the sandbox: a container or VM manager would let the agent run anything on the host's files. The
     // runtime folder (session bus, systemd, GnuPG, ssh and keyring agents) is hidden always, but legionctl's part.

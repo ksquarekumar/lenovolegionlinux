@@ -38,6 +38,10 @@ pub struct Launch {
     pub agent: Vec<String>,
     /// Where the real git is inside the sandbox, for the gate.
     pub real_git: PathBuf,
+    /// The session's workspace: the agent's working folder.
+    pub workdir: PathBuf,
+    /// The session's MCP servers (`mcp.json`): legionctl's own and each one behind the proxy.
+    pub mcp: serde_json::Value,
 }
 
 fn now() -> i64 {
@@ -156,11 +160,18 @@ impl Dossiers {
         create: bool,
         dir: &Path,
         config: &Config,
+        headless: bool,
     ) -> Result<Launch> {
-        let command = config.session.agents.get(agent).with_context(|| {
+        // headless: the agent's ACP adapter (session run); else the interactive command (session start)
+        let (agents, key) = if headless {
+            (&config.session.acp, "session.acp")
+        } else {
+            (&config.session.agents, "session.agents")
+        };
+        let command = agents.get(agent).with_context(|| {
             format!(
-                "unknown agent {agent}; configured: {:?}",
-                config.session.agents.keys()
+                "unknown agent {agent} in {key}; configured: {:?}",
+                agents.keys()
             )
         })?;
         // a server whose package is missing or changed stops the session before anything is bound
@@ -229,14 +240,18 @@ impl Dossiers {
         sandbox.extend(["--setenv".into(), "LEGIONCTL_SESSION".into(), id.clone()]);
         sandbox.extend(["--chdir".into(), ws.path.to_string_lossy().into_owned()]);
         Ok(Launch {
-            scope: vec![
-                "systemd-run".into(),
-                "--user".into(),
-                "--scope".into(),
-                "--quiet".into(),
-                format!("--unit=legionctl-session-{id}"),
-                "--".into(),
-            ],
+            scope: if config.session.scope {
+                vec![
+                    "systemd-run".into(),
+                    "--user".into(),
+                    "--scope".into(),
+                    "--quiet".into(),
+                    format!("--unit=legionctl-session-{id}"),
+                    "--".into(),
+                ]
+            } else {
+                Vec::new()
+            },
             sandbox,
             agent: command
                 .iter()
@@ -246,6 +261,8 @@ impl Dossiers {
                 })
                 .collect(),
             real_git,
+            workdir: ws.path.clone(),
+            mcp: mcp_json,
             id,
         })
     }

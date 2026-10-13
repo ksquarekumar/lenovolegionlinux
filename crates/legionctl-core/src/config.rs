@@ -98,6 +98,10 @@ pub struct SessionConfig {
     pub agents: BTreeMap<String, Vec<String>>,
     /// Writable in the sandbox besides the workspace, the dossier and the repository's .git (`~/` is the home).
     pub writable: Vec<String>,
+    /// Agent name -> the command of its ACP adapter, for headless runs (`session run`).
+    pub acp: BTreeMap<String, Vec<String>>,
+    /// Run sessions in a systemd user scope (`legionctl-session-<id>`); off where there is no user systemd.
+    pub scope: bool,
     /// Hidden in the sandbox: sockets and folders that would give a way out (a container or VM with the host's
     /// files). A folder becomes empty, a file or socket `/dev/null`.
     pub hidden: Vec<String>,

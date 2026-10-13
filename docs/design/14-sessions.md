@@ -60,6 +60,16 @@ arguments and, with `workspace`, the git state of its folder (HEAD, `status --po
 live in the operator database (`tool_cache`, migration v3) through `cache.get` and `cache.put`; a hit is logged as
 outcome `cached`. The e2e test sees ok, cached, then ok again after a file in the working copy changes.
 
+Built (2026-10-13, S3): headless runs. `legionctl session run <agent> <prompt>` prepares the session as `session
+start` does (dossier binding, workspace, sandbox with the hiding and the git gate, generated MCP config), then the
+operator drives the agent's ACP adapter (`session.acp`: Zed's `claude-code-acp` and `codex-acp` by default) with
+adk-rust's ACP client (`adk-acp` 2.2.0, protocol v1). The adapter gets the session's MCP servers at `session/new`.
+Permission asks are allowed, because the sandbox and the gates are the boundary; each is logged as
+`session.permission` and returned. `session.scope` (default true) runs it in the systemd user scope. The e2e test
+drives a stand-in ACP agent (`tests/fixtures/fake-acp-agent.py`): it gets the MCP servers, its permission is
+answered, its commit lands in the workspace and the gate refuses its push. Not yet: pause, offload and resume
+(S4), streaming the answer while it runs, the real adapters live (they need the user's logins).
+
 Fixed (2026-10-13): the sandbox bound the whole `$XDG_RUNTIME_DIR`, and `--ro-bind / /` does not stop a connect to a
 socket. The agent could reach the session bus and systemd's user manager (`systemd-run --user` runs outside the
 sandbox, past the git gate), the GnuPG, ssh and keyring agents, the docker socket (`docker` group: a container with

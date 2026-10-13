@@ -1010,3 +1010,12 @@ impl Render for crate::io::CacheValue {
         self.value.clone().unwrap_or_default()
     }
 }
+
+impl Render for crate::io::RunOutput {
+    fn text(&self) -> String {
+        let mut out = vec![self.text.clone()];
+        out.extend(self.permissions.iter().map(|p| format!("permission: {p}")));
+        out.push(format!("session {} in {} ms", self.id, self.ms));
+        out.join("\n")
+    }
+}

@@ -25,7 +25,9 @@ use legionctl_api::{
 use legionctl_core::config::{Dirs, Resolved, resolve};
 
 use crate::system1::System1Proxy;
-use legionctl_api::{CacheGetIn, CachePutIn, CacheValue, Manifest, PackageFetchIn, Packages};
+use legionctl_api::{
+    CacheGetIn, CachePutIn, CacheValue, Manifest, PackageFetchIn, Packages, RunOutput, SessionRunIn,
+};
 use legionctl_core::db::Db;
 use legionctl_core::dossier::{Dossiers, place_of};
 use legionctl_core::packages::Store;
@@ -75,7 +77,7 @@ fn bench_run_of(e: legionctl_api::EventRow) -> Result<BenchRun> {
 }
 
 /// The full path of an executable on `PATH`.
-fn which(program: &str) -> Option<PathBuf> {
+pub(crate) fn which(program: &str) -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?)
         .map(|dir| dir.join(program))
         .find(|p| {
@@ -1159,7 +1161,41 @@ impl Engine for Operator {
                 .last_in(&place_of(dir))?
                 .context("no dossier was used in this repository yet; name one (and pass create for a new one)")?,
         };
-        store.start_session(&input.agent, &dossier, input.create, dir, &resolved.config)
+        store.start_session(
+            &input.agent,
+            &dossier,
+            input.create,
+            dir,
+            &resolved.config,
+            false,
+        )
+    }
+
+    fn session_run(&self, ctx: &Ctx, input: SessionRunIn) -> Result<RunOutput> {
+        Self::record(
+            ctx,
+            "session.run",
+            &serde_json::json!({ "agent": input.agent, "dossier": input.dossier }),
+        )?;
+        let dir = input.repo.get()?;
+        let resolved = config(Some(&input.repo))?;
+        let store = Dossiers::open(&resolved.config.dossier)?;
+        let dossier = match input.dossier {
+            Some(d) => d,
+            None => store
+                .last_in(&place_of(dir))?
+                .context("no dossier was used in this repository yet; name one (and pass create for a new one)")?,
+        };
+        let launch = store.start_session(
+            &input.agent,
+            &dossier,
+            input.create,
+            dir,
+            &resolved.config,
+            true,
+        )?;
+        self.runtime
+            .block_on(crate::acp::run(launch, &input.prompt))
     }
 
     fn session_list(&self, _: &Ctx, _: Empty) -> Result<Sessions> {

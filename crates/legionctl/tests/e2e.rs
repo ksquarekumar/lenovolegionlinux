@@ -28,6 +28,20 @@ fn claude_hook(event: &str, fields: &Value) -> String {
 }
 
 /// An operator with an empty HOME and the repo's plugin skills.
+/// `PATH` with this build's binaries first: the operator finds this `legionctl` (the git gate), not an installed one.
+fn path_with_build() -> OsString {
+    let bin = Path::new(env!("CARGO_BIN_EXE_legionctl"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    std::env::join_paths(
+        [bin]
+            .into_iter()
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap()
+}
+
 fn operator(tag: &str) -> (Operator, PathBuf) {
     // outside /tmp (private in a session sandbox) and outside any git repository, like a real home
     let home = Path::new("/var/tmp").join(format!("legionctl-e2e-{tag}-{}", std::process::id()));
@@ -43,7 +57,7 @@ fn operator(tag: &str) -> (Operator, PathBuf) {
         &[
             ("LEGIONCTL_SYSROOT", root.into()),
             ("HOME", home.clone().into()),
-            ("PATH", std::env::var_os("PATH").unwrap()),
+            ("PATH", path_with_build()),
             ("LEGIONCTL_PLUGIN_SKILLS", OsString::from(skills)),
         ],
     );
@@ -868,12 +882,7 @@ fn probe_package(home: &Path) {
 fn mcp_tools(op: &Operator, home: &Path, args: &[String]) -> Vec<String> {
     use rmcp::ServiceExt;
     let exe = Path::new(env!("CARGO_BIN_EXE_legionctl"));
-    let path = std::env::join_paths(
-        [exe.parent().unwrap().to_path_buf()]
-            .into_iter()
-            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
-    )
-    .unwrap();
+    let path = path_with_build();
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let mut proxy = tokio::process::Command::new(exe);
         proxy
@@ -979,6 +988,63 @@ fn a_store_package_runs_pinned_and_offline_and_a_changed_one_is_refused() {
         String::from_utf8_lossy(&refused.stderr)
     );
     assert!(!String::from_utf8_lossy(&cli(&["dossier", "locks"]).stdout).contains("other"));
+}
+
+/// A headless run through an ACP adapter (a stand-in agent): it gets the session's MCP servers at session/new, its
+/// permission ask is answered and logged, it works inside the same sandbox and git gate as an interactive session,
+/// and its answer comes back.
+#[test]
+fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
+    let (op, home) = operator("run");
+    let repo = repository(&home);
+    let agent =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-acp-agent.py");
+    write(
+        &home.join(".config/legionctl/run.jsonc"),
+        &json!({"session": {"acp": {"fake": ["python3", agent]}, "scope": false, "writable": []}})
+            .to_string(),
+    );
+    let env = [("HOME", home.to_str().unwrap())];
+    let out = op.run(
+        &repo,
+        &env,
+        &[
+            "session",
+            "run",
+            "fake",
+            "fix the bug",
+            "--dossier",
+            "port",
+            "--create",
+            "--json",
+        ],
+        "",
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let run: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let text = run["text"].as_str().unwrap();
+    for expected in [
+        "prompt: fix the bug",
+        "mcp: legionctl",
+        "permission: allow",
+        "COMMIT_OK",
+        "PUSH_REFUSED",
+    ] {
+        assert!(text.contains(expected), "{expected} missing:\n{text}");
+    }
+    assert_eq!(run["permissions"], json!(["git push (Execute): allowed"]));
+    let workspace = home.join("worktrees/repo/port");
+    assert_eq!(
+        git(&home, &workspace, &["log", "-1", "--format=%s"]),
+        "headless",
+        "the commit is in the workspace"
+    );
+    let events = op.run(&repo, &env, &["events", "--json"], "");
+    assert!(String::from_utf8_lossy(&events.stdout).contains("session.permission"));
 }
 
 /// Run a `session start` launch as the client does, without the systemd scope (CI has no user systemd): the
