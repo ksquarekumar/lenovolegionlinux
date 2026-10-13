@@ -454,7 +454,7 @@ operations! {
     /// Telemetry: package and GPU power, temperatures, clocks, PSI, fan RPM and throttle reasons, one line per sample.
     monitor / Monitor = "monitor", Read, MonitorIn => Samples;
     /// The event log: what agents, people and the machine daemon did, oldest first.
-    events / EventsOp = "events", Read, EventsIn => Events;
+    events / EventsOp = "events", Read, EventsIn => Page<EventRow>;
     /// Every knob legionctl reads or sets: current value, the profile's value for the current power source, the
     /// firmware range and choices, and the policy (enforce, follow, observe).
     knobs / KnobsOp = "knobs", Read, ProfileIn => Knobs;
@@ -468,13 +468,13 @@ operations! {
     /// Log one MCP tool call (legionctl mcp-proxy calls this for each call it forwards or refuses).
     tools_record / ToolsRecord = "internal.tools.record", Session, ToolCall => Empty;
     /// Calls through the model gateway: account, model, tokens in and out, replayed or not, status, duration.
-    gateway_usage / GatewayUsageOp = "gateway.usage", Read, GatewayUsageIn => Vec<GatewayUsage>;
+    gateway_usage / GatewayUsageOp = "gateway.usage", Read, GatewayUsageIn => Page<GatewayUsage>;
     /// A reusable MCP tool result (legionctl mcp-proxy asks before it calls a tool its config lets it cache).
     cache_get / CacheGet = "internal.cache.get", Read, CacheGetIn => CacheValue;
     /// Keep an MCP tool result for reuse.
     cache_put / CachePut = "internal.cache.put", Session, CachePutIn => Empty;
     /// MCP tool calls of session agents through legionctl mcp-proxy, oldest first.
-    tools_calls / ToolsCalls = "tools.calls", Read, ToolCallsIn => ToolCalls;
+    tools_calls / ToolsCalls = "tools.calls", Read, ToolCallsIn => Page<ToolCallRow>;
     /// A repository's Dockerfiles as a services description (build, entrypoints, ports) and a build-cache description
     /// (base images, lockfiles); with `--write`, into the repository's `.legionctl/`.
     images_scan / ImagesScan = "images.scan", Workspace, ImagesScanIn => Scan;
@@ -508,7 +508,7 @@ operations! {
     /// knob values in the event log. Loads the machine fully for the duration.
     bench_run / BenchRunOp = "bench.run", Workspace, BenchIn => BenchRun;
     /// Bench runs, oldest first.
-    bench_list / BenchList = "bench.list", Read, Empty => BenchRuns;
+    bench_list / BenchList = "bench.list", Read, PageIn => Page<BenchRun>;
     /// Step a firmware power limit through values with a bench workload at each, on AC and an idle machine; returns
     /// each step and the recommended value (the knee). The original value comes back. A human approves it in the
     /// polkit dialog.
@@ -543,7 +543,7 @@ operations! {
     dossier_graph / DossierGraph = "dossier.graph", Read, DossierGraphIn => Graph;
     /// The dossier nudges in order: each level a session reached (info, warn, block) with its count of replies that
     /// changed the workspace, and each answer (a dossier write).
-    dossier_nudges / DossierNudges = "dossier.nudges", Read, DossierNudgesIn => Events;
+    dossier_nudges / DossierNudges = "dossier.nudges", Read, DossierNudgesIn => Page<EventRow>;
     /// Whether this session may write a path: inside the dossier root only its active dossier (agent hooks use it).
     dossier_guard / DossierGuard = "internal.dossier.guard", Read, GuardIn => Guard;
     /// Prepare a sandboxed session of an agent on a dossier's workspace; `legionctl session start` then runs it in the
@@ -557,7 +557,7 @@ operations! {
     /// Stop a session's scope (the agent and everything it started).
     session_stop / SessionStop = "session.stop", Workspace, SessionIdIn => Lines;
     /// The programs a session's processes started, oldest first (legionctl-system's eBPF sensor; needs its scope).
-    session_activity / SessionActivity = "session.activity", Read, SessionIdIn => Vec<SessionExec>;
+    session_activity / SessionActivity = "session.activity", Read, SessionActivityIn => Page<SessionExec>;
     /// Freeze a session's processes (cgroup freezer): memory stays, the agent does nothing until `session unpause`.
     session_pause / SessionPause = "session.pause", Workspace, SessionIdIn => Lines;
     /// Let a paused session run again.

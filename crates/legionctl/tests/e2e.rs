@@ -647,8 +647,9 @@ fn a_session_that_works_without_writing_its_dossier_is_nudged_until_it_writes() 
 
     ok(&["dossier", "append", "port/plan.md"], "- state recorded\n");
     assert_eq!(hook("stop"), "", "the write answered the nudge");
-    let replay: Vec<Value> =
+    let page: Value =
         serde_json::from_str(&ok(&["dossier", "nudges", "--of", "s1", "--json"], "")).unwrap();
+    let replay = page["items"].as_array().unwrap();
     let seen: Vec<(String, Value, Value)> = replay
         .iter()
         .map(|e| {
@@ -701,8 +702,8 @@ fn every_change_is_audited_with_its_outcome_and_errors_have_codes() {
     );
     assert!(run("s1", &["dossier", "list"]).status.success());
 
-    let events: Vec<Value> =
-        serde_json::from_slice(&run("s1", &["events", "--json"]).stdout).unwrap();
+    let page: Value = serde_json::from_slice(&run("s1", &["events", "--json"]).stdout).unwrap();
+    let events = page["items"].as_array().unwrap();
     let audit: Vec<(String, Value)> = events
         .iter()
         .map(|e| {
@@ -837,6 +838,79 @@ fn the_wire_format_matches_the_committed_schema() {
              LEGIONCTL_WRITE_SCHEMA=1 cargo test -p legionctl --test e2e the_wire_format and commit the file"
         );
     }
+}
+
+/// Logs come in pages (DESIGN/03): `next` is the cursor of the following page, and the last page has none; a limit
+/// outside 1-1000 is invalid input. Retention: rows older than `events.keep_days` are gone after the operator's
+/// next start.
+#[test]
+fn the_event_log_pages_and_keeps_only_its_days() {
+    let (op, home) = operator("pages");
+    for name in ["one", "two", "three"] {
+        let out = op.run(
+            &home,
+            &[("LEGIONCTL_SESSION", "s1")],
+            &["dossier", "use", name],
+            "",
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let page = |args: &[&str]| -> Value {
+        serde_json::from_str(&op.ok(&[&["events", "--json"], args].concat())).unwrap()
+    };
+    let first = page(&["--limit", "2"]);
+    assert_eq!(first["items"].as_array().unwrap().len(), 2);
+    let next = first["next"]
+        .as_str()
+        .expect("a cursor to the rest")
+        .to_string();
+    let rest = page(&["--limit", "2", "--cursor", &next]);
+    let names: Vec<&str> = [&first, &rest]
+        .iter()
+        .flat_map(|p| p["items"].as_array().unwrap())
+        .map(|e| e["payload"]["input"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["one", "two", "three"]);
+    assert_eq!(rest["next"], Value::Null, "the last page");
+    let refused = op.cli(&["events", "--limit", "0"]);
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("--limit must be 1-1000"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+
+    // two of the rows are 100 days old; the next operator on this home removes them at its start (default 90 days)
+    let aged = Command::new("python3")
+        .args([
+            "-c",
+            "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); \
+             c.execute('UPDATE events SET ts = ts - 100 * 86400 WHERE id IN (SELECT id FROM events ORDER BY id LIMIT 2)'); c.commit()",
+        ])
+        .arg(home.join(".local/state/legionctl/operator.db"))
+        .status()
+        .unwrap();
+    assert!(aged.success());
+    drop(op);
+    let again = Operator::start(
+        "pages2",
+        &[
+            ("HOME", home.clone().into()),
+            ("LEGIONCTL_SYSROOT", home.join("root").into()),
+            ("PATH", path_with_build()),
+        ],
+    );
+    let kept: Value = serde_json::from_str(&again.ok(&["events", "--json"])).unwrap();
+    let names: Vec<&str> = kept["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["payload"]["input"]["name"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(names, ["three"], "{kept}");
 }
 
 /// The body of `GET <path>` on the operator's socket, with the user token.
@@ -1140,7 +1214,7 @@ fn the_mcp_proxy_offers_only_allowed_tools_and_logs_every_call() {
         &["tools", "calls", "--json"],
         "",
     );
-    let calls: Value = serde_json::from_slice(&calls.stdout).unwrap();
+    let calls: Value = serde_json::from_slice::<Value>(&calls.stdout).unwrap()["items"].clone();
     let summary: Vec<(String, String, String)> = calls
         .as_array()
         .unwrap()
@@ -1240,7 +1314,7 @@ fn the_proxy_reaches_a_remote_server_with_its_header() {
         &["tools", "calls", "--json"],
         "",
     );
-    let calls: Value = serde_json::from_slice(&calls.stdout).unwrap();
+    let calls: Value = serde_json::from_slice::<Value>(&calls.stdout).unwrap()["items"].clone();
     assert_eq!(
         (calls[0]["server"].as_str(), calls[0]["outcome"].as_str()),
         (Some("docs"), Some("ok"))
@@ -1301,8 +1375,7 @@ fn the_proxy_reuses_a_cached_result_until_the_working_copy_changes() {
         &["tools", "calls", "--json"],
         "",
     );
-    let outcomes: Vec<String> = serde_json::from_slice::<Value>(&calls.stdout)
-        .unwrap()
+    let outcomes: Vec<String> = serde_json::from_slice::<Value>(&calls.stdout).unwrap()["items"]
         .as_array()
         .unwrap()
         .iter()

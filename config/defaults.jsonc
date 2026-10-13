@@ -161,6 +161,10 @@
   // names, or "*" }. legionctl agents plugins list marks what is installed outside this list.
   "plugins": { "marketplaces": {} },
 
+  // The operator's event log and gateway usage (DESIGN/03): days to keep; older rows go when the operator starts. The
+  // gateway's money budgets look back 30 days, so keep at least that. 0 keeps everything.
+  "events": { "keep_days": 90 },
+
   // The package store: name -> { "kind": npm|pypi|cargo|git|path, "source", "version" (the pin), "run" (the MCP
   // server's command, {dir} = the package folder), "network" (default false) }. legionctl packages fetch installs one.
   "packages": {},

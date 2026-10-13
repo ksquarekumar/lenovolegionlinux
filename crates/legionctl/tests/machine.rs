@@ -318,7 +318,7 @@ fn a_recording_replays_to_the_same_decisions_and_status() {
     }
     let log = json(&op, &["events"]);
     assert_eq!(
-        log.as_array().unwrap().last().unwrap()["kind"],
+        log["items"].as_array().unwrap().last().unwrap()["kind"],
         "record",
         "the operator's audit keeps the request after it ran"
     );
@@ -1215,7 +1215,7 @@ mod operator_and_daemon {
         let mut logged = Value::Null;
         for _ in 0..100 {
             logged = json(&["events"]);
-            if logged
+            if logged["items"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -1225,7 +1225,7 @@ mod operator_and_daemon {
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        let apply = logged
+        let apply = logged["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -1242,7 +1242,7 @@ mod operator_and_daemon {
             "on battery the battery policy is wanted, whatever was applied"
         );
         assert_eq!(epp["knob"]["policy"], "enforce");
-        let history = epp["history"].as_array().unwrap();
+        let history = epp["history"]["items"].as_array().unwrap();
         assert_eq!(
             history.last().map(|e| &e["id"]),
             Some(&apply["id"]),
@@ -1251,7 +1251,7 @@ mod operator_and_daemon {
         // a knob the daemon did not touch has no history from that apply
         let untouched = json(&["inspect", "firmware.ppt_pl1_spl"]);
         assert!(
-            untouched["history"]
+            untouched["history"]["items"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -1493,7 +1493,7 @@ mod operator_and_daemon {
             probe(true, "inside");
             let out = op.cli(&["session", "activity", "acttest", "--json"]);
             let rows: Value = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
-            if rows.as_array().is_some_and(|r| !r.is_empty())
+            if rows["items"].as_array().is_some_and(|r| !r.is_empty())
                 || std::time::Instant::now() > deadline
             {
                 break rows;
@@ -1503,7 +1503,7 @@ mod operator_and_daemon {
         for dir in &made {
             let _ = std::fs::remove_dir(dir);
         }
-        let argvs: Vec<Value> = activity
+        let argvs: Vec<Value> = activity["items"]
             .as_array()
             .unwrap_or_else(|| panic!("no activity: {activity}"))
             .iter()
@@ -1772,7 +1772,7 @@ mod operator_and_daemon {
         );
         assert!(asked[0].starts_with("hooks.add {"), "{asked:?}");
         let audit: Value = serde_json::from_str(&op.ok(&["events", "--json"])).unwrap();
-        let outcomes: Vec<(String, Value, Value)> = audit
+        let outcomes: Vec<(String, Value, Value)> = audit["items"]
             .as_array()
             .unwrap()
             .iter()

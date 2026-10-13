@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use std::fmt::Write as _;
+
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// Ordered schema migrations; index + 1 is the schema version after applying it. Never edit a released entry.
@@ -82,6 +84,8 @@ const OPERATOR: &[&str] = &[
         session TEXT NOT NULL,
         created INTEGER NOT NULL
      );",
+    // v8: pages of the log by kind (DESIGN/03): `kind = ? AND id > ?` uses this
+    "CREATE INDEX events_kind ON events (kind, id);",
 ];
 
 pub struct Db {
@@ -100,6 +104,29 @@ pub fn default_path() -> PathBuf {
 pub fn token_hash(token: &str) -> String {
     use blake2::{Blake2b, Digest, digest::consts::U32};
     format!("{:x}", Blake2b::<U32>::digest(token.as_bytes()))
+}
+
+/// Which events a page holds.
+#[derive(Debug, Default)]
+pub struct EventFilter<'a> {
+    /// Only these kinds; every kind when empty.
+    pub kinds: &'a [&'a str],
+    /// Only events whose payload has this text value at this JSON path (`$.session`).
+    pub field: Option<(&'a str, &'a str)>,
+    /// Only events whose payload contains this text (`*` matches any text, for per-CPU files).
+    pub naming: Option<&'a str>,
+}
+
+/// The first `limit` rows, and the id of the last one when the query found more (it asks for one more).
+fn cut<T>(mut rows: Vec<T>, limit: u32, id: impl Fn(&T) -> i64) -> (Vec<T>, Option<i64>) {
+    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+    if rows.len() > limit {
+        rows.truncate(limit);
+        let next = rows.last().map(&id);
+        (rows, next)
+    } else {
+        (rows, None)
+    }
 }
 
 pub(crate) fn now() -> i64 {
@@ -183,17 +210,6 @@ impl Db {
             params![now(), actor, kind, payload.to_string()],
         )?;
         Ok(self.conn.last_insert_rowid())
-    }
-
-    /// Events after `since` (an event id), oldest first, at most `limit`.
-    ///
-    /// # Errors
-    /// The database read fails.
-    pub fn events(&self, since: i64, limit: u32) -> Result<Vec<EventRow>> {
-        self.query_events(
-            "SELECT id, ts, actor, kind, payload FROM events WHERE id > ?1 ORDER BY id LIMIT ?2",
-            params![since, limit],
-        )
     }
 
     /// The id of the newest event; 0 when there is none.
@@ -340,16 +356,21 @@ impl Db {
         Ok(())
     }
 
-    /// Usage rows after `since` (a row id), oldest first.
+    /// Usage rows after the row id `after`, oldest first, at most `limit`; and the id to go on after when more
+    /// follow.
     ///
     /// # Errors
     /// The database read fails.
-    pub fn gateway_usage(&self, since: i64) -> Result<Vec<GatewayUsage>> {
+    pub fn gateway_usage_page(
+        &self,
+        after: i64,
+        limit: u32,
+    ) -> Result<(Vec<GatewayUsage>, Option<i64>)> {
         let mut stmt = self.conn.prepare(
             "SELECT id, ts, account, model, tokens_in, tokens_out, cached, status, ms, cost_usd FROM gateway_usage
-             WHERE id > ?1 ORDER BY id",
+             WHERE id > ?1 ORDER BY id LIMIT ?2",
         )?;
-        let rows = stmt.query_map(params![since], |r| {
+        let rows = stmt.query_map(params![after, i64::from(limit) + 1], |r| {
             Ok(GatewayUsage {
                 id: r.get(0)?,
                 ts: r.get(1)?,
@@ -363,7 +384,8 @@ impl Db {
                 cost_usd: r.get(9)?,
             })
         })?;
-        Ok(rows.collect::<Result<_, _>>()?)
+        let rows = rows.collect::<Result<Vec<_>, _>>()?;
+        Ok(cut(rows, limit, |row| row.id))
     }
 
     /// USD that `account` spent on `model` in the last `seconds`, replays not counted.
@@ -379,15 +401,79 @@ impl Db {
         )?)
     }
 
-    /// Events of `kind`, oldest first.
+    /// The events after the id `after` that `filter` lets through, oldest first, at most `limit`; and the id to go
+    /// on after when more follow.
     ///
     /// # Errors
     /// The database read fails.
-    pub fn events_of(&self, kind: &str) -> Result<Vec<EventRow>> {
-        self.query_events(
-            "SELECT id, ts, actor, kind, payload FROM events WHERE kind = ?1 ORDER BY id",
-            params![kind],
-        )
+    pub fn events_page(
+        &self,
+        filter: &EventFilter,
+        after: i64,
+        limit: u32,
+    ) -> Result<(Vec<EventRow>, Option<i64>)> {
+        let mut sql = String::from("SELECT id, ts, actor, kind, payload FROM events WHERE id > ?");
+        let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(after)];
+        if !filter.kinds.is_empty() {
+            let marks = vec!["?"; filter.kinds.len()].join(", ");
+            let _ = write!(sql, " AND kind IN ({marks})");
+            args.extend(
+                filter
+                    .kinds
+                    .iter()
+                    .map(|k| Box::new(k.to_string()) as Box<dyn rusqlite::ToSql>),
+            );
+        }
+        if let Some((path, value)) = filter.field {
+            sql.push_str(" AND json_extract(payload, ?) = ?");
+            args.push(Box::new(path.to_string()));
+            args.push(Box::new(value.to_string()));
+        }
+        if let Some(text) = filter.naming {
+            let escaped = text
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            sql.push_str(" AND payload LIKE ? ESCAPE '\\'");
+            args.push(Box::new(format!("%{}%", escaped.replace('*', "%"))));
+        }
+        sql.push_str(" ORDER BY id LIMIT ?");
+        args.push(Box::new(i64::from(limit) + 1));
+        let rows = self.query_events(
+            &sql,
+            rusqlite::params_from_iter(args.iter().map(AsRef::as_ref)),
+        )?;
+        Ok(cut(rows, limit, |row| row.id))
+    }
+
+    /// The event with this id.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn event(&self, id: i64) -> Result<Option<EventRow>> {
+        Ok(self
+            .query_events(
+                "SELECT id, ts, actor, kind, payload FROM events WHERE id = ?1",
+                params![id],
+            )?
+            .pop())
+    }
+
+    /// Delete events and gateway usage older than `days` (0 keeps everything).
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn prune(&self, days: u32) -> Result<usize> {
+        if days == 0 {
+            return Ok(0);
+        }
+        let before = now() - i64::from(days) * 86_400;
+        Ok(self
+            .conn
+            .execute("DELETE FROM events WHERE ts < ?1", params![before])?
+            + self
+                .conn
+                .execute("DELETE FROM gateway_usage WHERE ts < ?1", params![before])?)
     }
 
     /// Events from `ts` (seconds since the epoch) on, oldest first.
@@ -399,25 +485,6 @@ impl Db {
             "SELECT id, ts, actor, kind, payload FROM events WHERE ts >= ?1 ORDER BY id",
             params![ts],
         )
-    }
-
-    /// The last `limit` events whose payload names `path` (`*` matches any text, for per-CPU files), oldest first.
-    ///
-    /// # Errors
-    /// The database read fails.
-    pub fn events_naming(&self, path: &str, limit: u32) -> Result<Vec<EventRow>> {
-        let escaped = path
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
-        let pattern = format!("%{}%", escaped.replace('*', "%"));
-        let mut rows = self.query_events(
-            "SELECT id, ts, actor, kind, payload FROM events WHERE payload LIKE ?1 ESCAPE '\\' \
-             ORDER BY id DESC LIMIT ?2",
-            params![pattern, limit],
-        )?;
-        rows.reverse();
-        Ok(rows)
     }
 
     fn query_events(&self, sql: &str, args: impl rusqlite::Params) -> Result<Vec<EventRow>> {
@@ -551,7 +618,14 @@ mod tests {
             3,
             "the backup is the previous version, unmigrated"
         );
-        assert_eq!(backup.events(0, 10).unwrap()[0].kind, "before.upgrade");
+        assert_eq!(
+            backup
+                .events_page(&EventFilter::default(), 0, 10)
+                .unwrap()
+                .0[0]
+                .kind,
+            "before.upgrade"
+        );
     }
 
     /// The operator opens its database for each call, from several threads, while the recorder writes: an old

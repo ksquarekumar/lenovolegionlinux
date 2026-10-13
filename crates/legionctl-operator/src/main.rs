@@ -38,23 +38,22 @@ impl Ready {
 async fn supervise(
     modules: Vec<(&'static str, Ready, tokio::task::JoinHandle<Result<()>>)>,
 ) -> Result<()> {
-    let (mut names, mut handles): (Vec<_>, Vec<_>) =
-        modules.into_iter().map(|(n, r, h)| ((n, r), h)).unzip();
-    while !handles.is_empty() {
-        let (ended, index, rest) = futures_util::future::select_all(handles).await;
-        let (name, ready) = names.remove(index);
-        handles = rest;
+    use futures_util::StreamExt;
+    // each module's end comes with its own name and ready flag
+    let mut ends: futures_util::stream::FuturesUnordered<_> = modules
+        .into_iter()
+        .map(|(name, ready, handle)| async move { (name, ready, handle.await) })
+        .collect();
+    while let Some((name, ready, ended)) = ends.next().await {
         match ended {
             Err(e) if e.is_panic() => anyhow::bail!("{name} panicked: {e}"),
             Err(e) => anyhow::bail!("{name} was cancelled: {e}"),
-            Ok(result) if ready.is_set() => {
-                anyhow::bail!(
-                    "{name} stopped while it ran: {}",
-                    result
-                        .err()
-                        .map_or_else(|| "it ended".into(), |e| format!("{e:#}"))
-                )
-            }
+            Ok(result) if ready.is_set() => anyhow::bail!(
+                "{name} stopped while it ran: {}",
+                result
+                    .err()
+                    .map_or_else(|| "it ended".into(), |e| format!("{e:#}"))
+            ),
             Ok(Ok(())) => eprintln!("operator: {name} is off"),
             Ok(Err(e)) => eprintln!("operator: {name} cannot run here: {e:#}"),
         }
@@ -92,6 +91,21 @@ async fn main() -> Result<()> {
     let operator = Arc::new(engine::Operator {
         runtime: tokio::runtime::Handle::current(),
     });
+    // retention (`events.keep_days`): the log and gateway usage lose their old rows at each start, before the first
+    // call reads them
+    let pruned = tokio::task::spawn_blocking(|| {
+        let days = legionctl_core::config::resolve(&legionctl_core::config::Dirs::from_env(), None)
+            .map(|r| r.config.events.keep_days);
+        match days.and_then(|days| legionctl_core::db::Db::open_default()?.prune(days)) {
+            Ok(0) => {}
+            Ok(rows) => eprintln!("operator: {rows} old log rows removed (events.keep_days)"),
+            Err(e) => eprintln!("operator: old log rows not removed: {e:#}"),
+        }
+    })
+    .await;
+    if let Err(e) = pruned {
+        eprintln!("operator: old log rows not removed: {e}");
+    }
     let modules = vec![
         module("the machine event recorder", recorder::run),
         module("the session module", session::run),

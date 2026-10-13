@@ -3372,17 +3372,19 @@
     "input": {
       "type": "object",
       "properties": {
-        "since": {
-          "type": "integer",
-          "format": "int64",
-          "description": "Only events after this id (0: from the start).",
-          "default": 0
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Where the page starts: the `next` of the page before; default: the oldest.",
+          "default": null
         },
         "limit": {
           "type": "integer",
           "format": "uint32",
           "minimum": 0,
-          "description": "At most this many events.",
+          "description": "Items on the page (1-1000).",
           "default": 200
         }
       },
@@ -3390,37 +3392,53 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
-      "type": "array",
-      "items": {
-        "description": "One entry of the event log: who did what, when.",
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "at": {
-            "description": "Seconds since the epoch.",
-            "type": "integer",
-            "format": "int64"
-          },
-          "actor": {
-            "type": "string"
-          },
-          "kind": {
-            "type": "string"
-          },
-          "payload": true
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "description": "One entry of the event log: who did what, when.",
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "at": {
+                "description": "Seconds since the epoch.",
+                "type": "integer",
+                "format": "int64"
+              },
+              "actor": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "payload": true
+            },
+            "required": [
+              "id",
+              "at",
+              "actor",
+              "kind",
+              "payload"
+            ]
+          }
         },
-        "required": [
-          "id",
-          "at",
-          "actor",
-          "kind",
-          "payload"
-        ]
+        "next": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The cursor of the next page; none on the last one."
+        }
       },
-      "title": "Array_of_EventRow",
+      "required": [
+        "items"
+      ],
+      "description": "One page of a log, oldest first.",
+      "title": "Page",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
@@ -3526,12 +3544,20 @@
           "format": "path",
           "description": "Profile (JSONC); default: the installed one."
         },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Where the history page starts: the `next` of the page before; default: the oldest.",
+          "default": null
+        },
         "limit": {
           "type": "integer",
           "format": "uint32",
           "minimum": 0,
-          "description": "Most recent events to show.",
-          "default": 50
+          "description": "History events on the page (1-1000).",
+          "default": 200
         }
       },
       "required": [
@@ -3603,36 +3629,51 @@
           ]
         },
         "history": {
-          "type": "array",
-          "items": {
-            "description": "One entry of the event log: who did what, when.",
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "integer",
-                "format": "int64"
-              },
-              "at": {
-                "description": "Seconds since the epoch.",
-                "type": "integer",
-                "format": "int64"
-              },
-              "actor": {
-                "type": "string"
-              },
-              "kind": {
-                "type": "string"
-              },
-              "payload": true
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "description": "One entry of the event log: who did what, when.",
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "at": {
+                    "description": "Seconds since the epoch.",
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "actor": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "payload": true
+                },
+                "required": [
+                  "id",
+                  "at",
+                  "actor",
+                  "kind",
+                  "payload"
+                ]
+              }
             },
-            "required": [
-              "id",
-              "at",
-              "actor",
-              "kind",
-              "payload"
-            ]
+            "next": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The cursor of the next page; none on the last one."
+            }
           },
+          "required": [
+            "items"
+          ],
           "description": "Events that name the knob's file (writes, warnings), oldest first."
         }
       },
@@ -3927,80 +3968,105 @@
     "input": {
       "type": "object",
       "properties": {
-        "since": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Where the page starts: the `next` of the page before; default: the oldest.",
+          "default": null
+        },
+        "limit": {
           "type": "integer",
-          "format": "int64",
-          "description": "Only rows after this id.",
-          "default": 0
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Items on the page (1-1000).",
+          "default": 200
         }
       },
       "title": "GatewayUsageIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
-      "type": "array",
-      "items": {
-        "description": "One call through the model gateway.",
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "at": {
-            "description": "Seconds since the epoch.",
-            "type": "integer",
-            "format": "int64"
-          },
-          "account": {
-            "type": "string"
-          },
-          "model": {
-            "type": "string"
-          },
-          "tokens_in": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "tokens_out": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "cached": {
-            "description": "Replayed from the cache: no provider call.",
-            "type": "boolean"
-          },
-          "status": {
-            "description": "The HTTP status returned to the caller.",
-            "type": "integer",
-            "format": "uint16",
-            "minimum": 0,
-            "maximum": 65535
-          },
-          "ms": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "cost_usd": {
-            "description": "From `gateway.prices`; 0 for a replay or a model without a price.",
-            "type": "number",
-            "format": "double"
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "description": "One call through the model gateway.",
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "at": {
+                "description": "Seconds since the epoch.",
+                "type": "integer",
+                "format": "int64"
+              },
+              "account": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "tokens_in": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "tokens_out": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "cached": {
+                "description": "Replayed from the cache: no provider call.",
+                "type": "boolean"
+              },
+              "status": {
+                "description": "The HTTP status returned to the caller.",
+                "type": "integer",
+                "format": "uint16",
+                "minimum": 0,
+                "maximum": 65535
+              },
+              "ms": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "cost_usd": {
+                "description": "From `gateway.prices`; 0 for a replay or a model without a price.",
+                "type": "number",
+                "format": "double"
+              }
+            },
+            "required": [
+              "id",
+              "at",
+              "account",
+              "model",
+              "tokens_in",
+              "tokens_out",
+              "cached",
+              "status",
+              "ms",
+              "cost_usd"
+            ]
           }
         },
-        "required": [
-          "id",
-          "at",
-          "account",
-          "model",
-          "tokens_in",
-          "tokens_out",
-          "cached",
-          "status",
-          "ms",
-          "cost_usd"
-        ]
+        "next": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The cursor of the next page; none on the last one."
+        }
       },
-      "title": "Array_of_GatewayUsage",
+      "required": [
+        "items"
+      ],
+      "description": "One page of a log, oldest first.",
+      "title": "Page",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
@@ -4082,97 +4148,128 @@
             "string",
             "null"
           ],
-          "description": "Only this session's calls."
+          "description": "Only this session's calls (id from `session list`)."
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Where the page starts: the `next` of the page before; default: the oldest.",
+          "default": null
+        },
+        "limit": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Items on the page (1-1000).",
+          "default": 200
         }
       },
       "title": "ToolCallsIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
-      "type": "array",
-      "items": {
-        "description": "One MCP tool call through `legionctl mcp-proxy`, as the event log keeps it (no arguments, only their hash).",
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "at": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "session": {
-            "description": "The agent session (`LEGIONCTL_SESSION`); a sandbox's own, whatever it sends.",
-            "type": "string",
-            "format": "session",
-            "default": ""
-          },
-          "server": {
-            "type": "string"
-          },
-          "tool": {
-            "type": "string"
-          },
-          "args_hash": {
-            "description": "BLAKE2b-128 of the arguments' JSON, hex.",
-            "type": "string"
-          },
-          "ms": {
-            "type": "integer",
-            "format": "uint64",
-            "minimum": 0
-          },
-          "bytes": {
-            "description": "Size of the result's JSON.",
-            "type": "integer",
-            "format": "uint64",
-            "minimum": 0
-          },
-          "outcome": {
-            "description": "How a proxied tool call ended.",
-            "oneOf": [
-              {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "description": "One MCP tool call through `legionctl mcp-proxy`, as the event log keeps it (no arguments, only their hash).",
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "at": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "session": {
+                "description": "The agent session (`LEGIONCTL_SESSION`); a sandbox's own, whatever it sends.",
                 "type": "string",
-                "enum": [
-                  "ok"
+                "format": "session",
+                "default": ""
+              },
+              "server": {
+                "type": "string"
+              },
+              "tool": {
+                "type": "string"
+              },
+              "args_hash": {
+                "description": "BLAKE2b-128 of the arguments' JSON, hex.",
+                "type": "string"
+              },
+              "ms": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "bytes": {
+                "description": "Size of the result's JSON.",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "outcome": {
+                "description": "How a proxied tool call ended.",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "ok"
+                    ]
+                  },
+                  {
+                    "description": "An earlier result was reused.",
+                    "type": "string",
+                    "const": "cached"
+                  },
+                  {
+                    "description": "The tool reported an error.",
+                    "type": "string",
+                    "const": "error"
+                  },
+                  {
+                    "description": "The server did not answer.",
+                    "type": "string",
+                    "const": "failed"
+                  },
+                  {
+                    "description": "The tool is not allowed.",
+                    "type": "string",
+                    "const": "refused"
+                  }
                 ]
-              },
-              {
-                "description": "An earlier result was reused.",
-                "type": "string",
-                "const": "cached"
-              },
-              {
-                "description": "The tool reported an error.",
-                "type": "string",
-                "const": "error"
-              },
-              {
-                "description": "The server did not answer.",
-                "type": "string",
-                "const": "failed"
-              },
-              {
-                "description": "The tool is not allowed.",
-                "type": "string",
-                "const": "refused"
               }
+            },
+            "required": [
+              "id",
+              "at",
+              "server",
+              "tool",
+              "args_hash",
+              "ms",
+              "bytes",
+              "outcome"
             ]
           }
         },
-        "required": [
-          "id",
-          "at",
-          "server",
-          "tool",
-          "args_hash",
-          "ms",
-          "bytes",
-          "outcome"
-        ]
+        "next": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The cursor of the next page; none on the last one."
+        }
       },
-      "title": "Array_of_ToolCallRow",
+      "required": [
+        "items"
+      ],
+      "description": "One page of a log, oldest first.",
+      "title": "Page",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
@@ -5401,163 +5498,196 @@
     "internal": false,
     "input": {
       "type": "object",
-      "title": "Empty",
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Where the page starts: the `next` of the page before; default: the oldest.",
+          "default": null
+        },
+        "limit": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Items on the page (1-1000).",
+          "default": 200
+        }
+      },
+      "title": "PageIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
-      "type": "array",
-      "items": {
-        "description": "What a run stores in the event log (`bench.result`).",
-        "type": "object",
-        "properties": {
-          "id": {
-            "description": "The event id of the run; `bench compare` takes two.",
-            "type": "integer",
-            "format": "int64"
-          },
-          "at": {
-            "description": "Seconds since the epoch.",
-            "type": "integer",
-            "format": "int64"
-          },
-          "scenario": {
-            "description": "The workload of a bench or tune step.",
-            "type": "string",
-            "enum": [
-              "cpu",
-              "gpu",
-              "mixed"
-            ]
-          },
-          "label": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "seconds": {
-            "type": "integer",
-            "format": "uint32",
-            "minimum": 0
-          },
-          "scores": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "number",
-              "format": "double"
-            }
-          },
-          "problems": {
-            "description": "Failed stressors, GPU computation errors, a workload that exited with an error.",
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "summary": {
-            "description": "The samples of a run, summed up.",
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "description": "What a run stores in the event log (`bench.result`).",
             "type": "object",
             "properties": {
-              "samples": {
+              "id": {
+                "description": "The event id of the run; `bench compare` takes two.",
                 "type": "integer",
-                "format": "uint",
+                "format": "int64"
+              },
+              "at": {
+                "description": "Seconds since the epoch.",
+                "type": "integer",
+                "format": "int64"
+              },
+              "scenario": {
+                "description": "The workload of a bench or tune step.",
+                "type": "string",
+                "enum": [
+                  "cpu",
+                  "gpu",
+                  "mixed"
+                ]
+              },
+              "label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "seconds": {
+                "type": "integer",
+                "format": "uint32",
                 "minimum": 0
               },
-              "package_w_mean": {
-                "type": [
-                  "number",
-                  "null"
-                ],
-                "format": "double"
+              "scores": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "number",
+                  "format": "double"
+                }
               },
-              "package_w_max": {
-                "type": [
-                  "number",
-                  "null"
-                ],
-                "format": "double"
-              },
-              "cpu_temp_max": {
-                "type": [
-                  "number",
-                  "null"
-                ],
-                "format": "double"
-              },
-              "cpu_mhz_mean": {
-                "type": [
-                  "number",
-                  "null"
-                ],
-                "format": "double"
-              },
-              "gpu_w_mean": {
-                "type": [
-                  "number",
-                  "null"
-                ],
-                "format": "double"
-              },
-              "gpu_temp_max": {
-                "type": [
-                  "number",
-                  "null"
-                ],
-                "format": "double"
-              },
-              "fan_rpm_max": {
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "format": "uint64",
-                "minimum": 0
-              },
-              "runq_p99_us_max": {
-                "description": "The worst run-queue latency p99 of any sample and CPU class (µs, the eBPF sensor).",
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "format": "uint64",
-                "minimum": 0
-              },
-              "throttle": {
-                "description": "Throttle reasons active in any sample.",
+              "problems": {
+                "description": "Failed stressors, GPU computation errors, a workload that exited with an error.",
                 "type": "array",
                 "items": {
                   "type": "string"
                 }
+              },
+              "summary": {
+                "description": "The samples of a run, summed up.",
+                "type": "object",
+                "properties": {
+                  "samples": {
+                    "type": "integer",
+                    "format": "uint",
+                    "minimum": 0
+                  },
+                  "package_w_mean": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "format": "double"
+                  },
+                  "package_w_max": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "format": "double"
+                  },
+                  "cpu_temp_max": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "format": "double"
+                  },
+                  "cpu_mhz_mean": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "format": "double"
+                  },
+                  "gpu_w_mean": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "format": "double"
+                  },
+                  "gpu_temp_max": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "format": "double"
+                  },
+                  "fan_rpm_max": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  "runq_p99_us_max": {
+                    "description": "The worst run-queue latency p99 of any sample and CPU class (µs, the eBPF sensor).",
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  "throttle": {
+                    "description": "Throttle reasons active in any sample.",
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "samples",
+                  "throttle"
+                ]
+              },
+              "knobs": {
+                "description": "Every knob's value when the run started.",
+                "type": "object",
+                "additionalProperties": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
               }
             },
             "required": [
-              "samples",
-              "throttle"
+              "id",
+              "at",
+              "scenario",
+              "seconds",
+              "scores",
+              "problems",
+              "summary",
+              "knobs"
             ]
-          },
-          "knobs": {
-            "description": "Every knob's value when the run started.",
-            "type": "object",
-            "additionalProperties": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
           }
         },
-        "required": [
-          "id",
-          "at",
-          "scenario",
-          "seconds",
-          "scores",
-          "problems",
-          "summary",
-          "knobs"
-        ]
+        "next": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The cursor of the next page; none on the last one."
+        }
       },
-      "title": "Array_of_BenchRun",
+      "required": [
+        "items"
+      ],
+      "description": "One page of a log, oldest first.",
+      "title": "Page",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
@@ -6865,43 +6995,74 @@
           ],
           "description": "Only this session (id from `session list` or `dossier locks`); default: every session.",
           "default": null
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Where the page starts: the `next` of the page before; default: the oldest.",
+          "default": null
+        },
+        "limit": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Items on the page (1-1000).",
+          "default": 200
         }
       },
       "title": "DossierNudgesIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
-      "type": "array",
-      "items": {
-        "description": "One entry of the event log: who did what, when.",
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "at": {
-            "description": "Seconds since the epoch.",
-            "type": "integer",
-            "format": "int64"
-          },
-          "actor": {
-            "type": "string"
-          },
-          "kind": {
-            "type": "string"
-          },
-          "payload": true
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "description": "One entry of the event log: who did what, when.",
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "at": {
+                "description": "Seconds since the epoch.",
+                "type": "integer",
+                "format": "int64"
+              },
+              "actor": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "payload": true
+            },
+            "required": [
+              "id",
+              "at",
+              "actor",
+              "kind",
+              "payload"
+            ]
+          }
         },
-        "required": [
-          "id",
-          "at",
-          "actor",
-          "kind",
-          "payload"
-        ]
+        "next": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The cursor of the next page; none on the last one."
+        }
       },
-      "title": "Array_of_EventRow",
+      "required": [
+        "items"
+      ],
+      "description": "One page of a log, oldest first.",
+      "title": "Page",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
@@ -7231,45 +7392,76 @@
         "id": {
           "type": "string",
           "description": "Session id (`session list`)."
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Where the page starts: the `next` of the page before; default: the oldest.",
+          "default": null
+        },
+        "limit": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Items on the page (1-1000).",
+          "default": 200
         }
       },
       "required": [
         "id"
       ],
-      "title": "SessionIdIn",
+      "title": "SessionActivityIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
-      "type": "array",
-      "items": {
-        "description": "A program that a process in an agent session started (the eBPF sensor in legionctl-system).",
-        "type": "object",
-        "properties": {
-          "at": {
-            "description": "Seconds since the epoch.",
-            "type": "integer",
-            "format": "int64"
-          },
-          "pid": {
-            "type": "integer",
-            "format": "uint32",
-            "minimum": 0
-          },
-          "argv": {
-            "description": "The arguments, cut at 512 bytes.",
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "description": "A program that a process in an agent session started (the eBPF sensor in legionctl-system).",
+            "type": "object",
+            "properties": {
+              "at": {
+                "description": "Seconds since the epoch.",
+                "type": "integer",
+                "format": "int64"
+              },
+              "pid": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              },
+              "argv": {
+                "description": "The arguments, cut at 512 bytes.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "at",
+              "pid",
+              "argv"
+            ]
           }
         },
-        "required": [
-          "at",
-          "pid",
-          "argv"
-        ]
+        "next": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The cursor of the next page; none on the last one."
+        }
       },
-      "title": "Array_of_SessionExec",
+      "required": [
+        "items"
+      ],
+      "description": "One page of a log, oldest first.",
+      "title": "Page",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },

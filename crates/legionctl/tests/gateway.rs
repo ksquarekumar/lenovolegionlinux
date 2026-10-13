@@ -220,7 +220,9 @@ fn the_gateway_pools_forwards_replays_and_streams() {
     );
     assert_eq!(messages(&CALLER, &stream), (200, "hit".into(), streamed));
 
-    let usage: Value = serde_json::from_str(&s.op.ok(&["gateway", "usage", "--json"])).unwrap();
+    let usage: Value = serde_json::from_str::<Value>(&s.op.ok(&["gateway", "usage", "--json"]))
+        .unwrap()["items"]
+        .clone();
     let rows: Vec<(String, bool, u64, i64)> = usage
         .as_array()
         .unwrap()
@@ -280,7 +282,9 @@ fn the_gateway_refuses_over_budget_without_token_and_across_apis() {
         provider_calls(&s.log),
         ["limited claude-x caller-key", "ok claude-y caller-key"]
     );
-    let usage: Value = serde_json::from_str(&s.op.ok(&["gateway", "usage", "--json"])).unwrap();
+    let usage: Value = serde_json::from_str::<Value>(&s.op.ok(&["gateway", "usage", "--json"]))
+        .unwrap()["items"]
+        .clone();
     let costs: Vec<f64> = usage
         .as_array()
         .unwrap()
@@ -539,7 +543,9 @@ fn an_openai_caller_reaches_an_anthropic_model_translated() {
         )
     );
     check_chat_streams(&s, &headers, &mut request);
-    let usage: Value = serde_json::from_str(&s.op.ok(&["gateway", "usage", "--json"])).unwrap();
+    let usage: Value = serde_json::from_str::<Value>(&s.op.ok(&["gateway", "usage", "--json"]))
+        .unwrap()["items"]
+        .clone();
     let tokens: Vec<(i64, i64)> = usage
         .as_array()
         .unwrap()
@@ -583,7 +589,9 @@ fn a_reworded_prompt_replays_semantically_only_when_asked() {
     let (embedding, model): (Vec<&String>, Vec<&String>) =
         calls.iter().partition(|c| c.starts_with("ok embed-x"));
     assert_eq!((embedding.len(), model.len()), (3, 3), "{calls:?}");
-    let usage: Value = serde_json::from_str(&s.op.ok(&["gateway", "usage", "--json"])).unwrap();
+    let usage: Value = serde_json::from_str::<Value>(&s.op.ok(&["gateway", "usage", "--json"]))
+        .unwrap()["items"]
+        .clone();
     let rows: Vec<(String, bool, i64)> = usage
         .as_array()
         .unwrap()

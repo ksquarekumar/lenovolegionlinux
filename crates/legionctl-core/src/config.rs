@@ -37,9 +37,17 @@ pub struct Config {
     pub gateway: GatewayConfig,
     pub load: Thresholds,
     pub plugins: PluginsConfig,
+    pub events: EventsConfig,
 }
 
 /// The agent plugins a user may install through legionctl (A1).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EventsConfig {
+    /// Days the operator keeps events and gateway usage; it deletes older ones when it starts. 0 keeps everything.
+    pub keep_days: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PluginsConfig {

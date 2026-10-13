@@ -463,6 +463,12 @@ pub struct DossierNudgesIn {
     /// Only this session (id from `session list` or `dossier locks`); default: every session.
     #[serde(default)]
     pub of: Option<String>,
+    /// Where the page starts: the `next` of the page before; default: the oldest.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Items on the page (1-1000).
+    #[serde(default = "two_hundred")]
+    pub limit: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -610,15 +616,23 @@ pub type Samples = Vec<Sample>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EventsIn {
-    /// Only events after this id (0: from the start).
+    /// Where the page starts: the `next` of the page before; default: the oldest.
     #[serde(default)]
-    pub since: i64,
-    /// At most this many events.
+    pub cursor: Option<String>,
+    /// Items on the page (1-1000).
     #[serde(default = "two_hundred")]
     pub limit: u32,
 }
 
 pub type Events = Vec<EventRow>;
+
+/// One page of a log, oldest first.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Page<T> {
+    pub items: Vec<T>,
+    /// The cursor of the next page; none on the last one.
+    pub next: Option<String>,
+}
 
 pub type Knobs = Vec<Knob>;
 
@@ -628,13 +642,12 @@ pub struct InspectIn {
     pub knob: String,
     /// Profile (JSONC); default: the installed one.
     pub profile: Option<ClientPath>,
-    /// Most recent events to show.
-    #[serde(default = "fifty")]
+    /// Where the history page starts: the `next` of the page before; default: the oldest.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// History events on the page (1-1000).
+    #[serde(default = "two_hundred")]
     pub limit: u32,
-}
-
-fn fifty() -> u32 {
-    50
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -694,8 +707,6 @@ pub struct BenchRun {
     #[serde(flatten)]
     pub result: BenchResult,
 }
-
-pub type BenchRuns = Vec<BenchRun>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct BenchCompareIn {
@@ -1011,15 +1022,24 @@ fn seven() -> u64 {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct GatewayUsageIn {
-    /// Only rows after this id.
+    /// Where the page starts: the `next` of the page before; default: the oldest.
     #[serde(default)]
-    pub since: i64,
+    pub cursor: Option<String>,
+    /// Items on the page (1-1000).
+    #[serde(default = "two_hundred")]
+    pub limit: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ToolCallsIn {
-    /// Only this session's calls.
+    /// Only this session's calls (id from `session list`).
     pub session: Option<String>,
+    /// Where the page starts: the `next` of the page before; default: the oldest.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Items on the page (1-1000).
+    #[serde(default = "two_hundred")]
+    pub limit: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1029,8 +1049,6 @@ pub struct ToolCallRow {
     #[serde(flatten)]
     pub call: ToolCall,
 }
-
-pub type ToolCalls = Vec<ToolCallRow>;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct DryRunIn {
@@ -1043,5 +1061,27 @@ pub struct DryRunIn {
 pub struct KnobDetail {
     pub knob: Knob,
     /// Events that name the knob's file (writes, warnings), oldest first.
-    pub history: Vec<EventRow>,
+    pub history: Page<EventRow>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SessionActivityIn {
+    /// Session id (`session list`).
+    pub id: String,
+    /// Where the page starts: the `next` of the page before; default: the oldest.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Items on the page (1-1000).
+    #[serde(default = "two_hundred")]
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct PageIn {
+    /// Where the page starts: the `next` of the page before; default: the oldest.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Items on the page (1-1000).
+    #[serde(default = "two_hundred")]
+    pub limit: u32,
 }

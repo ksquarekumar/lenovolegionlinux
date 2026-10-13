@@ -705,7 +705,7 @@ impl Render for Vec<Knob> {
 
 impl Render for KnobDetail {
     fn text(&self) -> String {
-        let history = if self.history.is_empty() {
+        let history = if self.history.items.is_empty() {
             "no events name this knob".into()
         } else {
             self.history.text()
@@ -1315,4 +1315,18 @@ fn wire_name<T: serde::Serialize>(value: &T) -> String {
         .ok()
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_default()
+}
+
+/// A page as its items, and how to get the next one.
+impl<T> Render for crate::Page<T>
+where
+    Vec<T>: Render,
+{
+    fn text(&self) -> String {
+        let items = self.items.text();
+        match &self.next {
+            Some(next) => format!("{items}\n(more: add --cursor {next})"),
+            None => items,
+        }
+    }
 }

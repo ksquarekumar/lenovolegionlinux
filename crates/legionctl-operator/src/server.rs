@@ -197,12 +197,18 @@ async fn events(
                     return Some((Ok(event), (last, pending)));
                 }
                 // shortcut: a new event reaches the stream within 250 ms (it reads the log), wake it from Db::record if that is slow
-                let rows =
-                    tokio::task::spawn_blocking(move || Db::open_default()?.events(last, 500))
-                        .await
-                        .ok()
-                        .and_then(Result::ok)
-                        .unwrap_or_default();
+                let rows = tokio::task::spawn_blocking(move || {
+                    Db::open_default()?.events_page(
+                        &legionctl_core::db::EventFilter::default(),
+                        last,
+                        500,
+                    )
+                })
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .map(|(rows, _)| rows)
+                .unwrap_or_default();
                 if rows.is_empty() {
                     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                 }

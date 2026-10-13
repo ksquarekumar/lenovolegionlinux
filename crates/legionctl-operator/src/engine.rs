@@ -6,13 +6,13 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use legionctl_api::{
-    Account, BenchCompare, BenchCompareIn, BenchIn, BenchRun, BenchRuns, Code, DossierAddIn,
-    DossierAppendIn, DossierCheckIn, DossierEditIn, DossierFindings, DossierList, DossierReadIn,
-    DossierSearchIn, DossierUseIn, DossierWriteIn, DryRunIn, Events, EventsIn, GateIn, Guard,
-    GuardIn, HookReply, HookRunIn, InspectIn, IntoWire, KnobDetail, Knobs, Launch, Lines, Locks,
-    MonitorIn, RecordIn, Recording, ReplayIn, Samples, SessionExec, SessionId, SessionIdIn,
-    SessionIn, SessionResumeIn, SessionStartIn, SessionState, Sessions, ToolCall, ToolCallRow,
-    ToolCalls, ToolCallsIn, TuneIn, TuneReport, WindowsState, coded,
+    Account, BenchCompare, BenchCompareIn, BenchIn, BenchRun, Code, DossierAddIn, DossierAppendIn,
+    DossierCheckIn, DossierEditIn, DossierFindings, DossierList, DossierReadIn, DossierSearchIn,
+    DossierUseIn, DossierWriteIn, DryRunIn, Events, EventsIn, GateIn, Guard, GuardIn, HookReply,
+    HookRunIn, InspectIn, IntoWire, KnobDetail, Knobs, Launch, Lines, Locks, MonitorIn, RecordIn,
+    Recording, ReplayIn, Samples, SessionExec, SessionId, SessionIdIn, SessionIn, SessionResumeIn,
+    SessionStartIn, SessionState, Sessions, ToolCall, ToolCallRow, ToolCallsIn, TuneIn, TuneReport,
+    WindowsState, coded,
 };
 use legionctl_api::{
     AccountAddIn, BranchIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath, CloseIn,
@@ -22,6 +22,7 @@ use legionctl_api::{
     SetupReport, SkillList, Snapshot, StatusIn, Validation, Workspace, WorkspaceIn,
     WorkspaceOpenIn, WorkspaceStates, Workspaces,
 };
+use legionctl_api::{EventRow, Page, PageIn, SessionActivityIn};
 use legionctl_core::config::{Dirs, Resolved, resolve};
 
 use crate::system1::System1Proxy;
@@ -34,7 +35,7 @@ use legionctl_api::{
     CacheGetIn, CachePutIn, CacheValue, Manifest, PackageFetchIn, Packages, RunOutput, SessionRunIn,
 };
 use legionctl_api::{ImagesScanIn, RepoIn, Scan, ServiceState, VirtActIn, VirtStatus};
-use legionctl_core::db::Db;
+use legionctl_core::db::{Db, EventFilter};
 use legionctl_core::dossier::{Dossiers, place_of};
 use legionctl_core::packages::Store;
 use legionctl_core::reminders::Event;
@@ -73,6 +74,31 @@ fn home() -> PathBuf {
 
 fn path(p: Option<&ClientPath>) -> Result<Option<&Path>> {
     p.map(ClientPath::get).transpose()
+}
+
+/// The event id a page cursor stands for (0 without one), and the page length.
+fn page_of(cursor: Option<&str>, limit: u32) -> Result<(i64, u32)> {
+    if !(1..=1000).contains(&limit) {
+        return Err(coded(Code::InvalidInput, "--limit must be 1-1000"));
+    }
+    let after = match cursor {
+        None => 0,
+        Some(c) => c.parse().map_err(|_| {
+            coded(
+                Code::InvalidInput,
+                format!("cursor {c} is not one this operator gave"),
+            )
+        })?,
+    };
+    Ok((after, limit))
+}
+
+/// Rows of the log as a wire page.
+fn page<T: IntoWire<W>, W>((rows, next): (Vec<T>, Option<i64>)) -> Page<W> {
+    Page {
+        items: rows.into_iter().map(IntoWire::into_wire).collect(),
+        next: next.map(|n| n.to_string()),
+    }
 }
 
 fn bench_run_of(e: legionctl_core::db::EventRow) -> Result<BenchRun> {
@@ -1108,18 +1134,16 @@ impl Engine for Operator {
         Ok(Lines { lines: vec![rel] })
     }
 
-    fn dossier_nudges(&self, _: &Ctx, input: DossierNudgesIn) -> Result<Events> {
-        let db = Db::open_default()?;
-        let mut rows = db.events_of("dossier.nudge")?;
-        rows.extend(db.events_of("dossier.ack")?);
-        rows.retain(|e| {
-            input
-                .of
-                .as_deref()
-                .is_none_or(|s| e.payload["session"] == s)
-        });
-        rows.sort_by_key(|e| e.id);
-        Ok(rows.into_wire())
+    fn dossier_nudges(&self, _: &Ctx, input: DossierNudgesIn) -> Result<Page<EventRow>> {
+        let (after, limit) = page_of(input.cursor.as_deref(), input.limit)?;
+        let filter = EventFilter {
+            kinds: &["dossier.nudge", "dossier.ack"],
+            field: input.of.as_deref().map(|s| ("$.session", s)),
+            naming: None,
+        };
+        Ok(page(
+            Db::open_default()?.events_page(&filter, after, limit)?,
+        ))
     }
 
     fn dossier_graph(&self, _: &Ctx, input: DossierGraphIn) -> Result<Graph> {
@@ -1169,10 +1193,13 @@ impl Engine for Operator {
             .collect())
     }
 
-    fn events(&self, _: &Ctx, input: EventsIn) -> Result<Events> {
-        Ok(Db::open_default()?
-            .events(input.since, input.limit)?
-            .into_wire())
+    fn events(&self, _: &Ctx, input: EventsIn) -> Result<Page<EventRow>> {
+        let (after, limit) = page_of(input.cursor.as_deref(), input.limit)?;
+        Ok(page(Db::open_default()?.events_page(
+            &EventFilter::default(),
+            after,
+            limit,
+        )?))
     }
 
     fn packages_list(&self, _: &Ctx, _: Empty) -> Result<Packages> {
@@ -1198,8 +1225,9 @@ impl Engine for Operator {
             .into_wire())
     }
 
-    fn gateway_usage(&self, _: &Ctx, input: GatewayUsageIn) -> Result<Vec<GatewayUsage>> {
-        Ok(Db::open_default()?.gateway_usage(input.since)?.into_wire())
+    fn gateway_usage(&self, _: &Ctx, input: GatewayUsageIn) -> Result<Page<GatewayUsage>> {
+        let (after, limit) = page_of(input.cursor.as_deref(), input.limit)?;
+        Ok(page(Db::open_default()?.gateway_usage_page(after, limit)?))
     }
 
     fn cache_get(&self, _: &Ctx, input: CacheGetIn) -> Result<CacheValue> {
@@ -1218,26 +1246,27 @@ impl Engine for Operator {
         Ok(Empty {})
     }
 
-    fn tools_calls(&self, _: &Ctx, input: ToolCallsIn) -> Result<ToolCalls> {
-        Db::open_default()?
-            .events_of("internal.tools.record")?
-            .into_iter()
-            .map(|e| {
-                Ok(ToolCallRow {
-                    id: e.id,
-                    at: e.ts,
-                    call: serde_json::from_value(e.payload["input"].clone())?,
+    fn tools_calls(&self, _: &Ctx, input: ToolCallsIn) -> Result<Page<ToolCallRow>> {
+        let (after, limit) = page_of(input.cursor.as_deref(), input.limit)?;
+        let filter = EventFilter {
+            kinds: &["internal.tools.record"],
+            field: input.session.as_deref().map(|s| ("$.input.session", s)),
+            naming: None,
+        };
+        let (rows, next) = Db::open_default()?.events_page(&filter, after, limit)?;
+        Ok(Page {
+            items: rows
+                .into_iter()
+                .map(|e| {
+                    Ok(ToolCallRow {
+                        id: e.id,
+                        at: e.ts,
+                        call: serde_json::from_value(e.payload["input"].clone())?,
+                    })
                 })
-            })
-            .filter(|row: &Result<ToolCallRow>| {
-                row.as_ref().map_or(true, |r| {
-                    input
-                        .session
-                        .as_ref()
-                        .is_none_or(|s| *s == r.call.session.0)
-                })
-            })
-            .collect()
+                .collect::<Result<_>>()?,
+            next: next.map(|n| n.to_string()),
+        })
     }
 
     fn images_scan(&self, _: &Ctx, input: ImagesScanIn) -> Result<Scan> {
@@ -1521,12 +1550,7 @@ impl Engine for Operator {
         };
         let db = Db::open_default()?;
         let id = db.record(&ctx.actor, "bench.result", &serde_json::to_value(&result)?)?;
-        bench_run_of(
-            db.events_of("bench.result")?
-                .into_iter()
-                .find(|e| e.id == id)
-                .context("the run was not stored")?,
-        )
+        bench_run_of(db.event(id)?.context("the run was not stored")?)
     }
 
     fn tune(&self, _: &Ctx, input: TuneIn) -> Result<TuneReport> {
@@ -1560,20 +1584,24 @@ impl Engine for Operator {
         Ok(serde_json::from_str::<legionctl_machine::tune::TuneReport>(&report)?.into_wire())
     }
 
-    fn bench_list(&self, _: &Ctx, _: Empty) -> Result<BenchRuns> {
-        Db::open_default()?
-            .events_of("bench.result")?
-            .into_iter()
-            .map(bench_run_of)
-            .collect()
+    fn bench_list(&self, _: &Ctx, input: PageIn) -> Result<Page<BenchRun>> {
+        let (after, limit) = page_of(input.cursor.as_deref(), input.limit)?;
+        let filter = EventFilter {
+            kinds: &["bench.result"],
+            ..EventFilter::default()
+        };
+        let (rows, next) = Db::open_default()?.events_page(&filter, after, limit)?;
+        Ok(Page {
+            items: rows.into_iter().map(bench_run_of).collect::<Result<_>>()?,
+            next: next.map(|n| n.to_string()),
+        })
     }
 
     fn bench_compare(&self, _: &Ctx, input: BenchCompareIn) -> Result<BenchCompare> {
-        let runs = Db::open_default()?.events_of("bench.result")?;
+        let db = Db::open_default()?;
         let run = |id: i64| {
-            runs.iter()
-                .find(|e| e.id == id)
-                .cloned()
+            db.event(id)?
+                .filter(|e| e.kind == "bench.result")
                 .with_context(|| format!("no bench run {id} (see legionctl bench list)"))
                 .and_then(bench_run_of)
         };
@@ -1595,10 +1623,15 @@ impl Engine for Operator {
                 input.knob
             )
         })?;
-        let history = Db::open_default()?.events_naming(&knob.path, input.limit)?;
+        let (after, limit) = page_of(input.cursor.as_deref(), input.limit)?;
+        let filter = EventFilter {
+            naming: Some(&knob.path),
+            ..EventFilter::default()
+        };
+        let history = page(Db::open_default()?.events_page(&filter, after, limit)?);
         Ok(KnobDetail {
             knob: knob.into_wire(),
-            history: history.into_wire(),
+            history,
         })
     }
 
@@ -1671,19 +1704,27 @@ impl Engine for Operator {
         scope_control("stop", &input.id, "stopped")
     }
 
-    fn session_activity(&self, _: &Ctx, input: SessionIdIn) -> Result<Vec<SessionExec>> {
-        Ok(Db::open_default()?
-            .events_of("session.exec")?
-            .into_iter()
-            .filter(|e| e.payload["session"] == input.id.as_str())
-            .filter_map(|e| {
-                Some(SessionExec {
-                    at: e.ts,
-                    pid: u32::try_from(e.payload["pid"].as_u64()?).ok()?,
-                    argv: serde_json::from_value(e.payload["argv"].clone()).ok()?,
+    fn session_activity(&self, _: &Ctx, input: SessionActivityIn) -> Result<Page<SessionExec>> {
+        let (after, limit) = page_of(input.cursor.as_deref(), input.limit)?;
+        let filter = EventFilter {
+            kinds: &["session.exec"],
+            field: Some(("$.session", &input.id)),
+            naming: None,
+        };
+        let (rows, next) = Db::open_default()?.events_page(&filter, after, limit)?;
+        Ok(Page {
+            items: rows
+                .into_iter()
+                .filter_map(|e| {
+                    Some(SessionExec {
+                        at: e.ts,
+                        pid: u32::try_from(e.payload["pid"].as_u64()?).ok()?,
+                        argv: serde_json::from_value(e.payload["argv"].clone()).ok()?,
+                    })
                 })
-            })
-            .collect())
+                .collect(),
+            next: next.map(|n| n.to_string()),
+        })
     }
 
     fn session_pause(&self, _: &Ctx, input: SessionIdIn) -> Result<Lines> {

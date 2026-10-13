@@ -17,7 +17,7 @@ use gpui_kit::{
 use legionctl_api::client::Client;
 use legionctl_api::{
     BenchIn, BenchRun, Changes, DesktopGpu, Empty, Findings, GpuPrimaryIn, GpuState, MonitorIn,
-    PowerApplyIn, PowerSource, ProfileIn, Sample, Scenario, Snapshot, StatusIn, op,
+    PageIn, PowerApplyIn, PowerSource, ProfileIn, Sample, Scenario, Snapshot, StatusIn, op,
 };
 
 /// How often the glance values refresh.
@@ -171,11 +171,20 @@ impl LegionApp {
                 });
             }
             Page::Bench => {
-                let task =
-                    self.operator(
-                        cx,
-                        async move { client.call::<op::BenchList>(&Empty {}).await },
-                    );
+                let task = self.operator(
+                    cx,
+                    // shortcut: the first 1000 runs, oldest first; follow `next` when someone has more
+                    async move {
+                        let first = PageIn {
+                            cursor: None,
+                            limit: 1000,
+                        };
+                        client
+                            .call::<op::BenchList>(&first)
+                            .await
+                            .map(|page| page.items)
+                    },
+                );
                 self.finish(cx, task, |app, runs| app.state.runs = Some(runs));
             }
         }

@@ -74,6 +74,12 @@ here (no bus, a port in use) and is left out with a log line; one that panics or
 with an error, and systemd starts it again (`Restart=on-failure`, at most 5 starts in 300 s; the socket keeps
 clients waiting). The machine daemon stops the same way when its exec sensor stops.
 
+Built (2026-10-13, DESIGN/03, todo-60 part 1): logs come in pages. `events`, `inspect` (history), `gateway usage`,
+`tools calls`, `session activity`, `bench list` and `dossier nudges` take `--cursor` (the `next` of the page before)
+and `--limit` (1-1000, default 200) and answer `{items, next}`, oldest first; the filters are SQL (`kind`, a JSON
+field of the payload, a text in it; index `events(kind, id)`). Retention: `events.keep_days` (90) removes older
+events and gateway usage when the operator starts, before it serves.
+
 ## Worktrees and sandboxes
 
 - **Copy-on-write:** this machine's disks are ext4, which cannot reflink. A worktree is a `git worktree` (shares the
