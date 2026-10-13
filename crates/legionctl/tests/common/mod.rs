@@ -23,11 +23,16 @@ impl Operator {
         let nowhere = OsString::from("unix:path=/nonexistent/bus");
         let mut cmd = Command::new("systemd-socket-activate");
         cmd.env_clear().arg("-l").arg(&socket);
-        for (name, value) in env.iter().chain(&[
+        // the buses point nowhere unless the test gives its own
+        let defaults = [
             ("DBUS_SESSION_BUS_ADDRESS", nowhere.clone()),
             ("DBUS_SYSTEM_BUS_ADDRESS", nowhere),
             ("XDG_RUNTIME_DIR", runtime.clone().into()),
-        ]) {
+        ];
+        let unset = defaults
+            .into_iter()
+            .filter(|(k, _)| !env.iter().any(|(e, _)| e == k));
+        for (name, value) in env.iter().cloned().chain(unset) {
             cmd.arg(format!("--setenv={name}={}", value.to_string_lossy()));
         }
         // another package's binary: cargo builds it into the same folder (`make test` builds every binary first)

@@ -4,8 +4,10 @@
 
 mod display;
 mod engine;
+mod recorder;
 mod server;
 mod session;
+mod system1;
 
 use std::sync::Arc;
 
@@ -16,6 +18,14 @@ async fn main() -> Result<()> {
     let listener = server::activated_listener()?;
     let operator = Arc::new(engine::Operator {
         runtime: tokio::runtime::Handle::current(),
+    });
+    tokio::spawn(async {
+        match recorder::run().await {
+            Ok(()) => {
+                eprintln!("operator: machine event recorder ended (the daemon's signals stopped)");
+            }
+            Err(e) => eprintln!("operator: machine event recorder stopped: {e:#}"),
+        }
     });
     tokio::spawn(async {
         if let Err(e) = session::run().await {

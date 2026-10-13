@@ -15,6 +15,7 @@ pub mod react;
 pub mod snapshot;
 pub mod sysroot;
 pub mod system;
+pub mod telemetry;
 
 #[must_use]
 pub fn human_bytes(bytes: u64) -> String {

@@ -42,6 +42,8 @@ gnome-extensions enable legionctl-osd@legionctl    # takes effect at the next lo
 legionctl status                  # power, mode, CPU, limits, GPU wiring, units, modules, load (fans and throttle: root)
 legionctl doctor                  # drift, conflicts, kernel modules and DKMS, NTFS, GPU placement
 legionctl load                    # one-line load level, and which cgroup waits on I/O
+legionctl monitor --count 10      # power, temperatures, clocks, GPU, PSI, fans, throttle reasons (GET /v1/metrics too)
+legionctl trace                   # follow the event log: agents, people and the machine daemon
 legionctl gpu status              # which GPU drives each display; hybrid or discrete
 legionctl run --gpu nvidia -- blender
 legionctl run --cores e --nice 10 -- make -j16

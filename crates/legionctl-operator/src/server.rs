@@ -32,6 +32,7 @@ pub fn router(operator: Arc<Operator>) -> axum::Router {
     axum::Router::new()
         .route("/v1/ops", get(list))
         .route("/v1/ops/{name}", post(call))
+        .route("/v1/metrics", get(metrics))
         .with_state(operator)
 }
 
@@ -41,6 +42,23 @@ async fn list() -> Json<Value> {
             .map(|op| json!({"name": op.name, "help": op.help, "class": op.class, "input": (op.input)()}))
             .collect(),
     ))
+}
+
+/// One telemetry sample in `OpenMetrics` text, for Prometheus or Grafana.
+async fn metrics(State(operator): State<Arc<Operator>>) -> (StatusCode, String) {
+    let sample =
+        tokio::task::spawn_blocking(move || operator.sample(std::time::Duration::from_millis(250)))
+            .await;
+    match sample {
+        Ok(s) => (
+            StatusCode::OK,
+            legionctl_machine::telemetry::openmetrics(&s),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("sampling failed: {e}\n"),
+        ),
+    }
 }
 
 async fn call(

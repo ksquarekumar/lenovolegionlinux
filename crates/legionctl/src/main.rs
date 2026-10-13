@@ -12,7 +12,7 @@ use std::os::unix::process::CommandExt;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use legionctl_api::{ClientPath, Cores, GateIn, Launch, RunEnvIn, RunGpu, op};
+use legionctl_api::{ClientPath, Cores, EventsIn, GateIn, Launch, RunEnvIn, RunGpu, op};
 
 use crate::client::Client;
 
@@ -20,6 +20,7 @@ fn client_only() -> Vec<Command> {
     vec![
         Command::new("mcp").about("MCP server over stdio, for Claude Code, Codex and other agents"),
         Command::new("tui").about("Live dashboard"),
+        Command::new("trace").about("Follow the event log: agents, people and the machine daemon, as it happens"),
         Command::new("hook")
             .about("Claude Code hook adapter: reads the hook's JSON from stdin, answers in Claude Code's hook protocol")
             .arg(Arg::new("event").required(true).value_parser(hook::EVENTS)),
@@ -151,6 +152,30 @@ fn gate_git() -> Result<()> {
     Err(err).context("running the real git")
 }
 
+/// `legionctl trace`: print new events as they arrive (the backlog is skipped).
+fn trace() -> Result<()> {
+    let client = Client::new("cli")?;
+    let runtime = tokio::runtime::Runtime::new()?;
+    let page =
+        |since: i64| runtime.block_on(client.call::<op::EventsOp>(&EventsIn { since, limit: 500 }));
+    let mut last = 0;
+    loop {
+        let events = page(last)?;
+        match events.last() {
+            Some(e) => last = e.id,
+            None => break,
+        }
+    }
+    loop {
+        let events = page(last)?;
+        if let Some(e) = events.last() {
+            last = e.id;
+            println!("{}", legionctl_api::Render::text(&events));
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+}
+
 /// `legionctl session start`: run the prepared session in this terminal, with this binary as the git gate.
 fn start_session(launch: Launch) -> Result<()> {
     let exe = std::env::current_exe()?.to_string_lossy().into_owned();
@@ -184,6 +209,7 @@ fn main() -> Result<()> {
     match matches.subcommand() {
         Some(("mcp", _)) => return tokio::runtime::Runtime::new()?.block_on(mcp::serve()),
         Some(("tui", _)) => return tui::run(),
+        Some(("trace", _)) => return trace(),
         Some(("run", sub)) => return run(sub),
         Some(("hook", sub)) => {
             return hook::run(sub.get_one::<String>("event").map_or("", String::as_str));

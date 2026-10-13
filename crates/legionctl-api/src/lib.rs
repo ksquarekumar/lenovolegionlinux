@@ -317,6 +317,10 @@ operations! {
     hooks_run / HooksRun = "hooks.run", Workspace, HookRunIn => HookReply;
     /// legionctl skills: where each agent has them and whether the reminder that keeps each in force is on.
     skills / Skills = "skills", Read, ProjectIn => SkillList;
+    /// Telemetry: package and GPU power, temperatures, clocks, PSI, fan RPM and throttle reasons, one line per sample.
+    monitor / Monitor = "monitor", Read, MonitorIn => Samples;
+    /// The event log: what agents, people and the machine daemon did, oldest first.
+    events / EventsOp = "events", Read, EventsIn => Events;
     /// Bind this session to a dossier (one writable dossier per session); create it from the pattern with create.
     dossier_use / DossierUse = "dossier.use", Workspace, DossierUseIn => Lines;
     /// This session's active dossier.

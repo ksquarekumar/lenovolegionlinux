@@ -24,7 +24,7 @@ use legionctl_machine::ledger::{Key, Ledger};
 use legionctl_machine::policy::{self, Machine, Options, Source, Step};
 use legionctl_machine::react::{Event, react};
 use legionctl_machine::sysroot::SysRoot;
-use legionctl_machine::{cleanup, gpu, profile};
+use legionctl_machine::{cleanup, gpu, profile, telemetry};
 use tokio::io::unix::AsyncFd;
 use tokio::io::{Interest, Ready};
 use zbus::object_server::SignalEmitter;
@@ -272,6 +272,16 @@ impl System1 {
             Self::changed(&emitter, "Cleanup", &lines).await?;
         }
         Ok(lines)
+    }
+
+    /// The readings only root can make (fan RPM, throttle reasons from the MSR), as JSON (`telemetry::RootSample`).
+    /// Read-only, so polkit is not asked.
+    async fn sample(&self) -> zbus::fdo::Result<String> {
+        let root = self.root.clone();
+        let sample = tokio::task::spawn_blocking(move || telemetry::root_sample(&root))
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        serde_json::to_string(&sample).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
     /// Something changed the machine: an event or a method (`cause`), with what it did. Never sent for no change.

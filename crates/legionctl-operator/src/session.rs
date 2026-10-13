@@ -14,22 +14,7 @@ use anyhow::{Context, Result};
 use futures_util::StreamExt;
 
 use crate::display;
-
-#[zbus::proxy(
-    default_service = "org.legionctl.System1",
-    default_path = "/org/legionctl/System1",
-    interface = "org.legionctl.System1"
-)]
-trait System1 {
-    #[zbus(signal)]
-    fn key(&self, name: String) -> zbus::Result<()>;
-
-    #[zbus(signal)]
-    fn mode_changed(&self, mode: String, fn_q_choice: bool, source: String) -> zbus::Result<()>;
-
-    #[zbus(signal)]
-    fn fn_lock(&self, on: bool) -> zbus::Result<()>;
-}
+use crate::system1::System1Proxy;
 
 #[zbus::proxy(
     default_service = "org.legionctl.Osd",

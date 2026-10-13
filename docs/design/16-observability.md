@@ -25,6 +25,14 @@ app and MCP. An agent can diagnose the machine with the same tools as a person.
 | `legionctl events [--since]` | the event log of both engines, with actor and payload |
 | `GET /v1/metrics` | the same telemetry in OpenMetrics format, for Prometheus or Grafana |
 
+Built (2026-10-13, M3a): `monitor` (package power from RAPL energy over the sample window, CPU temperature and
+clock, the NVIDIA GPU only while it is awake, PSI, and fan RPM and throttle reasons now/logged from
+`legionctl-system`'s `Sample()` method, which reads the MSR and the firmware as root), `GET /v1/metrics` (the same
+sample in OpenMetrics), `events` (the operator's event log, which now also records the daemon's `Changed`,
+`ModeChanged`, `FnLock` and `Key` signals as actor `legionctl-system`), and `trace` (follows the event log). The
+recorder runs while the operator runs: from login (or the first client request); machine changes before that are in
+the daemon's journal only.
+
 ## Check: is the machine correct
 
 `legionctl doctor` runs checks that are data: id, severity, evidence, and a fix operation with a preview diff.

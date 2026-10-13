@@ -15,11 +15,13 @@ use legionctl_api::{
 };
 use legionctl_api::{
     DossierAddIn, DossierAppendIn, DossierCheckIn, DossierEditIn, DossierFindings, DossierList,
-    DossierReadIn, DossierSearchIn, DossierUseIn, DossierWriteIn, GateIn, Guard, GuardIn,
-    HookReply, HookRunIn, Launch, Lines, Locks, SessionId, SessionIdIn, SessionIn, SessionStartIn,
-    SessionState, Sessions,
+    DossierReadIn, DossierSearchIn, DossierUseIn, DossierWriteIn, Events, EventsIn, GateIn, Guard,
+    GuardIn, HookReply, HookRunIn, Launch, Lines, Locks, MonitorIn, Sample, Samples, SessionId,
+    SessionIdIn, SessionIn, SessionStartIn, SessionState, Sessions,
 };
 use legionctl_core::config::{Dirs, Resolved, resolve};
+
+use crate::system1::System1Proxy;
 use legionctl_core::db::Db;
 use legionctl_core::dossier::{Dossiers, place_of};
 use legionctl_core::reminders::Event;
@@ -30,18 +32,8 @@ use legionctl_machine::policy::{self, Machine, Options, Source};
 use legionctl_machine::profile::{self, Profile};
 use legionctl_machine::snapshot::Detail;
 use legionctl_machine::sysroot::SysRoot;
+use legionctl_machine::telemetry::{self, RootSample};
 use legionctl_machine::{cleanup, gpu, load};
-
-#[zbus::proxy(
-    default_service = "org.legionctl.System1",
-    default_path = "/org/legionctl/System1",
-    interface = "org.legionctl.System1"
-)]
-trait System1Methods {
-    fn apply(&self, source: &str) -> zbus::Result<Vec<String>>;
-    fn set_desktop_gpu(&self, choice: &str) -> zbus::Result<Vec<String>>;
-    fn cleanup(&self, unload_modules: bool) -> zbus::Result<Vec<String>>;
-}
 
 pub struct Operator {
     /// Runs the D-Bus calls of machine changes; engine methods run on blocking threads.
@@ -120,13 +112,13 @@ impl Operator {
     /// A machine change through `legionctl-system`; polkit asks the human.
     fn system(
         &self,
-        call: impl AsyncFnOnce(&System1MethodsProxy<'_>) -> zbus::Result<Vec<String>>,
+        call: impl AsyncFnOnce(&System1Proxy<'_>) -> zbus::Result<Vec<String>>,
     ) -> Result<Changes> {
         let lines = self.runtime.block_on(async {
             let conn = zbus::Connection::system()
                 .await
                 .context("connecting to the system bus")?;
-            let proxy = System1MethodsProxy::new(&conn).await?;
+            let proxy = System1Proxy::new(&conn).await?;
             call(&proxy)
                 .await
                 .context("legionctl-system refused or failed")
@@ -305,6 +297,22 @@ fn gate_message(resolved: &Resolved) -> Result<String> {
 /// The config for work in `project` (its repository layer applies), or without a repository.
 fn config(project: Option<&ClientPath>) -> Result<Resolved> {
     resolve(&Dirs::from_env(), path(project)?)
+}
+
+impl Operator {
+    /// One telemetry sample over `window`; the root-only part comes from `legionctl-system`, and stays unknown when
+    /// the daemon does not answer.
+    pub fn sample(&self, window: std::time::Duration) -> Sample {
+        let root_part = self
+            .runtime
+            .block_on(async {
+                let conn = zbus::Connection::system().await?;
+                let json = System1Proxy::new(&conn).await?.sample().await?;
+                anyhow::Ok(serde_json::from_str::<RootSample>(&json)?)
+            })
+            .unwrap_or_default();
+        telemetry::sample(&SysRoot::from_env(), window, root_part)
+    }
 }
 
 impl Engine for Operator {
@@ -767,6 +775,20 @@ impl Engine for Operator {
 
     fn skills(&self, _: &Ctx, input: ProjectIn) -> Result<SkillList> {
         Ok(skills::inventory(&home(), &config(Some(&input.project))?))
+    }
+
+    fn monitor(&self, _: &Ctx, input: MonitorIn) -> Result<Samples> {
+        anyhow::ensure!((1..=3600).contains(&input.count), "count must be 1-3600");
+        anyhow::ensure!(
+            (100..=60_000).contains(&input.interval_ms),
+            "interval_ms must be 100-60000"
+        );
+        let window = std::time::Duration::from_millis(u64::from(input.interval_ms));
+        Ok((0..input.count).map(|_| self.sample(window)).collect())
+    }
+
+    fn events(&self, _: &Ctx, input: EventsIn) -> Result<Events> {
+        Db::open_default()?.events(input.since, input.limit)
     }
 
     fn session_start(&self, ctx: &Ctx, input: SessionStartIn) -> Result<Launch> {

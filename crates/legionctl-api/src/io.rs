@@ -9,6 +9,7 @@ pub use legionctl_core::dossier::{DossierInfo, EditMode, Lock};
 
 pub use legionctl_core::agents::ConfigFile;
 pub use legionctl_core::config::{Explanation, Layer as ConfigLayer};
+pub use legionctl_core::db::EventRow;
 pub use legionctl_core::hooks::{Action, Binding};
 pub use legionctl_core::reminders::Reminder;
 pub use legionctl_core::session::{Launch, SessionRecord};
@@ -19,6 +20,7 @@ pub use legionctl_machine::gpu::Output;
 pub use legionctl_machine::load::Load as LoadState;
 pub use legionctl_machine::profile::Capability;
 pub use legionctl_machine::snapshot::Snapshot;
+pub use legionctl_machine::telemetry::Sample;
 
 pub type ConfigFiles = Vec<ConfigFile>;
 pub type Workspaces = Vec<Workspace>;
@@ -528,3 +530,30 @@ pub struct GateIn {
     #[serde(default = "here")]
     pub project: ClientPath,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MonitorIn {
+    /// Samples to take (1-3600).
+    #[serde(default = "one")]
+    pub count: u32,
+    /// Window of each sample in milliseconds (100-60000); package power is the mean over it.
+    #[serde(default = "thousand")]
+    pub interval_ms: u32,
+}
+
+fn thousand() -> u32 {
+    1000
+}
+
+pub type Samples = Vec<Sample>;
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EventsIn {
+    /// Only events after this id (0: from the start).
+    #[serde(default)]
+    pub since: i64,
+    #[serde(default = "two_hundred")]
+    pub limit: u32,
+}
+
+pub type Events = Vec<EventRow>;

@@ -1165,6 +1165,7 @@ dependencies = [
  "futures-util",
  "legionctl-machine",
  "sd-notify",
+ "serde_json",
  "tokio",
  "udev",
  "zbus",

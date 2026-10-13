@@ -3,10 +3,10 @@
 use std::collections::BTreeMap;
 
 use crate::io::{
-    CapabilityList, Changes, ConfigFile, ConfigView, DossierFindings, DossierInfo, Explanation,
-    Findings, GpuState, Guard, HookReply, HookTable, Launch, LayerList, Lines, LoadState, Lock,
-    Reminder, RunEnv, SessionState, SetupReport, SkillInfo, Snapshot, Text, Validation, Workspace,
-    WorkspaceStatus,
+    CapabilityList, Changes, ConfigFile, ConfigView, DossierFindings, DossierInfo, EventRow,
+    Explanation, Findings, GpuState, Guard, HookReply, HookTable, Launch, LayerList, Lines,
+    LoadState, Lock, Reminder, RunEnv, Sample, SessionState, SetupReport, SkillInfo, Snapshot,
+    Text, Validation, Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -599,6 +599,52 @@ impl Render for Vec<SessionState> {
                     s.session.agent,
                     s.session.dossier,
                     s.session.workdir.display()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+fn some(v: Option<f64>, unit: &str) -> String {
+    v.map_or("-".into(), |v| format!("{v:.0}{unit}"))
+}
+
+impl Render for Vec<Sample> {
+    fn text(&self) -> String {
+        self.iter()
+            .map(|s| {
+                let gpu = s.gpu.as_ref().map_or("-".into(), |g| {
+                    format!("{} {} {}", g.state, some(g.power_w, " W"), some(g.temp_c, " °C"))
+                });
+                let fans = s.root.fan_rpm.as_ref().map_or("? (root)".into(), |f| {
+                    f.values().map(ToString::to_string).collect::<Vec<_>>().join("/")
+                });
+                let throttle = s.root.throttle_now.as_ref().map_or("? (root)".into(), |t| {
+                    if t.is_empty() { "-".into() } else { t.join(",") }
+                });
+                format!(
+                    "pkg {}  cpu {} {}  gpu {gpu}  fans {fans} rpm  throttle {throttle}  psi cpu/mem/io {}/{}/{}",
+                    some(s.package_w, " W"),
+                    some(s.cpu_temp_c, " °C"),
+                    some(s.cpu_mhz, " MHz"),
+                    some(s.cpu_pressure.as_ref().map(|p| p.some_avg10), "%"),
+                    some(s.memory_pressure.as_ref().map(|p| p.some_avg10), "%"),
+                    some(s.io_pressure.as_ref().map(|p| p.some_avg10), "%"),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+impl Render for Vec<EventRow> {
+    fn text(&self) -> String {
+        self.iter()
+            .map(|e| {
+                format!(
+                    "{:>6} {} {:<16} {:<28} {}",
+                    e.id, e.ts, e.actor, e.kind, e.payload
                 )
             })
             .collect::<Vec<_>>()

@@ -109,6 +109,39 @@ impl Db {
         )?;
         Ok(self.conn.last_insert_rowid())
     }
+
+    /// Events after `since` (an event id), oldest first, at most `limit`.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn events(&self, since: i64, limit: u32) -> Result<Vec<EventRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, ts, actor, kind, payload FROM events WHERE id > ?1 ORDER BY id LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![since, limit], |r| {
+            let payload: String = r.get(4)?;
+            Ok(EventRow {
+                id: r.get(0)?,
+                ts: r.get(1)?,
+                actor: r.get(2)?,
+                kind: r.get(3)?,
+                payload: serde_json::from_str(&payload)
+                    .unwrap_or(serde_json::Value::String(payload)),
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+}
+
+/// One entry of the event log: who did what, when.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct EventRow {
+    pub id: i64,
+    /// Seconds since the epoch.
+    pub ts: i64,
+    pub actor: String,
+    pub kind: String,
+    pub payload: serde_json::Value,
 }
 
 fn migrate(conn: &mut Connection, migrations: &[&str]) -> Result<()> {

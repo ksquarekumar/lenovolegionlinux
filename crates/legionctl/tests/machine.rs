@@ -436,7 +436,7 @@ mod daemon_process {
     use zbus::zvariant::OwnedValue;
 
     /// (subject kind, action, flags, whether anything else was attached)
-    type Asked = std::sync::Arc<std::sync::Mutex<Vec<(String, String, u32, bool)>>>;
+    pub(super) type Asked = std::sync::Arc<std::sync::Mutex<Vec<(String, String, u32, bool)>>>;
 
     /// Allows every action except the denied ones, as a polkit that asked a human would, and records each question:
     /// (subject kind, action, flags, whether anything else was attached).
@@ -466,7 +466,7 @@ mod daemon_process {
         }
     }
 
-    struct Kill(Child);
+    pub(super) struct Kill(Child);
 
     impl Drop for Kill {
         fn drop(&mut self) {
@@ -485,7 +485,7 @@ mod daemon_process {
 
     /// A private bus, the polkit and logind stand-ins on it, and the daemon on the recorded machine `m`. The
     /// processes stop when the returned guards drop.
-    async fn start(m: &Machine) -> (zbus::Connection, Asked, (Kill, Kill)) {
+    pub(super) async fn start(m: &Machine) -> (zbus::Connection, Asked, (Kill, Kill)) {
         let bus_path = m.dir.join("bus");
         let bus = Kill(
             Command::new("dbus-daemon")
@@ -629,5 +629,94 @@ mod daemon_process {
                 ),
             ]
         );
+    }
+}
+
+/// The operator on the same private bus as the daemon: machine changes reach the event log, and telemetry gets the
+/// root-only part from the daemon.
+mod operator_and_daemon {
+    use super::daemon_process::start;
+    use super::*;
+    use serde_json::Value;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn daemon_changes_reach_the_event_log_and_monitor_gets_the_daemons_msr_reading() {
+        let m = Machine::new("telemetry");
+        // on battery, so that Apply("ac") has changes to announce (no change, no Changed signal)
+        m.set("/sys/class/power_supply/ADP0/online", "0");
+        // the MSR with the thermal bits set (status bit 0, log bit 1) at IA32_PACKAGE_THERM_STATUS
+        let msr = m.dir.join("root/dev/cpu/0/msr");
+        std::fs::create_dir_all(msr.parent().unwrap()).unwrap();
+        let mut bytes = vec![0u8; 0x1B1 + 8];
+        bytes[0x1B1] = 0b11;
+        std::fs::write(&msr, bytes).unwrap();
+        m.set("/sys/class/hwmon/hwmon9/name", "coretemp");
+        m.set("/sys/class/hwmon/hwmon9/temp1_input", "55000");
+        let (stand_ins, _asked, _processes) = start(&m).await;
+        let bus = format!("unix:path={}", m.dir.join("bus").display());
+        let op = Operator::start(
+            "telemetry",
+            &[
+                ("PATH", m.dir.join("bin").into()),
+                ("HOME", m.dir.join("home").into()),
+                ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+                ("DBUS_SYSTEM_BUS_ADDRESS", bus.into()),
+            ],
+        );
+        let json = |args: &[&str]| -> Value {
+            let out = op.cli(&[args, &["--json"]].concat());
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            serde_json::from_slice(&out.stdout).unwrap()
+        };
+
+        // telemetry: the throttle reason comes from the daemon's MSR read; the temperature from the recorded hwmon
+        let sample = &json(&["monitor", "--interval-ms", "100"])[0];
+        assert_eq!(
+            sample["throttle_now"],
+            serde_json::json!(["thermal"]),
+            "{sample}"
+        );
+        assert_eq!(sample["throttle_logged"], serde_json::json!(["thermal"]));
+        assert_eq!(sample["cpu_temp_c"], 55.0);
+
+        // the first request starts the operator (socket activation) and with it the recorder; give it time to subscribe
+        json(&["events"]);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        // a change through the daemon's API appears in the operator's event log, from the daemon
+        let system = zbus::Proxy::new(
+            &stand_ins,
+            "org.legionctl.System1",
+            "/org/legionctl/System1",
+            "org.legionctl.System1",
+        )
+        .await
+        .unwrap();
+        let lines: Vec<String> = system.call("Apply", &("ac",)).await.unwrap();
+        assert!(lines.iter().any(|l| l.contains("max-power")), "{lines:?}");
+        let mut logged = Value::Null;
+        for _ in 0..100 {
+            logged = json(&["events"]);
+            if logged
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["kind"] == "machine.apply")
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let apply = logged
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["kind"] == "machine.apply")
+            .unwrap_or_else(|| panic!("not recorded: {logged}"));
+        assert_eq!(apply["actor"], "legionctl-system");
+        assert_eq!(apply["payload"]["lines"], serde_json::json!(lines));
     }
 }

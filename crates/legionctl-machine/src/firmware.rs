@@ -63,12 +63,29 @@ pub fn throttle_reasons(value: u64) -> Vec<&'static str> {
         .collect()
 }
 
-/// Logged throttle reasons from CPU 0's MSR; `None` without root or the msr module.
-#[must_use]
-pub fn logged_throttle_reasons(root: &SysRoot) -> Option<Vec<&'static str>> {
+/// `IA32_PACKAGE_THERM_STATUS` of CPU 0; `None` without root or the msr module.
+fn package_therm_status(root: &SysRoot) -> Option<u64> {
     let mut msr = std::fs::File::open(root.path("/dev/cpu/0/msr")).ok()?;
     msr.seek(SeekFrom::Start(PACKAGE_THERM_STATUS)).ok()?;
     let mut buf = [0u8; 8];
     msr.read_exact(&mut buf).ok()?;
-    Some(throttle_reasons(u64::from_le_bytes(buf)))
+    Some(u64::from_le_bytes(buf))
+}
+
+/// Logged throttle reasons from CPU 0's MSR; `None` without root or the msr module.
+#[must_use]
+pub fn logged_throttle_reasons(root: &SysRoot) -> Option<Vec<&'static str>> {
+    package_therm_status(root).map(throttle_reasons)
+}
+
+/// Throttle reasons active now: each status bit sits one below its log bit.
+#[must_use]
+pub fn current_throttle_reasons(root: &SysRoot) -> Option<Vec<&'static str>> {
+    package_therm_status(root).map(|value| {
+        THROTTLE_LOG_BITS
+            .iter()
+            .filter(|(bit, _)| value >> (bit - 1) & 1 == 1)
+            .map(|(_, name)| *name)
+            .collect()
+    })
 }
