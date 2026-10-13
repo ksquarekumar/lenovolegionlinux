@@ -7,6 +7,7 @@ pub mod firmware;
 pub mod gpu;
 pub mod kernel;
 pub mod keys;
+pub mod knobs;
 pub mod ledger;
 pub mod load;
 pub mod policy;

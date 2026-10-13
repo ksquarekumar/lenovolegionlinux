@@ -33,6 +33,14 @@ sample in OpenMetrics), `events` (the operator's event log, which now also recor
 recorder runs while the operator runs: from login (or the first client request); machine changes before that are in
 the daemon's journal only.
 
+Built (2026-10-13, M3b): `knobs` lists each knob that legionctl reads or sets: the platform profile, the CPU knobs
+(a per-CPU knob shows one value, or `value×count` when the CPUs differ), power-profiles-daemon, the profile's
+sysctls and the `lenovo-wmi-other` firmware attributes with their firmware range. For each knob it shows the current
+value, the value the profile wants for the current power source (the Fn+Q choice when one is active) and the
+policy: `enforce` (the profile sets it), `follow` (the platform profile: an Fn+Q choice is accepted) or `observe`.
+`inspect <knob>` shows one knob and the events that name its file (the daemon's writes and warnings). The
+"because" chain comes with the configset layers (M3e).
+
 ## Check: is the machine correct
 
 `legionctl doctor` runs checks that are data: id, severity, evidence, and a fix operation with a preview diff.
@@ -50,6 +58,11 @@ Fixes are applied only through `legionctl approve`.
 | Virtualization | provider health, guest memory, Docker disk use, NVIDIA runtime vs driver, KVM/IOMMU/VFIO, binfmt (17-virtualization) |
 | Agents | setup gaps (ctx, MCP, skills), invalid agent settings, quota near limit, gate denials, stale worktrees |
 
+Built (2026-10-13, M3b): besides the policy, kernel, conflict, NTFS and GPU checks, `doctor` now finds failed
+system and user units, the OSD extension when it is not active, setup gaps, dossier bindings idle past
+`dossier.stale_hours`, and workspaces that drifted from their record or have conflicts. The findings are still
+lines; checks as data with fix operations come with `approve` (M3g).
+
 ## Change: tune and experiment safely
 
 - `legionctl plan` shows the exact writes a change makes; `apply` refuses values outside firmware min/max.
@@ -58,7 +71,9 @@ Fixes are applied only through `legionctl approve`.
   stored; `bench compare` shows two runs side by side (for example two scx modes, two power limits).
 - `legionctl power tune`: the sweep engine (06-tuning) writes a generated configset layer for review.
 - `legionctl wmi`: catalog of the firmware WMI methods this model has (10-gap), each marked read-only or write;
-  read-only methods run directly, write methods only through an operation with approval.
+  read-only methods run directly, write methods only through an operation with approval. Parked: the measured
+  method table is in 10-gap, but the exact `acpi_call` argument strings for WMAA/WMAF were not recorded; they must
+  be verified with the user before legionctl calls them.
 - Machine events can be bound to actions with the same hooks manager as agent events: built-in actions or a
   user shell command with a timeout. That is the extension point; there are no plugins.
 

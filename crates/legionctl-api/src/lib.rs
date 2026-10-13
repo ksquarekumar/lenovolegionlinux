@@ -321,6 +321,11 @@ operations! {
     monitor / Monitor = "monitor", Read, MonitorIn => Samples;
     /// The event log: what agents, people and the machine daemon did, oldest first.
     events / EventsOp = "events", Read, EventsIn => Events;
+    /// Every knob legionctl reads or sets: current value, the profile's value for the current power source, the
+    /// firmware range and choices, and the policy (enforce, follow, observe).
+    knobs / KnobsOp = "knobs", Read, ProfileIn => Knobs;
+    /// One knob and its history from the event log.
+    inspect / Inspect = "inspect", Read, InspectIn => KnobDetail;
     /// Bind this session to a dossier (one writable dossier per session); create it from the pattern with create.
     dossier_use / DossierUse = "dossier.use", Workspace, DossierUseIn => Lines;
     /// This session's active dossier.

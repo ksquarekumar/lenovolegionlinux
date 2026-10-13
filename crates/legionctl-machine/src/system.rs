@@ -20,6 +20,31 @@ pub fn unit_state(query: &str, unit: &str) -> String {
     }
 }
 
+/// Failed units of the system manager, or of the user's with `user`; empty when systemctl is missing.
+#[must_use]
+pub fn failed_units(user: bool) -> Vec<String> {
+    let args = ["--user", "--failed", "--plain", "--no-legend"];
+    output("systemctl", &args[usize::from(!user)..])
+        .map(|(_, text)| {
+            text.lines()
+                .filter_map(|l| l.split_whitespace().next().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A GNOME Shell extension's `State:` (ACTIVE, ERROR, ...), `not installed`, or `None` without `gnome-extensions`.
+#[must_use]
+pub fn extension_state(uuid: &str) -> Option<String> {
+    let (ok, text) = output("gnome-extensions", &["info", uuid])?;
+    if !ok {
+        return Some("not installed".into());
+    }
+    text.lines()
+        .find_map(|l| l.trim().strip_prefix("State:"))
+        .map(|s| s.trim().to_string())
+}
+
 #[must_use]
 pub fn package_installed(package: &str) -> bool {
     output("pacman", &["-Q", package]).is_some_and(|(ok, _)| ok)

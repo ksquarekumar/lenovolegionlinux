@@ -115,10 +115,34 @@ impl Db {
     /// # Errors
     /// The database read fails.
     pub fn events(&self, since: i64, limit: u32) -> Result<Vec<EventRow>> {
-        let mut stmt = self.conn.prepare(
+        self.query_events(
             "SELECT id, ts, actor, kind, payload FROM events WHERE id > ?1 ORDER BY id LIMIT ?2",
+            params![since, limit],
+        )
+    }
+
+    /// The last `limit` events whose payload names `path` (`*` matches any text, for per-CPU files), oldest first.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn events_naming(&self, path: &str, limit: u32) -> Result<Vec<EventRow>> {
+        let escaped = path
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let pattern = format!("%{}%", escaped.replace('*', "%"));
+        let mut rows = self.query_events(
+            "SELECT id, ts, actor, kind, payload FROM events WHERE payload LIKE ?1 ESCAPE '\\' \
+             ORDER BY id DESC LIMIT ?2",
+            params![pattern, limit],
         )?;
-        let rows = stmt.query_map(params![since, limit], |r| {
+        rows.reverse();
+        Ok(rows)
+    }
+
+    fn query_events(&self, sql: &str, args: impl rusqlite::Params) -> Result<Vec<EventRow>> {
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(args, |r| {
             let payload: String = r.get(4)?;
             Ok(EventRow {
                 id: r.get(0)?,

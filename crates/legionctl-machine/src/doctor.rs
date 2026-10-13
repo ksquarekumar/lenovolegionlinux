@@ -1,5 +1,6 @@
 //! Read-only health checks: is the machine in the policy the profile describes, and is anything known to fight it
-//! (old Legion tooling, missing or unwanted kernel modules, DKMS builds, throttling, dirty NTFS volumes, GPU wiring)?
+//! (old Legion tooling, missing or unwanted kernel modules, DKMS builds, throttling, dirty NTFS volumes, GPU wiring,
+//! failed units, the OSD extension)?
 
 use std::process::Command;
 
@@ -190,6 +191,36 @@ pub fn doctor(machine: &Machine) -> Vec<String> {
         ));
     }
     w.extend(gpu_warnings(root, profile, ac));
+    w.extend(desktop_warnings());
+    w
+}
+
+const OSD_EXTENSION: &str = "legionctl-osd@legionctl";
+
+/// Failed system and user units, and the OSD extension when it is not running.
+fn desktop_warnings() -> Vec<String> {
+    let mut w: Vec<String> = system::failed_units(false)
+        .into_iter()
+        .map(|u| format!("unit {u} failed; see systemctl status {u}"))
+        .chain(
+            system::failed_units(true)
+                .into_iter()
+                .map(|u| format!("user unit {u} failed; see systemctl --user status {u}")),
+        )
+        .collect();
+    // ENABLED is the name of ACTIVE before GNOME 45
+    if let Some(state) = system::extension_state(OSD_EXTENSION)
+        && !["ACTIVE", "ENABLED"].contains(&state.as_str())
+    {
+        let fix = if state == "ERROR" || state == "OUT OF DATE" {
+            "see journalctl --user -b /usr/bin/gnome-shell".to_string()
+        } else {
+            format!("gnome-extensions enable {OSD_EXTENSION}, then log in again")
+        };
+        w.push(format!(
+            "the OSD extension {OSD_EXTENSION} is {state}; Fn+Q, Fn+R and Fn lock show no OSD ({fix})"
+        ));
+    }
     w
 }
 

@@ -16,8 +16,8 @@ use legionctl_api::{
 use legionctl_api::{
     DossierAddIn, DossierAppendIn, DossierCheckIn, DossierEditIn, DossierFindings, DossierList,
     DossierReadIn, DossierSearchIn, DossierUseIn, DossierWriteIn, Events, EventsIn, GateIn, Guard,
-    GuardIn, HookReply, HookRunIn, Launch, Lines, Locks, MonitorIn, Sample, Samples, SessionId,
-    SessionIdIn, SessionIn, SessionStartIn, SessionState, Sessions,
+    GuardIn, HookReply, HookRunIn, InspectIn, KnobDetail, Knobs, Launch, Lines, Locks, MonitorIn,
+    Sample, Samples, SessionId, SessionIdIn, SessionIn, SessionStartIn, SessionState, Sessions,
 };
 use legionctl_core::config::{Dirs, Resolved, resolve};
 
@@ -33,7 +33,7 @@ use legionctl_machine::profile::{self, Profile};
 use legionctl_machine::snapshot::Detail;
 use legionctl_machine::sysroot::SysRoot;
 use legionctl_machine::telemetry::{self, RootSample};
-use legionctl_machine::{cleanup, gpu, load};
+use legionctl_machine::{cleanup, gpu, knobs, load};
 
 pub struct Operator {
     /// Runs the D-Bus calls of machine changes; engine methods run on blocking threads.
@@ -139,6 +139,41 @@ impl Operator {
 
 fn dossiers() -> Result<Dossiers> {
     Dossiers::open(&config(None)?.config.dossier)
+}
+
+/// The agent side of `doctor`: setup gaps, stale dossier bindings, workspaces that drifted from their record.
+fn agent_findings() -> Result<Vec<String>> {
+    let mut w: Vec<String> = setup::check()
+        .needs_attention()
+        .iter()
+        .map(|i| {
+            format!(
+                "setup: {} for {} is {}; run legionctl setup apply",
+                i.what, i.agent, i.status
+            )
+        })
+        .collect();
+    let store = dossiers()?;
+    for lock in store.locks()?.iter().filter(|l| l.stale) {
+        w.push(format!(
+            "dossier {} is bound to session {}, idle past dossier.stale_hours; the next session that uses it takes it over",
+            lock.dossier, lock.session
+        ));
+    }
+    for ws in store.workspaces(None)? {
+        let status = store.workspace_status(&ws)?;
+        for drift in &status.drift {
+            w.push(format!("workspace {}: {drift}", ws.path.display()));
+        }
+        if status.conflicted > 0 {
+            w.push(format!(
+                "workspace {} has {} conflicted files",
+                ws.path.display(),
+                status.conflicted
+            ));
+        }
+    }
+    Ok(w)
 }
 
 fn session(id: &SessionId) -> Result<&str> {
@@ -340,9 +375,9 @@ impl Engine for Operator {
 
     fn doctor(&self, _: &Ctx, input: ProfileIn) -> Result<Findings> {
         let plan = Plan::load(path(input.profile.as_ref())?)?;
-        Ok(Findings {
-            findings: legionctl_machine::doctor::doctor(&plan.machine()),
-        })
+        let mut findings = legionctl_machine::doctor::doctor(&plan.machine());
+        findings.extend(agent_findings()?);
+        Ok(Findings { findings })
     }
 
     fn capabilities(&self, _: &Ctx, input: ProfileIn) -> Result<CapabilityList> {
@@ -789,6 +824,24 @@ impl Engine for Operator {
 
     fn events(&self, _: &Ctx, input: EventsIn) -> Result<Events> {
         Db::open_default()?.events(input.since, input.limit)
+    }
+
+    fn knobs(&self, _: &Ctx, input: ProfileIn) -> Result<Knobs> {
+        Ok(knobs::catalog(
+            &Plan::load(path(input.profile.as_ref())?)?.machine(),
+        ))
+    }
+
+    fn inspect(&self, _: &Ctx, input: InspectIn) -> Result<KnobDetail> {
+        let plan = Plan::load(path(input.profile.as_ref())?)?;
+        let knob = knobs::find(&plan.machine(), &input.knob).with_context(|| {
+            format!(
+                "no knob {} on this machine (see legionctl knobs)",
+                input.knob
+            )
+        })?;
+        let history = Db::open_default()?.events_naming(&knob.path, input.limit)?;
+        Ok(KnobDetail { knob, history })
     }
 
     fn session_start(&self, ctx: &Ctx, input: SessionStartIn) -> Result<Launch> {

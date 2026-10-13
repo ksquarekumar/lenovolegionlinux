@@ -17,6 +17,7 @@ pub use legionctl_core::setup::Report as SetupReport;
 pub use legionctl_core::skills::SkillInfo;
 pub use legionctl_core::workspace::{Workspace, WorkspaceStatus};
 pub use legionctl_machine::gpu::Output;
+pub use legionctl_machine::knobs::Knob;
 pub use legionctl_machine::load::Load as LoadState;
 pub use legionctl_machine::profile::Capability;
 pub use legionctl_machine::snapshot::Snapshot;
@@ -557,3 +558,27 @@ pub struct EventsIn {
 }
 
 pub type Events = Vec<EventRow>;
+
+pub type Knobs = Vec<Knob>;
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct InspectIn {
+    /// Knob id (`cpu.epp`, `firmware.ppt_pl1_spl`, ...) or its path.
+    pub knob: String,
+    /// Profile (JSONC); default: the installed one.
+    pub profile: Option<ClientPath>,
+    /// Most recent events to show.
+    #[serde(default = "fifty")]
+    pub limit: u32,
+}
+
+fn fifty() -> u32 {
+    50
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct KnobDetail {
+    pub knob: Knob,
+    /// Events that name the knob's file (writes, warnings), oldest first.
+    pub history: Vec<EventRow>,
+}

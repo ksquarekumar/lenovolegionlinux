@@ -185,7 +185,16 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
         &bin,
         "systemctl",
         "if [ \"$1\" = is-active ] && [ \"$2\" = legiond.service ]; then echo active; \
-         elif [ \"$1\" = is-active ]; then echo inactive; else echo disabled; fi",
+         elif [ \"$1\" = is-active ]; then echo inactive; \
+         elif [ \"$1\" = --failed ]; then echo 'tlp.service loaded failed failed TLP'; \
+         elif [ \"$2\" = --failed ]; then echo 'app-ghostty.service loaded failed failed Ghostty'; \
+         else echo disabled; fi",
+    );
+    // the OSD extension threw at startup
+    Machine::script(
+        &bin,
+        "gnome-extensions",
+        "printf 'legionctl-osd@legionctl\\n  Enabled: Yes\\n  State: ERROR\\n'",
     );
     Machine::script(&bin, "pacman", "[ \"$2\" = lenovolegionlinux-git ]");
     // acpi_call is not available for the bore-lto kernel, and DKMS built it only for the other one
@@ -214,8 +223,23 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
     );
     let report = String::from_utf8(out.stdout).unwrap();
     let lines: Vec<&str> = report.lines().collect();
+    // the agent side follows: here ctx and the Codex setup are missing (setup.check's own tests cover the list)
+    let (machine, agent) = lines.split_at(
+        lines
+            .iter()
+            .position(|l| l.starts_with("- setup: "))
+            .unwrap(),
+    );
+    assert!(
+        agent.iter().all(|l| l.starts_with("- setup: ")),
+        "{agent:?}"
+    );
+    assert!(
+        agent.contains(&"- setup: ctx for all is not installed; run legionctl setup apply"),
+        "{agent:?}"
+    );
     assert_eq!(
-        lines,
+        machine,
         [
             "doctor: warnings",
             "- platform_profile is 'max-power', expected 'balanced'",
@@ -228,6 +252,9 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
             "- DKMS module acpi_call/1.2.2 is not built for kernel 7.2.9-2-cachyos-bore-lto",
             "- NTFS volume nvme0n1p3 is marked dirty; run chkdsk in Windows (or ntfsfix -d, see docs/design/11-disks.md)",
             "- an external display runs on NVIDIA but the desktop may be drawn on Intel; try `legionctl gpu primary --choice nvidia`",
+            "- unit tlp.service failed; see systemctl status tlp.service",
+            "- user unit app-ghostty.service failed; see systemctl --user status app-ghostty.service",
+            "- the OSD extension legionctl-osd@legionctl is ERROR; Fn+Q, Fn+R and Fn lock show no OSD (see journalctl --user -b /usr/bin/gnome-shell)",
         ]
     );
 }
@@ -652,6 +679,11 @@ mod operator_and_daemon {
         std::fs::write(&msr, bytes).unwrap();
         m.set("/sys/class/hwmon/hwmon9/name", "coretemp");
         m.set("/sys/class/hwmon/hwmon9/temp1_input", "55000");
+        // one CPU left behind by an earlier tool; the AC policy puts it back
+        m.set(
+            "/sys/devices/system/cpu/cpufreq/policy3/energy_performance_preference",
+            "power",
+        );
         let (stand_ins, _asked, _processes) = start(&m).await;
         let bus = format!("unix:path={}", m.dir.join("bus").display());
         let op = Operator::start(
@@ -718,5 +750,30 @@ mod operator_and_daemon {
             .unwrap_or_else(|| panic!("not recorded: {logged}"));
         assert_eq!(apply["actor"], "legionctl-system");
         assert_eq!(apply["payload"]["lines"], serde_json::json!(lines));
+
+        // the knob sums up every CPU; its history finds the per-CPU write through the policy* path
+        let epp = json(&["inspect", "cpu.epp"]);
+        assert_eq!(epp["knob"]["value"], "performance", "{epp}");
+        assert_eq!(
+            epp["knob"]["desired"], "balance_power",
+            "on battery the battery policy is wanted, whatever was applied"
+        );
+        assert_eq!(epp["knob"]["policy"], "enforce");
+        let history = epp["history"].as_array().unwrap();
+        assert_eq!(
+            history.last().map(|e| &e["id"]),
+            Some(&apply["id"]),
+            "{epp}"
+        );
+        // a knob the daemon did not touch has no history from that apply
+        let untouched = json(&["inspect", "firmware.ppt_pl1_spl"]);
+        assert!(
+            untouched["history"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|e| e["id"] != apply["id"]),
+            "{untouched}"
+        );
     }
 }

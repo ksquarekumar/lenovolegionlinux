@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 
 use crate::io::{
     CapabilityList, Changes, ConfigFile, ConfigView, DossierFindings, DossierInfo, EventRow,
-    Explanation, Findings, GpuState, Guard, HookReply, HookTable, Launch, LayerList, Lines,
-    LoadState, Lock, Reminder, RunEnv, Sample, SessionState, SetupReport, SkillInfo, Snapshot,
-    Text, Validation, Workspace, WorkspaceStatus,
+    Explanation, Findings, GpuState, Guard, HookReply, HookTable, Knob, KnobDetail, Launch,
+    LayerList, Lines, LoadState, Lock, Reminder, RunEnv, Sample, SessionState, SetupReport,
+    SkillInfo, Snapshot, Text, Validation, Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -649,5 +649,42 @@ impl Render for Vec<EventRow> {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+}
+
+fn knob_line(k: &Knob) -> String {
+    let value = k.value.as_deref().unwrap_or("?");
+    let desired = match &k.desired {
+        Some(d) if Some(d) == k.value.as_ref() => String::new(),
+        Some(d) => format!("  (wants {d})"),
+        None => String::new(),
+    };
+    let range = match (&k.min, &k.max) {
+        // the firmware gives 0..0 for a value it has no range for
+        (Some(min), Some(max)) if min != max => format!("  [{min}..{max}]"),
+        _ if !k.choices.is_empty() => format!("  [{}]", k.choices.join(" ")),
+        _ => String::new(),
+    };
+    format!(
+        "{:<40} {:<8} {value}{desired}{range}",
+        k.id,
+        format!("{:?}", k.policy).to_lowercase()
+    )
+}
+
+impl Render for Vec<Knob> {
+    fn text(&self) -> String {
+        self.iter().map(knob_line).collect::<Vec<_>>().join("\n")
+    }
+}
+
+impl Render for KnobDetail {
+    fn text(&self) -> String {
+        let history = if self.history.is_empty() {
+            "no events name this knob".into()
+        } else {
+            self.history.text()
+        };
+        format!("{}\n{}\n\n{history}", knob_line(&self.knob), self.knob.path)
     }
 }
