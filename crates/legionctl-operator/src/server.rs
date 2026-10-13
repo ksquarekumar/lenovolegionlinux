@@ -70,6 +70,33 @@ fn principal(headers: &HeaderMap) -> Result<Principal, ApiError> {
     }
 }
 
+/// Only the fields the operation's input has: a misspelled field would otherwise be dropped, and the operation would
+/// run with that field's default (an edit with `lines` for `content` deleted the lines it was to change).
+fn known_fields(op: &OpInfo, input: &Value) -> Result<(), ApiError> {
+    let schema = (op.input)();
+    let known = schema["properties"].as_object();
+    let unknown: Vec<&String> = input
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(field, _)| field)
+        .filter(|field| !known.is_some_and(|k| k.contains_key(*field)))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    let mut fields: Vec<&String> = known.into_iter().flatten().map(|(f, _)| f).collect();
+    fields.sort();
+    Err(ApiError {
+        code: Code::InvalidInput,
+        message: format!(
+            "{} has no field {unknown:?}; its fields: {fields:?}",
+            op.name
+        ),
+        op: String::new(),
+    })
+}
+
 /// For a session's call, its own id in every session field of the input: a sandbox cannot act as another session.
 fn own_session(op: &OpInfo, principal: &Principal, input: &mut Value) {
     let (Principal::Session(id), Some(map)) = (principal, input.as_object_mut()) else {
@@ -275,6 +302,10 @@ async fn run(
     };
     let op = OPS.iter().find(|op| op.name == name);
     if let Some(op) = op {
+        if let Err(mut e) = known_fields(op, &input) {
+            e.op.clone_from(&name);
+            return refusal(&e);
+        }
         own_session(op, &principal, &mut input);
         if let Err(mut e) = approved(op, &principal, &input).await {
             e.op.clone_from(&name);

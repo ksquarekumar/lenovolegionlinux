@@ -148,11 +148,12 @@ struct Mcp {
 }
 
 impl Mcp {
-    fn start(operator: &Operator) -> Mcp {
+    fn start(operator: &Operator, env: &[(&str, &str)]) -> Mcp {
         let mut child = Command::new(env!("CARGO_BIN_EXE_legionctl"))
             .arg("mcp")
             .env_clear()
             .env("XDG_RUNTIME_DIR", &operator.runtime)
+            .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -194,10 +195,66 @@ impl Drop for Mcp {
     }
 }
 
+/// A misspelled field is refused, not dropped: an agent's `dossier_edit` with `lines` for `content` (as happened on
+/// 2026-10-14) ran as an empty replace and deleted the plan row it was to change. Through the MCP server, as agents
+/// call it: the call fails with the operation's real fields, and the row stays.
+#[test]
+fn an_unknown_input_field_is_refused_before_the_operation_runs() {
+    let (op, home) = operator("fields");
+    let repo = repository(&home);
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", "s1"),
+    ];
+    for (args, stdin) in [
+        (&["dossier", "use", "plan"][..], ""),
+        (
+            &["dossier", "write", "plan/plan.md", "--overwrite"][..],
+            "# Plan\n| todo-1 | keep me |\n",
+        ),
+    ] {
+        let o = op.run(&repo, &env, args, stdin);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    }
+    let read = String::from_utf8_lossy(
+        &op.run(&repo, &env, &["dossier", "read", "plan/plan.md"], "")
+            .stdout,
+    )
+    .to_string();
+    let anchor = read
+        .lines()
+        .find(|l| l.contains("todo-1"))
+        .unwrap()
+        .split('|')
+        .next()
+        .unwrap();
+
+    let mut mcp = Mcp::start(&op, &env);
+    let result = mcp.call(
+        "tools/call",
+        &json!({"name": "dossier_edit", "arguments": {
+            "path": "plan/plan.md", "mode": "replace", "start": anchor, "lines": ["| todo-1 | changed |"]
+        }}),
+    );
+    assert_eq!(result["isError"], true, "{result}");
+    let error: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        error["error"]["message"],
+        "dossier.edit has no field [\"lines\"]; its fields: [\"content\", \"end\", \"mode\", \"path\", \"session\", \"start\"]",
+        "the refusal names the field and the real ones"
+    );
+    let after = op.run(&repo, &env, &["dossier", "read", "plan/plan.md"], "");
+    assert!(
+        String::from_utf8_lossy(&after.stdout).contains("| todo-1 | keep me |"),
+        "the row stays"
+    );
+}
+
 #[test]
 fn mcp_server_has_one_tool_per_operation_and_calls_the_operator() {
     let (op, _home) = operator("mcp");
-    let mut mcp = Mcp::start(&op);
+    let mut mcp = Mcp::start(&op, &[]);
 
     let tools = mcp.call("tools/list", &json!({}));
     let names: Vec<&str> = tools["tools"]
