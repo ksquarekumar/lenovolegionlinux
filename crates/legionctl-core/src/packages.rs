@@ -159,7 +159,13 @@ impl Store {
     ///
     /// # Errors
     /// The fetch command fails, or the version is missing for a kind that needs one.
-    pub fn fetch(&self, name: &str, p: &PackageConfig, force: bool) -> Result<Manifest> {
+    pub fn fetch(
+        &self,
+        name: &str,
+        p: &PackageConfig,
+        force: bool,
+        hidden: &[String],
+    ) -> Result<Manifest> {
         let dir = self.dir(name, p);
         if let Some(m) = Self::manifest(&dir).filter(|_| !force) {
             return Ok(m);
@@ -231,7 +237,7 @@ impl Store {
                 ]
             }
         };
-        if let Err(e) = sandboxed(&dir, &argv) {
+        if let Err(e) = sandboxed(&dir, &argv, hidden) {
             let _ = std::fs::remove_dir_all(&dir);
             return Err(e.context(format!("fetching {name}")));
         }
@@ -272,10 +278,15 @@ impl Store {
     }
 }
 
-/// Run a fetch with network, but with a scratch home and /tmp: install scripts and caches stay out of the real home.
-fn sandboxed(dir: &Path, argv: &[String]) -> Result<()> {
+/// Run a fetch with network, but with a scratch home and /tmp, and without the ways out a session sandbox hides
+/// (build and install scripts are code from the package).
+fn sandboxed(dir: &Path, argv: &[String], hidden: &[String]) -> Result<()> {
     let scratch = std::env::temp_dir().join(format!("legionctl-fetch-{}", std::process::id()));
     std::fs::create_dir_all(&scratch)?;
+    let mut hiding = Vec::new();
+    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
+        crate::session::hide(&mut hiding, Path::new(&runtime), hidden);
+    }
     let out = Command::new("bwrap")
         .args([
             "--die-with-parent",
@@ -289,6 +300,7 @@ fn sandboxed(dir: &Path, argv: &[String]) -> Result<()> {
             "--tmpfs",
             "/tmp",
         ])
+        .args(&hiding)
         .arg("--bind")
         .arg(&scratch)
         .arg("/tmp/home")

@@ -53,6 +53,24 @@ fn new_id() -> Result<String> {
         .to_string())
 }
 
+/// bwrap arguments that hide the ways out of a sandbox. The runtime folder holds the session bus, systemd's user
+/// manager and the `GnuPG`, ssh and keyring agents, so it becomes a private tmpfs (callers bind back what they need);
+/// each `hidden` path that exists becomes an empty tmpfs (a folder) or `/dev/null` (a file or socket, like docker's).
+pub fn hide(args: &mut Vec<String>, runtime: &Path, hidden: &[String]) {
+    args.extend(["--tmpfs".into(), runtime.to_string_lossy().into_owned()]);
+    for hidden in hidden {
+        let path = Path::new(hidden);
+        if let Ok(meta) = std::fs::metadata(path) {
+            let target = path.to_string_lossy().into_owned();
+            if meta.is_dir() {
+                args.extend(["--tmpfs".into(), target]);
+            } else {
+                args.extend(["--ro-bind".into(), "/dev/null".into(), target]);
+            }
+        }
+    }
+}
+
 fn bind(args: &mut Vec<String>, path: &Path) {
     let path = path.to_string_lossy().into_owned();
     args.extend(["--bind".into(), path.clone(), path]);
@@ -180,9 +198,7 @@ impl Dossiers {
         ]
         .map(String::from)
         .to_vec();
-        // the runtime folder holds the session bus, systemd's user manager, the GnuPG, ssh and keyring agents: a way
-        // out of the sandbox. Only legionctl's folder (the operator socket, this session's files) comes back.
-        sandbox.extend(["--tmpfs".into(), runtime.to_string_lossy().into_owned()]);
+        hide(&mut sandbox, &runtime, &config.session.hidden);
         for path in [
             &runtime.join("legionctl"),
             &ws.path,
@@ -190,18 +206,6 @@ impl Dossiers {
             &git_common_dir(&ws.path)?,
         ] {
             bind(&mut sandbox, path);
-        }
-        // sockets that give a way out (docker, libvirt): a folder becomes empty, a file or socket /dev/null
-        for hidden in &config.session.hidden {
-            let path = Path::new(hidden);
-            if let Ok(meta) = std::fs::metadata(path) {
-                let target = path.to_string_lossy().into_owned();
-                if meta.is_dir() {
-                    sandbox.extend(["--tmpfs".into(), target]);
-                } else {
-                    sandbox.extend(["--ro-bind".into(), "/dev/null".into(), target]);
-                }
-            }
         }
         for writable in &config.session.writable {
             let path = expand_home(writable)?;

@@ -899,7 +899,12 @@ impl Engine for Operator {
             .packages
             .get(&input.name)
             .with_context(|| format!("no package {} in the config (packages)", input.name))?;
-        Store::new(Store::default_root()).fetch(&input.name, package, input.force)
+        Store::new(Store::default_root()).fetch(
+            &input.name,
+            package,
+            input.force,
+            &resolved.config.session.hidden,
+        )
     }
 
     fn tools_record(&self, ctx: &Ctx, input: ToolCall) -> Result<Empty> {

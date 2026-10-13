@@ -58,7 +58,7 @@ socket. The agent could reach the session bus and systemd's user manager (`syste
 sandbox, past the git gate), the GnuPG, ssh and keyring agents, the docker socket (`docker` group: a container with
 the host's files) and libvirt. Now the runtime folder is a private tmpfs with only `legionctl/` bound back, and
 `session.hidden` (default: docker, containerd, podman and libvirt sockets) puts an empty tmpfs on a folder and
-`/dev/null` on a file or socket. The session test checks a decoy session bus and a listening socket from inside;
+`/dev/null` on a file or socket. Package fetches (`cargo install` runs build scripts) use the same hiding. The session test checks a decoy session bus and a listening socket from inside;
 its runtime folder is under /var/tmp like /run/user (under /tmp the sandbox hid it anyway, and the test passed
 without the fix).
 
