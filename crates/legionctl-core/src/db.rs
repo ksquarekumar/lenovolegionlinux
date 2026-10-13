@@ -68,6 +68,8 @@ const OPERATOR: &[&str] = &[
         status     INTEGER NOT NULL,
         ms         INTEGER NOT NULL
      );",
+    // v5: the cost of each gateway call, from gateway.prices (money budgets)
+    "ALTER TABLE gateway_usage ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0;",
 ];
 
 pub struct Db {
@@ -221,9 +223,9 @@ impl Db {
     /// The database write fails.
     pub fn gateway_usage_add(&self, row: &GatewayUsage) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO gateway_usage (ts, account, model, tokens_in, tokens_out, cached, status, ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![now(), row.account, row.model, row.tokens_in, row.tokens_out, row.cached, row.status, row.ms],
+            "INSERT INTO gateway_usage (ts, account, model, tokens_in, tokens_out, cached, status, ms, cost_usd)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![now(), row.account, row.model, row.tokens_in, row.tokens_out, row.cached, row.status, row.ms, row.cost_usd],
         )?;
         Ok(())
     }
@@ -234,7 +236,7 @@ impl Db {
     /// The database read fails.
     pub fn gateway_usage(&self, since: i64) -> Result<Vec<GatewayUsage>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, ts, account, model, tokens_in, tokens_out, cached, status, ms FROM gateway_usage
+            "SELECT id, ts, account, model, tokens_in, tokens_out, cached, status, ms, cost_usd FROM gateway_usage
              WHERE id > ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map(params![since], |r| {
@@ -248,23 +250,23 @@ impl Db {
                 cached: r.get(6)?,
                 status: r.get(7)?,
                 ms: r.get(8)?,
+                cost_usd: r.get(9)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// Tokens (in + out) that `account` used on `model` in the last 24 hours, cached replays not counted.
+    /// USD that `account` spent on `model` in the last `seconds`, replays not counted.
     ///
     /// # Errors
     /// The database read fails.
-    pub fn gateway_tokens_today(&self, account: &str, model: &str) -> Result<u64> {
-        let used: i64 = self.conn.query_row(
-            "SELECT COALESCE(SUM(tokens_in + tokens_out), 0) FROM gateway_usage
+    pub fn gateway_spent(&self, account: &str, model: &str, seconds: i64) -> Result<f64> {
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM gateway_usage
              WHERE account = ?1 AND model = ?2 AND cached = 0 AND ts > ?3",
-            params![account, model, now() - 86_400],
+            params![account, model, now() - seconds],
             |r| r.get(0),
-        )?;
-        Ok(u64::try_from(used).unwrap_or(0))
+        )?)
     }
 
     /// Events of `kind`, oldest first.
@@ -340,6 +342,8 @@ pub struct GatewayUsage {
     /// The HTTP status returned to the caller.
     pub status: u16,
     pub ms: i64,
+    /// From `gateway.prices`; 0 for a replay or a model without a price.
+    pub cost_usd: f64,
 }
 
 /// One entry of the event log: who did what, when.

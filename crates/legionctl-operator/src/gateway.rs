@@ -17,7 +17,7 @@ use axum::routing::post;
 use blake2::digest::consts::U16;
 use blake2::{Blake2b, Digest};
 use futures_util::StreamExt;
-use legionctl_core::config::{Dirs, GatewayAccount, GatewayConfig, resolve};
+use legionctl_core::config::{Dirs, GatewayAccount, GatewayConfig, Price, resolve};
 use legionctl_core::db::{Db, GatewayUsage};
 use serde_json::{Value, json};
 
@@ -233,7 +233,7 @@ async fn send(
     Ok(request.send().await?)
 }
 
-/// Why `name` cannot serve `bare` now: its key needs the gateway token, or its budget for the day is used.
+/// Why `name` cannot serve `bare` now: its key needs the gateway token, or a money budget is used.
 fn blocked(
     config: &GatewayConfig,
     account: &GatewayAccount,
@@ -253,10 +253,19 @@ fn blocked(
         ));
     }
     let budget = config.budgets.get(&format!("{name}/{bare}"))?;
-    let used = Db::open_default()
-        .and_then(|db| db.gateway_tokens_today(name, bare))
-        .unwrap_or(0);
-    (used >= *budget).then(|| format!("{name}/{bare}: the day's budget of {budget} tokens is used"))
+    let db = Db::open_default().ok()?;
+    [
+        ("day", budget.day_usd, 86_400),
+        ("30 days", budget.month_usd, 30 * 86_400),
+    ]
+    .into_iter()
+    .find_map(|(period, limit, seconds)| {
+        let limit = limit?;
+        let spent = db.gateway_spent(name, bare, seconds).unwrap_or(0.0);
+        (spent >= limit).then(|| {
+            format!("{name}/{bare}: the budget of ${limit:.2} per {period} is used (${spent:.2})")
+        })
+    })
 }
 
 /// The kept answer for `key`, recorded as a cached call of `model`.
@@ -360,13 +369,17 @@ async fn call(
             });
             continue;
         }
+        let price = config.prices.get(&bare).copied();
         return respond(
             upstream,
-            name,
-            bare,
-            key,
-            config.cache_ttl_s,
-            cache_mode != "off",
+            GatewayUsage {
+                account: name,
+                model: bare,
+                status,
+                ..Default::default()
+            },
+            price,
+            (key, config.cache_ttl_s, cache_mode != "off"),
             started,
         );
     }
@@ -384,14 +397,12 @@ async fn call(
 /// Stream the provider's answer to the caller; at its end, record usage and keep it for replay.
 fn respond(
     upstream: reqwest::Response,
-    account: String,
-    model: String,
-    key: String,
-    ttl_s: u64,
-    keep: bool,
+    mut row: GatewayUsage,
+    price: Option<Price>,
+    (key, ttl_s, keep): (String, u64, bool),
     started: Instant,
 ) -> Response {
-    let status = upstream.status().as_u16();
+    let status = row.status;
     let content_type = upstream
         .headers()
         .get("content-type")
@@ -420,18 +431,10 @@ fn respond(
                 }
             }
         }
-        let (tokens_in, tokens_out) = usage(&body);
-        let ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
-        record(&GatewayUsage {
-            account,
-            model,
-            tokens_in,
-            tokens_out,
-            cached: false,
-            status,
-            ms,
-            ..Default::default()
-        });
+        (row.tokens_in, row.tokens_out) = usage(&body);
+        row.cost_usd = price.map_or(0.0, |p| p.cost(row.tokens_in, row.tokens_out));
+        row.ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+        record(&row);
         if keep
             && complete
             && ttl_s > 0

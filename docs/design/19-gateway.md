@@ -20,14 +20,24 @@ operator; `/v1/messages` (Anthropic), `/v1/chat/completions` and `/v1/responses`
 and a base URL; `keyring: true` takes the key from `secret-tool lookup legionctl-account <name>`, and such an account
 serves only callers that send `x-legionctl-token` (the per-user token in `~/.local/state/legionctl/gateway-token`,
 mode 600), because any local user reaches a local port. Without a key the caller's own credentials go through (Claude
-Code and Codex logins). Pool (model, then `*`) with fallback on 429; `account/model` without fallback; budgets in
-tokens per day per `account/model` (money needs a price table: not yet). Exact cache in `operator.db`
+Code and Codex logins). Pool (model, then `*`) with fallback on 429; `account/model` without fallback; money budgets
+per `account/model` (G2 part 1, below). Exact cache in `operator.db`
 (`gateway_cache`, key = BLAKE2b of the path and the request) with replay of JSON and SSE bodies, `x-legionctl-cache:
 off|refresh`; a usage row per call (`gateway_usage`; `legionctl gateway usage`). The usage row is written before the
 caller's stream ends, so a budget check right after sees it. Upstream TLS is native (OpenSSL): rustls would bring
 ISC-licensed crates that cargo-deny does not allow yet. Not built: translation between the two APIs (refused with the
-reason), the semantic cache, money budgets, durable ACP sessions, session environments. Tests: a stand-in provider
+reason), the semantic cache, durable ACP sessions, session environments. Tests: a stand-in provider
 (`tests/fixtures/fake-provider.py`) in `crates/legionctl/tests/gateway.rs`.
+
+## Built (2026-10-13, G2 part 1: money budgets)
+
+`gateway.prices`: model -> `{ "input", "output" }` in USD per million tokens; no prices are built in, because they
+change. Each usage row has `cost_usd` (0 for a replay, a refusal, or a model without a price). `gateway.budgets`:
+`account/model` -> `{ "day_usd", "month_usd" }` over rolling windows of 24 hours and 30 days; the account leaves the
+pool when one is used, and an explicit call gets a 429 with the limit and the amount spent. A budget for a model
+without a price makes the config invalid (the reason names the key), because its cost would always be 0. Shortcut:
+the provider's cache-read and cache-write tokens are not counted; add their prices when a budget needs that
+precision.
 
 ## Model addressing
 

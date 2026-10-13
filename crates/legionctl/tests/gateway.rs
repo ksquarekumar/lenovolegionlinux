@@ -1,7 +1,7 @@
 //! The model gateway in the operator, in front of a stand-in provider (`tests/fixtures/fake-provider.py`): the pool
 //! moves past a rate-limited account, the caller's own credentials go through, exact answers replay (streams too),
-//! an explicit account gets its 429, a day's budget stops an account, a keyring account needs the gateway token,
-//! and translating between the two APIs is refused.
+//! an explicit account gets its 429, a money budget stops an account (and needs a price), a keyring account needs
+//! the gateway token, and translating between the two APIs is refused.
 
 mod common;
 
@@ -97,6 +97,7 @@ fn provider_calls(log: &Path) -> Vec<String> {
 struct Setup {
     _provider: Kill,
     op: Operator,
+    home: PathBuf,
     port: u16,
     log: PathBuf,
 }
@@ -131,7 +132,9 @@ fn setup(tag: &str) -> Setup {
                 "keyed": {"provider": "anthropic", "base_url": base("ok"), "keyring": true}
             },
             "pool": {"claude-x": ["limited", "main"], "*": ["main"]},
-            "budgets": {"main/claude-y": 15}
+            // 10 tokens in and 5 out at these prices cost $2: one call uses the day
+            "prices": {"claude-y": {"input": 100_000.0, "output": 200_000.0}},
+            "budgets": {"main/claude-y": {"day_usd": 2.0}}
         }})
         .to_string(),
     )
@@ -139,7 +142,7 @@ fn setup(tag: &str) -> Setup {
     let op = Operator::start(
         tag,
         &[
-            ("HOME", home.into()),
+            ("HOME", home.clone().into()),
             ("PATH", std::env::var_os("PATH").unwrap()),
         ],
     );
@@ -149,6 +152,7 @@ fn setup(tag: &str) -> Setup {
     Setup {
         _provider: provider,
         op,
+        home,
         port,
         log,
     }
@@ -233,11 +237,11 @@ fn the_gateway_refuses_over_budget_without_token_and_across_apis() {
     let messages = |body: &Value| post(s.port, "/v1/messages", &CALLER, body);
     // an explicit account gets its own 429; no pool
     assert_eq!(messages(&ask("limited/claude-x", "hi")).0, 429);
-    // a day's budget of 15 tokens: one call (10 in + 5 out) uses it; a new question is refused
+    // a day's budget of $2: one call costs it; a new question is refused
     assert_eq!(messages(&ask("main/claude-y", "one")).0, 200);
     let (status, _, body) = messages(&ask("main/claude-y", "two"));
     assert!(
-        status == 429 && body.contains("budget of 15 tokens is used"),
+        status == 429 && body.contains("budget of $2.00 per day is used ($2.00)"),
         "{body}"
     );
     // a keyring account needs the gateway token; the other API needs a translation that is not built
@@ -256,5 +260,37 @@ fn the_gateway_refuses_over_budget_without_token_and_across_apis() {
     assert_eq!(
         provider_calls(&s.log),
         ["limited claude-x caller-key", "ok claude-y caller-key"]
+    );
+    let usage: Value = serde_json::from_str(&s.op.ok(&["gateway", "usage", "--json"])).unwrap();
+    let costs: Vec<f64> = usage
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["cost_usd"].as_f64().unwrap())
+        .collect();
+    assert_eq!(
+        costs,
+        [0.0, 2.0],
+        "the 429 costs nothing; the call costs its tokens"
+    );
+}
+
+#[test]
+fn a_budget_without_a_price_is_refused_with_the_reason() {
+    let s = setup("gw-price");
+    let config = s.home.join(".config/legionctl/gateway.jsonc");
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(
+        &config,
+        text.replace(r#""prices":{"claude-y""#, r#""prices":{"claude-z""#),
+    )
+    .unwrap();
+    let out = s.op.run(&s.home, &[], &["config", "show"], "");
+    assert!(
+        !out.status.success()
+            && String::from_utf8_lossy(&out.stderr)
+                .contains("gateway.budgets.main/claude-y: gateway.prices has no claude-y"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }

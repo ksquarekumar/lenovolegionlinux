@@ -50,8 +50,58 @@ pub struct GatewayConfig {
     pub pool: BTreeMap<String, Vec<String>>,
     /// How long an exact-cache entry replays (0: no cache).
     pub cache_ttl_s: u64,
-    /// `account/model` -> tokens (in + out) per day; the entry leaves the pool when they are used.
-    pub budgets: BTreeMap<String, u64>,
+    /// `account/model` -> money per day and per 30 days; the entry leaves the pool when one is used.
+    pub budgets: BTreeMap<String, Budget>,
+    /// Model -> price, for the cost of each call and for budgets.
+    pub prices: BTreeMap<String, Price>,
+}
+
+impl GatewayConfig {
+    /// Every budget names an account and a model with a price: without a price no call has a cost.
+    ///
+    /// # Errors
+    /// A budget that cannot be counted.
+    pub fn check(&self) -> Result<()> {
+        for key in self.budgets.keys() {
+            let (account, model) = key
+                .split_once('/')
+                .with_context(|| format!("gateway.budgets.{key}: write it as account/model"))?;
+            ensure!(
+                self.accounts.contains_key(account),
+                "gateway.budgets.{key}: no gateway account {account}"
+            );
+            ensure!(
+                self.prices.contains_key(model),
+                "gateway.budgets.{key}: gateway.prices has no {model}, so its cost is unknown"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Money limits of one `account/model`, in USD; rolling windows of 24 hours and 30 days.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Budget {
+    pub day_usd: Option<f64>,
+    pub month_usd: Option<f64>,
+}
+
+/// USD per million tokens.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Price {
+    pub input: f64,
+    pub output: f64,
+}
+
+impl Price {
+    #[must_use]
+    pub fn cost(self, tokens_in: i64, tokens_out: i64) -> f64 {
+        // a call has far fewer than 2^32 tokens: u32 holds them, and f64 holds u32 exactly
+        let n = |t: i64| f64::from(u32::try_from(t).unwrap_or(u32::MAX));
+        (n(tokens_in) * self.input + n(tokens_out) * self.output) / 1e6
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -478,6 +528,7 @@ pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
     let value = Value::Object(merged);
     let config: Config =
         serde_json::from_value(value.clone()).context("the merged config is not valid")?;
+    config.gateway.check()?;
     Ok(Resolved {
         config,
         value,

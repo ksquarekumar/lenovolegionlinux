@@ -1065,13 +1065,14 @@ impl Render for Vec<crate::io::GatewayUsage> {
         self.iter()
             .map(|u| {
                 format!(
-                    "{:>6} {} {:<14} {:<24} in {:>7} out {:>7} {} {} {} ms",
+                    "{:>6} {} {:<14} {:<24} in {:>7} out {:>7} ${:.4} {} {} {} ms",
                     u.id,
                     u.ts,
                     u.account,
                     u.model,
                     u.tokens_in,
                     u.tokens_out,
+                    u.cost_usd,
                     if u.cached { "cached" } else { "called" },
                     u.status,
                     u.ms
