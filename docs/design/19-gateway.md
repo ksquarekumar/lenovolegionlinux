@@ -25,8 +25,8 @@ per `account/model` (G2 part 1, below). Exact cache in `operator.db`
 (`gateway_cache`, key = BLAKE2b of the path and the request) with replay of JSON and SSE bodies, `x-legionctl-cache:
 off|refresh`; a usage row per call (`gateway_usage`; `legionctl gateway usage`). The usage row is written before the
 caller's stream ends, so a budget check right after sees it. Upstream TLS is native (OpenSSL): rustls would bring
-ISC-licensed crates that cargo-deny does not allow yet. Not built: translation between the two APIs (refused with the
-reason), the semantic cache, durable ACP sessions, session environments. Tests: a stand-in provider
+ISC-licensed crates that cargo-deny does not allow yet. Not built: the semantic cache, translation of the OpenAI
+Responses API, durable ACP sessions, session environments. Tests: a stand-in provider
 (`tests/fixtures/fake-provider.py`) in `crates/legionctl/tests/gateway.rs`.
 
 ## Built (2026-10-13, G2 part 1: money budgets)
@@ -38,6 +38,22 @@ pool when one is used, and an explicit call gets a 429 with the limit and the am
 without a price makes the config invalid (the reason names the key), because its cost would always be 0. Shortcut:
 the provider's cache-read and cache-write tokens are not counted; add their prices when a budget needs that
 precision.
+
+## Built (2026-10-13, G2 part 2: API translation)
+
+`crates/legionctl-operator/src/translate.rs`: an Anthropic caller (`/v1/messages`) reaches an OpenAI account
+(`/v1/chat/completions`), and the other way round, by name (`oa/gpt-x`) or through the pool. Translated: system
+text, text and image content, tool definitions, tool choice and parallel calls, tool calls and their results (an
+Anthropic tool error becomes `[tool error] ` before the OpenAI tool text), stop sequences, `max_tokens`, temperature,
+`top_p`, the user id, JSON answers, error bodies, and SSE streams event by event (tool-call arguments as they arrive;
+Anthropic's `message_delta` gets both token counts; an OpenAI caller gets the usage chunk only when it asked for
+it). Refused with the reason, never changed: keys with no equivalent (`top_k`, `response_format`, `n` above 1, ...),
+thinking blocks, documents, server tools, and a Chat Completions request without `max_tokens` (Anthropic has no
+default). `cache_control` hints are dropped (cost, not answer). Only a keyring account can serve a translated call:
+the caller's own key is for the other provider. Usage and cost count the provider's bytes, so a caller's shape cannot
+hide tokens. The cache keeps and replays the caller's shape. The OpenAI Responses API (`/v1/responses`) is not
+translated yet: refused with the reason. Tests: both directions, JSON and streams, with tool calls, against the
+stand-in provider (`crates/legionctl/tests/gateway.rs`).
 
 ## Model addressing
 

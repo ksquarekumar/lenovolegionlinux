@@ -21,17 +21,67 @@ use legionctl_core::config::{Dirs, GatewayAccount, GatewayConfig, Price, resolve
 use legionctl_core::db::{Db, GatewayUsage};
 use serde_json::{Value, json};
 
+use crate::translate::{self, Direction};
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Api {
-    Anthropic,
-    OpenAi,
+    Messages,
+    Chat,
+    Responses,
 }
 
 impl Api {
     fn provider(self) -> &'static str {
         match self {
-            Api::Anthropic => "anthropic",
-            Api::OpenAi => "openai",
+            Api::Messages => "anthropic",
+            Api::Chat | Api::Responses => "openai",
+        }
+    }
+
+    fn path(self) -> &'static str {
+        match self {
+            Api::Messages => "/v1/messages",
+            Api::Chat => "/v1/chat/completions",
+            Api::Responses => "/v1/responses",
+        }
+    }
+
+    /// The direction to `account`'s API: `None` when it speaks the caller's.
+    ///
+    /// # Errors
+    /// The two APIs do not translate, or the account forwards the caller's own key, which is for the other provider.
+    fn translation(
+        self,
+        name: &str,
+        account: &GatewayAccount,
+    ) -> Result<Option<Direction>, String> {
+        if account.provider == self.provider() {
+            return Ok(None);
+        }
+        let direction = match self {
+            Api::Messages => Direction::MessagesToChat,
+            Api::Chat => Direction::ChatToMessages,
+            Api::Responses => {
+                return Err(format!(
+                    "account {name} speaks the {} API; translating the OpenAI Responses API is not built",
+                    account.provider
+                ));
+            }
+        };
+        if !account.keyring {
+            return Err(format!(
+                "account {name} speaks the {} API and has no keyring key; the caller's own key is for the other provider",
+                account.provider
+            ));
+        }
+        Ok(Some(direction))
+    }
+
+    /// The provider's API for a translated call.
+    fn of(direction: Direction) -> Self {
+        match direction {
+            Direction::MessagesToChat => Api::Chat,
+            Direction::ChatToMessages => Api::Messages,
         }
     }
 }
@@ -70,17 +120,14 @@ pub async fn serve(port: u16) -> Result<()> {
         token: token()?,
     };
     let app = axum::Router::new()
-        .route(
-            "/v1/messages",
-            post(|s, h, b| call(s, Api::Anthropic, "/v1/messages", h, b)),
-        )
+        .route("/v1/messages", post(|s, h, b| call(s, Api::Messages, h, b)))
         .route(
             "/v1/chat/completions",
-            post(|s, h, b| call(s, Api::OpenAi, "/v1/chat/completions", h, b)),
+            post(|s, h, b| call(s, Api::Chat, h, b)),
         )
         .route(
             "/v1/responses",
-            post(|s, h, b| call(s, Api::OpenAi, "/v1/responses", h, b)),
+            post(|s, h, b| call(s, Api::Responses, h, b)),
         )
         .with_state(gateway);
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
@@ -137,44 +184,42 @@ fn record(row: &GatewayUsage) {
     }
 }
 
-/// The accounts that may serve `model` for `api`: the named one, or the pool entry (then `*`).
+/// The accounts that may serve `model` for `api`: the named one, or the pool entry (then `*`), with the translation
+/// each needs.
 fn candidates(
     config: &GatewayConfig,
     api: Api,
     model: &str,
-) -> Result<Vec<(String, String)>, String> {
+) -> Result<Vec<(String, String, Option<Direction>)>, String> {
     if let Some((account, bare)) = model.split_once('/') {
         let a = config
             .accounts
             .get(account)
             .ok_or(format!("no gateway account {account}"))?;
-        if a.provider != api.provider() {
-            return Err(format!(
-                "account {account} speaks the {} API; translating between the OpenAI and Anthropic APIs is not built yet",
-                a.provider
-            ));
-        }
-        return Ok(vec![(account.into(), bare.into())]);
+        let direction = api.translation(account, a)?;
+        return Ok(vec![(account.into(), bare.into(), direction)]);
     }
     let pool = config
         .pool
         .get(model)
         .or_else(|| config.pool.get("*"))
         .ok_or(format!("no pool for {model}"))?;
-    let accounts: Vec<(String, String)> = pool
-        .iter()
-        .filter(|a| {
-            config
-                .accounts
-                .get(*a)
-                .is_some_and(|a| a.provider == api.provider())
-        })
-        .map(|a| (a.clone(), model.to_string()))
-        .collect();
+    let mut reasons = Vec::new();
+    let mut accounts = Vec::new();
+    for name in pool {
+        let Some(account) = config.accounts.get(name) else {
+            continue;
+        };
+        match api.translation(name, account) {
+            Ok(direction) => accounts.push((name.clone(), model.to_string(), direction)),
+            Err(why) => reasons.push(why),
+        }
+    }
     if accounts.is_empty() {
         return Err(format!(
-            "the pool for {model} has no {} account",
-            api.provider()
+            "the pool for {model} has no account for the {} API: {}",
+            api.provider(),
+            reasons.join("; ")
         ));
     }
     Ok(accounts)
@@ -196,7 +241,6 @@ async fn key(account: &str) -> Result<String> {
 async fn send(
     gw: &Gateway,
     api: Api,
-    path: &str,
     account: &GatewayAccount,
     name: &str,
     headers: &HeaderMap,
@@ -204,7 +248,11 @@ async fn send(
 ) -> Result<reqwest::Response> {
     let mut request = gw
         .http
-        .post(format!("{}{path}", account.base_url.trim_end_matches('/')))
+        .post(format!(
+            "{}{}",
+            account.base_url.trim_end_matches('/'),
+            api.path()
+        ))
         .header("content-type", "application/json")
         .body(body);
     for header in [
@@ -217,11 +265,15 @@ async fn send(
             request = request.header(header, value);
         }
     }
+    if api == Api::Messages && !headers.contains_key("anthropic-version") {
+        // an OpenAI caller sends none; Anthropic needs one
+        request = request.header("anthropic-version", "2023-06-01");
+    }
     if account.keyring {
         let key = key(name).await?;
         request = match api {
-            Api::Anthropic => request.header("x-api-key", key),
-            Api::OpenAi => request.bearer_auth(key),
+            Api::Messages => request.header("x-api-key", key),
+            Api::Chat | Api::Responses => request.bearer_auth(key),
         };
     } else {
         for header in ["x-api-key", "authorization"] {
@@ -296,13 +348,12 @@ fn replay(key: &str, model: &str) -> Option<Response> {
     Some(response)
 }
 
-async fn call(
-    State(gw): State<Gateway>,
-    api: Api,
-    path: &'static str,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
+/// The request as the account's API takes it.
+fn provider_body(direction: Option<Direction>, request: &Value) -> Result<Value, String> {
+    direction.map_or_else(|| Ok(request.clone()), |d| translate::request(d, request))
+}
+
+async fn call(State(gw): State<Gateway>, api: Api, headers: HeaderMap, body: Bytes) -> Response {
     let started = Instant::now();
     let Ok(mut request) = serde_json::from_slice::<Value>(&body) else {
         return refuse(StatusCode::BAD_REQUEST, "the body is not JSON");
@@ -324,7 +375,7 @@ async fn call(
     // the key: the API and the request (keys sorted), not the account: any account's answer replays
     let key = format!(
         "{:x}",
-        Blake2b::<U16>::digest(format!("{path}{request}").as_bytes())
+        Blake2b::<U16>::digest(format!("{}{request}", api.path()).as_bytes())
     );
     if cache_mode == "on"
         && config.cache_ttl_s > 0
@@ -334,21 +385,30 @@ async fn call(
     }
     let explicit = model.contains('/');
     let mut refusals = Vec::new();
-    for (name, bare) in accounts {
+    for (name, bare, direction) in accounts {
         let account = &config.accounts[&name];
         if let Some(why) = blocked(&config, account, &name, &bare, &headers, &gw.token) {
             refusals.push(why);
             continue;
         }
         request["model"] = Value::String(bare.clone());
+        let body = match provider_body(direction, &request) {
+            Ok(body) => body,
+            Err(why) => {
+                return refuse(
+                    StatusCode::BAD_REQUEST,
+                    &format!("{name}/{bare}: cannot translate the request: {why}"),
+                );
+            }
+        };
+        let target = direction.map_or(api, Api::of);
         let upstream = match send(
             &gw,
-            api,
-            path,
+            target,
             account,
             &name,
             &headers,
-            request.to_string().into_bytes(),
+            body.to_string().into_bytes(),
         )
         .await
         {
@@ -379,6 +439,7 @@ async fn call(
                 ..Default::default()
             },
             price,
+            direction.map(|d| Translator::new(d, &request)),
             (key, config.cache_ttl_s, cache_mode != "off"),
             started,
         );
@@ -399,6 +460,7 @@ fn respond(
     upstream: reqwest::Response,
     mut row: GatewayUsage,
     price: Option<Price>,
+    mut translator: Option<Translator>,
     (key, ttl_s, keep): (String, u64, bool),
     started: Instant,
 ) -> Response {
@@ -409,17 +471,29 @@ fn respond(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/json")
         .to_string();
+    // a translated error is JSON whatever the request asked
+    if let Some(t) = &mut translator
+        && !content_type.starts_with("text/event-stream")
+    {
+        t.stream = None;
+    }
     let mut chunks = upstream.bytes_stream();
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(16);
     let content_type_kept = content_type.clone();
     tokio::spawn(async move {
-        let mut body = Vec::new();
+        // the provider's bytes count usage; the caller's bytes are what replays
+        let (mut raw, mut body) = (Vec::new(), Vec::new());
         let mut complete = true;
         while let Some(chunk) = chunks.next().await {
             match chunk {
                 Ok(bytes) => {
+                    raw.extend_from_slice(&bytes);
+                    let bytes = match &mut translator {
+                        Some(t) => Bytes::from(t.push(&bytes)),
+                        None => bytes,
+                    };
                     body.extend_from_slice(&bytes);
-                    if tx.send(Ok(bytes)).await.is_err() {
+                    if !bytes.is_empty() && tx.send(Ok(bytes)).await.is_err() {
                         complete = false;
                         break;
                     }
@@ -431,7 +505,15 @@ fn respond(
                 }
             }
         }
-        (row.tokens_in, row.tokens_out) = usage(&body);
+        if let Some(t) = &mut translator {
+            let tail = Bytes::from(t.finish(&raw));
+            body.extend_from_slice(&tail);
+            if !tail.is_empty() && tx.send(Ok(tail)).await.is_err() {
+                complete = false;
+            }
+        }
+        drop(tx);
+        (row.tokens_in, row.tokens_out) = usage(&raw);
         row.cost_usd = price.map_or(0.0, |p| p.cost(row.tokens_in, row.tokens_out));
         row.ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
         record(&row);
@@ -462,4 +544,40 @@ fn respond(
         .headers_mut()
         .insert("x-legionctl-cache", HeaderValue::from_static("miss"));
     response
+}
+
+/// A translated answer: event by event for a stream, whole for JSON.
+struct Translator {
+    direction: Direction,
+    stream: Option<translate::Stream>,
+}
+
+impl Translator {
+    fn new(direction: Direction, request: &Value) -> Self {
+        Self {
+            direction,
+            stream: (request["stream"] == true).then(|| translate::Stream::new(direction, request)),
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.stream
+            .as_mut()
+            .map_or_else(Vec::new, |s| s.push(bytes))
+    }
+
+    /// The rest of the caller's answer, once the provider's `raw` body is complete.
+    fn finish(&mut self, raw: &[u8]) -> Vec<u8> {
+        match &mut self.stream {
+            Some(s) => s.finish(),
+            None => serde_json::from_slice::<Value>(raw).map_or_else(
+                |_| raw.to_vec(),
+                |v| {
+                    translate::response(self.direction, &v)
+                        .to_string()
+                        .into_bytes()
+                },
+            ),
+        }
+    }
 }
