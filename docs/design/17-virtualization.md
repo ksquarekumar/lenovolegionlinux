@@ -50,8 +50,12 @@ modular `virtqemud` (service or socket active: the modular daemons exit when idl
 --readonly list --all` (libvirt has no socket API without its C library; this is the one CLI read). Findings: no
 KVM, a cgroupfs driver on a systemd host, both libvirt daemons, more than one docker CLI on PATH; findings fail the
 command. Not in `doctor` yet (they depend on the host's Docker and would make the doctor test differ between
-machines). Live on this machine: up everywhere but the cgroupfs finding; WinBoat found. Not yet: `virt list` with
-CPU and memory use, create, start/stop/pause, tune.
+machines). Live on this machine: up everywhere but the cgroupfs finding; WinBoat found.
+
+Built (2026-10-13, V1 part 2): `legionctl virt act --action pause|unpause|start|stop <name>`: a container through
+the Engine API (`POST /containers/<name>/<action>`), a VM through `virsh` (suspend, resume, start, shutdown); a name
+that is neither is refused. Checked live on a throwaway container (paused, running, exited). Not yet: CPU and memory
+use per instance, create, tune.
 
 ### GPU offload options
 

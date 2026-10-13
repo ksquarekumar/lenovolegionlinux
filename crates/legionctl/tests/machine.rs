@@ -430,12 +430,10 @@ fn bench_compare_shows_the_score_change_and_the_knob_that_caused_it() {
     assert_eq!(list.lines().count(), 3, "{list}");
 }
 
-/// `virt status` on the recorded machine (no /dev/kvm in the recording) with a stand-in Docker Engine API and stand-in
-/// systemctl and virsh: each capability up or down, `WinBoat` recognized by its image, and the findings (no KVM, the
-/// cgroupfs driver, both libvirt daemons).
-#[test]
-fn virt_status_reads_docker_libvirt_and_the_kernel() {
-    let m = Machine::new("virt");
+/// The recorded machine (no /dev/kvm in the recording) with a stand-in Docker Engine API (its POSTs logged to
+/// `docker.log`) and stand-in systemctl and virsh (virsh logs its verb to `virsh.log`).
+fn virt_machine(tag: &'static str) -> (Machine, daemon_process::Kill, Operator) {
+    let m = Machine::new(tag);
     let bin = m.dir.join("bin");
     m.set("/run/systemd/system/.present", "");
     Machine::script(
@@ -446,14 +444,19 @@ fn virt_status_reads_docker_libvirt_and_the_kernel() {
     Machine::script(
         &bin,
         "virsh",
-        "printf ' Id   Name    State\\n---------------------\\n -    win11   shut off\\n'",
+        &format!(
+            "if [ \"$3\" = --readonly ]; then printf ' Id   Name    State\\n---------------------\\n -    win11   shut off\\n'; \
+             else echo \"$3 $4\" >> {}; fi",
+            m.dir.join("virsh.log").display()
+        ),
     );
     let socket = m.dir.join("docker.sock");
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-docker.py");
-    let _docker = daemon_process::Kill(
+    let docker = daemon_process::Kill(
         std::process::Command::new("python3")
             .arg(fixture)
             .arg(&socket)
+            .arg(m.dir.join("docker.log"))
             .spawn()
             .unwrap(),
     );
@@ -466,7 +469,7 @@ fn virt_status_reads_docker_libvirt_and_the_kernel() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     let op = Operator::start(
-        "virt",
+        tag,
         &[
             ("PATH", bin.into()),
             ("HOME", m.dir.join("home").into()),
@@ -474,6 +477,15 @@ fn virt_status_reads_docker_libvirt_and_the_kernel() {
             ("DOCKER_HOST", format!("unix://{}", socket.display()).into()),
         ],
     );
+    (m, docker, op)
+}
+
+/// `virt status` on the recorded machine (no /dev/kvm in the recording) with a stand-in Docker Engine API and stand-in
+/// systemctl and virsh: each capability up or down, `WinBoat` recognized by its image, and the findings (no KVM, the
+/// cgroupfs driver, both libvirt daemons).
+#[test]
+fn virt_status_reads_docker_libvirt_and_the_kernel() {
+    let (_m, _docker, op) = virt_machine("virt");
     let out = op.cli(&["virt", "status", "--json"]);
     let status: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let caps: Vec<(String, bool)> = status["capabilities"]
@@ -544,6 +556,35 @@ fn safe_mode_hands_the_machine_to_the_firmware_and_doctor_says_why() {
              journalctl -u legionctl-system, then systemctl restart legionctl-system"
         ),
         "{doctor}"
+    );
+}
+
+/// Pause and stop by name: a container through the Engine API, a VM through virsh (suspend, shutdown); a name that
+/// is neither is refused.
+#[test]
+fn virt_act_pauses_a_container_and_stops_a_vm_by_name() {
+    let (m, _docker, op) = virt_machine("virtact");
+    assert_eq!(
+        op.ok(&["virt", "act", "--action", "pause", "WinBoat"]),
+        "container WinBoat: pause\n"
+    );
+    assert_eq!(
+        op.ok(&["virt", "act", "--action", "stop", "win11"]),
+        "vm win11: stop\n"
+    );
+    let refused = op.cli(&["virt", "act", "--action", "pause", "nothing"]);
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("no container or VM named nothing"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(m.dir.join("docker.log")).unwrap(),
+        "pause WinBoat\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(m.dir.join("virsh.log")).unwrap(),
+        "shutdown win11\n"
     );
 }
 

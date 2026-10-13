@@ -780,6 +780,24 @@ pub struct ImagesScanIn {
     pub write: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum VirtAction {
+    /// Freeze it: CPU free at once, memory kept.
+    Pause,
+    Unpause,
+    Start,
+    /// A clean stop (a VM gets an ACPI shutdown).
+    Stop,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct VirtActIn {
+    pub action: VirtAction,
+    /// A container or VM name from `virt status`.
+    pub name: String,
+}
+
 /// A compose service's container and its health.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ServiceState {

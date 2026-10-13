@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""A stand-in Docker Engine API on a unix socket for the virt test: `fake-docker.py <socket>`.
+"""A stand-in Docker Engine API on a unix socket for the virt tests: `fake-docker.py <socket> [<log>]`.
 
-/version, /info (cgroupfs driver, no nvidia runtime) and /containers/json (a WinBoat container and another).
+/version, /info (cgroupfs driver, no nvidia runtime) and /containers/json (a WinBoat container and another);
+POST /containers/<name>/<action> appends `<action> <name>` to the log and answers 204, or 404 for another name.
 """
 
 import json
@@ -28,6 +29,22 @@ class Docker(BaseHTTPRequestHandler):
         self.send_header("content-length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_POST(self):
+        _, _, name, action = self.path.split("/")
+        names = [c["Names"][0].lstrip("/") for c in ANSWERS["/containers/json"]]
+        if name not in names:
+            body = json.dumps({"message": f"No such container: {name}"}).encode()
+            self.send_response(404)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        with open(sys.argv[2], "a") as f:
+            f.write(f"{action} {name}\n")
+        self.send_response(204)
+        self.end_headers()
 
     def address_string(self):
         return "unix"

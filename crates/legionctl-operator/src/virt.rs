@@ -20,6 +20,10 @@ fn docker_socket() -> PathBuf {
 
 /// One GET on the Docker Engine API.
 pub async fn docker(path: &str) -> Result<Value> {
+    request("GET", path).await
+}
+
+async fn request(method: &str, path: &str) -> Result<Value> {
     let socket = docker_socket();
     let stream = tokio::net::UnixStream::connect(&socket)
         .await
@@ -27,18 +31,29 @@ pub async fn docker(path: &str) -> Result<Value> {
     let (mut sender, connection) =
         hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream)).await?;
     tokio::spawn(connection);
-    let request = hyper::Request::get(path)
+    let request = hyper::Request::builder()
+        .method(method)
+        .uri(path)
         .header("host", "docker")
         .body(Empty::<Bytes>::new())?;
     let response = sender.send_request(request).await?;
-    anyhow::ensure!(
-        response.status().is_success(),
-        "Docker {path}: {}",
-        response.status()
-    );
-    Ok(serde_json::from_slice(
-        &response.into_body().collect().await?.to_bytes(),
-    )?)
+    let status = response.status();
+    let body = response.into_body().collect().await?.to_bytes();
+    if !status.is_success() {
+        let message = serde_json::from_slice::<Value>(&body)
+            .ok()
+            .and_then(|v| v["message"].as_str().map(String::from));
+        anyhow::bail!(
+            "Docker {method} {path}: {}",
+            message.unwrap_or_else(|| status.to_string())
+        );
+    }
+    // start, stop, pause and unpause answer 204 with no body
+    Ok(if body.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&body)?
+    })
 }
 
 fn capability(name: &str, provider: &str, up: bool, detail: String) -> VirtCapability {
@@ -289,4 +304,46 @@ pub async fn project_containers(project: &str) -> Result<Vec<legionctl_api::Serv
     }
     out.sort_by(|a, b| a.service.cmp(&b.service));
     Ok(out)
+}
+
+/// Pause, unpause, start or stop a container (Engine API) or a VM (`virsh`), by name.
+///
+/// # Errors
+/// No container or VM has this name, or the provider refuses.
+pub async fn act(action: &str, name: &str) -> Result<String> {
+    let containers = docker("/containers/json?all=1")
+        .await
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+    if containers.iter().any(|c| {
+        c["Names"][0]
+            .as_str()
+            .is_some_and(|n| n.trim_start_matches('/') == name)
+    }) {
+        request("POST", &format!("/containers/{name}/{action}")).await?;
+        return Ok(format!("container {name}: {action}"));
+    }
+    let verb = match action {
+        "pause" => "suspend",
+        "unpause" => "resume",
+        "start" => "start",
+        "stop" => "shutdown",
+        other => anyhow::bail!("unknown action {other}"),
+    };
+    anyhow::ensure!(
+        libvirt_vms().iter().any(|v| v.name == name),
+        "no container or VM named {name}"
+    );
+    let out = tokio::process::Command::new("virsh")
+        .args(["-c", "qemu:///system", verb, name])
+        .output()
+        .await
+        .context("running virsh")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "virsh {verb} {name}: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(format!("vm {name}: {action}"))
 }

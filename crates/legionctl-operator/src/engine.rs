@@ -32,7 +32,7 @@ use legionctl_api::{
 use legionctl_api::{
     CacheGetIn, CachePutIn, CacheValue, Manifest, PackageFetchIn, Packages, RunOutput, SessionRunIn,
 };
-use legionctl_api::{ImagesScanIn, RepoIn, Scan, ServiceState, VirtStatus};
+use legionctl_api::{ImagesScanIn, RepoIn, Scan, ServiceState, VirtActIn, VirtStatus};
 use legionctl_core::db::Db;
 use legionctl_core::dossier::{Dossiers, place_of};
 use legionctl_core::packages::Store;
@@ -1100,6 +1100,16 @@ impl Engine for Operator {
         let (project, _) = legionctl_core::images::project(input.repo.get()?);
         self.runtime
             .block_on(crate::virt::project_containers(&project))
+    }
+
+    fn virt_act(&self, ctx: &Ctx, input: VirtActIn) -> Result<Lines> {
+        Self::record(ctx, "virt.act", &input)?;
+        let action = serde_json::to_value(input.action)?;
+        let line = self.runtime.block_on(crate::virt::act(
+            action.as_str().unwrap_or_default(),
+            &input.name,
+        ))?;
+        Ok(Lines { lines: vec![line] })
     }
 
     fn virt_status(&self, _: &Ctx, _: Empty) -> Result<VirtStatus> {

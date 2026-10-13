@@ -378,6 +378,8 @@ operations! {
     /// Virtualization, containers and emulation: each capability with its provider and health, the containers and VMs
     /// (`WinBoat` recognized), and what is wrong.
     virt_status / VirtStatusOp = "virt.status", Read, Empty => VirtStatus;
+    /// Pause, unpause, start or stop a container or VM by name (pausing `WinBoat` frees its CPU at once).
+    virt_act / VirtAct = "virt.act", Workspace, VirtActIn => Lines;
     /// Dual boot: the Windows boot entry, a pending one-time boot, NTFS volumes Windows left dirty, and what to fix.
     windows_status / WindowsStatus = "windows.status", Read, Empty => WindowsState;
     /// Restart into Windows once (the start after returns to Linux). A human approves it in the polkit dialog.
