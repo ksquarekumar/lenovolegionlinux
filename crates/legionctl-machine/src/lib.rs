@@ -18,6 +18,7 @@ pub mod snapshot;
 pub mod sysroot;
 pub mod system;
 pub mod telemetry;
+pub mod tune;
 
 #[must_use]
 pub fn human_bytes(bytes: u64) -> String {

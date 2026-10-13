@@ -6,7 +6,8 @@ use crate::io::{
     BenchCompare, BenchRun, CapabilityList, Changes, ConfigFile, ConfigView, DossierFindings,
     DossierInfo, EventRow, Explanation, Findings, GpuState, Guard, HookReply, HookTable, Knob,
     KnobDetail, Launch, LayerList, Lines, LoadState, Lock, Recording, Reminder, RunEnv, Sample,
-    SessionState, SetupReport, SkillInfo, Snapshot, Text, Validation, Workspace, WorkspaceStatus,
+    SessionState, SetupReport, SkillInfo, Snapshot, Text, TuneReport, Validation, Workspace,
+    WorkspaceStatus,
 };
 
 pub trait Render {
@@ -856,5 +857,57 @@ impl Render for BenchCompare {
             format!("knobs that differ:\n  {}", knobs.join("\n  "))
         });
         out.join("\n")
+    }
+}
+
+impl Render for TuneReport {
+    fn text(&self) -> String {
+        let mut out = vec![format!(
+            "{:<8} {:>16} {:>14} {:>10} {:>8}  steady throttle",
+            self.attribute.rsplit('_').next().unwrap_or_default(),
+            "score",
+            "package W",
+            "CPU °C",
+            "GPU W"
+        )];
+        for step in &self.steps {
+            let score = step.scores.values().next().copied();
+            out.push(format!(
+                "{:<8} {:>16} {:>14} {:>10} {:>8}  {}",
+                step.value,
+                some(score, ""),
+                some(step.summary.package_w_mean, ""),
+                some(step.summary.cpu_temp_max, ""),
+                some(step.summary.gpu_w_mean, ""),
+                if step.steady_throttle.is_empty() {
+                    "-".into()
+                } else {
+                    step.steady_throttle.join(",")
+                },
+            ));
+            out.extend(
+                step.problems
+                    .iter()
+                    .map(|p| format!("         problem: {p}")),
+            );
+        }
+        out.push(String::new());
+        out.push(match self.recommended {
+            Some(v) => format!("recommended {} = {v}: {}", self.attribute, self.reason),
+            None => format!("no recommendation: {}", self.reason),
+        });
+        if let Some(why) = &self.aborted {
+            out.push(format!("stopped early: {why}"));
+        }
+        out.push(format!(
+            "{} is back at {}; results in {}",
+            self.attribute, self.original, self.file
+        ));
+        out.join("\n")
+    }
+
+    /// A sweep that stopped early fails the command.
+    fn success(&self) -> bool {
+        self.aborted.is_none()
     }
 }

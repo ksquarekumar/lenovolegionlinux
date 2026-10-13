@@ -336,6 +336,10 @@ operations! {
     bench_run / BenchRunOp = "bench.run", Workspace, BenchIn => BenchRun;
     /// Bench runs, oldest first.
     bench_list / BenchList = "bench.list", Read, Empty => BenchRuns;
+    /// Step a firmware power limit through values with a bench workload at each, on AC and an idle machine; returns
+    /// each step and the recommended value (the knee). The original value comes back. A human approves it in the
+    /// polkit dialog.
+    tune / Tune = "tune", Machine, TuneIn => TuneReport;
     /// Two bench runs side by side: scores, telemetry and the knobs that differ.
     bench_compare / BenchCompareOp = "bench.compare", Read, BenchCompareIn => BenchCompare;
     /// Bind this session to a dossier (one writable dossier per session); create it from the pattern with create.

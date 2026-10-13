@@ -11,7 +11,7 @@ use legionctl_api::{
     DossierSearchIn, DossierUseIn, DossierWriteIn, Events, EventsIn, GateIn, Guard, GuardIn,
     HookReply, HookRunIn, InspectIn, KnobDetail, Knobs, Launch, Lines, Locks, MonitorIn, RecordIn,
     Recording, ReplayIn, Sample, Samples, SessionId, SessionIdIn, SessionIn, SessionStartIn,
-    SessionState, Sessions,
+    SessionState, Sessions, TuneIn, TuneReport,
 };
 use legionctl_api::{
     BranchIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath, CloseIn, ConfigFiles,
@@ -43,14 +43,7 @@ pub struct Operator {
 }
 
 fn has_command(name: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|path| {
-        std::env::split_paths(&path).any(|dir| {
-            std::fs::metadata(dir.join(name)).is_ok_and(|m| {
-                m.is_file()
-                    && std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111 != 0
-            })
-        })
-    })
+    which(name).is_some()
 }
 
 fn ppd_current() -> Option<String> {
@@ -76,6 +69,18 @@ fn bench_run_of(e: legionctl_api::EventRow) -> Result<BenchRun> {
         ts: e.ts,
         result: serde_json::from_value(e.payload)?,
     })
+}
+
+/// The full path of an executable on `PATH`.
+fn which(program: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(program))
+        .find(|p| {
+            std::fs::metadata(p).is_ok_and(|m| {
+                m.is_file()
+                    && std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111 != 0
+            })
+        })
 }
 
 /// Operations that change the machine (or record it): their events go into a recording.
@@ -141,11 +146,8 @@ impl Operator {
     }
 
     /// A machine change through `legionctl-system`; polkit asks the human.
-    fn system(
-        &self,
-        call: impl AsyncFnOnce(&System1Proxy<'_>) -> zbus::Result<Vec<String>>,
-    ) -> Result<Changes> {
-        let lines = self.runtime.block_on(async {
+    fn system<T>(&self, call: impl AsyncFnOnce(&System1Proxy<'_>) -> zbus::Result<T>) -> Result<T> {
+        self.runtime.block_on(async {
             let conn = zbus::Connection::system()
                 .await
                 .context("connecting to the system bus")?;
@@ -153,10 +155,6 @@ impl Operator {
             call(&proxy)
                 .await
                 .context("legionctl-system refused or failed")
-        })?;
-        Ok(Changes {
-            lines,
-            dry_run: false,
         })
     }
 
@@ -477,7 +475,10 @@ impl Engine for Operator {
         Self::record(ctx, "power.apply", &input)?;
         let name = serde_json::to_value(input.source)?;
         let name = name.as_str().unwrap_or("auto").to_string();
-        self.system(async move |p| p.apply(&name).await)
+        Ok(Changes {
+            lines: self.system(async move |p| p.apply(&name).await)?,
+            dry_run: false,
+        })
     }
 
     fn gpu_primary(&self, ctx: &Ctx, input: GpuPrimaryIn) -> Result<Changes> {
@@ -491,7 +492,10 @@ impl Engine for Operator {
             return Ok(dry_run(&gpu::set_desktop(&plan.machine(), choice)?));
         }
         Self::record(ctx, "gpu.primary", &input)?;
-        self.system(async move |p| p.set_desktop_gpu(choice).await)
+        Ok(Changes {
+            lines: self.system(async move |p| p.set_desktop_gpu(choice).await)?,
+            dry_run: false,
+        })
     }
 
     fn cleanup(&self, ctx: &Ctx, input: CleanupIn) -> Result<Changes> {
@@ -504,7 +508,10 @@ impl Engine for Operator {
             return Ok(dry_run(&cleanup::plan(&plan.machine(), opts)?));
         }
         Self::record(ctx, "cleanup", &input)?;
-        self.system(async move |p| p.cleanup(input.unload_modules).await)
+        Ok(Changes {
+            lines: self.system(async move |p| p.cleanup(input.unload_modules).await)?,
+            dry_run: false,
+        })
     }
 
     fn agents(&self, _: &Ctx, input: ProjectIn) -> Result<ConfigFiles> {
@@ -972,6 +979,39 @@ impl Engine for Operator {
                 .find(|e| e.id == id)
                 .context("the run was not stored")?,
         )
+    }
+
+    fn tune(&self, ctx: &Ctx, input: TuneIn) -> Result<TuneReport> {
+        let load = load::read_load(&SysRoot::from_env(), &config(None)?.config.load);
+        anyhow::ensure!(
+            input.force || load.level == load::Level::Idle,
+            "the machine is not idle ({}); stop other work, or pass force",
+            load.reasons.join("; ")
+        );
+        Self::record(ctx, "tune", &input)?;
+        // the daemon has its own PATH: give it the programs' full paths
+        let workloads = input
+            .scenario
+            .commands(input.seconds)
+            .into_iter()
+            .map(|mut argv| {
+                argv[0] = which(&argv[0])
+                    .with_context(|| format!("{} is not installed", argv[0]))?
+                    .display()
+                    .to_string();
+                Ok(argv)
+            })
+            .collect::<Result<_>>()?;
+        let spec = serde_json::to_string(&legionctl_machine::tune::TuneSpec {
+            attribute: input.attribute,
+            values: input.values,
+            scenario: input.scenario,
+            seconds: input.seconds,
+            cooldown_s: input.cooldown_s,
+            workloads,
+        })?;
+        let report = self.system(async move |p| p.tune(&spec).await)?;
+        Ok(serde_json::from_str(&report)?)
     }
 
     fn bench_list(&self, _: &Ctx, _: Empty) -> Result<BenchRuns> {

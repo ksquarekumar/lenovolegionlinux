@@ -23,6 +23,7 @@ pub use legionctl_machine::load::Load as LoadState;
 pub use legionctl_machine::profile::Capability;
 pub use legionctl_machine::snapshot::Snapshot;
 pub use legionctl_machine::telemetry::Sample;
+pub use legionctl_machine::tune::TuneReport;
 
 pub type ConfigFiles = Vec<ConfigFile>;
 pub type Workspaces = Vec<Workspace>;
@@ -649,6 +650,28 @@ pub struct BenchCompareIn {
 pub struct BenchCompare {
     pub a: BenchRun,
     pub b: BenchRun,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TuneIn {
+    /// Firmware limit to step: `ppt_pl1_spl`, `ppt_pl2_sppt`, `ppt_cpu_cl`, `cpu_temp` or `gpu_nv_ac_offset`.
+    pub attribute: String,
+    /// Values to step through (W, or °C for `cpu_temp`), each within the firmware range.
+    pub values: Vec<u32>,
+    pub scenario: Scenario,
+    /// Duration of each step (1-600).
+    #[serde(default = "sixty")]
+    pub seconds: u32,
+    /// Pause between steps (0-600).
+    #[serde(default = "thirty")]
+    pub cooldown_s: u32,
+    /// Run also when the machine is not idle (the scores then mix in other work).
+    #[serde(default)]
+    pub force: bool,
+}
+
+fn sixty() -> u32 {
+    60
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

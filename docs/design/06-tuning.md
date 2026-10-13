@@ -24,8 +24,21 @@
 - **Recommendation**: per scenario the knee (smallest limit within 2 % of the best score), constrained by no
   thermal throttle reasons in the steady-state half and GPU throughput within 2 % of its best for cross-load.
 
-`scripts/rapl-sweep.sh` stays until the engine exists; next revision should sweep `ppt_*` instead of RAPL
-(after the writability question in 02-platform is answered).
+Built (2026-10-13, M3e): `legionctl tune <attribute> <values...> --scenario cpu|gpu|mixed [--seconds 60]
+[--cooldown-s 30] [--force]`. The operator refuses a machine that is not idle (unless `--force`), resolves the
+bench workloads (stress-ng, gpu-burn) to full paths, and calls `System1.Tune` (polkit action `org.legionctl.tune`).
+The daemon refuses an attribute outside the list above, a value outside the firmware range (and an attribute
+without a range), and battery. For each value it writes the attribute (with a read-back check), runs the workloads
+as the caller (`setpriv` to the caller's uid and gid; nothing user-owned runs as root), samples telemetry each
+second as root, and stops the step at once when the machine leaves AC or the CPU is hotter than the firmware's
+`cpu_temp` (it kills the workload's process group). Events wait while a tune runs; at the end the original value
+comes back, the policy applies again for the current power source (an Fn+Q choice stays), and a `Changed("Tune")`
+signal goes to the event log. The report goes to `/var/lib/legionctl/tune/<time>-<attribute>.json`.
+The recommended layer (`configsets/tuned.toml`) is not built: the configset layers for the machine policy do not
+exist yet, so the user puts the recommended value into the profile. Not verified live: a sweep on the real machine
+(needs the package installed, the polkit dialog and an idle machine) and the `setpriv` path (the e2e daemon runs as
+the caller, so the workload runs directly).
+
 
 ## Results: sweep 2026-10-12 04:06 (background load 6–8, `--force`)
 

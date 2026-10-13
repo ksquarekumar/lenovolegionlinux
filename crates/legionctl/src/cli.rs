@@ -28,8 +28,10 @@ enum Kind {
     Text,
     Path,
     Integer,
-    /// A list of strings: the trailing arguments.
-    List,
+    /// A list of strings, or of integers: the trailing arguments.
+    List {
+        integers: bool,
+    },
     Choice(Vec<String>),
 }
 
@@ -91,7 +93,9 @@ fn fields(input: &Value) -> Vec<Field<'_>> {
                 match kind {
                     Some("boolean") => Kind::Flag,
                     Some("integer") => Kind::Integer,
-                    Some("array") => Kind::List,
+                    Some("array") => Kind::List {
+                        integers: schema["items"]["type"] == "integer",
+                    },
                     _ => Kind::Text,
                 }
             };
@@ -124,12 +128,17 @@ fn argument(field: &Field) -> Arg {
     match &field.kind {
         Kind::Flag => return arg.action(ArgAction::SetTrue),
         Kind::Integer => arg = arg.value_parser(clap::value_parser!(i64)),
-        Kind::List => {
-            return Arg::new(field.key.to_string())
+        Kind::List { integers } => {
+            let list = Arg::new(field.key.to_string())
                 .num_args(0..)
                 .trailing_var_arg(true)
                 .allow_hyphen_values(true)
                 .action(ArgAction::Append);
+            return if *integers {
+                list.value_parser(clap::value_parser!(i64))
+            } else {
+                list
+            };
         }
         Kind::Choice(values) => {
             arg = arg.value_parser(clap::builder::PossibleValuesParser::new(values.clone()));
@@ -240,7 +249,14 @@ pub fn operation(matches: &ArgMatches) -> Result<Option<(&'static OpInfo, Value)
         let value = match field.kind {
             Kind::Flag => Some(Value::Bool(at.get_flag(field.key))),
             Kind::Integer => at.get_one::<i64>(field.key).map(|n| Value::from(*n)),
-            Kind::List => Some(Value::from(
+            Kind::List { integers: true } => Some(Value::from(
+                at.get_many::<i64>(field.key)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .collect::<Vec<_>>(),
+            )),
+            Kind::List { integers: false } => Some(Value::from(
                 at.get_many::<String>(field.key)
                     .into_iter()
                     .flatten()

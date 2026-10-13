@@ -8,6 +8,8 @@
 //! | resume | logind `PrepareForSleep(false)` |
 //! | tick | every 30 s, on AC (knobs that cannot notify) |
 //!
+//! While a tune runs (`Tune`), events wait: the sweep owns the firmware limits, and the policy applies again after.
+//!
 //! It serves `org.legionctl.System1` on the system bus: methods change the machine after polkit authorizes the
 //! caller, and signals tell the session what changed (`Changed`), the firmware mode after a change (`ModeChanged`),
 //! Fn lock (`FnLock`) and which Fn key was pressed (`Key`). Decisions come from `legionctl_machine`; this file only
@@ -15,6 +17,9 @@
 
 use std::collections::HashMap;
 use std::io::Read;
+use std::os::unix::fs::MetadataExt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -24,7 +29,7 @@ use legionctl_machine::ledger::{Key, Ledger};
 use legionctl_machine::policy::{self, Machine, Options, Source, Step};
 use legionctl_machine::react::{Event, react};
 use legionctl_machine::sysroot::SysRoot;
-use legionctl_machine::{cleanup, gpu, profile, telemetry};
+use legionctl_machine::{cleanup, gpu, profile, telemetry, tune};
 use tokio::io::unix::AsyncFd;
 use tokio::io::{Interest, Ready};
 use zbus::object_server::SignalEmitter;
@@ -205,6 +210,35 @@ fn failed(e: &anyhow::Error) -> zbus::fdo::Error {
 
 struct System1 {
     root: SysRoot,
+    /// A tune runs: the event loop waits.
+    tuning: Arc<AtomicBool>,
+}
+
+/// The caller's uid and primary gid, when it is not this process's user (the workload then runs as the caller).
+async fn caller(
+    conn: &zbus::Connection,
+    header: &zbus::message::Header<'_>,
+) -> zbus::fdo::Result<Option<(u32, u32)>> {
+    let sender = header
+        .sender()
+        .ok_or_else(|| zbus::fdo::Error::AccessDenied("caller has no bus name".into()))?;
+    let uid = zbus::fdo::DBusProxy::new(conn)
+        .await?
+        .get_connection_unix_user(sender.clone().into())
+        .await?;
+    // /proc/self belongs to this process's effective user
+    if std::fs::metadata("/proc/self").is_ok_and(|m| m.uid() == uid) {
+        return Ok(None);
+    }
+    let passwd = std::fs::read_to_string("/etc/passwd")
+        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+    let gid = passwd
+        .lines()
+        .map(|l| l.split(':').collect::<Vec<_>>())
+        .find(|f| f.get(2) == Some(&uid.to_string().as_str()))
+        .and_then(|f| f.get(3)?.parse().ok())
+        .ok_or_else(|| zbus::fdo::Error::Failed(format!("uid {uid} is not in /etc/passwd")))?;
+    Ok(Some((uid, gid)))
 }
 
 #[zbus::interface(name = "org.legionctl.System1")]
@@ -272,6 +306,63 @@ impl System1 {
             Self::changed(&emitter, "Cleanup", &lines).await?;
         }
         Ok(lines)
+    }
+
+    /// Step a firmware limit through values with a workload at each (`tune::TuneSpec` as JSON) and return the report
+    /// (`tune::TuneReport` as JSON). The workloads run as the caller; the original value comes back; then the policy
+    /// applies again for the current power source (an Fn+Q choice stays).
+    async fn tune(
+        &self,
+        spec: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<String> {
+        authorize(conn, &header, "org.legionctl.tune").await?;
+        let spec: tune::TuneSpec = serde_json::from_str(&spec)
+            .map_err(|e| zbus::fdo::Error::InvalidArgs(e.to_string()))?;
+        let user = caller(conn, &header).await?;
+        if self.tuning.swap(true, Ordering::SeqCst) {
+            return Err(zbus::fdo::Error::Failed("a tune runs already".into()));
+        }
+        let root = self.root.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            let report = tune::run(
+                &root,
+                &spec,
+                &|argv, cancel| tune::run_workload(argv, user, cancel),
+                &|| telemetry::sample(&root, Duration::from_secs(1), telemetry::root_sample(&root)),
+            );
+            let reapplied = carry_out(&root, |m| {
+                Ok(m.apply(
+                    None,
+                    Options {
+                        keep_override: true,
+                        ..Options::default()
+                    },
+                )?
+                .1)
+            });
+            (report, reapplied)
+        })
+        .await;
+        self.tuning.store(false, Ordering::SeqCst);
+        let (report, reapplied) = report.map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        let report = report.map_err(|e| failed(&e))?;
+        let mut lines = vec![format!(
+            "tune {}: {} steps, recommended {}{}",
+            report.attribute,
+            report.steps.len(),
+            report.recommended.map_or("none".into(), |v| v.to_string()),
+            report
+                .aborted
+                .as_ref()
+                .map(|a| format!(", stopped: {a}"))
+                .unwrap_or_default()
+        )];
+        lines.extend(reapplied.map_err(|e| failed(&e))?);
+        Self::changed(&emitter, "Tune", &lines).await?;
+        serde_json::to_string(&report).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
     /// The readings only root can make (fan RPM, throttle reasons from the MSR), as JSON (`telemetry::RootSample`).
@@ -380,6 +471,7 @@ fn udev_event(e: &udev::Event) -> Option<Event> {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let root = SysRoot::from_env();
+    let tuning = Arc::new(AtomicBool::new(false));
     let monitor = udev::MonitorBuilder::new()?
         .match_subsystem("power_supply")?
         .match_subsystem("platform-profile")?
@@ -388,7 +480,13 @@ async fn main() -> Result<()> {
     let monitor = AsyncFd::new(monitor)?;
     let bus = zbus::connection::Builder::system()?
         .name(BUS_NAME)?
-        .serve_at(OBJECT_PATH, System1 { root: root.clone() })?
+        .serve_at(
+            OBJECT_PATH,
+            System1 {
+                root: root.clone(),
+                tuning: tuning.clone(),
+            },
+        )?
         .build()
         .await
         .with_context(|| format!("owning {BUS_NAME} on the system bus"))?;
@@ -418,12 +516,12 @@ async fn main() -> Result<()> {
                 let mut guard = ready?;
                 let events: Vec<Event> = guard.get_inner().iter().filter_map(|e| udev_event(&e)).collect();
                 guard.clear_ready();
-                for event in events {
+                for event in events.into_iter().filter(|_| !tuning.load(Ordering::SeqCst)) {
                     handle(&root, &emitter, event, &mut announced).await;
                 }
             }
             Some(signal) = sleep.next() => {
-                if !signal.args()?.start {
+                if !signal.args()?.start && !tuning.load(Ordering::SeqCst) {
                     handle(&root, &emitter, Event::Resume, &mut announced).await;
                 }
             }
@@ -447,7 +545,9 @@ async fn main() -> Result<()> {
                     eprintln!("FnLock: cannot send: {e}");
                 }
             }
-            _ = tick.tick() => handle(&root, &emitter, Event::Tick, &mut announced).await,
+            _ = tick.tick() => if !tuning.load(Ordering::SeqCst) {
+                handle(&root, &emitter, Event::Tick, &mut announced).await;
+            },
             _ = term.recv() => {
                 notify(sd_notify::NotifyState::Stopping);
                 return Ok(());

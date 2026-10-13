@@ -836,6 +836,23 @@ mod operator_and_daemon {
     use super::*;
     use serde_json::Value;
 
+    /// The operator of machine `m` on its private bus (the daemon's).
+    fn on_bus(m: &Machine, tag: &'static str) -> Operator {
+        let bus = format!("unix:path={}", m.dir.join("bus").display());
+        Operator::start(
+            tag,
+            &[
+                ("PATH", m.dir.join("bin").into()),
+                ("HOME", m.dir.join("home").into()),
+                ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+                ("DBUS_SYSTEM_BUS_ADDRESS", bus.into()),
+            ],
+        )
+    }
+
+    const PL1: &str =
+        "/sys/class/firmware-attributes/lenovo-wmi-other-0/attributes/ppt_pl1_spl/current_value";
+
     #[tokio::test(flavor = "multi_thread")]
     async fn daemon_changes_reach_the_event_log_and_monitor_gets_the_daemons_msr_reading() {
         let m = Machine::new("telemetry");
@@ -855,16 +872,7 @@ mod operator_and_daemon {
             "power",
         );
         let (stand_ins, _asked, _processes) = start(&m).await;
-        let bus = format!("unix:path={}", m.dir.join("bus").display());
-        let op = Operator::start(
-            "telemetry",
-            &[
-                ("PATH", m.dir.join("bin").into()),
-                ("HOME", m.dir.join("home").into()),
-                ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
-                ("DBUS_SYSTEM_BUS_ADDRESS", bus.into()),
-            ],
-        );
+        let op = on_bus(&m, "telemetry");
         let json = |args: &[&str]| -> Value {
             let out = op.cli(&[args, &["--json"]].concat());
             assert!(
@@ -945,5 +953,123 @@ mod operator_and_daemon {
                 .all(|e| e["id"] != apply["id"]),
             "{untouched}"
         );
+    }
+
+    /// A sweep of PL1 through the operator and the daemon: the stand-in workload scores what the firmware limit is at
+    /// each step, so the recommendation shows that each value was really written; the original comes back; the
+    /// guards refuse battery and values outside the firmware range.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tune_steps_the_firmware_limit_recommends_the_knee_and_restores_it() {
+        let m = Machine::new("tune");
+        Machine::script(
+            &m.dir.join("bin"),
+            "stress-ng",
+            &format!(
+                "/usr/bin/sleep 1.2; read -r pl1 < {}; \
+                 case $pl1 in 60) s=30000.00;; 80) s=37400.00;; *) s=38000.00;; esac; \
+                 echo \"stress-ng: metrc: [1] cpu              114043      3.00     91.33      0.08     $s        1247.63\" >&2",
+                m.dir.join("root").join(&PL1[1..]).display()
+            ),
+        );
+        let (_stand_ins, asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "tune");
+        let tune = |values: &[&str]| {
+            let args = [
+                &[
+                    "tune",
+                    "--scenario",
+                    "cpu",
+                    "--seconds",
+                    "1",
+                    "--cooldown-s",
+                    "0",
+                    "ppt_pl1_spl",
+                ][..],
+                values,
+            ]
+            .concat();
+            op.cli(&args)
+        };
+
+        let out = tune(&["90", "60", "80"]);
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "{text}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(text.contains("recommended ppt_pl1_spl = 80"), "{text}");
+        assert!(text.contains("ppt_pl1_spl is back at 90"), "{text}");
+        assert_eq!(m.file(PL1), "90", "the original value is written back");
+        assert!(
+            asked
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, action, _, _)| action == "org.legionctl.tune"),
+            "polkit was asked"
+        );
+        let results = std::fs::read_dir(m.dir.join("root/var/lib/legionctl/tune"))
+            .unwrap()
+            .count();
+        assert_eq!(results, 1, "one results file");
+
+        let outside = tune(&["200"]);
+        assert!(
+            String::from_utf8_lossy(&outside.stderr)
+                .contains("200 is outside the firmware range of ppt_pl1_spl (30..140)"),
+            "{}",
+            String::from_utf8_lossy(&outside.stderr)
+        );
+        m.set("/sys/class/power_supply/ADP0/online", "0");
+        let battery = tune(&["60"]);
+        assert!(
+            String::from_utf8_lossy(&battery.stderr).contains("tuning runs on AC only"),
+            "{}",
+            String::from_utf8_lossy(&battery.stderr)
+        );
+    }
+
+    /// Hotter than the firmware's own limit (`cpu_temp` 100 °C): the workload is killed at once, not after its 30 s, no
+    /// later step runs, and the original value comes back.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tune_stops_and_kills_the_workload_above_the_firmware_temperature_limit() {
+        let m = Machine::new("hot");
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "hot");
+        m.set("/sys/class/hwmon/hwmon9/name", "coretemp");
+        m.set("/sys/class/hwmon/hwmon9/temp1_input", "105000");
+        Machine::script(&m.dir.join("bin"), "stress-ng", "/usr/bin/sleep 30");
+        let started = std::time::Instant::now();
+        let hot = op.cli(&[
+            "tune",
+            "--scenario",
+            "cpu",
+            "--seconds",
+            "30",
+            "--cooldown-s",
+            "0",
+            "ppt_pl1_spl",
+            "60",
+            "80",
+        ]);
+        let text = String::from_utf8_lossy(&hot.stdout);
+        assert_eq!(hot.status.code(), Some(1), "a stopped sweep fails: {text}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "the workload was not killed: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            text.contains("stopped early: CPU at 105 °C, above the firmware limit of 100 °C"),
+            "{text}"
+        );
+        assert_eq!(
+            text.lines().filter(|l| l.starts_with("60 ")).count(),
+            1,
+            "no step after the stop: {text}"
+        );
+        assert!(!text.lines().any(|l| l.starts_with("80 ")), "{text}");
+        assert_eq!(m.file(PL1), "90");
     }
 }
