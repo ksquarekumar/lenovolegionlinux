@@ -1166,21 +1166,33 @@ impl Render for crate::io::VirtStatus {
 impl Render for crate::io::Scan {
     fn text(&self) -> String {
         if self.services.is_empty() {
-            return "no Dockerfile in this repository".into();
+            return "no Dockerfile or compose file in this repository".into();
         }
-        let mut out = Vec::new();
+        let mut out: Vec<String> = self
+            .compose_file
+            .iter()
+            .map(|f| format!("compose file {f}"))
+            .collect();
         for (name, s) in &self.services {
-            let target = s
-                .build
-                .target
-                .as_deref()
-                .map(|t| format!(" (stage {t})"))
-                .unwrap_or_default();
-            out.push(format!(
-                "{name}: {}{target}, ports {}",
-                s.build.dockerfile,
-                s.ports.join(" ")
-            ));
+            let source = match (&s.build, &s.image) {
+                (Some(b), _) => format!(
+                    "{}{}",
+                    b.dockerfile,
+                    b.target
+                        .as_deref()
+                        .map(|t| format!(" (stage {t})"))
+                        .unwrap_or_default()
+                ),
+                (None, image) => format!("image {}", image.as_deref().unwrap_or("?")),
+            };
+            out.push(format!("{name}: {source}, ports {}", s.ports.join(" ")));
+            out.extend(s.mounts.iter().map(|m| {
+                let mode = if m.read_only { "ro" } else { "rw" };
+                format!("  mount {} {} -> {} ({mode})", m.kind, m.source, m.target)
+            }));
+            if !s.depends_on.is_empty() {
+                out.push(format!("  depends on {}", s.depends_on.join(", ")));
+            }
             out.extend(
                 s.entrypoints
                     .iter()

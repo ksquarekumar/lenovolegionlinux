@@ -1071,7 +1071,7 @@ impl Engine for Operator {
 
     fn images_scan(&self, _: &Ctx, input: ImagesScanIn) -> Result<Scan> {
         let repo = input.repo.get()?;
-        let scan = legionctl_core::images::scan(repo);
+        let scan = legionctl_core::images::scan_repository(repo)?;
         if input.write {
             let dir = repo.join(".legionctl");
             std::fs::create_dir_all(&dir)?;
@@ -1092,7 +1092,11 @@ impl Engine for Operator {
         let repo = input.repo.get()?;
         let (project, tag) = legionctl_core::images::project(repo);
         let mut lines = Vec::new();
-        for (name, service) in legionctl_core::images::scan(repo).services {
+        for (name, service) in legionctl_core::images::scan_repository(repo)?.services {
+            // a prebuilt image from the compose file: compose pulls it
+            let Some(spec) = service.build else {
+                continue;
+            };
             let image = legionctl_core::images::image(&project, &name, &tag);
             let mut build = Command::new("docker");
             build.current_dir(repo).args([
@@ -1102,13 +1106,13 @@ impl Engine for Operator {
                 "-t",
                 &image,
                 "-f",
-                &service.build.dockerfile,
+                &spec.dockerfile,
             ]);
-            if let Some(target) = &service.build.target {
+            if let Some(target) = &spec.target {
                 build.args(["--target", target]);
             }
             let out = build
-                .arg(&service.build.context)
+                .arg(&spec.context)
                 .output()
                 .context("running docker buildx")?;
             anyhow::ensure!(
@@ -1130,14 +1134,19 @@ impl Engine for Operator {
         Self::record(ctx, "images.run", &input)?;
         let repo = input.repo.get()?;
         let (project, tag) = legionctl_core::images::project(repo);
-        let compose =
-            legionctl_core::images::compose(&legionctl_core::images::scan(repo), &project, &tag);
+        let scan = legionctl_core::images::scan_repository(repo)?;
+        let compose = legionctl_core::images::compose(&scan, &project, &tag);
         let file = repo.join(".legionctl/compose.json");
         std::fs::create_dir_all(file.parent().context("no parent")?)?;
         std::fs::write(&file, serde_json::to_string_pretty(&compose)? + "\n")?;
-        let out = Command::new("docker")
-            .current_dir(repo)
-            .args(["compose", "-p", &project, "-f"])
+        let mut up = Command::new("docker");
+        up.current_dir(repo).args(["compose", "-p", &project]);
+        // the repository's own file first: legionctl's file only adds the built tags
+        if let Some(own) = &scan.compose_file {
+            up.args(["-f", own]);
+        }
+        let out = up
+            .arg("-f")
             .arg(&file)
             .args(["up", "-d", "--no-build"])
             .output()

@@ -1810,6 +1810,130 @@ fn images_build_tags_by_commit_and_run_reports_what_compose_says() {
     let _ = Command::new("docker").args(["rmi", &image]).output();
 }
 
+/// A repository with a compose file: service `backend` builds `services/api` (named `api` by its folder), with
+/// published ports, a bind and a named volume, limits, a GPU and a shell health check over the Dockerfile's; `db` is
+/// a prebuilt image that must not be pulled; `.env` holds a secret for the environment.
+fn compose_repo(home: &Path) -> PathBuf {
+    let repo = repository(home);
+    write(
+        &repo.join("services/api/Dockerfile"),
+        "FROM scratch\nCOPY note /note\nEXPOSE 8080\nHEALTHCHECK CMD [\"/check\"]\n",
+    );
+    write(&repo.join("services/api/note"), "x\n");
+    write(&repo.join("config/api.toml"), "");
+    write(&repo.join(".env"), "API_SECRET=hunter2\n");
+    write(
+        &repo.join("compose.yaml"),
+        "services:\n  backend:\n    build:\n      context: services/api\n    ports: [\"18080:8080\", \"9000\"]\n\
+         \x20   expose: [\"7000\"]\n    volumes: [\"./config:/etc/api:ro\", \"data:/data\"]\n    depends_on: [db]\n\
+         \x20   environment:\n      SECRET: ${API_SECRET}\n    healthcheck:\n      test: [\"CMD-SHELL\", \"true\"]\n\
+         \x20   deploy:\n      resources:\n        limits: {cpus: \"0.5\", memory: 256M}\n\
+         \x20       reservations:\n          devices:\n            - capabilities: [gpu]\n\
+         \x20 db:\n    image: postgres:17\n    pull_policy: never\nvolumes:\n  data: {}\n",
+    );
+    git(home, &repo, &["add", "."]);
+    git(home, &repo, &["commit", "--quiet", "-m", "compose"]);
+    repo
+}
+
+/// Images of a compose project (the real `docker compose config` reads it): compose names the services and adds the
+/// prebuilt image, ports, mounts, limits and dependencies over the Dockerfile scan; the environment's secret is not
+/// in the description or the written files.
+#[test]
+fn images_scan_reads_the_compose_file_but_not_its_environment() {
+    let (op, home) = operator("compose");
+    let repo = compose_repo(&home);
+    let out = op.run(
+        &repo,
+        &[("HOME", home.to_str().unwrap())],
+        &["images", "scan", "--write", "--json"],
+        "",
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let scan: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        scan["services"],
+        json!({
+            "backend": {
+                "build": {"context": "services/api", "dockerfile": "services/api/Dockerfile", "target": null},
+                "entrypoints": {"health": ["/bin/sh", "-c", "true"]},
+                "ports": ["18080:8080", "9000", "7000"],
+                "mounts": [
+                    {"kind": "bind", "source": "config", "target": "/etc/api", "read_only": true},
+                    {"kind": "volume", "source": "data", "target": "/data", "read_only": false}
+                ],
+                "resources": {"cpus": 0.5, "memory_bytes": 268_435_456, "gpu": true},
+                "depends_on": ["db"]
+            },
+            "db": {"build": null, "image": "postgres:17", "entrypoints": {}, "ports": []}
+        })
+    );
+    assert_eq!(
+        scan["cache"],
+        json!({"backend": {"bases": [], "lockfiles": []}})
+    );
+    assert_eq!(scan["compose_file"], "compose.yaml");
+    let written =
+        std::fs::read_to_string(repo.join(".legionctl/docker-compose-services.json")).unwrap();
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("hunter2") && !written.contains("hunter2"),
+        "the environment stays out"
+    );
+}
+
+/// `images run` of a compose project passes the repository's file first and legionctl's file second, which only
+/// sets the built tag of each built service; the prebuilt image is not built.
+#[test]
+fn images_run_of_a_compose_project_overrides_only_the_built_tags() {
+    let (op, home) = operator("composerun");
+    let repo = compose_repo(&home);
+    let commit = git(&home, &repo, &["rev-parse", "--short", "HEAD"]);
+    let env = [("HOME", home.to_str().unwrap())];
+    let built = op.run(&repo, &env, &["images", "build"], "");
+    let image = format!("localhost/repo/backend:{commit}");
+    assert_eq!(
+        String::from_utf8_lossy(&built.stdout).trim(),
+        format!("built {image}"),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    // db comes from the repository's file and may not be pulled: compose refuses it, and the refusal comes back
+    let run = op.run(&repo, &env, &["images", "run"], "");
+    assert!(
+        !run.status.success()
+            && String::from_utf8_lossy(&run.stderr).contains("No such image: postgres:17"),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let override_file: Value = serde_json::from_str(
+        &std::fs::read_to_string(repo.join(".legionctl/compose.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        override_file,
+        json!({"name": "repo", "services": {"backend": {"image": image}}})
+    );
+    let _ = Command::new("docker")
+        .current_dir(&repo)
+        .args([
+            "compose",
+            "-p",
+            "repo",
+            "-f",
+            "compose.yaml",
+            "-f",
+            ".legionctl/compose.json",
+            "down",
+            "--volumes",
+        ])
+        .output();
+    let _ = Command::new("docker").args(["rmi", &image]).output();
+}
+
 /// Run a `session start` launch as the client does, without the systemd scope (CI has no user systemd): the
 /// sandbox, this binary bound over git as the gate, then the agent.
 fn run_launch(op: &Operator, home: &Path, launch: &Value) -> std::process::Output {

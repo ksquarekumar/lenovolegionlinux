@@ -72,8 +72,20 @@ Built (2026-10-13, I1 part 2): `images build` builds each service with `docker b
 `localhost/<repo>/<service>:<short commit>` (`dev` outside git); `images run` writes `.legionctl/compose.json`
 (JSON is YAML to compose: image, build, exposed ports, health check) and runs `docker compose -p <repo> up -d
 --no-build`, passing compose's error on; `images status` reads the project's containers and their health from the
-Engine API. Checked live (build, run, `running (healthy)`). Not yet: reading existing compose files, mounts and
-resources, the buildx cache export (the docker driver cannot export a cache), `pack-vm`.
+Engine API. Checked live (build, run, `running (healthy)`). Not yet: the buildx cache export (the docker driver
+cannot export a cache), `pack-vm`.
+
+Built (2026-10-13, I1 part 3): compose files. A `compose.yaml`, `compose.yml`, `docker-compose.yaml` or
+`docker-compose.yml` at the repository root is read through `docker compose config --format json` (compose's own
+interpolation, `extends` and profiles; no YAML reader in legionctl). Its services name the description: a service
+that builds a scanned Dockerfile takes the compose name and keeps what the Dockerfile says unless compose says
+otherwise (target, health check); a service without a build is a prebuilt `image`. Added from compose: ports
+(`<published>:<port>` when published, then `expose`), mounts (bind sources relative to the repository, named volumes),
+limits (`cpus`, `memory_bytes`, a GPU reservation) and `depends_on`. The environment is never read: it can hold
+secrets from `.env`. `images build` builds only services with a build. `images run` passes the repository's file
+first and `.legionctl/compose.json` second, as an override with only the built tags, so environment, commands,
+`env_file` and volumes stay as the repository says. Tests with the real Docker: the description (and no secret in
+it), and a run whose refusal comes from the repository's own service.
 
 ## Operations
 
