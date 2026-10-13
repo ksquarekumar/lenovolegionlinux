@@ -148,6 +148,29 @@ fn build_images(repo: &Path) -> Result<Lines> {
     Ok(Lines { lines })
 }
 
+/// The stop signals of the headless runs in progress, by job: the session policy offloads a run with it.
+static STOPS: std::sync::Mutex<std::collections::BTreeMap<i64, tokio::sync::oneshot::Sender<()>>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Register a stop signal for the run of `job`.
+fn stoppable(job: i64) -> tokio::sync::oneshot::Receiver<()> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    STOPS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(job, tx);
+    rx
+}
+
+/// Stop the headless run of `job`; false when it does not run here.
+pub fn stop_run(job: i64) -> bool {
+    STOPS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&job)
+        .is_some_and(|tx| tx.send(()).is_ok())
+}
+
 /// Record how a job ended.
 fn end_job<T: serde::Serialize>(db: &Db, job: i64, out: &Result<T>) -> Result<()> {
     let outcome = match out {
@@ -616,13 +639,13 @@ impl Operator {
 }
 
 impl Operator {
-    /// Resume the jobs a restart cut off (they are still `running`): each in the background, at most 3 attempts. A
-    /// build runs again; a headless run goes on in its session (same dossier and workspace, a new ACP session) with
-    /// the task and a note that it was cut off.
-    pub fn resume_jobs(self: &std::sync::Arc<Self>) -> Result<()> {
+    /// Resume the jobs in `state`: `running` ones a restart cut off (at most 3 attempts), `offloaded` ones when
+    /// memory eased. Each goes on in the background: a build runs again; a headless run goes on in its session (same
+    /// dossier and workspace, a new ACP session) with the task and a note that it was cut off.
+    pub fn resume_jobs(self: &std::sync::Arc<Self>, state: &str) -> Result<()> {
         let db = Db::open_default()?;
-        for job in db.jobs_in("running")? {
-            if job.attempts >= 3 {
+        for job in db.jobs_in(state)? {
+            if state == "running" && job.attempts >= 3 {
                 db.job_end(job.id, &Err("cut off by a restart 3 times".into()))?;
                 continue;
             }
@@ -634,7 +657,14 @@ impl Operator {
                     Err(e) => return eprintln!("operator: job {} not resumed: {e:#}", job.id),
                 };
                 let outcome = match job.kind.as_str() {
-                    "session.run" => end_job(&db, job.id, &operator.continue_run(&job.input)),
+                    "session.run" => {
+                        let out = operator.continue_run(job.id, &job.input);
+                        STOPS
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .remove(&job.id);
+                        end_job(&db, job.id, &out)
+                    }
                     "images.build" => {
                         let repo = PathBuf::from(job.input["repo"].as_str().unwrap_or_default());
                         end_job(&db, job.id, &build_images(&repo))
@@ -650,7 +680,7 @@ impl Operator {
     }
 
     /// A headless run that a restart cut off, on in its own session.
-    fn continue_run(&self, input: &serde_json::Value) -> Result<RunOutput> {
+    fn continue_run(&self, job: i64, input: &serde_json::Value) -> Result<RunOutput> {
         let id = input["session"]
             .as_str()
             .context("the job has no session")?;
@@ -665,7 +695,8 @@ impl Operator {
             "A restart of legionctl cut off your work on this task; your workspace and your dossier hold what you did. \
              Go on with the task:\n\n{prompt}"
         );
-        self.runtime.block_on(crate::acp::run(launch, &note))
+        self.runtime
+            .block_on(crate::acp::run(launch, &note, stoppable(job)))
     }
 }
 
@@ -1852,7 +1883,11 @@ impl Engine for Operator {
         )?;
         let out = self
             .runtime
-            .block_on(crate::acp::run(launch, &input.prompt));
+            .block_on(crate::acp::run(launch, &input.prompt, stoppable(job)));
+        STOPS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&job);
         end_job(&db, job, &out)?;
         out
     }

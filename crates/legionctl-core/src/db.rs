@@ -121,7 +121,7 @@ pub fn token_hash(token: &str) -> String {
     format!("{:x}", Blake2b::<U32>::digest(token.as_bytes()))
 }
 
-/// A long operation and how it ended (`state`: running, done, failed).
+/// A long operation and how it ended (`state`: running, offloaded, done, failed).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct Job {
     pub id: i64,
@@ -177,19 +177,31 @@ impl Db {
             Err(e) => ("failed", None, Some(e.clone())),
         };
         self.conn.execute(
-            "UPDATE jobs SET state = ?2, result = ?3, error = ?4, updated = ?5 WHERE id = ?1",
+            "UPDATE jobs SET state = ?2, result = ?3, error = ?4, updated = ?5 WHERE id = ?1 AND state = 'running'",
             params![id, state, result, error, now()],
         )?;
         Ok(())
     }
 
-    /// Run the job once more (after a restart cut it off).
+    /// The job stopped to free memory (`offloaded`); the session policy runs it again when memory eases.
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn job_offload(&self, id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE jobs SET state = 'offloaded', updated = ?2 WHERE id = ?1 AND state = 'running'",
+            params![id, now()],
+        )?;
+        Ok(())
+    }
+
+    /// Run the job once more (after a restart cut it off, or an offload).
     ///
     /// # Errors
     /// The database write fails.
     pub fn job_again(&self, id: i64) -> Result<()> {
         self.conn.execute(
-            "UPDATE jobs SET attempts = attempts + 1, updated = ?2 WHERE id = ?1",
+            "UPDATE jobs SET attempts = attempts + 1, state = 'running', updated = ?2 WHERE id = ?1",
             params![id, now()],
         )?;
         Ok(())

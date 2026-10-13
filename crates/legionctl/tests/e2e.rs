@@ -1908,6 +1908,82 @@ fn a_headless_run_cut_off_by_a_restart_goes_on_in_its_session() {
     );
 }
 
+/// Offload (S4 policy, decided 2026-10-13): with `session.policy.offload_headless`, a headless run stops while memory
+/// is under pressure (available memory below the `load.busy` share, here from the machine's /proc/meminfo) and goes on
+/// in its session when memory eases.
+#[test]
+fn a_headless_run_waits_out_memory_pressure() {
+    let (op, home) = operator("offload");
+    let repo = repository(&home);
+    let agent =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-acp-agent.py");
+    write(
+        &home.join(".config/legionctl/run.jsonc"),
+        &json!({"session": {"acp": {"fake": ["python3", agent]}, "scope": false, "writable": [],
+                            "policy": {"idle_freeze_minutes": 0, "offload_headless": true}}})
+        .to_string(),
+    );
+    let meminfo = home.join("root/proc/meminfo");
+    let memory = |available_kib: u64| {
+        write(
+            &meminfo,
+            &format!("MemTotal: 16000000 kB\nMemAvailable: {available_kib} kB\n"),
+        );
+    };
+    memory(12_000_000);
+    let client = Command::new(env!("CARGO_BIN_EXE_legionctl"))
+        .args([
+            "session",
+            "run",
+            "fake",
+            "SLOW port the parser",
+            "--dossier",
+            "port",
+        ])
+        .current_dir(&repo)
+        .env_clear()
+        .env("XDG_RUNTIME_DIR", &op.runtime)
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .env("HOME", &home)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let state = || -> Value {
+        let jobs: Value = serde_json::from_str(&op.ok(&["jobs", "list", "--json"])).unwrap();
+        jobs["items"][0].clone()
+    };
+    let wait_for = |want: &str, seconds: u64| -> Value {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+        loop {
+            let job = state();
+            if job["state"] == want {
+                return job;
+            }
+            assert!(std::time::Instant::now() < deadline, "no {want} job: {job}");
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+    };
+    wait_for("running", 15);
+    memory(800_000);
+    wait_for("offloaded", 25);
+    let out = client.wait_with_output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("offloaded: memory is under pressure"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    memory(12_000_000);
+    let done = wait_for("done", 30);
+    assert_eq!(done["attempts"], 2, "{done}");
+    assert!(
+        done["result"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("prompt: A restart of legionctl cut off your work")
+    );
+}
+
 /// Callers and their tokens (DESIGN/03): `{mcp}` in the agent's command is the session's MCP config; a session's
 /// sandbox has its own token and cannot read the user's; without its
 /// token it is denied (a token it makes up is not the user's); and a call that names another session still acts for

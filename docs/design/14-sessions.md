@@ -257,4 +257,8 @@ Built (2026-10-14, S4 policy, decided 2026-10-13, part 1): idle freeze. With `se
 hook call is a `stop` (its agent ended a reply) older than that, with no freeze or unpause since, is frozen
 (`systemctl --user freeze` on its scope), recorded as `session.freeze`, and the user gets a desktop notice with
 `legionctl session unpause <id>`; `session list` shows it as `frozen`. The operator's audit of the hook calls is the
-record of activity. Offload of headless runs under memory pressure waits for the jobs table (todo-67).
+record of activity. Part 2 (built 2026-10-14): offload. With `session.policy.offload_headless` (off by default) the same policy
+stops each headless run (a job, note 12) while memory is under pressure by the `load.busy` limits (memory stalls
+"some", or available memory below the share): the job becomes `offloaded`, its client gets "offloaded: memory is
+under pressure", the user a desktop notice, and the log `session.offload`. When memory eases, the job goes on in its
+session like a job a restart cut off.

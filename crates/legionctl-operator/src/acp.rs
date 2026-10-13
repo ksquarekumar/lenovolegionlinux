@@ -16,7 +16,11 @@ use legionctl_core::session::Launch;
 ///
 /// # Errors
 /// The adapter does not start or speak ACP, or the prompt fails.
-pub async fn run(launch: Launch, prompt: &str) -> Result<RunOutput> {
+pub async fn run(
+    launch: Launch,
+    prompt: &str,
+    stop: tokio::sync::oneshot::Receiver<()>,
+) -> Result<RunOutput> {
     let started = Instant::now();
     let legionctl = crate::engine::which("legionctl")
         .context("legionctl is not on PATH (the git gate is its binary)")?;
@@ -63,7 +67,11 @@ pub async fn run(launch: Launch, prompt: &str) -> Result<RunOutput> {
         PermissionDecision::AllowOnce
     }));
     let mut session = AcpSession::start(config, Arc::new(policy)).await?;
-    let answer = session.prompt(prompt).await?;
+    // a stop (offload) drops the session, which ends the agent
+    let answer = tokio::select! {
+        answer = session.prompt(prompt) => answer?,
+        _ = stop => anyhow::bail!("offloaded: memory is under pressure"),
+    };
     // session/close is optional in ACP; without it, dropping the session ends the adapter
     if let Err(e) = session.close().await {
         eprintln!(

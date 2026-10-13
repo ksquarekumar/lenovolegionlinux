@@ -292,6 +292,8 @@ pub struct SessionPolicy {
     /// Freeze an interactive session this many minutes after its agent ended a reply with no prompt since; 0 never.
     /// A frozen session reads nothing from its terminal: `legionctl session unpause <id>` lets it go on.
     pub idle_freeze_minutes: u32,
+    /// Stop headless runs while memory is under pressure (the `load.busy` limits) and go on with them when it eases.
+    pub offload_headless: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

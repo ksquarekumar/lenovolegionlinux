@@ -117,14 +117,16 @@ async fn main() -> Result<()> {
         eprintln!("operator: old log rows not removed: {e}");
     }
     // the long operations a restart cut off go on in the background
-    if let Err(e) = operator.resume_jobs() {
+    if let Err(e) = operator.resume_jobs("running") {
         eprintln!("operator: jobs not resumed: {e:#}");
     }
     let modules = vec![
         module("the machine event recorder", recorder::run),
         module("the session module", session::run),
         module("the model gateway", gateway),
-        module("the session policy", policy::run),
+        module("the session policy", |ready| {
+            policy::run(ready, operator.clone())
+        }),
     ];
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let api = axum::serve(listener, server::router(operator)).with_graceful_shutdown(async move {
