@@ -24,8 +24,7 @@ pub struct Output {
 }
 
 fn driver(root: &SysRoot, card: &str) -> String {
-    std::fs::read_link(root.path(Path::new(DRM).join(card).join("device/driver")))
-        .ok()
+    root.link(Path::new(DRM).join(card).join("device/driver"))
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_default()
 }

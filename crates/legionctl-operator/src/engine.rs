@@ -17,7 +17,8 @@ use legionctl_api::{
     DossierAddIn, DossierAppendIn, DossierCheckIn, DossierEditIn, DossierFindings, DossierList,
     DossierReadIn, DossierSearchIn, DossierUseIn, DossierWriteIn, Events, EventsIn, GateIn, Guard,
     GuardIn, HookReply, HookRunIn, InspectIn, KnobDetail, Knobs, Launch, Lines, Locks, MonitorIn,
-    Sample, Samples, SessionId, SessionIdIn, SessionIn, SessionStartIn, SessionState, Sessions,
+    RecordIn, Recording, ReplayIn, Sample, Samples, SessionId, SessionIdIn, SessionIn,
+    SessionStartIn, SessionState, Sessions,
 };
 use legionctl_core::config::{Dirs, Resolved, resolve};
 
@@ -68,6 +69,9 @@ fn path(p: Option<&ClientPath>) -> Result<Option<&Path>> {
     p.map(ClientPath::get).transpose()
 }
 
+/// Operations that change the machine (or record it): their events go into a recording.
+const MACHINE_OPS: [&str; 4] = ["power.apply", "gpu.primary", "cleanup", "record"];
+
 /// The machine, its profile and the Fn+Q ledger, as the planners need them.
 struct Plan {
     root: SysRoot,
@@ -77,11 +81,29 @@ struct Plan {
 
 impl Plan {
     fn load(profile: Option<&Path>) -> Result<Plan> {
-        let root = SysRoot::from_env();
+        Plan::at(SysRoot::from_env(), profile)
+    }
+
+    /// The machine under `root`; without `profile`, the profile installed there.
+    fn at(root: SysRoot, profile: Option<&Path>) -> Result<Plan> {
+        let installed = root.path(profile::DEFAULT_PATH);
         Ok(Plan {
             ledger: Ledger::open(&root)?,
-            profile: profile::load(profile)?.0,
+            profile: profile::load(Some(profile.unwrap_or(&installed)))?.0,
             root,
+        })
+    }
+
+    /// What the daemon would write now (`power apply`, auto), what `doctor` finds and the knobs.
+    fn decisions(&self, dir: &Path, events: Events) -> Result<Recording> {
+        let machine = self.machine();
+        Ok(Recording {
+            dir: dir.display().to_string(),
+            paths: 0,
+            plan: dry_run(&machine.apply(None, Options::default())?.1).lines,
+            findings: legionctl_machine::doctor::doctor(&machine),
+            knobs: knobs::catalog(&machine),
+            events,
         })
     }
 
@@ -824,6 +846,59 @@ impl Engine for Operator {
 
     fn events(&self, _: &Ctx, input: EventsIn) -> Result<Events> {
         Db::open_default()?.events(input.since, input.limit)
+    }
+
+    fn record(&self, ctx: &Ctx, input: RecordIn) -> Result<Recording> {
+        Self::record(ctx, "record", &input)?;
+        let dir = input.dir.get()?;
+        anyhow::ensure!(
+            std::fs::read_dir(dir).map_or(true, |mut d| d.next().is_none()),
+            "{} is not empty; record into a new directory",
+            dir.display()
+        );
+        let root = SysRoot::from_env().traced();
+        let plan = Plan::at(root.clone(), None)?;
+        let since = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs(),
+        )? - i64::from(input.minutes) * 60;
+        // only the machine's events: agent payloads (prompts, dossier text) stay out of a recording that is shared
+        let events = Db::open_default()?
+            .events_from(since)?
+            .into_iter()
+            .filter(|e| e.actor == "legionctl-system" || MACHINE_OPS.contains(&e.kind.as_str()))
+            .collect();
+        // status reads more files than the decisions do; recording them lets every read operation replay
+        Snapshot::read(
+            &plan.root,
+            &plan.profile,
+            Detail::Full,
+            &config(None)?.config.load,
+        );
+        let mut recording = plan.decisions(dir, events)?;
+        let tree = dir.join("root");
+        recording.paths = root.record_into(&tree)?;
+        for file in [profile::DEFAULT_PATH, legionctl_machine::ledger::DB] {
+            if let Ok(bytes) = std::fs::read(root.path(file)) {
+                let to = SysRoot::new(&tree).path(file);
+                std::fs::create_dir_all(to.parent().context("no parent")?)?;
+                std::fs::write(to, bytes)?;
+            }
+        }
+        std::fs::write(
+            dir.join("events.json"),
+            serde_json::to_string_pretty(&recording.events)?,
+        )?;
+        Ok(recording)
+    }
+
+    fn replay(&self, _: &Ctx, input: ReplayIn) -> Result<Recording> {
+        let dir = input.dir.get()?;
+        let events = std::fs::read(dir.join("events.json"))
+            .with_context(|| format!("{} is not a recording", dir.display()))?;
+        Plan::at(SysRoot::new(dir.join("root")), None)?
+            .decisions(dir, serde_json::from_slice(&events)?)
     }
 
     fn knobs(&self, _: &Ctx, input: ProfileIn) -> Result<Knobs> {

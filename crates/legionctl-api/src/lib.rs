@@ -326,6 +326,11 @@ operations! {
     knobs / KnobsOp = "knobs", Read, ProfileIn => Knobs;
     /// One knob and its history from the event log.
     inspect / Inspect = "inspect", Read, InspectIn => KnobDetail;
+    /// Record this machine into a directory: the files legionctl reads, the profile, the Fn+Q ledger and recent
+    /// events. A bug report, a test fixture, or a before/after record of a BIOS or kernel update.
+    record / Record = "record", Workspace, RecordIn => Recording;
+    /// What the daemon would write and what doctor finds on a recorded machine, with its events.
+    replay / Replay = "replay", Read, ReplayIn => Recording;
     /// Bind this session to a dossier (one writable dossier per session); create it from the pattern with create.
     dossier_use / DossierUse = "dossier.use", Workspace, DossierUseIn => Lines;
     /// This session's active dossier.

@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
 
-const DEFAULT_PATH: &str = "/usr/share/legionctl/profiles/lenovo-82wq-legion-pro-7-16irx8h.json";
+pub const DEFAULT_PATH: &str =
+    "/usr/share/legionctl/profiles/lenovo-82wq-legion-pro-7-16irx8h.json";
 
 #[derive(Debug, Deserialize)]
 pub struct Profile {

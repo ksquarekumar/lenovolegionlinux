@@ -577,6 +577,39 @@ fn fifty() -> u32 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RecordIn {
+    /// New (or empty) directory for the recording.
+    pub dir: ClientPath,
+    /// Events of the last minutes to keep.
+    #[serde(default = "ten")]
+    pub minutes: u32,
+}
+
+fn ten() -> u32 {
+    10
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReplayIn {
+    /// A directory that `legionctl record` wrote.
+    pub dir: ClientPath,
+}
+
+/// What the daemon and `doctor` decide on a machine: live for `record`, on the recorded tree for `replay`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Recording {
+    pub dir: String,
+    /// Machine paths that `record` wrote (0 for `replay`).
+    pub paths: usize,
+    /// What `power apply` (auto) would write.
+    pub plan: Vec<String>,
+    /// The machine checks of `doctor`.
+    pub findings: Vec<String>,
+    pub knobs: Knobs,
+    pub events: Events,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct KnobDetail {
     pub knob: Knob,
     /// Events that name the knob's file (writes, warnings), oldest first.

@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use crate::io::{
     CapabilityList, Changes, ConfigFile, ConfigView, DossierFindings, DossierInfo, EventRow,
     Explanation, Findings, GpuState, Guard, HookReply, HookTable, Knob, KnobDetail, Launch,
-    LayerList, Lines, LoadState, Lock, Reminder, RunEnv, Sample, SessionState, SetupReport,
-    SkillInfo, Snapshot, Text, Validation, Workspace, WorkspaceStatus,
+    LayerList, Lines, LoadState, Lock, Recording, Reminder, RunEnv, Sample, SessionState,
+    SetupReport, SkillInfo, Snapshot, Text, Validation, Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -686,5 +686,38 @@ impl Render for KnobDetail {
             self.history.text()
         };
         format!("{}\n{}\n\n{history}", knob_line(&self.knob), self.knob.path)
+    }
+}
+
+impl Render for Recording {
+    fn text(&self) -> String {
+        let section = |title: &str, lines: &[String]| {
+            if lines.is_empty() {
+                format!("{title}: none")
+            } else {
+                format!(
+                    "{title}:\n{}",
+                    lines
+                        .iter()
+                        .map(|l| format!("  {l}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                )
+            }
+        };
+        let mut out = vec![if self.paths > 0 {
+            format!("recorded {} machine paths into {}", self.paths, self.dir)
+        } else {
+            format!("replay of {}", self.dir)
+        }];
+        out.push(section("power apply would", &self.plan));
+        out.push(section("doctor", &self.findings));
+        out.push(format!("knobs:\n{}", self.knobs.text()));
+        out.push(format!(
+            "events ({}):\n{}",
+            self.events.len(),
+            self.events.text()
+        ));
+        out.join("\n\n")
     }
 }

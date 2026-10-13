@@ -121,6 +121,17 @@ impl Db {
         )
     }
 
+    /// Events from `ts` (seconds since the epoch) on, oldest first.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn events_from(&self, ts: i64) -> Result<Vec<EventRow>> {
+        self.query_events(
+            "SELECT id, ts, actor, kind, payload FROM events WHERE ts >= ?1 ORDER BY id",
+            params![ts],
+        )
+    }
+
     /// The last `limit` events whose payload names `path` (`*` matches any text, for per-CPU files), oldest first.
     ///
     /// # Errors

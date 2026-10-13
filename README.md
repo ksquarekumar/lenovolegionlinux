@@ -43,6 +43,8 @@ legionctl status                  # power, mode, CPU, limits, GPU wiring, units,
 legionctl doctor                  # drift, conflicts, kernel modules and DKMS, NTFS, GPU placement, failed units, OSD, agent setup
 legionctl knobs                   # every knob: value, what the profile wants now, firmware range, policy
 legionctl inspect cpu.epp         # one knob and the events that changed it
+legionctl record --dir ~/rec-bios # the files legionctl reads, the profile and machine events: a bug report or fixture
+legionctl replay --dir ~/rec-bios # what the daemon and doctor decide on that recording
 legionctl load                    # one-line load level, and which cgroup waits on I/O
 legionctl monitor --count 10      # power, temperatures, clocks, GPU, PSI, fans, throttle reasons (GET /v1/metrics too)
 legionctl trace                   # follow the event log: agents, people and the machine daemon

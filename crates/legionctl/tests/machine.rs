@@ -259,6 +259,94 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
     );
 }
 
+/// A recording holds every file legionctl reads: replaying it gives the decisions of the live machine, and an operator
+/// on the recording shows the same status. A read that bypasses the sysroot makes this test fail.
+#[test]
+fn a_recording_replays_to_the_same_decisions_and_status() {
+    let m = Machine::new("record");
+    // unplugged with the AC policy still applied, one CPU left behind, and an Fn+Q choice in the ledger
+    m.set("/sys/class/power_supply/ADP0/online", "0");
+    m.set(
+        "/sys/devices/system/cpu/cpufreq/policy3/energy_performance_preference",
+        "power",
+    );
+    m.record(Key::Override, "performance");
+    let json = |op: &Operator, args: &[&str]| -> serde_json::Value {
+        let out = op.cli(&[args, &["--json"]].concat());
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let op = m.operator();
+    let status = json(&op, &["status"]);
+    // an agent's text must not reach a recording that is shared as a bug report
+    std::fs::create_dir_all(m.dir.join("project")).unwrap();
+    json(
+        &op,
+        &[
+            "reminders",
+            "add",
+            "private",
+            "the secret plan",
+            "--project",
+            m.dir.join("project").to_str().unwrap(),
+        ],
+    );
+    let dir = m.dir.join("recording");
+    let dir = dir.to_str().unwrap();
+    let recorded = json(&op, &["record", "--dir", dir]);
+    let replayed = json(&op, &["replay", "--dir", dir]);
+
+    assert!(
+        recorded["plan"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l.as_str().unwrap().contains("policy3")),
+        "the plan puts the CPU back: {}",
+        recorded["plan"]
+    );
+    for part in ["plan", "findings", "knobs"] {
+        assert_eq!(
+            recorded[part], replayed[part],
+            "{part} differs on the recording"
+        );
+    }
+    assert_eq!(
+        recorded["events"].as_array().unwrap().last().unwrap()["kind"],
+        "record",
+        "the recording keeps its own request"
+    );
+    assert_eq!(recorded["events"], replayed["events"]);
+    let events = std::fs::read_to_string(m.dir.join("recording/events.json")).unwrap();
+    assert!(!events.contains("secret plan"), "{events}");
+    assert!(
+        json(&op, &["events"]).to_string().contains("secret plan"),
+        "the operator's own log keeps it"
+    );
+    // the Fn+Q choice came along in the ledger
+    let profile = &replayed["knobs"][0];
+    assert_eq!(profile["id"], "platform_profile");
+    assert_eq!(profile["desired"], "performance");
+
+    // every other read operation runs on the recording too
+    let on_recording = Operator::start(
+        "recorded",
+        &[
+            ("PATH", m.dir.join("bin").into()),
+            ("HOME", m.dir.join("home").into()),
+            ("LEGIONCTL_SYSROOT", m.dir.join("recording/root").into()),
+        ],
+    );
+    assert_eq!(json(&on_recording, &["status"]), status);
+
+    let again = op.cli(&["record", "--dir", dir]);
+    assert!(!again.status.success(), "a recording is never overwritten");
+}
+
 #[test]
 fn cleanup_plans_to_disable_running_conflicts_and_leaves_packages_to_the_human() {
     let m = Machine::new("cleanup");
