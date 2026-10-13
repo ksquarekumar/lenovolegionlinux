@@ -46,6 +46,8 @@ pub struct Summary {
     pub gpu_w_mean: Option<f64>,
     pub gpu_temp_max: Option<f64>,
     pub fan_rpm_max: Option<u64>,
+    /// The worst run-queue latency p99 of any sample and CPU class (µs, the eBPF sensor).
+    pub runq_p99_us_max: Option<u64>,
     /// Throttle reasons active in any sample.
     pub throttle: Vec<String>,
 }
@@ -76,6 +78,10 @@ pub fn summarize(samples: &[Sample]) -> Summary {
         fan_rpm_max: samples
             .iter()
             .filter_map(|s| s.root.fan_rpm.as_ref()?.values().max().copied())
+            .max(),
+        runq_p99_us_max: samples
+            .iter()
+            .filter_map(|s| s.runq_latency.as_ref()?.values().map(|l| l.p99_us).max())
             .max(),
         throttle: samples
             .iter()

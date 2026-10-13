@@ -624,8 +624,15 @@ impl Render for Vec<Sample> {
                 let throttle = s.root.throttle_now.as_ref().map_or("? (root)".into(), |t| {
                     if t.is_empty() { "-".into() } else { t.join(",") }
                 });
+                let runq = s.runq_latency.as_ref().map_or("-".into(), |classes| {
+                    classes
+                        .iter()
+                        .map(|(class, l)| format!("{} {}", &class[..1], l.p99_us))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                });
                 format!(
-                    "pkg {}  cpu {} {}  gpu {gpu}  fans {fans} rpm  throttle {throttle}  psi cpu/mem/io {}/{}/{}",
+                    "pkg {}  cpu {} {}  gpu {gpu}  fans {fans} rpm  throttle {throttle}  runq p99 {runq} µs  psi cpu/mem/io {}/{}/{}",
                     some(s.package_w, " W"),
                     some(s.cpu_temp_c, " °C"),
                     some(s.cpu_mhz, " MHz"),
@@ -742,6 +749,11 @@ fn bench_rows(run: &BenchRun) -> Vec<(String, Option<f64>)> {
         (
             "fan rpm max".into(),
             s.fan_rpm_max
+                .map(|r| f64::from(u32::try_from(r).unwrap_or(u32::MAX))),
+        ),
+        (
+            "runq p99 µs max".into(),
+            s.runq_p99_us_max
                 .map(|r| f64::from(u32::try_from(r).unwrap_or(u32::MAX))),
         ),
     ]);

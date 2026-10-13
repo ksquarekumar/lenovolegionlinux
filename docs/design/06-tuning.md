@@ -39,7 +39,6 @@ exist yet, so the user puts the recommended value into the profile. Not verified
 (needs the package installed, the polkit dialog and an idle machine) and the `setpriv` path (the e2e daemon runs as
 the caller, so the workload runs directly).
 
-
 ## Results: sweep 2026-10-12 04:06 (background load 6–8, `--force`)
 
 | Scenario | Finding | Decision |

@@ -4,6 +4,24 @@ Kernel support measured: `/sys/kernel/btf/vmlinux`, `CONFIG_BPF_SYSCALL`, `BPF_J
 `SCHED_CLASS_EXT`, `KPROBES`. Programs are written with **aya** (Rust, CO-RE, no clang at runtime) in the
 `legionctl-bpf` crate. eBPF is the only path for these sensors: no `/proc` polling or other second source.
 
+## Built (2026-10-13, M3f): the jank metric
+
+`crates/legionctl-system/bpf/runq.bpf.c` hooks `tp_btf/sched_wakeup`, `sched_wakeup_new` and `sched_switch` (a
+preempted task waits again) and counts the wait from enqueue to run in a per-CPU log2 histogram (µs). The one field
+it reads (`task_struct.pid`) is a CO-RE relocation, so the program needs no kernel or libbpf headers: clang
+compiles it at build time (`build.rs`), and aya loads it in `legionctl-system`. The kernel side is C, not aya's
+Rust eBPF, because that needs a nightly toolchain and bpf-linker, which neither this machine nor CI has.
+
+The daemon adds the cumulative histogram per CPU class (performance, efficiency) to `Sample()`; a telemetry sample
+reads it at the start and the end of its window and gives `runq_latency` per class: count, p50 and p99 (upper
+bound of the log2 bucket). `monitor`, `/v1/metrics` (`legionctl_runq_latency_p99_microseconds`), bench and tune
+summaries carry it. A sensor that cannot load (no permission, the verifier's message) is `runq_error` in the sample
+and a `doctor` finding; the daemon runs on. Tests: without root the error path (e2e); as root in CI (`sudo`) the
+programs pass the verifier of the runner's kernel and count real wakeups.
+
+Not built yet: pinning under `/sys/fs/bpf/legionctl/` (a restart loads the programs again), and the other uses
+below (workload detection, power attribution, throttle correlation, session activity, HID-BPF).
+
 ## Worth doing
 
 | Use | Hook | Output |

@@ -15,6 +15,8 @@
 //! Fn lock (`FnLock`) and which Fn key was pressed (`Key`). Decisions come from `legionctl_machine`; this file only
 //! wires event sources and the bus to it.
 
+mod runq;
+
 use std::collections::HashMap;
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
@@ -212,6 +214,19 @@ struct System1 {
     root: SysRoot,
     /// A tune runs: the event loop waits.
     tuning: Arc<AtomicBool>,
+    /// The run-queue latency sensor, or why it does not run.
+    runq: Arc<Result<runq::Runq, String>>,
+}
+
+/// The readings only root makes, with the eBPF sensor's histogram (or its error).
+fn root_part(root: &SysRoot, runq: &Result<runq::Runq, String>) -> telemetry::RootSample {
+    let mut part = telemetry::root_sample(root);
+    match runq.as_ref().map(runq::Runq::per_cpu) {
+        Ok(Ok(per_cpu)) => part.runq = Some(telemetry::by_class(root, &per_cpu)),
+        Ok(Err(e)) => part.runq_error = Some(format!("reading the histogram: {e:#}")),
+        Err(e) => part.runq_error = Some(e.clone()),
+    }
+    part
 }
 
 /// The caller's uid and primary gid, when it is not this process's user (the workload then runs as the caller).
@@ -326,12 +341,13 @@ impl System1 {
             return Err(zbus::fdo::Error::Failed("a tune runs already".into()));
         }
         let root = self.root.clone();
+        let runq = self.runq.clone();
         let report = tokio::task::spawn_blocking(move || {
             let report = tune::run(
                 &root,
                 &spec,
                 &|argv, cancel| tune::run_workload(argv, user, cancel),
-                &|| telemetry::sample(&root, Duration::from_secs(1), telemetry::root_sample(&root)),
+                &|| telemetry::sample(&root, Duration::from_secs(1), &|| root_part(&root, &runq)),
             );
             let reapplied = carry_out(&root, |m| {
                 Ok(m.apply(
@@ -368,8 +384,8 @@ impl System1 {
     /// The readings only root can make (fan RPM, throttle reasons from the MSR), as JSON (`telemetry::RootSample`).
     /// Read-only, so polkit is not asked.
     async fn sample(&self) -> zbus::fdo::Result<String> {
-        let root = self.root.clone();
-        let sample = tokio::task::spawn_blocking(move || telemetry::root_sample(&root))
+        let (root, runq) = (self.root.clone(), self.runq.clone());
+        let sample = tokio::task::spawn_blocking(move || root_part(&root, &runq))
             .await
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
         serde_json::to_string(&sample).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
@@ -472,6 +488,11 @@ fn udev_event(e: &udev::Event) -> Option<Event> {
 async fn main() -> Result<()> {
     let root = SysRoot::from_env();
     let tuning = Arc::new(AtomicBool::new(false));
+    // a sensor that cannot load is reported (Sample, doctor), and the daemon runs without it (note 04)
+    let runq = Arc::new(runq::Runq::start().map_err(|e| format!("{e:#}")));
+    if let Err(e) = runq.as_ref() {
+        eprintln!("runq sensor: not running: {e}");
+    }
     let monitor = udev::MonitorBuilder::new()?
         .match_subsystem("power_supply")?
         .match_subsystem("platform-profile")?
@@ -485,6 +506,7 @@ async fn main() -> Result<()> {
             System1 {
                 root: root.clone(),
                 tuning: tuning.clone(),
+                runq,
             },
         )?
         .build()

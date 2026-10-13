@@ -367,15 +367,16 @@ impl Operator {
     /// One telemetry sample over `window`; the root-only part comes from `legionctl-system`, and stays unknown when
     /// the daemon does not answer.
     pub fn sample(&self, window: std::time::Duration) -> Sample {
-        let root_part = self
-            .runtime
-            .block_on(async {
-                let conn = zbus::Connection::system().await?;
-                let json = System1Proxy::new(&conn).await?.sample().await?;
-                anyhow::Ok(serde_json::from_str::<RootSample>(&json)?)
-            })
-            .unwrap_or_default();
-        telemetry::sample(&SysRoot::from_env(), window, root_part)
+        let root_part = || {
+            self.runtime
+                .block_on(async {
+                    let conn = zbus::Connection::system().await?;
+                    let json = System1Proxy::new(&conn).await?.sample().await?;
+                    anyhow::Ok(serde_json::from_str::<RootSample>(&json)?)
+                })
+                .unwrap_or_default()
+        };
+        telemetry::sample(&SysRoot::from_env(), window, &root_part)
     }
 }
 
@@ -405,6 +406,16 @@ impl Engine for Operator {
     fn doctor(&self, _: &Ctx, input: ProfileIn) -> Result<Findings> {
         let plan = Plan::load(path(input.profile.as_ref())?)?;
         let mut findings = legionctl_machine::doctor::doctor(&plan.machine());
+        match self.system(async |p| p.sample().await) {
+            Ok(json) => {
+                if let Some(e) = serde_json::from_str::<RootSample>(&json)?.runq_error {
+                    findings.push(format!("the eBPF run-queue sensor does not run: {e}"));
+                }
+            }
+            Err(e) => findings.push(format!(
+                "legionctl-system does not answer (fans, throttle reasons and the eBPF sensor are unknown): {e:#}"
+            )),
+        }
         findings.extend(agent_findings()?);
         Ok(Findings { findings })
     }

@@ -255,6 +255,8 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
             "- unit tlp.service failed; see systemctl status tlp.service",
             "- user unit app-ghostty.service failed; see systemctl --user status app-ghostty.service",
             "- the OSD extension legionctl-osd@legionctl is ERROR; Fn+Q, Fn+R and Fn lock show no OSD (see journalctl --user -b /usr/bin/gnome-shell)",
+            "- legionctl-system does not answer (fans, throttle reasons and the eBPF sensor are unknown): connecting to the system bus: Failed to connect to address `unix:path=/nonexistent/bus`: No such file or directory (os error 2): \
+             No such file or directory (os error 2)",
         ]
     );
 }
@@ -725,6 +727,16 @@ mod daemon_process {
                 .unwrap(),
         );
 
+        let dbus = zbus::fdo::DBusProxy::new(&stand_ins).await.unwrap();
+        let name = zbus::names::BusName::try_from("org.legionctl.System1").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !dbus.name_has_owner(name.clone()).await.unwrap() {
+            assert!(
+                Instant::now() < deadline,
+                "the daemon did not take its bus name"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         (stand_ins, asked, (bus, daemon))
     }
 
@@ -738,11 +750,6 @@ mod daemon_process {
         wait_for("the battery policy at start", || {
             m.file(PROFILE_PATH) == "balanced"
         });
-        let dbus = zbus::fdo::DBusProxy::new(&stand_ins).await.unwrap();
-        let name = zbus::names::BusName::try_from("org.legionctl.System1").unwrap();
-        while !dbus.name_has_owner(name.clone()).await.unwrap() {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
         let system = zbus::Proxy::new(
             &stand_ins,
             "org.legionctl.System1",
@@ -1071,5 +1078,65 @@ mod operator_and_daemon {
         );
         assert!(!text.lines().any(|l| l.starts_with("80 ")), "{text}");
         assert_eq!(m.file(PL1), "90");
+    }
+
+    /// Without BPF permission (a non-root daemon) the daemon runs on, and the sensor's error reaches the sample and
+    /// doctor.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_sensor_that_cannot_load_is_reported_by_monitor_and_doctor() {
+        let m = Machine::new("nobpf");
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "nobpf");
+        let out = op.cli(&["monitor", "--interval-ms", "100", "--json"]);
+        let sample = &serde_json::from_slice::<Value>(&out.stdout).unwrap()[0];
+        assert!(
+            sample["runq_error"]
+                .as_str()
+                .is_some_and(|e| e.contains("Operation not permitted")),
+            "{sample}"
+        );
+        assert_eq!(sample["runq_latency"], Value::Null);
+        let doctor = String::from_utf8(op.cli(&["doctor"]).stdout).unwrap();
+        assert!(
+            doctor.contains(
+                "- the eBPF run-queue sensor does not run: loading the runq object: map error"
+            ),
+            "{doctor}"
+        );
+    }
+
+    /// As root (CI runs it with sudo): the eBPF programs pass the verifier of the running kernel, attach, and the
+    /// histogram counts the wakeups of a busy machine.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs root: CI runs it with sudo"]
+    async fn as_root_the_runq_sensor_measures_wakeups() {
+        let m = Machine::new("runq");
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "runq");
+        // wakeups: short sleeps in a few shells
+        let load: Vec<_> = (0..4)
+            .map(|_| {
+                std::process::Command::new("/bin/sh")
+                    .args(["-c", "for i in $(seq 200); do /usr/bin/sleep 0.005; done"])
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        let out = op.cli(&["monitor", "--interval-ms", "1000", "--json"]);
+        for mut child in load {
+            child.wait().unwrap();
+        }
+        let samples: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let sample = &samples[0];
+        assert_eq!(sample["runq_error"], Value::Null, "{sample}");
+        let classes = sample["runq_latency"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{sample}"));
+        assert!(
+            classes
+                .values()
+                .any(|l| l["count"].as_u64().unwrap() > 0 && l["p99_us"].as_u64().unwrap() >= 2),
+            "{sample}"
+        );
     }
 }

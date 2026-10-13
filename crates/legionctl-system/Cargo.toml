@@ -15,6 +15,7 @@ udev = "0.9.3"
 zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }
 futures-util = "0.3.34"
 sd-notify = "0.5.0"
+aya = "0.14.0"
 
 [lints]
 workspace = true

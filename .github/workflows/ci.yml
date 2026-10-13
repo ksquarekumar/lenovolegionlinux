@@ -18,12 +18,18 @@ jobs:
         run: rustup toolchain install stable --profile minimal -c clippy,rustfmt && rustup default stable
       - name: Install tools
         run: make tools
-      # legionctl-system reads udev events through libudev; the daemon test runs a private dbus-daemon; the session
-      # test runs bwrap
+      # legionctl-system reads udev events through libudev and compiles its eBPF program with clang; the daemon test
+      # runs a private dbus-daemon; the session test runs bwrap
       - name: Install libudev
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev dbus bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev dbus bubblewrap clang jq
       # the session test runs bwrap; Ubuntu blocks unprivileged user namespaces through AppArmor by default
       - name: Allow user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Lint, format check, profile validation, tests
         run: make ci
+      # the eBPF sensor needs root to load: run its test binary with sudo (the binary is built as the runner user)
+      - name: eBPF sensor as root
+        run: |
+          bin=$(cargo test -p legionctl --test machine --no-run --message-format=json \
+            | jq -r 'select(.target.name == "machine" and .executable != null) | .executable')
+          sudo -E "$bin" --ignored --exact operator_and_daemon::as_root_the_runq_sensor_measures_wakeups

@@ -24,6 +24,107 @@ pub struct RootSample {
     pub throttle_now: Option<Vec<String>>,
     /// Throttle reasons logged since boot (the MSR's sticky bits).
     pub throttle_logged: Option<Vec<String>>,
+    /// The eBPF sensor's cumulative run-queue wait histogram per CPU class (bucket i: 2^i to 2^(i+1) µs). A sample
+    /// turns two of these into `runq_latency`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runq: Option<BTreeMap<String, Vec<u64>>>,
+    /// Why the eBPF sensor does not run (no permission, the verifier's message).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runq_error: Option<String>,
+}
+
+/// Run-queue latency over a sample window: how long woken tasks waited for a CPU. Log2 resolution: a percentile is
+/// the upper bound of its bucket.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Latency {
+    pub count: u64,
+    pub p50_us: u64,
+    pub p99_us: u64,
+}
+
+/// CPU numbers in a kernel list (`0-15,24`).
+fn cpu_list(text: &str) -> Vec<usize> {
+    text.split(',')
+        .filter_map(|part| {
+            let (a, b) = part
+                .trim()
+                .split_once('-')
+                .unwrap_or((part.trim(), part.trim()));
+            Some(a.parse().ok()?..=b.parse().ok()?)
+        })
+        .flatten()
+        .collect()
+}
+
+/// Per-CPU histograms summed per CPU class: `performance` and `efficiency` cores, or `all` on a CPU without classes.
+#[must_use]
+pub fn by_class(root: &SysRoot, per_cpu: &[Vec<u64>]) -> BTreeMap<String, Vec<u64>> {
+    let classes: Vec<(&str, Vec<usize>)> =
+        [("performance", "cpu_core"), ("efficiency", "cpu_atom")]
+            .into_iter()
+            .filter_map(|(name, dir)| {
+                Some((
+                    name,
+                    cpu_list(&root.read(format!("/sys/devices/{dir}/cpus"))?),
+                ))
+            })
+            .collect();
+    let mut out: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    for (cpu, hist) in per_cpu.iter().enumerate() {
+        let class = classes
+            .iter()
+            .find(|(_, cpus)| cpus.contains(&cpu))
+            .map_or("all", |(name, _)| name);
+        let sum = out.entry(class.into()).or_default();
+        sum.resize(sum.len().max(hist.len()), 0);
+        for (bucket, n) in hist.iter().enumerate() {
+            sum[bucket] += n;
+        }
+    }
+    out
+}
+
+fn percentile(hist: &[u64], count: u64, share: f64) -> u64 {
+    // the rank of the percentile, rounded up (count is small enough for f64)
+    let rank = (f64::from(u32::try_from(count).unwrap_or(u32::MAX)) * share).ceil();
+    let mut seen = 0.0;
+    for (bucket, n) in hist.iter().enumerate() {
+        seen += f64::from(u32::try_from(*n).unwrap_or(u32::MAX));
+        if seen >= rank {
+            return 2u64 << bucket;
+        }
+    }
+    2u64 << hist.len().saturating_sub(1)
+}
+
+/// The latency in the window between two cumulative readings.
+#[must_use]
+pub fn latency(
+    before: &BTreeMap<String, Vec<u64>>,
+    after: &BTreeMap<String, Vec<u64>>,
+) -> BTreeMap<String, Latency> {
+    after
+        .iter()
+        .filter_map(|(class, hist)| {
+            let old = before.get(class);
+            let delta: Vec<u64> = hist
+                .iter()
+                .enumerate()
+                .map(|(i, n)| n.saturating_sub(old.and_then(|o| o.get(i)).copied().unwrap_or(0)))
+                .collect();
+            let count = delta.iter().sum();
+            (count > 0).then(|| {
+                (
+                    class.clone(),
+                    Latency {
+                        count,
+                        p50_us: percentile(&delta, count, 0.5),
+                        p99_us: percentile(&delta, count, 0.99),
+                    },
+                )
+            })
+        })
+        .collect()
 }
 
 /// Read the root-only values (in `legionctl-system`).
@@ -35,6 +136,7 @@ pub fn root_sample(root: &SysRoot) -> RootSample {
             .map(|f| f.iter().map(|(n, v)| ((*n).to_string(), *v)).collect()),
         throttle_now: firmware::current_throttle_reasons(root).map(names),
         throttle_logged: firmware::logged_throttle_reasons(root).map(names),
+        ..RootSample::default()
     }
 }
 
@@ -61,6 +163,8 @@ pub struct Sample {
     pub cpu_pressure: Option<Pressure>,
     pub memory_pressure: Option<Pressure>,
     pub io_pressure: Option<Pressure>,
+    /// Run-queue latency in the window per CPU class (the daemon's eBPF sensor).
+    pub runq_latency: Option<BTreeMap<String, Latency>>,
     #[serde(flatten)]
     pub root: RootSample,
 }
@@ -144,12 +248,19 @@ fn gpu(root: &SysRoot) -> Option<GpuSample> {
     Some(sample)
 }
 
-/// One sample over `window` (the package power is the mean over it); `root_part` comes from `legionctl-system`.
+/// One sample over `window` (the package power is the mean over it); `root_part` reads `legionctl-system`'s part,
+/// at the start and at the end of the window.
 #[must_use]
-pub fn sample(root: &SysRoot, window: Duration, root_part: RootSample) -> Sample {
+pub fn sample(root: &SysRoot, window: Duration, root_part: &dyn Fn() -> RootSample) -> Sample {
+    let first = root_part();
     let before = read_f64(root, RAPL_PACKAGE);
     std::thread::sleep(window);
     let after = read_f64(root, RAPL_PACKAGE);
+    let mut last = root_part();
+    let runq_latency = first
+        .runq
+        .zip(last.runq.take())
+        .map(|(a, b)| latency(&a, &b));
     let psi = |name: &str| {
         root.read(format!("/proc/pressure/{name}"))
             .as_deref()
@@ -168,7 +279,8 @@ pub fn sample(root: &SysRoot, window: Duration, root_part: RootSample) -> Sample
         cpu_pressure: psi("cpu"),
         memory_pressure: psi("memory"),
         io_pressure: psi("io"),
-        root: root_part,
+        runq_latency,
+        root: last,
     }
 }
 
@@ -248,6 +360,15 @@ pub fn openmetrics(s: &Sample) -> String {
             .iter()
             .flatten()
             .map(|(f, rpm)| (format!("{{fan=\"{f}\"}}"), rpm.to_string()))
+            .collect(),
+    );
+    gauge(
+        "runq_latency_p99_microseconds",
+        "Run-queue latency p99 over the sample window, per CPU class",
+        s.runq_latency
+            .iter()
+            .flatten()
+            .map(|(class, l)| (format!("{{class=\"{class}\"}}"), l.p99_us.to_string()))
             .collect(),
     );
     lines.push("# EOF".into());

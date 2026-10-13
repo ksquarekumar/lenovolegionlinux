@@ -9,10 +9,11 @@ url="https://github.com/ksquarekumar/lenovolegionlinux"
 install=legionctl.install
 license=("MIT")
 depends=("systemd" "systemd-libs" "dbus" "polkit" "power-profiles-daemon" "cpupower" "nvidia-utils")
-makedepends=("git" "cargo")
+makedepends=("git" "cargo" "clang")
 optdepends=(
   "gnome-shell: the legionctl-osd OSD extension"
   "acpi_call-dkms: firmware fan RPM through Lenovo WMI"
+  "stress-ng: the CPU workload of bench and tune"
   "scx-scheds: sched_ext schedulers (scx_lavd) for /etc/scx_loader.toml"
   "scx-tools: scx_loader service"
 )
