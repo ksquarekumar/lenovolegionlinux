@@ -43,6 +43,16 @@ three in one inventory, so a health problem in a provider shows which consumers 
 
 One API per provider: the Docker Engine API on its socket and the libvirt API (`qemu:///system`). No CLI parsing.
 
+Built (2026-10-13, V1 part 1): `legionctl virt status`: KVM (`/dev/kvm` and its module), IOMMU, VFIO and binfmt
+from the kernel; Docker through its Engine API on its socket (`DOCKER_HOST` when set): version, data root, the
+NVIDIA runtime, the cgroup driver, and the containers (`WinBoat` recognized by its image); libvirt: `libvirtd` or the
+modular `virtqemud` (service or socket active: the modular daemons exit when idle), and its VMs through `virsh
+--readonly list --all` (libvirt has no socket API without its C library; this is the one CLI read). Findings: no
+KVM, a cgroupfs driver on a systemd host, both libvirt daemons, more than one docker CLI on PATH; findings fail the
+command. Not in `doctor` yet (they depend on the host's Docker and would make the doctor test differ between
+machines). Live on this machine: up everywhere but the cgroupfs finding; WinBoat found. Not yet: `virt list` with
+CPU and memory use, create, start/stop/pause, tune.
+
 ### GPU offload options
 
 | Target | Compute | Graphics |

@@ -10,6 +10,7 @@ mod recorder;
 mod server;
 mod session;
 mod system1;
+mod virt;
 
 use std::sync::Arc;
 

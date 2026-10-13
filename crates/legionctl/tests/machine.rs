@@ -430,6 +430,93 @@ fn bench_compare_shows_the_score_change_and_the_knob_that_caused_it() {
     assert_eq!(list.lines().count(), 3, "{list}");
 }
 
+/// `virt status` on the recorded machine (no /dev/kvm in the recording) with a stand-in Docker Engine API and stand-in
+/// systemctl and virsh: each capability up or down, `WinBoat` recognized by its image, and the findings (no KVM, the
+/// cgroupfs driver, both libvirt daemons).
+#[test]
+fn virt_status_reads_docker_libvirt_and_the_kernel() {
+    let m = Machine::new("virt");
+    let bin = m.dir.join("bin");
+    m.set("/run/systemd/system/.present", "");
+    Machine::script(
+        &bin,
+        "systemctl",
+        "case \"$2\" in libvirtd.service|virtqemud.socket) echo active;; *) echo inactive;; esac",
+    );
+    Machine::script(
+        &bin,
+        "virsh",
+        "printf ' Id   Name    State\\n---------------------\\n -    win11   shut off\\n'",
+    );
+    let socket = m.dir.join("docker.sock");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-docker.py");
+    let _docker = daemon_process::Kill(
+        std::process::Command::new("python3")
+            .arg(fixture)
+            .arg(&socket)
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !socket.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the stand-in Docker did not start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let op = Operator::start(
+        "virt",
+        &[
+            ("PATH", bin.into()),
+            ("HOME", m.dir.join("home").into()),
+            ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+            ("DOCKER_HOST", format!("unix://{}", socket.display()).into()),
+        ],
+    );
+    let out = op.cli(&["virt", "status", "--json"]);
+    let status: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let caps: Vec<(String, bool)> = status["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["name"].as_str().unwrap().into(),
+                c["up"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        caps,
+        [
+            ("Hardware virtualization".into(), false),
+            ("IOMMU".into(), false),
+            ("Device passthrough".into(), false),
+            ("Foreign binaries".into(), false),
+            ("Containers".into(), true),
+            ("GPU compute in containers".into(), false),
+            ("VMs".into(), true),
+        ]
+    );
+    assert_eq!(
+        status["instances"],
+        serde_json::json!([
+            {"kind": "container", "name": "WinBoat", "image": "ghcr.io/dockur/windows:6.05", "state": "Up 8 hours", "consumer": "WinBoat"},
+            {"kind": "container", "name": "db", "image": "postgres:17", "state": "Exited (0) 2 days ago", "consumer": null},
+            {"kind": "vm", "name": "win11", "image": "", "state": "shut off", "consumer": null}
+        ])
+    );
+    assert_eq!(
+        status["findings"],
+        serde_json::json!([
+            "no KVM: VMs run without hardware virtualization (slow)",
+            "Docker uses the cgroupfs cgroup driver on a systemd host; the systemd driver is the supported setup",
+            "libvirtd and the modular virtqemud both run; use one of them"
+        ])
+    );
+}
+
 #[test]
 fn cleanup_plans_to_disable_running_conflicts_and_leaves_packages_to_the_human() {
     let m = Machine::new("cleanup");
@@ -669,7 +756,7 @@ mod daemon_process {
         }
     }
 
-    pub(super) struct Kill(Child);
+    pub(super) struct Kill(pub(super) Child);
 
     impl Drop for Kill {
         fn drop(&mut self) {

@@ -25,6 +25,7 @@ use legionctl_api::{
 use legionctl_core::config::{Dirs, Resolved, resolve};
 
 use crate::system1::System1Proxy;
+use legionctl_api::VirtStatus;
 use legionctl_api::{
     AgentName, AgentSetIn, AgentUsageIn, DossierGraphIn, Edit, GatewayUsage, GatewayUsageIn, Graph,
     SettingsScope, UsageReport,
@@ -1010,6 +1011,12 @@ impl Engine for Operator {
                 })
             })
             .collect()
+    }
+
+    fn virt_status(&self, _: &Ctx, _: Empty) -> Result<VirtStatus> {
+        Ok(self
+            .runtime
+            .block_on(crate::virt::status(&SysRoot::from_env())))
     }
 
     fn windows_status(&self, _: &Ctx, _: Empty) -> Result<WindowsState> {

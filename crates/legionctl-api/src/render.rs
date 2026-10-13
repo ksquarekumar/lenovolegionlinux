@@ -1125,3 +1125,39 @@ impl Render for crate::io::UsageReport {
         out.join("\n")
     }
 }
+
+impl Render for crate::io::VirtStatus {
+    fn text(&self) -> String {
+        let mut out: Vec<String> = self
+            .capabilities
+            .iter()
+            .map(|c| {
+                format!(
+                    "{} {:<26} {:<16} {}",
+                    if c.up { "up  " } else { "DOWN" },
+                    c.name,
+                    c.provider,
+                    c.detail
+                )
+            })
+            .collect();
+        out.extend(self.instances.iter().map(|i| {
+            let consumer = i
+                .consumer
+                .as_deref()
+                .map(|c| format!(" ({c})"))
+                .unwrap_or_default();
+            format!(
+                "  {:<9} {}{consumer}: {} {}",
+                i.kind, i.name, i.state, i.image
+            )
+        }));
+        out.extend(self.findings.iter().map(|f| format!("- {f}")));
+        out.join("\n")
+    }
+
+    /// Findings fail the command.
+    fn success(&self) -> bool {
+        self.findings.is_empty()
+    }
+}

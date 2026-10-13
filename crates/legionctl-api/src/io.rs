@@ -769,6 +769,35 @@ pub struct CacheValue {
     pub value: Option<String>,
 }
 
+/// One capability of the machine (note 17) and the provider that gives it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct VirtCapability {
+    pub name: String,
+    pub provider: String,
+    pub up: bool,
+    pub detail: String,
+}
+
+/// A container or VM.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct VirtInstance {
+    /// container or vm.
+    pub kind: String,
+    pub name: String,
+    pub image: String,
+    pub state: String,
+    /// The app it belongs to, when legionctl recognizes it (`WinBoat` by its image).
+    pub consumer: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct VirtStatus {
+    pub capabilities: Vec<VirtCapability>,
+    pub instances: Vec<VirtInstance>,
+    /// What is wrong, with the fix in words.
+    pub findings: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentName {

@@ -349,6 +349,9 @@ operations! {
     cache_put / CachePut = "cache.put", Workspace, CachePutIn => Empty;
     /// MCP tool calls of session agents through legionctl mcp-proxy, oldest first.
     tools_calls / ToolsCalls = "tools.calls", Read, ToolCallsIn => ToolCalls;
+    /// Virtualization, containers and emulation: each capability with its provider and health, the containers and VMs
+    /// (`WinBoat` recognized), and what is wrong.
+    virt_status / VirtStatusOp = "virt.status", Read, Empty => VirtStatus;
     /// Dual boot: the Windows boot entry, a pending one-time boot, NTFS volumes Windows left dirty, and what to fix.
     windows_status / WindowsStatus = "windows.status", Read, Empty => WindowsState;
     /// Restart into Windows once (the start after returns to Linux). A human approves it in the polkit dialog.
