@@ -1203,6 +1203,82 @@ fn a_plain_folder_workspace_keeps_the_source_until_merge() {
     );
 }
 
+/// The work graph from a dossier's files: plan rows and artifacts with front matter; `dossier check` finds a link
+/// to a row that does not exist, an acceptance row without EVIDENCE, and EVIDENCE whose code changed after it was
+/// written; `dossier graph` shows a row with what supports it.
+#[test]
+fn dossier_check_finds_dangling_links_unverified_acceptance_and_stale_evidence() {
+    let (op, home) = operator("graph");
+    let repo = repository(&home);
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", "s1"),
+    ];
+    let ok = |args: &[&str]| {
+        let o = op.run(&repo, &env, args, "");
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8_lossy(&o.stdout).to_string()
+    };
+    ok(&["dossier", "use", "port", "--create"]);
+    ok(&["workspace", "open"]);
+    let dossier = home.join(".agentworkspace/port");
+    let plan = std::fs::read_to_string(dossier.join("plan.md")).unwrap().replace(
+        "## Acceptance Criteria\n",
+        "## Acceptance Criteria\n| id | criterion | status |\n| --- | --- | --- |\n\
+         | acceptance-1 | builds | done |\n| acceptance-2 | tests pass | done |\n| acceptance-3 | docs | pending |\n",
+    );
+    write(&dossier.join("plan.md"), &plan);
+    let artifact = |file: &str, front: &str| {
+        write(
+            &dossier.join(file),
+            &format!("---\n{front}\n---\n# {file}\n"),
+        );
+    };
+    artifact(
+        "EVIDENCE/validation/01-build.md",
+        "id: EV-01\nsupports: [plan#acceptance-1]\ncode: [README.md]",
+    );
+    artifact(
+        "EVIDENCE/validation/02-tests.md",
+        "id: EV-02\nsupports: [plan#acceptance-2]",
+    );
+    artifact("MEMORY/01-note.md", "supports: [plan#acceptance-9]");
+    // EV-01 was written long before README.md's last commit
+    std::fs::File::options()
+        .write(true)
+        .open(dossier.join("EVIDENCE/validation/01-build.md"))
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_hours(262_968))
+        .unwrap();
+
+    let check: Value = serde_json::from_str(&ok(&["dossier", "check", "--json"])).unwrap();
+    assert_eq!(
+        check["problems"],
+        json!([
+            "MEMORY/01-note supports plan#acceptance-9, which does not exist",
+            "plan#acceptance-3 has no EVIDENCE that supports it",
+            "EV-01 is stale: README.md changed after it was written"
+        ])
+    );
+    let around: Value = serde_json::from_str(&ok(&[
+        "dossier",
+        "graph",
+        "--node",
+        "plan#acceptance-2",
+        "--json",
+    ]))
+    .unwrap();
+    assert_eq!(
+        around["edges"],
+        json!([{"from": "EV-02", "to": "plan#acceptance-2", "kind": "supports"}])
+    );
+    assert_eq!(around["nodes"].as_array().unwrap().len(), 2);
+}
+
 /// Run a `session start` launch as the client does, without the systemd scope (CI has no user systemd): the
 /// sandbox, this binary bound over git as the gate, then the agent.
 fn run_launch(op: &Operator, home: &Path, launch: &Value) -> std::process::Output {

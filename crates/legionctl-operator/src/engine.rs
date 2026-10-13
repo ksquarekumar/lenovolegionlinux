@@ -28,6 +28,7 @@ use crate::system1::System1Proxy;
 use legionctl_api::{
     CacheGetIn, CachePutIn, CacheValue, Manifest, PackageFetchIn, Packages, RunOutput, SessionRunIn,
 };
+use legionctl_api::{DossierGraphIn, Graph};
 use legionctl_core::db::Db;
 use legionctl_core::dossier::{Dossiers, place_of};
 use legionctl_core::packages::Store;
@@ -866,6 +867,17 @@ impl Engine for Operator {
             &input.content.0,
         )?;
         Ok(Lines { lines: vec![rel] })
+    }
+
+    fn dossier_graph(&self, _: &Ctx, input: DossierGraphIn) -> Result<Graph> {
+        let ws = dossiers()?;
+        let dossier = match input.dossier {
+            Some(d) => d,
+            None => ws
+                .active(session(&input.session)?)?
+                .context("this session has no active dossier; name one")?,
+        };
+        Ok(ws.graph(&dossier, input.node.as_deref()))
     }
 
     fn dossier_check(&self, _: &Ctx, input: DossierCheckIn) -> Result<DossierFindings> {

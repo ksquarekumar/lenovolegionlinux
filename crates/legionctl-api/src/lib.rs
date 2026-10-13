@@ -386,6 +386,8 @@ operations! {
     dossier_add / DossierAdd = "dossier.add", Workspace, DossierAddIn => Lines;
     /// Ledger findings for a dossier (default: this session's): a missing plan.md or plan section.
     dossier_check / DossierCheck = "dossier.check", Read, DossierCheckIn => DossierFindings;
+    /// The dossier's work graph: plan rows and artifacts, linked by supports, supersedes, code and plan references.
+    dossier_graph / DossierGraph = "dossier.graph", Read, DossierGraphIn => Graph;
     /// Whether this session may write a path: inside the dossier root only its active dossier (agent hooks use it).
     dossier_guard / DossierGuard = "dossier.guard", Read, GuardIn => Guard;
     /// Prepare a sandboxed session of an agent on a dossier's workspace; `legionctl session start` then runs it in the

@@ -726,12 +726,51 @@ impl Dossiers {
             .lines()
             .filter_map(|l| l.trim().strip_prefix("## "))
             .collect();
-        self.config
+        let mut findings: Vec<String> = self
+            .config
             .plan_sections
             .iter()
             .filter(|s| !present.contains(&s.as_str()))
             .map(|s| format!("plan.md has no '## {s}' section"))
-            .collect()
+            .collect();
+        // code paths of EVIDENCE are relative to the dossier's repository (its open workspace's main checkout)
+        let repo = self
+            .workspaces(Some(dossier))
+            .ok()
+            .and_then(|w| w.into_iter().next())
+            .map(|w| w.repo);
+        let changed_after = |path: &str, written: std::time::SystemTime| {
+            let Some(repo) = &repo else { return false };
+            let last = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo)
+                .args(["log", "-1", "--format=%ct", "--", path])
+                .output()
+                .ok()
+                .and_then(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .trim()
+                        .parse::<u64>()
+                        .ok()
+                });
+            let written = written
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            last.is_some_and(|t| t > written)
+        };
+        let dir = self.root.join(dossier);
+        findings.extend(crate::graph::build(&dir).findings(&dir, &changed_after));
+        findings
+    }
+
+    /// The work graph of `dossier`, or the part around `node`.
+    #[must_use]
+    pub fn graph(&self, dossier: &str, node: Option<&str>) -> crate::graph::Graph {
+        let graph = crate::graph::build(&self.root.join(dossier));
+        match node {
+            Some(id) => graph.around(id),
+            None => graph,
+        }
     }
 }
 

@@ -7,6 +7,7 @@ pub mod db;
 pub mod dossier;
 pub mod folder;
 pub mod gates;
+pub mod graph;
 pub mod hooks;
 pub mod packages;
 pub mod reminders;

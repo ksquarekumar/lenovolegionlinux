@@ -1036,3 +1036,26 @@ impl Render for crate::io::RunOutput {
         out.join("\n")
     }
 }
+
+impl Render for crate::io::Graph {
+    fn text(&self) -> String {
+        let mut out: Vec<String> = self
+            .nodes
+            .iter()
+            .map(|n| {
+                let status = n
+                    .status
+                    .as_deref()
+                    .map(|s| format!(" [{s}]"))
+                    .unwrap_or_default();
+                format!("{} ({}){status}: {}", n.id, n.kind, n.title)
+            })
+            .collect();
+        out.extend(
+            self.edges
+                .iter()
+                .map(|e| format!("  {} -{}-> {}", e.from, e.kind, e.to)),
+        );
+        out.join("\n")
+    }
+}

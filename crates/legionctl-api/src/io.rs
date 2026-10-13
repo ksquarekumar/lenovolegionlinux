@@ -10,6 +10,7 @@ pub use legionctl_core::dossier::{DossierInfo, EditMode, Lock};
 pub use legionctl_core::agents::ConfigFile;
 pub use legionctl_core::config::{Explanation, Layer as ConfigLayer};
 pub use legionctl_core::db::EventRow;
+pub use legionctl_core::graph::Graph;
 pub use legionctl_core::hooks::{Action, Binding};
 pub use legionctl_core::packages::{Manifest, PackageState};
 pub use legionctl_core::reminders::Reminder;
@@ -463,6 +464,18 @@ pub struct DossierAddIn {
     /// a-z, 0-9 and '-'.
     pub slug: String,
     pub content: StdinText,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct DossierGraphIn {
+    /// Dossier; default: this session's.
+    #[serde(default)]
+    pub dossier: Option<String>,
+    /// Only this node and its neighbours (`plan#todo-3`, `MEMORY/03-x`).
+    #[serde(default)]
+    pub node: Option<String>,
     #[serde(default)]
     pub session: SessionId,
 }

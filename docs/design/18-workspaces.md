@@ -186,6 +186,14 @@ legionctl indexes the front matter and the ledger rows into the work graph (grap
   code-graph symbols and paths, resolved against `codegraphs/<repo-id>.db` by `ATTACH`), `verified-by`
   (acceptance row → EVIDENCE), `depends-on`, `runs-with` (work item → entrypoint, runtime, environment).
 
+Built (2026-10-13, W4, first part): the graph is built from the dossier's files on each call (no tables: a dossier
+is tens of files, and a graph made on demand is never out of date). Nodes: each `plan.md` table row whose first
+cell is an id (`plan#todo-3`, with its `status` column) and each artifact (its front-matter `id`, else its path
+without `.md`). Edges: `supports`, `supersedes` and `code` from front matter, and `refers-to` for an artifact path
+named in a plan row. `legionctl dossier graph [--node <id>]` shows it; `dossier check` adds dangling links,
+acceptance rows that no EVIDENCE supports, and EVIDENCE whose `code` paths have a commit in the dossier's
+repository after the file was written. Not yet: code-graph symbols (`touches`), status history, runnable state.
+
 `legionctl dossier check` then reports what the practice asks for as concrete findings: missing plan sections, a
 claim or a `Done` row without EVIDENCE, an acceptance row with no `verified-by`, a dangling link, a DESIGN that
 contradicts an approved decision, and EVIDENCE whose linked symbols changed after it was written (stale evidence).
