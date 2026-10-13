@@ -17,6 +17,7 @@ use axum::routing::post;
 use blake2::digest::consts::U16;
 use blake2::{Blake2b, Digest};
 use futures_util::StreamExt;
+use legionctl_core::cache::{Cache, Entry};
 use legionctl_core::config::{Dirs, GatewayAccount, GatewayConfig, Price, resolve};
 use legionctl_core::db::{Db, GatewayUsage};
 use serde_json::{Value, json};
@@ -323,9 +324,16 @@ fn blocked(
 
 /// The kept answer for `key`, recorded as a cached call of `model`; `label` is the cache header (hit, semantic).
 fn replay(key: &str, model: &str, label: &'static str) -> Option<Response> {
-    let (status, content_type, body) = Db::open_default()
-        .and_then(|db| db.gateway_cached(key))
-        .ok()??;
+    let kept = Cache::open().and_then(|c| c.get("gateway", key)).ok()??;
+    let status = kept.meta["status"]
+        .as_u64()
+        .and_then(|s| u16::try_from(s).ok())
+        .unwrap_or(200);
+    let content_type = kept.meta["content_type"]
+        .as_str()
+        .unwrap_or("application/json")
+        .to_string();
+    let body = kept.value;
     let (tokens_in, tokens_out) = usage(&body);
     record(&GatewayUsage {
         account: "cache".into(),
@@ -548,8 +556,8 @@ async fn cached(
         api.path(),
         Blake2b::<U16>::digest(rest.to_string().as_bytes())
     );
-    let nearest = Db::open_default()
-        .and_then(|db| db.gateway_semantic_nearest(&scope, &vector, semantic.threshold))
+    let nearest = Cache::open()
+        .and_then(|c| c.nearest("gateway", &scope, &vector, semantic.threshold))
         .ok()
         .flatten();
     match nearest.and_then(|kept| replay(&kept, served, "semantic")) {
@@ -629,10 +637,22 @@ fn respond(
             && complete
             && ttl_s > 0
             && (200..300).contains(&status)
-            && let Err(e) = Db::open_default().and_then(|db| {
-                db.gateway_keep(&key, status, &content_type_kept, &body, ttl_s)?;
+            && let Err(e) = Cache::open().and_then(|cache| {
+                let entry = Entry {
+                    value: body.clone(),
+                    meta: serde_json::json!({"status": status, "content_type": content_type_kept}),
+                };
+                let limit = legionctl_core::config::resolve(
+                    &legionctl_core::config::Dirs::from_env(),
+                    None,
+                )?
+                .config
+                .cache
+                .get("gateway")
+                .map_or(0, |l| l.max_bytes);
+                cache.put(("gateway", &key), &entry, ttl_s, limit)?;
                 match &semantic {
-                    Some((scope, vector)) => db.gateway_semantic_keep(&key, scope, vector),
+                    Some((scope, vector)) => cache.keep_vector(("gateway", &key), scope, vector),
                     None => Ok(()),
                 }
             })

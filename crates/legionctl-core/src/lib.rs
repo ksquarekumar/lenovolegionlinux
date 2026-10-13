@@ -2,6 +2,7 @@
 //! database. `legionctl-operator` calls it; machine state and load live in legionctl-machine.
 
 pub mod agents;
+pub mod cache;
 pub mod config;
 pub mod db;
 pub mod dossier;

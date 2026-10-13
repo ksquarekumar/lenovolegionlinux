@@ -1388,6 +1388,121 @@ fn the_proxy_reuses_a_cached_result_until_the_working_copy_changes() {
     );
 }
 
+/// The cache contract (DESIGN/03): the operator builds tool-cache keys with the caller's session, so a sandbox does
+/// not get, or plant, another session's entries; a namespace keeps to `cache.<ns>.max_bytes` by dropping the least
+/// recently used; `cache stats` shows it and `cache purge` empties it.
+#[test]
+fn tool_cache_entries_belong_to_a_session_and_fit_the_limit() {
+    let (op, home) = operator("cachescope");
+    let repo = repository(&home);
+    op.ok(&["events"]);
+    for (token, session) in [("token-a", "s-a"), ("token-b", "s-b")] {
+        add_session_token(&home, token, session);
+    }
+    // one hooks_list call through the proxy, as the session of `token` (none: the user); its outcome
+    let call = |token: Option<&str>| -> String {
+        use rmcp::ServiceExt;
+        let exe = env!("CARGO_BIN_EXE_legionctl");
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let mut proxy = tokio::process::Command::new(exe);
+            proxy
+                .args([
+                    "mcp-proxy",
+                    "--server",
+                    "self",
+                    "--cache",
+                    "hooks_list=60",
+                    "--",
+                    exe,
+                    "mcp",
+                ])
+                .current_dir(&repo)
+                .env("XDG_RUNTIME_DIR", &op.runtime)
+                .env("HOME", &home);
+            if let Some(token) = token {
+                proxy.env("LEGIONCTL_TOKEN", token);
+            }
+            let agent =
+                ().serve(rmcp::transport::TokioChildProcess::new(proxy).unwrap())
+                    .await
+                    .unwrap();
+            agent
+                .peer()
+                .call_tool(rmcp::model::CallToolRequestParams::new("hooks_list"))
+                .await
+                .unwrap();
+        });
+        let calls: Value = serde_json::from_str(&op.ok(&["tools", "calls", "--json"])).unwrap();
+        calls["items"].as_array().unwrap().last().unwrap()["outcome"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let stats = || -> Value {
+        let all: Value = serde_json::from_str(&op.ok(&["cache", "stats", "--json"])).unwrap();
+        all.as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["ns"] == "tools")
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(
+        [
+            call(Some("token-a")),
+            call(Some("token-a")),
+            call(Some("token-b")),
+            call(None)
+        ],
+        ["ok", "cached", "ok", "ok"].map(String::from),
+        "an entry serves its own session only"
+    );
+    assert_eq!(stats()["entries"], 3);
+
+    // room for one entry: the next put keeps only the newest
+    let one = stats()["bytes"].as_u64().unwrap() / 3;
+    write(
+        &home.join(".config/legionctl/cache.jsonc"),
+        &json!({"cache": {"tools": {"max_bytes": one + one / 2}}}).to_string(),
+    );
+    assert_eq!(call(Some("token-a")), "cached", "a's entry is still there");
+    write(&repo.join("README.md"), "changed\n");
+    assert_eq!(
+        call(Some("token-b")),
+        "cached",
+        "no workspace rule: the git state is not part of this key"
+    );
+    let after = call(None);
+    assert_eq!(after, "cached");
+    // a fourth caller's put shrinks the namespace to its newest entry
+    add_session_token(&home, "token-c", "s-c");
+    assert_eq!(call(Some("token-c")), "ok");
+    assert_eq!(stats()["entries"], 1, "{}", stats());
+    assert_eq!(call(Some("token-a")), "ok", "the least recently used went");
+
+    assert!(
+        op.ok(&["cache", "purge", "--ns", "tools"])
+            .contains("entries removed from tools")
+    );
+    assert_eq!(stats()["entries"], 0);
+}
+
+/// A session's token in the test operator's database, as `session start` issues it (only its hash is kept).
+fn add_session_token(home: &Path, token: &str, session: &str) {
+    let added = Command::new("python3")
+        .args([
+            "-c",
+            "import hashlib, sqlite3, sys; c = sqlite3.connect(sys.argv[1]); \
+             c.execute('INSERT INTO tokens VALUES (?, ?, 0)', \
+             (hashlib.blake2b(sys.argv[2].encode(), digest_size=32).hexdigest(), sys.argv[3])); c.commit()",
+        ])
+        .arg(home.join(".local/state/legionctl/operator.db"))
+        .args([token, session])
+        .status()
+        .unwrap();
+    assert!(added.success());
+}
+
 /// A git repository with tag v1: a server that notes the network it sees, then serves legionctl's own MCP tools;
 /// configured as package `probe` and as MCP server `probe` allowing only `load`.
 fn probe_package(home: &Path) {

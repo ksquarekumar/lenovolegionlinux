@@ -38,9 +38,18 @@ pub struct Config {
     pub load: Thresholds,
     pub plugins: PluginsConfig,
     pub events: EventsConfig,
+    /// Namespace -> its limit in the disposable cache (`tools`, `gateway`).
+    pub cache: BTreeMap<String, CacheLimit>,
 }
 
 /// The agent plugins a user may install through legionctl (A1).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CacheLimit {
+    /// Bytes the namespace may hold; the least recently used entries go first.
+    pub max_bytes: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EventsConfig {

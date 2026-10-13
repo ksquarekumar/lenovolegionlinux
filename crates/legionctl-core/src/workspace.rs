@@ -44,22 +44,40 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
 /// git fails in the workspace.
 pub fn work_state(dossiers: &Dossiers, ws: &Workspace) -> Result<String> {
     use blake2::{Blake2b, Digest, digest::consts::U16};
-    let mut hash = Blake2b::<U16>::new();
     if ws.path.join(".git").exists() {
-        for args in [
-            &["rev-parse", "HEAD"][..],
-            &["status", "--porcelain=v1", "--untracked-files=all"],
-            &["diff", "HEAD"],
-        ] {
-            hash.update(git(&ws.path, args)?);
+        return git_state(&ws.path);
+    }
+    Ok(format!(
+        "{:x}",
+        Blake2b::<U16>::digest(dossiers.workspace_status(ws)?.files.join("\n"))
+    ))
+}
+
+/// The content of the git working copy that holds `dir` as one hash: HEAD, `git status`, the diff against HEAD and
+/// the size and change time of each untracked file. Equal hashes mean nothing changed.
+///
+/// # Errors
+/// git fails in `dir`.
+pub fn git_state(dir: &Path) -> Result<String> {
+    use blake2::{Blake2b, Digest, digest::consts::U16};
+    let mut hash = Blake2b::<U16>::new();
+    for args in [
+        &["rev-parse", "HEAD"][..],
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+        &["diff", "HEAD"],
+    ] {
+        hash.update(git(dir, args)?);
+    }
+    let top = git(dir, &["rev-parse", "--show-toplevel"])?;
+    for file in git(
+        dir,
+        &["ls-files", "--others", "--exclude-standard", "--full-name"],
+    )?
+    .lines()
+    {
+        if let Ok(meta) = Path::new(&top).join(file).metadata() {
+            hash.update(format!("{file} {} {:?}", meta.len(), meta.modified().ok()));
         }
-        for file in git(&ws.path, &["ls-files", "--others", "--exclude-standard"])?.lines() {
-            if let Ok(meta) = ws.path.join(file).metadata() {
-                hash.update(format!("{file} {} {:?}", meta.len(), meta.modified().ok()));
-            }
-        }
-    } else {
-        hash.update(dossiers.workspace_status(ws)?.files.join("\n"));
     }
     Ok(format!("{:x}", hash.finalize()))
 }

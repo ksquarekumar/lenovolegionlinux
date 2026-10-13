@@ -22,7 +22,10 @@ use legionctl_api::{
     SetupReport, SkillList, Snapshot, StatusIn, Validation, Workspace, WorkspaceIn,
     WorkspaceOpenIn, WorkspaceStates, Workspaces,
 };
-use legionctl_api::{EventRow, Page, PageIn, SessionActivityIn};
+use legionctl_api::{
+    CachePurgeIn, CacheStat, CachedCall, EventRow, Page, PageIn, Principal, SessionActivityIn,
+};
+use legionctl_core::cache::Cache;
 use legionctl_core::config::{Dirs, Resolved, resolve};
 
 use crate::system1::System1Proxy;
@@ -74,6 +77,32 @@ fn home() -> PathBuf {
 
 fn path(p: Option<&ClientPath>) -> Result<Option<&Path>> {
     p.map(ClientPath::get).transpose()
+}
+
+/// The cache key of a tool call: the caller's session (a sandbox's entries are its own), the server, the tool, the
+/// arguments and, for a tool that reads the working copy, its git state.
+fn tool_key(ctx: &Ctx, call: &CachedCall) -> Result<String> {
+    use blake2::{Blake2b, Digest, digest::consts::U16};
+    let scope = match &ctx.principal {
+        Principal::User => String::new(),
+        Principal::Session(id) => id.clone(),
+    };
+    let state = match &call.workspace {
+        Some(dir) => legionctl_core::workspace::git_state(dir.get()?)?,
+        None => String::new(),
+    };
+    let input = serde_json::to_vec(&(scope, &call.server, &call.tool, &call.args, state))?;
+    Ok(format!("{:x}", Blake2b::<U16>::digest(&input)))
+}
+
+/// The byte limit of a cache namespace (`cache.<ns>.max_bytes`).
+fn cache_limit(ns: &str) -> Result<u64> {
+    config(None)?
+        .config
+        .cache
+        .get(ns)
+        .map(|l| l.max_bytes)
+        .with_context(|| format!("no limit for the cache namespace {ns} (cache.{ns}.max_bytes)"))
 }
 
 /// The event id a page cursor stands for (0 without one), and the page length.
@@ -1230,15 +1259,50 @@ impl Engine for Operator {
         Ok(page(Db::open_default()?.gateway_usage_page(after, limit)?))
     }
 
-    fn cache_get(&self, _: &Ctx, input: CacheGetIn) -> Result<CacheValue> {
+    fn cache_get(&self, ctx: &Ctx, input: CacheGetIn) -> Result<CacheValue> {
+        let key = tool_key(ctx, &input.call)?;
         Ok(CacheValue {
-            value: Db::open_default()?.cache_get(&input.key)?,
+            value: Cache::open()?
+                .get("tools", &key)?
+                .map(|e| String::from_utf8_lossy(&e.value).into_owned()),
         })
     }
 
-    fn cache_put(&self, _: &Ctx, input: CachePutIn) -> Result<Empty> {
-        Db::open_default()?.cache_put(&input.key, &input.value, input.ttl_s)?;
+    fn cache_put(&self, ctx: &Ctx, input: CachePutIn) -> Result<Empty> {
+        let key = tool_key(ctx, &input.call)?;
+        let entry = legionctl_core::cache::Entry {
+            value: input.value.into_bytes(),
+            meta: serde_json::Value::Null,
+        };
+        Cache::open()?.put(("tools", &key), &entry, input.ttl_s, cache_limit("tools")?)?;
         Ok(Empty {})
+    }
+
+    fn cache_stats(&self, _: &Ctx, _: Empty) -> Result<Vec<CacheStat>> {
+        let limits = config(None)?.config.cache;
+        let usage = Cache::open()?.usage()?;
+        Ok(limits
+            .iter()
+            .map(|(ns, limit)| {
+                let used = usage.iter().find(|u| &u.ns == ns);
+                CacheStat {
+                    ns: ns.clone(),
+                    entries: used.map_or(0, |u| u.entries),
+                    bytes: used.map_or(0, |u| u.bytes),
+                    max_bytes: limit.max_bytes,
+                }
+            })
+            .collect())
+    }
+
+    fn cache_purge(&self, _: &Ctx, input: CachePurgeIn) -> Result<Lines> {
+        let deleted = Cache::open()?.purge(input.ns.as_deref())?;
+        Ok(Lines {
+            lines: vec![format!(
+                "{deleted} entries removed from {}",
+                input.ns.as_deref().unwrap_or("every namespace")
+            )],
+        })
     }
 
     // the operator's audit row of this call is the record

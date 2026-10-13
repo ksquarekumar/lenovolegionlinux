@@ -473,6 +473,10 @@ operations! {
     cache_get / CacheGet = "internal.cache.get", Read, CacheGetIn => CacheValue;
     /// Keep an MCP tool result for reuse.
     cache_put / CachePut = "internal.cache.put", Session, CachePutIn => Empty;
+    /// The disposable cache (`~/.cache/legionctl/cache.db`): entries and bytes of each namespace, and its limit.
+    cache_stats / CacheStats = "cache.stats", Read, Empty => Vec<CacheStat>;
+    /// Empty the cache, or one namespace of it (tools, gateway).
+    cache_purge / CachePurge = "cache.purge", Workspace, CachePurgeIn => Lines;
     /// MCP tool calls of session agents through legionctl mcp-proxy, oldest first.
     tools_calls / ToolsCalls = "tools.calls", Read, ToolCallsIn => Page<ToolCallRow>;
     /// A repository's Dockerfiles as a services description (build, entrypoints, ports) and a build-cache description

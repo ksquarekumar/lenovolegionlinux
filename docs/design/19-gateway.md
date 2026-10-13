@@ -22,7 +22,7 @@ serves only callers that send `x-legionctl-token` (the per-user token in `~/.loc
 mode 600), because any local user reaches a local port. Without a key the caller's own credentials go through (Claude
 Code and Codex logins). Pool (model, then `*`) with fallback on 429; `account/model` without fallback; money budgets
 per `account/model` (G2 part 1, below). Exact cache in `operator.db`
-(`gateway_cache`, key = BLAKE2b of the path and the request) with replay of JSON and SSE bodies, `x-legionctl-cache:
+(namespace `gateway` of the disposable cache, note 12; key = BLAKE2b of the path and the request) with replay of JSON and SSE bodies, `x-legionctl-cache:
 off|refresh`; a usage row per call (`gateway_usage`; `legionctl gateway usage`). The usage row is written before the
 caller's stream ends, so a budget check right after sees it. Upstream TLS is native (OpenSSL): rustls would bring
 ISC-licensed crates that cargo-deny does not allow yet. Not built: translation of the OpenAI Responses API, durable
@@ -66,7 +66,7 @@ so a JSON answer never replays to a stream or to a request with other tools. The
 rules as any account: a keyring key needs the gateway token, and its budget counts (`x-legionctl-cache: semantic`). On a miss the embedding is kept with the new answer and expires with it.
 Each embedding call is a usage row of the embedding account (with its cost when `gateway.prices` has the model). An
 embedding failure is logged and the call goes on without the semantic cache. Embeddings are kept in `operator.db`
-(`gateway_semantic`) and searched in full: the cache holds one row per kept answer, which stays small.
+(the cache's `vectors` beside the entries) and searched in full: the cache holds one row per kept answer, which stays small.
 
 ## Model addressing
 

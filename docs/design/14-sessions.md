@@ -82,7 +82,8 @@ Built (2026-10-13, T2): the call cache. `mcp.servers.<name>.cache` lists the too
 each with `ttl_s` and `workspace` (the tool reads the working copy). Nothing else is cached; a tool error is never
 kept. The proxy's key is a BLAKE2b-128 of the server's command (for a package, its store version), the tool, the
 arguments and, with `workspace`, the git state of its folder (HEAD, `status --porcelain=v2`, `diff HEAD`). Entries
-live in the operator database (`tool_cache`, migration v3) through `internal.cache.get` and `internal.cache.put`; a hit is logged as
+live in the disposable cache (`~/.cache/legionctl/cache.db`, namespace `tools`, keys built by the operator with the
+caller's session; note 12) through `internal.cache.get` and `internal.cache.put`; a hit is logged as
 outcome `cached`. The e2e test sees ok, cached, then ok again after a file in the working copy changes.
 
 Built (2026-10-13, S3): headless runs. `legionctl session run <agent> <prompt>` prepares the session as `session

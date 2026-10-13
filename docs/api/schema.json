@@ -4076,14 +4076,32 @@
     "input": {
       "type": "object",
       "properties": {
-        "key": {
+        "server": {
           "type": "string",
-          "description": "The cache key (a hash; the proxy computes it)."
+          "description": "The server: its command line (for a package, it names the store version)."
+        },
+        "tool": {
+          "type": "string"
+        },
+        "args": {
+          "description": "The call's arguments."
+        },
+        "workspace": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "path",
+          "description": "The folder whose git state the result depends on, for a tool that reads the working copy.",
+          "default": null
         }
       },
       "required": [
-        "key"
+        "server",
+        "tool",
+        "args"
       ],
+      "description": "A tool call as the cache knows it (DESIGN/03): the operator builds the key from these, from the git state of\n`workspace`, and from the caller's session, so one sandbox cannot put entries under another's keys.",
       "title": "CacheGetIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
@@ -4108,9 +4126,24 @@
     "input": {
       "type": "object",
       "properties": {
-        "key": {
+        "server": {
           "type": "string",
-          "description": "The cache key the client computed."
+          "description": "The server: its command line (for a package, it names the store version)."
+        },
+        "tool": {
+          "type": "string"
+        },
+        "args": {
+          "description": "The call's arguments."
+        },
+        "workspace": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "path",
+          "description": "The folder whose git state the result depends on, for a tool that reads the working copy.",
+          "default": null
         },
         "value": {
           "type": "string",
@@ -4124,16 +4157,100 @@
         }
       },
       "required": [
-        "key",
+        "server",
+        "tool",
+        "args",
         "value",
         "ttl_s"
       ],
+      "description": "A tool call as the cache knows it (DESIGN/03): the operator builds the key from these, from the git state of\n`workspace`, and from the caller's session, so one sandbox cannot put entries under another's keys.",
       "title": "CachePutIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
       "type": "object",
       "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "cache.stats": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "description": "One namespace of the disposable cache.",
+        "type": "object",
+        "properties": {
+          "ns": {
+            "type": "string"
+          },
+          "entries": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "max_bytes": {
+            "description": "The namespace's limit (`cache.<ns>.max_bytes`).",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "ns",
+          "entries",
+          "bytes",
+          "max_bytes"
+        ]
+      },
+      "title": "Array_of_CacheStat",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "cache.purge": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "ns": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Only this namespace (tools, gateway); default: all.",
+          "default": null
+        }
+      },
+      "title": "CachePurgeIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },

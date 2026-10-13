@@ -80,6 +80,13 @@ and `--limit` (1-1000, default 200) and answer `{items, next}`, oldest first; th
 field of the payload, a text in it; index `events(kind, id)`). Retention: `events.keep_days` (90) removes older
 events and gateway usage when the operator starts, before it serves.
 
+Built (2026-10-13, DESIGN/03, todo-60 part 2): one cache contract. The caches live in the disposable
+`~/.cache/legionctl/cache.db` (`legionctl_core::cache`): namespaces `tools` (the MCP proxy's results) and `gateway`
+(kept answers and their prompt embeddings), each with `cache.<ns>.max_bytes`; a write removes expired entries, then
+the least recently used until the namespace fits. The operator builds the keys: the proxy sends the call (server,
+tool, arguments, the folder for a tool that reads the working copy), and the key holds the caller's session, so one
+sandbox cannot get or plant another session's entries. `legionctl cache stats` and `cache purge [--ns]`.
+
 ## Worktrees and sandboxes
 
 - **Copy-on-write:** this machine's disks are ext4, which cannot reflink. A worktree is a `git worktree` (shares the

@@ -8,7 +8,7 @@ use std::time::Instant;
 use blake2::digest::consts::U16;
 use blake2::{Blake2b, Digest};
 use legionctl_api::client::Client;
-use legionctl_api::{CacheGetIn, CachePutIn, Outcome, ToolCall, op};
+use legionctl_api::{CacheGetIn, CachePutIn, CachedCall, ClientPath, Outcome, ToolCall, op};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
     PaginatedRequestParams, ServerCapabilities, ServerConfig,
@@ -44,25 +44,6 @@ impl std::str::FromStr for CacheRule {
             workspace,
         })
     }
-}
-
-/// The working copy's state for a cache key: HEAD, status and the diff against HEAD.
-async fn git_state() -> String {
-    let mut state = Vec::new();
-    for args in [
-        &["rev-parse", "HEAD"][..],
-        &["status", "--porcelain=v2"],
-        &["diff", "HEAD"],
-    ] {
-        if let Ok(out) = tokio::process::Command::new("git")
-            .args(args)
-            .output()
-            .await
-        {
-            state.extend(out.stdout);
-        }
-    }
-    format!("{:x}", Blake2b::<U16>::digest(&state))
 }
 
 struct Proxy {
@@ -155,23 +136,20 @@ impl ServerHandler for Proxy {
             ));
         }
         let rule = self.cache.iter().find(|r| r.tool == tool);
-        let key = match rule {
-            Some(rule) => {
-                let state = if rule.workspace {
-                    git_state().await
-                } else {
-                    String::new()
-                };
-                let input = serde_json::to_vec(&(&self.command, &tool, &request.arguments, state))
-                    .unwrap_or_default();
-                Some(format!("{:x}", Blake2b::<U16>::digest(&input)))
-            }
-            None => None,
-        };
-        if let Some(key) = &key
+        // the operator builds the key from the call, the working copy's git state and this session
+        let call = rule.map(|rule| CachedCall {
+            server: self.command.join(" "),
+            tool: tool.clone(),
+            args: serde_json::to_value(&request.arguments).unwrap_or_default(),
+            workspace: rule
+                .workspace
+                .then(|| std::env::current_dir().ok().map(ClientPath))
+                .flatten(),
+        });
+        if let Some(call) = &call
             && let Ok(hit) = self
                 .client
-                .call::<op::CacheGet>(&CacheGetIn { key: key.clone() })
+                .call::<op::CacheGet>(&CacheGetIn { call: call.clone() })
                 .await
             && let Some(result) = hit
                 .value
@@ -195,9 +173,9 @@ impl ServerHandler for Proxy {
                 } else {
                     Outcome::Ok
                 };
-                if let (Some(key), Some(rule), Outcome::Ok) = (key, rule, outcome) {
+                if let (Some(call), Some(rule), Outcome::Ok) = (call, rule, outcome) {
                     let put = CachePutIn {
-                        key,
+                        call,
                         value: serde_json::to_string(&result).unwrap_or_default(),
                         ttl_s: rule.ttl_s,
                     };

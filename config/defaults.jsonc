@@ -165,6 +165,13 @@
   // gateway's money budgets look back 30 days, so keep at least that. 0 keeps everything.
   "events": { "keep_days": 90 },
 
+  // The disposable cache (~/.cache/legionctl/cache.db; delete it any time): namespace -> bytes it may hold. tools: the
+  // MCP proxy's tool results; gateway: the model gateway's kept answers. The least recently used go first.
+  "cache": {
+    "tools": { "max_bytes": 268435456 },
+    "gateway": { "max_bytes": 1073741824 }
+  },
+
   // The package store: name -> { "kind": npm|pypi|cargo|git|path, "source", "version" (the pin), "run" (the MCP
   // server's command, {dir} = the package folder), "network" (default false) }. legionctl packages fetch installs one.
   "packages": {},

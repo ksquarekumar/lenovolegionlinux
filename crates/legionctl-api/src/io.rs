@@ -774,18 +774,50 @@ pub struct ToolCall {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CacheGetIn {
-    /// The cache key (a hash; the proxy computes it).
-    pub key: String,
+    /// The tool call the result belongs to; the operator builds the key from it.
+    #[serde(flatten)]
+    pub call: CachedCall,
+}
+
+/// A tool call as the cache knows it (DESIGN/03): the operator builds the key from these, from the git state of
+/// `workspace`, and from the caller's session, so one sandbox cannot put entries under another's keys.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CachedCall {
+    /// The server: its command line (for a package, it names the store version).
+    pub server: String,
+    pub tool: String,
+    /// The call's arguments.
+    pub args: serde_json::Value,
+    /// The folder whose git state the result depends on, for a tool that reads the working copy.
+    #[serde(default)]
+    pub workspace: Option<ClientPath>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CachePutIn {
-    /// The cache key the client computed.
-    pub key: String,
+    #[serde(flatten)]
+    pub call: CachedCall,
     /// The tool result as JSON.
     pub value: String,
     /// Seconds the entry stays valid.
     pub ttl_s: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct CachePurgeIn {
+    /// Only this namespace (tools, gateway); default: all.
+    #[serde(default)]
+    pub ns: Option<String>,
+}
+
+/// One namespace of the disposable cache.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CacheStat {
+    pub ns: String,
+    pub entries: u64,
+    pub bytes: u64,
+    /// The namespace's limit (`cache.<ns>.max_bytes`).
+    pub max_bytes: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]

@@ -1330,3 +1330,23 @@ where
         }
     }
 }
+
+impl Render for Vec<crate::CacheStat> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "the cache is empty".into();
+        }
+        self.iter()
+            .map(|c| {
+                format!(
+                    "{:<8} {:>7} entries  {} of {}",
+                    c.ns,
+                    c.entries,
+                    legionctl_machine::human_bytes(c.bytes),
+                    legionctl_machine::human_bytes(c.max_bytes)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
