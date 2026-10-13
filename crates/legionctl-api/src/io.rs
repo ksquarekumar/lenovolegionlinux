@@ -526,6 +526,9 @@ pub struct SessionStartIn {
     /// A folder in the repository to work on.
     #[serde(default = "here")]
     pub repo: ClientPath,
+    /// An account profile (`agents account-add`): its logins and transcripts instead of `~/.claude` and `~/.codex`.
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -543,6 +546,9 @@ pub struct SessionRunIn {
     /// A folder in the repository to work on.
     #[serde(default = "here")]
     pub repo: ClientPath,
+    /// An account profile (`agents account-add`): its logins and transcripts instead of `~/.claude` and `~/.codex`.
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 /// What a headless run gave back.
@@ -883,6 +889,20 @@ pub struct AgentUsageIn {
     /// Transcripts changed in the last days (default 7).
     #[serde(default = "seven")]
     pub days: u64,
+    /// An account profile's transcripts instead of `~/.claude` and `~/.codex`.
+    #[serde(default)]
+    pub account: Option<String>,
+}
+
+/// An account profile: its own Claude Code and Codex logins and transcripts.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Account {
+    pub name: String,
+    pub dir: String,
+    /// Claude Code is logged in there.
+    pub claude: bool,
+    /// Codex is logged in there.
+    pub codex: bool,
 }
 
 fn seven() -> u64 {

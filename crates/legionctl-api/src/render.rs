@@ -1221,3 +1221,24 @@ impl Render for Vec<crate::io::ServiceState> {
             .all(|s| s.state == "running" && s.health.as_deref() != Some("unhealthy"))
     }
 }
+
+impl Render for Vec<crate::io::Account> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no account profiles (legionctl agents account-add <name>)".into();
+        }
+        self.iter()
+            .map(|a| {
+                let yes = |b: bool| if b { "logged in" } else { "not logged in" };
+                format!(
+                    "{:<16} claude {:<14} codex {:<14} {}",
+                    a.name,
+                    yes(a.claude),
+                    yes(a.codex),
+                    a.dir
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}

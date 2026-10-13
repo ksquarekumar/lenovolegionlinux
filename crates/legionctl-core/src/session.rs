@@ -25,6 +25,28 @@ pub struct SessionRecord {
     pub workdir: PathBuf,
     /// Seconds since the epoch.
     pub started: i64,
+    /// The account profile (`agents account-add`), if one was chosen.
+    pub account: Option<String>,
+}
+
+/// What `session start` and `session run` ask for.
+#[derive(Debug, Clone)]
+pub struct Start<'a> {
+    pub agent: &'a str,
+    pub dossier: &'a str,
+    /// Create the dossier when it does not exist.
+    pub create: bool,
+    /// A folder in the repository (or the plain folder) to work on.
+    pub dir: &'a Path,
+    /// The agent's ACP adapter (`session run`) instead of its interactive command.
+    pub headless: bool,
+    pub account: Option<&'a str>,
+}
+
+/// Where account profiles live: `~/.local/share/legionctl/accounts/<name>/{claude,codex}`.
+#[must_use]
+pub fn accounts_root() -> PathBuf {
+    crate::packages::Store::default_root().with_file_name("accounts")
 }
 
 /// How the client starts a session in its terminal: `scope` + `sandbox` + `agent`, in that order.
@@ -86,6 +108,39 @@ fn agent_dir(ws: &crate::workspace::Workspace) -> PathBuf {
     } else {
         ws.path.clone()
     }
+}
+
+/// The folder of account profile `account`.
+///
+/// # Errors
+/// The name is not a profile name, or no such profile exists.
+pub fn account_dir(account: &str) -> Result<PathBuf> {
+    anyhow::ensure!(
+        crate::dossier::valid_name(account),
+        "an account name is a-z, 0-9 and '-', starting with a letter or digit"
+    );
+    let dir = accounts_root().join(account);
+    anyhow::ensure!(
+        dir.is_dir(),
+        "no account profile {account}; make it with `legionctl agents account-add {account}`"
+    );
+    Ok(dir)
+}
+
+/// The account's own logins and transcripts instead of `~/.claude` and `~/.codex`: its folders, writable, and the
+/// variables that point the agents there.
+fn account_binds(sandbox: &mut Vec<String>, account: &str) -> Result<()> {
+    for (agent, variable) in [("claude", "CLAUDE_CONFIG_DIR"), ("codex", "CODEX_HOME")] {
+        let dir = accounts_root().join(account).join(agent);
+        std::fs::create_dir_all(&dir)?;
+        bind(sandbox, &dir);
+        sandbox.extend([
+            "--setenv".into(),
+            variable.into(),
+            dir.to_string_lossy().into_owned(),
+        ]);
+    }
+    Ok(())
 }
 
 fn bind(args: &mut Vec<String>, path: &Path) {
@@ -184,41 +239,37 @@ impl Dossiers {
     /// # Errors
     /// The agent is not configured, the dossier cannot be bound (held by a live session), or the workspace cannot
     /// be opened.
-    pub fn start_session(
-        &self,
-        agent: &str,
-        dossier: &str,
-        create: bool,
-        dir: &Path,
-        config: &Config,
-        headless: bool,
-    ) -> Result<Launch> {
+    pub fn start_session(&self, start: &Start, config: &Config) -> Result<Launch> {
         // headless: the agent's ACP adapter (session run); else the interactive command (session start)
-        let (agents, key) = if headless {
+        let (agents, key) = if start.headless {
             (&config.session.acp, "session.acp")
         } else {
             (&config.session.agents, "session.agents")
         };
+        let agent = start.agent;
         let command = agents.get(agent).with_context(|| {
             format!(
                 "unknown agent {agent} in {key}; configured: {:?}",
                 agents.keys()
             )
         })?;
+        if let Some(account) = start.account {
+            account_dir(account)?;
+        }
         // a server whose package is missing or changed stops the session before anything is bound
         let mcp_json = mcp_config(
             config,
             &crate::packages::Store::new(crate::packages::Store::default_root()),
         )?;
         let id = new_id()?;
-        let place = place_of(dir);
-        self.bind(&id, agent, dossier, create, false, Some(&place))?;
-        let ws = self.open_workspace(&id, dir, None, &config.workspace.root)?;
+        let place = place_of(start.dir);
+        self.bind(&id, agent, start.dossier, start.create, false, Some(&place))?;
+        let ws = self.open_workspace(&id, start.dir, None, &config.workspace.root)?;
         self.db().execute(
-            "INSERT INTO sessions (id, agent, dossier, workdir, started) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, agent, dossier, agent_dir(&ws).to_string_lossy(), now()],
+            "INSERT INTO sessions (id, agent, dossier, workdir, started, account) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, agent, start.dossier, agent_dir(&ws).to_string_lossy(), now(), start.account],
         )?;
-        self.launch(id, dossier, &ws, config, command, mcp_json)
+        self.launch(id, &ws, config, (command, start.account), mcp_json)
     }
 
     /// Prepare an ended session again: the same id, dossier and workspace, and the agent's resume command
@@ -250,10 +301,9 @@ impl Dossiers {
         let ws = self.open_workspace(id, &record.workdir, None, &config.workspace.root)?;
         self.launch(
             id.to_string(),
-            &record.dossier,
             &ws,
             config,
-            command,
+            (command, record.account.as_deref()),
             mcp_json,
         )
     }
@@ -262,12 +312,12 @@ impl Dossiers {
     fn launch(
         &self,
         id: String,
-        dossier: &str,
         ws: &crate::workspace::Workspace,
         config: &Config,
-        command: &[String],
+        (command, account): (&[String], Option<&str>),
         mcp_json: serde_json::Value,
     ) -> Result<Launch> {
+        let dossier = ws.dossier.as_str();
         let runtime = PathBuf::from(
             std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?,
         );
@@ -336,6 +386,9 @@ impl Dossiers {
             real_git.to_string_lossy().into_owned(),
         ]);
         sandbox.extend(["--setenv".into(), "LEGIONCTL_SESSION".into(), id.clone()]);
+        if let Some(account) = account {
+            account_binds(&mut sandbox, account)?;
+        }
         sandbox.extend(["--chdir".into(), workdir.to_string_lossy().into_owned()]);
         Ok(Launch {
             scope: if config.session.scope {
@@ -369,7 +422,7 @@ impl Dossiers {
     /// The database read fails.
     pub fn sessions(&self) -> Result<Vec<SessionRecord>> {
         let mut stmt = self.db().prepare(
-            "SELECT id, agent, dossier, workdir, started FROM sessions ORDER BY started DESC",
+            "SELECT id, agent, dossier, workdir, started, account FROM sessions ORDER BY started DESC",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(SessionRecord {
@@ -378,6 +431,7 @@ impl Dossiers {
                 dossier: r.get(2)?,
                 workdir: PathBuf::from(r.get::<_, String>(3)?),
                 started: r.get(4)?,
+                account: r.get(5)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -389,7 +443,7 @@ impl Dossiers {
         let found = self
             .db()
             .query_row(
-                "SELECT id, agent, dossier, workdir, started FROM sessions WHERE id = ?1",
+                "SELECT id, agent, dossier, workdir, started, account FROM sessions WHERE id = ?1",
                 [id],
                 |r| {
                     Ok(SessionRecord {
@@ -398,6 +452,7 @@ impl Dossiers {
                         dossier: r.get(2)?,
                         workdir: PathBuf::from(r.get::<_, String>(3)?),
                         started: r.get(4)?,
+                        account: r.get(5)?,
                     })
                 },
             )

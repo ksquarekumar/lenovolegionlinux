@@ -96,12 +96,19 @@ Operating directory, named workspace in `~/.agentworkspace`, dossier and change 
   (`toml_edit`); JSON is written pretty, so a one-line list in the file becomes lines. An unknown top-level key is
   written with a warning (the published schemas grow each release). `legionctl agents usage [--days N]` counts
   tokens per agent, day and model from Claude Code's transcripts (each message once) and Codex's `token_count`
-  events, with Codex's rate-limit use. Not yet: plugin and MCP installs from an allowlist, account profiles.
+  events, with Codex's rate-limit use. Not yet: plugin and MCP installs from an allowlist.
 - **Plugins, MCP servers and skills:** an allowlist of authorised marketplaces and items; install into Claude Code
   (`claude plugin …`) and Codex (`~/.codex/config.toml`) from one place, and show what each agent has loaded.
 - **Accounts:** one profile per account (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`), credentials in the keyring; an ACP
   session can be restarted on another account with the same worktree, plan and sandbox. Usage per account from local
   transcripts (token counts) and the gateway's rate-limit headers, shown against quotas.
+  Built (2026-10-13, A1 part 2): `legionctl agents account-add <name>` makes
+  `~/.local/share/legionctl/accounts/<name>/{claude,codex}` and prints the login commands; `agents accounts` lists the
+  profiles and which agents have a login in them. `session start <agent> --account <name>` binds the profile writable
+  into the sandbox and sets `CLAUDE_CONFIG_DIR` and `CODEX_HOME` there; the session keeps its account, so a resume
+  uses it again. `agents usage --account <name>` reads the profile's transcripts. An account name has the dossier name
+  rules, so it cannot leave the profiles folder. Logins stay in the agents' own files in the profile (not the
+  keyring: the agents read only their files). Not yet: restarting a session on another account.
 
 ## AI gateway
 

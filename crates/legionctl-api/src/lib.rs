@@ -292,6 +292,10 @@ operations! {
     /// Set one key of an agent's settings file (dotted: `permissions.defaultMode`, `mcp_servers.ctx.command`): the
     /// changed lines, a backup of the file, then the write; with dry run only the changed lines.
     agents_set / AgentsSet = "agents.set", Workspace, AgentSetIn => Edit;
+    /// Account profiles and which agents are logged in to each.
+    agents_accounts / AgentsAccounts = "agents.accounts", Read, Empty => Vec<Account>;
+    /// Make an account profile (its own Claude Code and Codex logins); `session start --account` uses it.
+    agents_account_add / AgentsAccountAdd = "agents.account-add", Workspace, IdIn => Lines;
     /// Tokens per agent, day and model from Claude Code's and Codex's own transcripts, and Codex's rate-limit use.
     agents_usage / AgentsUsage = "agents.usage", Read, AgentUsageIn => UsageReport;
     /// Open (or reopen) this session's dossier workspace in a repository: a worktree on legionctl/<dossier> with the

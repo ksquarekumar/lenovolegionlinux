@@ -6,7 +6,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use legionctl_api::{
-    BenchCompare, BenchCompareIn, BenchIn, BenchResult, BenchRun, BenchRuns, DossierAddIn,
+    Account, BenchCompare, BenchCompareIn, BenchIn, BenchResult, BenchRun, BenchRuns, DossierAddIn,
     DossierAppendIn, DossierCheckIn, DossierEditIn, DossierFindings, DossierList, DossierReadIn,
     DossierSearchIn, DossierUseIn, DossierWriteIn, DryRunIn, Events, EventsIn, GateIn, Guard,
     GuardIn, HookReply, HookRunIn, InspectIn, KnobDetail, Knobs, Launch, Lines, Locks, MonitorIn,
@@ -37,6 +37,7 @@ use legionctl_core::db::Db;
 use legionctl_core::dossier::{Dossiers, place_of};
 use legionctl_core::packages::Store;
 use legionctl_core::reminders::Event;
+use legionctl_core::session::Start;
 use legionctl_core::workspace::Place;
 use legionctl_core::{agents, hooks, reminders, setup, skills};
 use legionctl_machine::ledger::Ledger;
@@ -591,7 +592,62 @@ impl Engine for Operator {
     }
 
     fn agents_usage(&self, _: &Ctx, input: AgentUsageIn) -> Result<UsageReport> {
-        Ok(agents::usage(&home(), input.days))
+        let (claude, codex) = match &input.account {
+            Some(account) => {
+                let profile = legionctl_core::session::account_dir(account)?;
+                (profile.join("claude"), profile.join("codex"))
+            }
+            None => (home().join(".claude"), home().join(".codex")),
+        };
+        Ok(agents::usage(&claude, &codex, input.days))
+    }
+
+    fn agents_accounts(&self, _: &Ctx, _: Empty) -> Result<Vec<Account>> {
+        let root = legionctl_core::session::accounts_root();
+        let mut out: Vec<Account> = std::fs::read_dir(&root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .map(|e| {
+                let dir = e.path();
+                Account {
+                    name: e.file_name().to_string_lossy().into_owned(),
+                    // the files each agent writes at login
+                    claude: dir.join("claude/.credentials.json").is_file(),
+                    codex: dir.join("codex/auth.json").is_file(),
+                    dir: dir.display().to_string(),
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    }
+
+    fn agents_account_add(&self, ctx: &Ctx, input: IdIn) -> Result<Lines> {
+        Self::record(ctx, "agents.account-add", &input)?;
+        anyhow::ensure!(
+            legionctl_core::dossier::valid_name(&input.id),
+            "an account name is a-z, 0-9 and '-', starting with a letter or digit"
+        );
+        let dir = legionctl_core::session::accounts_root().join(&input.id);
+        for agent in ["claude", "codex"] {
+            std::fs::create_dir_all(dir.join(agent))?;
+        }
+        Ok(Lines {
+            lines: vec![
+                format!("account profile {}", dir.display()),
+                format!(
+                    "log in: CLAUDE_CONFIG_DIR={}/claude claude, then /login",
+                    dir.display()
+                ),
+                format!("        CODEX_HOME={}/codex codex login", dir.display()),
+                format!(
+                    "use it: legionctl session start claude --account {}",
+                    input.id
+                ),
+            ],
+        })
     }
 
     fn workspace_open(&self, ctx: &Ctx, input: WorkspaceOpenIn) -> Result<Workspace> {
@@ -1335,14 +1391,15 @@ impl Engine for Operator {
                 .last_in(&place_of(dir))?
                 .context("no dossier was used in this repository yet; name one (and pass create for a new one)")?,
         };
-        store.start_session(
-            &input.agent,
-            &dossier,
-            input.create,
+        let start = Start {
+            agent: &input.agent,
+            dossier: &dossier,
+            create: input.create,
             dir,
-            &resolved.config,
-            false,
-        )
+            headless: false,
+            account: input.account.as_deref(),
+        };
+        store.start_session(&start, &resolved.config)
     }
 
     fn session_run(&self, ctx: &Ctx, input: SessionRunIn) -> Result<RunOutput> {
@@ -1360,14 +1417,15 @@ impl Engine for Operator {
                 .last_in(&place_of(dir))?
                 .context("no dossier was used in this repository yet; name one (and pass create for a new one)")?,
         };
-        let launch = store.start_session(
-            &input.agent,
-            &dossier,
-            input.create,
+        let start = Start {
+            agent: &input.agent,
+            dossier: &dossier,
+            create: input.create,
             dir,
-            &resolved.config,
-            true,
-        )?;
+            headless: true,
+            account: input.account.as_deref(),
+        };
+        let launch = store.start_session(&start, &resolved.config)?;
         self.runtime
             .block_on(crate::acp::run(launch, &input.prompt))
     }

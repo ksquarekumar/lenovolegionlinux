@@ -1797,3 +1797,131 @@ fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_h
     let listed = op.run(&repo, &[], &["session", "list"], "");
     assert!(String::from_utf8_lossy(&listed.stdout).contains(id));
 }
+
+/// `agents accounts` sees the login in profile `work`; `agents usage` counts its transcript, not `~/.claude`.
+fn profile_listed_and_counted(op: &Operator, repo: &Path) {
+    let accounts: Value = serde_json::from_slice(
+        &op.run(repo, &[], &["agents", "accounts", "--json"], "")
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(accounts[0]["name"], "work");
+    assert_eq!(
+        (
+            accounts[0]["claude"].as_bool(),
+            accounts[0]["codex"].as_bool()
+        ),
+        (Some(true), Some(false))
+    );
+    let usage = op.run(
+        repo,
+        &[],
+        &[
+            "agents",
+            "usage",
+            "--account",
+            "work",
+            "--days",
+            "100000",
+            "--json",
+        ],
+        "",
+    );
+    let usage = String::from_utf8_lossy(&usage.stdout);
+    assert!(usage.contains("claude-x") && usage.contains('7'), "{usage}");
+}
+
+#[test]
+fn an_account_profile_gives_the_session_its_own_agent_logins_and_usage() {
+    let (op, home) = operator("account");
+    let repo = repository(&home);
+    // the agent "logs in" and writes a transcript where its variables point; $HOME stays read-only
+    let probe = "printf '{}' > \"$CLAUDE_CONFIG_DIR/.credentials.json\" && mkdir -p \"$CLAUDE_CONFIG_DIR/projects/p\" && \
+                 printf '%s\\n' \"$1\" > \"$CLAUDE_CONFIG_DIR/projects/p/t.jsonl\" && echo \"CODEX=$CODEX_HOME\"";
+    let transcript = json!({"timestamp": "2026-10-13T10:00:00Z", "message": {"id": "m1", "model": "claude-x",
+        "usage": {"input_tokens": 7, "output_tokens": 3}}});
+    write(
+        &home.join(".config/legionctl/session.jsonc"),
+        &json!({"session": {"agents": {"probe": ["sh", "-c", probe, "probe", transcript.to_string()]}, "resume": {"probe": ["true"]}, "writable": []}})
+            .to_string(),
+    );
+    let start = |account: &str| {
+        op.run(
+            &repo,
+            &[("HOME", home.to_str().unwrap())],
+            &[
+                "session",
+                "start",
+                "probe",
+                "--dossier",
+                "acct",
+                "--create",
+                "--account",
+                account,
+                "--json",
+            ],
+            "",
+        )
+    };
+    // a missing profile and a name that leaves the profiles folder are refused before any session is made
+    for (account, error) in [
+        ("work", "no account profile work"),
+        ("..", "an account name is"),
+    ] {
+        let refused = start(account);
+        assert!(
+            !refused.status.success() && String::from_utf8_lossy(&refused.stderr).contains(error),
+            "{account}: {}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+    }
+    assert!(
+        !op.run(&repo, &[], &["agents", "account-add", "../x"], "")
+            .status
+            .success()
+    );
+    assert!(
+        op.run(&repo, &[], &["agents", "account-add", "work"], "")
+            .status
+            .success()
+    );
+
+    let started = start("work");
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let launch: Value = serde_json::from_slice(&started.stdout).unwrap();
+    let out = run_launch(&op, &home, &launch);
+    let profile = home.join(".local/share/legionctl/accounts/work");
+    assert!(
+        String::from_utf8_lossy(&out.stdout)
+            .contains(&format!("CODEX={}", profile.join("codex").display())),
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !home.join(".claude").exists(),
+        "the login stayed in the profile"
+    );
+
+    profile_listed_and_counted(&op, &repo);
+    // the account survives a resume
+    let id = launch["id"].as_str().unwrap();
+    let resumed: Value = serde_json::from_slice(
+        &op.run(
+            &repo,
+            &[("HOME", home.to_str().unwrap())],
+            &["session", "resume", id, "--json"],
+            "",
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert!(
+        resumed["sandbox"].to_string().contains("CLAUDE_CONFIG_DIR"),
+        "{resumed}"
+    );
+}

@@ -57,6 +57,8 @@ const SCHEMA: &[&str] = &[
         workdir TEXT NOT NULL,
         started INTEGER NOT NULL
      );",
+    // v5: the account profile a session runs with (A1)
+    "ALTER TABLE sessions ADD COLUMN account TEXT;",
 ];
 
 /// Where a session works, for binding the next session there: the repository that contains `dir`, else `dir`.
@@ -108,7 +110,8 @@ fn parse_anchor(anchor: &str) -> Result<(usize, String)> {
     parsed.with_context(|| format!("anchor must look like 12:a3f0, got '{anchor}'"))
 }
 
-pub(crate) fn valid_name(name: &str) -> bool {
+#[must_use]
+pub fn valid_name(name: &str) -> bool {
     name.chars()
         .next()
         .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())

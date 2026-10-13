@@ -363,14 +363,15 @@ fn add(
 }
 
 /// Tokens per agent, day and model in the transcripts changed in the last `days` days: Claude Code's
-/// `~/.claude/projects/**/*.jsonl` (each message once: its usage repeats on every content block) and Codex's
-/// `~/.codex/sessions/**/*.jsonl` (`token_count` events, each turn's `last_token_usage`).
+/// `<claude>/projects/**/*.jsonl` (each message once: its usage repeats on every content block) and Codex's
+/// `<codex>/sessions/**/*.jsonl` (`token_count` events, each turn's `last_token_usage`). `claude` and `codex` are
+/// `~/.claude` and `~/.codex`, or an account profile's folders.
 #[must_use]
-pub fn usage(home: &Path, days: u64) -> UsageReport {
+pub fn usage(claude: &Path, codex: &Path, days: u64) -> UsageReport {
     let since = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
     let mut rows = std::collections::BTreeMap::new();
     let mut files = Vec::new();
-    jsonl_files(&home.join(".claude/projects"), since, &mut files);
+    jsonl_files(&claude.join("projects"), since, &mut files);
     let mut seen = std::collections::BTreeSet::new();
     for file in &files {
         for line in std::fs::read_to_string(file).unwrap_or_default().lines() {
@@ -407,7 +408,7 @@ pub fn usage(home: &Path, days: u64) -> UsageReport {
         }
     }
     let mut files = Vec::new();
-    jsonl_files(&home.join(".codex/sessions"), since, &mut files);
+    jsonl_files(&codex.join("sessions"), since, &mut files);
     files.sort();
     let mut codex_limits = std::collections::BTreeMap::new();
     for file in &files {
