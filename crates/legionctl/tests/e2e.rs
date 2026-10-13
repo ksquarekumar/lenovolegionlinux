@@ -794,6 +794,51 @@ fn trace_shows_each_change_as_it_happens() {
     );
 }
 
+/// The wire format is reviewed: `docs/api/schema.json` holds every operation's class, visibility, input and output
+/// schema, and the code must match it, so a change to a type on the wire shows up as a diff of that file
+/// (`LEGIONCTL_WRITE_SCHEMA=1` writes it after a deliberate change).
+#[test]
+fn the_wire_format_matches_the_committed_schema() {
+    let schema: serde_json::Map<String, Value> = legionctl_api::OPS
+        .iter()
+        .map(|op| {
+            (
+                op.name.to_string(),
+                json!({
+                    "class": op.class,
+                    "internal": op.internal(),
+                    "input": (op.input)(),
+                    "output": (op.output)(),
+                }),
+            )
+        })
+        .collect();
+    let text = serde_json::to_string_pretty(&schema).unwrap() + "\n";
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/api/schema.json");
+    if std::env::var_os("LEGIONCTL_WRITE_SCHEMA").is_some() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &text).unwrap();
+    }
+    let committed = std::fs::read_to_string(&path).unwrap_or_default();
+    if committed != text {
+        let changed: Vec<&String> = schema
+            .iter()
+            .filter(|(name, now)| {
+                serde_json::from_str::<Value>(&committed)
+                    .ok()
+                    .and_then(|c| c.get(name.as_str()).cloned())
+                    .as_ref()
+                    != Some(*now)
+            })
+            .map(|(name, _)| name)
+            .collect();
+        panic!(
+            "the wire format differs from docs/api/schema.json in {changed:?}; if the change is meant, run \
+             LEGIONCTL_WRITE_SCHEMA=1 cargo test -p legionctl --test e2e the_wire_format and commit the file"
+        );
+    }
+}
+
 /// The body of `GET <path>` on the operator's socket, with the user token.
 fn get(op: &Operator, path: &str) -> String {
     let token = std::fs::read_to_string(op.runtime.join(legionctl_api::USER_TOKEN)).unwrap();
