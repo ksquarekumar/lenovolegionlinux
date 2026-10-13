@@ -7,6 +7,7 @@ mod hook;
 mod mcp;
 mod proxy;
 mod tui;
+mod vm;
 
 use std::os::unix::process::CommandExt;
 
@@ -40,6 +41,13 @@ fn client_only() -> Vec<Command> {
                     .last(true),
             ),
         Command::new("tui").about("Live dashboard"),
+        // a session in a VM (W5): the host's runner and relay, and the guest's boot service; legionctl starts them
+        Command::new("vm")
+            .hide(true)
+            .arg(Arg::new("spec").required(true))
+            .arg(Arg::new("agent").num_args(1..).required(true).last(true)),
+        Command::new("relay").hide(true).arg(Arg::new("socket").required(true)),
+        Command::new("guest").hide(true),
         Command::new("trace").about("Follow the event log: agents, people and the machine daemon, as it happens"),
         Command::new("hook")
             .about("Claude Code hook adapter: reads the hook's JSON from stdin, answers in Claude Code's hook protocol")
@@ -183,27 +191,28 @@ fn trace() -> Result<()> {
     }))
 }
 
-/// `legionctl session start`: run the prepared session in this terminal, with this binary as the git gate (a
-/// container's image has its own).
+/// `legionctl session start`: run the prepared session in this terminal, with this binary as the git gate on the
+/// host (a container's image and a VM's disk have their own) and as a VM's runner.
 fn start_session(mut launch: Launch) -> Result<()> {
-    // a container gets a terminal when there is one: docker refuses -t without it
-    if launch.inside == legionctl_api::Inside::Container
-        && std::io::IsTerminal::is_terminal(&std::io::stdin())
-    {
-        launch.sandbox.insert(2, "-t".into());
-    }
-    let gate = if launch.inside == legionctl_api::Inside::Host {
-        vec![
+    let exe = std::env::current_exe()?.to_string_lossy().into_owned();
+    let mut gate = Vec::new();
+    match launch.inside {
+        legionctl_api::Inside::Host => gate.extend([
             "--ro-bind".into(),
-            std::env::current_exe()?.to_string_lossy().into_owned(),
+            exe,
             "/usr/bin/git".into(),
             "--setenv".into(),
             "LEGIONCTL_REAL_GIT".into(),
             launch.real_git.to_string_lossy().into_owned(),
-        ]
-    } else {
-        Vec::new()
-    };
+        ]),
+        // a container gets a terminal when there is one: docker refuses -t without it
+        legionctl_api::Inside::Container => {
+            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                launch.sandbox.insert(2, "-t".into());
+            }
+        }
+        legionctl_api::Inside::Vm => launch.sandbox.insert(0, exe),
+    }
     let argv = [launch.scope, launch.sandbox, gate, launch.agent].concat();
     for line in &launch.lines {
         eprintln!("legionctl: {line}");
@@ -263,6 +272,22 @@ fn main() -> Result<()> {
             ));
         }
         Some(("tui", _)) => return tui::run(),
+        Some(("vm", sub)) => {
+            let spec = sub.get_one::<String>("spec").context("the spec")?;
+            let agent = sub
+                .get_many::<String>("agent")
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect();
+            return vm::run(std::path::Path::new(spec), agent);
+        }
+        Some(("relay", sub)) => {
+            let socket = sub.get_one::<String>("socket").context("the socket")?;
+            return tokio::runtime::Runtime::new()?
+                .block_on(vm::relay(std::path::Path::new(socket)));
+        }
+        Some(("guest", _)) => return vm::guest(),
         Some(("trace", _)) => return trace(),
         Some(("run", sub)) => return run(sub),
         Some(("hook", sub)) => {

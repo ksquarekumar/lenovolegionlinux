@@ -132,6 +132,16 @@
       "npm": ["@anthropic-ai/claude-code", "@zed-industries/claude-code-acp", "@openai/codex", "@zed-industries/codex-acp"],
       "client": "/usr/lib/legionctl/legionctl-static"
     },
+    // Sessions in a VM (`--in vm`) run on the repository's disk, made by `legionctl workspace pack --as vm`: a layer
+    // over this cloud image with git, Node.js, the npm packages above and the static client. Each session gets a
+    // throwaway layer over the disk; its folders are shared with virtiofs.
+    "vm": {
+      "base": "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2",
+      "disk_gib": 20,
+      "memory_mib": 4096,
+      "cpus": 4,
+      "virtiofsd": "/usr/lib/virtiofsd"
+    },
     // Writable besides the workspace, the dossier, the repository's .git and the runtime folder (/tmp is private to
     // the session): the agents' own state.
     "writable": ["~/.claude", "~/.claude.json", "~/.codex", "~/.cache"],

@@ -1966,6 +1966,109 @@ fn sessions_in_a_container_work_on_the_mounted_workspace_behind_the_git_gate() {
     let _ = rmi();
 }
 
+/// W5 part 3 (note 18): `workspace pack --as vm` makes the repository's disk from a cloud image (checked against its
+/// SHA512SUMS) in one cloud-init boot, and sessions `--in vm` run on a throwaway layer over it, headless and through
+/// the real client: the workspace, its git data and the dossier are virtiofs shares at their own paths, so commits
+/// land in the workspaces on the host; the disk's `/usr/bin/git` is the static client, which reaches the operator
+/// through the guest's relay and QEMU's forward, and refuses the push. Boots VMs: needs KVM, QEMU, virtiofsd,
+/// xorriso, `make static` and the Debian cloud image (downloaded once into /var/tmp/legionctl-test-cache).
+#[test]
+#[ignore = "boots VMs (KVM, QEMU, virtiofsd, a cloud image): CI runs it in its own step"]
+fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
+    let cache = Path::new("/var/tmp/legionctl-test-cache");
+    let url = "https://cloud.debian.org/images/cloud/trixie/latest";
+    let file = "debian-13-genericcloud-amd64.qcow2";
+    std::fs::create_dir_all(cache).unwrap();
+    for name in [file, "SHA512SUMS"] {
+        if !cache.join(name).is_file() {
+            let got = Command::new("curl")
+                .args(["-fsSL", "--retry", "3", "-o"])
+                .arg(cache.join(name))
+                .arg(format!("{url}/{name}"))
+                .status()
+                .unwrap();
+            assert!(got.success(), "downloading {url}/{name}");
+        }
+    }
+    let (op, home) = operator("vm");
+    let repo = container_repository(&home);
+    let virtiofsd = ["/usr/lib/virtiofsd", "/usr/libexec/virtiofsd"]
+        .into_iter()
+        .find(|p| Path::new(p).exists())
+        .expect("virtiofsd");
+    write(
+        &home.join(".config/legionctl/vm.jsonc"),
+        &json!({"session": {"vm": {
+            "base": format!("file://{}", cache.join(file).display()),
+            "disk_gib": 8, "memory_mib": 2048, "cpus": 2, "virtiofsd": virtiofsd,
+        }}})
+        .to_string(),
+    );
+    let run = |args: &[&str]| op.run(&repo, &[("HOME", home.to_str().unwrap())], args, "");
+
+    let packed = run(&["workspace", "pack", "--as", "vm"]);
+    assert!(
+        String::from_utf8_lossy(&packed.stdout).contains("legionctl/vm/repo.qcow2 from file://"),
+        "{}{}",
+        String::from_utf8_lossy(&packed.stdout),
+        String::from_utf8_lossy(&packed.stderr)
+    );
+    let out = run(&[
+        "session",
+        "run",
+        "fake",
+        "fix",
+        "--dossier",
+        "port",
+        "--in",
+        "vm",
+        "--json",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = serde_json::from_slice::<Value>(&out.stdout).unwrap()["text"].to_string();
+    for expected in ["prompt: fix", "inside: vm", "COMMIT_OK", "PUSH_REFUSED"] {
+        assert!(text.contains(expected), "{expected} missing:\n{text}");
+    }
+    assert_eq!(
+        git(
+            &home,
+            &home.join("worktrees/repo/port"),
+            &["log", "-1", "--format=%s"]
+        ),
+        "headless",
+        "the commit is in the workspace on the host"
+    );
+
+    let started = run(&[
+        "session",
+        "start",
+        "probe",
+        "--dossier",
+        "talk",
+        "--in",
+        "vm",
+    ]);
+    let text = String::from_utf8_lossy(&started.stdout);
+    for expected in ["COMMIT_OK", "PUSH_REFUSED", "WROTE", "SESSION="] {
+        assert!(
+            text.contains(expected),
+            "{expected} missing:\n{text}\n{}",
+            String::from_utf8_lossy(&started.stderr)
+        );
+    }
+    assert!(!home.join("outside").exists(), "the VM's home is its own");
+    let talk = home.join("worktrees/repo/talk");
+    assert_eq!(git(&home, &talk, &["log", "-1", "--format=%s"]), "probe");
+    assert!(
+        talk.join(".agentworkspace/MEMORY/probe.md").exists(),
+        "the dossier is shared"
+    );
+}
+
 /// Jobs (DESIGN/02): a headless run is a job; when the operator stops in the middle of it, the next operator goes on
 /// with it in the same session (a new ACP session, told that it was cut off) and records how it ended.
 #[test]

@@ -26,7 +26,7 @@ use legionctl_api::{
     CachePurgeIn, CacheStat, CachedCall, EventRow, JobIdIn, Page, PageIn, Principal,
     SessionActivityIn,
 };
-use legionctl_api::{KnobHoldIn, KnobIn, PackIn, UndoIn};
+use legionctl_api::{KnobHoldIn, KnobIn, PackIn, PackKind, UndoIn};
 use legionctl_core::cache::Cache;
 use legionctl_core::config::{Dirs, Resolved, resolve};
 
@@ -350,6 +350,188 @@ fn pack(
     );
     lines.push(format!("packed {image} from {base}"));
     Ok(Lines { lines })
+}
+
+/// `command`'s stdout, or its stderr as the error.
+fn output(command: &mut Command) -> Result<Vec<u8>> {
+    let out = command
+        .output()
+        .with_context(|| format!("running {}", command.get_program().display()))?;
+    anyhow::ensure!(
+        out.status.success(),
+        "{}: {}",
+        command.get_program().display(),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(out.stdout)
+}
+
+/// The cloud image at `url`, downloaded once next to the VM disks and checked against its folder's `SHA512SUMS`.
+fn vm_base(url: &str) -> Result<PathBuf> {
+    let (folder, file) = url
+        .rsplit_once('/')
+        .context("session.vm.base is a URL of a file")?;
+    let path = legionctl_core::session::vm_root().join(format!(
+        "base-{:016x}-{file}",
+        legionctl_machine::fnv(url.as_bytes())
+    ));
+    if path.is_file() {
+        return Ok(path);
+    }
+    std::fs::create_dir_all(legionctl_core::session::vm_root())?;
+    let part = path.with_extension("part");
+    output(
+        Command::new("curl")
+            .args(["-fsSL", "--retry", "3", "-o"])
+            .arg(&part)
+            .arg(url),
+    )?;
+    let sums = output(
+        Command::new("curl")
+            .args(["-fsSL", "--retry", "3"])
+            .arg(format!("{folder}/SHA512SUMS")),
+    )?;
+    let want = String::from_utf8_lossy(&sums)
+        .lines()
+        .find_map(|l| {
+            let (hash, name) = l.split_once(char::is_whitespace)?;
+            (name.trim().trim_start_matches('*') == file).then(|| hash.to_string())
+        })
+        .with_context(|| format!("{folder}/SHA512SUMS has no {file}"))?;
+    let got = output(Command::new("sha512sum").arg(&part))?;
+    anyhow::ensure!(
+        String::from_utf8_lossy(&got).split_whitespace().next() == Some(want.as_str()),
+        "{url} does not match its SHA512SUMS"
+    );
+    std::fs::rename(&part, &path)?;
+    Ok(path)
+}
+
+/// cloud-init's user data for a repository's disk: git, Node.js and the agents, the static client as `legionctl`,
+/// the git gate and the guest service; then a mark on the serial console, and power off.
+fn vm_user_data(npm: &[String]) -> String {
+    let node = if npm.is_empty() { "" } else { ", nodejs, npm" };
+    let agents = if npm.is_empty() {
+        String::new()
+    } else {
+        format!("npm install -g --no-fund --no-audit {}; ", npm.join(" "))
+    };
+    format!(
+        "#cloud-config\n\
+         package_update: true\n\
+         packages: [git, ca-certificates{node}]\n\
+         runcmd:\n  \
+         - [sh, -ec, 'mount -o ro LABEL=cidata /mnt; install -m 755 /mnt/legionctl /usr/local/bin/legionctl; \
+         install -m 644 /mnt/legionctl-guest.service /etc/systemd/system/; umount /mnt; \
+         mkdir -p /usr/local/libexec/legionctl; mv \"$(command -v git)\" /usr/local/libexec/legionctl/git; \
+         ln -s /usr/local/bin/legionctl /usr/bin/git; {agents}\
+         systemctl enable legionctl-guest.service; systemctl mask serial-getty@hvc0.service; \
+         touch /etc/cloud/cloud-init.disabled; echo legionctl-pack-ok > /dev/ttyS0']\n\
+         power_state: {{mode: poweroff, timeout: 30, condition: true}}\n"
+    )
+}
+
+const GUEST_UNIT: &str = "[Unit]\nDescription=legionctl session (W5)\nAfter=network-online.target\n\
+Wants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/legionctl guest\n\
+StandardOutput=tty\nStandardError=tty\nTTYPath=/dev/ttyS0\n\n[Install]\nWantedBy=multi-user.target\n";
+
+/// Make the VM disk of the repository that holds `dir`: a layer over the base cloud image, set up once by
+/// cloud-init in a first boot.
+fn pack_vm(
+    dir: &Path,
+    container: &legionctl_core::config::ContainerConfig,
+    vm: &legionctl_core::config::VmConfig,
+) -> Result<Lines> {
+    let base = vm_base(&vm.base)?;
+    let disk = legionctl_core::session::vm_disk(dir);
+    let seed = disk.with_extension("seed");
+    let _ = std::fs::remove_dir_all(&seed);
+    std::fs::create_dir_all(&seed)?;
+    std::fs::copy(&container.client, seed.join("legionctl")).with_context(|| {
+        format!(
+            "no static legionctl at {} (session.container.client): the package installs it; in a checkout, `make static`",
+            container.client
+        )
+    })?;
+    std::fs::write(seed.join("legionctl-guest.service"), GUEST_UNIT)?;
+    std::fs::write(seed.join("user-data"), vm_user_data(&container.npm))?;
+    std::fs::write(
+        seed.join("meta-data"),
+        "instance-id: legionctl-pack\nlocal-hostname: legionctl\n",
+    )?;
+    let iso = disk.with_extension("seed.iso");
+    output(
+        Command::new("xorriso")
+            .args(["-as", "mkisofs", "-quiet", "-V", "cidata", "-J", "-r", "-o"])
+            .arg(&iso)
+            .arg(&seed),
+    )?;
+    let new = disk.with_extension("new.qcow2");
+    output(
+        Command::new("qemu-img")
+            .args(["create", "-q", "-f", "qcow2", "-F", "qcow2", "-b"])
+            .arg(&base)
+            .arg(&new)
+            .arg(format!("{}G", vm.disk_gib)),
+    )?;
+    let log = disk.with_extension("pack.log");
+    let mut first_boot = Command::new("qemu-system-x86_64")
+        .args([
+            "-machine",
+            "q35,accel=kvm,smm=off",
+            "-cpu",
+            "host",
+            "-m",
+            "2048",
+            "-smp",
+            "2",
+        ])
+        .args(["-nodefaults", "-display", "none", "-monitor", "none"])
+        .arg("-serial")
+        .arg(format!("file:{}", log.display()))
+        .arg("-drive")
+        .arg(format!("file={},if=virtio", new.display()))
+        .arg("-drive")
+        .arg(format!(
+            "file={},if=virtio,format=raw,readonly=on",
+            iso.display()
+        ))
+        .args([
+            "-netdev",
+            "user,id=net",
+            "-device",
+            "virtio-net-pci,netdev=net",
+        ])
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .context("running qemu-system-x86_64")?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_mins(20);
+    let status = loop {
+        if let Some(status) = first_boot.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = first_boot.kill();
+            anyhow::bail!(
+                "the first boot of {} took over 20 min; see {}",
+                disk.display(),
+                log.display()
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    };
+    let console = std::fs::read_to_string(&log).unwrap_or_default();
+    anyhow::ensure!(
+        status.success() && console.contains("legionctl-pack-ok"),
+        "the first boot did not set up the disk ({status}); see {}",
+        log.display()
+    );
+    std::fs::rename(&new, &disk)?;
+    std::fs::remove_file(&iso)?;
+    std::fs::remove_dir_all(&seed)?;
+    Ok(Lines {
+        lines: vec![format!("packed {} from {}", disk.display(), vm.base)],
+    })
 }
 
 /// The CPU list of a core class: the P-cores, the E-cores or every online CPU.
@@ -1629,13 +1811,16 @@ impl Engine for Operator {
 
     fn workspace_pack(&self, _: &Ctx, input: PackIn) -> Result<Lines> {
         let repo = input.repo.get()?;
-        let container = config(Some(&input.repo))?.config.session.container;
+        let session = config(Some(&input.repo))?.config.session;
         let db = Db::open_default()?;
         let job = db.job_begin(
             "workspace.pack",
-            &serde_json::json!({"repo": repo, "service": input.service}),
+            &serde_json::json!({"repo": repo, "service": input.service, "as": input.kind}),
         )?;
-        let out = pack(repo, input.service.as_deref(), &container);
+        let out = match input.kind {
+            PackKind::Container => pack(repo, input.service.as_deref(), &session.container),
+            PackKind::Vm => pack_vm(repo, &session.container, &session.vm),
+        };
         end_job(&db, job, &out)?;
         out
     }

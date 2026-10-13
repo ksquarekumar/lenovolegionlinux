@@ -121,6 +121,8 @@ wire_enum! {
         Host,
         /// In a container of the repository's agent image (`legionctl workspace pack`).
         Container,
+        /// In a VM of the repository's disk (`legionctl workspace pack --as vm`), run by `legionctl vm` in the scope.
+        Vm,
     }
     /// Hook event: session-start, prompt or stop.
     enum Event from core::reminders::Event as "kebab-case" {
@@ -461,8 +463,9 @@ wire! {
         id: String,
         /// `systemd-run --user --scope ...`: the session's cgroup, for `session stop` and limits.
         scope: Vec<String>,
-        /// `bwrap ...` (the client adds the git gate: its own binary over `/usr/bin/git`), or `docker run ...` of the
-        /// agent image, whose `/usr/bin/git` is the gate already.
+        /// `bwrap ...` (the caller adds the git gate: its own legionctl over `/usr/bin/git`), `docker run ...` of the
+        /// agent image, whose `/usr/bin/git` is the gate already, or `vm <spec> --`, which the caller runs with its own
+        /// legionctl.
         sandbox: Vec<String>,
         inside: Inside,
         agent: Vec<String>,

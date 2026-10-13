@@ -14,6 +14,10 @@ makedepends=("git" "cargo" "clang" "docker")
 optdepends=(
   "gnome-shell: the legionctl-osd OSD extension"
   "acpi_call-dkms: firmware fan RPM through Lenovo WMI"
+  "docker: agent sessions in a container (legionctl workspace pack)"
+  "qemu-base: agent sessions in a VM (legionctl workspace pack --as vm)"
+  "virtiofsd: the folders of a VM session"
+  "libisoburn: xorriso for the cloud-init seed of a VM disk"
   "stress-ng: the CPU workload of bench and tune"
   "scx-scheds: sched_ext schedulers (scx_lavd) for /etc/scx_loader.toml"
   "scx-tools: scx_loader service"

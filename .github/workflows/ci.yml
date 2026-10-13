@@ -45,3 +45,17 @@ jobs:
             | jq -r 'select(.target.name == "machine" and .executable != null) | .executable')
           sudo -E "$bin" --ignored --exact operator_and_daemon::as_root_the_runq_sensor_measures_wakeups_and_outlives_a_failed_daemon \
             operator_and_daemon::as_root_the_exec_sensor_records_what_a_session_starts
+      # sessions in a VM (W5): KVM for the runner user, QEMU, virtiofsd, xorriso for the cloud-init seed, and the
+      # Debian cloud image the test downloads once (its SHA512SUMS beside it)
+      - name: Cache the cloud image of the VM test
+        uses: actions/cache@v4
+        with:
+          path: /var/tmp/legionctl-test-cache
+          key: debian-13-genericcloud-v1
+      - name: VM sessions
+        run: |
+          sudo apt-get install -y qemu-system-x86 qemu-utils virtiofsd xorriso
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          cargo test --locked -p legionctl --test e2e -- --ignored --exact \
+            sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate

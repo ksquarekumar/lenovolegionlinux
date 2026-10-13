@@ -41,6 +41,8 @@ pub enum Inside {
     Host,
     /// In a container of the repository's agent image (`legionctl workspace pack`).
     Container,
+    /// In a VM of the repository's disk (`legionctl workspace pack --as vm`), run by `legionctl vm` in the scope.
+    Vm,
 }
 
 impl Inside {
@@ -48,16 +50,78 @@ impl Inside {
         match self {
             Inside::Host => "host",
             Inside::Container => "container",
+            Inside::Vm => "vm",
         }
     }
 
     pub(crate) fn from_db(text: &str) -> Inside {
-        if text == "container" {
-            Inside::Container
-        } else {
-            Inside::Host
+        match text {
+            "container" => Inside::Container,
+            "vm" => Inside::Vm,
+            _ => Inside::Host,
         }
     }
+}
+
+/// How `legionctl vm` runs a session's VM (`<session folder>/vm.json`): the disk, the folders it shares, and what
+/// the guest does.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VmSpec {
+    /// The repository's disk; each session runs on a throwaway layer over it.
+    pub disk: PathBuf,
+    pub memory_mib: u64,
+    pub cpus: u32,
+    pub virtiofsd: String,
+    /// Host folders shared with virtiofs: tag, folder, read-only.
+    pub shares: Vec<(String, PathBuf, bool)>,
+    /// The operator socket the guest's connections go to.
+    pub socket: PathBuf,
+    pub guest: GuestSpec,
+}
+
+/// What the guest's `legionctl guest` does (`guest.json` in the `legionctl-spec` share): mount, then run the agent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GuestSpec {
+    /// In order: later mounts go inside earlier ones.
+    pub mounts: Vec<GuestMount>,
+    pub env: Vec<(String, String)>,
+    pub workdir: PathBuf,
+    pub uid: u32,
+    pub gid: u32,
+    /// Where the agent finds the operator: a socket the guest relays to the host.
+    pub socket: PathBuf,
+    /// Set by `legionctl vm`: the agent's command, and whether it runs in a terminal.
+    pub argv: Vec<String>,
+    pub interactive: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum GuestMount {
+    /// A virtiofs share at its path.
+    Share {
+        tag: String,
+        path: PathBuf,
+        read_only: bool,
+    },
+    /// A private empty folder owned by the agent's user.
+    Empty(PathBuf),
+    /// A small file (the git identity), written in.
+    File(PathBuf, String),
+}
+
+/// Where a repository's VM disks live: `~/.local/share/legionctl/vm`.
+#[must_use]
+pub fn vm_root() -> PathBuf {
+    crate::packages::Store::default_root().with_file_name("vm")
+}
+
+/// The VM disk of the repository that holds `dir` (`legionctl workspace pack --as vm` makes it).
+#[must_use]
+pub fn vm_disk(dir: &Path) -> PathBuf {
+    vm_root().join(format!(
+        "{}.qcow2",
+        crate::images::project(&place_of(dir)).0
+    ))
 }
 
 /// What `session start` and `session run` ask for.
@@ -89,8 +153,9 @@ pub struct Launch {
     pub id: String,
     /// `systemd-run --user --scope ...`: the session's cgroup, for `session stop` and limits.
     pub scope: Vec<String>,
-    /// `bwrap ...` (the client adds the git gate: its own binary over `/usr/bin/git`), or `docker run ...` of the
-    /// agent image, whose `/usr/bin/git` is the gate already.
+    /// `bwrap ...` (the caller adds the git gate: its own legionctl over `/usr/bin/git`), `docker run ...` of the
+    /// agent image, whose `/usr/bin/git` is the gate already, or `vm <spec> --`, which the caller runs with its own
+    /// legionctl.
     pub sandbox: Vec<String>,
     pub inside: Inside,
     pub agent: Vec<String>,
@@ -120,6 +185,7 @@ fn container_name(id: &str) -> String {
 /// own word; unknown without systemd.
 #[must_use]
 pub fn state(id: &str, inside: Inside) -> String {
+    // a VM's runner (legionctl vm, QEMU and virtiofsd) is in the session's scope, like a host session
     if inside == Inside::Container {
         let status = std::process::Command::new("docker")
             .args(["inspect", "-f", "{{.State.Status}}", &container_name(id)])
@@ -174,13 +240,13 @@ pub enum Control {
     Stop,
 }
 
-/// Pause, unpause or stop session `id` where it runs: its systemd scope, or its container.
+/// Pause, unpause or stop session `id` where it runs: its systemd scope (also a VM's), or its container.
 ///
 /// # Errors
 /// systemctl or docker refuses (no such scope or container, or it is not in a state for this).
 pub fn control(id: &str, inside: Inside, what: Control) -> Result<()> {
     let (program, args) = match inside {
-        Inside::Host => {
+        Inside::Host | Inside::Vm => {
             let verb = match what {
                 Control::Pause => "freeze",
                 Control::Unpause => "thaw",
@@ -597,6 +663,121 @@ fn docker_sandbox(
     Ok(args)
 }
 
+/// What a session's sandbox runs from.
+enum Runs {
+    Host,
+    /// The repository's agent image.
+    Container(String),
+    /// The repository's VM disk.
+    Vm(PathBuf),
+}
+
+/// Where a session of the repository that holds `dir` runs, or the error that says how to make its image or disk.
+fn runs(inside: Inside, dir: &Path) -> Result<Runs> {
+    Ok(match inside {
+        Inside::Host => Runs::Host,
+        Inside::Container => Runs::Container(packed(dir)?),
+        Inside::Vm => {
+            let disk = vm_disk(dir);
+            anyhow::ensure!(
+                disk.is_file(),
+                "no VM disk {}: make it with `legionctl workspace pack --as vm` in the repository",
+                disk.display()
+            );
+            Runs::Vm(disk)
+        }
+    })
+}
+
+/// `vm <session folder>/vm.json --` (a `legionctl` subcommand): the session's VM, sharing `mounts` with virtiofs. The runtime folder
+/// becomes the guest's own (its operator socket is a relay to the host's), with only the session's files shared.
+fn vm_sandbox(
+    id: &str,
+    disk: &Path,
+    vm: &crate::config::VmConfig,
+    runtime: &Path,
+    (workdir, mounts, env): (&Path, Vec<Mount>, &[(String, String)]),
+) -> Result<Vec<String>> {
+    let me = std::fs::metadata("/proc/self")?;
+    let home = PathBuf::from(std::env::var("HOME").context("HOME is not set")?);
+    let legionctl = runtime.join("legionctl");
+    let mut shares: Vec<(String, PathBuf, bool)> = Vec::new();
+    let mut share = |host: PathBuf, path: PathBuf, read_only: bool| {
+        let tag = format!("m{}", shares.len());
+        shares.push((tag.clone(), host, read_only));
+        GuestMount::Share {
+            tag,
+            path,
+            read_only,
+        }
+    };
+    let mut guest_mounts = vec![GuestMount::Empty(home.clone())];
+    for mount in mounts {
+        match mount {
+            Mount::Writable(p) if p == legionctl => {
+                guest_mounts.push(GuestMount::Empty(p.clone()));
+                let files = p.join("sessions").join(id);
+                guest_mounts.push(share(files.clone(), files, false));
+            }
+            Mount::Writable(p) => guest_mounts.push(share(p.clone(), p, false)),
+            Mount::ReadOnly(from, to) if from.is_dir() => guest_mounts.push(share(from, to, true)),
+            Mount::ReadOnly(from, to) => {
+                guest_mounts.push(GuestMount::File(to, std::fs::read_to_string(&from)?));
+            }
+            Mount::Empty(p) => guest_mounts.push(GuestMount::Empty(p)),
+            Mount::Overlay { folder, .. } => anyhow::bail!(
+                "a plain folder's workspace ({}) cannot run in a VM: use a git repository",
+                folder.display()
+            ),
+        }
+    }
+    let gitconfig = home.join(".gitconfig");
+    if gitconfig.is_file() {
+        guest_mounts.push(GuestMount::File(
+            gitconfig.clone(),
+            std::fs::read_to_string(&gitconfig)?,
+        ));
+    }
+    let mut guest_env = env.to_vec();
+    guest_env.extend([
+        // the disk's git gate (workspace pack --as vm) keeps the real git here
+        (
+            "LEGIONCTL_REAL_GIT".into(),
+            "/usr/local/libexec/legionctl/git".into(),
+        ),
+        ("HOME".into(), home.to_string_lossy().into_owned()),
+        (
+            "XDG_RUNTIME_DIR".into(),
+            runtime.to_string_lossy().into_owned(),
+        ),
+    ]);
+    let spec = VmSpec {
+        disk: disk.to_path_buf(),
+        memory_mib: vm.memory_mib,
+        cpus: vm.cpus,
+        virtiofsd: vm.virtiofsd.clone(),
+        shares,
+        socket: legionctl.join("api.sock"),
+        guest: GuestSpec {
+            mounts: guest_mounts,
+            env: guest_env,
+            workdir: workdir.to_path_buf(),
+            uid: std::os::unix::fs::MetadataExt::uid(&me),
+            gid: std::os::unix::fs::MetadataExt::gid(&me),
+            socket: legionctl.join("api.sock"),
+            ..GuestSpec::default()
+        },
+    };
+    let path = legionctl.join("sessions").join(id).join("vm.json");
+    std::fs::write(&path, serde_json::to_string_pretty(&spec)?)?;
+    // the caller runs it with its own legionctl, as it adds the git gate on the host
+    Ok(vec![
+        "vm".into(),
+        path.to_string_lossy().into_owned(),
+        "--".into(),
+    ])
+}
+
 /// The agent image of the repository that holds `dir` (`legionctl workspace pack` makes it).
 #[must_use]
 pub fn agent_image(dir: &Path) -> String {
@@ -832,10 +1013,7 @@ impl Dossiers {
         let store = crate::packages::Store::new(crate::packages::Store::default_root());
         let mcp_json = mcp_config(config, &store)?;
         let skills = skills(config, &store)?;
-        let image = match start.inside {
-            Inside::Host => None,
-            Inside::Container => Some(packed(start.dir)?),
-        };
+        let runs = runs(start.inside, start.dir)?;
         let id = new_id()?;
         let place = place_of(start.dir);
         let bound = self.bind(&id, agent, start.dossier, start.steal, Some(&place))?;
@@ -843,7 +1021,7 @@ impl Dossiers {
         self.db().execute(
             "INSERT INTO sessions (id, agent, dossier, workdir, started, account, scoped, inside) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             // a container tells whether its session is live, as a scope does
-            params![id, agent, start.dossier, agent_dir(&ws).to_string_lossy(), now(), start.account, config.session.scope || image.is_some(), start.inside.as_str()],
+            params![id, agent, start.dossier, agent_dir(&ws).to_string_lossy(), now(), start.account, config.session.scope || start.inside == Inside::Container, start.inside.as_str()],
         )?;
         self.launch(
             id,
@@ -851,7 +1029,7 @@ impl Dossiers {
             config,
             (command, start.account),
             (mcp_json, skills.as_deref()),
-            image.as_deref(),
+            &runs,
         )
     }
 
@@ -881,10 +1059,7 @@ impl Dossiers {
         let store = crate::packages::Store::new(crate::packages::Store::default_root());
         let mcp_json = mcp_config(config, &store)?;
         let skills = skills(config, &store)?;
-        let image = match record.inside {
-            Inside::Host => None,
-            Inside::Container => Some(packed(&record.workdir)?),
-        };
+        let runs = runs(record.inside, &record.workdir)?;
         let place = place_of(&record.workdir);
         let bound = self.bind(id, &record.agent, &record.dossier, false, Some(&place))?;
         // after the bind: a refused resume leaves the session on its account
@@ -910,11 +1085,11 @@ impl Dossiers {
             config,
             (command, record.account.as_deref()),
             (mcp_json, skills.as_deref()),
-            image.as_deref(),
+            &runs,
         )
     }
 
-    /// The sandbox (bwrap, or `docker run` of `image`) and agent command of session `id` working in workspace `ws`.
+    /// The sandbox (bwrap, `docker run` or `legionctl vm`) and agent command of session `id` working in workspace `ws`.
     fn launch(
         &self,
         id: String,
@@ -922,7 +1097,7 @@ impl Dossiers {
         config: &Config,
         (command, account): (&[String], Option<&str>),
         (mcp_json, skills): (serde_json::Value, Option<&[(String, PathBuf)]>),
-        image: Option<&str>,
+        runs: &Runs,
     ) -> Result<Launch> {
         let dossier = ws.dossier.as_str();
         let runtime = PathBuf::from(
@@ -962,15 +1137,24 @@ impl Dossiers {
             skill_mounts(&mut mounts, account, skills)?;
         }
 
-        let sandbox = match image {
-            None => {
+        let sandbox = match runs {
+            Runs::Host => {
                 mounts.push(Mount::ReadOnly("/usr/bin/git".into(), real_git.clone()));
                 bwrap_sandbox(ws, &runtime, &config.session.hidden, &mounts, &env)?
             }
-            Some(image) => docker_sandbox(&id, image, (&runtime, &workdir), mounts, &env)?,
+            Runs::Container(image) => {
+                docker_sandbox(&id, image, (&runtime, &workdir), mounts, &env)?
+            }
+            Runs::Vm(disk) => vm_sandbox(
+                &id,
+                disk,
+                &config.session.vm,
+                &runtime,
+                (&workdir, mounts, &env),
+            )?,
         };
         Ok(Launch {
-            scope: if config.session.scope && image.is_none() {
+            scope: if config.session.scope && !matches!(runs, Runs::Container(_)) {
                 let unit = format!("--unit=legionctl-session-{id}");
                 ["systemd-run", "--user", "--scope", "--quiet", &unit, "--"]
                     .map(String::from)
@@ -979,10 +1163,10 @@ impl Dossiers {
                 Vec::new()
             },
             sandbox,
-            inside: if image.is_some() {
-                Inside::Container
-            } else {
-                Inside::Host
+            inside: match runs {
+                Runs::Host => Inside::Host,
+                Runs::Container(_) => Inside::Container,
+                Runs::Vm(_) => Inside::Vm,
             },
             agent: command
                 .iter()

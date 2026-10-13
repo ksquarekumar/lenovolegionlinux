@@ -928,6 +928,22 @@ pub struct PackIn {
     /// The service whose image the agent layer goes on, when the repository builds more than one.
     #[serde(default)]
     pub service: Option<String>,
+    /// What to make: the agent image (container) or the VM disk (vm).
+    #[serde(default = "as_container", rename = "as")]
+    pub kind: PackKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PackKind {
+    /// `localhost/<repo>/legionctl-agent:latest`, for sessions `--in container`.
+    Container,
+    /// `~/.local/share/legionctl/vm/<repo>.qcow2`, for sessions `--in vm`.
+    Vm,
+}
+
+fn as_container() -> PackKind {
+    PackKind::Container
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

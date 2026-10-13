@@ -4519,6 +4519,7 @@ dependencies = [
  "http",
  "legionctl-api",
  "legionctl-app",
+ "legionctl-core",
  "legionctl-machine",
  "ratatui",
  "rmcp",

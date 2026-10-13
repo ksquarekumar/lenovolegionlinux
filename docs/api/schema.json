@@ -1916,6 +1916,22 @@
           ],
           "description": "The service whose image the agent layer goes on, when the repository builds more than one.",
           "default": null
+        },
+        "as": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "container",
+              "description": "`localhost/<repo>/legionctl-agent:latest`, for sessions `--in container`."
+            },
+            {
+              "type": "string",
+              "const": "vm",
+              "description": "`~/.local/share/legionctl/vm/<repo>.qcow2`, for sessions `--in vm`."
+            }
+          ],
+          "description": "What to make: the agent image (container) or the VM disk (vm).",
+          "default": "container"
         }
       },
       "title": "PackIn",
@@ -7653,6 +7669,11 @@
               "type": "string",
               "const": "container",
               "description": "In a container of the repository's agent image (`legionctl workspace pack`)."
+            },
+            {
+              "type": "string",
+              "const": "vm",
+              "description": "In a VM of the repository's disk (`legionctl workspace pack --as vm`), run by `legionctl vm` in the scope."
             }
           ],
           "description": "Where the session runs: host (a bwrap sandbox) or container (the repository's agent image from `legionctl\nworkspace pack`, with the workspace and the dossier mounted).",
@@ -7683,7 +7704,7 @@
           "items": {
             "type": "string"
           },
-          "description": "`bwrap ...` (the client adds the git gate: its own binary over `/usr/bin/git`), or `docker run ...` of the\nagent image, whose `/usr/bin/git` is the gate already."
+          "description": "`bwrap ...` (the caller adds the git gate: its own legionctl over `/usr/bin/git`), `docker run ...` of the\nagent image, whose `/usr/bin/git` is the gate already, or `vm <spec> --`, which the caller runs with its own\nlegionctl."
         },
         "inside": {
           "oneOf": [
@@ -7696,6 +7717,11 @@
               "type": "string",
               "const": "container",
               "description": "In a container of the repository's agent image (`legionctl workspace pack`)."
+            },
+            {
+              "type": "string",
+              "const": "vm",
+              "description": "In a VM of the repository's disk (`legionctl workspace pack --as vm`), run by `legionctl vm` in the scope."
             }
           ],
           "description": "Where a session runs."
@@ -7793,6 +7819,11 @@
               "type": "string",
               "const": "container",
               "description": "In a container of the repository's agent image (`legionctl workspace pack`)."
+            },
+            {
+              "type": "string",
+              "const": "vm",
+              "description": "In a VM of the repository's disk (`legionctl workspace pack --as vm`), run by `legionctl vm` in the scope."
             }
           ],
           "description": "Where the session runs: host (a bwrap sandbox) or container (the repository's agent image from `legionctl\nworkspace pack`, with the workspace and the dossier mounted).",
@@ -7891,6 +7922,11 @@
                 "description": "In a container of the repository's agent image (`legionctl workspace pack`).",
                 "type": "string",
                 "const": "container"
+              },
+              {
+                "description": "In a VM of the repository's disk (`legionctl workspace pack --as vm`), run by `legionctl vm` in the scope.",
+                "type": "string",
+                "const": "vm"
               }
             ]
           },
@@ -8142,7 +8178,7 @@
           "items": {
             "type": "string"
           },
-          "description": "`bwrap ...` (the client adds the git gate: its own binary over `/usr/bin/git`), or `docker run ...` of the\nagent image, whose `/usr/bin/git` is the gate already."
+          "description": "`bwrap ...` (the caller adds the git gate: its own legionctl over `/usr/bin/git`), `docker run ...` of the\nagent image, whose `/usr/bin/git` is the gate already, or `vm <spec> --`, which the caller runs with its own\nlegionctl."
         },
         "inside": {
           "oneOf": [
@@ -8155,6 +8191,11 @@
               "type": "string",
               "const": "container",
               "description": "In a container of the repository's agent image (`legionctl workspace pack`)."
+            },
+            {
+              "type": "string",
+              "const": "vm",
+              "description": "In a VM of the repository's disk (`legionctl workspace pack --as vm`), run by `legionctl vm` in the scope."
             }
           ],
           "description": "Where a session runs."

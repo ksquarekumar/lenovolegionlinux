@@ -304,10 +304,16 @@ instead of the systemd scope.
   (`session.container.client`; the package builds it for musl in `rust:<version>-alpine`) as the MCP server, the
   hook client and the git gate (`/usr/bin/git` is the client; the real git moves to
   `/usr/local/libexec/legionctl/git`). Tag: `legionctl-pack/<project>:<dossier>`.
-- VM: a qcow2 overlay over `session.vm.base` (a cloud image) per dossier; cloud-init installs the same agent layer.
-  The operating directory, `.git` and the dossier are shared with virtiofs at their own paths; the guest reaches the
-  operator through a QEMU user-network forward to the operator socket (`guestfwd` to the unix socket), so the guest
-  client uses a TCP address; the ACP adapter runs over the VM's serial port (headless) or the console (interactive).
+- VM: a qcow2 disk per repository (`~/.local/share/legionctl/vm/<repo>.qcow2`) over `session.vm.base` (a cloud
+  image, downloaded once and checked against its folder's `SHA512SUMS`); one cloud-init boot installs the same agent
+  layer and the guest service, then disables cloud-init. A session runs `legionctl vm <spec>` in its scope (so pause,
+  unpause and stop act on the scope, as for a host session): a virtiofs daemon per shared folder, then QEMU on a
+  throwaway layer over the disk (`snapshot=on`), the agent on the virtio console (the runner's stdio: JSON-RPC for a
+  headless run, a terminal for an interactive one). In the guest, `legionctl guest` mounts the shares at their own
+  paths, makes the runtime folder its own with only the session's files shared, and listens on the operator socket's
+  path: each connection goes to 10.0.2.100:80, which QEMU's user network forwards to `legionctl relay` on the host,
+  into the operator socket. So every client keeps one transport (the unix socket). The agent runs as the user without
+  root's groups; the VM powers off when it ends, and after an error (the console log says why).
 
 `session run|start --in container` starts `docker run` with: the session's user and group; a private tmpfs home with
 the agent's account folders (A1: login files written in at start, copied back at end) and `session.writable` paths;
@@ -316,11 +322,17 @@ bridge network. A plain-folder workspace (an overlay in bwrap) cannot run in a c
 
 Parts: 1) container pack and headless runs; 2) interactive container sessions and resume; 3) VMs.
 
+Built (2026-10-14, part 3): `workspace pack --as vm` and `session run|start --in vm` as above. QEMU runs with
+`smm=off`: on this machine's kernel, KVM resets a SeaBIOS guest with SMM at once (a reboot loop after GRUB); SMM is
+only for Secure Boot firmware, which these disks do not use. Test (e2e, KVM; CI's own step): pack from the Debian
+cloud image, a headless run and an interactive session through the real client, commits in the host workspaces,
+the push refused by the disk's gate through the guest relay, the dossier shared, the home private.
+
 Built (2026-10-14, parts 1 and 2): `workspace pack [--service <name>]` makes one image per repository (the agent
 layer does not depend on the dossier, since D5 mounts the work), `localhost/<repo>/legionctl-agent:latest`, as a job
 (resumed after a restart); `session run|start --in container`; the sessions table records `inside`, and pause,
 unpause, stop, `session list`, binding liveness and the idle freeze use the container. The client adds `-t` when it
-runs in a terminal. Not built yet: the gateway from a container (it listens on 127.0.0.1), GPU per run, part 3 (VMs).
+runs in a terminal. Not built yet: the gateway from a container or VM (it listens on 127.0.0.1), GPU per run.
 Test (e2e, docker): the repository's Dockerfile image gets the layer; a headless run and an interactive session
 through the real client commit into their workspaces on the host, the gate in the image refuses the push (an agent
 layer without the gate fails the test), the dossier is writable, the home is private, and a run without a pack says

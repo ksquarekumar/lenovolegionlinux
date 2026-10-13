@@ -286,6 +286,21 @@ pub struct SessionConfig {
     pub policy: SessionPolicy,
     /// The agent image of a repository (`workspace pack`) for sessions in a container (W5).
     pub container: ContainerConfig,
+    /// The VM disk of a repository (`workspace pack --as vm`) for sessions in a VM (W5).
+    pub vm: VmConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VmConfig {
+    /// The cloud image (qcow2) a repository's disk starts from; its folder's `SHA512SUMS` checks the download.
+    pub base: String,
+    /// The size of a repository's disk.
+    pub disk_gib: u32,
+    pub memory_mib: u64,
+    pub cpus: u32,
+    /// The virtiofs daemon, which shares the session's folders with the VM.
+    pub virtiofsd: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

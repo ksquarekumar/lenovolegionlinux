@@ -35,6 +35,16 @@ def request(method, params):
     return {}
 
 
+def where():
+    if os.path.exists("/.dockerenv"):
+        return "container"
+    try:
+        with open("/sys/class/dmi/id/sys_vendor") as f:
+            return "vm" if "QEMU" in f.read() else "host"
+    except OSError:
+        return "host"
+
+
 def run(argv):
     done = subprocess.run(argv, capture_output=True, text=True)
     return done.returncode == 0, done.stdout + done.stderr
@@ -65,7 +75,7 @@ def prompt(params):
         f"permission: {outcome.get('optionId', outcome.get('outcome'))}",
         "COMMIT_OK" if committed else "COMMIT_FAILED",
         "PUSH_REFUSED" if (not pushed and "gates.git.deny" in push_output) else "PUSH_NOT_REFUSED",
-        "inside: " + ("container" if os.path.exists("/.dockerenv") else "host"),
+        "inside: " + where(),
     ]
     send({
         "jsonrpc": "2.0",
