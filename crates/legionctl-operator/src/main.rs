@@ -3,10 +3,11 @@
 //! (Fn+R, OSD).
 
 mod acp;
-mod approval;
+mod desktop;
 mod display;
 mod engine;
 mod gateway;
+mod policy;
 mod recorder;
 mod semantic;
 mod server;
@@ -119,6 +120,7 @@ async fn main() -> Result<()> {
         module("the machine event recorder", recorder::run),
         module("the session module", session::run),
         module("the model gateway", gateway),
+        module("the session policy", policy::run),
     ];
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let api = axum::serve(listener, server::router(operator)).with_graceful_shutdown(async move {

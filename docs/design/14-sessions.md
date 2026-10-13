@@ -251,3 +251,10 @@ session's resolved snapshot.
 4. ACP client (agent-client-protocol crate): create, prompt, pause/offload/resume.
 5. Package store and MCP proxy with call log, then the cache.
 6. Gateway accounting and budgets; `/v1/runs`.
+
+Built (2026-10-14, S4 policy, decided 2026-10-13, part 1): idle freeze. With `session.policy.idle_freeze_minutes`
+(0, off, by default; 5 when you want it) the operator's session policy checks every 10 s: a running session whose last
+hook call is a `stop` (its agent ended a reply) older than that, with no freeze or unpause since, is frozen
+(`systemctl --user freeze` on its scope), recorded as `session.freeze`, and the user gets a desktop notice with
+`legionctl session unpause <id>`; `session list` shows it as `frozen`. The operator's audit of the hook calls is the
+record of activity. Offload of headless runs under memory pressure waits for the jobs table (todo-67).

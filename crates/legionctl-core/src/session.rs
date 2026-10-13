@@ -77,21 +77,31 @@ fn now() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
-/// The state of a session's scope (`systemctl --user is-active`): active, inactive (also when it ended and is gone),
-/// failed, or unknown when systemctl cannot answer.
+/// The state of a session's scope (`systemctl --user is-active`): active, frozen (paused), inactive (also when it
+/// ended and is gone), failed, or unknown when systemctl cannot answer.
 #[must_use]
 pub fn scope_state(id: &str) -> String {
-    std::process::Command::new("systemctl")
-        .args([
-            "--user",
-            "is-active",
-            &format!("legionctl-session-{id}.scope"),
-        ])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".into())
+    let unit = format!("legionctl-session-{id}.scope");
+    let systemctl = |args: &[&str]| {
+        std::process::Command::new("systemctl")
+            .arg("--user")
+            .args(args)
+            .arg(&unit)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .ok()
+            .filter(|s| !s.is_empty())
+    };
+    match systemctl(&["is-active"]).as_deref() {
+        Some("active")
+            if systemctl(&["show", "--property=FreezerState", "--value"]).as_deref()
+                == Some("frozen") =>
+        {
+            "frozen".into()
+        }
+        Some(state) => state.into(),
+        None => "unknown".into(),
+    }
 }
 
 /// Whether a session's scope still runs (a paused scope is frozen, and still active).
@@ -99,7 +109,7 @@ pub fn scope_state(id: &str) -> String {
 pub fn scope_active(id: &str) -> bool {
     matches!(
         scope_state(id).as_str(),
-        "active" | "activating" | "reloading"
+        "active" | "frozen" | "activating" | "reloading"
     )
 }
 

@@ -118,6 +118,10 @@
     },
     // Each session in its own systemd user scope (legionctl-session-<id>), for limits, pause and stop.
     "scope": true,
+    // What legionctl does by itself with sessions; off by default (0). idle_freeze_minutes: freeze an interactive
+    // session that many minutes after its agent ended a reply and no prompt came (5 when you want it); it shows as
+    // frozen in `legionctl session list` and a desktop notification, and `legionctl session unpause <id>` thaws it.
+    "policy": { "idle_freeze_minutes": 0 },
     // Writable besides the workspace, the dossier, the repository's .git and the runtime folder (/tmp is private to
     // the session): the agents' own state.
     "writable": ["~/.claude", "~/.claude.json", "~/.codex", "~/.cache"],

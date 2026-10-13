@@ -60,31 +60,9 @@ async fn safe_mode_notice(session: &zbus::Connection, told: &mut Option<String>)
         "{}\nSee journalctl -u legionctl-system, then systemctl restart legionctl-system",
         reason.as_deref().unwrap_or_default().trim()
     );
-    // urgency 2: critical, so it stays until the user closes it
-    let hints = std::collections::HashMap::from([("urgency", zbus::zvariant::Value::U8(2))]);
-    // org.freedesktop.Notifications.Notify: app, replaces id, icon, summary, body, actions, hints, timeout
-    let args = (
-        "legionctl",
-        0u32,
-        "dialog-warning",
-        "legionctl: safe mode",
-        body.as_str(),
-        Vec::<&str>::new(),
-        hints,
-        0i32,
-    );
-    match session
-        .call_method(
-            Some("org.freedesktop.Notifications"),
-            "/org/freedesktop/Notifications",
-            Some("org.freedesktop.Notifications"),
-            "Notify",
-            &args,
-        )
-        .await
-    {
-        Ok(_) => *told = reason,
-        Err(e) => eprintln!("operator: safe mode notice not shown: {e}"),
+    match crate::desktop::tell(session, "dialog-warning", "legionctl: safe mode", &body).await {
+        Ok(()) => *told = reason,
+        Err(e) => eprintln!("operator: safe mode notice not shown: {e:#}"),
     }
 }
 

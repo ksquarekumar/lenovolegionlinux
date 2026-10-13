@@ -282,6 +282,16 @@ pub struct SessionConfig {
     /// Skills from the store, as `<package>` or `<package>/<folder in it>` (a folder with `SKILL.md`). When set,
     /// the agents see exactly these skills, read-only, instead of the user's own; when null, the user's own.
     pub skills: Option<Vec<String>>,
+    /// What legionctl does by itself with sessions (S4, decided 2026-10-13); off by default.
+    pub policy: SessionPolicy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionPolicy {
+    /// Freeze an interactive session this many minutes after its agent ended a reply with no prompt since; 0 never.
+    /// A frozen session reads nothing from its terminal: `legionctl session unpause <id>` lets it go on.
+    pub idle_freeze_minutes: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

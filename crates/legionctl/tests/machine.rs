@@ -1688,6 +1688,161 @@ mod operator_and_daemon {
         assert_eq!(version, legionctl_machine::interface_version());
     }
 
+    /// The operator of the idle-freeze test: a stand-in systemctl that keeps the scope's freezer state in a file and
+    /// logs freeze and thaw, a repository, and `session.policy.idle_freeze_minutes` 1.
+    fn idle_operator(
+        m: &Machine,
+        address: String,
+    ) -> (Operator, std::path::PathBuf, std::path::PathBuf) {
+        let bin = m.dir.join("bin");
+        let scope_file = m.dir.join("freezer");
+        std::fs::write(&scope_file, "running").unwrap();
+        Machine::script(
+            &bin,
+            "systemctl",
+            &format!(
+                "f={f}; case \"$2\" in is-active) echo active;; show) cat \"$f\";; freeze) echo frozen > \"$f\"; \
+                 echo \"freeze $3\" >> {log};; thaw) echo running > \"$f\"; echo \"thaw $3\" >> {log};; esac",
+                f = scope_file.display(),
+                log = m.dir.join("systemctl.log").display()
+            ),
+        );
+        let home = m.dir.join("home");
+        let repo = home.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(
+            home.join(".gitconfig"),
+            "[user]\n  name = Test\n  email = test@example.com\n",
+        )
+        .unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "x",
+            ],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(&repo)
+                    .env("HOME", &home)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        std::fs::create_dir_all(home.join(".config/legionctl")).unwrap();
+        std::fs::write(
+            home.join(".config/legionctl/idle.jsonc"),
+            serde_json::json!({
+                "session": {"agents": {"probe": ["true"]}, "writable": [], "policy": {"idle_freeze_minutes": 1}},
+                "workspace": {"root": home.join("worktrees")}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let path = std::env::join_paths(
+            std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        let op = Operator::start(
+            "idle",
+            &[
+                ("PATH", path),
+                ("HOME", home.clone().into()),
+                ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+                ("DBUS_SYSTEM_BUS_ADDRESS", address.clone().into()),
+                ("DBUS_SESSION_BUS_ADDRESS", address.into()),
+            ],
+        );
+        (op, home, repo)
+    }
+
+    /// Idle freeze (S4 policy, decided 2026-10-13): with `session.policy.idle_freeze_minutes` set, a running
+    /// session whose agent ended a reply and got no prompt for that long is frozen once: the user gets a notice with
+    /// the command that thaws it, `session list` says frozen, and after `session unpause` it is not frozen again
+    /// until a new reply ends. Stand-ins: systemctl (scope state in a file) and the desktop on the private bus.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_idle_session_is_frozen_once_and_the_user_hears_how_to_thaw_it() {
+        let m = Machine::new("idle");
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let address = format!("unix:path={}", m.dir.join("bus").display());
+        let (_desktop, told) = answering_desktop(&address, &["ok", "ok", "ok"]).await;
+        let (op, home, repo) = idle_operator(&m, address);
+        let started = op.run(
+            &repo,
+            &[("HOME", home.to_str().unwrap())],
+            &["session", "start", "probe", "--dossier", "idle", "--json"],
+            "",
+        );
+        assert!(
+            started.status.success(),
+            "{}",
+            String::from_utf8_lossy(&started.stderr)
+        );
+        let id = serde_json::from_slice::<Value>(&started.stdout).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // the agent ended a reply two minutes ago, and no prompt came
+        op.run(
+            &repo,
+            &[("LEGIONCTL_SESSION", id.as_str())],
+            &["hook", "stop"],
+            &serde_json::json!({"session_id": id, "cwd": repo, "hook_event_name": "Stop"})
+                .to_string(),
+        );
+        let aged = std::process::Command::new("python3")
+            .args(["-c", "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); \
+                    c.execute(\"UPDATE events SET ts = ts - 120 WHERE kind = 'internal.hooks.run'\"); c.commit()"])
+            .arg(home.join(".local/state/legionctl/operator.db"))
+            .status()
+            .unwrap();
+        assert!(aged.success());
+        let log = m.dir.join("systemctl.log");
+        let frozen_times = || {
+            std::fs::read_to_string(&log)
+                .unwrap_or_default()
+                .matches("freeze")
+                .count()
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25);
+        while frozen_times() == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the idle session was not frozen"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        let list: Value = serde_json::from_str(&op.ok(&["session", "list", "--json"])).unwrap();
+        assert_eq!(list[0]["state"], "frozen", "{list}");
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let notices = told.lock().unwrap().clone();
+        assert!(
+            notices
+                .iter()
+                .any(|b| b.contains(&format!("legionctl session unpause {id}"))),
+            "{notices:?}"
+        );
+        op.ok(&["session", "unpause", &id]);
+        // two more checks pass: the old reply does not freeze it again
+        tokio::time::sleep(std::time::Duration::from_secs(21)).await;
+        assert_eq!(
+            frozen_times(),
+            1,
+            "{}",
+            std::fs::read_to_string(&log).unwrap()
+        );
+    }
+
     /// A stand-in desktop on the private bus: it records the body of each notification and answers the n-th with
     /// the n-th of `answers` (an action key) as `ActionInvoked`.
     async fn answering_desktop(
@@ -1717,7 +1872,12 @@ mod operator_and_daemon {
                 {
                     let (_, _, _, _, body, actions, ..): Notify =
                         call.body().deserialize().unwrap();
-                    assert_eq!(actions, ["allow", "Allow", "deny", "Deny"]);
+                    // a question offers Allow and Deny; a notice offers nothing and gets no answer
+                    let question = !actions.is_empty();
+                    assert!(
+                        !question || actions == ["allow", "Allow", "deny", "Deny"],
+                        "{actions:?}"
+                    );
                     let n = {
                         let mut seen = seen.lock().unwrap();
                         seen.push(body);
@@ -1725,15 +1885,17 @@ mod operator_and_daemon {
                     };
                     let id = u32::try_from(n).unwrap();
                     bus.reply(&call.header(), &(id,)).await.unwrap();
-                    bus.emit_signal(
-                        None::<()>,
-                        "/org/freedesktop/Notifications",
-                        "org.freedesktop.Notifications",
-                        "ActionInvoked",
-                        &(id, answers[n - 1]),
-                    )
-                    .await
-                    .unwrap();
+                    if question {
+                        bus.emit_signal(
+                            None::<()>,
+                            "/org/freedesktop/Notifications",
+                            "org.freedesktop.Notifications",
+                            "ActionInvoked",
+                            &(id, answers[n - 1]),
+                        )
+                        .await
+                        .unwrap();
+                    }
                 }
             }
         });

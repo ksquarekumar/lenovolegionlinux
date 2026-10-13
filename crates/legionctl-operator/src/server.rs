@@ -108,7 +108,7 @@ async fn approved(op: &OpInfo, principal: &Principal, input: &Value) -> Result<(
         message,
         op: String::new(),
     };
-    match crate::approval::ask(session, &what).await {
+    match crate::desktop::ask(session, &what).await {
         Ok(true) => Ok(()),
         Ok(false) => Err(denied(format!(
             "{} changes more than this session, and the user did not allow it",

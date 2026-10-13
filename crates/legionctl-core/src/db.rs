@@ -293,6 +293,16 @@ impl Db {
         after: i64,
         limit: u32,
     ) -> Result<(Vec<EventRow>, Option<i64>)> {
+        self.events_page_in(filter, after, limit, "")
+    }
+
+    fn events_page_in(
+        &self,
+        filter: &EventFilter,
+        after: i64,
+        limit: u32,
+        order: &str,
+    ) -> Result<(Vec<EventRow>, Option<i64>)> {
         let mut sql = String::from("SELECT id, ts, actor, kind, payload FROM events WHERE id > ?");
         let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(after)];
         if !filter.kinds.is_empty() {
@@ -318,13 +328,22 @@ impl Db {
             sql.push_str(" AND payload LIKE ? ESCAPE '\\'");
             args.push(Box::new(format!("%{}%", escaped.replace('*', "%"))));
         }
-        sql.push_str(" ORDER BY id LIMIT ?");
+        let _ = write!(sql, " ORDER BY id {order} LIMIT ?");
         args.push(Box::new(i64::from(limit) + 1));
         let rows = self.query_events(
             &sql,
             rusqlite::params_from_iter(args.iter().map(AsRef::as_ref)),
         )?;
         Ok(cut(rows, limit, |row| row.id))
+    }
+
+    /// The newest event that `filter` lets through.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn last_event(&self, filter: &EventFilter) -> Result<Option<EventRow>> {
+        let (rows, _) = self.events_page_in(filter, 0, 1, "DESC")?;
+        Ok(rows.into_iter().next())
     }
 
     /// The event with this id.

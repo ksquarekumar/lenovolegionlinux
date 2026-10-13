@@ -1,5 +1,6 @@
-//! An agent's call outside its own session waits for the user (DESIGN/03): a desktop notification with Allow and
-//! Deny. No answer within the time, a closed notification, or no desktop to ask is a no.
+//! The desktop: notices for the user, and the question an agent's call outside its own session waits for (DESIGN/03),
+//! a notification with Allow and Deny; no answer within the time, a closed notification, or no desktop to ask is a
+//! no.
 
 use std::time::Duration;
 
@@ -8,6 +9,40 @@ use futures_util::StreamExt;
 
 const NOTIFICATIONS: &str = "org.freedesktop.Notifications";
 const WAIT: Duration = Duration::from_secs(120);
+
+/// Show the user a notice that stays until closed (urgency critical).
+///
+/// # Errors
+/// There is no notification service on `bus`.
+pub async fn tell(bus: &zbus::Connection, icon: &str, summary: &str, body: &str) -> Result<()> {
+    let hints = std::collections::HashMap::from([("urgency", zbus::zvariant::Value::U8(2))]);
+    // Notify: app, replaces id, icon, summary, body, actions, hints, timeout
+    let args = (
+        "legionctl",
+        0u32,
+        icon,
+        summary,
+        body,
+        Vec::<&str>::new(),
+        hints,
+        0i32,
+    );
+    // a desktop that does not answer must not hold up the caller
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        bus.call_method(
+            Some(NOTIFICATIONS),
+            "/org/freedesktop/Notifications",
+            Some(NOTIFICATIONS),
+            "Notify",
+            &args,
+        ),
+    )
+    .await
+    .context("the desktop notification service does not answer")?
+    .context("no desktop notification service")?;
+    Ok(())
+}
 
 /// Ask the user whether `session` may do `what`; true only for Allow.
 ///
