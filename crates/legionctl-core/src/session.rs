@@ -180,13 +180,28 @@ impl Dossiers {
         ]
         .map(String::from)
         .to_vec();
+        // the runtime folder holds the session bus, systemd's user manager, the GnuPG, ssh and keyring agents: a way
+        // out of the sandbox. Only legionctl's folder (the operator socket, this session's files) comes back.
+        sandbox.extend(["--tmpfs".into(), runtime.to_string_lossy().into_owned()]);
         for path in [
-            &runtime,
+            &runtime.join("legionctl"),
             &ws.path,
             &self.root.join(dossier),
             &git_common_dir(&ws.path)?,
         ] {
             bind(&mut sandbox, path);
+        }
+        // sockets that give a way out (docker, libvirt): a folder becomes empty, a file or socket /dev/null
+        for hidden in &config.session.hidden {
+            let path = Path::new(hidden);
+            if let Ok(meta) = std::fs::metadata(path) {
+                let target = path.to_string_lossy().into_owned();
+                if meta.is_dir() {
+                    sandbox.extend(["--tmpfs".into(), target]);
+                } else {
+                    sandbox.extend(["--ro-bind".into(), "/dev/null".into(), target]);
+                }
+            }
         }
         for writable in &config.session.writable {
             let path = expand_home(writable)?;

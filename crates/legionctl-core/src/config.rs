@@ -84,6 +84,9 @@ pub struct SessionConfig {
     pub agents: BTreeMap<String, Vec<String>>,
     /// Writable in the sandbox besides the workspace, the dossier and the repository's .git (`~/` is the home).
     pub writable: Vec<String>,
+    /// Hidden in the sandbox: sockets and folders that would give a way out (a container or VM with the host's
+    /// files). A folder becomes empty, a file or socket `/dev/null`.
+    pub hidden: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

@@ -53,6 +53,15 @@ network. The e2e test fetches a git package, runs it through the generated proxy
 allowed tool), changes a store file and sees the refusal. Not yet: skills from the store (Claude Code reads skills
 from the real home), remote servers with keyring credentials, the cache (T2).
 
+Fixed (2026-10-13): the sandbox bound the whole `$XDG_RUNTIME_DIR`, and `--ro-bind / /` does not stop a connect to a
+socket. The agent could reach the session bus and systemd's user manager (`systemd-run --user` runs outside the
+sandbox, past the git gate), the GnuPG, ssh and keyring agents, the docker socket (`docker` group: a container with
+the host's files) and libvirt. Now the runtime folder is a private tmpfs with only `legionctl/` bound back, and
+`session.hidden` (default: docker, containerd, podman and libvirt sockets) puts an empty tmpfs on a folder and
+`/dev/null` on a file or socket. The session test checks a decoy session bus and a listening socket from inside;
+its runtime folder is under /var/tmp like /run/user (under /tmp the sandbox hid it anyway, and the test passed
+without the fix).
+
 ## Session record
 
 One row per session in the user database (plus child tables), changed only through the event log:

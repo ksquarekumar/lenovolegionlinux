@@ -103,7 +103,10 @@
     },
     // Writable besides the workspace, the dossier, the repository's .git and the runtime folder (/tmp is private to
     // the session): the agents' own state.
-    "writable": ["~/.claude", "~/.claude.json", "~/.codex", "~/.cache"]
+    "writable": ["~/.claude", "~/.claude.json", "~/.codex", "~/.cache"],
+    // Hidden in the sandbox: a container or VM manager would let the agent run anything on the host's files. The
+    // runtime folder (session bus, systemd, GnuPG, ssh and keyring agents) is hidden always, but legionctl's part.
+    "hidden": ["/run/docker.sock", "/var/run/docker.sock", "/run/containerd", "/run/podman", "/run/libvirt", "/var/run/libvirt"]
   },
 
   // MCP servers for session agents: name -> { "command": [...] or "package": name, "allow": [tools] }. The agent reaches each only

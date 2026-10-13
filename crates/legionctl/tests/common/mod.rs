@@ -16,7 +16,8 @@ pub struct Operator {
 
 impl Operator {
     pub fn start(tag: &str, env: &[(&str, OsString)]) -> Operator {
-        let runtime = PathBuf::from(format!("/tmp/lc-{tag}-{}", std::process::id()));
+        // outside /tmp like /run/user/<uid>: the session sandbox replaces /tmp, which would hide what it must hide
+        let runtime = PathBuf::from(format!("/var/tmp/lc-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&runtime);
         let socket = runtime.join("legionctl/api.sock");
         std::fs::create_dir_all(socket.parent().unwrap()).unwrap();

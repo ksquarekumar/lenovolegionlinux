@@ -913,6 +913,41 @@ fn a_store_package_runs_pinned_and_offline_and_a_changed_one_is_refused() {
     assert!(!String::from_utf8_lossy(&cli(&["dossier", "locks"]).stdout).contains("other"));
 }
 
+/// Run a `session start` launch as the client does, without the systemd scope (CI has no user systemd): the
+/// sandbox, this binary bound over git as the gate, then the agent.
+fn run_launch(op: &Operator, home: &Path, launch: &Value) -> std::process::Output {
+    let strings = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap().to_string())
+            .collect()
+    };
+    let gate = [
+        "--ro-bind",
+        env!("CARGO_BIN_EXE_legionctl"),
+        "/usr/bin/git",
+        "--setenv",
+        "LEGIONCTL_REAL_GIT",
+        launch["real_git"].as_str().unwrap(),
+    ]
+    .map(String::from);
+    let argv = [
+        strings(&launch["sandbox"]),
+        gate.to_vec(),
+        strings(&launch["agent"]),
+    ]
+    .concat();
+    Command::new(&argv[0])
+        .args(&argv[1..])
+        .env_clear()
+        .env("HOME", home)
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .env("XDG_RUNTIME_DIR", &op.runtime)
+        .output()
+        .unwrap()
+}
+
 #[test]
 fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_hold() {
     let (op, home) = operator("session");
@@ -923,10 +958,19 @@ fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_h
                  git reset --hard HEAD 2>&1 | grep -q gates.git.deny && echo RESET_REFUSED; \
                  touch \"$HOME/outside\" 2>/dev/null || echo HOME_READONLY; \
                  touch .agentworkspace/MEMORY/probe.md && echo DOSSIER_WRITABLE; echo \"SESSION=$LEGIONCTL_SESSION\"; \
-                 echo \"SETTINGS=$(cat \"$1\")\"";
+                 echo \"SETTINGS=$(cat \"$1\")\"; \
+                 [ -e \"$XDG_RUNTIME_DIR/bus\" ] || echo BUS_HIDDEN; [ -S \"$HOME/decoy.sock\" ] || echo SOCKET_HIDDEN";
+    // a session bus in the runtime folder, and a listening socket like docker's: neither may reach the agent
+    write(&op.runtime.join("bus"), "");
+    let _decoy = std::os::unix::net::UnixListener::bind(home.join("decoy.sock")).unwrap();
     write(
         &home.join(".config/legionctl/session.jsonc"),
-        &json!({"session": {"agents": {"probe": ["sh", "-c", probe, "probe", "{settings}"]}, "writable": []}}).to_string(),
+        &json!({"session": {
+            "agents": {"probe": ["sh", "-c", probe, "probe", "{settings}"]},
+            "writable": [],
+            "hidden": [home.join("decoy.sock")]
+        }})
+        .to_string(),
     );
     let started = op.run(
         &repo,
@@ -948,37 +992,7 @@ fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_h
         String::from_utf8_lossy(&started.stderr)
     );
     let launch: Value = serde_json::from_slice(&started.stdout).unwrap();
-    let strings = |v: &Value| -> Vec<String> {
-        v.as_array()
-            .unwrap()
-            .iter()
-            .map(|s| s.as_str().unwrap().to_string())
-            .collect()
-    };
-    let gate = [
-        "--ro-bind",
-        env!("CARGO_BIN_EXE_legionctl"),
-        "/usr/bin/git",
-        "--setenv",
-        "LEGIONCTL_REAL_GIT",
-        launch["real_git"].as_str().unwrap(),
-    ]
-    .map(String::from);
-    // the client runs scope + sandbox + gate + agent; CI has no user systemd, so this runs sandbox + gate + agent
-    let argv = [
-        strings(&launch["sandbox"]),
-        gate.to_vec(),
-        strings(&launch["agent"]),
-    ]
-    .concat();
-    let out = Command::new(&argv[0])
-        .args(&argv[1..])
-        .env_clear()
-        .env("HOME", &home)
-        .env("PATH", std::env::var_os("PATH").unwrap())
-        .env("XDG_RUNTIME_DIR", &op.runtime)
-        .output()
-        .unwrap();
+    let out = run_launch(&op, &home, &launch);
     let text = String::from_utf8_lossy(&out.stdout);
     for expected in [
         "COMMIT_OK",
@@ -986,6 +1000,8 @@ fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_h
         "RESET_REFUSED",
         "HOME_READONLY",
         "DOSSIER_WRITABLE",
+        "BUS_HIDDEN",
+        "SOCKET_HIDDEN",
     ] {
         assert!(
             text.contains(expected),
