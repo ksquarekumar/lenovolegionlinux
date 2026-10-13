@@ -10,3 +10,8 @@ post_upgrade() {
   systemctl try-restart legionctl-system.service
   echo ":: per user:             systemctl --user daemon-reload && systemctl --user restart legionctl-operator.service"
 }
+
+pre_remove() {
+  # the daemon's pinned eBPF sensors (they detach when the daemon stops)
+  rm -rf /sys/fs/bpf/legionctl
+}

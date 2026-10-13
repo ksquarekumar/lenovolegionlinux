@@ -33,8 +33,16 @@ permission answers `WatchSessions` with the reason, and the operator records not
 program started inside a scope cgroup is recorded with its arguments and one outside is not; the test asks the
 daemon first, so a refused program fails it with the verifier's message.
 
-Not built yet: pinning under `/sys/fs/bpf/legionctl/` (a restart loads the programs again), and the other uses
-below (workload detection, power attribution, throttle correlation, HID-BPF).
+Pinning (decision D7): each sensor pins its links, then the maps the daemon reads, under
+`/sys/fs/bpf/legionctl/<sensor>-<build>` (`<build>` is the FNV-1a of the eBPF object). A daemon that failed and starts
+again finds the pinned maps of its build and loads nothing: the programs stay attached and the run-queue histogram
+goes on counting; the exec sensor clears the scopes the failed daemon watched. A load removes all other pins of the
+sensor (another build, or a load that stopped before its maps were pinned). A stop (SIGTERM, also at a package
+upgrade) and the package's removal (`pre_remove`) remove the pins, so nothing stays attached without a daemon. Test:
+as root in CI, a killed daemon's successor keeps the same pinned histogram (its inode) and measures, and a SIGTERM
+removes the pins.
+
+Not built yet: the other uses below (workload detection, power attribution, throttle correlation, HID-BPF).
 
 ## Worth doing
 
@@ -63,4 +71,5 @@ below (workload detection, power attribution, throttle correlation, HID-BPF).
 - Maps are bounded (LRU hash, fixed histogram buckets); no unbounded per-PID state.
 - If a program fails verification, `legionctl-system` keeps running, the sensor reports `failed` with the verifier
   message, and `legionctl doctor` shows it.
-- Programs are pinned under `/sys/fs/bpf/legionctl/`, so a daemon restart reattaches them instead of reloading.
+- Programs are pinned under `/sys/fs/bpf/legionctl/`, so a daemon that failed reuses them instead of loading again;
+  a stop and the package's removal remove the pins.

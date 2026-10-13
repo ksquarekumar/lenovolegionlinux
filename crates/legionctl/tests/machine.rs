@@ -35,6 +35,18 @@ fn copy_tree(from: &Path, to: &Path) {
     }
 }
 
+impl Drop for Machine {
+    /// As root, the BPF filesystem the daemon pinned into goes with the machine (and the pinned programs detach).
+    fn drop(&mut self) {
+        if std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/proc/self").unwrap()) == 0 {
+            let _ = std::process::Command::new("umount")
+                .arg(self.dir.join("root/sys/fs/bpf"))
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+}
+
 impl Machine {
     fn new(tag: &'static str) -> Machine {
         let dir =
@@ -1012,6 +1024,25 @@ mod daemon_process {
             .await
             .unwrap();
 
+        // as root, the sensors pin into a BPF filesystem of this machine's own (D7)
+        if std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/proc/self").unwrap()) == 0 {
+            let pins = m.dir.join("root/sys/fs/bpf");
+            std::fs::create_dir_all(&pins).unwrap();
+            assert!(
+                Command::new("mount")
+                    .args(["-t", "bpf", "bpf"])
+                    .arg(&pins)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let daemon = daemon(m, &stand_ins).await;
+        (stand_ins, asked, (bus, daemon))
+    }
+
+    /// The daemon on the private bus of `m`, once it owns its name.
+    pub(super) async fn daemon(m: &Machine, stand_ins: &zbus::Connection) -> Kill {
         let daemon_bin =
             Path::new(env!("CARGO_BIN_EXE_legionctl")).with_file_name("legionctl-system");
         let daemon = Kill(
@@ -1019,13 +1050,15 @@ mod daemon_process {
                 .env_clear()
                 .env("PATH", m.dir.join("bin"))
                 .env("LEGIONCTL_SYSROOT", m.dir.join("root"))
-                .env("DBUS_SYSTEM_BUS_ADDRESS", &address)
+                .env(
+                    "DBUS_SYSTEM_BUS_ADDRESS",
+                    format!("unix:path={}", m.dir.join("bus").display()),
+                )
                 .stderr(Stdio::null())
                 .spawn()
                 .unwrap(),
         );
-
-        let dbus = zbus::fdo::DBusProxy::new(&stand_ins).await.unwrap();
+        let dbus = zbus::fdo::DBusProxy::new(stand_ins).await.unwrap();
         let name = zbus::names::BusName::try_from("org.legionctl.System1").unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         while !dbus.name_has_owner(name.clone()).await.unwrap() {
@@ -1035,7 +1068,7 @@ mod daemon_process {
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        (stand_ins, asked, (bus, daemon))
+        daemon
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1137,7 +1170,7 @@ mod daemon_process {
 /// The operator on the same private bus as the daemon: machine changes reach the event log, and telemetry gets the
 /// root-only part from the daemon.
 mod operator_and_daemon {
-    use super::daemon_process::start;
+    use super::daemon_process::{daemon, start};
     use super::*;
     use serde_json::Value;
 
@@ -1402,38 +1435,79 @@ mod operator_and_daemon {
     }
 
     /// As root (CI runs it with sudo): the eBPF programs pass the verifier of the running kernel, attach, and the
-    /// histogram counts the wakeups of a busy machine.
+    /// histogram counts the wakeups of a busy machine. The programs are pinned (D7): a daemon that failed (killed)
+    /// and starts again reuses the pins of its build, which go on counting; a stop (SIGTERM) removes the pins.
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "needs root: CI runs it with sudo"]
-    async fn as_root_the_runq_sensor_measures_wakeups() {
+    async fn as_root_the_runq_sensor_measures_wakeups_and_outlives_a_failed_daemon() {
+        use std::os::unix::fs::MetadataExt;
+
         let m = Machine::new("runq");
-        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let (stand_ins, _asked, (_bus, first)) = start(&m).await;
         let op = on_bus(&m, "runq");
-        // wakeups: short sleeps in a few shells
-        let load: Vec<_> = (0..4)
-            .map(|_| {
-                std::process::Command::new("/bin/sh")
-                    .args(["-c", "for i in $(seq 200); do /usr/bin/sleep 0.005; done"])
-                    .spawn()
-                    .unwrap()
-            })
-            .collect();
-        let out = op.cli(&["monitor", "--interval-ms", "1000", "--json"]);
-        for mut child in load {
-            child.wait().unwrap();
+        let measures = || {
+            // wakeups: short sleeps in a few shells
+            let load: Vec<_> = (0..4)
+                .map(|_| {
+                    std::process::Command::new("/bin/sh")
+                        .args(["-c", "for i in $(seq 200); do /usr/bin/sleep 0.005; done"])
+                        .spawn()
+                        .unwrap()
+                })
+                .collect();
+            let out = op.cli(&["monitor", "--interval-ms", "1000", "--json"]);
+            for mut child in load {
+                child.wait().unwrap();
+            }
+            let samples: Value = serde_json::from_slice(&out.stdout).unwrap();
+            let sample = &samples[0];
+            assert_eq!(sample["runq_error"], Value::Null, "{sample}");
+            let classes = sample["runq_latency"]
+                .as_object()
+                .unwrap_or_else(|| panic!("{sample}"));
+            assert!(
+                classes.values().any(
+                    |l| l["count"].as_u64().unwrap() > 0 && l["p99_us"].as_u64().unwrap() >= 2
+                ),
+                "{sample}"
+            );
+        };
+        measures();
+        let pins = m.dir.join("root/sys/fs/bpf/legionctl");
+        let pinned = |sensor: &str| {
+            std::fs::read_dir(&pins)
+                .unwrap()
+                .flatten()
+                .find(|e| e.file_name().to_string_lossy().starts_with(sensor))
+                .unwrap_or_else(|| panic!("no {sensor} pins in {}", pins.display()))
+                .path()
+        };
+        let hist = pinned("runq-").join("runq_hist");
+        for pin in ["wakeup", "wakeup_new", "switch_to"] {
+            assert!(hist.with_file_name(pin).exists(), "{pin}");
         }
-        let samples: Value = serde_json::from_slice(&out.stdout).unwrap();
-        let sample = &samples[0];
-        assert_eq!(sample["runq_error"], Value::Null, "{sample}");
-        let classes = sample["runq_latency"]
-            .as_object()
-            .unwrap_or_else(|| panic!("{sample}"));
+        for pin in ["exec", "execs", "watched"] {
+            assert!(pinned("exec-").join(pin).exists(), "{pin}");
+        }
+        let inode = std::fs::metadata(&hist).unwrap().ino();
+
+        // the daemon fails; the next one finds the pins of its build and loads nothing
+        drop(first);
+        let second = daemon(&m, &stand_ins).await;
+        assert_eq!(std::fs::metadata(&hist).unwrap().ino(), inode);
+        measures();
+
+        // a stop removes the pins
         assert!(
-            classes
-                .values()
-                .any(|l| l["count"].as_u64().unwrap() > 0 && l["p99_us"].as_u64().unwrap() >= 2),
-            "{sample}"
+            std::process::Command::new("kill")
+                .args(["-TERM", &second.0.id().to_string()])
+                .status()
+                .unwrap()
+                .success()
         );
+        let mut second = second;
+        second.0.wait().unwrap();
+        assert!(!pins.exists(), "{}", pins.display());
     }
 
     /// As root (CI runs it with sudo): a program started in an agent session's scope (a cgroup

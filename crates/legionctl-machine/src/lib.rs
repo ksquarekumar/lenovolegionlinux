@@ -38,14 +38,17 @@ pub fn human_bytes(bytes: u64) -> String {
 /// The machine daemon's D-Bus interface as committed (`dbus/org.legionctl.System1.xml`).
 pub const INTERFACE_XML: &str = include_str!("../../../dbus/org.legionctl.System1.xml");
 
+/// FNV-1a of `bytes`: a build's or a contract's identity, not a secret.
+#[must_use]
+pub fn fnv(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
 /// FNV-1a of the committed interface: the daemon's `Version` property, equal for a daemon and an operator built from
 /// the same contract.
 #[must_use]
 pub fn interface_version() -> String {
-    let hash = INTERFACE_XML
-        .bytes()
-        .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
-            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
-        });
-    format!("{hash:016x}")
+    format!("{:016x}", fnv(INTERFACE_XML.as_bytes()))
 }

@@ -9,8 +9,12 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use aya::maps::{HashMap, MapData, RingBuf};
 use aya::programs::BtfTracePoint;
+use aya::programs::links::FdLink;
 use aya::{Btf, Ebpf};
+use legionctl_machine::sysroot::SysRoot;
 use tokio::io::unix::AsyncFd;
+
+use crate::pins::Pins;
 
 /// `struct exec` of the program: cgroup id, pid, length, then the arguments.
 const HEADER: usize = 16;
@@ -23,41 +27,54 @@ pub struct Exec {
     pub argv: Vec<String>,
 }
 
-/// The program and its `watched` map, with the scopes it watches: cgroup id -> (uid, session id).
+/// The `watched` map of the program, with the scopes it watches: cgroup id -> (uid, session id).
 pub struct Watch {
-    /// Keeps the program attached.
-    _bpf: Ebpf,
     watched: HashMap<MapData, u64, u32>,
     scopes: BTreeMap<u64, (u32, String)>,
 }
 
-/// Load and attach the program; its ring buffer, ready for the event loop, and the watch.
+/// The pinned program of this build, else load, attach and pin it; its ring buffer, ready for the event loop, and the
+/// watch.
 ///
 /// # Errors
-/// No BPF permission, no BTF, or the verifier refuses the program (its message is in the error).
-pub fn start() -> Result<(AsyncFd<RingBuf<MapData>>, Watch)> {
-    let mut bpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
-        env!("OUT_DIR"),
-        "/exec.bpf.o"
-    )))
-    .context("loading the exec object")?;
-    let btf = Btf::from_sys_fs().context("reading the kernel BTF")?;
-    let program: &mut BtfTracePoint = bpf
-        .program_mut("exec")
-        .context("no program exec")?
-        .try_into()?;
-    program
-        .load("sched_process_exec", &btf)
-        .context("loading exec")?;
-    program
-        .attach()
-        .context("attaching exec to sched_process_exec")?;
-    let ring = RingBuf::try_from(bpf.take_map("execs").context("no execs map")?)?;
-    let watched = HashMap::try_from(bpf.take_map("watched").context("no watched map")?)?;
+/// No BPF permission, no BTF, the verifier refuses the program (its message is in the error), or a pin fails.
+pub fn start(root: &SysRoot) -> Result<(AsyncFd<RingBuf<MapData>>, Watch)> {
+    let object = aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/exec.bpf.o"));
+    let pins = Pins::of(root, "exec", object);
+    let (ring, watched) =
+        if let (Some(ring), Some(watched)) = (pins.map("execs"), pins.map("watched")) {
+            (ring, watched)
+        } else {
+            let mut bpf = Ebpf::load(object).context("loading the exec object")?;
+            let btf = Btf::from_sys_fs().context("reading the kernel BTF")?;
+            let program: &mut BtfTracePoint = bpf
+                .program_mut("exec")
+                .context("no program exec")?
+                .try_into()?;
+            program
+                .load("sched_process_exec", &btf)
+                .context("loading exec")?;
+            let link = program
+                .attach()
+                .context("attaching exec to sched_process_exec")?;
+            let link = FdLink::from(program.take_link(link)?);
+            let ring = bpf.take_map("execs").context("no execs map")?;
+            let watched = bpf.take_map("watched").context("no watched map")?;
+            pins.pin(
+                vec![("exec", link)],
+                &[("execs", &ring), ("watched", &watched)],
+            )?;
+            (ring, watched)
+        };
+    let mut watched: HashMap<MapData, u64, u32> = HashMap::try_from(watched)?;
+    // the scopes a failed daemon watched; `refresh` adds the live ones again
+    let stale: Vec<u64> = watched.keys().collect::<Result<_, _>>()?;
+    for id in &stale {
+        watched.remove(id)?;
+    }
     Ok((
-        AsyncFd::new(ring)?,
+        AsyncFd::new(RingBuf::try_from(ring)?)?,
         Watch {
-            _bpf: bpf,
             watched,
             scopes: BTreeMap::new(),
         },

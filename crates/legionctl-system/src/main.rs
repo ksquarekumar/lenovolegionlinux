@@ -16,6 +16,7 @@
 //! wires event sources and the bus to it.
 
 mod exec;
+mod pins;
 mod runq;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -712,12 +713,12 @@ fn udev_event(e: &udev::Event) -> Option<Event> {
 /// The eBPF sensors. One that cannot load is reported (Sample, doctor), and the daemon runs without it (note 04).
 type Execs = Result<(AsyncFd<aya::maps::RingBuf<aya::maps::MapData>>, exec::Watch), String>;
 
-fn sensors() -> (Arc<Result<runq::Runq, String>>, Execs) {
-    let runq = Arc::new(runq::Runq::start().map_err(|e| format!("{e:#}")));
+fn sensors(root: &SysRoot) -> (Arc<Result<runq::Runq, String>>, Execs) {
+    let runq = Arc::new(runq::Runq::start(root).map_err(|e| format!("{e:#}")));
     if let Err(e) = runq.as_ref() {
         eprintln!("runq sensor: not running: {e}");
     }
-    let execs = exec::start().map_err(|e| format!("{e:#}"));
+    let execs = exec::start(root).map_err(|e| format!("{e:#}"));
     if let Err(e) = &execs {
         eprintln!("exec sensor: not running: {e}");
     }
@@ -731,7 +732,7 @@ async fn main() -> Result<()> {
         return safe(&root);
     }
     let tuning = Arc::new(AtomicBool::new(false));
-    let (runq, execs) = sensors();
+    let (runq, execs) = sensors(&root);
     let watchers = Arc::new(Mutex::new(BTreeMap::new()));
     let monitor = udev::MonitorBuilder::new()?
         .match_subsystem("power_supply")?
@@ -825,7 +826,8 @@ async fn main() -> Result<()> {
             },
             _ = term.recv() => {
                 notify(sd_notify::NotifyState::Stopping);
-                return Ok(());
+                // a stop ends the sensors; a failure keeps them for the next start (D7)
+                return pins::unpin(&root);
             }
         }
     }
