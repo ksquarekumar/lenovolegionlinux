@@ -253,6 +253,8 @@ struct System1 {
     watchers: Arc<Mutex<BTreeMap<u32, String>>>,
     /// Why the session activity sensor does not run.
     exec_error: Option<String>,
+    /// The hash of the interface this build serves (`Version`).
+    version: String,
 }
 
 /// The readings only root makes, with the eBPF sensor's histogram (or its error).
@@ -295,8 +297,14 @@ async fn caller(
 
 #[zbus::interface(name = "org.legionctl.System1")]
 impl System1 {
+    /// The hash of the interface this daemon was built from; the operator compares it with its own.
+    #[zbus(property)]
+    fn version(&self) -> String {
+        self.version.clone()
+    }
+
     /// Apply the power policy for `ac`, `battery` or `auto` (the current power source). Clears an Fn+Q choice.
-    async fn apply(
+    async fn apply_power(
         &self,
         source: String,
         #[zbus(header)] header: zbus::message::Header<'_>,
@@ -317,27 +325,27 @@ impl System1 {
         let lines = carry_out(&self.root, |m| Ok(m.apply(source, Options::default())?.1))
             .map_err(|e| failed(&e))?;
         if !lines.is_empty() {
-            Self::changed(&emitter, "Apply", &lines).await?;
+            Self::changed(&emitter, "ApplyPower", &lines).await?;
         }
         Ok(lines)
     }
 
     /// Choose the GPU GNOME draws the desktop on: `nvidia`, `intel` or `auto`; takes effect at the next login.
-    async fn set_desktop_gpu(
+    async fn set_primary_gpu(
         &self,
         choice: String,
         #[zbus(header)] header: zbus::message::Header<'_>,
         #[zbus(connection)] conn: &zbus::Connection,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<Vec<String>> {
-        authorize(conn, &header, "org.legionctl.gpu.desktop").await?;
+        authorize(conn, &header, "org.legionctl.gpu.primary").await?;
         let choice: gpu::DesktopGpu = choice
             .parse()
             .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("{e}")))?;
         let lines =
             carry_out(&self.root, |m| gpu::set_desktop(m, choice)).map_err(|e| failed(&e))?;
         if !lines.is_empty() {
-            Self::changed(&emitter, "SetDesktopGpu", &lines).await?;
+            Self::changed(&emitter, "SetPrimaryGpu", &lines).await?;
         }
         Ok(lines)
     }
@@ -423,7 +431,7 @@ impl System1 {
 
     /// Boot Windows once (`BootNext` to its firmware entry), then reboot. Nothing reboots when setting `BootNext`
     /// fails.
-    async fn reboot_to_windows(
+    async fn reboot_windows(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
         #[zbus(connection)] conn: &zbus::Connection,
@@ -449,7 +457,7 @@ impl System1 {
                 .collect::<String>()
         ));
         // the signal goes out before the reboot takes the bus down
-        Self::changed(&emitter, "RebootToWindows", &lines).await?;
+        Self::changed(&emitter, "RebootWindows", &lines).await?;
         lines.extend(policy::execute(&self.root, &ledger, reboot));
         Ok(lines)
     }
@@ -691,6 +699,7 @@ async fn main() -> Result<()> {
                 runq,
                 watchers: watchers.clone(),
                 exec_error: execs.as_ref().err().cloned(),
+                version: legionctl_machine::interface_version(),
             },
         )?
         .build()

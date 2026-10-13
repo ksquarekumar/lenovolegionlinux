@@ -28,8 +28,8 @@ flowchart LR
   - Transport: HTTP/JSON on `$XDG_RUNTIME_DIR/legionctl/api.sock`, owned by `legionctl-operator.socket` (systemd
     socket activation; the first request starts the operator). `POST /v1/ops/<name>`, `GET /v1/ops`.
   - The operator reads machine state as the user (status, load, doctor, plans); fan RPM and throttle reasons stay
-    `unknown` without root. Machine changes go to `legionctl-system` over D-Bus with polkit (`Apply`,
-    `SetDesktopGpu`, `Cleanup`).
+    `unknown` without root. Machine changes go to `legionctl-system` over D-Bus with polkit (`ApplyPower`,
+    `SetPrimaryGpu`, `Cleanup`).
   - Client-only commands: `legionctl mcp` and `legionctl tui` (surfaces), and `legionctl run` (it must exec in the
     caller's process; it gets the GPU environment and CPU list from the `internal.gpu.run-env` operation).
   - Paths in inputs (`profile`, `project`, `repo`) are resolved by the client against its own working directory.

@@ -1246,26 +1246,19 @@ fn the_proxy_reaches_a_remote_server_with_its_header() {
     use rmcp::model::CallToolRequestParams;
 
     let (op, home) = operator("remote");
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
     let fixture =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-remote-mcp.py");
+    // the stand-in picks its own port and says which: listening by then, and no race for the port
     let mut server = Command::new("python3")
         .arg(fixture)
-        .arg(port.to_string())
+        .stdout(Stdio::piped())
         .spawn()
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the stand-in server did not start"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    let mut port = String::new();
+    BufReader::new(server.stdout.take().unwrap())
+        .read_line(&mut port)
+        .unwrap();
+    let port: u16 = port.trim().parse().expect("the stand-in's port");
     let url = format!("http://127.0.0.1:{port}/mcp");
     let (tools, answer) = tokio::runtime::Runtime::new().unwrap().block_on(async {
         let mut proxy = tokio::process::Command::new(env!("CARGO_BIN_EXE_legionctl"));

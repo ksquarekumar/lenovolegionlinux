@@ -597,6 +597,15 @@ impl Engine for Operator {
                 "legionctl-system does not answer (fans, throttle reasons and the eBPF sensor are unknown): {e:#}"
             )),
         }
+        if let Ok(theirs) = self.system(async |p| p.version().await)
+            && theirs != legionctl_machine::interface_version()
+        {
+            findings.push(
+                "legionctl-system is built from another D-Bus interface than this operator; restart both after an \
+                 upgrade (sudo systemctl restart legionctl-system; systemctl --user restart legionctl-operator)"
+                    .into(),
+            );
+        }
         findings.extend(agent_findings()?);
         Ok(Findings { findings })
     }
@@ -667,7 +676,7 @@ impl Engine for Operator {
         let name = serde_json::to_value(input.source)?;
         let name = name.as_str().unwrap_or("auto").to_string();
         Ok(Changes {
-            lines: self.system(async move |p| p.apply(&name).await)?,
+            lines: self.system(async move |p| p.apply_power(&name).await)?,
             dry_run: false,
         })
     }
@@ -680,7 +689,7 @@ impl Engine for Operator {
         }
         Ok(Changes {
             lines: self.system(async move |p| {
-                p.set_desktop_gpu(gpu::DesktopGpu::from(choice).as_str())
+                p.set_primary_gpu(gpu::DesktopGpu::from(choice).as_str())
                     .await
             })?,
             dry_run: false,
@@ -1500,7 +1509,7 @@ impl Engine for Operator {
             return Ok(dry_run(&windows::reboot_plan(&windows::state()?)?));
         }
         Ok(Changes {
-            lines: self.system(async |p| p.reboot_to_windows().await)?,
+            lines: self.system(async |p| p.reboot_windows().await)?,
             dry_run: false,
         })
     }

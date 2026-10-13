@@ -14,7 +14,7 @@
     </defaults>
   </action>
 
-  <action id="org.legionctl.gpu.desktop">
+  <action id="org.legionctl.gpu.primary">
     <description>Choose the GPU that draws the desktop</description>
     <message>Authentication is required to choose the GPU that draws the desktop</message>
     <defaults>

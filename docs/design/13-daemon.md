@@ -122,3 +122,16 @@ API and the database; no shared mutable state between processes outside SQLite.
 3. `legionctl-system` (system): D-Bus API with polkit; the Python tooling's work moves into it (switch in 15-layout); sagas for GPU-mode
    and initramfs changes.
 4. Telemetry ring in a sealed memfd; TUI reads it.
+
+## D-Bus contract (built 2026-10-14, DESIGN/03, todo-61)
+
+`dbus/org.legionctl.System1.xml` is the reviewed interface: a machine test compares it with the running daemon's
+`Introspect` output, word for word, and the machine tests call each method the operator uses against the real
+daemon on a private bus. Method names match the operations: `ApplyPower` (power apply), `SetPrimaryGpu` (gpu
+primary; polkit `org.legionctl.gpu.primary`), `Cleanup`, `Tune`, `RebootWindows` (windows reboot), `Sample`,
+`WatchSessions`. The `Version` property is the hash of the committed file; `doctor` says when the daemon and the
+operator come from different files. Change events are `machine.<cause in kebab case>` (`machine.apply-power`).
+Not done, on purpose: a `SafeMode` property (in safe mode the daemon does not run, so the marker file
+`/run/legionctl/safe-mode` stays the channel), the Fn+Q ledger through D-Bus (the operator's dry runs read the same
+root-owned `system.db` read-only, with the daemon's own code), and typed structs for `Tune` and `Sample` (they stay
+JSON documents of `machine` types; D-Bus has no optional fields).

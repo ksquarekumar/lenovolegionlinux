@@ -140,7 +140,7 @@ trait Actuator: Send + Sync {
 
 - Properties: `PowerSource`, `FirmwareMode`, `Override`, `Conditions`, `DesiredState`, `ObservedState`.
 - Methods: `SetOverride(mode)`, `ClearOverride()`, `Plan() → diff`, `Apply()`, `Reload()`, `StartTune(spec)`,
-  `RebootToWindows()`.
+  `RebootWindows()`.
 - Signals: `StateChanged`, `Osd(kind, label, icon, level)`, `Conflict(knob, writer)`.
 - polkit: `org.legion.set-override` allowed for the active local session without a password; tuning, Windows VM
   and reboot actions require admin auth.

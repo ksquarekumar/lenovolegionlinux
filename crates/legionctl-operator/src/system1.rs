@@ -6,10 +6,13 @@
     interface = "org.legionctl.System1"
 )]
 pub trait System1 {
-    fn apply(&self, source: &str) -> zbus::Result<Vec<String>>;
-    fn set_desktop_gpu(&self, choice: &str) -> zbus::Result<Vec<String>>;
+    fn apply_power(&self, source: &str) -> zbus::Result<Vec<String>>;
+    fn set_primary_gpu(&self, choice: &str) -> zbus::Result<Vec<String>>;
     fn cleanup(&self, unload_modules: bool) -> zbus::Result<Vec<String>>;
-    fn reboot_to_windows(&self) -> zbus::Result<Vec<String>>;
+    fn reboot_windows(&self) -> zbus::Result<Vec<String>>;
+    /// The hash of the interface the daemon was built from (`dbus/org.legionctl.System1.xml`).
+    #[zbus(property)]
+    fn version(&self) -> zbus::Result<String>;
     /// A sweep (`tune::TuneSpec` as JSON); returns `tune::TuneReport` as JSON.
     fn tune(&self, spec: &str) -> zbus::Result<String>;
     /// Root-only readings as JSON (`telemetry::RootSample`).

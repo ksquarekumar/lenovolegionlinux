@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""A stand-in remote MCP server (streamable HTTP, JSON answers) for the proxy test: `fake-remote-mcp.py <port>`.
+"""A stand-in remote MCP server (streamable HTTP, JSON answers) for the proxy test: `fake-remote-mcp.py`. It listens
+on a port the kernel picks and prints it, then serves: no other process can take the port between a test's choice and
+the bind.
 
 Tools `docs` and `admin`; `docs` answers with the `x-api-key` header it received, so the test sees the key arrive.
 """
 
 import json
-import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 TOOLS = [
@@ -56,4 +57,6 @@ class Server(BaseHTTPRequestHandler):
         pass
 
 
-ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Server).serve_forever()
+server = ThreadingHTTPServer(("127.0.0.1", 0), Server)
+print(server.server_address[1], flush=True)
+server.serve_forever()

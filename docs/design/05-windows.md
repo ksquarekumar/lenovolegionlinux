@@ -22,12 +22,12 @@ while the volume is dirty or hibernated. So fixes happen inside Windows; Linux o
 
 ## Boot to Windows
 
-`RebootToWindows()` sets `BootNext=0004` via efivars (efibootmgr equivalent) and reboots. One-shot: the next
+`RebootWindows()` sets `BootNext=0004` via efivars (efibootmgr equivalent) and reboots. One-shot: the next
 boot returns to Linux. Exposed in `legionctl`, the control center and as a polkit-guarded D-Bus method.
 
 Built (2026-10-13, M5 part 1): `legionctl windows status` (the entry whose path is `bootmgfw.efi`, whatever its
 label; a `BootNext` already set; NTFS volumes the kernel reported dirty, with the fix) and `legionctl windows reboot
-[--dry-run]` (`System1.RebootToWindows`, polkit action `org.legionctl.windows.reboot`): the daemon runs
+[--dry-run]` (`System1.RebootWindows`, polkit action `org.legionctl.windows.reboot`): the daemon runs
 `efibootmgr --bootnext <id>`, and only when that succeeds, `systemctl reboot`. The e2e test uses this machine's
 captured `efibootmgr` list and checks the order and that a failed `BootNext` stops the reboot. Not run live (it
 restarts the machine).

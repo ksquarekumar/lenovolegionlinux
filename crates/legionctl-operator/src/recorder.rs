@@ -41,7 +41,7 @@ pub async fn run(ready: crate::Ready) -> Result<()> {
         let (kind, payload) = tokio::select! {
             Some(s) = changed.next() => {
                 let a = s.args()?;
-                (format!("machine.{}", a.cause.to_lowercase()), json!({"lines": a.lines}))
+                (format!("machine.{}", kebab(&a.cause)), json!({"lines": a.lines}))
             }
             Some(s) = modes.next() => {
                 let a = s.args()?;
@@ -63,4 +63,16 @@ pub async fn run(ready: crate::Ready) -> Result<()> {
         };
         tokio::task::spawn_blocking(move || record(&kind, &payload)).await?;
     }
+}
+
+/// `ApplyPower` -> `apply-power`: the daemon's cause as an event kind.
+fn kebab(cause: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in cause.chars().enumerate() {
+        if c.is_ascii_uppercase() && i > 0 {
+            out.push('-');
+        }
+        out.push(c.to_ascii_lowercase());
+    }
+    out
 }

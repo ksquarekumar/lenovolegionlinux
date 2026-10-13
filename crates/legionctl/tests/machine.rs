@@ -1003,7 +1003,7 @@ mod daemon_process {
             .serve_at(
                 "/org/freedesktop/PolicyKit1/Authority",
                 Polkit {
-                    denied: &["org.legionctl.gpu.desktop"],
+                    denied: &["org.legionctl.gpu.primary"],
                     asked: asked.clone(),
                 },
             )
@@ -1060,7 +1060,7 @@ mod daemon_process {
 
         // Apply("ac") with polkit's yes: the AC policy, and the session hears what changed and why
         // (the firmware's own platform-profile uevent, which a recorded machine does not send, announces the mode)
-        let lines: Vec<String> = system.call("Apply", &("ac",)).await.unwrap();
+        let lines: Vec<String> = system.call("ApplyPower", &("ac",)).await.unwrap();
         assert!(lines.iter().any(|l| l.contains("max-power")), "{lines:?}");
         assert_eq!(m.file(PROFILE_PATH), "max-power");
         // the daemon owns its name before it handles Start, so a Start signal may come first
@@ -1068,7 +1068,7 @@ mod daemon_process {
             loop {
                 let signal = changes.next().await.unwrap();
                 let (cause, lines): (String, Vec<String>) = signal.body().deserialize().unwrap();
-                if cause == "Apply" {
+                if cause == "ApplyPower" {
                     return lines;
                 }
             }
@@ -1099,13 +1099,13 @@ mod daemon_process {
 
         // polkit's no: nothing changes, and the caller hears why
         let refused = system
-            .call::<_, _, Vec<String>>("SetDesktopGpu", &("nvidia",))
+            .call::<_, _, Vec<String>>("SetPrimaryGpu", &("nvidia",))
             .await
             .unwrap_err();
         assert!(
             refused
                 .to_string()
-                .contains("not authorized for org.legionctl.gpu.desktop"),
+                .contains("not authorized for org.legionctl.gpu.primary"),
             "{refused}"
         );
         assert_eq!(
@@ -1125,7 +1125,7 @@ mod daemon_process {
                 ),
                 (
                     "system-bus-name".into(),
-                    "org.legionctl.gpu.desktop".into(),
+                    "org.legionctl.gpu.primary".into(),
                     1,
                     false
                 ),
@@ -1210,7 +1210,7 @@ mod operator_and_daemon {
         )
         .await
         .unwrap();
-        let lines: Vec<String> = system.call("Apply", &("ac",)).await.unwrap();
+        let lines: Vec<String> = system.call("ApplyPower", &("ac",)).await.unwrap();
         assert!(lines.iter().any(|l| l.contains("max-power")), "{lines:?}");
         let mut logged = Value::Null;
         for _ in 0..100 {
@@ -1219,7 +1219,7 @@ mod operator_and_daemon {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|e| e["kind"] == "machine.apply")
+                .any(|e| e["kind"] == "machine.apply-power")
             {
                 break;
             }
@@ -1229,7 +1229,7 @@ mod operator_and_daemon {
             .as_array()
             .unwrap()
             .iter()
-            .find(|e| e["kind"] == "machine.apply")
+            .find(|e| e["kind"] == "machine.apply-power")
             .unwrap_or_else(|| panic!("not recorded: {logged}"));
         assert_eq!(apply["actor"], "legionctl-system");
         assert_eq!(apply["payload"]["lines"], serde_json::json!(lines));
@@ -1634,6 +1634,58 @@ mod operator_and_daemon {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         };
         assert!(!status.success(), "{status}");
+    }
+
+    /// The D-Bus contract is reviewed: the running daemon's interface is `dbus/org.legionctl.System1.xml`, word for
+    /// word (`LEGIONCTL_WRITE_DBUS=1` writes it after a deliberate change), and its `Version` is that file's hash,
+    /// which the operator's doctor compares with its own.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_daemon_serves_the_committed_d_bus_interface() {
+        let m = Machine::new("dbusxml");
+        let (stand_ins, _asked, _processes) = start(&m).await;
+        let xml: String = zbus::Proxy::new(
+            &stand_ins,
+            "org.legionctl.System1",
+            "/org/legionctl/System1",
+            "org.freedesktop.DBus.Introspectable",
+        )
+        .await
+        .unwrap()
+        .call("Introspect", &())
+        .await
+        .unwrap();
+        let start = xml
+            .find("<interface name=\"org.legionctl.System1\">")
+            .expect("the interface");
+        let end = xml[start..].find("</interface>").unwrap() + start + "</interface>".len();
+        let ours = format!(
+            "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\"\n \
+             \"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">\n<node>\n  {}\n</node>\n",
+            &xml[start..end]
+        );
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dbus/org.legionctl.System1.xml");
+        if std::env::var_os("LEGIONCTL_WRITE_DBUS").is_some() {
+            std::fs::write(&path, &ours).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            ours,
+            "the daemon's interface differs from dbus/org.legionctl.System1.xml; if meant, run \
+             LEGIONCTL_WRITE_DBUS=1 cargo test -p legionctl --test machine the_daemon_serves and rebuild"
+        );
+        let version: String = zbus::Proxy::new(
+            &stand_ins,
+            "org.legionctl.System1",
+            "/org/legionctl/System1",
+            "org.legionctl.System1",
+        )
+        .await
+        .unwrap()
+        .get_property("Version")
+        .await
+        .unwrap();
+        assert_eq!(version, legionctl_machine::interface_version());
     }
 
     /// A stand-in desktop on the private bus: it records the body of each notification and answers the n-th with
