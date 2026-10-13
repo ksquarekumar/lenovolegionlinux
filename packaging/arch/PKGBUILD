@@ -9,7 +9,7 @@ url="https://github.com/ksquarekumar/lenovolegionlinux"
 install=legionctl.install
 license=("MIT")
 depends=("systemd" "systemd-libs" "dbus" "polkit" "power-profiles-daemon" "cpupower" "nvidia-utils" "bubblewrap"
-  "libxkbcommon" "libxkbcommon-x11" "libxcb" "wayland" "vulkan-icd-loader")
+  "libxkbcommon" "libxkbcommon-x11" "libxcb" "wayland" "vulkan-icd-loader" "fontconfig")
 makedepends=("git" "cargo" "clang")
 optdepends=(
   "gnome-shell: the legionctl-osd OSD extension"
