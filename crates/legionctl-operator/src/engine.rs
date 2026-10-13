@@ -11,7 +11,8 @@ use legionctl_api::{
     DossierSearchIn, DossierUseIn, DossierWriteIn, DryRunIn, Events, EventsIn, GateIn, Guard,
     GuardIn, HookReply, HookRunIn, InspectIn, KnobDetail, Knobs, Launch, Lines, Locks, MonitorIn,
     RecordIn, Recording, ReplayIn, Sample, Samples, SessionId, SessionIdIn, SessionIn,
-    SessionStartIn, SessionState, Sessions, TuneIn, TuneReport, WindowsState,
+    SessionStartIn, SessionState, Sessions, ToolCall, ToolCallRow, ToolCalls, ToolCallsIn, TuneIn,
+    TuneReport, WindowsState,
 };
 use legionctl_api::{
     BranchIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath, CloseIn, ConfigFiles,
@@ -882,6 +883,30 @@ impl Engine for Operator {
 
     fn events(&self, _: &Ctx, input: EventsIn) -> Result<Events> {
         Db::open_default()?.events(input.since, input.limit)
+    }
+
+    fn tools_record(&self, ctx: &Ctx, input: ToolCall) -> Result<Empty> {
+        Db::open_default()?.record(&ctx.actor, "tool.call", &serde_json::to_value(&input)?)?;
+        Ok(Empty {})
+    }
+
+    fn tools_calls(&self, _: &Ctx, input: ToolCallsIn) -> Result<ToolCalls> {
+        Db::open_default()?
+            .events_of("tool.call")?
+            .into_iter()
+            .map(|e| {
+                Ok(ToolCallRow {
+                    id: e.id,
+                    ts: e.ts,
+                    call: serde_json::from_value(e.payload)?,
+                })
+            })
+            .filter(|row: &Result<ToolCallRow>| {
+                row.as_ref().map_or(true, |r| {
+                    input.session.as_ref().is_none_or(|s| *s == r.call.session)
+                })
+            })
+            .collect()
     }
 
     fn windows_status(&self, _: &Ctx, _: Empty) -> Result<WindowsState> {

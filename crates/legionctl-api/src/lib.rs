@@ -329,6 +329,10 @@ operations! {
     knobs / KnobsOp = "knobs", Read, ProfileIn => Knobs;
     /// One knob and its history from the event log.
     inspect / Inspect = "inspect", Read, InspectIn => KnobDetail;
+    /// Log one MCP tool call (legionctl mcp-proxy calls this for each call it forwards or refuses).
+    tools_record / ToolsRecord = "tools.record", Workspace, ToolCall => Empty;
+    /// MCP tool calls of session agents through legionctl mcp-proxy, oldest first.
+    tools_calls / ToolsCalls = "tools.calls", Read, ToolCallsIn => ToolCalls;
     /// Dual boot: the Windows boot entry, a pending one-time boot, NTFS volumes Windows left dirty, and what to fix.
     windows_status / WindowsStatus = "windows.status", Read, Empty => WindowsState;
     /// Restart into Windows once (the start after returns to Linux). A human approves it in the polkit dialog.

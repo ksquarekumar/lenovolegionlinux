@@ -95,14 +95,21 @@
   // your home is read-only.
   "session": {
     // Agent name -> command line; {id} is the session id (Claude Code's hooks then find the session's dossier);
-    // {settings} is the session's generated Claude Code settings file (the gates as permissions.deny).
+    // {settings} is the session's generated Claude Code settings file (the gates as permissions.deny); {mcp} is its
+    // MCP config: legionctl's own server and each of mcp.servers through legionctl mcp-proxy, and no other.
     "agents": {
-      "claude": ["claude", "--session-id", "{id}", "--settings", "{settings}"],
+      "claude": ["claude", "--session-id", "{id}", "--settings", "{settings}", "--mcp-config", "{mcp}", "--strict-mcp-config"],
       "codex": ["codex"]
     },
     // Writable besides the workspace, the dossier, the repository's .git and the runtime folder (/tmp is private to
     // the session): the agents' own state.
     "writable": ["~/.claude", "~/.claude.json", "~/.codex", "~/.cache"]
+  },
+
+  // MCP servers for session agents: name -> { "command": [...], "allow": [tools] }. The agent reaches each only
+  // through legionctl mcp-proxy, which offers the allowed tools and logs every call (legionctl tools calls).
+  "mcp": {
+    "servers": {}
   },
 
   // Gates on commands in a session sandbox. /etc/legionctl can lock them.

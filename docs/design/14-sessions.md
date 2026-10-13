@@ -33,6 +33,16 @@ Built (2026-10-13, S2a): agent permission generation. `session start` writes
 e2e session test reads the file from inside the sandbox. Codex keeps its command: its own sandbox inside bwrap is
 still to be checked live.
 
+Built (2026-10-13, S2b): the MCP proxy. `mcp.servers` (config) names each server's command and tool allowlist.
+`session start` writes `sessions/<id>/mcp.json`: legionctl's own server, and each configured server as
+`legionctl mcp-proxy --server <name> --allow <tool>... -- <command>`; the `claude` template passes it with
+`--mcp-config {mcp} --strict-mcp-config`, so the agent has no other servers. The proxy (rmcp server to the agent,
+rmcp client to the server it starts) lists only the allowed tools, refuses others, and logs each call through the
+operator (`tools.record`, event `tool.call`: session, server, tool, BLAKE2b-128 of the arguments, ms, bytes,
+outcome ok/error/failed/refused); `legionctl tools calls [--session]` lists them. A log that fails (operator down)
+does not stop the call; the proxy says so on stderr. Not yet: remote servers with keyring credentials, the package
+store (T1) for the server binaries, the cache (T2).
+
 ## Session record
 
 One row per session in the user database (plus child tables), changed only through the event log:

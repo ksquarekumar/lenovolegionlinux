@@ -677,6 +677,97 @@ fn workspace_topic_branches_keep_their_work_and_the_active_one_merges() {
     );
 }
 
+/// The MCP proxy between a session's agent and a server (here legionctl's own MCP server): the agent sees only the
+/// allowed tools, a call to another tool is refused, and the operator logs both calls with the session id.
+#[test]
+fn the_mcp_proxy_offers_only_allowed_tools_and_logs_every_call() {
+    use rmcp::ServiceExt;
+    use rmcp::model::CallToolRequestParams;
+
+    let (op, home) = operator("proxy");
+    let exe = env!("CARGO_BIN_EXE_legionctl");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (tools, load, doctor) = runtime.block_on(async {
+        let mut proxy = tokio::process::Command::new(exe);
+        proxy
+            .args([
+                "mcp-proxy",
+                "--server",
+                "self",
+                "--allow",
+                "load",
+                "--allow",
+                "capabilities",
+                "--",
+                exe,
+                "mcp",
+            ])
+            .env("XDG_RUNTIME_DIR", &op.runtime)
+            .env("HOME", &home)
+            .env("LEGIONCTL_SESSION", "s-proxy");
+        let agent =
+            ().serve(rmcp::transport::TokioChildProcess::new(proxy).unwrap())
+                .await
+                .unwrap();
+        let mut tools: Vec<String> = agent
+            .peer()
+            .list_all_tools()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        tools.sort();
+        let load = agent
+            .peer()
+            .call_tool(CallToolRequestParams::new("load"))
+            .await
+            .unwrap();
+        let doctor = agent
+            .peer()
+            .call_tool(CallToolRequestParams::new("doctor"))
+            .await;
+        (tools, load, doctor)
+    });
+    assert_eq!(tools, ["capabilities", "load"]);
+    assert_ne!(load.is_error, Some(true), "{load:?}");
+    assert!(
+        doctor
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains("doctor is not allowed for self")),
+        "{doctor:?}"
+    );
+
+    let calls = op.run(
+        &home,
+        &[("HOME", home.to_str().unwrap())],
+        &["tools", "calls", "--json"],
+        "",
+    );
+    let calls: Value = serde_json::from_slice(&calls.stdout).unwrap();
+    let summary: Vec<(String, String, String)> = calls
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["session"].as_str().unwrap().into(),
+                c["tool"].as_str().unwrap().into(),
+                c["outcome"].as_str().unwrap().into(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("s-proxy".into(), "load".into(), "ok".into()),
+            ("s-proxy".into(), "doctor".into(), "refused".into())
+        ]
+    );
+    assert_eq!(calls[0]["args_hash"].as_str().unwrap().len(), 32, "{calls}");
+    assert!(calls[0]["bytes"].as_u64().unwrap() > 0, "{calls}");
+}
+
 #[test]
 fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_hold() {
     let (op, home) = operator("session");

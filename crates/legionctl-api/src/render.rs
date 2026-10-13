@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 
 use crate::io::{
     BenchCompare, BenchRun, CapabilityList, Changes, ConfigFile, ConfigView, DossierFindings,
-    DossierInfo, EventRow, Explanation, Findings, GpuState, Guard, HookReply, HookTable, Knob,
-    KnobDetail, Launch, LayerList, Lines, LoadState, Lock, Recording, Reminder, RunEnv, Sample,
-    SessionState, SetupReport, SkillInfo, Snapshot, Text, TuneReport, Validation, WindowsState,
-    Workspace, WorkspaceStatus,
+    DossierInfo, Empty, EventRow, Explanation, Findings, GpuState, Guard, HookReply, HookTable,
+    Knob, KnobDetail, Launch, LayerList, Lines, LoadState, Lock, Recording, Reminder, RunEnv,
+    Sample, SessionState, SetupReport, SkillInfo, Snapshot, Text, ToolCallRow, TuneReport,
+    Validation, WindowsState, Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -940,5 +940,34 @@ impl Render for WindowsState {
     /// Hazards fail the command.
     fn success(&self) -> bool {
         self.hazards.is_empty()
+    }
+}
+
+impl Render for Vec<ToolCallRow> {
+    fn text(&self) -> String {
+        self.iter()
+            .map(|r| {
+                let c = &r.call;
+                format!(
+                    "{:>6} {} {:<10} {}.{:<24} {:<8} {:>6} ms {:>8} B  {}",
+                    r.id,
+                    r.ts,
+                    &c.session[..c.session.len().min(8)],
+                    c.server,
+                    c.tool,
+                    c.outcome,
+                    c.ms,
+                    c.bytes,
+                    c.args_hash
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+impl Render for Empty {
+    fn text(&self) -> String {
+        String::new()
     }
 }

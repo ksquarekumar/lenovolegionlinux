@@ -676,6 +676,38 @@ fn sixty() -> u32 {
     60
 }
 
+/// One MCP tool call through `legionctl mcp-proxy`, as the event log keeps it (no arguments, only their hash).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ToolCall {
+    /// The agent session (`LEGIONCTL_SESSION`).
+    pub session: String,
+    pub server: String,
+    pub tool: String,
+    /// BLAKE2b-128 of the arguments' JSON, hex.
+    pub args_hash: String,
+    pub ms: u64,
+    /// Size of the result's JSON.
+    pub bytes: u64,
+    /// ok, error (the tool reported one), failed (the server did not answer) or refused (not allowed).
+    pub outcome: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ToolCallsIn {
+    /// Only this session's calls.
+    pub session: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ToolCallRow {
+    pub id: i64,
+    pub ts: i64,
+    #[serde(flatten)]
+    pub call: ToolCall,
+}
+
+pub type ToolCalls = Vec<ToolCallRow>;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct DryRunIn {
     /// Show what would happen; change nothing.

@@ -5,6 +5,7 @@
 mod cli;
 mod hook;
 mod mcp;
+mod proxy;
 mod tui;
 
 use std::os::unix::process::CommandExt;
@@ -18,6 +19,17 @@ use legionctl_api::client::Client;
 fn client_only() -> Vec<Command> {
     vec![
         Command::new("mcp").about("MCP server over stdio, for Claude Code, Codex and other agents"),
+        Command::new("mcp-proxy")
+            .about("A session agent's way to an MCP server: only the allowed tools, every call logged (tools calls)")
+            .arg(Arg::new("server").long("server").required(true))
+            .arg(Arg::new("allow").long("allow").action(ArgAction::Append).help("A tool the agent may call; none: all"))
+            .arg(
+                Arg::new("command")
+                    .num_args(1..)
+                    .allow_hyphen_values(true)
+                    .required(true)
+                    .last(true),
+            ),
         Command::new("tui").about("Live dashboard"),
         Command::new("trace").about("Follow the event log: agents, people and the machine daemon, as it happens"),
         Command::new("hook")
@@ -207,6 +219,21 @@ fn main() -> Result<()> {
     let matches = cli::command(client_only()).get_matches();
     match matches.subcommand() {
         Some(("mcp", _)) => return tokio::runtime::Runtime::new()?.block_on(mcp::serve()),
+        Some(("mcp-proxy", sub)) => {
+            let strings = |id: &str| {
+                sub.get_many::<String>(id)
+                    .into_iter()
+                    .flatten()
+                    .cloned()
+                    .collect()
+            };
+            let server = sub.get_one::<String>("server").cloned().unwrap_or_default();
+            return tokio::runtime::Runtime::new()?.block_on(proxy::serve(
+                server,
+                strings("allow"),
+                strings("command"),
+            ));
+        }
         Some(("tui", _)) => return tui::run(),
         Some(("trace", _)) => return trace(),
         Some(("run", sub)) => return run(sub),

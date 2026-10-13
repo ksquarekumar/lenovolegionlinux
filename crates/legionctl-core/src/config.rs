@@ -32,13 +32,32 @@ pub struct Config {
     pub dossier: DossierConfig,
     pub session: SessionConfig,
     pub gates: GatesConfig,
+    pub mcp: McpConfig,
     pub load: Thresholds,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct McpConfig {
+    /// MCP servers a session's agent reaches, each through `legionctl mcp-proxy` (the allowlist and the call log).
+    pub servers: BTreeMap<String, McpServer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct McpServer {
+    /// The stdio server's command line.
+    pub command: Vec<String>,
+    /// Tools the agent may call; empty: every tool the server offers.
+    #[serde(default)]
+    pub allow: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SessionConfig {
-    /// Agent name -> command line; `{id}` is the session id.
+    /// Agent name -> command line; `{id}` is the session id, `{settings}` the generated Claude Code settings file and
+    /// `{mcp}` the generated MCP config (the proxied servers and legionctl's own).
     pub agents: BTreeMap<String, Vec<String>>,
     /// Writable in the sandbox besides the workspace, the dossier and the repository's .git (`~/` is the home).
     pub writable: Vec<String>,

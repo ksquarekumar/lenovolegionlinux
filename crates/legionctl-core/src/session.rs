@@ -72,6 +72,30 @@ pub fn claude_settings(config: &Config) -> serde_json::Value {
     serde_json::json!({ "permissions": { "deny": deny } })
 }
 
+/// The session's MCP config: legionctl's own server, and every configured server behind `legionctl mcp-proxy` with
+/// its allowlist, as resolved now.
+#[must_use]
+pub fn mcp_config(config: &Config) -> serde_json::Value {
+    let mut servers = serde_json::Map::new();
+    servers.insert(
+        "legionctl".into(),
+        serde_json::json!({ "command": "legionctl", "args": ["mcp"] }),
+    );
+    for (name, server) in &config.mcp.servers {
+        let mut args = vec!["mcp-proxy".to_string(), "--server".into(), name.clone()];
+        for tool in &server.allow {
+            args.extend(["--allow".into(), tool.clone()]);
+        }
+        args.push("--".into());
+        args.extend(server.command.iter().cloned());
+        servers.insert(
+            name.clone(),
+            serde_json::json!({ "command": "legionctl", "args": args }),
+        );
+    }
+    serde_json::json!({ "mcpServers": servers })
+}
+
 impl Dossiers {
     /// Prepare a session of `agent` on `dossier` in the repository that contains `dir`: bind the dossier to a new
     /// session id, open its workspace, record the session, and return how to start it.
@@ -111,6 +135,8 @@ impl Dossiers {
         std::fs::write(&real_git, "")?;
         let settings = session_dir.join("claude-settings.json");
         std::fs::write(&settings, claude_settings(config).to_string())?;
+        let mcp = session_dir.join("mcp.json");
+        std::fs::write(&mcp, mcp_config(config).to_string())?;
 
         // paths under /tmp (tests, other runtimes) are bound after the private /tmp, so they stay visible
         let mut sandbox: Vec<String> = [
