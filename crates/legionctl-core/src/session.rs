@@ -58,15 +58,19 @@ fn new_id() -> Result<String> {
 /// each `hidden` path that exists becomes an empty tmpfs (a folder) or `/dev/null` (a file or socket, like docker's).
 pub fn hide(args: &mut Vec<String>, runtime: &Path, hidden: &[String]) {
     args.extend(["--tmpfs".into(), runtime.to_string_lossy().into_owned()]);
-    for hidden in hidden {
-        let path = Path::new(hidden);
-        if let Ok(meta) = std::fs::metadata(path) {
-            let target = path.to_string_lossy().into_owned();
-            if meta.is_dir() {
-                args.extend(["--tmpfs".into(), target]);
-            } else {
-                args.extend(["--ro-bind".into(), "/dev/null".into(), target]);
-            }
+    // the real paths, once each: bwrap cannot mount through a symlink like /var/run -> /run
+    let mut real: Vec<PathBuf> = hidden
+        .iter()
+        .filter_map(|h| std::fs::canonicalize(h).ok())
+        .collect();
+    real.sort();
+    real.dedup();
+    for path in real {
+        let target = path.to_string_lossy().into_owned();
+        if path.is_dir() {
+            args.extend(["--tmpfs".into(), target]);
+        } else {
+            args.extend(["--ro-bind".into(), "/dev/null".into(), target]);
         }
     }
 }
