@@ -94,9 +94,16 @@ pub struct McpConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct McpServer {
-    /// The stdio server's command line; empty when `package` gives it.
+    /// The stdio server's command line; empty when `package` or `url` gives the server.
     #[serde(default)]
     pub command: Vec<String>,
+    /// A remote server (streamable HTTP): `https://mcp.context7.com/mcp`.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// For a remote server: header -> keyring entry (`secret-tool lookup legionctl-mcp <entry>`), read at session
+    /// start. The session's agent can read them too (same user and sandbox): keep high-value keys in the gateway.
+    #[serde(default)]
+    pub keyring_headers: BTreeMap<String, String>,
     /// A package from the store: its `run` line, from the hash-checked folder, without network unless it allows it.
     #[serde(default)]
     pub package: Option<String>,

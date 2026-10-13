@@ -53,6 +53,21 @@ network. The e2e test fetches a git package, runs it through the generated proxy
 allowed tool), changes a store file and sees the refusal. Not yet: skills from the store (Claude Code reads skills
 from the real home), remote servers with keyring credentials.
 
+Built (2026-10-13): remote MCP servers. `mcp.servers.<name>.url` names a streamable-HTTP server; `keyring_headers`
+maps a header to a keyring entry (`secret-tool lookup legionctl-mcp <entry>`), read by `session start` outside the
+sandbox (inside it the keyring is hidden) and passed to the proxy, so the session's agent can read it too: keep
+high-value keys in the gateway. The proxy (rmcp's streamable-HTTP client, native TLS) applies the same allowlist,
+log and cache. Checked live against DeepWiki's public endpoint. The tools this agent uses outside legionctl fit as:
+
+```jsonc
+"mcp": { "servers": {
+  "deepwiki": { "url": "https://mcp.deepwiki.com/mcp" },
+  "context7": { "url": "https://mcp.context7.com/mcp", "keyring_headers": { "CONTEXT7_API_KEY": "context7" } },
+  "ctx": { "package": "ctx" }
+} },
+"packages": { "ctx": { "kind": "path", "source": "~/.local/bin/ctx", "run": ["{dir}/ctx", "mcp"] } }
+```
+
 Built (2026-10-13, T2): the call cache. `mcp.servers.<name>.cache` lists the tools whose results may be reused,
 each with `ttl_s` and `workspace` (the tool reads the working copy). Nothing else is cached; a tool error is never
 kept. The proxy's key is a BLAKE2b-128 of the server's command (for a package, its store version), the tool, the

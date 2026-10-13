@@ -782,6 +782,89 @@ fn the_mcp_proxy_offers_only_allowed_tools_and_logs_every_call() {
     assert!(calls[0]["bytes"].as_u64().unwrap() > 0, "{calls}");
 }
 
+/// A remote MCP server (streamable HTTP) behind the proxy: its header reaches it, only the allowed tool is offered,
+/// and the call is logged like a local one.
+#[test]
+fn the_proxy_reaches_a_remote_server_with_its_header() {
+    use rmcp::ServiceExt;
+    use rmcp::model::CallToolRequestParams;
+
+    let (op, home) = operator("remote");
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-remote-mcp.py");
+    let mut server = Command::new("python3")
+        .arg(fixture)
+        .arg(port.to_string())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the stand-in server did not start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let (tools, answer) = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let mut proxy = tokio::process::Command::new(env!("CARGO_BIN_EXE_legionctl"));
+        proxy
+            .args([
+                "mcp-proxy",
+                "--server",
+                "docs",
+                "--allow",
+                "docs",
+                "--url",
+                &url,
+                "--header",
+                "x-api-key=abc",
+            ])
+            .env("XDG_RUNTIME_DIR", &op.runtime)
+            .env("HOME", &home)
+            .env("LEGIONCTL_SESSION", "s-remote");
+        let agent =
+            ().serve(rmcp::transport::TokioChildProcess::new(proxy).unwrap())
+                .await
+                .unwrap();
+        let tools: Vec<String> = agent
+            .peer()
+            .list_all_tools()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        let answer = agent
+            .peer()
+            .call_tool(CallToolRequestParams::new("docs"))
+            .await
+            .unwrap();
+        (tools, answer)
+    });
+    let _ = server.kill();
+    let _ = server.wait();
+    assert_eq!(tools, ["docs"]);
+    let text = serde_json::to_string(&answer.content).unwrap();
+    assert!(text.contains("key=abc"), "{text}");
+    let calls = op.run(
+        &home,
+        &[("HOME", home.to_str().unwrap())],
+        &["tools", "calls", "--json"],
+        "",
+    );
+    let calls: Value = serde_json::from_slice(&calls.stdout).unwrap();
+    assert_eq!(
+        (calls[0]["server"].as_str(), calls[0]["outcome"].as_str()),
+        (Some("docs"), Some("ok"))
+    );
+}
+
 /// The cache of the proxy: a tool its config lets it cache answers from the cache with the same result, until the
 /// working copy changes; the log tells cached calls from real ones.
 #[test]

@@ -128,6 +128,28 @@ pub fn mcp_config(config: &Config, store: &crate::packages::Store) -> Result<ser
             let scope = if rule.workspace { ":workspace" } else { "" };
             args.extend(["--cache".into(), format!("{tool}={}{scope}", rule.ttl_s)]);
         }
+        if let Some(url) = &server.url {
+            args.extend(["--url".into(), url.clone()]);
+            for (header, entry) in &server.keyring_headers {
+                let out = std::process::Command::new("secret-tool")
+                    .args(["lookup", "legionctl-mcp", entry])
+                    .output()
+                    .context("secret-tool")?;
+                anyhow::ensure!(
+                    out.status.success() && !out.stdout.is_empty(),
+                    "mcp.servers.{name}: no keyring entry legionctl-mcp {entry} (secret-tool store --label=... legionctl-mcp {entry})"
+                );
+                args.extend([
+                    "--header".into(),
+                    format!("{header}={}", String::from_utf8_lossy(&out.stdout).trim()),
+                ]);
+            }
+            servers.insert(
+                name.clone(),
+                serde_json::json!({ "command": "legionctl", "args": args }),
+            );
+            continue;
+        }
         let command = match &server.package {
             Some(package) => {
                 let p = config
@@ -143,7 +165,7 @@ pub fn mcp_config(config: &Config, store: &crate::packages::Store) -> Result<ser
         };
         anyhow::ensure!(
             !command.is_empty(),
-            "mcp.servers.{name} has neither a command nor a package"
+            "mcp.servers.{name} has neither a command, a package nor a url"
         );
         args.push("--".into());
         args.extend(command);

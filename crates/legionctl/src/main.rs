@@ -30,11 +30,13 @@ fn client_only() -> Vec<Command> {
                     .help("tool=ttl[:workspace]: reuse the tool's result for ttl seconds"),
             )
             .arg(Arg::new("no-network").long("no-network").action(ArgAction::SetTrue).help("Run the server without network"))
+            .arg(Arg::new("url").long("url").help("A remote server (streamable HTTP) instead of a command"))
+            .arg(Arg::new("header").long("header").action(ArgAction::Append).help("name=value for the remote server"))
             .arg(
                 Arg::new("command")
                     .num_args(1..)
                     .allow_hyphen_values(true)
-                    .required(true)
+                    .required_unless_present("url")
                     .last(true),
             ),
         Command::new("tui").about("Live dashboard"),
@@ -242,8 +244,23 @@ fn main() -> Result<()> {
                     .iter()
                     .map(|r: &String| r.parse())
                     .collect::<Result<_>>()?,
-                sub.get_flag("no-network"),
-                strings("command"),
+                match sub.get_one::<String>("url") {
+                    Some(url) => proxy::Upstream::Url {
+                        url: url.clone(),
+                        headers: strings("header")
+                            .iter()
+                            .map(|h: &String| {
+                                h.split_once('=')
+                                    .map(|(n, v)| (n.to_string(), v.to_string()))
+                            })
+                            .collect::<Option<_>>()
+                            .context("--header wants name=value")?,
+                    },
+                    None => proxy::Upstream::Command {
+                        argv: strings("command"),
+                        no_network: sub.get_flag("no-network"),
+                    },
+                },
             ));
         }
         Some(("tui", _)) => return tui::run(),

@@ -222,7 +222,60 @@ fn hit_size(result: &CallToolResult) -> usize {
     serde_json::to_vec(result).map_or(0, |b| b.len())
 }
 
-/// Serve the agent on stdio, forwarding to `command`.
+/// The server behind the proxy: a command it starts, or a remote one.
+pub enum Upstream {
+    Command {
+        argv: Vec<String>,
+        no_network: bool,
+    },
+    Url {
+        url: String,
+        headers: Vec<(String, String)>,
+    },
+}
+
+async fn connect(upstream: &Upstream) -> anyhow::Result<RunningService<RoleClient, ()>> {
+    Ok(match upstream {
+        Upstream::Command { argv, no_network } => {
+            let mut child = if *no_network {
+                // the same files, no network namespace: only loopback, and unix sockets still reach the operator
+                let mut c = tokio::process::Command::new("bwrap");
+                c.args([
+                    "--die-with-parent",
+                    "--dev-bind",
+                    "/",
+                    "/",
+                    "--unshare-net",
+                    "--",
+                ])
+                .args(argv);
+                c
+            } else {
+                let mut c = tokio::process::Command::new(&argv[0]);
+                c.args(&argv[1..]);
+                c
+            };
+            child.kill_on_drop(true);
+            ().serve(TokioChildProcess::new(child)?).await?
+        }
+        Upstream::Url { url, headers } => {
+            let mut config =
+                rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(url.as_str());
+            for (name, value) in headers {
+                config.custom_headers.insert(
+                    http::HeaderName::try_from(name.as_str())?,
+                    http::HeaderValue::try_from(value.as_str())?,
+                );
+            }
+            ().serve(rmcp::transport::StreamableHttpClientTransport::from_config(
+                config,
+            ))
+            .await?
+        }
+    })
+}
+
+/// Serve the agent on stdio, forwarding to `upstream`.
 ///
 /// # Errors
 /// The server does not start, or the stdio transport fails.
@@ -230,35 +283,20 @@ pub async fn serve(
     server: String,
     allow: Vec<String>,
     cache: Vec<CacheRule>,
-    no_network: bool,
-    command: Vec<String>,
+    upstream: Upstream,
 ) -> anyhow::Result<()> {
-    let mut child = if no_network {
-        // the same files, no network namespace: only loopback, and unix sockets still reach the operator
-        let mut c = tokio::process::Command::new("bwrap");
-        c.args([
-            "--die-with-parent",
-            "--dev-bind",
-            "/",
-            "/",
-            "--unshare-net",
-            "--",
-        ])
-        .args(&command);
-        c
-    } else {
-        let mut c = tokio::process::Command::new(&command[0]);
-        c.args(&command[1..]);
-        c
+    let upstream_service = connect(&upstream).await?;
+    // part of each cache key: the command (for a package, its store version) or the URL
+    let command = match upstream {
+        Upstream::Command { argv, .. } => argv,
+        Upstream::Url { url, .. } => vec![url],
     };
-    child.kill_on_drop(true);
-    let upstream = ().serve(TokioChildProcess::new(child)?).await?;
     let proxy = Proxy {
         server,
         command,
         allow,
         cache,
-        upstream,
+        upstream: upstream_service,
         client: Client::new("mcp-proxy")?,
         session: std::env::var("LEGIONCTL_SESSION").unwrap_or_default(),
     };
