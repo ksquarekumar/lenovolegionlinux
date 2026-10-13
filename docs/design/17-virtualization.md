@@ -54,8 +54,15 @@ machines). Live on this machine: up everywhere but the cgroupfs finding; WinBoat
 
 Built (2026-10-13, V1 part 2): `legionctl virt act --action pause|unpause|start|stop <name>`: a container through
 the Engine API (`POST /containers/<name>/<action>`), a VM through `virsh` (suspend, resume, start, shutdown); a name
-that is neither is refused. Checked live on a throwaway container (paused, running, exited). Not yet: CPU and memory
-use per instance, create, tune.
+that is neither is refused. Checked live on a throwaway container (paused, running, exited). Not yet: create, tune.
+
+Built (2026-10-13, V1 part 3): memory per running instance in `virt status` (`memory_bytes`): a container's use
+without its inactive page cache, as `docker stats` counts it (Engine API `stats?stream=false&one-shot=true`), and a
+VM's resident memory (`virsh --readonly domstats --balloon --list-running`: `balloon.rss`, else the balloon size).
+When available memory is below `load.busy.memory_available_percent` (the same limit as the load module), a finding
+names what the guests hold, largest first, and how to pause one. CPU use per instance is not shown: it needs two
+samples per container (about 2 s per call). The live check found the wrong `domstats` option
+(`--state-running`); the stand-in `virsh` now refuses options it does not expect.
 
 ### GPU offload options
 

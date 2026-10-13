@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """A stand-in Docker Engine API on a unix socket for the virt tests: `fake-docker.py <socket> [<log>]`.
 
-/version, /info (cgroupfs driver, no nvidia runtime) and /containers/json (a WinBoat container and another);
+/version, /info (cgroupfs driver, no nvidia runtime), /containers/json (a running WinBoat container and an exited
+one) and the running one's stats (17 GiB used, 1 GiB of it inactive page cache);
 POST /containers/<name>/<action> appends `<action> <name>` to the log and answers 204, or 404 for another name.
 """
 
@@ -15,9 +16,11 @@ ANSWERS = {
     "/version": {"Version": "27.0.0"},
     "/info": {"DockerRootDir": "/var/lib/docker", "CgroupDriver": "cgroupfs", "Runtimes": {"runc": {}}},
     "/containers/json": [
-        {"Names": ["/WinBoat"], "Image": "ghcr.io/dockur/windows:6.05", "Status": "Up 8 hours"},
-        {"Names": ["/db"], "Image": "postgres:17", "Status": "Exited (0) 2 days ago"},
+        {"Id": "wb1", "Names": ["/WinBoat"], "Image": "ghcr.io/dockur/windows:6.05", "State": "running",
+         "Status": "Up 8 hours"},
+        {"Id": "db1", "Names": ["/db"], "Image": "postgres:17", "State": "exited", "Status": "Exited (0) 2 days ago"},
     ],
+    "/containers/wb1/stats": {"memory_stats": {"usage": 17 << 30, "stats": {"inactive_file": 1 << 30}}},
 }
 
 

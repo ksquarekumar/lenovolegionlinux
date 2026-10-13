@@ -841,6 +841,8 @@ pub struct VirtInstance {
     pub state: String,
     /// The app it belongs to, when legionctl recognizes it (`WinBoat` by its image).
     pub consumer: Option<String>,
+    /// Host memory it holds while it runs: a container's use without its page cache, a VM's resident memory.
+    pub memory_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

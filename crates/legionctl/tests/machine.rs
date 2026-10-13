@@ -430,10 +430,22 @@ fn bench_compare_shows_the_score_change_and_the_knob_that_caused_it() {
     assert_eq!(list.lines().count(), 3, "{list}");
 }
 
-/// The recorded machine (no /dev/kvm in the recording) with a stand-in Docker Engine API (its POSTs logged to
-/// `docker.log`) and stand-in systemctl and virsh (virsh logs its verb to `virsh.log`).
-fn virt_machine(tag: &'static str) -> (Machine, daemon_process::Kill, Operator) {
+/// The recorded machine (no /dev/kvm in the recording) with `available_gib` of 32 GiB memory available, a stand-in
+/// Docker Engine API (its POSTs logged to `docker.log`) and stand-in systemctl and virsh (VM `win11` shut off, `lab`
+/// running with 2 GiB resident; virsh logs its verb to `virsh.log`).
+fn virt_machine(
+    tag: &'static str,
+    available_gib: u64,
+) -> (Machine, daemon_process::Kill, Operator) {
     let m = Machine::new(tag);
+    m.set(
+        "/proc/meminfo",
+        &format!(
+            "MemTotal:       {} kB\nMemFree:        1024 kB\nMemAvailable:   {} kB\n",
+            32 << 20,
+            available_gib << 20
+        ),
+    );
     let bin = m.dir.join("bin");
     m.set("/run/systemd/system/.present", "");
     Machine::script(
@@ -445,7 +457,10 @@ fn virt_machine(tag: &'static str) -> (Machine, daemon_process::Kill, Operator) 
         &bin,
         "virsh",
         &format!(
-            "if [ \"$3\" = --readonly ]; then printf ' Id   Name    State\\n---------------------\\n -    win11   shut off\\n'; \
+            "if [ \"$3\" = --readonly ]; then case \"$4\" in \
+             list) printf ' Id   Name    State\\n---------------------\\n -    win11   shut off\\n 3    lab     running\\n';; \
+             domstats) [ \"$5 $6\" = '--balloon --list-running' ] || exit 1; \
+             printf \"Domain: 'lab'\\n  balloon.current=4194304\\n  balloon.rss=2097152\\n\\n\";; esac; \
              else echo \"$3 $4\" >> {}; fi",
             m.dir.join("virsh.log").display()
         ),
@@ -485,7 +500,7 @@ fn virt_machine(tag: &'static str) -> (Machine, daemon_process::Kill, Operator) 
 /// cgroupfs driver, both libvirt daemons).
 #[test]
 fn virt_status_reads_docker_libvirt_and_the_kernel() {
-    let (_m, _docker, op) = virt_machine("virt");
+    let (_m, _docker, op) = virt_machine("virt", 20);
     let out = op.cli(&["virt", "status", "--json"]);
     let status: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let caps: Vec<(String, bool)> = status["capabilities"]
@@ -514,9 +529,12 @@ fn virt_status_reads_docker_libvirt_and_the_kernel() {
     assert_eq!(
         status["instances"],
         serde_json::json!([
-            {"kind": "container", "name": "WinBoat", "image": "ghcr.io/dockur/windows:6.05", "state": "Up 8 hours", "consumer": "WinBoat"},
-            {"kind": "container", "name": "db", "image": "postgres:17", "state": "Exited (0) 2 days ago", "consumer": null},
-            {"kind": "vm", "name": "win11", "image": "", "state": "shut off", "consumer": null}
+            {"kind": "container", "name": "WinBoat", "image": "ghcr.io/dockur/windows:6.05", "state": "Up 8 hours",
+             "consumer": "WinBoat", "memory_bytes": 16_u64 << 30},
+            {"kind": "container", "name": "db", "image": "postgres:17", "state": "Exited (0) 2 days ago",
+             "consumer": null, "memory_bytes": null},
+            {"kind": "vm", "name": "win11", "image": "", "state": "shut off", "consumer": null, "memory_bytes": null},
+            {"kind": "vm", "name": "lab", "image": "", "state": "running", "consumer": null, "memory_bytes": 2_u64 << 30}
         ])
     );
     assert_eq!(
@@ -526,6 +544,20 @@ fn virt_status_reads_docker_libvirt_and_the_kernel() {
             "Docker uses the cgroupfs cgroup driver on a systemd host; the systemd driver is the supported setup",
             "libvirtd and the modular virtqemud both run; use one of them"
         ])
+    );
+}
+
+/// Low host memory (4 of 32 GiB available, below the 15 % `load.busy` limit): the finding names what the guests
+/// hold, largest first, and how to free it; at 20 GiB available there is no such finding (the test above).
+#[test]
+fn virt_status_names_what_guests_hold_when_memory_is_low() {
+    let (_m, _docker, op) = virt_machine("virtlow", 4);
+    let status: serde_json::Value =
+        serde_json::from_slice(&op.cli(&["virt", "status", "--json"]).stdout).unwrap();
+    assert_eq!(
+        status["findings"].as_array().unwrap().last().unwrap(),
+        "memory is low (4.0 GiB of 32.0 GiB available); guests hold 18.0 GiB: WinBoat 16.0 GiB, lab 2.0 GiB. Pause \
+         or stop one: legionctl virt act --action pause <name>"
     );
 }
 
@@ -563,7 +595,7 @@ fn safe_mode_hands_the_machine_to_the_firmware_and_doctor_says_why() {
 /// is neither is refused.
 #[test]
 fn virt_act_pauses_a_container_and_stops_a_vm_by_name() {
-    let (m, _docker, op) = virt_machine("virtact");
+    let (m, _docker, op) = virt_machine("virtact", 20);
     assert_eq!(
         op.ok(&["virt", "act", "--action", "pause", "WinBoat"]),
         "container WinBoat: pause\n"

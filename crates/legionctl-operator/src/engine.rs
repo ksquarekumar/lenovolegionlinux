@@ -1178,9 +1178,10 @@ impl Engine for Operator {
     }
 
     fn virt_status(&self, _: &Ctx, _: Empty) -> Result<VirtStatus> {
+        let low = config(None)?.config.load.busy.memory_available_percent;
         Ok(self
             .runtime
-            .block_on(crate::virt::status(&SysRoot::from_env())))
+            .block_on(crate::virt::status(&SysRoot::from_env(), low)))
     }
 
     fn windows_status(&self, _: &Ctx, _: Empty) -> Result<WindowsState> {

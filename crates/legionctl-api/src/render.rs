@@ -1148,8 +1148,12 @@ impl Render for crate::io::VirtStatus {
                 .as_deref()
                 .map(|c| format!(" ({c})"))
                 .unwrap_or_default();
+            let memory = i
+                .memory_bytes
+                .map(|b| format!(", holds {}", legionctl_machine::human_bytes(b)))
+                .unwrap_or_default();
             format!(
-                "  {:<9} {}{consumer}: {} {}",
+                "  {:<9} {}{consumer}: {} {}{memory}",
                 i.kind, i.name, i.state, i.image
             )
         }));

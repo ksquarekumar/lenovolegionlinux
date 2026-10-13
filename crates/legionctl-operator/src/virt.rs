@@ -80,6 +80,45 @@ fn docker_clis() -> Vec<PathBuf> {
     found
 }
 
+/// Resident memory of each running VM, from `virsh domstats --balloon` (KiB): `balloon.rss`, else the balloon size.
+fn vm_memory() -> std::collections::BTreeMap<String, u64> {
+    let Ok(out) = std::process::Command::new("virsh")
+        .args([
+            "-c",
+            "qemu:///system",
+            "--readonly",
+            "domstats",
+            "--balloon",
+            "--list-running",
+        ])
+        .output()
+    else {
+        return std::collections::BTreeMap::new();
+    };
+    let mut memory = std::collections::BTreeMap::new();
+    let mut domain = String::new();
+    // "Domain: 'win11'" then indented "balloon.rss=16384000" lines
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        if let Some(name) = line.strip_prefix("Domain: ") {
+            domain = name.trim_matches('\'').to_string();
+        } else if let Some((key, value)) = line.trim().split_once('=') {
+            let Ok(kib) = value.parse::<u64>() else {
+                continue;
+            };
+            match key {
+                "balloon.rss" => {
+                    memory.insert(domain.clone(), kib * 1024);
+                }
+                "balloon.current" => {
+                    memory.entry(domain.clone()).or_insert(kib * 1024);
+                }
+                _ => {}
+            }
+        }
+    }
+    memory
+}
+
 fn libvirt_vms() -> Vec<VirtInstance> {
     let Ok(out) = std::process::Command::new("virsh")
         .args(["-c", "qemu:///system", "--readonly", "list", "--all"])
@@ -87,6 +126,7 @@ fn libvirt_vms() -> Vec<VirtInstance> {
     else {
         return Vec::new();
     };
+    let memory = vm_memory();
     // " Id   Name   State" then a rule, then "-    win11   shut off"
     String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -100,6 +140,7 @@ fn libvirt_vms() -> Vec<VirtInstance> {
                 image: String::new(),
                 state: parts.collect::<Vec<_>>().join(" "),
                 consumer: None,
+                memory_bytes: memory.get(name).copied(),
             })
         })
         .collect()
@@ -196,7 +237,13 @@ async fn containers(root: &SysRoot, status: &mut VirtStatus) {
         .unwrap_or_default();
     for c in list {
         let image = c["Image"].as_str().unwrap_or("").to_string();
+        let memory_bytes = if c["State"] == "running" {
+            container_memory(c["Id"].as_str().unwrap_or_default()).await
+        } else {
+            None
+        };
         status.instances.push(VirtInstance {
+            memory_bytes,
             kind: "container".into(),
             name: c["Names"][0]
                 .as_str()
@@ -210,6 +257,56 @@ async fn containers(root: &SysRoot, status: &mut VirtStatus) {
             state: c["Status"].as_str().unwrap_or("").into(),
         });
     }
+}
+
+/// A running container's memory as `docker stats` counts it: the cgroup's use without its inactive page cache.
+async fn container_memory(id: &str) -> Option<u64> {
+    let stats = docker(&format!(
+        "/containers/{id}/stats?stream=false&one-shot=true"
+    ))
+    .await
+    .ok()?;
+    let memory = &stats["memory_stats"];
+    let usage = memory["usage"].as_u64()?;
+    // cgroup v2 names it inactive_file, v1 total_inactive_file
+    let cache = memory["stats"]["inactive_file"]
+        .as_u64()
+        .or_else(|| memory["stats"]["total_inactive_file"].as_u64())
+        .unwrap_or(0);
+    Some(usage.saturating_sub(cache))
+}
+
+/// Host memory is low (below `low_percent` available, the `load.busy` limit): name what the guests hold.
+fn memory_finding(root: &SysRoot, instances: &[VirtInstance], low_percent: f64) -> Option<String> {
+    let meminfo = root.read("/proc/meminfo")?;
+    let total = legionctl_machine::load::meminfo_kib(&meminfo, "MemTotal")? * 1024;
+    let available = legionctl_machine::load::meminfo_kib(&meminfo, "MemAvailable")? * 1024;
+    let mut holders: Vec<(&str, u64)> = instances
+        .iter()
+        .filter_map(|i| Some((i.name.as_str(), i.memory_bytes?)))
+        .filter(|(_, bytes)| *bytes > 0)
+        .collect();
+    // in MiB, which f64 holds exactly
+    let mib = |bytes: u64| f64::from(u32::try_from(bytes >> 20).unwrap_or(u32::MAX));
+    let low = mib(available) * 100.0 < low_percent * mib(total);
+    if !low || holders.is_empty() {
+        return None;
+    }
+    holders.sort_by_key(|h| std::cmp::Reverse(h.1));
+    let held: u64 = holders.iter().map(|(_, b)| b).sum();
+    let human = legionctl_machine::human_bytes;
+    let list: Vec<String> = holders
+        .iter()
+        .map(|(name, bytes)| format!("{name} {}", human(*bytes)))
+        .collect();
+    Some(format!(
+        "memory is low ({} of {} available); guests hold {}: {}. Pause or stop one: legionctl virt act --action \
+         pause <name>",
+        human(available),
+        human(total),
+        human(held),
+        list.join(", ")
+    ))
 }
 
 /// libvirt's daemons and VMs.
@@ -242,8 +339,9 @@ fn vms(status: &mut VirtStatus) {
     status.instances.extend(libvirt_vms());
 }
 
-/// The status of every capability, the instances, and what is wrong.
-pub async fn status(root: &SysRoot) -> VirtStatus {
+/// The status of every capability, the instances, and what is wrong; `low_percent` is the share of memory
+/// available below which memory counts as low.
+pub async fn status(root: &SysRoot, low_percent: f64) -> VirtStatus {
     let mut status = VirtStatus {
         capabilities: kernel(root),
         instances: Vec::new(),
@@ -264,6 +362,9 @@ pub async fn status(root: &SysRoot) -> VirtStatus {
         ));
     }
     vms(&mut status);
+    status
+        .findings
+        .extend(memory_finding(root, &status.instances, low_percent));
     status
 }
 

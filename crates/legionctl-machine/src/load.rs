@@ -67,7 +67,9 @@ pub fn parse_pressure(text: &str) -> Option<Pressure> {
     })
 }
 
-fn meminfo_kib(text: &str, key: &str) -> Option<u64> {
+/// A `/proc/meminfo` value in KiB.
+#[must_use]
+pub fn meminfo_kib(text: &str, key: &str) -> Option<u64> {
     text.lines()
         .find_map(|l| l.strip_prefix(key)?.strip_prefix(':'))?
         .split_whitespace()
