@@ -452,7 +452,7 @@ operations! {
     /// Let a paused session run again.
     session_thaw / SessionThaw = "session.thaw", Workspace, SessionIdIn => Lines;
     /// Continue an ended session: the same id, dossier and workspace, and the agent's resume command.
-    session_resume / SessionResume = "session.resume", Workspace, SessionIdIn => Launch;
+    session_resume / SessionResume = "session.resume", Workspace, SessionResumeIn => Launch;
     /// Whether a git command may run in a session sandbox (the git gate asks this before every git call).
     gates_check / GatesCheck = "gates.check", Read, GateIn => Guard;
     /// The merged config (defaults, /etc/legionctl, ~/.config/legionctl, the repository's .legionctl) and the files

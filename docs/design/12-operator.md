@@ -115,7 +115,10 @@ Operating directory, named workspace in `~/.agentworkspace`, dossier and change 
   into the sandbox and sets `CLAUDE_CONFIG_DIR` and `CODEX_HOME` there; the session keeps its account, so a resume
   uses it again. `agents usage --account <name>` reads the profile's transcripts. An account name has the dossier name
   rules, so it cannot leave the profiles folder. Logins stay in the agents' own files in the profile (not the
-  keyring: the agents read only their files). Not yet: restarting a session on another account.
+  keyring: the agents read only their files). `session resume <id> --account <name>` continues a session on another
+  profile (another login, other rate limits): it copies Claude Code's transcript (`projects/<folder>/<id>.jsonl` and
+  its `<id>/` folder) into that profile, records the new account, and runs the resume command there. The old profile
+  keeps its copy. Codex has no resume by id, so its sessions start anew.
 
 ## AI gateway
 

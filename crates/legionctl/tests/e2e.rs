@@ -2242,6 +2242,73 @@ fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_h
     assert!(String::from_utf8_lossy(&listed.stdout).contains(id));
 }
 
+/// A session continues on another account: `session resume --account` copies Claude Code's transcript into that
+/// profile and runs the agent there, and the session keeps the new account; an unknown profile is refused.
+#[test]
+fn a_resumed_session_continues_on_another_account_with_its_transcript() {
+    let (op, home) = operator("switch");
+    let repo = repository(&home);
+    let env = [("HOME", home.to_str().unwrap())];
+    let cli = |args: &[&str]| op.run(&repo, &env, args, "");
+    // the agent appends a turn to its transcript; the resumed one reads it back and says where it runs
+    let transcript = "$CLAUDE_CONFIG_DIR/projects/p/$LEGIONCTL_SESSION.jsonl";
+    write(
+        &home.join(".config/legionctl/session.jsonc"),
+        &json!({"session": {
+            "agents": {"probe": ["sh", "-c", format!("mkdir -p \"$CLAUDE_CONFIG_DIR/projects/p\" && echo turn-1 >> \"{transcript}\"")]},
+            "resume": {"probe": ["sh", "-c", format!("cat \"{transcript}\"; echo \"CONFIG=$CLAUDE_CONFIG_DIR\"")]},
+            "writable": []
+        }})
+        .to_string(),
+    );
+    for name in ["first", "second"] {
+        assert!(cli(&["agents", "account-add", name]).status.success());
+    }
+    let started = cli(&[
+        "session",
+        "start",
+        "probe",
+        "--dossier",
+        "switch",
+        "--create",
+        "--account",
+        "first",
+        "--json",
+    ]);
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let launch: Value = serde_json::from_slice(&started.stdout).unwrap();
+    run_launch(&op, &home, &launch);
+    let id = launch["id"].as_str().unwrap();
+
+    let refused = cli(&["session", "resume", id, "--account", "ghost"]);
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("no account profile ghost"));
+    let resumed = cli(&["session", "resume", id, "--account", "second", "--json"]);
+    assert!(
+        resumed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    let out = run_launch(
+        &op,
+        &home,
+        &serde_json::from_slice(&resumed.stdout).unwrap(),
+    );
+    let second = home.join(".local/share/legionctl/accounts/second/claude");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!("turn-1\nCONFIG={}\n", second.display()),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let sessions: Value =
+        serde_json::from_slice(&cli(&["session", "list", "--json"]).stdout).unwrap();
+    assert_eq!(sessions[0]["account"], "second", "{sessions}");
+}
+
 /// `agents accounts` sees the login in profile `work`; `agents usage` counts its transcript, not `~/.claude`.
 fn profile_listed_and_counted(op: &Operator, repo: &Path) {
     let accounts: Value = serde_json::from_slice(

@@ -171,20 +171,56 @@ pub fn skills(
     Ok(Some(out))
 }
 
+/// Claude Code's and Codex's folders: the account profile's, or `~/.claude` and `~/.codex`.
+fn agent_homes(account: Option<&str>) -> Result<[PathBuf; 2]> {
+    Ok(if let Some(account) = account {
+        let dir = accounts_root().join(account);
+        [dir.join("claude"), dir.join("codex")]
+    } else {
+        let home = PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?);
+        [home.join(".claude"), home.join(".codex")]
+    })
+}
+
+/// Copy Claude Code's transcript of session `id` (`projects/<folder>/<id>.jsonl`, and its `<id>/` folder of
+/// subagent transcripts) from one config folder to another, so `claude --resume` finds it there.
+fn copy_transcript(from: &Path, to: &Path, id: &str) -> Result<()> {
+    fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+        if from.is_dir() {
+            std::fs::create_dir_all(to)?;
+            for entry in std::fs::read_dir(from)? {
+                let entry = entry?;
+                copy_tree(&entry.path(), &to.join(entry.file_name()))?;
+            }
+        } else {
+            std::fs::copy(from, to)?;
+        }
+        Ok(())
+    }
+    for project in std::fs::read_dir(from.join("projects"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let target = to.join("projects").join(project.file_name());
+        for name in [format!("{id}.jsonl"), id.to_string()] {
+            let source = project.path().join(&name);
+            if source.exists() {
+                std::fs::create_dir_all(&target)?;
+                copy_tree(&source, &target.join(&name))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The skills folders of Claude Code and Codex (the account's, or the home's) as exactly `skills`, read-only.
 fn skill_binds(
     sandbox: &mut Vec<String>,
     account: Option<&str>,
     skills: &[(String, PathBuf)],
 ) -> Result<()> {
-    let homes = if let Some(account) = account {
-        let dir = accounts_root().join(account);
-        [dir.join("claude"), dir.join("codex")]
-    } else {
-        let home = PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?);
-        [home.join(".claude"), home.join(".codex")]
-    };
-    for home in homes {
+    for home in agent_homes(account)? {
         // the mount point must exist: the home is read-only in the sandbox
         let dir = home.join("skills");
         std::fs::create_dir_all(&dir)?;
@@ -355,8 +391,13 @@ impl Dossiers {
     ///
     /// # Errors
     /// No such session, its agent cannot resume, or its dossier is held by another live session.
-    pub fn resume_session(&self, id: &str, config: &Config) -> Result<Launch> {
-        let record = self.session(id)?;
+    pub fn resume_session(
+        &self,
+        id: &str,
+        config: &Config,
+        account: Option<&str>,
+    ) -> Result<Launch> {
+        let mut record = self.session(id)?;
         let command = config.session.resume.get(&record.agent).with_context(|| {
             format!(
                 "agent {} cannot resume a session (session.resume)",
@@ -366,6 +407,17 @@ impl Dossiers {
         let store = crate::packages::Store::new(crate::packages::Store::default_root());
         let mcp_json = mcp_config(config, &store)?;
         let skills = skills(config, &store)?;
+        if let Some(new) = account.filter(|a| record.account.as_deref() != Some(*a)) {
+            account_dir(new)?;
+            let [from, _] = agent_homes(record.account.as_deref())?;
+            let [to, _] = agent_homes(Some(new))?;
+            copy_transcript(&from, &to, id)?;
+            self.db().execute(
+                "UPDATE sessions SET account = ?1 WHERE id = ?2",
+                params![new, id],
+            )?;
+            record.account = Some(new.to_string());
+        }
         let place = place_of(&record.workdir);
         self.bind(
             id,

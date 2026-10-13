@@ -11,8 +11,8 @@ use legionctl_api::{
     DossierSearchIn, DossierUseIn, DossierWriteIn, DryRunIn, Events, EventsIn, GateIn, Guard,
     GuardIn, HookReply, HookRunIn, InspectIn, KnobDetail, Knobs, Launch, Lines, Locks, MonitorIn,
     RecordIn, Recording, ReplayIn, Sample, Samples, SessionId, SessionIdIn, SessionIn,
-    SessionStartIn, SessionState, Sessions, ToolCall, ToolCallRow, ToolCalls, ToolCallsIn, TuneIn,
-    TuneReport, WindowsState,
+    SessionResumeIn, SessionStartIn, SessionState, Sessions, ToolCall, ToolCallRow, ToolCalls,
+    ToolCallsIn, TuneIn, TuneReport, WindowsState,
 };
 use legionctl_api::{
     BranchIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath, CloseIn, ConfigFiles,
@@ -1533,12 +1533,12 @@ impl Engine for Operator {
         scope_control("thaw", &input.id, "running again")
     }
 
-    fn session_resume(&self, ctx: &Ctx, input: SessionIdIn) -> Result<Launch> {
+    fn session_resume(&self, ctx: &Ctx, input: SessionResumeIn) -> Result<Launch> {
         Self::record(ctx, "session.resume", &input)?;
         // the repository's own config layer applies, as at session start
         let session = dossiers()?.session(&input.id)?;
         let resolved = resolve(&Dirs::from_env(), Some(&place_of(&session.workdir)))?;
-        dossiers()?.resume_session(&input.id, &resolved.config)
+        dossiers()?.resume_session(&input.id, &resolved.config, input.account.as_deref())
     }
 
     fn gates_check(&self, _: &Ctx, input: GateIn) -> Result<Guard> {

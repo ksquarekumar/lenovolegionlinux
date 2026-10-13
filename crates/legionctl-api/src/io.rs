@@ -580,6 +580,14 @@ pub struct SessionIdIn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SessionResumeIn {
+    pub id: String,
+    /// Continue on this account profile instead (its rate limits, its login); Claude Code's transcript is copied
+    /// there, so the conversation goes on.
+    pub account: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GateIn {
     /// The git arguments, as the command got them.
     pub args: Vec<String>,
