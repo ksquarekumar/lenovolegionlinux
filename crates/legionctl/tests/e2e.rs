@@ -1247,6 +1247,14 @@ fn dossier_check_finds_dangling_links_unverified_acceptance_and_stale_evidence()
         "id: EV-02\nsupports: [plan#acceptance-2]",
     );
     artifact("MEMORY/01-note.md", "supports: [plan#acceptance-9]");
+    // a plan row that names an artifact by path reaches it by its id
+    let plan = std::fs::read_to_string(dossier.join("plan.md"))
+        .unwrap()
+        .replace(
+            "| acceptance-2 | tests pass | done |",
+            "| acceptance-2 | tests pass (EVIDENCE/validation/02-tests.md) | done |",
+        );
+    write(&dossier.join("plan.md"), &plan);
     // EV-01 was written long before README.md's last commit
     std::fs::File::options()
         .write(true)
@@ -1274,7 +1282,11 @@ fn dossier_check_finds_dangling_links_unverified_acceptance_and_stale_evidence()
     .unwrap();
     assert_eq!(
         around["edges"],
-        json!([{"from": "EV-02", "to": "plan#acceptance-2", "kind": "supports"}])
+        json!([
+            {"from": "EV-02", "to": "plan#acceptance-2", "kind": "supports"},
+            {"from": "plan#acceptance-2", "to": "EV-02", "kind": "refers-to"}
+        ]),
+        "the plan row names the artifact by path and reaches its id"
     );
     assert_eq!(around["nodes"].as_array().unwrap().len(), 2);
 }

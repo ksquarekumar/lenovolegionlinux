@@ -66,16 +66,16 @@ fn cells(line: &str) -> Option<Vec<String>> {
     Some(inner.split('|').map(|c| c.trim().to_string()).collect())
 }
 
-/// Artifact paths (`MEMORY/03-x.md`) named in a text.
-fn paths_in(text: &str, artifacts: &BTreeSet<String>) -> Vec<String> {
+/// The node ids of the artifacts whose paths (`MEMORY/03-x.md`) a text names.
+fn paths_in(text: &str, artifacts: &BTreeMap<String, String>) -> Vec<String> {
     artifacts
         .iter()
-        .filter(|a| text.contains(&format!("{a}.md")))
-        .cloned()
+        .filter(|(path, _)| text.contains(&format!("{path}.md")))
+        .map(|(_, id)| id.clone())
         .collect()
 }
 
-fn plan_rows(plan: &str, artifacts: &BTreeSet<String>, graph: &mut Graph) {
+fn plan_rows(plan: &str, artifacts: &BTreeMap<String, String>, graph: &mut Graph) {
     let mut section = String::new();
     let mut header: Option<Vec<String>> = None;
     for line in plan.lines() {
@@ -149,7 +149,8 @@ pub fn build(dir: &Path) -> Graph {
     markdown(dir, dir, &mut files);
     files.sort();
     let mut graph = Graph::default();
-    let mut artifacts = BTreeSet::new();
+    // path without .md -> node id (the front-matter id when there is one)
+    let mut artifacts = BTreeMap::new();
     for file in &files {
         let text = std::fs::read_to_string(dir.join(file)).unwrap_or_default();
         let fm = front_matter(&text);
@@ -159,7 +160,7 @@ pub fn build(dir: &Path) -> Graph {
             .and_then(|v| v.first())
             .cloned()
             .unwrap_or_else(|| path_id.clone());
-        artifacts.insert(path_id);
+        artifacts.insert(path_id, id.clone());
         let class = fm
             .get("class")
             .and_then(|v| v.first())
