@@ -182,6 +182,8 @@ fn input_schema<T: JsonSchema>() -> Value {
     schema.to_value()
 }
 
+pub use legionctl_core::error::{ApiError, Code, code_of, coded};
+
 /// A call that cannot reach an engine method.
 #[derive(Debug)]
 pub enum DispatchError {
@@ -191,6 +193,23 @@ pub enum DispatchError {
     Input(serde_json::Error),
     /// The engine method failed.
     Failed(anyhow::Error),
+}
+
+impl DispatchError {
+    /// The failure as the API answers it.
+    #[must_use]
+    pub fn api_error(&self, op: &str) -> ApiError {
+        let (code, message) = match self {
+            DispatchError::Unknown(name) => (Code::NotFound, format!("unknown operation {name}")),
+            DispatchError::Input(e) => (Code::InvalidInput, format!("invalid input: {e}")),
+            DispatchError::Failed(e) => (code_of(e), format!("{e:#}")),
+        };
+        ApiError {
+            code,
+            message,
+            op: op.to_string(),
+        }
+    }
 }
 
 macro_rules! operations {

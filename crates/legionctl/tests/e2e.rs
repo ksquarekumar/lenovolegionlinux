@@ -633,6 +633,89 @@ fn a_session_that_works_without_writing_its_dossier_is_nudged_until_it_writes() 
     );
 }
 
+/// The operator audits every call that is not a read, with its input, outcome code and time: a refused change has
+/// the code of its error (in the CLI's error and in the audit), a secret input stays out of the audit, and the
+/// metrics count the error by code.
+#[test]
+fn every_change_is_audited_with_its_outcome_and_errors_have_codes() {
+    let (op, home) = operator("audit");
+    let run =
+        |session: &str, args: &[&str]| op.run(&home, &[("LEGIONCTL_SESSION", session)], args, "");
+    assert!(run("s1", &["dossier", "use", "port"]).status.success());
+    let refused = run("s2", &["dossier", "use", "port"]);
+    assert!(!refused.status.success());
+    let token = "sk-not-for-the-audit";
+    let set = run(
+        "s1",
+        &[
+            "agents",
+            "set",
+            "--agent",
+            "claude",
+            "--scope",
+            "user",
+            "env.TOKEN",
+            token,
+            "--dry-run",
+        ],
+    );
+    assert!(
+        set.status.success(),
+        "{}",
+        String::from_utf8_lossy(&set.stderr)
+    );
+    assert!(run("s1", &["dossier", "ls"]).status.success());
+
+    let events: Vec<Value> =
+        serde_json::from_slice(&run("s1", &["events", "--json"]).stdout).unwrap();
+    let audit: Vec<(String, Value)> = events
+        .iter()
+        .map(|e| {
+            (
+                e["kind"].as_str().unwrap().to_string(),
+                e["payload"].clone(),
+            )
+        })
+        .collect();
+    let kinds: Vec<&str> = audit.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(
+        kinds,
+        ["dossier.use", "dossier.use", "agents.set"],
+        "reads are not audited"
+    );
+    assert_eq!(
+        (
+            audit[0].1["outcome"].clone(),
+            audit[1].1["outcome"].clone(),
+            audit[1].1["input"]["name"].clone()
+        ),
+        (Value::Null, json!("conflict"), json!("port"))
+    );
+    assert_eq!(audit[2].1["input"]["value"], "<secret>");
+    assert!(!serde_json::to_string(&events).unwrap().contains(token));
+
+    let metrics = get(&op, "/v1/metrics");
+    assert!(
+        metrics.contains("legionctl_op_errors_total{op=\"dossier.use\",code=\"conflict\"} 1")
+            && metrics.contains("legionctl_op_calls_total{op=\"dossier.use\"} 2"),
+        "{metrics}"
+    );
+}
+
+/// The body of `GET <path>` on the operator's socket.
+fn get(op: &Operator, path: &str) -> String {
+    let mut stream =
+        std::os::unix::net::UnixStream::connect(op.runtime.join("legionctl/api.sock")).unwrap();
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nhost: l\r\nconnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut response = String::new();
+    std::io::Read::read_to_string(&mut stream, &mut response).unwrap();
+    response.split_once("\r\n\r\n").unwrap().1.to_string()
+}
+
 /// Run one statement on the dossier database of the test's home (to age a binding; nothing else changes it).
 fn sql(home: &Path, statement: &str) {
     let out = Command::new("python3")
@@ -2054,8 +2137,9 @@ fn images_scan_describes_services_and_their_build_cache() {
     assert_eq!(written, scan["services"]);
 }
 
-/// After an upgrade the running operator is the old build: an operation it does not know says to restart it, while
-/// the same request from a client of its own build gets the plain error.
+/// After an upgrade the running operator is the old build: an operation it does not know is a version mismatch that
+/// says to restart it, while the same request from a client of its own build is not found; both in the error
+/// envelope.
 #[test]
 fn an_unknown_operation_from_another_build_says_to_restart_the_operator() {
     let (op, _home) = operator("build");
@@ -2072,23 +2156,33 @@ fn an_unknown_operation_from_another_build_says_to_restart_the_operator() {
         std::io::Read::read_to_string(&mut stream, &mut response).unwrap();
         response
     };
-    let other = ask("0000000000000000");
-    assert!(
-        other.contains("404")
-            && other.contains("restart it (systemctl --user restart legionctl-operator)"),
-        "{other}"
+    // the status line, and the error envelope of the body
+    let answer = |response: String| -> (String, Value) {
+        let (head, body) = response.split_once("\r\n\r\n").unwrap();
+        let body: Value = serde_json::from_str(body).unwrap();
+        (
+            head.lines().next().unwrap().to_string(),
+            body["error"].clone(),
+        )
+    };
+    let (status, error) = answer(ask("0000000000000000"));
+    assert!(status.contains("412"), "{status}");
+    assert_eq!(
+        (error["code"].as_str(), error["op"].as_str()),
+        (Some("version_mismatch"), Some("packages.newer"))
     );
-    let same = ask(legionctl_api::api_fingerprint());
     assert!(
-        same.contains("unknown operation packages.newer\"") && !same.contains("restart"),
-        "{same}"
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("restart it (systemctl --user restart legionctl-operator)"),
+        "{error}"
     );
-    assert!(
-        same.contains(&format!(
-            "x-legionctl-api: {}",
-            legionctl_api::api_fingerprint()
-        )),
-        "{same}"
+    let (status, error) = answer(ask(legionctl_api::api_fingerprint()));
+    assert!(status.contains("404"), "{status}");
+    assert_eq!(
+        (error["code"].as_str(), error["message"].as_str()),
+        (Some("not_found"), Some("unknown operation packages.newer"))
     );
 }
 

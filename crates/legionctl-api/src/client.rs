@@ -2,8 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{ACTOR_HEADER, API_HEADER, Op, SOCKET, api_fingerprint};
-use anyhow::{Context, Result, bail};
+use crate::{ACTOR_HEADER, API_HEADER, ApiError, Code, Op, SOCKET, api_fingerprint, coded};
+use anyhow::{Context, Result};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use serde_json::Value;
@@ -34,15 +34,18 @@ impl Client {
     /// Run the operation `name`.
     ///
     /// # Errors
-    /// The operator does not answer, or refuses: the error carries its message.
+    /// An [`ApiError`]: `unavailable` when the operator does not answer, else the operator's answer.
     pub async fn call_value(&self, name: &str, input: &Value) -> Result<Value> {
         let stream = tokio::net::UnixStream::connect(&self.socket)
             .await
-            .with_context(|| {
-                format!(
-                    "legionctl-operator does not answer on {}; start it with \
-                 `systemctl --user enable --now legionctl-operator.socket`",
-                    self.socket.display()
+            .map_err(|e| {
+                coded(
+                    Code::Unavailable,
+                    format!(
+                        "legionctl-operator does not answer on {} ({e}); start it with \
+                         `systemctl --user enable --now legionctl-operator.socket`",
+                        self.socket.display()
+                    ),
                 )
             })?;
         let (mut sender, connection) =
@@ -76,7 +79,13 @@ impl Client {
         let body: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())
             .context("the operator's answer is not JSON")?;
         if !status.is_success() {
-            bail!("{}", body["error"].as_str().unwrap_or("operation failed"));
+            let error: ApiError =
+                serde_json::from_value(body["error"].clone()).unwrap_or(ApiError {
+                    code: Code::Failed,
+                    message: format!("operation failed with HTTP {status}"),
+                    op: name.to_string(),
+                });
+            return Err(error.into());
         }
         Ok(body)
     }

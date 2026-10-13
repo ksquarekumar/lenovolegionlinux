@@ -649,6 +649,11 @@ impl Dossiers {
                 },
             )
             .optional()?;
-        found.with_context(|| format!("no session {id}; see `legionctl session list`"))
+        found.ok_or_else(|| {
+            crate::error::coded(
+                crate::error::Code::NotFound,
+                format!("no session {id}; see `legionctl session list`"),
+            )
+        })
     }
 }

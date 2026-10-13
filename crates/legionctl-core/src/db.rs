@@ -440,15 +440,25 @@ fn migrate(conn: &mut Connection, migrations: &[&str], path: &Path) -> Result<()
     if current > 0 && usize::try_from(current).unwrap_or(usize::MAX) < migrations.len() {
         let backup = PathBuf::from(format!("{}.v{current}.bak", path.display()));
         let _ = std::fs::remove_file(&backup);
-        conn.execute("VACUUM INTO ?1", params![backup.to_string_lossy()])
-            .with_context(|| format!("backing up {} before its migration", path.display()))?;
+        // another process that opens the database now makes the same backup: one is enough
+        if let Err(e) = conn.execute("VACUUM INTO ?1", params![backup.to_string_lossy()])
+            && !backup.exists()
+        {
+            return Err(e)
+                .with_context(|| format!("backing up {} before its migration", path.display()));
+        }
     }
     for (index, sql) in migrations
         .iter()
         .enumerate()
         .skip(usize::try_from(current).unwrap_or(0))
     {
-        let tx = conn.transaction()?;
+        // the write lock first, then the version again: another process may have applied this step meanwhile
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let applied: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if usize::try_from(applied).unwrap_or(0) > index {
+            continue;
+        }
         tx.execute_batch(sql)
             .with_context(|| format!("applying schema migration {}", index + 1))?;
         tx.pragma_update(None, "user_version", i64::try_from(index + 1)?)?;
@@ -489,6 +499,33 @@ mod tests {
             "the backup is the previous version, unmigrated"
         );
         assert_eq!(backup.events(0, 10).unwrap()[0].kind, "before.upgrade");
+    }
+
+    /// The operator opens its database for each call, from several threads, while the recorder writes: an old
+    /// database that many connections open at once is migrated once, and every open succeeds.
+    #[test]
+    fn many_connections_that_open_an_old_database_at_once_all_succeed() {
+        let dir = std::env::temp_dir().join(format!("legionctl-db-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("operator.db");
+        drop(Db::open(&path, &OPERATOR[..2]).unwrap());
+        let start = std::sync::Barrier::new(16);
+        std::thread::scope(|scope| {
+            let opens: Vec<_> = (0..16)
+                .map(|_| {
+                    scope.spawn(|| {
+                        start.wait();
+                        Db::open(&path, OPERATOR).map(|db| db.schema_version().unwrap())
+                    })
+                })
+                .collect();
+            for open in opens {
+                assert_eq!(
+                    open.join().unwrap().unwrap(),
+                    i64::try_from(OPERATOR.len()).unwrap()
+                );
+            }
+        });
     }
 
     #[test]

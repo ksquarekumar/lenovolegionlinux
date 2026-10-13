@@ -5,6 +5,7 @@ pub mod agents;
 pub mod config;
 pub mod db;
 pub mod dossier;
+pub mod error;
 pub mod folder;
 pub mod gates;
 pub mod graph;

@@ -73,7 +73,17 @@ impl ServerHandler for Legion {
         };
         Ok(match self.run(op, request.arguments).await {
             Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
-            Err(e) => CallToolResult::error(vec![ContentBlock::text(format!("{e:#}"))]),
+            // the same envelope as the socket: {"error": {code, message, op}}
+            Err(e) => CallToolResult::error(vec![ContentBlock::text(
+                serde_json::json!({"error": e.downcast_ref::<legionctl_api::ApiError>().cloned().unwrap_or(
+                    legionctl_api::ApiError {
+                        code: legionctl_api::code_of(&e),
+                        message: format!("{e:#}"),
+                        op: op.name.to_string(),
+                    }
+                )})
+                .to_string(),
+            )]),
         }
         .into())
     }

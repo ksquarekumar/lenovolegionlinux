@@ -316,10 +316,11 @@ fn a_recording_replays_to_the_same_decisions_and_status() {
             "{part} differs on the recording"
         );
     }
+    let log = json(&op, &["events"]);
     assert_eq!(
-        recorded["events"].as_array().unwrap().last().unwrap()["kind"],
+        log.as_array().unwrap().last().unwrap()["kind"],
         "record",
-        "the recording keeps its own request"
+        "the operator's audit keeps the request after it ran"
     );
     assert_eq!(recorded["events"], replayed["events"]);
     let events = std::fs::read_to_string(m.dir.join("recording/events.json")).unwrap();

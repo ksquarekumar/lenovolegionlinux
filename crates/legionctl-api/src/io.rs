@@ -942,7 +942,8 @@ pub struct AgentSetIn {
     pub scope: SettingsScope,
     /// Dotted key: `permissions.defaultMode`, `mcp_servers.ctx.command`.
     pub key: String,
-    /// JSON (`true`, `3`, `["a"]`, `{"k": 1}`) or plain text.
+    /// JSON (`true`, `3`, `["a"]`, `{"k": 1}`) or plain text. Not kept in the audit: it can be a token.
+    #[schemars(extend("x-secret" = true))]
     pub value: String,
     #[serde(default = "here")]
     pub project: ClientPath,

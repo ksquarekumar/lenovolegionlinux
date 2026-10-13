@@ -9,7 +9,13 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
-use legionctl_api::{ACTOR_HEADER, API_HEADER, Ctx, DispatchError, OPS, api_fingerprint};
+use std::fmt::Write as _;
+
+use legionctl_api::{
+    ACTOR_HEADER, API_HEADER, ApiError, Class, Code, Ctx, DispatchError, OPS, OpInfo,
+    api_fingerprint,
+};
+use legionctl_core::db::Db;
 use serde_json::{Value, json};
 
 use crate::engine::Operator;
@@ -52,7 +58,7 @@ async fn metrics(State(operator): State<Arc<Operator>>) -> (StatusCode, String) 
     match sample {
         Ok(s) => (
             StatusCode::OK,
-            legionctl_machine::telemetry::openmetrics(&s),
+            op_metrics() + &legionctl_machine::telemetry::openmetrics(&s),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -84,42 +90,123 @@ async fn run(
             .unwrap_or("unknown")
             .to_string(),
     };
+    let op = OPS.iter().find(|op| op.name == name);
+    let audit = op
+        .filter(|op| op.class != Class::Read)
+        .map(|op| (ctx.actor.clone(), redacted(op, &input)));
+    let started = std::time::Instant::now();
     // engine methods read files and run programs; keep them off the async threads
+    let call = name.clone();
     let result = tokio::task::spawn_blocking(move || {
-        legionctl_api::dispatch(&*operator, &ctx, &name, input)
+        legionctl_api::dispatch(&*operator, &ctx, &call, input)
     })
     .await;
-    match result {
-        Ok(Ok(output)) => (StatusCode::OK, Json(output)),
-        Ok(Err(DispatchError::Unknown(name))) => {
+    let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let answer = match result {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(e)) => {
+            let mut error = e.api_error(&name);
             // after an upgrade the running operator is the old build until it restarts
-            let other_build = headers
-                .get(API_HEADER)
-                .is_some_and(|v| v != api_fingerprint());
-            let hint = if other_build {
-                "; this operator is a different build than the client: restart it \
-                 (systemctl --user restart legionctl-operator)"
-            } else {
-                ""
-            };
-            error(
-                StatusCode::NOT_FOUND,
-                &format!("unknown operation {name}{hint}"),
-            )
+            if matches!(e, DispatchError::Unknown(_))
+                && headers
+                    .get(API_HEADER)
+                    .is_some_and(|v| v != api_fingerprint())
+            {
+                error.code = Code::VersionMismatch;
+                error.message.push_str(
+                    "; this operator is a different build than the client: restart it \
+                     (systemctl --user restart legionctl-operator)",
+                );
+            }
+            Err(error)
         }
-        Ok(Err(DispatchError::Input(e))) => {
-            error(StatusCode::BAD_REQUEST, &format!("invalid input: {e}"))
+        Err(e) => Err(ApiError {
+            code: Code::Internal,
+            message: format!("operation crashed: {e}"),
+            op: name.clone(),
+        }),
+    };
+    let code = answer.as_ref().err().map(|e| e.code);
+    count(op.map_or("unknown", |op| op.name), code, ms);
+    if let Some((actor, input)) = audit {
+        let payload = json!({"input": input, "outcome": code, "ms": ms});
+        if let Err(e) = Db::open_default().and_then(|db| db.record(&actor, &name, &payload)) {
+            eprintln!("operator: audit of {name} not recorded: {e:#}");
         }
-        Ok(Err(DispatchError::Failed(e))) => {
-            error(StatusCode::UNPROCESSABLE_ENTITY, &format!("{e:#}"))
-        }
-        Err(e) => error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("operation crashed: {e}"),
+    }
+    match answer {
+        Ok(output) => (StatusCode::OK, Json(output)),
+        Err(error) => (
+            StatusCode::from_u16(error.code.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Json(json!({"error": error})),
         ),
     }
 }
 
-fn error(status: StatusCode, message: &str) -> (StatusCode, Json<Value>) {
-    (status, Json(json!({"error": message})))
+/// The input as the audit keeps it: fields whose schema says `x-secret` become `<secret>`, and strings over 512
+/// bytes become their size.
+fn redacted(op: &OpInfo, input: &Value) -> Value {
+    fn shorten(value: &Value) -> Value {
+        match value {
+            Value::String(s) if s.len() > 512 => Value::String(format!("<{} bytes>", s.len())),
+            Value::Array(items) => items.iter().map(shorten).collect(),
+            Value::Object(map) => map.iter().map(|(k, v)| (k.clone(), shorten(v))).collect(),
+            other => other.clone(),
+        }
+    }
+    let schema = (op.input)();
+    let mut out = shorten(input);
+    if let (Some(map), Some(props)) = (out.as_object_mut(), schema["properties"].as_object()) {
+        for (field, prop) in props {
+            if prop["x-secret"] == true && map.contains_key(field) {
+                map.insert(field.clone(), Value::String("<secret>".into()));
+            }
+        }
+    }
+    out
+}
+
+/// Calls, failures by code and total time of each operation since the operator started.
+#[derive(Default)]
+struct Counts {
+    calls: u64,
+    ms: u64,
+    errors: std::collections::BTreeMap<&'static str, u64>,
+}
+
+static COUNTS: std::sync::Mutex<std::collections::BTreeMap<&'static str, Counts>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn count(op: &'static str, code: Option<Code>, ms: u64) {
+    let mut counts = COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let c = counts.entry(op).or_default();
+    c.calls += 1;
+    c.ms += ms;
+    if let Some(code) = code {
+        let name = code.as_str();
+        *c.errors.entry(name).or_default() += 1;
+    }
+}
+
+/// The counters in `OpenMetrics` text.
+fn op_metrics() -> String {
+    let counts = COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut out = String::from(
+        "# TYPE legionctl_op_calls counter\n# TYPE legionctl_op_errors counter\n# TYPE legionctl_op_ms counter\n",
+    );
+    for (op, c) in counts.iter() {
+        let _ = writeln!(out, "legionctl_op_calls_total{{op=\"{op}\"}} {}", c.calls);
+        let _ = writeln!(out, "legionctl_op_ms_total{{op=\"{op}\"}} {}", c.ms);
+        for (code, n) in &c.errors {
+            let _ = writeln!(
+                out,
+                "legionctl_op_errors_total{{op=\"{op}\",code=\"{code}\"}} {n}"
+            );
+        }
+    }
+    out
 }

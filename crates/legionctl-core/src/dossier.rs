@@ -255,12 +255,16 @@ impl Dossiers {
             }
             Some((holder, holder_tool, updated)) => {
                 let stale = !self.live(&holder, updated, now);
-                ensure!(
-                    stale || steal,
-                    "dossier '{name}' is in use by session {holder} ({holder_tool}), last active {} min ago; use another dossier \
-                     (--dossier <name>; a new name makes one), or take this one over with --steal",
-                    (now - updated) / 60
-                );
+                if !(stale || steal) {
+                    return Err(crate::error::coded(
+                        crate::error::Code::Conflict,
+                        format!(
+                            "dossier '{name}' is in use by session {holder} ({holder_tool}), last active {} min ago; use \
+                             another dossier (--dossier <name>; a new name makes one), or take this one over with --steal",
+                            (now - updated) / 60
+                        ),
+                    ));
+                }
                 tx.execute(
                     "UPDATE bindings SET released = ?1 WHERE dossier = ?2 AND released IS NULL",
                     params![now, name],
@@ -684,10 +688,12 @@ impl Dossiers {
         overwrite: bool,
     ) -> Result<PathBuf> {
         let full = self.guard_write(session, rel)?;
-        ensure!(
-            overwrite || !full.exists(),
-            "{rel} exists; use `legionctl dossier edit`, or add --overwrite"
-        );
+        if !overwrite && full.exists() {
+            return Err(crate::error::coded(
+                crate::error::Code::Conflict,
+                format!("{rel} exists; use `legionctl dossier edit`, or add --overwrite"),
+            ));
+        }
         let old = std::fs::read_to_string(&full).unwrap_or_default();
         let new = with_newline(content);
         atomic_write(&full, &new)?;

@@ -6,13 +6,13 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use legionctl_api::{
-    Account, BenchCompare, BenchCompareIn, BenchIn, BenchResult, BenchRun, BenchRuns, DossierAddIn,
-    DossierAppendIn, DossierCheckIn, DossierEditIn, DossierFindings, DossierList, DossierReadIn,
-    DossierSearchIn, DossierUseIn, DossierWriteIn, DryRunIn, Events, EventsIn, GateIn, Guard,
-    GuardIn, HookReply, HookRunIn, InspectIn, KnobDetail, Knobs, Launch, Lines, Locks, MonitorIn,
-    RecordIn, Recording, ReplayIn, Sample, Samples, SessionExec, SessionId, SessionIdIn, SessionIn,
-    SessionResumeIn, SessionStartIn, SessionState, Sessions, ToolCall, ToolCallRow, ToolCalls,
-    ToolCallsIn, TuneIn, TuneReport, WindowsState,
+    Account, BenchCompare, BenchCompareIn, BenchIn, BenchResult, BenchRun, BenchRuns, Code,
+    DossierAddIn, DossierAppendIn, DossierCheckIn, DossierEditIn, DossierFindings, DossierList,
+    DossierReadIn, DossierSearchIn, DossierUseIn, DossierWriteIn, DryRunIn, Events, EventsIn,
+    GateIn, Guard, GuardIn, HookReply, HookRunIn, InspectIn, KnobDetail, Knobs, Launch, Lines,
+    Locks, MonitorIn, RecordIn, Recording, ReplayIn, Sample, Samples, SessionExec, SessionId,
+    SessionIdIn, SessionIn, SessionResumeIn, SessionStartIn, SessionState, Sessions, ToolCall,
+    ToolCallRow, ToolCalls, ToolCallsIn, TuneIn, TuneReport, WindowsState, coded,
 };
 use legionctl_api::{
     BranchIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath, CloseIn, ConfigFiles,
@@ -211,11 +211,6 @@ fn dry_run(steps: &[policy::Step]) -> Changes {
 }
 
 impl Operator {
-    fn record(ctx: &Ctx, kind: &str, input: &impl serde::Serialize) -> Result<()> {
-        Db::open_default()?.record(&ctx.actor, kind, &serde_json::to_value(input)?)?;
-        Ok(())
-    }
-
     /// A machine change through `legionctl-system`; polkit asks the human.
     fn system<T>(&self, call: impl AsyncFnOnce(&System1Proxy<'_>) -> zbus::Result<T>) -> Result<T> {
         self.runtime.block_on(async {
@@ -223,9 +218,17 @@ impl Operator {
                 .await
                 .context("connecting to the system bus")?;
             let proxy = System1Proxy::new(&conn).await?;
-            call(&proxy)
-                .await
-                .context("legionctl-system refused or failed")
+            call(&proxy).await.map_err(|e| {
+                let code = match &e {
+                    zbus::Error::FDO(fdo) => match **fdo {
+                        zbus::fdo::Error::AccessDenied(_) => Code::Denied,
+                        zbus::fdo::Error::InvalidArgs(_) => Code::InvalidInput,
+                        _ => Code::Failed,
+                    },
+                    _ => Code::Failed,
+                };
+                coded(code, format!("legionctl-system: {e}"))
+            })
         })
     }
 
@@ -596,7 +599,7 @@ impl Engine for Operator {
         })
     }
 
-    fn power_apply(&self, ctx: &Ctx, input: PowerApplyIn) -> Result<Changes> {
+    fn power_apply(&self, _: &Ctx, input: PowerApplyIn) -> Result<Changes> {
         let source = match input.source {
             PowerSource::Auto => None,
             PowerSource::Ac => Some(Source::Ac),
@@ -608,7 +611,6 @@ impl Engine for Operator {
                 &plan.machine().apply(source, Options::default())?.1,
             ));
         }
-        Self::record(ctx, "power.apply", &input)?;
         let name = serde_json::to_value(input.source)?;
         let name = name.as_str().unwrap_or("auto").to_string();
         Ok(Changes {
@@ -617,7 +619,7 @@ impl Engine for Operator {
         })
     }
 
-    fn gpu_primary(&self, ctx: &Ctx, input: GpuPrimaryIn) -> Result<Changes> {
+    fn gpu_primary(&self, _: &Ctx, input: GpuPrimaryIn) -> Result<Changes> {
         let choice = match input.choice {
             DesktopGpu::Nvidia => "nvidia",
             DesktopGpu::Intel => "intel",
@@ -627,14 +629,13 @@ impl Engine for Operator {
             let plan = Plan::load(None)?;
             return Ok(dry_run(&gpu::set_desktop(&plan.machine(), choice)?));
         }
-        Self::record(ctx, "gpu.primary", &input)?;
         Ok(Changes {
             lines: self.system(async move |p| p.set_desktop_gpu(choice).await)?,
             dry_run: false,
         })
     }
 
-    fn cleanup(&self, ctx: &Ctx, input: CleanupIn) -> Result<Changes> {
+    fn cleanup(&self, _: &Ctx, input: CleanupIn) -> Result<Changes> {
         if input.dry_run {
             let plan = Plan::load(None)?;
             let opts = cleanup::Options {
@@ -643,7 +644,6 @@ impl Engine for Operator {
             };
             return Ok(dry_run(&cleanup::plan(&plan.machine(), opts)?));
         }
-        Self::record(ctx, "cleanup", &input)?;
         Ok(Changes {
             lines: self.system(async move |p| p.cleanup(input.unload_modules).await)?,
             dry_run: false,
@@ -654,13 +654,7 @@ impl Engine for Operator {
         Ok(agents::config_files(&home(), input.project.get()?))
     }
 
-    fn agents_set(&self, ctx: &Ctx, input: AgentSetIn) -> Result<Edit> {
-        // the key, not the value: it can be a token
-        Self::record(
-            ctx,
-            "agents.set",
-            &serde_json::json!({ "agent": input.agent, "key": input.key }),
-        )?;
+    fn agents_set(&self, _: &Ctx, input: AgentSetIn) -> Result<Edit> {
         let project = input.project.get()?;
         let path = match (input.agent, input.scope) {
             (AgentName::Claude, SettingsScope::User) => home().join(".claude/settings.json"),
@@ -720,8 +714,7 @@ impl Engine for Operator {
             .collect())
     }
 
-    fn agents_plugin_install(&self, ctx: &Ctx, input: PluginInstallIn) -> Result<Lines> {
-        Self::record(ctx, "agents.plugin-install", &input)?;
+    fn agents_plugin_install(&self, _: &Ctx, input: PluginInstallIn) -> Result<Lines> {
         // the user's and the system's layers only: a repository must not widen the allowlist it is checked against
         let plugins = config(None)?.config.plugins;
         if let Some(why) = plugins.refusal(&input.id) {
@@ -774,8 +767,7 @@ impl Engine for Operator {
         Ok(out)
     }
 
-    fn agents_account_add(&self, ctx: &Ctx, input: IdIn) -> Result<Lines> {
-        Self::record(ctx, "agents.account-add", &input)?;
+    fn agents_account_add(&self, _: &Ctx, input: IdIn) -> Result<Lines> {
         anyhow::ensure!(
             legionctl_core::dossier::valid_name(&input.id),
             "an account name is a-z, 0-9 and '-', starting with a letter or digit"
@@ -800,8 +792,7 @@ impl Engine for Operator {
         })
     }
 
-    fn workspace_open(&self, ctx: &Ctx, input: WorkspaceOpenIn) -> Result<Workspace> {
-        Self::record(ctx, "workspace.open", &input)?;
+    fn workspace_open(&self, _: &Ctx, input: WorkspaceOpenIn) -> Result<Workspace> {
         let root = config(None)?.config.workspace.root;
         dossiers()?.open_workspace(
             session(&input.session)?,
@@ -829,8 +820,7 @@ impl Engine for Operator {
         dossiers()?.workspaces(None)
     }
 
-    fn workspace_checkpoint(&self, ctx: &Ctx, input: CheckpointIn) -> Result<Lines> {
-        Self::record(ctx, "workspace.checkpoint", &input)?;
+    fn workspace_checkpoint(&self, _: &Ctx, input: CheckpointIn) -> Result<Lines> {
         let store = dossiers()?;
         let ws = store.workspace_of(session(&input.session)?, path(input.repo.as_ref())?)?;
         Ok(Lines {
@@ -838,8 +828,7 @@ impl Engine for Operator {
         })
     }
 
-    fn workspace_branch(&self, ctx: &Ctx, input: BranchIn) -> Result<Lines> {
-        Self::record(ctx, "workspace.branch", &input)?;
+    fn workspace_branch(&self, _: &Ctx, input: BranchIn) -> Result<Lines> {
         let store = dossiers()?;
         let ws = store.workspace_of(session(&input.session)?, path(input.repo.as_ref())?)?;
         Ok(Lines {
@@ -850,8 +839,7 @@ impl Engine for Operator {
         })
     }
 
-    fn workspace_merge(&self, ctx: &Ctx, input: WorkspaceIn) -> Result<Lines> {
-        Self::record(ctx, "workspace.merge", &input)?;
+    fn workspace_merge(&self, _: &Ctx, input: WorkspaceIn) -> Result<Lines> {
         let store = dossiers()?;
         let ws = store.workspace_of(session(&input.session)?, path(input.repo.as_ref())?)?;
         Ok(Lines {
@@ -859,8 +847,7 @@ impl Engine for Operator {
         })
     }
 
-    fn workspace_close(&self, ctx: &Ctx, input: CloseIn) -> Result<Lines> {
-        Self::record(ctx, "workspace.close", &input)?;
+    fn workspace_close(&self, _: &Ctx, input: CloseIn) -> Result<Lines> {
         let store = dossiers()?;
         let ws = store.workspace_of(session(&input.session)?, path(input.repo.as_ref())?)?;
         Ok(Lines {
@@ -872,8 +859,7 @@ impl Engine for Operator {
         Ok(setup::check())
     }
 
-    fn setup_apply(&self, ctx: &Ctx, input: SetupApplyIn) -> Result<Changes> {
-        Self::record(ctx, "setup.apply", &input)?;
+    fn setup_apply(&self, _: &Ctx, input: SetupApplyIn) -> Result<Changes> {
         Ok(Changes {
             lines: setup::apply(input.install_ctx)?,
             dry_run: false,
@@ -884,20 +870,17 @@ impl Engine for Operator {
         Ok(reminders::list(&config(Some(&input.project))?))
     }
 
-    fn reminders_on(&self, ctx: &Ctx, input: IdIn) -> Result<Reminders> {
-        Self::record(ctx, "reminders.on", &input)?;
+    fn reminders_on(&self, _: &Ctx, input: IdIn) -> Result<Reminders> {
         reminders::set_enabled(&config(Some(&input.project))?, &input.id, true)?;
         Ok(reminders::list(&config(Some(&input.project))?))
     }
 
-    fn reminders_off(&self, ctx: &Ctx, input: IdIn) -> Result<Reminders> {
-        Self::record(ctx, "reminders.off", &input)?;
+    fn reminders_off(&self, _: &Ctx, input: IdIn) -> Result<Reminders> {
         reminders::set_enabled(&config(Some(&input.project))?, &input.id, false)?;
         Ok(reminders::list(&config(Some(&input.project))?))
     }
 
-    fn reminders_add(&self, ctx: &Ctx, input: ReminderAddIn) -> Result<Reminders> {
-        Self::record(ctx, "reminders.add", &input)?;
+    fn reminders_add(&self, _: &Ctx, input: ReminderAddIn) -> Result<Reminders> {
         reminders::add(
             &config(Some(&input.project))?,
             &input.id,
@@ -907,8 +890,7 @@ impl Engine for Operator {
         Ok(reminders::list(&config(Some(&input.project))?))
     }
 
-    fn reminders_rm(&self, ctx: &Ctx, input: IdIn) -> Result<Reminders> {
-        Self::record(ctx, "reminders.rm", &input)?;
+    fn reminders_rm(&self, _: &Ctx, input: IdIn) -> Result<Reminders> {
         reminders::remove(&config(Some(&input.project))?, &input.id)?;
         Ok(reminders::list(&config(Some(&input.project))?))
     }
@@ -923,20 +905,17 @@ impl Engine for Operator {
         Ok(Self::hook_table(&config(Some(&input.project))?))
     }
 
-    fn hooks_bind(&self, ctx: &Ctx, input: HookBindIn) -> Result<HookTable> {
-        Self::record(ctx, "hooks.bind", &input)?;
+    fn hooks_bind(&self, _: &Ctx, input: HookBindIn) -> Result<HookTable> {
         hooks::bind(&config(Some(&input.project))?, input.event, &input.action)?;
         Ok(Self::hook_table(&config(Some(&input.project))?))
     }
 
-    fn hooks_unbind(&self, ctx: &Ctx, input: HookBindIn) -> Result<HookTable> {
-        Self::record(ctx, "hooks.unbind", &input)?;
+    fn hooks_unbind(&self, _: &Ctx, input: HookBindIn) -> Result<HookTable> {
         hooks::unbind(&config(Some(&input.project))?, input.event, &input.action)?;
         Ok(Self::hook_table(&config(Some(&input.project))?))
     }
 
-    fn hooks_add(&self, ctx: &Ctx, input: HookAddIn) -> Result<HookTable> {
-        Self::record(ctx, "hooks.add", &input)?;
+    fn hooks_add(&self, _: &Ctx, input: HookAddIn) -> Result<HookTable> {
         hooks::add_command(
             &config(Some(&input.project))?,
             &input.id,
@@ -946,8 +925,7 @@ impl Engine for Operator {
         Ok(Self::hook_table(&config(Some(&input.project))?))
     }
 
-    fn hooks_rm(&self, ctx: &Ctx, input: IdIn) -> Result<HookTable> {
-        Self::record(ctx, "hooks.rm", &input)?;
+    fn hooks_rm(&self, _: &Ctx, input: IdIn) -> Result<HookTable> {
         hooks::remove_action(&config(Some(&input.project))?, &input.id)?;
         Ok(Self::hook_table(&config(Some(&input.project))?))
     }
@@ -1027,7 +1005,6 @@ impl Engine for Operator {
     }
 
     fn dossier_use(&self, ctx: &Ctx, input: DossierUseIn) -> Result<Lines> {
-        Self::record(ctx, "dossier.use", &input)?;
         let lines = dossiers()?.bind(
             session(&input.session)?,
             &ctx.actor,
@@ -1049,8 +1026,7 @@ impl Engine for Operator {
         })
     }
 
-    fn dossier_release(&self, ctx: &Ctx, input: SessionIn) -> Result<Lines> {
-        Self::record(ctx, "dossier.release", &input)?;
+    fn dossier_release(&self, _: &Ctx, input: SessionIn) -> Result<Lines> {
         let released = dossiers()?.release(session(&input.session)?)?;
         Ok(Lines {
             lines: vec![
@@ -1194,8 +1170,7 @@ impl Engine for Operator {
         Store::new(Store::default_root()).list(&config(None)?.config.packages)
     }
 
-    fn packages_fetch(&self, ctx: &Ctx, input: PackageFetchIn) -> Result<Manifest> {
-        Self::record(ctx, "packages.fetch", &input)?;
+    fn packages_fetch(&self, _: &Ctx, input: PackageFetchIn) -> Result<Manifest> {
         let resolved = config(None)?;
         let package = resolved
             .config
@@ -1225,20 +1200,20 @@ impl Engine for Operator {
         Ok(Empty {})
     }
 
-    fn tools_record(&self, ctx: &Ctx, input: ToolCall) -> Result<Empty> {
-        Db::open_default()?.record(&ctx.actor, "tool.call", &serde_json::to_value(&input)?)?;
+    // the operator's audit row of this call is the record
+    fn tools_record(&self, _: &Ctx, _: ToolCall) -> Result<Empty> {
         Ok(Empty {})
     }
 
     fn tools_calls(&self, _: &Ctx, input: ToolCallsIn) -> Result<ToolCalls> {
         Db::open_default()?
-            .events_of("tool.call")?
+            .events_of("tools.record")?
             .into_iter()
             .map(|e| {
                 Ok(ToolCallRow {
                     id: e.id,
                     ts: e.ts,
-                    call: serde_json::from_value(e.payload)?,
+                    call: serde_json::from_value(e.payload["input"].clone())?,
                 })
             })
             .filter(|row: &Result<ToolCallRow>| {
@@ -1267,8 +1242,7 @@ impl Engine for Operator {
         Ok(scan)
     }
 
-    fn images_build(&self, ctx: &Ctx, input: RepoIn) -> Result<Lines> {
-        Self::record(ctx, "images.build", &input)?;
+    fn images_build(&self, _: &Ctx, input: RepoIn) -> Result<Lines> {
         let repo = input.repo.get()?;
         let (project, tag) = legionctl_core::images::project(repo);
         let mut lines = Vec::new();
@@ -1310,8 +1284,7 @@ impl Engine for Operator {
         Ok(Lines { lines })
     }
 
-    fn images_run(&self, ctx: &Ctx, input: RepoIn) -> Result<Lines> {
-        Self::record(ctx, "images.run", &input)?;
+    fn images_run(&self, _: &Ctx, input: RepoIn) -> Result<Lines> {
         let repo = input.repo.get()?;
         let (project, tag) = legionctl_core::images::project(repo);
         let scan = legionctl_core::images::scan_repository(repo)?;
@@ -1347,8 +1320,7 @@ impl Engine for Operator {
             .block_on(crate::virt::project_containers(&project))
     }
 
-    fn virt_act(&self, ctx: &Ctx, input: VirtActIn) -> Result<Lines> {
-        Self::record(ctx, "virt.act", &input)?;
+    fn virt_act(&self, _: &Ctx, input: VirtActIn) -> Result<Lines> {
         let action = serde_json::to_value(input.action)?;
         let line = self.runtime.block_on(crate::virt::act(
             action.as_str().unwrap_or_default(),
@@ -1364,8 +1336,7 @@ impl Engine for Operator {
             .block_on(crate::virt::status(&SysRoot::from_env(), low)))
     }
 
-    fn virt_tune(&self, ctx: &Ctx, input: VirtTuneIn) -> Result<Lines> {
-        Self::record(ctx, "virt.tune", &input)?;
+    fn virt_tune(&self, _: &Ctx, input: VirtTuneIn) -> Result<Lines> {
         let cpus = core_cpus(input.cores)?;
         let memory = input.memory.as_deref().map(parse_bytes).transpose()?;
         anyhow::ensure!(
@@ -1389,8 +1360,7 @@ impl Engine for Operator {
         Ok(Lines { lines })
     }
 
-    fn virt_create(&self, ctx: &Ctx, input: VirtCreateIn) -> Result<Lines> {
-        Self::record(ctx, "virt.create", &input)?;
+    fn virt_create(&self, _: &Ctx, input: VirtCreateIn) -> Result<Lines> {
         let spec = crate::virt::ContainerSpec {
             name: input.name,
             image: input.image,
@@ -1416,19 +1386,17 @@ impl Engine for Operator {
         windows::state()
     }
 
-    fn windows_reboot(&self, ctx: &Ctx, input: DryRunIn) -> Result<Changes> {
+    fn windows_reboot(&self, _: &Ctx, input: DryRunIn) -> Result<Changes> {
         if input.dry_run {
             return Ok(dry_run(&windows::reboot_plan(&windows::state()?)?));
         }
-        Self::record(ctx, "windows.reboot", &input)?;
         Ok(Changes {
             lines: self.system(async |p| p.reboot_to_windows().await)?,
             dry_run: false,
         })
     }
 
-    fn record(&self, ctx: &Ctx, input: RecordIn) -> Result<Recording> {
-        Self::record(ctx, "record", &input)?;
+    fn record(&self, _: &Ctx, input: RecordIn) -> Result<Recording> {
         let dir = input.dir.get()?;
         anyhow::ensure!(
             std::fs::read_dir(dir).map_or(true, |mut d| d.next().is_none()),
@@ -1544,14 +1512,13 @@ impl Engine for Operator {
         )
     }
 
-    fn tune(&self, ctx: &Ctx, input: TuneIn) -> Result<TuneReport> {
+    fn tune(&self, _: &Ctx, input: TuneIn) -> Result<TuneReport> {
         let load = load::read_load(&SysRoot::from_env(), &config(None)?.config.load);
         anyhow::ensure!(
             input.force || load.level == load::Level::Idle,
             "the machine is not idle ({}); stop other work, or add --force",
             load.reasons.join("; ")
         );
-        Self::record(ctx, "tune", &input)?;
         // the daemon has its own PATH: give it the programs' full paths
         let workloads = input
             .scenario
@@ -1618,8 +1585,7 @@ impl Engine for Operator {
         Ok(KnobDetail { knob, history })
     }
 
-    fn session_start(&self, ctx: &Ctx, input: SessionStartIn) -> Result<Launch> {
-        Self::record(ctx, "session.start", &input)?;
+    fn session_start(&self, _: &Ctx, input: SessionStartIn) -> Result<Launch> {
         let dir = input.repo.get()?;
         let resolved = config(Some(&input.repo))?;
         let store = Dossiers::open(&resolved.config.dossier)?;
@@ -1640,12 +1606,7 @@ impl Engine for Operator {
         store.start_session(&start, &resolved.config)
     }
 
-    fn session_run(&self, ctx: &Ctx, input: SessionRunIn) -> Result<RunOutput> {
-        Self::record(
-            ctx,
-            "session.run",
-            &serde_json::json!({ "agent": input.agent, "dossier": input.dossier }),
-        )?;
+    fn session_run(&self, _: &Ctx, input: SessionRunIn) -> Result<RunOutput> {
         let dir = input.repo.get()?;
         let resolved = config(Some(&input.repo))?;
         let store = Dossiers::open(&resolved.config.dossier)?;
@@ -1679,8 +1640,7 @@ impl Engine for Operator {
             .collect())
     }
 
-    fn session_stop(&self, ctx: &Ctx, input: SessionIdIn) -> Result<Lines> {
-        Self::record(ctx, "session.stop", &input)?;
+    fn session_stop(&self, _: &Ctx, input: SessionIdIn) -> Result<Lines> {
         scope_control("stop", &input.id, "stopped")
     }
 
@@ -1699,18 +1659,15 @@ impl Engine for Operator {
             .collect())
     }
 
-    fn session_pause(&self, ctx: &Ctx, input: SessionIdIn) -> Result<Lines> {
-        Self::record(ctx, "session.pause", &input)?;
+    fn session_pause(&self, _: &Ctx, input: SessionIdIn) -> Result<Lines> {
         scope_control("freeze", &input.id, "paused")
     }
 
-    fn session_thaw(&self, ctx: &Ctx, input: SessionIdIn) -> Result<Lines> {
-        Self::record(ctx, "session.thaw", &input)?;
+    fn session_thaw(&self, _: &Ctx, input: SessionIdIn) -> Result<Lines> {
         scope_control("thaw", &input.id, "running again")
     }
 
-    fn session_resume(&self, ctx: &Ctx, input: SessionResumeIn) -> Result<Launch> {
-        Self::record(ctx, "session.resume", &input)?;
+    fn session_resume(&self, _: &Ctx, input: SessionResumeIn) -> Result<Launch> {
         // the repository's own config layer applies, as at session start
         let session = dossiers()?.session(&input.id)?;
         let resolved = resolve(&Dirs::from_env(), Some(&place_of(&session.workdir)))?;

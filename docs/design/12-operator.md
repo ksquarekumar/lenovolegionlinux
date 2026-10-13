@@ -47,6 +47,13 @@ flowchart LR
 Every request records who asked (human, session id, agent), the exact command or diff, and the outcome. Agents can
 always propose; only an approval channel applies.
 
+Built (2026-10-13, DESIGN/03 slice 1): the operator's dispatch audits each call that is not a read as an event whose
+kind is the op name: actor, input (fields marked `x-secret` in the schema become `<secret>`, strings over 512 bytes
+become their size), outcome code (null on success) and ms. Every error, on the socket, in MCP and from D-Bus, is one
+envelope `{"error": {"code", "message", "op"}}` with the codes not_found, invalid_input, conflict, denied,
+unavailable, version_mismatch, failed and internal (HTTP 404, 400, 409, 403, 503, 412, 422, 500). `/v1/metrics`
+adds calls, errors by code and total ms of each op.
+
 ## Worktrees and sandboxes
 
 - **Copy-on-write:** this machine's disks are ext4, which cannot reflink. A worktree is a `git worktree` (shares the
