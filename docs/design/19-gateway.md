@@ -60,8 +60,10 @@ stand-in provider (`crates/legionctl/tests/gateway.rs`).
 `gateway.semantic`: `{ "account", "model", "threshold" }`, null (off) by default. The account speaks the OpenAI API
 (`/v1/embeddings`; its keyring key, or none for a local model). A caller that sends `x-legionctl-cache: semantic`
 gets the exact cache first; on a miss the prompt text (system, instructions, each message's role and text) is
-embedded, and the kept answer with the nearest prompt (cosine, same API path and model) replays when it reaches the
-threshold (`x-legionctl-cache: semantic`). On a miss the embedding is kept with the new answer and expires with it.
+embedded, and the kept answer with the nearest prompt replays when it reaches the threshold. Only the prompt may
+differ: the scope is the API path, the model and a hash of the rest of the request (stream mode, tools, parameters),
+so a JSON answer never replays to a stream or to a request with other tools. The embedding account follows the same
+rules as any account: a keyring key needs the gateway token, and its budget counts (`x-legionctl-cache: semantic`). On a miss the embedding is kept with the new answer and expires with it.
 Each embedding call is a usage row of the embedding account (with its cost when `gateway.prices` has the model). An
 embedding failure is logged and the call goes on without the semantic cache. Embeddings are kept in `operator.db`
 (`gateway_semantic`) and searched in full: the cache holds one row per kept answer, which stays small.

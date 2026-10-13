@@ -1638,8 +1638,11 @@ fn plugin_installs_follow_the_allowlist() {
     .unwrap();
     write(
         &home.join(".config/legionctl/plugins.jsonc"),
-        &json!({"plugins": {"marketplaces": {"acme": {"source": "acme/tools", "allow": ["fmt"]}}}})
-            .to_string(),
+        &json!({"plugins": {"marketplaces": {
+            "acme": {"source": "acme/tools", "allow": ["fmt"]},
+            "open": {"source": "open/all", "allow": ["*"]}
+        }}})
+        .to_string(),
     );
     let path =
         std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path_with_build())))
@@ -1654,14 +1657,35 @@ fn plugin_installs_follow_the_allowlist() {
             "marketplace other is not in plugins.marketplaces",
         ),
         ("fmt", "write it as <plugin>@<marketplace>"),
+        // a name that claude would read as its own flag (-y accepts a marketplace's command)
+        ("-y@open", "write it as <plugin>@<marketplace>"),
     ] {
-        let refused = run(&["agents", "plugin-install", id, "--scope", "user"]);
+        let refused = run(&["agents", "plugin-install", "--scope", "user", "--", id]);
         assert!(
             !refused.status.success() && String::from_utf8_lossy(&refused.stderr).contains(why),
             "{id}: {}",
             String::from_utf8_lossy(&refused.stderr)
         );
     }
+    // a repository's own config layer cannot widen the allowlist
+    let repo = repository(&home);
+    write(
+        &repo.join(".legionctl/plugins.jsonc"),
+        &json!({"plugins": {"marketplaces": {"evil": {"source": "evil/repo", "allow": ["*"]}}}})
+            .to_string(),
+    );
+    let from_repo = op.run(
+        &repo,
+        &[("HOME", home.to_str().unwrap())],
+        &["agents", "plugin-install", "x@evil", "--scope", "user"],
+        "",
+    );
+    assert!(
+        String::from_utf8_lossy(&from_repo.stderr)
+            .contains("marketplace evil is not in plugins.marketplaces"),
+        "{}",
+        String::from_utf8_lossy(&from_repo.stderr)
+    );
     assert!(
         !home.join("claude.log").exists(),
         "a refusal never reaches claude"
@@ -2016,6 +2040,8 @@ fn compose_repo(home: &Path) -> PathBuf {
     );
     write(&repo.join("services/api/note"), "x\n");
     write(&repo.join("config/api.toml"), "");
+    // a Dockerfile that no compose service builds: not a service of this project
+    write(&repo.join("tools/lint.Dockerfile"), "FROM scratch\n");
     write(&repo.join(".env"), "API_SECRET=hunter2\n");
     write(
         &repo.join("compose.yaml"),
@@ -2264,7 +2290,10 @@ fn a_resumed_session_continues_on_another_account_with_its_transcript() {
     write(
         &home.join(".config/legionctl/session.jsonc"),
         &json!({"session": {
-            "agents": {"probe": ["sh", "-c", format!("mkdir -p \"$CLAUDE_CONFIG_DIR/projects/p\" && echo turn-1 >> \"{transcript}\"")]},
+            // the agent also plants links to a file outside, which the copy must not follow
+            "agents": {"probe": ["sh", "-c", format!("mkdir -p \"$CLAUDE_CONFIG_DIR/projects/p/$LEGIONCTL_SESSION\" && echo turn-1 >> \"{transcript}\" && \
+                ln -s \"$HOME/secret\" \"$CLAUDE_CONFIG_DIR/projects/p/$LEGIONCTL_SESSION/leak\" && \
+                ln -s \"$HOME/elsewhere\" \"$CLAUDE_CONFIG_DIR/projects/linked\"")]},
             "resume": {"probe": ["sh", "-c", format!("cat \"{transcript}\"; echo \"CONFIG=$CLAUDE_CONFIG_DIR\"")]},
             "writable": []
         }})
@@ -2273,6 +2302,7 @@ fn a_resumed_session_continues_on_another_account_with_its_transcript() {
     for name in ["first", "second"] {
         assert!(cli(&["agents", "account-add", name]).status.success());
     }
+    write(&home.join("secret"), "hidden from the sandbox\n");
     let started = cli(&[
         "session",
         "start",
@@ -2316,6 +2346,15 @@ fn a_resumed_session_continues_on_another_account_with_its_transcript() {
     let sessions: Value =
         serde_json::from_slice(&cli(&["session", "list", "--json"]).stdout).unwrap();
     assert_eq!(sessions[0]["account"], "second", "{sessions}");
+    let planted = home.join(".local/share/legionctl/accounts/first/claude/projects");
+    assert!(
+        planted.join("linked").is_symlink() && planted.join(format!("p/{id}/leak")).is_symlink()
+    );
+    let copied = second.join("projects");
+    assert!(
+        !copied.join(format!("p/{id}/leak")).exists() && !copied.join("linked").exists(),
+        "a planted link was followed"
+    );
 }
 
 /// `agents accounts` sees the login in profile `work`; `agents usage` counts its transcript, not `~/.claude`.

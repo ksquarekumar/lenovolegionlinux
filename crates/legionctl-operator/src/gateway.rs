@@ -377,7 +377,7 @@ async fn call(State(gw): State<Gateway>, api: Api, headers: HeaderMap, body: Byt
         &config,
         &cache_mode,
         (api, &model, &accounts[0].1),
-        &request,
+        (&request, &headers),
     )
     .await
     {
@@ -486,7 +486,7 @@ async fn cached(
     config: &GatewayConfig,
     cache_mode: &str,
     (api, model, served): (Api, &str, &str),
-    request: &Value,
+    (request, headers): (&Value, &HeaderMap),
 ) -> Result<Response, ToKeep> {
     // the key: the API and the request (keys sorted), not the account: any account's answer replays
     let key = format!(
@@ -506,6 +506,20 @@ async fn cached(
     else {
         return Err((key, None));
     };
+    // the embedding account is held to the same rules as any account: its key needs the token, its budget counts
+    if let Some(why) = config.accounts.get(&semantic.account).and_then(|account| {
+        blocked(
+            config,
+            account,
+            &semantic.account,
+            &semantic.model,
+            headers,
+            &gw.token,
+        )
+    }) {
+        eprintln!("operator: semantic cache skipped: {why}");
+        return Err((key, None));
+    }
     let (vector, row) = match crate::semantic::embed(
         &gw.http,
         config,
@@ -521,7 +535,18 @@ async fn cached(
         }
     };
     record(&row);
-    let scope = format!("{}{model}", api.path());
+    // the same API, model and everything but the prompt (stream mode, tools, parameters): only the prompt may differ
+    let mut rest = request.clone();
+    if let Some(fields) = rest.as_object_mut() {
+        for prompt in ["system", "instructions", "messages", "input"] {
+            fields.remove(prompt);
+        }
+    }
+    let scope = format!(
+        "{}{model}{:x}",
+        api.path(),
+        Blake2b::<U16>::digest(rest.to_string().as_bytes())
+    );
     let nearest = Db::open_default()
         .and_then(|db| db.gateway_semantic_nearest(&scope, &vector, semantic.threshold))
         .ok()

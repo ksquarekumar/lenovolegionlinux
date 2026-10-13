@@ -60,8 +60,13 @@ impl PluginsConfig {
     /// Why `plugin@marketplace` may not be installed, if it may not.
     #[must_use]
     pub fn refusal(&self, id: &str) -> Option<String> {
-        let Some((plugin, market)) = id.split_once('@') else {
-            return Some(format!("{id}: write it as <plugin>@<marketplace>"));
+        let Some((plugin, market)) = id
+            .split_once('@')
+            .filter(|(plugin, _)| crate::dossier::valid_name(plugin))
+        else {
+            return Some(format!(
+                "{id}: write it as <plugin>@<marketplace>, the plugin name a-z, 0-9 and '-'"
+            ));
         };
         let Some(m) = self.marketplaces.get(market) else {
             return Some(format!(

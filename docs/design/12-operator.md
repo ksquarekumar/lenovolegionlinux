@@ -101,7 +101,8 @@ Operating directory, named workspace in `~/.agentworkspace`, dossier and change 
   (`claude plugin …`) and Codex (`~/.codex/config.toml`) from one place, and show what each agent has loaded.
   Built (2026-10-13, A1 part 3): `plugins.marketplaces` (marketplace name -> `source` and `allow`, plugin names or
   `*`). `legionctl agents plugin-install <plugin>@<marketplace> --scope user|project|project-local` refuses anything
-  outside it, then runs `claude plugin install <plugin> --marketplace <source> --scope <scope> --json` in the
+  outside it (read from the user's and the system's layers only: a repository cannot widen it; a plugin name is
+  a-z, 0-9 and '-', so it cannot pass as a flag), then runs `claude plugin install <plugin> --marketplace <source> --scope <scope> --json` in the
   project, never with `-y`: a command that the marketplace declares stays for a person to accept.
   `legionctl agents plugins` lists Claude Code's installed plugins (`claude plugin list --json`) and marks those
   outside the allowlist. Codex has no plugin system; MCP servers for sessions go through `mcp.servers` (the proxy)
@@ -117,7 +118,8 @@ Operating directory, named workspace in `~/.agentworkspace`, dossier and change 
   rules, so it cannot leave the profiles folder. Logins stay in the agents' own files in the profile (not the
   keyring: the agents read only their files). `session resume <id> --account <name>` continues a session on another
   profile (another login, other rate limits): it copies Claude Code's transcript (`projects/<folder>/<id>.jsonl` and
-  its `<id>/` folder) into that profile, records the new account, and runs the resume command there. The old profile
+  its `<id>/` folder; regular files and folders only, as the agent can plant symlinks there) into that profile,
+  after the dossier is bound, records the new account, and runs the resume command there. The old profile
   keeps its copy. Codex has no resume by id, so its sessions start anew.
 
 ## AI gateway

@@ -507,6 +507,8 @@ pub async fn tune(
                 legionctl_machine::human_bytes(bytes)
             ));
             update.insert("Memory".into(), bytes.into());
+            // with Memory alone Docker keeps (or sets twice the memory as) the swap limit, and refuses a later raise
+            update.insert("MemorySwap".into(), bytes.into());
         }
         if apply && !update.is_empty() {
             request(
@@ -583,6 +585,7 @@ pub async fn create(spec: &ContainerSpec, apply: bool) -> Result<Vec<String>> {
             legionctl_machine::human_bytes(bytes)
         ));
         host.insert("Memory".into(), bytes.into());
+        host.insert("MemorySwap".into(), bytes.into());
     }
     if spec.gpu {
         let info = docker("/info").await?;

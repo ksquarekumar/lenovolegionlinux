@@ -575,7 +575,7 @@ fn virt_tune_plans_then_pins_and_limits_a_container_and_a_vm() {
     op.ok(&["virt", "tune", "WinBoat", "--cores", "e", "--memory", "8g"]);
     assert_eq!(
         std::fs::read_to_string(m.dir.join("docker.log")).unwrap(),
-        "update WinBoat {\"CpusetCpus\":\"16-31\",\"Memory\":8589934592}\n"
+        "update WinBoat {\"CpusetCpus\":\"16-31\",\"Memory\":8589934592,\"MemorySwap\":8589934592}\n"
     );
     assert_eq!(
         op.ok(&["virt", "tune", "lab", "--cores", "p", "--memory", "2048m"]),
@@ -620,7 +620,7 @@ fn virt_create_makes_a_container_with_cores_and_memory_and_refuses_what_cannot_w
         serde_json::from_str(log.strip_prefix("create box ").unwrap()).unwrap();
     assert_eq!(
         body,
-        serde_json::json!({"Image": "busybox:1", "HostConfig": {"CpusetCpus": "0-15", "Memory": 1_073_741_824}})
+        serde_json::json!({"Image": "busybox:1", "HostConfig": {"CpusetCpus": "0-15", "Memory": 1_073_741_824, "MemorySwap": 1_073_741_824}})
     );
     for (args, why) in [
         (

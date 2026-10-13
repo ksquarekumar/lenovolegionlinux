@@ -183,16 +183,18 @@ fn agent_homes(account: Option<&str>) -> Result<[PathBuf; 2]> {
 }
 
 /// Copy Claude Code's transcript of session `id` (`projects/<folder>/<id>.jsonl`, and its `<id>/` folder of
-/// subagent transcripts) from one config folder to another, so `claude --resume` finds it there.
+/// subagent transcripts) from one config folder to another, so `claude --resume` finds it there. The agent can write
+/// these folders, so only regular files and folders are copied: a symlink would bring in a file the sandbox hides.
 fn copy_transcript(from: &Path, to: &Path, id: &str) -> Result<()> {
     fn copy_tree(from: &Path, to: &Path) -> Result<()> {
-        if from.is_dir() {
+        let kind = std::fs::symlink_metadata(from)?.file_type();
+        if kind.is_dir() {
             std::fs::create_dir_all(to)?;
             for entry in std::fs::read_dir(from)? {
                 let entry = entry?;
                 copy_tree(&entry.path(), &to.join(entry.file_name()))?;
             }
-        } else {
+        } else if kind.is_file() {
             std::fs::copy(from, to)?;
         }
         Ok(())
@@ -201,11 +203,12 @@ fn copy_transcript(from: &Path, to: &Path, id: &str) -> Result<()> {
         .into_iter()
         .flatten()
         .flatten()
+        .filter(|p| p.file_type().is_ok_and(|t| t.is_dir()))
     {
         let target = to.join("projects").join(project.file_name());
         for name in [format!("{id}.jsonl"), id.to_string()] {
             let source = project.path().join(&name);
-            if source.exists() {
+            if std::fs::symlink_metadata(&source).is_ok() {
                 std::fs::create_dir_all(&target)?;
                 copy_tree(&source, &target.join(&name))?;
             }
@@ -407,6 +410,16 @@ impl Dossiers {
         let store = crate::packages::Store::new(crate::packages::Store::default_root());
         let mcp_json = mcp_config(config, &store)?;
         let skills = skills(config, &store)?;
+        let place = place_of(&record.workdir);
+        self.bind(
+            id,
+            &record.agent,
+            &record.dossier,
+            false,
+            false,
+            Some(&place),
+        )?;
+        // after the bind: a refused resume leaves the session on its account
         if let Some(new) = account.filter(|a| record.account.as_deref() != Some(*a)) {
             account_dir(new)?;
             let [from, _] = agent_homes(record.account.as_deref())?;
@@ -418,15 +431,6 @@ impl Dossiers {
             )?;
             record.account = Some(new.to_string());
         }
-        let place = place_of(&record.workdir);
-        self.bind(
-            id,
-            &record.agent,
-            &record.dossier,
-            false,
-            false,
-            Some(&place),
-        )?;
         let ws = self.open_workspace(id, &record.workdir, None, &config.workspace.root)?;
         self.launch(
             id.to_string(),

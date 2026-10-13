@@ -608,4 +608,40 @@ fn a_reworded_prompt_replays_semantically_only_when_asked() {
             ("main".into(), false, 10),
         ]
     );
+    // a stream asks for another body shape: the kept JSON answer must not replay for it
+    let mut streamed = ask("claude-z", "what is the capital of france");
+    streamed["stream"] = json!(true);
+    assert_eq!(post(s.port, "/v1/messages", &semantic, &streamed).1, "miss");
+    // an embedding account with a keyring key needs the gateway token like any other: no token, no embedding
+    let config = s.home.join(".config/legionctl/gateway.jsonc");
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(
+        &config,
+        text.replace(
+            r#""emb":{"provider""#,
+            r#""emb":{"keyring":true,"provider""#,
+        ),
+    )
+    .unwrap();
+    assert!(
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .contains(r#""emb":{"keyring":true"#)
+    );
+    let embeddings = || {
+        provider_calls(&s.log)
+            .iter()
+            .filter(|c| c.starts_with("ok embed-x"))
+            .count()
+    };
+    let before = embeddings();
+    assert_eq!(
+        messages(&semantic, "Which river runs through Paris?").1,
+        "miss"
+    );
+    assert_eq!(
+        embeddings(),
+        before,
+        "the keyring key was used without the token"
+    );
 }

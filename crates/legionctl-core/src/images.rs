@@ -278,11 +278,14 @@ fn relative(repo: &Path, path: &str) -> String {
 }
 
 /// The compose services (normalized: absolute paths, structured ports) over the Dockerfile scan: a service that
-/// builds a scanned Dockerfile takes the compose name.
+/// builds a scanned Dockerfile takes the compose name. The compose file names the services: a Dockerfile that no
+/// service builds is left out, so `images run` starts nothing the repository did not declare.
 fn merge_compose(scan: &mut Scan, repo: &Path, config: &serde_json::Value) {
     let Some(services) = config["services"].as_object() else {
         return;
     };
+    let mut scanned = std::mem::take(&mut scan.services);
+    let mut scanned_cache = std::mem::take(&mut scan.cache);
     for (name, svc) in services {
         let mut service = Service::default();
         if let Some(build) = svc.get("build") {
@@ -291,12 +294,12 @@ fn merge_compose(scan: &mut Scan, repo: &Path, config: &serde_json::Value) {
                 .join(build["dockerfile"].as_str().unwrap_or("Dockerfile"))
                 .display()
                 .to_string();
-            let found = scan.services.iter().find_map(|(n, s)| {
+            let found = scanned.iter().find_map(|(n, s)| {
                 (s.build.as_ref().map(|b| &b.dockerfile) == Some(&dockerfile)).then(|| n.clone())
             });
             if let Some(old) = found {
-                service = scan.services.remove(&old).unwrap_or_default();
-                if let Some(cache) = scan.cache.remove(&old) {
+                service = scanned.remove(&old).unwrap_or_default();
+                if let Some(cache) = scanned_cache.remove(&old) {
                     scan.cache.insert(name.clone(), cache);
                 }
             }

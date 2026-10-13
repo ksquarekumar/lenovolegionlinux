@@ -67,8 +67,8 @@ samples per container (about 2 s per call). The live check found the wrong `doms
 Built (2026-10-13, V1 part 4): `legionctl virt tune <name> [--cores p|e|all] [--memory <size>] [--dry-run]`: the
 plan (the CPU list from `/sys/devices/cpu_core/cpus`, `cpu_atom/cpus` or `/sys/devices/system/cpu/online`; the size
 in bytes, with k, m or g as powers of 1024), then the change unless dry run. A container: Engine API
-`POST /containers/<name>/update` with `CpusetCpus` and `Memory` (Docker's refusal, for example a memory limit above
-an earlier swap limit, is passed on). A VM: `virsh vcpupin --vcpu <n> --cpulist <cpus> --live` for each live vCPU
+`POST /containers/<name>/update` with `CpusetCpus`, and `Memory` with `MemorySwap` set to the same value (no swap
+above the limit; with `Memory` alone Docker keeps the old swap limit and refuses a raise above it). A VM: `virsh vcpupin --vcpu <n> --cpulist <cpus> --live` for each live vCPU
 (`vcpucount --active --live`) and `virsh setmem <KiB> --live` (the balloon). A container's update stays with the
 container; a VM's pinning and balloon are live only, so its own settings return at its next start. Not live-checked on WinBoat (the user's VM stays as it is); the e2e test uses
 the stand-in Docker and virsh, with the command forms checked against `virsh --help`.

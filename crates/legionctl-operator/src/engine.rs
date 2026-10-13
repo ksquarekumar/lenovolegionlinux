@@ -668,7 +668,8 @@ impl Engine for Operator {
 
     fn agents_plugin_install(&self, ctx: &Ctx, input: PluginInstallIn) -> Result<Lines> {
         Self::record(ctx, "agents.plugin-install", &input)?;
-        let plugins = config(Some(&input.project))?.config.plugins;
+        // the user's and the system's layers only: a repository must not widen the allowlist it is checked against
+        let plugins = config(None)?.config.plugins;
         if let Some(why) = plugins.refusal(&input.id) {
             anyhow::bail!("{why}");
         }

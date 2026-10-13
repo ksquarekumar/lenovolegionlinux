@@ -77,8 +77,9 @@ cannot export a cache), `pack-vm`.
 
 Built (2026-10-13, I1 part 3): compose files. A `compose.yaml`, `compose.yml`, `docker-compose.yaml` or
 `docker-compose.yml` at the repository root is read through `docker compose config --format json` (compose's own
-interpolation, `extends` and profiles; no YAML reader in legionctl). Its services name the description: a service
-that builds a scanned Dockerfile takes the compose name and keeps what the Dockerfile says unless compose says
+interpolation, `extends` and profiles; no YAML reader in legionctl). Its services name the description, and a Dockerfile that no service builds is
+left out (so `run` starts nothing the repository did not declare): a service that builds a scanned Dockerfile takes
+the compose name and keeps what the Dockerfile says unless compose says
 otherwise (target, health check); a service without a build is a prebuilt `image`. Added from compose: ports
 (`<published>:<port>` when published, then `expose`), mounts (bind sources relative to the repository, named volumes),
 limits (`cpus`, `memory_bytes`, a GPU reservation) and `depends_on`. The environment is never read: it can hold
