@@ -432,12 +432,15 @@ fn bench_compare_shows_the_score_change_and_the_knob_that_caused_it() {
 
 /// The recorded machine (no /dev/kvm in the recording) with `available_gib` of 32 GiB memory available, a stand-in
 /// Docker Engine API (its POSTs logged to `docker.log`) and stand-in systemctl and virsh (VM `win11` shut off, `lab`
-/// running with 2 GiB resident; virsh logs its verb to `virsh.log`).
+/// running with 2 GiB resident and 2 vCPUs; virsh logs its other calls to `virsh.log`); P-cores 0-15, E-cores 16-31.
 fn virt_machine(
     tag: &'static str,
     available_gib: u64,
 ) -> (Machine, daemon_process::Kill, Operator) {
     let m = Machine::new(tag);
+    m.set("/sys/devices/cpu_core/cpus", "0-15\n");
+    m.set("/sys/devices/cpu_atom/cpus", "16-31\n");
+    m.set("/sys/devices/system/cpu/online", "0-31\n");
     m.set(
         "/proc/meminfo",
         &format!(
@@ -461,7 +464,7 @@ fn virt_machine(
              list) printf ' Id   Name    State\\n---------------------\\n -    win11   shut off\\n 3    lab     running\\n';; \
              domstats) [ \"$5 $6\" = '--balloon --list-running' ] || exit 1; \
              printf \"Domain: 'lab'\\n  balloon.current=4194304\\n  balloon.rss=2097152\\n\\n\";; esac; \
-             else echo \"$3 $4\" >> {}; fi",
+             else shift 2; echo \"$*\" >> {}; if [ \"$1\" = vcpucount ]; then echo 2; fi; fi",
             m.dir.join("virsh.log").display()
         ),
     );
@@ -544,6 +547,49 @@ fn virt_status_reads_docker_libvirt_and_the_kernel() {
             "Docker uses the cgroupfs cgroup driver on a systemd host; the systemd driver is the supported setup",
             "libvirtd and the modular virtqemud both run; use one of them"
         ])
+    );
+}
+
+/// Tune: the plan alone with dry run; then a container gets its CPU set and memory limit through the Engine API, a
+/// VM its vCPUs pinned one by one and its balloon set through virsh; a size that is not one is refused.
+#[test]
+fn virt_tune_plans_then_pins_and_limits_a_container_and_a_vm() {
+    let (m, _docker, op) = virt_machine("virttune", 20);
+    assert_eq!(
+        op.ok(&[
+            "virt",
+            "tune",
+            "WinBoat",
+            "--cores",
+            "e",
+            "--memory",
+            "8g",
+            "--dry-run"
+        ]),
+        "container WinBoat: CPUs 16-31\ncontainer WinBoat: memory limit 8.0 GiB\ndry run: nothing changed\n"
+    );
+    assert!(
+        !m.dir.join("docker.log").exists(),
+        "a dry run changes nothing"
+    );
+    op.ok(&["virt", "tune", "WinBoat", "--cores", "e", "--memory", "8g"]);
+    assert_eq!(
+        std::fs::read_to_string(m.dir.join("docker.log")).unwrap(),
+        "update WinBoat {\"CpusetCpus\":\"16-31\",\"Memory\":8589934592}\n"
+    );
+    assert_eq!(
+        op.ok(&["virt", "tune", "lab", "--cores", "p", "--memory", "2048m"]),
+        "vm lab: 2 vCPUs on CPUs 0-15\nvm lab: memory 2.0 GiB\napplied\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(m.dir.join("virsh.log")).unwrap(),
+        "vcpucount lab --live --active\nvcpupin lab --vcpu 0 --cpulist 0-15 --live\nvcpupin lab --vcpu 1 --cpulist 0-15 --live\nsetmem lab 2097152 --live\n"
+    );
+    let refused = op.cli(&["virt", "tune", "lab", "--memory", "lots"]);
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("lots is not a size"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
     );
 }
 

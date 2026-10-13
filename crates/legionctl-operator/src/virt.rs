@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use http_body_util::{BodyExt, Empty};
+use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use legionctl_api::{VirtCapability, VirtInstance, VirtStatus};
 use legionctl_machine::sysroot::SysRoot;
@@ -20,10 +20,10 @@ fn docker_socket() -> PathBuf {
 
 /// One GET on the Docker Engine API.
 pub async fn docker(path: &str) -> Result<Value> {
-    request("GET", path).await
+    request("GET", path, None).await
 }
 
-async fn request(method: &str, path: &str) -> Result<Value> {
+async fn request(method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
     let socket = docker_socket();
     let stream = tokio::net::UnixStream::connect(&socket)
         .await
@@ -35,7 +35,10 @@ async fn request(method: &str, path: &str) -> Result<Value> {
         .method(method)
         .uri(path)
         .header("host", "docker")
-        .body(Empty::<Bytes>::new())?;
+        .header("content-type", "application/json")
+        .body(Full::new(Bytes::from(
+            body.map(Value::to_string).unwrap_or_default(),
+        )))?;
     let response = sender.send_request(request).await?;
     let status = response.status();
     let body = response.into_body().collect().await?.to_bytes();
@@ -422,7 +425,7 @@ pub async fn act(action: &str, name: &str) -> Result<String> {
             .as_str()
             .is_some_and(|n| n.trim_start_matches('/') == name)
     }) {
-        request("POST", &format!("/containers/{name}/{action}")).await?;
+        request("POST", &format!("/containers/{name}/{action}"), None).await?;
         return Ok(format!("container {name}: {action}"));
     }
     let verb = match action {
@@ -447,4 +450,107 @@ pub async fn act(action: &str, name: &str) -> Result<String> {
         String::from_utf8_lossy(&out.stderr).trim()
     );
     Ok(format!("vm {name}: {action}"))
+}
+
+/// Whether a container of this name exists (any state).
+async fn is_container(name: &str) -> bool {
+    docker("/containers/json?all=1")
+        .await
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .any(|c| {
+            c["Names"][0]
+                .as_str()
+                .is_some_and(|n| n.trim_start_matches('/') == name)
+        })
+}
+
+async fn virsh(args: &[&str]) -> Result<String> {
+    let out = tokio::process::Command::new("virsh")
+        .args(["-c", "qemu:///system"])
+        .args(args)
+        .output()
+        .await
+        .context("running virsh")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "virsh {}: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Pin `name` to `cpus` and set its memory to `memory` bytes: a container through the Engine API (`update`), a VM
+/// through `virsh vcpupin` (each live vCPU) and `setmem --live`. The plan lines; with `apply`, the change too.
+///
+/// # Errors
+/// No container or VM has this name, or the provider refuses.
+pub async fn tune(
+    name: &str,
+    cpus: Option<&str>,
+    memory: Option<u64>,
+    apply: bool,
+) -> Result<Vec<String>> {
+    let mut plan = Vec::new();
+    if is_container(name).await {
+        let mut update = serde_json::Map::new();
+        if let Some(cpus) = cpus {
+            plan.push(format!("container {name}: CPUs {cpus}"));
+            update.insert("CpusetCpus".into(), cpus.into());
+        }
+        if let Some(bytes) = memory {
+            plan.push(format!(
+                "container {name}: memory limit {}",
+                legionctl_machine::human_bytes(bytes)
+            ));
+            update.insert("Memory".into(), bytes.into());
+        }
+        if apply && !update.is_empty() {
+            request(
+                "POST",
+                &format!("/containers/{name}/update"),
+                Some(&Value::Object(update)),
+            )
+            .await?;
+        }
+        return Ok(plan);
+    }
+    anyhow::ensure!(
+        libvirt_vms().iter().any(|v| v.name == name),
+        "no container or VM named {name}"
+    );
+    if let Some(cpus) = cpus {
+        let count: u32 = virsh(&["vcpucount", name, "--live", "--active"])
+            .await?
+            .parse()
+            .context("virsh vcpucount")?;
+        plan.push(format!("vm {name}: {count} vCPUs on CPUs {cpus}"));
+        if apply {
+            for vcpu in 0..count {
+                virsh(&[
+                    "vcpupin",
+                    name,
+                    "--vcpu",
+                    &vcpu.to_string(),
+                    "--cpulist",
+                    cpus,
+                    "--live",
+                ])
+                .await?;
+            }
+        }
+    }
+    if let Some(bytes) = memory {
+        plan.push(format!(
+            "vm {name}: memory {}",
+            legionctl_machine::human_bytes(bytes)
+        ));
+        if apply {
+            virsh(&["setmem", name, &format!("{}", bytes / 1024), "--live"]).await?;
+        }
+    }
+    Ok(plan)
 }

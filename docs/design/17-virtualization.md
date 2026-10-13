@@ -54,7 +54,7 @@ machines). Live on this machine: up everywhere but the cgroupfs finding; WinBoat
 
 Built (2026-10-13, V1 part 2): `legionctl virt act --action pause|unpause|start|stop <name>`: a container through
 the Engine API (`POST /containers/<name>/<action>`), a VM through `virsh` (suspend, resume, start, shutdown); a name
-that is neither is refused. Checked live on a throwaway container (paused, running, exited). Not yet: create, tune.
+that is neither is refused. Checked live on a throwaway container (paused, running, exited). Not yet: create.
 
 Built (2026-10-13, V1 part 3): memory per running instance in `virt status` (`memory_bytes`): a container's use
 without its inactive page cache, as `docker stats` counts it (Engine API `stats?stream=false&one-shot=true`), and a
@@ -63,6 +63,15 @@ When available memory is below `load.busy.memory_available_percent` (the same li
 names what the guests hold, largest first, and how to pause one. CPU use per instance is not shown: it needs two
 samples per container (about 2 s per call). The live check found the wrong `domstats` option
 (`--state-running`); the stand-in `virsh` now refuses options it does not expect.
+
+Built (2026-10-13, V1 part 4): `legionctl virt tune <name> [--cores p|e|all] [--memory <size>] [--dry-run]`: the
+plan (the CPU list from `/sys/devices/cpu_core/cpus`, `cpu_atom/cpus` or `/sys/devices/system/cpu/online`; the size
+in bytes, with k, m or g as powers of 1024), then the change unless dry run. A container: Engine API
+`POST /containers/<name>/update` with `CpusetCpus` and `Memory` (Docker's refusal, for example a memory limit above
+an earlier swap limit, is passed on). A VM: `virsh vcpupin --vcpu <n> --cpulist <cpus> --live` for each live vCPU
+(`vcpucount --active --live`) and `virsh setmem <KiB> --live` (the balloon). A container's update stays with the
+container; a VM's pinning and balloon are live only, so its own settings return at its next start. Not live-checked on WinBoat (the user's VM stays as it is); the e2e test uses
+the stand-in Docker and virsh, with the command forms checked against `virsh --help`.
 
 ### GPU offload options
 

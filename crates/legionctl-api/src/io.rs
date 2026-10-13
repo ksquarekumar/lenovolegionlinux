@@ -822,6 +822,30 @@ pub struct VirtActIn {
     pub name: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CoreClass {
+    /// The performance cores.
+    P,
+    /// The efficiency cores.
+    E,
+    /// Every online CPU.
+    All,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct VirtTuneIn {
+    /// A container or VM name from `virt status`.
+    pub name: String,
+    /// The cores it may run on.
+    pub cores: Option<CoreClass>,
+    /// Its memory limit (a container) or balloon size (a VM): bytes, or with k, m or g (powers of 1024).
+    pub memory: Option<String>,
+    /// Show the plan; change nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
 /// A compose service's container and its health.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ServiceState {

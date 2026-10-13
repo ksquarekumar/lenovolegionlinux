@@ -26,8 +26,8 @@ use legionctl_core::config::{Dirs, Resolved, resolve};
 
 use crate::system1::System1Proxy;
 use legionctl_api::{
-    AgentName, AgentSetIn, AgentUsageIn, DossierGraphIn, Edit, GatewayUsage, GatewayUsageIn, Graph,
-    Plugin, PluginInstallIn, SettingsScope, UsageReport,
+    AgentName, AgentSetIn, AgentUsageIn, CoreClass, DossierGraphIn, Edit, GatewayUsage,
+    GatewayUsageIn, Graph, Plugin, PluginInstallIn, SettingsScope, UsageReport, VirtTuneIn,
 };
 use legionctl_api::{
     CacheGetIn, CachePutIn, CacheValue, Manifest, PackageFetchIn, Packages, RunOutput, SessionRunIn,
@@ -109,6 +109,24 @@ fn scope_control(verb: &str, id: &str, done: &str) -> Result<Lines> {
     Ok(Lines {
         lines: vec![format!("session {} ({}) {done}", session.id, session.agent)],
     })
+}
+
+/// Bytes from `8589934592`, `8192m` or `8g` (k, m and g are powers of 1024).
+fn parse_bytes(text: &str) -> Result<u64> {
+    let text = text.trim().to_lowercase();
+    let (digits, shift) = match text.strip_suffix(['k', 'm', 'g']) {
+        Some(d) => (
+            d,
+            10 * (1 + "kmg".find(text.chars().last().unwrap_or('k')).unwrap_or(0)),
+        ),
+        None => (text.as_str(), 0),
+    };
+    let n: u64 = digits
+        .parse()
+        .with_context(|| format!("{text} is not a size (bytes, or with k, m or g)"))?;
+    n.checked_shl(u32::try_from(shift)?)
+        .filter(|b| b >> shift == n)
+        .with_context(|| format!("{text} is too large"))
 }
 
 /// Operations that change the machine (or record it): their events go into a recording.
@@ -1240,6 +1258,48 @@ impl Engine for Operator {
         Ok(self
             .runtime
             .block_on(crate::virt::status(&SysRoot::from_env(), low)))
+    }
+
+    fn virt_tune(&self, ctx: &Ctx, input: VirtTuneIn) -> Result<Lines> {
+        Self::record(ctx, "virt.tune", &input)?;
+        let root = SysRoot::from_env();
+        let cpus = match input.cores {
+            None => None,
+            Some(CoreClass::All) => Some(
+                root.read("/sys/devices/system/cpu/online")
+                    .context("no /sys/devices/system/cpu/online")?,
+            ),
+            Some(class) => {
+                let key = if class == CoreClass::P { "p" } else { "e" };
+                Some(
+                    legionctl_machine::gpu::core_class_cpus(&root, key).with_context(|| {
+                        format!(
+                            "this CPU has no {key}-core class (/sys/devices/cpu_core, cpu_atom)"
+                        )
+                    })?,
+                )
+            }
+        };
+        let memory = input.memory.as_deref().map(parse_bytes).transpose()?;
+        anyhow::ensure!(
+            cpus.is_some() || memory.is_some(),
+            "nothing to tune: give --cores or --memory"
+        );
+        let mut lines = self.runtime.block_on(crate::virt::tune(
+            &input.name,
+            cpus.as_deref().map(str::trim),
+            memory,
+            !input.dry_run,
+        ))?;
+        lines.push(
+            if input.dry_run {
+                "dry run: nothing changed"
+            } else {
+                "applied"
+            }
+            .into(),
+        );
+        Ok(Lines { lines })
     }
 
     fn windows_status(&self, _: &Ctx, _: Empty) -> Result<WindowsState> {

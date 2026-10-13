@@ -389,6 +389,9 @@ operations! {
     virt_status / VirtStatusOp = "virt.status", Read, Empty => VirtStatus;
     /// Pause, unpause, start or stop a container or VM by name (pausing `WinBoat` frees its CPU at once).
     virt_act / VirtAct = "virt.act", Workspace, VirtActIn => Lines;
+    /// Pin a container or VM to the P-cores, E-cores or all CPUs and set its memory: the plan, then the change
+    /// (Engine API update; virsh vcpupin and setmem), unless dry run.
+    virt_tune / VirtTune = "virt.tune", Workspace, VirtTuneIn => Lines;
     /// Dual boot: the Windows boot entry, a pending one-time boot, NTFS volumes Windows left dirty, and what to fix.
     windows_status / WindowsStatus = "windows.status", Read, Empty => WindowsState;
     /// Restart into Windows once (the start after returns to Linux). A human approves it in the polkit dialog.
