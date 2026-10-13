@@ -19,7 +19,7 @@ use crate::dossier::Dossiers;
 
 /// The line that keeps the dossier link out of the product (decided 2026-10-12: a committed `.gitignore` line).
 const IGNORE_LINE: &str = "/.agentworkspace";
-const LINK: &str = ".agentworkspace";
+pub(crate) const LINK: &str = ".agentworkspace";
 
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
     let out = Command::new("git")
@@ -47,7 +47,7 @@ fn now() -> i64 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Workspace {
     pub dossier: String,
-    /// The repository's main checkout.
+    /// The repository's main checkout; for a plain folder, the folder.
     pub repo: PathBuf,
     /// The operating directory: work here, not in the main checkout.
     pub path: PathBuf,
@@ -71,6 +71,16 @@ pub struct WorkspaceStatus {
     pub conflicted: u32,
     /// What differs from the record: a branch switched outside legionctl, a missing worktree.
     pub drift: Vec<String>,
+    /// A plain folder's changes, one per line (A, M, D, R and the path); empty for a repository.
+    pub files: Vec<String>,
+}
+
+impl Workspace {
+    /// A plain folder's workspace (an overlay layer, no branch).
+    #[must_use]
+    pub fn is_folder(&self) -> bool {
+        self.branch.is_empty()
+    }
 }
 
 /// The repository's `.git` folder that its worktrees share (objects, refs): what a commit in a worktree writes.
@@ -185,7 +195,10 @@ impl Dossiers {
     pub fn workspace_of(&self, session: &str, repo: Option<&Path>) -> Result<Workspace> {
         let dossier = self.active_dossier(session)?;
         if let Some(dir) = repo {
-            return self.row(&dossier, &main_checkout(dir)?)?.with_context(|| {
+            // a repository by its main checkout, a plain folder by its own path
+            let key = main_checkout(dir)
+                .or_else(|_| Ok::<_, anyhow::Error>(std::fs::canonicalize(dir)?))?;
+            return self.row(&dossier, &key)?.with_context(|| {
                 format!(
                     "dossier {dossier} has no workspace for {}; open one",
                     dir.display()
@@ -217,7 +230,9 @@ impl Dossiers {
         root: &Path,
     ) -> Result<Workspace> {
         let dossier = self.active_dossier(session)?;
-        let repo = main_checkout(dir)?;
+        let Ok(repo) = main_checkout(dir) else {
+            return self.open_folder(dossier, dir, root);
+        };
         if let Some(open) = self.row(&dossier, &repo)?
             && open.path.join(".git").exists()
         {
@@ -299,6 +314,41 @@ impl Dossiers {
         })
     }
 
+    /// A plain folder's workspace: an overlay layer at `<root>/<folder name>/<dossier>` over `dir`.
+    fn open_folder(&self, dossier: String, dir: &Path, root: &Path) -> Result<Workspace> {
+        let source = std::fs::canonicalize(dir)?;
+        if let Some(open) = self.row(&dossier, &source)? {
+            return Ok(open);
+        }
+        let name = source.file_name().context("the folder has no name")?;
+        let path = root.join(name).join(&dossier);
+        for dir in [crate::folder::upper(&path), crate::folder::work(&path)] {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::os::unix::fs::symlink(
+            self.root.join(&dossier),
+            crate::folder::upper(&path).join(LINK),
+        )
+        .or_else(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        })?;
+        self.db().execute(
+            "INSERT INTO workspaces (dossier, repo, path, branch, base, opened) VALUES (?1, ?2, ?3, '', '', ?4)",
+            params![dossier, source.to_string_lossy(), path.to_string_lossy(), now()],
+        )?;
+        Ok(Workspace {
+            dossier,
+            repo: source,
+            path,
+            branch: String::new(),
+            base: String::new(),
+        })
+    }
+
     /// Git state and drift of a workspace.
     ///
     /// # Errors
@@ -313,7 +363,16 @@ impl Dossiers {
             untracked: 0,
             conflicted: 0,
             drift: Vec::new(),
+            files: Vec::new(),
         };
+        if ws.is_folder() {
+            status.files = crate::folder::changes(&ws.path, &ws.repo)?
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            status.unstaged = u32::try_from(status.files.len()).unwrap_or(u32::MAX);
+            return Ok(status);
+        }
         if !ws.path.join(".git").exists() {
             status.drift.push(format!(
                 "the worktree {} is missing; open the workspace again",
@@ -358,6 +417,9 @@ impl Dossiers {
     /// The workspace is not open, there are conflicts, or git refuses.
     pub fn checkpoint(&self, ws: &Workspace, message: &str) -> Result<String> {
         ensure!(!message.trim().is_empty(), "a checkpoint needs a message");
+        if ws.is_folder() {
+            return crate::folder::checkpoint(&ws.path, &ws.repo, message);
+        }
         git(&ws.path, &["add", "--all"])?;
         if git(&ws.path, &["diff", "--cached", "--quiet"]).is_ok() {
             return Ok("nothing to checkpoint".into());
@@ -373,6 +435,10 @@ impl Dossiers {
     /// # Errors
     /// The topic is not valid, the workspace has uncommitted changes, or git refuses.
     pub fn switch_branch(&self, ws: &Workspace, topic: Option<&str>) -> Result<String> {
+        ensure!(
+            !ws.is_folder(),
+            "a plain folder's workspace has no branches"
+        );
         // not legionctl/<dossier>/<topic>: git cannot nest a ref under the existing branch legionctl/<dossier>
         let branch = match topic {
             Some(topic) => {
@@ -422,6 +488,9 @@ impl Dossiers {
     /// The workspace has uncommitted changes, the rebase stops on conflicts, or the main checkout is not clean or not
     /// on the base branch.
     pub fn merge(&self, ws: &Workspace) -> Result<Vec<String>> {
+        if ws.is_folder() {
+            return crate::folder::merge(&ws.path, &ws.repo);
+        }
         let (staged, unstaged, _, conflicted) = changes(&ws.path)?;
         ensure!(
             staged + unstaged + conflicted == 0,
@@ -464,7 +533,9 @@ impl Dossiers {
     /// # Errors
     /// The workspace has uncommitted changes without `force`, or git refuses.
     pub fn close(&self, ws: &Workspace, force: bool) -> Result<String> {
-        if ws.path.join(".git").exists() {
+        if ws.is_folder() {
+            crate::folder::close(&ws.path, &ws.repo, force)?;
+        } else if ws.path.join(".git").exists() {
             let (staged, unstaged, untracked, conflicted) = changes(&ws.path)?;
             ensure!(
                 force || staged + unstaged + untracked + conflicted == 0,
@@ -484,10 +555,13 @@ impl Dossiers {
             "UPDATE workspaces SET closed = ?1 WHERE dossier = ?2 AND repo = ?3 AND closed IS NULL",
             params![now(), ws.dossier, ws.repo.to_string_lossy()],
         )?;
-        Ok(format!(
-            "closed {} (branch {} kept)",
-            ws.path.display(),
-            ws.branch
-        ))
+        Ok(if ws.is_folder() {
+            format!(
+                "closed {} (its changes dropped or merged)",
+                ws.path.display()
+            )
+        } else {
+            format!("closed {} (branch {} kept)", ws.path.display(), ws.branch)
+        })
     }
 }

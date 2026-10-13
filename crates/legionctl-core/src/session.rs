@@ -79,6 +79,15 @@ pub fn hide(args: &mut Vec<String>, runtime: &Path, hidden: &[String]) {
     }
 }
 
+/// Where the agent works: a repository's worktree, or a plain folder itself (seen through its overlay).
+fn agent_dir(ws: &crate::workspace::Workspace) -> PathBuf {
+    if ws.is_folder() {
+        ws.repo.clone()
+    } else {
+        ws.path.clone()
+    }
+}
+
 fn bind(args: &mut Vec<String>, path: &Path) {
     let path = path.to_string_lossy().into_owned();
     args.extend(["--bind".into(), path.clone(), path]);
@@ -185,9 +194,9 @@ impl Dossiers {
         let ws = self.open_workspace(&id, dir, None, &config.workspace.root)?;
         self.db().execute(
             "INSERT INTO sessions (id, agent, dossier, workdir, started) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, agent, dossier, ws.path.to_string_lossy(), now()],
+            params![id, agent, dossier, agent_dir(&ws).to_string_lossy(), now()],
         )?;
-        self.launch(id, dossier, &ws.path, config, command, mcp_json)
+        self.launch(id, dossier, &ws, config, command, mcp_json)
     }
 
     /// Prepare an ended session again: the same id, dossier and workspace, and the agent's resume command
@@ -220,19 +229,19 @@ impl Dossiers {
         self.launch(
             id.to_string(),
             &record.dossier,
-            &ws.path,
+            &ws,
             config,
             command,
             mcp_json,
         )
     }
 
-    /// The sandbox and agent command of session `id` working in `workdir`.
+    /// The sandbox and agent command of session `id` working in workspace `ws`.
     fn launch(
         &self,
         id: String,
         dossier: &str,
-        workdir: &Path,
+        ws: &crate::workspace::Workspace,
         config: &Config,
         command: &[String],
         mcp_json: serde_json::Value,
@@ -267,13 +276,26 @@ impl Dossiers {
         .map(String::from)
         .to_vec();
         hide(&mut sandbox, &runtime, &config.session.hidden);
-        for path in [
-            &runtime.join("legionctl"),
-            &workdir.to_path_buf(),
-            &self.root.join(dossier),
-            &git_common_dir(workdir)?,
-        ] {
-            bind(&mut sandbox, path);
+        let workdir = agent_dir(ws);
+        bind(&mut sandbox, &runtime.join("legionctl"));
+        bind(&mut sandbox, &self.root.join(dossier));
+        if ws.is_folder() {
+            // the folder at its own path, every write into the dossier's layer
+            sandbox.extend([
+                "--overlay-src".into(),
+                workdir.to_string_lossy().into_owned(),
+                "--overlay".into(),
+            ]);
+            for path in [
+                crate::folder::upper(&ws.path),
+                crate::folder::work(&ws.path),
+                workdir.clone(),
+            ] {
+                sandbox.push(path.to_string_lossy().into_owned());
+            }
+        } else {
+            bind(&mut sandbox, &workdir);
+            bind(&mut sandbox, &git_common_dir(&workdir)?);
         }
         for writable in &config.session.writable {
             let path = expand_home(writable)?;
@@ -310,7 +332,7 @@ impl Dossiers {
                 })
                 .collect(),
             real_git,
-            workdir: workdir.to_path_buf(),
+            workdir,
             mcp: mcp_json,
             id,
         })

@@ -104,6 +104,16 @@ worktree that was removed, a commit made by hand. Git commands that change histo
 A plain-folder source gets an overlay copy; checkpoint snapshots the upper layer, and merge copies changed files
 back after a diff and approval.
 
+Built (2026-10-13, W3): `workspace open` (and `session start`) in a folder that is not in a git repository records a
+folder workspace (no branch): a layer at `<workspace.root>/<folder>/<dossier>/{upper,work}`, with the dossier link
+in the layer. The session sandbox mounts the folder at its own path with `--overlay-src <folder> --overlay upper
+work <folder>` (bwrap >= 0.8, no root), so the source does not change. `workspace status` lists the changes from
+the upper layer (`A`/`M` files, `D` whiteouts, `R` folders marked `user.overlay.opaque`); `checkpoint` copies them
+to `checkpoints/<time>/` with `DELETED` and `MESSAGE`; `merge` applies them to the folder and empties the layer;
+`close` drops the layer (it refuses unmerged changes without force); `branch` is refused. An agent outside a
+session works on the folder directly; the layer exists only inside sessions. The e2e test covers an edit, a new
+file, a deletion and a replaced folder.
+
 ## `~/.agentworkspace`
 
 ```

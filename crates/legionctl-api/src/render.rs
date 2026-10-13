@@ -281,6 +281,14 @@ impl Render for Vec<ConfigFile> {
 
 impl Render for Workspace {
     fn text(&self) -> String {
+        if self.is_folder() {
+            return format!(
+                "{}: {} through a layer at {} (sessions see the changes; merge applies them)",
+                self.dossier,
+                self.repo.display(),
+                self.path.display()
+            );
+        }
         format!(
             "{}: {} on {} (base {}; main checkout {})",
             self.dossier,
@@ -309,10 +317,19 @@ impl Render for Vec<WorkspaceStatus> {
         let mut out = Vec::new();
         for s in self {
             out.push(s.workspace.text());
-            out.push(format!(
-                "  {} ahead, {} behind; staged {}, unstaged {}, untracked {}, conflicts {}",
-                s.ahead, s.behind, s.staged, s.unstaged, s.untracked, s.conflicted
-            ));
+            if s.workspace.is_folder() {
+                out.push(format!(
+                    "  {} changes over {}",
+                    s.files.len(),
+                    s.workspace.repo.display()
+                ));
+                out.extend(s.files.iter().map(|f| format!("  {f}")));
+            } else {
+                out.push(format!(
+                    "  {} ahead, {} behind; staged {}, unstaged {}, untracked {}, conflicts {}",
+                    s.ahead, s.behind, s.staged, s.unstaged, s.untracked, s.conflicted
+                ));
+            }
             out.extend(s.drift.iter().map(|d| format!("  drift: {d}")));
         }
         out.join("\n")

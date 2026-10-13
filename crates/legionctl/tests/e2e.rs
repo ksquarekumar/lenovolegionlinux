@@ -1109,6 +1109,100 @@ fn an_ended_session_resumes_with_its_id_dossier_and_workspace() {
     );
 }
 
+/// A plain folder (not a repository): the session works on it through an overlay, so the folder stays as it was
+/// until merge; status lists additions, edits, deletions and a replaced folder; merge applies them; close drops the
+/// layer.
+#[test]
+fn a_plain_folder_workspace_keeps_the_source_until_merge() {
+    let (op, home) = operator("folder");
+    let notes = home.join("notes");
+    for (file, text) in [
+        ("keep", "k\n"),
+        ("gone", "g\n"),
+        ("edit", "e\n"),
+        ("sub/old", "o\n"),
+    ] {
+        write(&notes.join(file), text);
+    }
+    let work = "rm gone; echo more >> edit; echo n > new; rm -r sub; mkdir sub; echo f > sub/fresh";
+    write(
+        &home.join(".config/legionctl/folder.jsonc"),
+        &json!({
+            "session": {"agents": {"probe": ["sh", "-c", work]}, "scope": false, "writable": []},
+            "workspace": {"root": home.join("layers")}
+        })
+        .to_string(),
+    );
+    let started = op.run(
+        &notes,
+        &[("HOME", home.to_str().unwrap())],
+        &[
+            "session",
+            "start",
+            "probe",
+            "--dossier",
+            "notes",
+            "--create",
+            "--json",
+        ],
+        "",
+    );
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let launch: Value = serde_json::from_slice(&started.stdout).unwrap();
+    let out = run_launch(&op, &home, &launch);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let read = |file: &str| std::fs::read_to_string(notes.join(file)).ok();
+    assert_eq!(
+        (read("gone"), read("edit"), read("new")),
+        (Some("g\n".into()), Some("e\n".into()), None),
+        "the source is as it was"
+    );
+
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", launch["id"].as_str().unwrap()),
+    ];
+    let ok = |args: &[&str]| {
+        let o = op.run(&notes, &env, args, "");
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8_lossy(&o.stdout).to_string()
+    };
+    let status: Value = serde_json::from_str(&ok(&["workspace", "status", "--json"])).unwrap();
+    assert_eq!(
+        status[0]["files"],
+        json!(["M edit", "D gone", "A new", "R sub/"])
+    );
+    assert!(ok(&["workspace", "checkpoint", "first pass"]).contains("4 changes"));
+    ok(&["workspace", "merge"]);
+    assert_eq!(
+        (read("gone"), read("edit"), read("new")),
+        (None, Some("e\nmore\n".into()), Some("n\n".into()))
+    );
+    assert_eq!(
+        (read("sub/old"), read("sub/fresh")),
+        (None, Some("f\n".into())),
+        "the replaced folder"
+    );
+    assert_eq!(read("keep").as_deref(), Some("k\n"));
+    ok(&["workspace", "close"]);
+    assert!(
+        !home.join("layers/notes/notes").exists(),
+        "the layer is gone"
+    );
+}
+
 /// Run a `session start` launch as the client does, without the systemd scope (CI has no user systemd): the
 /// sandbox, this binary bound over git as the gate, then the agent.
 fn run_launch(op: &Operator, home: &Path, launch: &Value) -> std::process::Output {
