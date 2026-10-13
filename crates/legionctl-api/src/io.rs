@@ -374,11 +374,8 @@ pub struct SessionIn {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DossierUseIn {
-    /// Dossier name: a-z, 0-9 and '-'.
+    /// Dossier name: a-z, 0-9 and '-'. A name that does not exist makes a new dossier from the pattern.
     pub name: String,
-    /// Create it from the pattern when it does not exist.
-    #[serde(default)]
-    pub create: bool,
     /// Take it over from another live session (with the user's agreement).
     #[serde(default)]
     pub steal: bool,
@@ -517,12 +514,10 @@ pub struct Guard {
 pub struct SessionStartIn {
     /// Agent to start: claude or codex (config session.agents).
     pub agent: String,
-    /// Dossier to work in; default: the last one used in this repository.
+    /// Dossier to work in (a new name makes a new dossier); default: the last one used in this repository, if no
+    /// live session holds it.
     #[serde(default)]
     pub dossier: Option<String>,
-    /// Create the dossier when it does not exist.
-    #[serde(default)]
-    pub create: bool,
     /// Take the dossier over from another live session.
     #[serde(default)]
     pub steal: bool,
@@ -540,12 +535,10 @@ pub struct SessionRunIn {
     pub agent: String,
     /// The task for the agent.
     pub prompt: String,
-    /// Dossier to work in; default: the last one used in this repository.
+    /// Dossier to work in (a new name makes a new dossier); default: the last one used in this repository, if no
+    /// live session holds it.
     #[serde(default)]
     pub dossier: Option<String>,
-    /// Create the dossier when it does not exist.
-    #[serde(default)]
-    pub create: bool,
     /// Take the dossier over from another live session.
     #[serde(default)]
     pub steal: bool,

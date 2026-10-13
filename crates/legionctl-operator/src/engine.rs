@@ -297,7 +297,7 @@ fn rebind(
         return Ok(None);
     };
     Ok(Some(
-        match store.bind(session, "hook", &last, false, false, Some(&place)) {
+        match store.bind(session, "hook", &last, false, Some(&place)) {
             Ok(_) => {
                 let line = format!(
                     "legionctl dossier: {last} (bound at session start: the last dossier used in {}; read its plan.md and \
@@ -341,7 +341,7 @@ fn blocking_reason(
     if config.dossier.nudge.contains(&Event::Stop) && has_session && active.is_none() {
         return Ok(Some(
             "legionctl: this session has no dossier. Before you end this reply, bind one with the legionctl MCP tool \
-             dossier_use (create: true for a new one; ask the user for the name if it is not clear), record the state \
+             dossier_use (a new name makes a new dossier; ask the user for the name if it is not clear), record the state \
              in its plan.md and MEMORY, then finish."
                 .into(),
         ));
@@ -401,7 +401,7 @@ fn start_lines(
 fn nudge_line(resolved: &Resolved) -> String {
     format!(
         "legionctl: this session has no dossier yet. Set it up first, before other work: bind one with the legionctl \
-         MCP tool dossier_use (create: true for a new one; ask the user for the name if it is not clear).{}",
+         MCP tool dossier_use (a new name makes a new dossier; ask the user for the name if it is not clear).{}",
         if resolved.config.dossier.gate {
             " Until then, legionctl blocks the user's prompts except /legionctl:dossier."
         } else {
@@ -420,7 +420,7 @@ fn gate_message(resolved: &Resolved) -> Result<String> {
         .collect();
     Ok(format!(
         "legionctl: this session has no dossier, so the prompt was not sent. Run `/legionctl:dossier use <name>` \
-         (or `/legionctl:dossier use <name> --create` for a new one), then send the prompt again.{}",
+         (a new name makes a new dossier), then send the prompt again.{}",
         if recent.is_empty() {
             String::new()
         } else {
@@ -965,7 +965,6 @@ impl Engine for Operator {
             session(&input.session)?,
             &ctx.actor,
             &input.name,
-            input.create,
             input.steal,
             Some(&place_of(input.project.get()?)),
         )?;
@@ -1552,7 +1551,6 @@ impl Engine for Operator {
         let start = Start {
             agent: &input.agent,
             dossier: &dossier,
-            create: input.create,
             steal: input.steal,
             dir,
             headless: false,
@@ -1579,7 +1577,6 @@ impl Engine for Operator {
         let start = Start {
             agent: &input.agent,
             dossier: &dossier,
-            create: input.create,
             steal: input.steal,
             dir,
             headless: true,

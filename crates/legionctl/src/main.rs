@@ -209,6 +209,9 @@ fn start_session(launch: Launch) -> Result<()> {
         real_git,
     ];
     let argv = [launch.scope, launch.sandbox, gate.to_vec(), launch.agent].concat();
+    for line in &launch.lines {
+        eprintln!("legionctl: {line}");
+    }
     eprintln!(
         "legionctl: session {} (stop it with `legionctl session stop {}`)",
         launch.id, launch.id

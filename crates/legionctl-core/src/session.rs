@@ -34,8 +34,6 @@ pub struct SessionRecord {
 pub struct Start<'a> {
     pub agent: &'a str,
     pub dossier: &'a str,
-    /// Create the dossier when it does not exist.
-    pub create: bool,
     /// Take the dossier over from another live session.
     pub steal: bool,
     /// A folder in the repository (or the plain folder) to work on.
@@ -66,6 +64,9 @@ pub struct Launch {
     pub workdir: PathBuf,
     /// The session's MCP servers (`mcp.json`): legionctl's own and each one behind the proxy.
     pub mcp: serde_json::Value,
+    /// What the session uses (its dossier, new or not; its workspace, branch and size) and the commands that change
+    /// them; the client shows them before the agent starts.
+    pub lines: Vec<String>,
 }
 
 fn now() -> i64 {
@@ -98,6 +99,39 @@ pub fn scope_active(id: &str) -> bool {
         scope_state(id).as_str(),
         "active" | "activating" | "reloading"
     )
+}
+
+/// The session's dossier lines from the bind (`created ...` for a new one), then its workspace with branch and size,
+/// and how to change each.
+fn uses(mut bound: Vec<String>, ws: &crate::workspace::Workspace, workdir: &Path) -> Vec<String> {
+    bound.push(format!(
+        "workspace: {} on {} (base {}), {}",
+        workdir.display(),
+        ws.branch,
+        ws.base,
+        legionctl_machine::human_bytes(size(&ws.path))
+    ));
+    bound.push(
+        "change: another dossier with --dossier <name> (a new name makes one); a topic branch with \
+         `legionctl workspace branch <topic>`; see all with `legionctl workspace list`"
+            .into(),
+    );
+    bound
+}
+
+/// Bytes of the files under `dir`, without its git data; symlinks count as links.
+fn size(dir: &Path) -> u64 {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name() != ".git")
+        .map(|e| match e.metadata() {
+            Ok(m) if m.is_dir() => size(&e.path()),
+            Ok(m) => m.len(),
+            Err(_) => 0,
+        })
+        .sum()
 }
 
 fn new_id() -> Result<String> {
@@ -402,14 +436,7 @@ impl Dossiers {
         let skills = skills(config, &store)?;
         let id = new_id()?;
         let place = place_of(start.dir);
-        self.bind(
-            &id,
-            agent,
-            start.dossier,
-            start.create,
-            start.steal,
-            Some(&place),
-        )?;
+        let bound = self.bind(&id, agent, start.dossier, start.steal, Some(&place))?;
         let ws = self.open_workspace(&id, start.dir, None, &config.workspace.root)?;
         self.db().execute(
             "INSERT INTO sessions (id, agent, dossier, workdir, started, account, scoped) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -417,7 +444,7 @@ impl Dossiers {
         )?;
         self.launch(
             id,
-            &ws,
+            (&ws, bound),
             config,
             (command, start.account),
             (mcp_json, skills.as_deref()),
@@ -446,14 +473,7 @@ impl Dossiers {
         let mcp_json = mcp_config(config, &store)?;
         let skills = skills(config, &store)?;
         let place = place_of(&record.workdir);
-        self.bind(
-            id,
-            &record.agent,
-            &record.dossier,
-            false,
-            false,
-            Some(&place),
-        )?;
+        let bound = self.bind(id, &record.agent, &record.dossier, false, Some(&place))?;
         // after the bind: a refused resume leaves the session on its account
         if let Some(new) = account.filter(|a| record.account.as_deref() != Some(*a)) {
             account_dir(new)?;
@@ -469,7 +489,7 @@ impl Dossiers {
         let ws = self.open_workspace(id, &record.workdir, None, &config.workspace.root)?;
         self.launch(
             id.to_string(),
-            &ws,
+            (&ws, bound),
             config,
             (command, record.account.as_deref()),
             (mcp_json, skills.as_deref()),
@@ -480,7 +500,7 @@ impl Dossiers {
     fn launch(
         &self,
         id: String,
-        ws: &crate::workspace::Workspace,
+        (ws, bound): (&crate::workspace::Workspace, Vec<String>),
         config: &Config,
         (command, account): (&[String], Option<&str>),
         (mcp_json, skills): (serde_json::Value, Option<&[(String, PathBuf)]>),
@@ -583,6 +603,7 @@ impl Dossiers {
                 })
                 .collect(),
             real_git,
+            lines: uses(bound, ws, &workdir),
             workdir,
             mcp: mcp_json,
             id,

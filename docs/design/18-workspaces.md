@@ -71,8 +71,8 @@ At session start and on each prompt, the plugin's hook asks the operator for the
   source, copy and branch, so a wrong default is visible at once.
 - With a dossier bound, the agent goes ahead and the hook injects the brief (below).
 - Without a dossier, the prompt is blocked (decided 2026-10-12: everything, not only writes). The block message
-  lists recent dossiers for this operating directory and the two ways forward: `/legionctl:dossier use <name>` or
-  `/legionctl:dossier use <name> --create`. These are the only commands that pass the gate.
+  lists recent dossiers for this operating directory and the way forward: `/legionctl:dossier use <name>` (a new
+  name makes a new dossier; decided 2026-10-13, no `--create`). It is the only command that passes the gate.
 - Writes outside the operating directory and the dossier are denied (`PreToolUse`), so a session that started in
   the source repo cannot change the source by mistake.
 
@@ -215,7 +215,7 @@ contradicts an approved decision, and EVIDENCE whose linked symbols changed afte
 
 | Command | Effect |
 | --- | --- |
-| `legionctl dossier use <name> [--create]` | Bind this session to the dossier (create it from the global pattern if asked). The previous one is released. |
+| `legionctl dossier use <name> [--steal]` | Bind this session to the dossier; a new name makes it from the global pattern. The previous one is released. |
 | `legionctl dossier active`, `release`, `locks` | Show the binding; give it up; show which session holds which dossier and stale locks. |
 | `legionctl dossier ls`, `read <path>`, `search <pattern>` | Read any dossier; lines print as `<line>:<hash>\|<text>`. |
 | `legionctl dossier add <class> <slug>` | Create the next numbered artifact from stdin (`MEMORY/03-<slug>.md`); safe for parallel agents. |

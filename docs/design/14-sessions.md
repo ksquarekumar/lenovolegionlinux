@@ -12,7 +12,9 @@ Builds on 12-operator (harness, sandbox, gateway) and 13-daemon (one-writer data
 
 ## Built (2026-10-13, milestone 1: interactive agents in a sandbox)
 
-- `legionctl session start claude|codex [--dossier X] [--create]` binds the dossier to a new session id (Claude Code
+- `legionctl session start claude|codex [--dossier X] [--steal]` binds the dossier (a new name makes it; without
+  `--dossier`, the folder's last dossier if no live session holds it) to a new session id, shows the dossier (new or
+  not), the workspace, its branch and size, and the commands that change them (Claude Code
   gets it as `--session-id`, so its hooks find the binding), opens the dossier's workspace (18), records the session
   in `workspace.db`, and runs the agent in the terminal: `systemd-run --user --scope` (unit
   `legionctl-session-<id>`), then `bwrap` with `/` read-only (your home too, decided 2026-10-13), a private `/tmp`,

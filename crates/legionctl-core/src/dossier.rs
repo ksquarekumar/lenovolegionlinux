@@ -203,17 +203,16 @@ impl Dossiers {
             .optional()?)
     }
 
-    /// Bind `session` to `name`, releasing its previous dossier. A dossier held by another live session is refused
-    /// unless `steal`; a binding idle for `stale_hours` is taken over.
+    /// Bind `session` to `name`, made from the pattern when it does not exist, releasing its previous dossier. A
+    /// dossier held by another live session is refused unless `steal`; a stale binding is taken over.
     ///
     /// # Errors
-    /// `name` is not valid, does not exist without `create`, or is held by another session.
+    /// `name` is not valid, or is held by another session.
     pub fn bind(
         &self,
         session: &str,
         tool: &str,
         name: &str,
-        create: bool,
         steal: bool,
         place: Option<&Path>,
     ) -> Result<Vec<String>> {
@@ -224,10 +223,6 @@ impl Dossiers {
         let mut out = Vec::new();
         let dir = self.root.join(name);
         if !dir.is_dir() {
-            ensure!(
-                create,
-                "dossier '{name}' does not exist; add --create to make it"
-            );
             out.extend(self.create(name)?);
         }
         // IMMEDIATE: two sessions binding at once see each other's row
@@ -255,7 +250,7 @@ impl Dossiers {
                 ensure!(
                     stale || steal,
                     "dossier '{name}' is in use by session {holder} ({holder_tool}), last active {} min ago; use another dossier \
-                     (--dossier <name> --create), or take this one over with --steal",
+                     (--dossier <name>; a new name makes one), or take this one over with --steal",
                     (now - updated) / 60
                 );
                 tx.execute(
@@ -512,7 +507,7 @@ impl Dossiers {
                 )
                 .optional()?;
             bail!(
-                "{dossier} is not this session's active dossier{}. Run `legionctl dossier use {dossier}` (add --create for a new dossier) first.",
+                "{dossier} is not this session's active dossier{}. Run `legionctl dossier use {dossier}` first.",
                 holder.map_or(String::new(), |h| format!("; it is active in session {h}"))
             );
         }
@@ -918,7 +913,7 @@ mod tests {
         let mut dossier = config.dossier;
         dossier.root = dir.join("ws").display().to_string();
         let ws = Dossiers::open(&dossier).unwrap();
-        ws.bind("s1", "test", "port", true, false, None).unwrap();
+        ws.bind("s1", "test", "port", false, None).unwrap();
         ws.write("s1", "port/MEMORY/01-a.md", "alpha\nbeta\ngamma", false)
             .unwrap();
         let read = ws.read("port/MEMORY/01-a.md", 1, None).unwrap();
@@ -951,7 +946,7 @@ mod tests {
 
         // a second session cannot write or bind the held dossier; numbers continue per folder
         assert!(ws.write("s2", "port/MEMORY/02-b.md", "x", false).is_err());
-        assert!(ws.bind("s2", "test", "port", false, false, None).is_err());
+        assert!(ws.bind("s2", "test", "port", false, None).is_err());
         assert_eq!(
             ws.add("s1", "MEMORY", "b", "# B").unwrap(),
             "port/MEMORY/02-b.md"

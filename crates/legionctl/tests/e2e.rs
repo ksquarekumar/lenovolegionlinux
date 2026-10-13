@@ -336,12 +336,12 @@ fn dossier_gate_and_stop_hook_hold_the_agent_until_the_session_has_a_dossier() {
         blocked["reason"]
             .as_str()
             .unwrap()
-            .contains("/legionctl:dossier use <name> --create"),
+            .contains("/legionctl:dossier use <name>"),
         "{blocked}"
     );
     let passing = hook(
         "prompt",
-        json!({"session_id": "s1", "cwd": home, "prompt": "/legionctl:dossier use port --create"}),
+        json!({"session_id": "s1", "cwd": home, "prompt": "/legionctl:dossier use port"}),
     );
     assert!(passing.starts_with("Reminder:"), "{passing}");
 
@@ -367,7 +367,7 @@ fn dossier_gate_and_stop_hook_hold_the_agent_until_the_session_has_a_dossier() {
     );
 
     // bind, add a numbered artifact from stdin, and the gate opens
-    let bound = as_session("s1", &["dossier", "use", "port", "--create"], "");
+    let bound = as_session("s1", &["dossier", "use", "port"], "");
     assert!(bound.contains("active dossier: port"), "{bound}");
     assert_eq!(
         as_session("s1", &["dossier", "add", "MEMORY", "intake"], "# Intake\n"),
@@ -430,7 +430,7 @@ fn dossier_write_guard_and_takeover_work_through_the_claude_code_hooks() {
         out(o)
     };
 
-    as_session("s1", &["dossier", "use", "port", "--create"], "");
+    as_session("s1", &["dossier", "use", "port"], "");
     as_session("s1", &["dossier", "add", "MEMORY", "intake"], "# Intake\n");
 
     // a call without an absolute path (an outdated client) is refused, not stored with a relative place
@@ -623,7 +623,7 @@ fn workspace_opens_checkpoints_reports_drift_merges_and_closes_in_a_real_reposit
         );
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     };
-    ok(&repo, &["dossier", "use", "port", "--create"]);
+    ok(&repo, &["dossier", "use", "port"]);
 
     // no workspace yet: the agent is told at session start, and before a reply ends once the main checkout changed
     assert!(hook("session-start").contains(&format!("no workspace for {} yet", repo.display())));
@@ -723,7 +723,7 @@ fn workspace_topic_branches_keep_their_work_and_the_active_one_merges() {
         );
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     };
-    ok(&["dossier", "use", "port", "--create"]);
+    ok(&["dossier", "use", "port"]);
     ok(&["workspace", "open"]);
     let ws = home.join("worktrees/repo/port");
 
@@ -1074,15 +1074,7 @@ fn a_store_package_runs_pinned_and_offline_and_a_changed_one_is_refused() {
     );
     assert!(String::from_utf8_lossy(&cli(&["packages", "list"]).stdout).contains(" ok "));
 
-    let started = cli(&[
-        "session",
-        "start",
-        "claude",
-        "--dossier",
-        "port",
-        "--create",
-        "--json",
-    ]);
+    let started = cli(&["session", "start", "claude", "--dossier", "port", "--json"]);
     assert!(
         started.status.success(),
         "{}",
@@ -1123,14 +1115,7 @@ fn a_store_package_runs_pinned_and_offline_and_a_changed_one_is_refused() {
         !listed.status.success()
             && String::from_utf8_lossy(&listed.stdout).contains("CHANGED since fetch")
     );
-    let refused = cli(&[
-        "session",
-        "start",
-        "claude",
-        "--dossier",
-        "other",
-        "--create",
-    ]);
+    let refused = cli(&["session", "start", "claude", "--dossier", "other"]);
     assert!(
         String::from_utf8_lossy(&refused.stderr)
             .contains("package probe changed since it was fetched"),
@@ -1179,17 +1164,7 @@ fn session_skills_are_exactly_the_configured_store_skills_read_only() {
     let cli = |args: &[&str]| op.run(&repo, &env, args, "");
     skills_kit(&home);
     let configure = |skills: Value| configure_skills(&home, &skills);
-    let start = || {
-        cli(&[
-            "session",
-            "start",
-            "probe",
-            "--dossier",
-            "skills",
-            "--create",
-            "--json",
-        ])
-    };
+    let start = || cli(&["session", "start", "probe", "--dossier", "skills", "--json"]);
     configure(json!(["kit/skills/alpha"]));
     let not_fetched = start();
     assert!(String::from_utf8_lossy(&not_fetched.stderr).contains("package kit is not fetched"));
@@ -1258,14 +1233,7 @@ fn session_skills_are_exactly_the_configured_store_skills_read_only() {
             .join("skills/alpha/SKILL.md"),
         "changed\n",
     );
-    let refused = cli(&[
-        "session",
-        "start",
-        "probe",
-        "--dossier",
-        "other",
-        "--create",
-    ]);
+    let refused = cli(&["session", "start", "probe", "--dossier", "other"]);
     assert!(
         String::from_utf8_lossy(&refused.stderr)
             .contains("package kit changed since it was fetched"),
@@ -1299,7 +1267,6 @@ fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
             "fix the bug",
             "--dossier",
             "port",
-            "--create",
             "--json",
         ],
         "",
@@ -1358,7 +1325,7 @@ fn an_ended_session_resumes_with_its_id_dossier_and_workspace() {
         );
         serde_json::from_slice(&out.stdout).unwrap()
     };
-    let first = launch(&["session", "start", "probe", "--dossier", "port", "--create"]);
+    let first = launch(&["session", "start", "probe", "--dossier", "port"]);
     let id = first["id"].as_str().unwrap();
     let workspace = home.join("worktrees/repo/port");
     let expected = |word: &str| format!("{word} SESSION={id} DIR={}\n", workspace.display());
@@ -1366,22 +1333,40 @@ fn an_ended_session_resumes_with_its_id_dossier_and_workspace() {
         String::from_utf8_lossy(&run_launch(&op, &home, &first).stdout),
         expected("first")
     );
+    // the start says the dossier is new, and where the session works
+    let lines = |l: &Value| -> Vec<String> { serde_json::from_value(l["lines"].clone()).unwrap() };
+    let said = lines(&first);
+    assert!(said[0].starts_with("created "), "{said:?}");
+    assert!(
+        said.iter().any(|l| l.starts_with(&format!(
+            "workspace: {} on legionctl/port (base main), ",
+            workspace.display()
+        ))),
+        "{said:?}"
+    );
+    // the folder's last dossier is held by the live session: a start without a name says what to do
+    let held = op.run(&repo, &env, &["session", "start", "probe"], "");
+    let why = String::from_utf8_lossy(&held.stderr);
+    assert!(
+        why.contains(&format!("'port' is in use by session {id}"))
+            && why.contains("--dossier <name>"),
+        "{why}"
+    );
 
     let again = launch(&["session", "resume", id]);
     assert_eq!(again["id"], first["id"]);
+    let said = lines(&again);
+    assert!(
+        said[0].starts_with("active dossier: port")
+            && !said.iter().any(|l| l.starts_with("created")),
+        "{said:?}"
+    );
     assert_eq!(
         String::from_utf8_lossy(&run_launch(&op, &home, &again).stdout),
         expected("again")
     );
 
-    let other = launch(&[
-        "session",
-        "start",
-        "noresume",
-        "--dossier",
-        "other",
-        "--create",
-    ]);
+    let other = launch(&["session", "start", "noresume", "--dossier", "other"]);
     let refused = op.run(
         &repo,
         &env,
@@ -1420,15 +1405,7 @@ fn a_plain_folder_workspace_keeps_the_source_until_merge() {
     let started = op.run(
         &notes,
         &[("HOME", home.to_str().unwrap())],
-        &[
-            "session",
-            "start",
-            "probe",
-            "--dossier",
-            "notes",
-            "--create",
-            "--json",
-        ],
+        &["session", "start", "probe", "--dossier", "notes", "--json"],
         "",
     );
     assert!(
@@ -1508,7 +1485,7 @@ fn dossier_check_finds_dangling_links_unverified_acceptance_and_stale_evidence()
         );
         String::from_utf8_lossy(&o.stdout).to_string()
     };
-    ok(&["dossier", "use", "port", "--create"]);
+    ok(&["dossier", "use", "port"]);
     ok(&["workspace", "open"]);
     let dossier = home.join(".agentworkspace/port");
     let plan = std::fs::read_to_string(dossier.join("plan.md")).unwrap().replace(
@@ -1595,7 +1572,7 @@ fn dossier_graph_keeps_each_status_change_with_its_session() {
         );
         String::from_utf8_lossy(&o.stdout).to_string()
     };
-    ok(&["dossier", "use", "hist", "--create"], "");
+    ok(&["dossier", "use", "hist"], "");
     let plan = "# Plan\n\n## ToDo\n| id | item | status |\n| --- | --- | --- |\n| todo-1 | build it | planned |\n";
     ok(&["dossier", "write", "hist/plan.md", "--overwrite"], plan);
     // the row's anchor, then a new text for it
@@ -2285,15 +2262,7 @@ fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_h
     let started = op.run(
         &repo,
         &[("HOME", home.to_str().unwrap())],
-        &[
-            "session",
-            "start",
-            "probe",
-            "--dossier",
-            "port",
-            "--create",
-            "--json",
-        ],
+        &["session", "start", "probe", "--dossier", "port", "--json"],
         "",
     );
     assert!(
@@ -2377,7 +2346,6 @@ fn a_resumed_session_continues_on_another_account_with_its_transcript() {
         "probe",
         "--dossier",
         "switch",
-        "--create",
         "--account",
         "first",
         "--json",
@@ -2482,7 +2450,6 @@ fn an_account_profile_gives_the_session_its_own_agent_logins_and_usage() {
                 "probe",
                 "--dossier",
                 "acct",
-                "--create",
                 "--account",
                 account,
                 "--json",
