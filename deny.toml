@@ -3,18 +3,31 @@
 targets = ["x86_64-unknown-linux-gnu"]
 
 [advisories]
-ignore = []
+# Transitive through GPUI (the app), unmaintained but without a known vulnerability; decided by the user 2026-10-13 (D2)
+ignore = [
+  { id = "RUSTSEC-2024-0384", reason = "instant, through GPUI" },
+  { id = "RUSTSEC-2024-0436", reason = "paste, through GPUI" },
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser, through GPUI text shaping" },
+  { id = "RUSTSEC-2026-0206", reason = "rustybuzz, through GPUI text shaping" },
+]
 
 [licenses]
 allow = [
   "MIT",
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
   "BSD-3-Clause",
   "BSL-1.0",
   "Unicode-3.0",
   "Unlicense",
   "Zlib",
+  # GPUI (the app) and rustls; decided by the user 2026-10-13 (D2)
+  "0BSD",
+  "CC0-1.0",
+  "ISC",
+  "MPL-2.0",
+  "bzip2-1.0.6",
 ]
 confidence-threshold = 0.9
 
