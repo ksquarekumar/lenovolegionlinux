@@ -4602,6 +4602,7 @@ dependencies = [
  "legionctl-machine",
  "reqwest",
  "sd-notify",
+ "serde",
  "serde_json",
  "tokio",
  "zbus",

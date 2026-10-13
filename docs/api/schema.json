@@ -4254,6 +4254,164 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "jobs.list": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Where the page starts: the `next` of the page before; default: the oldest.",
+          "default": null
+        },
+        "limit": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Items on the page (1-1000).",
+          "default": 200
+        }
+      },
+      "title": "PageIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "input": true,
+              "state": {
+                "type": "string"
+              },
+              "attempts": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              },
+              "created_at": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "updated_at": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "result": true,
+              "error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "input",
+              "state",
+              "attempts",
+              "created_at",
+              "updated_at"
+            ]
+          }
+        },
+        "next": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The cursor of the next page; none on the last one."
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "description": "One page of a log, oldest first.",
+      "title": "Page",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "jobs.show": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Job id (`jobs list`)."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "JobIdIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "input": true,
+        "state": {
+          "type": "string"
+        },
+        "attempts": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "created_at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "updated_at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "result": true,
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "input",
+        "state",
+        "attempts",
+        "created_at",
+        "updated_at"
+      ],
+      "title": "Job",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "tools.calls": {
     "class": "read",
     "internal": false,

@@ -1117,3 +1117,9 @@ pub struct PageIn {
     #[serde(default = "two_hundred")]
     pub limit: u32,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct JobIdIn {
+    /// Job id (`jobs list`).
+    pub id: i64,
+}

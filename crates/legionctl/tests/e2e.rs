@@ -1814,6 +1814,100 @@ fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
     assert!(String::from_utf8_lossy(&events.stdout).contains("session.permission"));
 }
 
+/// Jobs (DESIGN/02): a headless run is a job; when the operator stops in the middle of it, the next operator goes on
+/// with it in the same session (a new ACP session, told that it was cut off) and records how it ended.
+#[test]
+fn a_headless_run_cut_off_by_a_restart_goes_on_in_its_session() {
+    let (op, home) = operator("jobs");
+    let repo = repository(&home);
+    let agent =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-acp-agent.py");
+    write(
+        &home.join(".config/legionctl/run.jsonc"),
+        &json!({"session": {"acp": {"fake": ["python3", agent]}, "scope": false, "writable": []}})
+            .to_string(),
+    );
+    // a long run (the stand-in waits 30 s on SLOW), from a client that stays connected
+    let mut client = Command::new(env!("CARGO_BIN_EXE_legionctl"))
+        .args([
+            "session",
+            "run",
+            "fake",
+            "SLOW port the parser",
+            "--dossier",
+            "port",
+        ])
+        .current_dir(&repo)
+        .env_clear()
+        .env("XDG_RUNTIME_DIR", &op.runtime)
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .env("HOME", &home)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let job = |op: &Operator| -> Value {
+        let jobs: Value = serde_json::from_str(&op.ok(&["jobs", "list", "--json"])).unwrap();
+        jobs["items"]
+            .as_array()
+            .unwrap()
+            .first()
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while job(&op)["state"] != "running" {
+        assert!(std::time::Instant::now() < deadline, "no running job");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    drop(op);
+    let _ = client.kill();
+    let _ = client.wait();
+
+    let again = Operator::start(
+        "jobs2",
+        &[
+            ("HOME", home.clone().into()),
+            ("LEGIONCTL_SYSROOT", home.join("root").into()),
+            ("PATH", path_with_keyring(&home)),
+        ],
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let ended = loop {
+        let now = job(&again);
+        if now["state"] != "running" {
+            break now;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the job did not end: {now}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    };
+    assert_eq!(
+        (
+            ended["kind"].as_str(),
+            ended["state"].as_str(),
+            ended["attempts"].as_u64()
+        ),
+        (Some("session.run"), Some("done"), Some(2)),
+        "{ended}"
+    );
+    let shown: Value =
+        serde_json::from_str(&again.ok(&["jobs", "show", &ended["id"].to_string(), "--json"]))
+            .unwrap();
+    let text = shown["result"]["text"].as_str().unwrap();
+    assert!(
+        text.contains("prompt: A restart of legionctl cut off your work")
+            && text.contains("SLOW port the parser"),
+        "{text}"
+    );
+    assert_eq!(
+        shown["result"]["id"], shown["input"]["session"],
+        "the same session went on"
+    );
+}
+
 /// Callers and their tokens (DESIGN/03): `{mcp}` in the agent's command is the session's MCP config; a session's
 /// sandbox has its own token and cannot read the user's; without its
 /// token it is denied (a token it makes up is not the user's); and a call that names another session still acts for

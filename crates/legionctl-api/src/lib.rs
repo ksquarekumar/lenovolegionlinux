@@ -477,6 +477,11 @@ operations! {
     cache_stats / CacheStats = "cache.stats", Read, Empty => Vec<CacheStat>;
     /// Empty the cache, or one namespace of it (tools, gateway).
     cache_purge / CachePurge = "cache.purge", Workspace, CachePurgeIn => Lines;
+    /// The long operations (session run, images build) and how each ended; the operator resumes the ones a restart
+    /// cut off.
+    jobs_list / JobsList = "jobs.list", Read, PageIn => Page<Job>;
+    /// One job, with its result or why it failed.
+    jobs_show / JobsShow = "jobs.show", Read, JobIdIn => Job;
     /// MCP tool calls of session agents through legionctl mcp-proxy, oldest first.
     tools_calls / ToolsCalls = "tools.calls", Read, ToolCallsIn => Page<ToolCallRow>;
     /// A repository's Dockerfiles as a services description (build, entrypoints, ports) and a build-cache description

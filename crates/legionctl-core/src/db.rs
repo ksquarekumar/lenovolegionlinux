@@ -88,6 +88,19 @@ const OPERATOR: &[&str] = &[
     "CREATE INDEX events_kind ON events (kind, id);",
     // v9: the caches moved to the disposable cache.db (legionctl_core::cache)
     "DROP TABLE tool_cache; DROP TABLE gateway_semantic; DROP TABLE gateway_cache;",
+    // v10: jobs, the long operations (DESIGN/02): what ran, its input, and how it ended; the operator resumes the ones
+    // a restart cut off
+    "CREATE TABLE jobs (
+        id       INTEGER PRIMARY KEY,
+        kind     TEXT NOT NULL,
+        input    TEXT NOT NULL,
+        state    TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 1,
+        created  INTEGER NOT NULL,
+        updated  INTEGER NOT NULL,
+        result   TEXT,
+        error    TEXT
+     );",
 ];
 
 pub struct Db {
@@ -106,6 +119,121 @@ pub fn default_path() -> PathBuf {
 pub fn token_hash(token: &str) -> String {
     use blake2::{Blake2b, Digest, digest::consts::U32};
     format!("{:x}", Blake2b::<U32>::digest(token.as_bytes()))
+}
+
+/// A long operation and how it ended (`state`: running, done, failed).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct Job {
+    pub id: i64,
+    /// The operation: `session.run`, `images.build`.
+    pub kind: String,
+    pub input: serde_json::Value,
+    pub state: String,
+    /// 1, and one more each time the operator resumed it after a restart.
+    pub attempts: u32,
+    pub created: i64,
+    pub updated: i64,
+    pub result: Option<serde_json::Value>,
+    pub error: Option<String>,
+}
+
+const JOB_COLUMNS: &str = "id, kind, input, state, attempts, created, updated, result, error";
+
+fn job_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
+    let json = |s: Option<String>| s.and_then(|s| serde_json::from_str(&s).ok());
+    Ok(Job {
+        id: r.get(0)?,
+        kind: r.get(1)?,
+        input: json(Some(r.get(2)?)).unwrap_or_default(),
+        state: r.get(3)?,
+        attempts: r.get(4)?,
+        created: r.get(5)?,
+        updated: r.get(6)?,
+        result: json(r.get(7)?),
+        error: r.get(8)?,
+    })
+}
+
+impl Db {
+    /// A new running job; its id.
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn job_begin(&self, kind: &str, input: &serde_json::Value) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO jobs (kind, input, state, created, updated) VALUES (?1, ?2, 'running', ?3, ?3)",
+            params![kind, input.to_string(), now()],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// The job ended: its result, or why it failed.
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn job_end(&self, id: i64, outcome: &Result<serde_json::Value, String>) -> Result<()> {
+        let (state, result, error) = match outcome {
+            Ok(value) => ("done", Some(value.to_string()), None),
+            Err(e) => ("failed", None, Some(e.clone())),
+        };
+        self.conn.execute(
+            "UPDATE jobs SET state = ?2, result = ?3, error = ?4, updated = ?5 WHERE id = ?1",
+            params![id, state, result, error, now()],
+        )?;
+        Ok(())
+    }
+
+    /// Run the job once more (after a restart cut it off).
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn job_again(&self, id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE jobs SET attempts = attempts + 1, updated = ?2 WHERE id = ?1",
+            params![id, now()],
+        )?;
+        Ok(())
+    }
+
+    /// The jobs in `state`, oldest first.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn jobs_in(&self, state: &str) -> Result<Vec<Job>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {JOB_COLUMNS} FROM jobs WHERE state = ?1 ORDER BY id"
+        ))?;
+        let rows = stmt.query_map([state], job_row)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// One job.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn job(&self, id: i64) -> Result<Option<Job>> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!("SELECT {JOB_COLUMNS} FROM jobs WHERE id = ?1"),
+                [id],
+                job_row,
+            )
+            .optional()?)
+    }
+
+    /// Jobs after the id `after`, oldest first, at most `limit`; and the id to go on after when more follow.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn jobs_page(&self, after: i64, limit: u32) -> Result<(Vec<Job>, Option<i64>)> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {JOB_COLUMNS} FROM jobs WHERE id > ?1 ORDER BY id LIMIT ?2"
+        ))?;
+        let rows = stmt.query_map(params![after, i64::from(limit) + 1], job_row)?;
+        let rows = rows.collect::<Result<Vec<_>, _>>()?;
+        Ok(cut(rows, limit, |job| job.id))
+    }
 }
 
 /// Which events a page holds.

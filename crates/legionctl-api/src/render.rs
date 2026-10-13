@@ -1350,3 +1350,34 @@ impl Render for Vec<crate::CacheStat> {
             .join("\n")
     }
 }
+
+impl Render for Vec<crate::Job> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no jobs".into();
+        }
+        self.iter()
+            .map(|j| {
+                format!(
+                    "{:>5} {:<13} {:<8} attempt {}",
+                    j.id, j.kind, j.state, j.attempts
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+impl Render for crate::Job {
+    fn text(&self) -> String {
+        let end = match (&self.result, &self.error) {
+            (Some(result), _) => result.to_string(),
+            (None, Some(error)) => error.clone(),
+            (None, None) => "running".into(),
+        };
+        format!(
+            "job {} {} {} (attempt {})\ninput: {}\n{end}",
+            self.id, self.kind, self.state, self.attempts, self.input
+        )
+    }
+}

@@ -782,6 +782,18 @@ wire! {
         file: String,
     }
 
+    struct Job from core::db::Job {
+        id: i64,
+        kind: String,
+        input: Value,
+        state: String,
+        attempts: u32,
+        created_at: i64 = created,
+        updated_at: i64 = updated,
+        result: Option<Value>,
+        error: Option<String>,
+    }
+
     struct WindowsState from machine::windows::WindowsState {
         /// The firmware entry that starts Windows (`0004`), if there is one.
         boot_entry: Option<String>,

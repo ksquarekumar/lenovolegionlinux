@@ -594,14 +594,18 @@ impl Dossiers {
         config: &Config,
         account: Option<&str>,
         token: &str,
+        headless: bool,
     ) -> Result<Launch> {
         let mut record = self.session(id)?;
-        let command = config.session.resume.get(&record.agent).with_context(|| {
-            format!(
-                "agent {} cannot resume a session (session.resume)",
-                record.agent
-            )
-        })?;
+        // a headless session goes on through its agent's ACP adapter, an interactive one through its resume command
+        let (commands, key) = if headless {
+            (&config.session.acp, "session.acp")
+        } else {
+            (&config.session.resume, "session.resume")
+        };
+        let command = commands
+            .get(&record.agent)
+            .with_context(|| format!("agent {} cannot resume a session ({key})", record.agent))?;
         let store = crate::packages::Store::new(crate::packages::Store::default_root());
         let mcp_json = mcp_config(config, &store)?;
         let skills = skills(config, &store)?;

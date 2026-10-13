@@ -23,7 +23,8 @@ use legionctl_api::{
     WorkspaceOpenIn, WorkspaceStates, Workspaces,
 };
 use legionctl_api::{
-    CachePurgeIn, CacheStat, CachedCall, EventRow, Page, PageIn, Principal, SessionActivityIn,
+    CachePurgeIn, CacheStat, CachedCall, EventRow, JobIdIn, Page, PageIn, Principal,
+    SessionActivityIn,
 };
 use legionctl_core::cache::Cache;
 use legionctl_core::config::{Dirs, Resolved, resolve};
@@ -103,6 +104,57 @@ fn cache_limit(ns: &str) -> Result<u64> {
         .get(ns)
         .map(|l| l.max_bytes)
         .with_context(|| format!("no limit for the cache namespace {ns} (cache.{ns}.max_bytes)"))
+}
+
+/// Build each service of the repository that its compose file or Dockerfiles build (`images build`).
+fn build_images(repo: &Path) -> Result<Lines> {
+    let (project, tag) = legionctl_core::images::project(repo);
+    let mut lines = Vec::new();
+    for (name, service) in legionctl_core::images::scan_repository(repo)?.services {
+        // a prebuilt image from the compose file: compose pulls it
+        let Some(spec) = service.build else {
+            continue;
+        };
+        let image = legionctl_core::images::image(&project, &name, &tag);
+        let mut build = Command::new("docker");
+        build.current_dir(repo).args([
+            "buildx",
+            "build",
+            "--load",
+            "-t",
+            &image,
+            "-f",
+            &spec.dockerfile,
+        ]);
+        if let Some(target) = &spec.target {
+            build.args(["--target", target]);
+        }
+        let out = build
+            .arg(&spec.context)
+            .output()
+            .context("running docker buildx")?;
+        anyhow::ensure!(
+            out.status.success(),
+            "building {name}: {}",
+            String::from_utf8_lossy(&out.stderr)
+                .lines()
+                .rev()
+                .take(5)
+                .collect::<Vec<_>>()
+                .join(" | ")
+        );
+        lines.push(format!("built {image}"));
+    }
+    Ok(Lines { lines })
+}
+
+/// Record how a job ended.
+fn end_job<T: serde::Serialize>(db: &Db, job: i64, out: &Result<T>) -> Result<()> {
+    let outcome = match out {
+        Ok(value) => Ok(serde_json::to_value(value)?),
+        Err(e) => Err(format!("{e:#}")),
+    };
+    db.job_end(job, &outcome)
 }
 
 /// The event id a page cursor stands for (0 without one), and the page length.
@@ -560,6 +612,60 @@ impl Operator {
                 .unwrap_or_default()
         };
         telemetry::sample(&SysRoot::from_env(), window, &root_part)
+    }
+}
+
+impl Operator {
+    /// Resume the jobs a restart cut off (they are still `running`): each in the background, at most 3 attempts. A
+    /// build runs again; a headless run goes on in its session (same dossier and workspace, a new ACP session) with
+    /// the task and a note that it was cut off.
+    pub fn resume_jobs(self: &std::sync::Arc<Self>) -> Result<()> {
+        let db = Db::open_default()?;
+        for job in db.jobs_in("running")? {
+            if job.attempts >= 3 {
+                db.job_end(job.id, &Err("cut off by a restart 3 times".into()))?;
+                continue;
+            }
+            db.job_again(job.id)?;
+            let operator = self.clone();
+            std::thread::spawn(move || {
+                let db = match Db::open_default() {
+                    Ok(db) => db,
+                    Err(e) => return eprintln!("operator: job {} not resumed: {e:#}", job.id),
+                };
+                let outcome = match job.kind.as_str() {
+                    "session.run" => end_job(&db, job.id, &operator.continue_run(&job.input)),
+                    "images.build" => {
+                        let repo = PathBuf::from(job.input["repo"].as_str().unwrap_or_default());
+                        end_job(&db, job.id, &build_images(&repo))
+                    }
+                    other => db.job_end(job.id, &Err(format!("no way to resume a {other} job"))),
+                };
+                if let Err(e) = outcome {
+                    eprintln!("operator: job {} not recorded: {e:#}", job.id);
+                }
+            });
+        }
+        Ok(())
+    }
+
+    /// A headless run that a restart cut off, on in its own session.
+    fn continue_run(&self, input: &serde_json::Value) -> Result<RunOutput> {
+        let id = input["session"]
+            .as_str()
+            .context("the job has no session")?;
+        let prompt = input["prompt"].as_str().unwrap_or_default();
+        let store = dossiers()?;
+        let record = store.session(id)?;
+        let resolved = resolve(&Dirs::from_env(), Some(&place_of(&record.workdir)))?;
+        let token = legionctl_api::random_token()?;
+        let launch = store.resume_session(id, &resolved.config, None, &token, true)?;
+        Db::open_default()?.issue_token(&launch.id, &token)?;
+        let note = format!(
+            "A restart of legionctl cut off your work on this task; your workspace and your dossier hold what you did. \
+             Go on with the task:\n\n{prompt}"
+        );
+        self.runtime.block_on(crate::acp::run(launch, &note))
     }
 }
 
@@ -1362,44 +1468,28 @@ impl Engine for Operator {
 
     fn images_build(&self, _: &Ctx, input: RepoIn) -> Result<Lines> {
         let repo = input.repo.get()?;
-        let (project, tag) = legionctl_core::images::project(repo);
-        let mut lines = Vec::new();
-        for (name, service) in legionctl_core::images::scan_repository(repo)?.services {
-            // a prebuilt image from the compose file: compose pulls it
-            let Some(spec) = service.build else {
-                continue;
-            };
-            let image = legionctl_core::images::image(&project, &name, &tag);
-            let mut build = Command::new("docker");
-            build.current_dir(repo).args([
-                "buildx",
-                "build",
-                "--load",
-                "-t",
-                &image,
-                "-f",
-                &spec.dockerfile,
-            ]);
-            if let Some(target) = &spec.target {
-                build.args(["--target", target]);
-            }
-            let out = build
-                .arg(&spec.context)
-                .output()
-                .context("running docker buildx")?;
-            anyhow::ensure!(
-                out.status.success(),
-                "building {name}: {}",
-                String::from_utf8_lossy(&out.stderr)
-                    .lines()
-                    .rev()
-                    .take(5)
-                    .collect::<Vec<_>>()
-                    .join(" | ")
-            );
-            lines.push(format!("built {image}"));
-        }
-        Ok(Lines { lines })
+        let db = Db::open_default()?;
+        let job = db.job_begin("images.build", &serde_json::json!({"repo": repo}))?;
+        let out = build_images(repo);
+        end_job(&db, job, &out)?;
+        out
+    }
+
+    fn jobs_list(&self, _: &Ctx, input: PageIn) -> Result<Page<legionctl_api::Job>> {
+        let (after, limit) = page_of(input.cursor.as_deref(), input.limit)?;
+        Ok(page(Db::open_default()?.jobs_page(after, limit)?))
+    }
+
+    fn jobs_show(&self, _: &Ctx, input: JobIdIn) -> Result<legionctl_api::Job> {
+        Ok(Db::open_default()?
+            .job(input.id)?
+            .ok_or_else(|| {
+                coded(
+                    Code::NotFound,
+                    format!("no job {}; see legionctl jobs list", input.id),
+                )
+            })?
+            .into_wire())
     }
 
     fn images_run(&self, _: &Ctx, input: RepoIn) -> Result<Lines> {
@@ -1754,9 +1844,17 @@ impl Engine for Operator {
             account: input.account.as_deref(),
         };
         let launch = store.start_session(&start, &resolved.config)?;
-        Db::open_default()?.issue_token(&launch.id, &token)?;
-        self.runtime
-            .block_on(crate::acp::run(launch, &input.prompt))
+        let db = Db::open_default()?;
+        db.issue_token(&launch.id, &token)?;
+        let job = db.job_begin(
+            "session.run",
+            &serde_json::json!({"session": launch.id, "prompt": input.prompt}),
+        )?;
+        let out = self
+            .runtime
+            .block_on(crate::acp::run(launch, &input.prompt));
+        end_job(&db, job, &out)?;
+        out
     }
 
     fn session_list(&self, _: &Ctx, _: Empty) -> Result<Sessions> {
@@ -1818,6 +1916,7 @@ impl Engine for Operator {
             &resolved.config,
             input.account.as_deref(),
             &token,
+            false,
         )?;
         Db::open_default()?.issue_token(&launch.id, &token)?;
         Ok(launch.into_wire())

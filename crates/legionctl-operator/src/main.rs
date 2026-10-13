@@ -116,6 +116,10 @@ async fn main() -> Result<()> {
     if let Err(e) = pruned {
         eprintln!("operator: old log rows not removed: {e}");
     }
+    // the long operations a restart cut off go on in the background
+    if let Err(e) = operator.resume_jobs() {
+        eprintln!("operator: jobs not resumed: {e:#}");
+    }
     let modules = vec![
         module("the machine event recorder", recorder::run),
         module("the session module", session::run),

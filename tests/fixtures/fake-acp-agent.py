@@ -3,12 +3,14 @@
 
 On a prompt it asks one permission, commits a file and tries a push in its working folder (inside the session's
 sandbox), then answers with what it saw: the prompt, the MCP servers from session/new, the permission outcome, and
-whether the commit and the push went through.
+whether the commit and the push went through. A prompt that starts with SLOW waits 30 s first (a long run, for the
+test that stops the operator in the middle of one).
 """
 
 import json
 import subprocess
 import sys
+import time
 
 mcp_servers = []
 pending = {}
@@ -39,6 +41,8 @@ def run(argv):
 
 def prompt(params):
     text = " ".join(block.get("text", "") for block in params.get("prompt", []))
+    if text.startswith("SLOW"):
+        time.sleep(30)
     outcome = request(
         "session/request_permission",
         {
