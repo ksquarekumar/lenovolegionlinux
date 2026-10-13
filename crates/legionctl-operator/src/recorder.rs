@@ -1,5 +1,6 @@
 //! The machine daemon's signals in the event log (actor `legionctl-system`), so `legionctl events` and
-//! `legionctl trace` show what the machine did next to what agents and people did. Needs only the system bus.
+//! `legionctl trace` show what the machine did next to what agents and people did, and the programs that agent
+//! sessions start (`session.exec`, from the daemon's eBPF sensor). Needs only the system bus.
 
 use anyhow::Result;
 use futures_util::StreamExt;
@@ -15,9 +16,21 @@ fn record(kind: &str, payload: &Value) {
     }
 }
 
+/// Ask the daemon for this user's session activity; a daemon without the sensor says why, and recording goes on.
+async fn watch_sessions(machine: &System1Proxy<'_>) {
+    match machine.watch_sessions().await {
+        Ok(()) => eprintln!("operator: recording session activity"),
+        Err(e) => eprintln!("operator: no session activity: {e}"),
+    }
+}
+
 pub async fn run() -> Result<()> {
     let system = zbus::Connection::system().await?;
     let machine = System1Proxy::new(&system).await?;
+    let mut execs = machine.receive_session_exec().await?;
+    // a restarted daemon forgets who watches: ask again
+    let mut owners = machine.inner().receive_owner_changed().await?;
+    watch_sessions(&machine).await;
     let mut changed = machine.receive_changed().await?;
     let mut modes = machine.receive_mode_changed().await?;
     let mut fn_lock = machine.receive_fn_lock().await?;
@@ -35,6 +48,16 @@ pub async fn run() -> Result<()> {
             }
             Some(s) = fn_lock.next() => ("machine.fn-lock".into(), json!({"on": s.args()?.on})),
             Some(s) = keys.next() => ("machine.key".into(), json!({"name": s.args()?.name})),
+            Some(s) = execs.next() => {
+                let a = s.args()?;
+                ("session.exec".into(), json!({"session": a.session, "pid": a.pid, "argv": a.argv}))
+            }
+            Some(owner) = owners.next() => {
+                if owner.is_some() {
+                    watch_sessions(&machine).await;
+                }
+                continue;
+            }
             else => return Ok(()),
         };
         tokio::task::spawn_blocking(move || record(&kind, &payload)).await?;

@@ -1248,6 +1248,18 @@ impl Render for Vec<crate::io::ServiceState> {
     }
 }
 
+impl Render for Vec<crate::io::SessionExec> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no programs recorded for this session".into();
+        }
+        self.iter()
+            .map(|e| format!("{} {:>7} {}", e.ts, e.pid, e.argv.join(" ")))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
 impl Render for Vec<crate::io::Plugin> {
     fn text(&self) -> String {
         if self.is_empty() {

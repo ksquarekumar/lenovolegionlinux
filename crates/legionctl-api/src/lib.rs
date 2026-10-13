@@ -447,6 +447,8 @@ operations! {
     session_list / SessionList = "session.list", Read, Empty => Sessions;
     /// Stop a session's scope (the agent and everything it started).
     session_stop / SessionStop = "session.stop", Workspace, SessionIdIn => Lines;
+    /// The programs a session's processes started, oldest first (legionctl-system's eBPF sensor; needs its scope).
+    session_activity / SessionActivity = "session.activity", Read, SessionIdIn => Vec<SessionExec>;
     /// Freeze a session's processes (cgroup freezer): memory stays, the agent does nothing until thawed.
     session_pause / SessionPause = "session.pause", Workspace, SessionIdIn => Lines;
     /// Let a paused session run again.

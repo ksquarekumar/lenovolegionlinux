@@ -10,7 +10,7 @@ use legionctl_api::{
     DossierAppendIn, DossierCheckIn, DossierEditIn, DossierFindings, DossierList, DossierReadIn,
     DossierSearchIn, DossierUseIn, DossierWriteIn, DryRunIn, Events, EventsIn, GateIn, Guard,
     GuardIn, HookReply, HookRunIn, InspectIn, KnobDetail, Knobs, Launch, Lines, Locks, MonitorIn,
-    RecordIn, Recording, ReplayIn, Sample, Samples, SessionId, SessionIdIn, SessionIn,
+    RecordIn, Recording, ReplayIn, Sample, Samples, SessionExec, SessionId, SessionIdIn, SessionIn,
     SessionResumeIn, SessionStartIn, SessionState, Sessions, ToolCall, ToolCallRow, ToolCalls,
     ToolCallsIn, TuneIn, TuneReport, WindowsState,
 };
@@ -1521,6 +1521,21 @@ impl Engine for Operator {
     fn session_stop(&self, ctx: &Ctx, input: SessionIdIn) -> Result<Lines> {
         Self::record(ctx, "session.stop", &input)?;
         scope_control("stop", &input.id, "stopped")
+    }
+
+    fn session_activity(&self, _: &Ctx, input: SessionIdIn) -> Result<Vec<SessionExec>> {
+        Ok(Db::open_default()?
+            .events_of("session.exec")?
+            .into_iter()
+            .filter(|e| e.payload["session"] == input.id.as_str())
+            .filter_map(|e| {
+                Some(SessionExec {
+                    ts: e.ts,
+                    pid: u32::try_from(e.payload["pid"].as_u64()?).ok()?,
+                    argv: serde_json::from_value(e.payload["argv"].clone()).ok()?,
+                })
+            })
+            .collect())
     }
 
     fn session_pause(&self, ctx: &Ctx, input: SessionIdIn) -> Result<Lines> {

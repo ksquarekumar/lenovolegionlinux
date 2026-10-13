@@ -14,6 +14,11 @@ pub trait System1 {
     fn tune(&self, spec: &str) -> zbus::Result<String>;
     /// Root-only readings as JSON (`telemetry::RootSample`).
     fn sample(&self) -> zbus::Result<String>;
+    /// Send this connection the program starts of its user's agent sessions (`SessionExec`).
+    fn watch_sessions(&self) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    fn session_exec(&self, session: String, pid: u32, argv: Vec<String>) -> zbus::Result<()>;
 
     #[zbus(signal)]
     fn changed(&self, cause: String, lines: Vec<String>) -> zbus::Result<()>;

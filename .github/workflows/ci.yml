@@ -37,9 +37,10 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Lint, format check, profile validation, tests
         run: make ci
-      # the eBPF sensor needs root to load: run its test binary with sudo (the binary is built as the runner user)
-      - name: eBPF sensor as root
+      # the eBPF sensors need root to load: run their tests with sudo (the binary is built as the runner user)
+      - name: eBPF sensors as root
         run: |
           bin=$(cargo test -p legionctl --test machine --no-run --message-format=json \
             | jq -r 'select(.target.name == "machine" and .executable != null) | .executable')
-          sudo -E "$bin" --ignored --exact operator_and_daemon::as_root_the_runq_sensor_measures_wakeups
+          sudo -E "$bin" --ignored --exact operator_and_daemon::as_root_the_runq_sensor_measures_wakeups \
+            operator_and_daemon::as_root_the_exec_sensor_records_what_a_session_starts

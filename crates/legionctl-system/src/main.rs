@@ -15,13 +15,14 @@
 //! Fn lock (`FnLock`) and which Fn key was pressed (`Key`). Decisions come from `legionctl_machine`; this file only
 //! wires event sources and the bus to it.
 
+mod exec;
 mod runq;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -248,6 +249,10 @@ struct System1 {
     tuning: Arc<AtomicBool>,
     /// The run-queue latency sensor, or why it does not run.
     runq: Arc<Result<runq::Runq, String>>,
+    /// Who gets the session activity: uid -> its connection (`WatchSessions`; the newest call of a user wins).
+    watchers: Arc<Mutex<BTreeMap<u32, String>>>,
+    /// Why the session activity sensor does not run.
+    exec_error: Option<String>,
 }
 
 /// The readings only root makes, with the eBPF sensor's histogram (or its error).
@@ -456,6 +461,41 @@ impl System1 {
         serde_json::to_string(&sample).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
+    /// Send the starts of programs in the caller's own agent sessions (`SessionExec`) to the caller's connection, from
+    /// now on. Only the caller's sessions, and only to it: arguments can hold secrets.
+    async fn watch_sessions(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> zbus::fdo::Result<()> {
+        if let Some(e) = &self.exec_error {
+            return Err(zbus::fdo::Error::Failed(format!(
+                "the eBPF session activity sensor does not run: {e}"
+            )));
+        }
+        let sender = header
+            .sender()
+            .ok_or_else(|| zbus::fdo::Error::AccessDenied("caller has no bus name".into()))?;
+        let uid = zbus::fdo::DBusProxy::new(conn)
+            .await?
+            .get_connection_unix_user(sender.clone().into())
+            .await?;
+        self.watchers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(uid, sender.to_string());
+        Ok(())
+    }
+
+    /// A process in agent session `session` started a program; sent only to the session owner's watcher.
+    #[zbus(signal)]
+    async fn session_exec(
+        emitter: &SignalEmitter<'_>,
+        session: &str,
+        pid: u32,
+        argv: &[String],
+    ) -> zbus::Result<()>;
+
     /// Something changed the machine: an event or a method (`cause`), with what it did. Never sent for no change.
     #[zbus(signal)]
     async fn changed(
@@ -537,6 +577,65 @@ fn reread(mut file: &std::fs::File) -> std::io::Result<String> {
     Ok(value.trim().to_string())
 }
 
+/// The session activity sensor's loop: each second it watches the scopes of the users who asked; each program start
+/// goes to its session owner's watcher.
+async fn session_activity(
+    bus: zbus::Connection,
+    watchers: Arc<Mutex<BTreeMap<u32, String>>>,
+    mut ring: AsyncFd<aya::maps::RingBuf<aya::maps::MapData>>,
+    mut watch: exec::Watch,
+) {
+    // new and ended session scopes reach the sensor within a second
+    let mut scan = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        tokio::select! {
+            _ = scan.tick() => {
+                let uids: BTreeSet<u32> = watchers
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .keys()
+                    .copied()
+                    .collect();
+                if let Err(e) = watch.refresh(&uids) {
+                    eprintln!("exec sensor: cannot watch the sessions: {e:#}");
+                }
+            }
+            ready = ring.readable_mut() => {
+                let Ok(mut guard) = ready else {
+                    eprintln!("exec sensor: the ring buffer failed; stopped");
+                    return;
+                };
+                let execs = watch.drain(guard.get_inner_mut());
+                guard.clear_ready();
+                for e in execs {
+                    send_exec(&bus, &watchers, e).await;
+                }
+            }
+        }
+    }
+}
+
+/// Send one session's program start to its owner's watcher alone (a unicast signal).
+async fn send_exec(bus: &zbus::Connection, watchers: &Mutex<BTreeMap<u32, String>>, e: exec::Exec) {
+    let Some(name) = watchers
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&e.uid)
+        .cloned()
+    else {
+        return;
+    };
+    let sent = async {
+        let to = SignalEmitter::new(bus, OBJECT_PATH)?
+            .set_destination(zbus::names::BusName::try_from(name.as_str())?);
+        System1::session_exec(&to, &e.session, e.pid, &e.argv).await
+    }
+    .await;
+    if let Err(err) = sent {
+        eprintln!("exec sensor: cannot send to {name}: {err}");
+    }
+}
+
 /// The udev events this daemon reacts to, or `None` for anything else on the socket.
 fn udev_event(e: &udev::Event) -> Option<Event> {
     if e.event_type() != udev::EventType::Change {
@@ -561,6 +660,11 @@ async fn main() -> Result<()> {
     if let Err(e) = runq.as_ref() {
         eprintln!("runq sensor: not running: {e}");
     }
+    let execs = exec::start().map_err(|e| format!("{e:#}"));
+    if let Err(e) = &execs {
+        eprintln!("exec sensor: not running: {e}");
+    }
+    let watchers = Arc::new(Mutex::new(BTreeMap::new()));
     let monitor = udev::MonitorBuilder::new()?
         .match_subsystem("power_supply")?
         .match_subsystem("platform-profile")?
@@ -575,12 +679,17 @@ async fn main() -> Result<()> {
                 root: root.clone(),
                 tuning: tuning.clone(),
                 runq,
+                watchers: watchers.clone(),
+                exec_error: execs.as_ref().err().cloned(),
             },
         )?
         .build()
         .await
         .with_context(|| format!("owning {BUS_NAME} on the system bus"))?;
     let emitter = SignalEmitter::new(&bus, OBJECT_PATH)?;
+    if let Ok((ring, watch)) = execs {
+        tokio::spawn(session_activity(bus.clone(), watchers, ring, watch));
+    }
     let mut sleep = Login1Proxy::new(&bus)
         .await?
         .receive_prepare_for_sleep()

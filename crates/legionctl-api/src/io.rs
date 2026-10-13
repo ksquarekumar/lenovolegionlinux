@@ -579,6 +579,16 @@ pub struct SessionIdIn {
     pub id: String,
 }
 
+/// A program that a process in an agent session started (the eBPF sensor in legionctl-system).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SessionExec {
+    /// Seconds since the epoch.
+    pub ts: i64,
+    pub pid: u32,
+    /// The arguments, cut at 512 bytes.
+    pub argv: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionResumeIn {
     pub id: String,

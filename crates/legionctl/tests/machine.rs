@@ -1334,6 +1334,90 @@ mod operator_and_daemon {
         );
     }
 
+    /// As root (CI runs it with sudo): a program started in an agent session's scope (a cgroup
+    /// `legionctl-session-<id>.scope` of the operator's user) reaches `session activity` with its arguments, through
+    /// the eBPF exec sensor and a signal sent to the operator alone; a program outside the scope does not.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs root: CI runs it with sudo"]
+    async fn as_root_the_exec_sensor_records_what_a_session_starts() {
+        let m = Machine::new("execs");
+        let (stand_ins, _asked, _processes) = start(&m).await;
+        // the daemon's own reason when the sensor does not run (the verifier's message); asked before the
+        // operator starts, so the operator's later call is the watch that counts
+        if let Err(e) = stand_ins
+            .call_method(
+                Some("org.legionctl.System1"),
+                "/org/legionctl/System1",
+                Some("org.legionctl.System1"),
+                "WatchSessions",
+                &(),
+            )
+            .await
+        {
+            panic!("{e}");
+        }
+        let op = on_bus(&m, "execs");
+        let uid = std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/proc/self").unwrap());
+        let user = PathBuf::from(format!(
+            "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/app.slice"
+        ));
+        // the cgroups this test makes, deepest last, so they go in reverse
+        let made: Vec<PathBuf> = user
+            .join("legionctl-session-acttest.scope")
+            .ancestors()
+            .take_while(|p| !p.exists())
+            .map(Path::to_path_buf)
+            .collect();
+        std::fs::create_dir_all(made.first().unwrap()).unwrap();
+        let scope = user.join("legionctl-session-acttest.scope");
+        let probe = |inside: bool, word: &str| {
+            let enter = if inside {
+                format!("echo $$ > {}/cgroup.procs && ", scope.display())
+            } else {
+                String::new()
+            };
+            std::process::Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    &format!("{enter}exec /bin/echo legionctl-probe {word}"),
+                ])
+                .output()
+                .unwrap();
+        };
+        probe(false, "outside");
+        // the operator asks to watch at its start; the daemon looks for new scopes each second
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let activity = loop {
+            probe(true, "inside");
+            let out = op.cli(&["session", "activity", "acttest", "--json"]);
+            let rows: Value = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
+            if rows.as_array().is_some_and(|r| !r.is_empty())
+                || std::time::Instant::now() > deadline
+            {
+                break rows;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        };
+        for dir in &made {
+            let _ = std::fs::remove_dir(dir);
+        }
+        let argvs: Vec<Value> = activity
+            .as_array()
+            .unwrap_or_else(|| panic!("no activity: {activity}"))
+            .iter()
+            .map(|r| r["argv"].clone())
+            .collect();
+        assert!(
+            argvs.contains(&serde_json::json!([
+                "/bin/echo",
+                "legionctl-probe",
+                "inside"
+            ])),
+            "{activity}"
+        );
+        assert!(!activity.to_string().contains("outside"), "{activity}");
+    }
+
     /// Restart into Windows: the entry comes from the firmware's list (captured on this machine), the dry run changes
     /// nothing, polkit is asked, `BootNext` is set before the reboot, and a failed `BootNext` stops the reboot.
     #[tokio::test(flavor = "multi_thread")]

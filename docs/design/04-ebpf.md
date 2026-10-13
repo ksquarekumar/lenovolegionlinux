@@ -19,8 +19,22 @@ summaries carry it. A sensor that cannot load (no permission, the verifier's mes
 and a `doctor` finding; the daemon runs on. Tests: without root the error path (e2e); as root in CI (`sudo`) the
 programs pass the verifier of the runner's kernel and count real wakeups.
 
+## Built (2026-10-13): session activity
+
+`crates/legionctl-system/bpf/exec.bpf.c` hooks `tp_btf/sched_process_exec`: when the current cgroup is in its
+`watched` map, it puts the pid and the first 512 bytes of the new program's arguments (`mm->arg_start..arg_end`,
+CO-RE) into a ring buffer. The operator calls `WatchSessions()` on `org.legionctl.System1` at its start (and again
+when the daemon restarts); the daemon notes the caller's uid and connection, and each second points `watched` at that
+user's `legionctl-session-<id>.scope` cgroups (`/sys/fs/cgroup/user.slice/user-<uid>.slice/user@<uid>.service`,
+the folder's inode is the cgroup id). Each program start goes out as `SessionExec(session, pid, argv)` to that
+connection alone (a unicast signal): arguments can hold secrets, and another local user never receives them. The
+operator records `session.exec` events; `legionctl session activity <id>` lists them. A daemon without BPF
+permission answers `WatchSessions` with the reason, and the operator records nothing. Tests: as root in CI, a
+program started inside a scope cgroup is recorded with its arguments and one outside is not; the test asks the
+daemon first, so a refused program fails it with the verifier's message.
+
 Not built yet: pinning under `/sys/fs/bpf/legionctl/` (a restart loads the programs again), and the other uses
-below (workload detection, power attribution, throttle correlation, session activity, HID-BPF).
+below (workload detection, power attribution, throttle correlation, HID-BPF).
 
 ## Worth doing
 
