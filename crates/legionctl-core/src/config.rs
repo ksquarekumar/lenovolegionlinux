@@ -36,6 +36,44 @@ pub struct Config {
     pub packages: BTreeMap<String, PackageConfig>,
     pub gateway: GatewayConfig,
     pub load: Thresholds,
+    pub plugins: PluginsConfig,
+}
+
+/// The agent plugins a user may install through legionctl (A1).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PluginsConfig {
+    /// Marketplace name (its own, as in its marketplace.json) -> where it comes from and which plugins.
+    pub marketplaces: BTreeMap<String, Marketplace>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Marketplace {
+    /// `owner/repo`, a git or https URL, or a path.
+    pub source: String,
+    /// Plugin names allowed from it; `*` allows all.
+    pub allow: Vec<String>,
+}
+
+impl PluginsConfig {
+    /// Why `plugin@marketplace` may not be installed, if it may not.
+    #[must_use]
+    pub fn refusal(&self, id: &str) -> Option<String> {
+        let Some((plugin, market)) = id.split_once('@') else {
+            return Some(format!("{id}: write it as <plugin>@<marketplace>"));
+        };
+        let Some(m) = self.marketplaces.get(market) else {
+            return Some(format!(
+                "marketplace {market} is not in plugins.marketplaces"
+            ));
+        };
+        (!m.allow.iter().any(|a| a == "*" || a == plugin)).then(|| {
+            format!(
+                "plugin {plugin} is not allowed from {market} (plugins.marketplaces.{market}.allow)"
+            )
+        })
+    }
 }
 
 /// The model gateway in the operator (note 19).

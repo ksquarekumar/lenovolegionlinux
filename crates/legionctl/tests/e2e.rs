@@ -1614,6 +1614,86 @@ fn dossier_graph_keeps_each_status_change_with_its_session() {
     );
 }
 
+/// Plugins: only what `plugins.marketplaces` allows is installed, through `claude plugin install` from the
+/// configured source and never with `-y`; the list marks installed plugins outside the allowlist. A stand-in `claude`
+/// logs its arguments.
+#[test]
+fn plugin_installs_follow_the_allowlist() {
+    let home = Path::new("/var/tmp").join(format!("legionctl-e2e-plugins-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let bin = home.join("bin");
+    write(
+        &bin.join("claude"),
+        &format!(
+            "#!/bin/sh\necho \"$*\" >> {}\nif [ \"$2\" = list ]; then echo '[{{\"id\":\"fmt@acme\",\"version\":\"1.0.0\",\"scope\":\"user\",\
+             \"enabled\":true}},{{\"id\":\"spy@elsewhere\",\"version\":\"0.1.0\",\"scope\":\"project\",\"enabled\":false}}]'; \
+             else echo '{{\"ok\":true}}'; fi\n",
+            home.join("claude.log").display()
+        ),
+    );
+    std::fs::set_permissions(
+        bin.join("claude"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    write(
+        &home.join(".config/legionctl/plugins.jsonc"),
+        &json!({"plugins": {"marketplaces": {"acme": {"source": "acme/tools", "allow": ["fmt"]}}}})
+            .to_string(),
+    );
+    let path =
+        std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path_with_build())))
+            .unwrap();
+    let op = Operator::start("plugins", &[("HOME", home.clone().into()), ("PATH", path)]);
+    let run = |args: &[&str]| op.run(&home, &[("HOME", home.to_str().unwrap())], args, "");
+
+    for (id, why) in [
+        ("lint@acme", "plugin lint is not allowed from acme"),
+        (
+            "fmt@other",
+            "marketplace other is not in plugins.marketplaces",
+        ),
+        ("fmt", "write it as <plugin>@<marketplace>"),
+    ] {
+        let refused = run(&["agents", "plugin-install", id, "--scope", "user"]);
+        assert!(
+            !refused.status.success() && String::from_utf8_lossy(&refused.stderr).contains(why),
+            "{id}: {}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+    }
+    assert!(
+        !home.join("claude.log").exists(),
+        "a refusal never reaches claude"
+    );
+    let installed = run(&[
+        "agents",
+        "plugin-install",
+        "fmt@acme",
+        "--scope",
+        "project-local",
+    ]);
+    assert!(
+        installed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&installed.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("claude.log")).unwrap(),
+        "plugin install fmt --marketplace acme/tools --scope local --json\n"
+    );
+
+    let listed: Value =
+        serde_json::from_slice(&run(&["agents", "plugins", "--json"]).stdout).unwrap();
+    let marks: Vec<(&str, bool)> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| (p["id"].as_str().unwrap(), p["allowed"].as_bool().unwrap()))
+        .collect();
+    assert_eq!(marks, [("fmt@acme", true), ("spy@elsewhere", false)]);
+}
+
 /// Agent settings: a dry run shows only the changed lines and writes nothing; a write keeps a backup; TOML keeps its
 /// comments; an unknown top-level key is written with a warning.
 #[test]

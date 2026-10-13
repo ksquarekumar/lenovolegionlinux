@@ -1248,6 +1248,31 @@ impl Render for Vec<crate::io::ServiceState> {
     }
 }
 
+impl Render for Vec<crate::io::Plugin> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no Claude Code plugins".into();
+        }
+        self.iter()
+            .map(|p| {
+                format!(
+                    "{} {} ({}, {}){}",
+                    p.id,
+                    p.version,
+                    p.scope,
+                    if p.enabled { "enabled" } else { "disabled" },
+                    if p.allowed {
+                        ""
+                    } else {
+                        ": outside plugins.marketplaces"
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
 impl Render for Vec<crate::io::Account> {
     fn text(&self) -> String {
         if self.is_empty() {

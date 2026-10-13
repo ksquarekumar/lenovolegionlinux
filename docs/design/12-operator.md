@@ -96,9 +96,16 @@ Operating directory, named workspace in `~/.agentworkspace`, dossier and change 
   (`toml_edit`); JSON is written pretty, so a one-line list in the file becomes lines. An unknown top-level key is
   written with a warning (the published schemas grow each release). `legionctl agents usage [--days N]` counts
   tokens per agent, day and model from Claude Code's transcripts (each message once) and Codex's `token_count`
-  events, with Codex's rate-limit use. Not yet: plugin and MCP installs from an allowlist.
+  events, with Codex's rate-limit use.
 - **Plugins, MCP servers and skills:** an allowlist of authorised marketplaces and items; install into Claude Code
   (`claude plugin …`) and Codex (`~/.codex/config.toml`) from one place, and show what each agent has loaded.
+  Built (2026-10-13, A1 part 3): `plugins.marketplaces` (marketplace name -> `source` and `allow`, plugin names or
+  `*`). `legionctl agents plugin-install <plugin>@<marketplace> --scope user|project|project-local` refuses anything
+  outside it, then runs `claude plugin install <plugin> --marketplace <source> --scope <scope> --json` in the
+  project, never with `-y`: a command that the marketplace declares stays for a person to accept.
+  `legionctl agents plugins` lists Claude Code's installed plugins (`claude plugin list --json`) and marks those
+  outside the allowlist. Codex has no plugin system; MCP servers for sessions go through `mcp.servers` (the proxy)
+  and skills through `session.skills`, not into the agents' own files.
 - **Accounts:** one profile per account (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`), credentials in the keyring; an ACP
   session can be restarted on another account with the same worktree, plan and sandbox. Usage per account from local
   transcripts (token counts) and the gateway's rate-limit headers, shown against quotas.

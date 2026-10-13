@@ -896,6 +896,26 @@ pub struct AgentUsageIn {
     pub account: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PluginInstallIn {
+    /// `<plugin>@<marketplace>`, both allowed in `plugins.marketplaces`.
+    pub id: String,
+    pub scope: SettingsScope,
+    #[serde(default = "here")]
+    pub project: ClientPath,
+}
+
+/// A Claude Code plugin as `claude plugin list` reports it, and whether the allowlist has it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Plugin {
+    /// `<plugin>@<marketplace>`.
+    pub id: String,
+    pub version: String,
+    pub scope: String,
+    pub enabled: bool,
+    pub allowed: bool,
+}
+
 /// An account profile: its own Claude Code and Codex logins and transcripts.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Account {

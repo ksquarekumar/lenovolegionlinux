@@ -296,6 +296,11 @@ operations! {
     agents_accounts / AgentsAccounts = "agents.accounts", Read, Empty => Vec<Account>;
     /// Make an account profile (its own Claude Code and Codex logins); `session start --account` uses it.
     agents_account_add / AgentsAccountAdd = "agents.account-add", Workspace, IdIn => Lines;
+    /// Claude Code's installed plugins, each marked in or out of the allowlist (`plugins.marketplaces`).
+    agents_plugins / AgentsPlugins = "agents.plugins", Read, Empty => Vec<Plugin>;
+    /// Install a Claude Code plugin that `plugins.marketplaces` allows (`claude plugin install`); a command the
+    /// marketplace declares still needs a person to accept it.
+    agents_plugin_install / AgentsPluginInstall = "agents.plugin-install", Workspace, PluginInstallIn => Lines;
     /// Tokens per agent, day and model from Claude Code's and Codex's own transcripts, and Codex's rate-limit use.
     agents_usage / AgentsUsage = "agents.usage", Read, AgentUsageIn => UsageReport;
     /// Open (or reopen) this session's dossier workspace in a repository: a worktree on legionctl/<dossier> with the

@@ -148,6 +148,11 @@
     "prices": {}
   },
 
+  // Agent plugins legionctl may install (legionctl agents plugin-install <plugin>@<marketplace>): marketplace name
+  // (its own, from its marketplace.json) -> { "source": owner/repo, a git or https URL, or a path; "allow": plugin
+  // names, or "*" }. legionctl agents plugins marks what is installed outside this list.
+  "plugins": { "marketplaces": {} },
+
   // The package store: name -> { "kind": npm|pypi|cargo|git|path, "source", "version" (the pin), "run" (the MCP
   // server's command, {dir} = the package folder), "network" (default false) }. legionctl packages fetch installs one.
   "packages": {},

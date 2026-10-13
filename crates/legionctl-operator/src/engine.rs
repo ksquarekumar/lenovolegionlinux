@@ -27,7 +27,7 @@ use legionctl_core::config::{Dirs, Resolved, resolve};
 use crate::system1::System1Proxy;
 use legionctl_api::{
     AgentName, AgentSetIn, AgentUsageIn, DossierGraphIn, Edit, GatewayUsage, GatewayUsageIn, Graph,
-    SettingsScope, UsageReport,
+    Plugin, PluginInstallIn, SettingsScope, UsageReport,
 };
 use legionctl_api::{
     CacheGetIn, CachePutIn, CacheValue, Manifest, PackageFetchIn, Packages, RunOutput, SessionRunIn,
@@ -600,6 +600,64 @@ impl Engine for Operator {
             None => (home().join(".claude"), home().join(".codex")),
         };
         Ok(agents::usage(&claude, &codex, input.days))
+    }
+
+    fn agents_plugins(&self, _: &Ctx, _: Empty) -> Result<Vec<Plugin>> {
+        let plugins = config(None)?.config.plugins;
+        let out = Command::new("claude")
+            .args(["plugin", "list", "--json"])
+            .output()
+            .context("running claude plugin list")?;
+        anyhow::ensure!(
+            out.status.success(),
+            "claude plugin list: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        let list: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout)?;
+        Ok(list
+            .iter()
+            .map(|p| {
+                let id = p["id"].as_str().unwrap_or_default().to_string();
+                Plugin {
+                    allowed: plugins.refusal(&id).is_none(),
+                    version: p["version"].as_str().unwrap_or_default().into(),
+                    scope: p["scope"].as_str().unwrap_or_default().into(),
+                    enabled: p["enabled"] == true,
+                    id,
+                }
+            })
+            .collect())
+    }
+
+    fn agents_plugin_install(&self, ctx: &Ctx, input: PluginInstallIn) -> Result<Lines> {
+        Self::record(ctx, "agents.plugin-install", &input)?;
+        let plugins = config(Some(&input.project))?.config.plugins;
+        if let Some(why) = plugins.refusal(&input.id) {
+            anyhow::bail!("{why}");
+        }
+        let (plugin, market) = input.id.split_once('@').context("checked above")?;
+        let scope = match input.scope {
+            SettingsScope::User => "user",
+            SettingsScope::Project => "project",
+            SettingsScope::ProjectLocal => "local",
+        };
+        // never -y: a command the marketplace declares is for a person to accept
+        let out = Command::new("claude")
+            .current_dir(input.project.get()?)
+            .args(["plugin", "install", plugin, "--marketplace"])
+            .arg(&plugins.marketplaces[market].source)
+            .args(["--scope", scope, "--json"])
+            .output()
+            .context("running claude plugin install")?;
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout).trim(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        anyhow::ensure!(out.status.success(), "claude plugin install: {said}");
+        Ok(Lines {
+            lines: vec![format!("installed {} ({scope})", input.id), said],
+        })
     }
 
     fn agents_accounts(&self, _: &Ctx, _: Empty) -> Result<Vec<Account>> {
