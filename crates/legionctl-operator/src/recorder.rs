@@ -24,7 +24,7 @@ async fn watch_sessions(machine: &System1Proxy<'_>) {
     }
 }
 
-pub async fn run() -> Result<()> {
+pub async fn run(ready: crate::Ready) -> Result<()> {
     let system = zbus::Connection::system().await?;
     let machine = System1Proxy::new(&system).await?;
     let mut execs = machine.receive_session_exec().await?;
@@ -36,6 +36,7 @@ pub async fn run() -> Result<()> {
     let mut fn_lock = machine.receive_fn_lock().await?;
     let mut keys = machine.receive_key().await?;
     eprintln!("operator: recording machine events");
+    ready.set();
     loop {
         let (kind, payload) = tokio::select! {
             Some(s) = changed.next() => {

@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 pub struct Operator {
     /// Short on purpose: a unix socket path must fit in 108 bytes.
     pub runtime: PathBuf,
-    child: Child,
+    /// The operator (systemd-socket-activate execs it).
+    pub child: Child,
 }
 
 impl Operator {

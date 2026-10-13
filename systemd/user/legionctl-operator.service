@@ -4,6 +4,9 @@ Requires=legionctl-operator.socket
 After=legionctl-operator.socket graphical-session.target
 # stop at logout so the next login starts the session module again
 PartOf=graphical-session.target
+# a module that stops after it ran ends the operator with an error (DESIGN/02): start again, but not in a loop
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 ExecStart=/usr/lib/legionctl/legionctl-operator

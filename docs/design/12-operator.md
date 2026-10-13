@@ -68,6 +68,12 @@ dossier, its workspace except merge, its hooks), `workspace` (the user's files a
 as `dossier use --steal`), waits for the user: a desktop notification with Allow and Deny, 120 s; Deny, no answer, a
 closed notification or no desktop to ask is `denied`. The user's own calls never ask.
 
+Built (2026-10-13, DESIGN/02, todo-65): supervision through systemd. The operator's resident modules (event
+recorder, session module, model gateway) set a ready flag once they run. A module that stops before that cannot run
+here (no bus, a port in use) and is left out with a log line; one that panics or stops after it ran ends the operator
+with an error, and systemd starts it again (`Restart=on-failure`, at most 5 starts in 300 s; the socket keeps
+clients waiting). The machine daemon stops the same way when its exec sensor stops.
+
 ## Worktrees and sandboxes
 
 - **Copy-on-write:** this machine's disks are ext4, which cannot reflink. A worktree is a `git worktree` (shares the

@@ -1605,6 +1605,42 @@ mod operator_and_daemon {
         drop(desktop);
     }
 
+    /// Supervision: a resident module that stops after it ran ends the operator with an error, so systemd starts it
+    /// again (here the bus goes away under the event recorder and the session module).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_operator_exits_with_an_error_when_a_running_module_stops() {
+        let m = Machine::new("supervise");
+        let (_stand_ins, _asked, (bus, _daemon)) = start(&m).await;
+        let address = format!("unix:path={}", m.dir.join("bus").display());
+        let mut op = Operator::start(
+            "supervise",
+            &[
+                ("PATH", m.dir.join("bin").into()),
+                ("HOME", m.dir.join("home").into()),
+                ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+                ("DBUS_SYSTEM_BUS_ADDRESS", address.clone().into()),
+                ("DBUS_SESSION_BUS_ADDRESS", address.into()),
+            ],
+        );
+        op.ok(&["load"]);
+        // the recorder subscribes to the daemon's signals; then the bus stops
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        assert!(op.child.try_wait().unwrap().is_none(), "the operator runs");
+        drop(bus);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = op.child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the operator still runs without its bus"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        };
+        assert!(!status.success(), "{status}");
+    }
+
     /// A stand-in desktop on the private bus: it records the body of each notification and answers the n-th with
     /// the n-th of `answers` (an action key) as `ActionInvoked`.
     async fn answering_desktop(

@@ -97,7 +97,7 @@ fn mode_detail(fn_q_choice: bool, source: &str) -> String {
 }
 
 /// Runs until the session bus or the system bus goes away; the operations keep working without it.
-pub async fn run() -> Result<()> {
+pub async fn run(ready: crate::Ready) -> Result<()> {
     let system = zbus::Connection::system()
         .await
         .context("connecting to the system bus")?;
@@ -124,7 +124,7 @@ pub async fn run() -> Result<()> {
         "operator: session module running (built-in panel at {} Hz)",
         rate.as_deref().unwrap_or("?")
     );
-
+    ready.set();
     loop {
         tokio::select! {
             Some(signal) = keys.next() => {

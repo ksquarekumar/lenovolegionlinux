@@ -648,14 +648,10 @@ fn udev_event(e: &udev::Event) -> Option<Event> {
     }
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
-    let root = SysRoot::from_env();
-    if std::env::args().nth(1).as_deref() == Some("--safe") {
-        return safe(&root);
-    }
-    let tuning = Arc::new(AtomicBool::new(false));
-    // a sensor that cannot load is reported (Sample, doctor), and the daemon runs without it (note 04)
+/// The eBPF sensors. One that cannot load is reported (Sample, doctor), and the daemon runs without it (note 04).
+type Execs = Result<(AsyncFd<aya::maps::RingBuf<aya::maps::MapData>>, exec::Watch), String>;
+
+fn sensors() -> (Arc<Result<runq::Runq, String>>, Execs) {
     let runq = Arc::new(runq::Runq::start().map_err(|e| format!("{e:#}")));
     if let Err(e) = runq.as_ref() {
         eprintln!("runq sensor: not running: {e}");
@@ -664,6 +660,17 @@ async fn main() -> Result<()> {
     if let Err(e) = &execs {
         eprintln!("exec sensor: not running: {e}");
     }
+    (runq, execs)
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
+    let root = SysRoot::from_env();
+    if std::env::args().nth(1).as_deref() == Some("--safe") {
+        return safe(&root);
+    }
+    let tuning = Arc::new(AtomicBool::new(false));
+    let (runq, execs) = sensors();
     let watchers = Arc::new(Mutex::new(BTreeMap::new()));
     let monitor = udev::MonitorBuilder::new()?
         .match_subsystem("power_supply")?
@@ -687,9 +694,11 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("owning {BUS_NAME} on the system bus"))?;
     let emitter = SignalEmitter::new(&bus, OBJECT_PATH)?;
-    if let Ok((ring, watch)) = execs {
-        tokio::spawn(session_activity(bus.clone(), watchers, ring, watch));
-    }
+    // the exec sensor runs beside the loop below; if it stops after it started, the daemon stops with an error and
+    // systemd starts it again (DESIGN/02)
+    let mut activity = execs
+        .ok()
+        .map(|(ring, watch)| tokio::spawn(session_activity(bus.clone(), watchers, ring, watch)));
     let mut sleep = Login1Proxy::new(&bus)
         .await?
         .receive_prepare_for_sleep()
@@ -713,6 +722,9 @@ async fn main() -> Result<()> {
 
     loop {
         tokio::select! {
+            ended = async { activity.as_mut().expect("guarded").await }, if activity.is_some() => {
+                anyhow::bail!("the exec sensor stopped: {}", ended.err().map_or_else(|| "it ended".into(), |e| e.to_string()));
+            }
             ready = monitor.readable() => {
                 let mut guard = ready?;
                 let events: Vec<Event> = guard.get_inner().iter().filter_map(|e| udev_event(&e)).collect();

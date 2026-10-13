@@ -114,7 +114,7 @@ fn token() -> Result<String> {
 ///
 /// # Errors
 /// The port is taken or the token cannot be made.
-pub async fn serve(port: u16) -> Result<()> {
+pub async fn serve(port: u16, ready: crate::Ready) -> Result<()> {
     let gateway = Gateway {
         http: reqwest::Client::new(),
         token: token()?,
@@ -134,6 +134,7 @@ pub async fn serve(port: u16) -> Result<()> {
         .await
         .with_context(|| format!("gateway port {port}"))?;
     eprintln!("operator: model gateway on 127.0.0.1:{port}");
+    ready.set();
     axum::serve(listener, app).await?;
     Ok(())
 }
