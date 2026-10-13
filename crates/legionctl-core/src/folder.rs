@@ -219,7 +219,7 @@ pub fn close(path: &Path, source: &Path, force: bool) -> Result<()> {
     let changes = changes(path, source)?;
     ensure!(
         force || changes.is_empty(),
-        "the workspace has {} changes not merged into {}; merge them, or pass force to drop them",
+        "the workspace has {} changes not merged into {}; run `legionctl workspace merge`, or add --force to drop them",
         changes.len(),
         source.display()
     );

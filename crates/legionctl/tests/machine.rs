@@ -692,8 +692,8 @@ fn safe_mode_hands_the_machine_to_the_firmware_and_doctor_says_why() {
     );
 }
 
-/// Pause and stop by name: a container through the Engine API, a VM through virsh (suspend, shutdown); a name that
-/// is neither is refused.
+/// Pause, stop and start by name: a container through the Engine API, a VM through virsh (suspend, shutdown,
+/// start); a name that is neither is refused.
 #[test]
 fn virt_act_pauses_a_container_and_stops_a_vm_by_name() {
     let (m, _docker, op) = virt_machine("virtact", 20);
@@ -704,6 +704,11 @@ fn virt_act_pauses_a_container_and_stops_a_vm_by_name() {
     assert_eq!(
         op.ok(&["virt", "act", "--action", "stop", "win11"]),
         "vm win11: stop\n"
+    );
+    // start shares its schema entry with unpause; the CLI must still offer it
+    assert_eq!(
+        op.ok(&["virt", "act", "--action", "start", "win11"]),
+        "vm win11: start\n"
     );
     let refused = op.cli(&["virt", "act", "--action", "pause", "nothing"]);
     assert!(
@@ -717,7 +722,7 @@ fn virt_act_pauses_a_container_and_stops_a_vm_by_name() {
     );
     assert_eq!(
         std::fs::read_to_string(m.dir.join("virsh.log")).unwrap(),
-        "shutdown win11\n"
+        "shutdown win11\nstart win11\n"
     );
 }
 

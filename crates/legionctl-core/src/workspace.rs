@@ -200,7 +200,7 @@ impl Dossiers {
                 .or_else(|_| Ok::<_, anyhow::Error>(std::fs::canonicalize(dir)?))?;
             return self.row(&dossier, &key)?.with_context(|| {
                 format!(
-                    "dossier {dossier} has no workspace for {}; open one",
+                    "dossier {dossier} has no workspace for {}; run `legionctl workspace open` there",
                     dir.display()
                 )
             });
@@ -208,11 +208,11 @@ impl Dossiers {
         let mut open = self.workspaces(Some(&dossier))?;
         ensure!(
             !open.is_empty(),
-            "dossier {dossier} has no open workspace; open one first"
+            "dossier {dossier} has no open workspace; run `legionctl workspace open` in the repository"
         );
         ensure!(
             open.len() == 1,
-            "dossier {dossier} has several workspaces; name the repository"
+            "dossier {dossier} has several workspaces; add --repo <folder>"
         );
         Ok(open.remove(0))
     }
@@ -539,7 +539,7 @@ impl Dossiers {
             let (staged, unstaged, untracked, conflicted) = changes(&ws.path)?;
             ensure!(
                 force || staged + unstaged + untracked + conflicted == 0,
-                "the workspace has uncommitted changes; checkpoint them, or pass force to discard them"
+                "the workspace has uncommitted changes; run `legionctl workspace checkpoint <message>`, or add --force to discard them"
             );
             let path = ws
                 .path

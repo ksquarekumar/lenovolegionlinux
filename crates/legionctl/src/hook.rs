@@ -1,5 +1,6 @@
 //! `legionctl hook <event>`: the adapter between Claude Code's hooks and the operator. It reads the hook's JSON from
-//! stdin (`session_id`, `cwd`, `prompt`, `tool_input`) and answers in Claude Code's hook protocol:
+//! stdin (`session_id`, `cwd`, `prompt`, `tool_input`; in a legionctl session `LEGIONCTL_SESSION` replaces
+//! `session_id`) and answers in Claude Code's hook protocol:
 //!
 //! | Event | Operation | Answer |
 //! | --- | --- | --- |
@@ -23,9 +24,12 @@ pub const EVENTS: [&str; 5] = ["session-start", "prompt", "pre-tool", "stop", "s
 
 async fn answer(event: &str, input: &Value) -> Result<Option<String>> {
     let client = Client::new("hook")?;
-    let session = input["session_id"]
-        .as_str()
-        .map(|s| SessionId(s.to_string()));
+    // in a legionctl session the dossier is bound to its id, not to the id of the agent inside the sandbox
+    let session = std::env::var("LEGIONCTL_SESSION")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| input["session_id"].as_str().map(String::from))
+        .map(SessionId);
     let project = ClientPath(input["cwd"].as_str().map_or_else(|| ".".into(), Into::into));
     let run = |event: Event| HookRunIn {
         event,

@@ -63,7 +63,16 @@ fn choices(schema: &Value) -> Option<Vec<String>> {
         schema["oneOf"]
             .as_array()?
             .iter()
-            .filter_map(|v| v["const"].as_str().or_else(|| v["enum"][0].as_str()))
+            // a variant group without docs is one entry with an enum of all its values
+            .flat_map(|v| match v["const"].as_str() {
+                Some(c) => vec![c],
+                None => v["enum"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect(),
+            })
             .map(String::from)
             .collect()
     };

@@ -279,7 +279,7 @@ fn agent_findings() -> Result<Vec<String>> {
 fn session(id: &SessionId) -> Result<&str> {
     anyhow::ensure!(
         !id.0.is_empty(),
-        "no session id: set LEGIONCTL_SESSION (Claude Code sets CLAUDE_CODE_SESSION_ID)"
+        "this acts on an agent session's dossier: run it in a session (LEGIONCTL_SESSION or CLAUDE_CODE_SESSION_ID)"
     );
     Ok(&id.0)
 }
@@ -617,7 +617,7 @@ impl Engine for Operator {
             (AgentName::Codex, SettingsScope::User) => home().join(".codex/config.toml"),
             (AgentName::Codex, SettingsScope::Project) => project.join(".codex/config.toml"),
             (AgentName::Codex, SettingsScope::ProjectLocal) => {
-                anyhow::bail!("Codex has no project-local settings")
+                anyhow::bail!("Codex has no project-local settings; use --scope user")
             }
         };
         agents::set(
@@ -906,6 +906,10 @@ impl Engine for Operator {
             Some(s) => store.active(&s.0)?,
             None => None,
         };
+        if let (Some(s), Some(_)) = (session, &active) {
+            // each hook call shows the session is live, so its dossier is not taken over
+            store.touch(&s.0)?;
+        }
         let rebound = match session {
             Some(s)
                 if input.event == Event::SessionStart
@@ -1063,7 +1067,7 @@ impl Engine for Operator {
             Some(d) => d,
             None => ws
                 .active(session(&input.session)?)?
-                .context("this session has no active dossier; name one")?,
+                .context("this session has no active dossier; add --dossier <name>")?,
         };
         ws.graph(&dossier, input.node.as_deref())
     }
@@ -1074,7 +1078,7 @@ impl Engine for Operator {
             Some(d) => d,
             None => ws
                 .active(session(&input.session)?)?
-                .context("this session has no active dossier; name one")?,
+                .context("this session has no active dossier; add --dossier <name>")?,
         };
         Ok(DossierFindings {
             problems: ws.check(&dossier),
@@ -1096,7 +1100,7 @@ impl Engine for Operator {
         anyhow::ensure!((1..=3600).contains(&input.count), "count must be 1-3600");
         anyhow::ensure!(
             (100..=60_000).contains(&input.interval_ms),
-            "interval_ms must be 100-60000"
+            "--interval-ms must be 100-60000"
         );
         let window = std::time::Duration::from_millis(u64::from(input.interval_ms));
         Ok((0..input.count).map(|_| self.sample(window)).collect())
@@ -1464,7 +1468,7 @@ impl Engine for Operator {
         let load = load::read_load(&SysRoot::from_env(), &config(None)?.config.load);
         anyhow::ensure!(
             input.force || load.level == load::Level::Idle,
-            "the machine is not idle ({}); stop other work, or pass force",
+            "the machine is not idle ({}); stop other work, or add --force",
             load.reasons.join("; ")
         );
         Self::record(ctx, "tune", &input)?;
@@ -1541,14 +1545,15 @@ impl Engine for Operator {
         let store = Dossiers::open(&resolved.config.dossier)?;
         let dossier = match input.dossier {
             Some(d) => d,
-            None => store
-                .last_in(&place_of(dir))?
-                .context("no dossier was used in this repository yet; name one (and pass create for a new one)")?,
+            None => store.last_in(&place_of(dir))?.context(
+                "no dossier was used in this repository yet; add --dossier <name> --create",
+            )?,
         };
         let start = Start {
             agent: &input.agent,
             dossier: &dossier,
             create: input.create,
+            steal: input.steal,
             dir,
             headless: false,
             account: input.account.as_deref(),
@@ -1567,14 +1572,15 @@ impl Engine for Operator {
         let store = Dossiers::open(&resolved.config.dossier)?;
         let dossier = match input.dossier {
             Some(d) => d,
-            None => store
-                .last_in(&place_of(dir))?
-                .context("no dossier was used in this repository yet; name one (and pass create for a new one)")?,
+            None => store.last_in(&place_of(dir))?.context(
+                "no dossier was used in this repository yet; add --dossier <name> --create",
+            )?,
         };
         let start = Start {
             agent: &input.agent,
             dossier: &dossier,
             create: input.create,
+            steal: input.steal,
             dir,
             headless: true,
             account: input.account.as_deref(),
@@ -1589,16 +1595,7 @@ impl Engine for Operator {
             .sessions()?
             .into_iter()
             .map(|session| {
-                // a scope that ended is gone from systemd: is-active then says inactive
-                let unit = format!("legionctl-session-{}.scope", session.id);
-                let out = Command::new("systemctl")
-                    .args(["--user", "is-active", &unit])
-                    .output();
-                let state = out
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                    .ok()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| "unknown".into());
+                let state = legionctl_core::session::scope_state(&session.id);
                 SessionState { state, session }
             })
             .collect())

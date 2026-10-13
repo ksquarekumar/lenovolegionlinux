@@ -36,6 +36,8 @@ pub struct Start<'a> {
     pub dossier: &'a str,
     /// Create the dossier when it does not exist.
     pub create: bool,
+    /// Take the dossier over from another live session.
+    pub steal: bool,
     /// A folder in the repository (or the plain folder) to work on.
     pub dir: &'a Path,
     /// The agent's ACP adapter (`session run`) instead of its interactive command.
@@ -70,6 +72,32 @@ fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+/// The state of a session's scope (`systemctl --user is-active`): active, inactive (also when it ended and is gone),
+/// failed, or unknown when systemctl cannot answer.
+#[must_use]
+pub fn scope_state(id: &str) -> String {
+    std::process::Command::new("systemctl")
+        .args([
+            "--user",
+            "is-active",
+            &format!("legionctl-session-{id}.scope"),
+        ])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".into())
+}
+
+/// Whether a session's scope still runs (a paused scope is frozen, and still active).
+#[must_use]
+pub fn scope_active(id: &str) -> bool {
+    matches!(
+        scope_state(id).as_str(),
+        "active" | "activating" | "reloading"
+    )
 }
 
 fn new_id() -> Result<String> {
@@ -374,11 +402,18 @@ impl Dossiers {
         let skills = skills(config, &store)?;
         let id = new_id()?;
         let place = place_of(start.dir);
-        self.bind(&id, agent, start.dossier, start.create, false, Some(&place))?;
+        self.bind(
+            &id,
+            agent,
+            start.dossier,
+            start.create,
+            start.steal,
+            Some(&place),
+        )?;
         let ws = self.open_workspace(&id, start.dir, None, &config.workspace.root)?;
         self.db().execute(
-            "INSERT INTO sessions (id, agent, dossier, workdir, started, account) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, agent, start.dossier, agent_dir(&ws).to_string_lossy(), now(), start.account],
+            "INSERT INTO sessions (id, agent, dossier, workdir, started, account, scoped) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, agent, start.dossier, agent_dir(&ws).to_string_lossy(), now(), start.account, config.session.scope],
         )?;
         self.launch(
             id,

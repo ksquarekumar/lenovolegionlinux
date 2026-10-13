@@ -474,19 +474,86 @@ fn dossier_write_guard_and_takeover_work_through_the_claude_code_hooks() {
         ""
     );
 
-    // a second session cannot take the dossier while s1 holds it; after s1 ends, it can
-    let refused = op.run(
+    // a second session cannot take the dossier while s1 holds it. s1 quiet for two hours (within stale_hours) still
+    // holds it, and its next prompt shows it active again
+    sql(
         &home,
-        &[("LEGIONCTL_SESSION", "s2")],
-        &["dossier", "use", "port"],
-        "",
+        "UPDATE bindings SET updated = updated - 7200 WHERE session = 's1'",
     );
-    assert!(!refused.status.success());
-    assert!(String::from_utf8_lossy(&refused.stderr).contains("held by session s1"));
-    hook("session-end", json!({"session_id": "s1"}));
+    let take = || {
+        let o = op.run(
+            &home,
+            &[("LEGIONCTL_SESSION", "s2")],
+            &["dossier", "use", "port"],
+            "",
+        );
+        assert!(!o.status.success());
+        String::from_utf8_lossy(&o.stderr).to_string()
+    };
+    let refused = take();
+    assert!(
+        refused.contains("in use by session s1 (cli), last active 120 min ago"),
+        "{refused}"
+    );
+    hook(
+        "prompt",
+        json!({"session_id": "s1", "cwd": home, "prompt": "go on"}),
+    );
+    assert!(
+        take().contains("last active 0 min ago"),
+        "the prompt hook did not refresh the binding"
+    );
+    // in a legionctl session the agent's hooks carry the agent's own session id; its end releases the legionctl
+    // session's dossier
+    op.run(
+        &home,
+        &[("LEGIONCTL_SESSION", "s1")],
+        &["hook", "session-end"],
+        &claude_hook("session-end", &json!({"session_id": "agent-inside"})),
+    );
     assert!(
         as_session("s2", &["dossier", "use", "port"], "")
             .contains("newest memory:\n  MEMORY/01-intake.md  Intake")
+    );
+}
+
+/// The agent has ended, and its scope with it (the test session ran without one, so its record is marked as
+/// scoped): after the minute of grace, the next session takes the dossier without --steal.
+fn ended_scope_frees_the_dossier(op: &Operator, home: &Path, notes: &Path, id: &str) {
+    sql(home, "UPDATE sessions SET scoped = 1");
+    sql(home, "UPDATE bindings SET updated = updated - 120");
+    let next = op.run(
+        notes,
+        &[
+            ("HOME", home.to_str().unwrap()),
+            ("LEGIONCTL_SESSION", "next"),
+        ],
+        &["dossier", "use", "notes"],
+        "",
+    );
+    let said = String::from_utf8_lossy(&next.stdout);
+    assert!(
+        said.contains(&format!("was held by session {id} (stale)")),
+        "{said}{}",
+        String::from_utf8_lossy(&next.stderr)
+    );
+}
+
+/// Run one statement on the dossier database of the test's home (to age a binding; nothing else changes it).
+fn sql(home: &Path, statement: &str) {
+    let out = Command::new("python3")
+        .args([
+            "-c",
+            "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.execute(sys.argv[2]); c.commit()",
+        ])
+        .arg(home.join(".agentworkspace/workspace.db"))
+        .arg(statement)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }
 
@@ -1418,6 +1485,7 @@ fn a_plain_folder_workspace_keeps_the_source_until_merge() {
         !home.join("layers/notes/notes").exists(),
         "the layer is gone"
     );
+    ended_scope_frees_the_dossier(&op, &home, &notes, launch["id"].as_str().unwrap());
 }
 
 /// The work graph from a dossier's files: plan rows and artifacts with front matter; `dossier check` finds a link

@@ -19,13 +19,19 @@ Replaces the "plan workspaces" section of 12-operator. Sessions (14) and sandbox
 - `legionctl-core::dossier` follows `safecoder dossier` (studied in the source repo): rows `<line>:<hash>|<text>`
   with a BLAKE2b 2-byte hash of the line text (same anchors as safecoder), `replace`, `insert-after` and `delete`
   edits that refuse an outdated anchor, `NN-<slug>.md` numbering per class folder with exclusive create, atomic
-  writes, SQLite bindings in `workspace.db` (one open binding per dossier and per session, 12-hour stale rule,
-  `steal`), and the 18 ledger sections in `plan.md`. Search is literal text (no regular expressions).
+  writes, SQLite bindings in `workspace.db` (one open binding per dossier and per session, `steal`), and the 18
+  ledger sections in `plan.md`. Search is literal text (no regular expressions).
+- Liveness of a binding: each hook call (session start, prompt, stop) and each dossier write refreshes it. A binding
+  not refreshed for `dossier.stale_hours` (12) is stale. A session that legionctl started in a scope is stale as
+  soon as its scope has ended (after one minute of grace for the client's `systemd-run`), so the next session takes
+  its dossier without `--steal`. The end of a session releases its binding (`hook session-end`).
 - Format JSONC (decided 2026-10-13). The pattern (artifact classes, plan sections, gate, root, stale time) is the
   `dossier.*` config keys, so it has the layers and locks of 14; each dossier keeps its data (title, entities,
   objectives) in `<dossier>/dossier.jsonc`. There is no separate global pattern file.
-- Session id: hooks read `session_id` from Claude Code's hook JSON; CLI and MCP calls take `LEGIONCTL_SESSION`, else
-  `CLAUDE_CODE_SESSION_ID`, which Claude Code sets for the commands it starts.
+- Session id: hooks read `session_id` from Claude Code's hook JSON, except in a legionctl session, where
+  `LEGIONCTL_SESSION` replaces it (the dossier is bound to the legionctl session, not to the agent inside it); CLI
+  and MCP calls take `LEGIONCTL_SESSION`, else `CLAUDE_CODE_SESSION_ID`, which Claude Code sets for the commands it
+  starts.
 - `legionctl hook <event>` adapts Claude Code's hooks: `session-start` adds the dossier line to the context, `prompt`
   blocks (`{"decision":"block"}`) when `dossier.gate` is on and the session has no dossier (a prompt that contains
   `legionctl:dossier` passes), `pre-tool` denies `Write`, `Edit`, `MultiEdit` and `NotebookEdit` into a dossier that

@@ -68,6 +68,8 @@ const SCHEMA: &[&str] = &[
         from_status TEXT,
         to_status   TEXT
      );",
+    // v7: whether a session runs in its own systemd scope, which then tells whether it is still live
+    "ALTER TABLE sessions ADD COLUMN scoped INTEGER NOT NULL DEFAULT 0;",
 ];
 
 /// Where a session works, for binding the next session there: the repository that contains `dir`, else `dir`.
@@ -224,11 +226,10 @@ impl Dossiers {
         if !dir.is_dir() {
             ensure!(
                 create,
-                "dossier '{name}' does not exist; pass create to start it"
+                "dossier '{name}' does not exist; add --create to make it"
             );
             out.extend(self.create(name)?);
         }
-        let stale_after = self.stale_after();
         // IMMEDIATE: two sessions binding at once see each other's row
         let tx = Transaction::new_unchecked(self.db.conn(), TransactionBehavior::Immediate)?;
         let holder: Option<(String, String, i64)> = tx
@@ -250,10 +251,11 @@ impl Dossiers {
                 return Ok(out);
             }
             Some((holder, holder_tool, updated)) => {
-                let stale = now - updated > stale_after;
+                let stale = !self.live(&holder, updated, now);
                 ensure!(
                     stale || steal,
-                    "dossier '{name}' is held by session {holder} ({holder_tool}), last active {} min ago; use steal to take it over",
+                    "dossier '{name}' is in use by session {holder} ({holder_tool}), last active {} min ago; use another dossier \
+                     (--dossier <name> --create), or take this one over with --steal",
                     (now - updated) / 60
                 );
                 tx.execute(
@@ -330,23 +332,58 @@ impl Dossiers {
     /// # Errors
     /// The database read fails.
     pub fn locks(&self) -> Result<Vec<Lock>> {
-        let stale_after = self.stale_after();
         let now = now();
         let mut stmt = self
             .db
             .conn()
             .prepare("SELECT dossier, session, tool, updated FROM bindings WHERE released IS NULL ORDER BY dossier")?;
         let rows = stmt.query_map([], |r| {
-            let updated: i64 = r.get(3)?;
             Ok(Lock {
                 dossier: r.get(0)?,
                 session: r.get(1)?,
                 tool: r.get(2)?,
-                updated,
-                stale: now - updated > stale_after,
+                updated: r.get(3)?,
+                stale: false,
             })
         })?;
-        Ok(rows.collect::<Result<_, _>>()?)
+        let mut locks: Vec<Lock> = rows.collect::<Result<_, _>>()?;
+        for lock in &mut locks {
+            lock.stale = !self.live(&lock.session, lock.updated, now);
+        }
+        Ok(locks)
+    }
+
+    /// Whether the session that holds a binding last refreshed at `updated` is still live: active within
+    /// `stale_hours` (each hook call and dossier write refreshes it), and for a session legionctl started in a scope,
+    /// that scope still runs. A minute of grace covers the time between the bind and the client's `systemd-run`.
+    fn live(&self, session: &str, updated: i64, now: i64) -> bool {
+        if now - updated > self.stale_after() {
+            return false;
+        }
+        let scoped: Option<bool> = self
+            .db
+            .conn()
+            .query_row(
+                "SELECT scoped FROM sessions WHERE id = ?1",
+                [session],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten();
+        scoped != Some(true) || now - updated <= 60 || crate::session::scope_active(session)
+    }
+
+    /// Mark `session`'s binding as active now (the hooks call it on each prompt and stop).
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn touch(&self, session: &str) -> Result<()> {
+        self.db.conn().execute(
+            "UPDATE bindings SET updated = ?1 WHERE session = ?2 AND released IS NULL",
+            params![now(), session],
+        )?;
+        Ok(())
     }
 
     /// The class folders, `plan.md` with every ledger section, and `dossier.jsonc` with the title.
@@ -479,10 +516,7 @@ impl Dossiers {
                 holder.map_or(String::new(), |h| format!("; it is active in session {h}"))
             );
         }
-        self.db.conn().execute(
-            "UPDATE bindings SET updated = ?1 WHERE session = ?2 AND released IS NULL",
-            params![now(), session],
-        )?;
+        self.touch(session)?;
         Ok(full)
     }
 
@@ -600,7 +634,7 @@ impl Dossiers {
         let full = self.guard_write(session, rel)?;
         ensure!(
             overwrite || !full.exists(),
-            "{rel} exists; use edit, or pass overwrite"
+            "{rel} exists; use `legionctl dossier edit`, or add --overwrite"
         );
         let old = std::fs::read_to_string(&full).unwrap_or_default();
         let new = with_newline(content);

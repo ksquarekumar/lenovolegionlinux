@@ -523,6 +523,9 @@ pub struct SessionStartIn {
     /// Create the dossier when it does not exist.
     #[serde(default)]
     pub create: bool,
+    /// Take the dossier over from another live session.
+    #[serde(default)]
+    pub steal: bool,
     /// A folder in the repository to work on.
     #[serde(default = "here")]
     pub repo: ClientPath,
@@ -543,6 +546,9 @@ pub struct SessionRunIn {
     /// Create the dossier when it does not exist.
     #[serde(default)]
     pub create: bool,
+    /// Take the dossier over from another live session.
+    #[serde(default)]
+    pub steal: bool,
     /// A folder in the repository to work on.
     #[serde(default = "here")]
     pub repo: ClientPath,

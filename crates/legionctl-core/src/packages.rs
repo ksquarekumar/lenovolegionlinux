@@ -269,7 +269,7 @@ impl Store {
         };
         ensure!(
             tree_hash(&dir)? == manifest.hash,
-            "package {name} changed since it was fetched ({}); fetch it again with force",
+            "package {name} changed since it was fetched ({}); run `legionctl packages fetch {name} --force`",
             dir.display()
         );
         Ok(dir)
