@@ -984,7 +984,7 @@ mod daemon_process {
         }
     }
 
-    fn wait_for(what: &str, mut ok: impl FnMut() -> bool) {
+    pub(super) fn wait_for(what: &str, mut ok: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(10);
         while !ok() {
             assert!(Instant::now() < deadline, "timed out waiting for {what}");
@@ -1170,7 +1170,7 @@ mod daemon_process {
 /// The operator on the same private bus as the daemon: machine changes reach the event log, and telemetry gets the
 /// root-only part from the daemon.
 mod operator_and_daemon {
-    use super::daemon_process::{daemon, start};
+    use super::daemon_process::{daemon, start, wait_for};
     use super::*;
     use serde_json::Value;
 
@@ -1718,9 +1718,12 @@ mod operator_and_daemon {
         let m = Machine::new("undo");
         // on battery, so that applying the AC policy changes the CPUs' EPP
         m.set("/sys/class/power_supply/ADP0/online", "0");
-        let (stand_ins, _asked, _processes) = start(&m).await;
-        let op = on_bus(&m, "undo");
         let epp0 = "/sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference";
+        let recorded = m.file(epp0);
+        let (stand_ins, _asked, _processes) = start(&m).await;
+        // the daemon applies the battery policy after it owns its name
+        wait_for("the battery policy at start", || m.file(epp0) != recorded);
+        let op = on_bus(&m, "undo");
         let before = m.file(epp0);
         op.ok(&["events"]);
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
