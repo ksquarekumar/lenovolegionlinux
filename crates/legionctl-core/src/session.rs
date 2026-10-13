@@ -127,6 +127,79 @@ pub fn account_dir(account: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// The skills a session gets (`session.skills`): each skill's name and its hash-checked folder in the store; `None`
+/// when the user's own skills stay.
+///
+/// # Errors
+/// An entry names no package, leaves its package, has no `SKILL.md` or repeats a name; or its package is not fetched
+/// or changed since.
+pub fn skills(
+    config: &Config,
+    store: &crate::packages::Store,
+) -> Result<Option<Vec<(String, PathBuf)>>> {
+    let Some(entries) = &config.session.skills else {
+        return Ok(None);
+    };
+    let mut out: Vec<(String, PathBuf)> = Vec::new();
+    for entry in entries {
+        let (package, inner) = entry.split_once('/').unwrap_or((entry, ""));
+        let p = config
+            .packages
+            .get(package)
+            .with_context(|| format!("session.skills: no package {package}"))?;
+        let inner = Path::new(inner);
+        anyhow::ensure!(
+            inner
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_))),
+            "session.skills: {entry} leaves its package"
+        );
+        let dir = store.checked(package, p)?.join(inner);
+        anyhow::ensure!(
+            dir.join("SKILL.md").is_file(),
+            "session.skills: {entry} has no SKILL.md"
+        );
+        let name = inner
+            .file_name()
+            .map_or_else(|| package.to_string(), |n| n.to_string_lossy().into_owned());
+        anyhow::ensure!(
+            out.iter().all(|(n, _)| *n != name),
+            "session.skills: two skills are named {name}"
+        );
+        out.push((name, dir));
+    }
+    Ok(Some(out))
+}
+
+/// The skills folders of Claude Code and Codex (the account's, or the home's) as exactly `skills`, read-only.
+fn skill_binds(
+    sandbox: &mut Vec<String>,
+    account: Option<&str>,
+    skills: &[(String, PathBuf)],
+) -> Result<()> {
+    let homes = if let Some(account) = account {
+        let dir = accounts_root().join(account);
+        [dir.join("claude"), dir.join("codex")]
+    } else {
+        let home = PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?);
+        [home.join(".claude"), home.join(".codex")]
+    };
+    for home in homes {
+        // the mount point must exist: the home is read-only in the sandbox
+        let dir = home.join("skills");
+        std::fs::create_dir_all(&dir)?;
+        sandbox.extend(["--tmpfs".into(), dir.to_string_lossy().into_owned()]);
+        for (name, source) in skills {
+            sandbox.extend([
+                "--ro-bind".into(),
+                source.to_string_lossy().into_owned(),
+                dir.join(name).to_string_lossy().into_owned(),
+            ]);
+        }
+    }
+    Ok(())
+}
+
 /// The account's own logins and transcripts instead of `~/.claude` and `~/.codex`: its folders, writable, and the
 /// variables that point the agents there.
 fn account_binds(sandbox: &mut Vec<String>, account: &str) -> Result<()> {
@@ -257,10 +330,9 @@ impl Dossiers {
             account_dir(account)?;
         }
         // a server whose package is missing or changed stops the session before anything is bound
-        let mcp_json = mcp_config(
-            config,
-            &crate::packages::Store::new(crate::packages::Store::default_root()),
-        )?;
+        let store = crate::packages::Store::new(crate::packages::Store::default_root());
+        let mcp_json = mcp_config(config, &store)?;
+        let skills = skills(config, &store)?;
         let id = new_id()?;
         let place = place_of(start.dir);
         self.bind(&id, agent, start.dossier, start.create, false, Some(&place))?;
@@ -269,7 +341,13 @@ impl Dossiers {
             "INSERT INTO sessions (id, agent, dossier, workdir, started, account) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![id, agent, start.dossier, agent_dir(&ws).to_string_lossy(), now(), start.account],
         )?;
-        self.launch(id, &ws, config, (command, start.account), mcp_json)
+        self.launch(
+            id,
+            &ws,
+            config,
+            (command, start.account),
+            (mcp_json, skills.as_deref()),
+        )
     }
 
     /// Prepare an ended session again: the same id, dossier and workspace, and the agent's resume command
@@ -285,10 +363,9 @@ impl Dossiers {
                 record.agent
             )
         })?;
-        let mcp_json = mcp_config(
-            config,
-            &crate::packages::Store::new(crate::packages::Store::default_root()),
-        )?;
+        let store = crate::packages::Store::new(crate::packages::Store::default_root());
+        let mcp_json = mcp_config(config, &store)?;
+        let skills = skills(config, &store)?;
         let place = place_of(&record.workdir);
         self.bind(
             id,
@@ -304,7 +381,7 @@ impl Dossiers {
             &ws,
             config,
             (command, record.account.as_deref()),
-            mcp_json,
+            (mcp_json, skills.as_deref()),
         )
     }
 
@@ -315,7 +392,7 @@ impl Dossiers {
         ws: &crate::workspace::Workspace,
         config: &Config,
         (command, account): (&[String], Option<&str>),
-        mcp_json: serde_json::Value,
+        (mcp_json, skills): (serde_json::Value, Option<&[(String, PathBuf)]>),
     ) -> Result<Launch> {
         let dossier = ws.dossier.as_str();
         let runtime = PathBuf::from(
@@ -388,6 +465,9 @@ impl Dossiers {
         sandbox.extend(["--setenv".into(), "LEGIONCTL_SESSION".into(), id.clone()]);
         if let Some(account) = account {
             account_binds(&mut sandbox, account)?;
+        }
+        if let Some(skills) = skills {
+            skill_binds(&mut sandbox, account, skills)?;
         }
         sandbox.extend(["--chdir".into(), workdir.to_string_lossy().into_owned()]);
         Ok(Launch {

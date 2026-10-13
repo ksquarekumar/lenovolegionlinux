@@ -101,8 +101,6 @@
       "claude": ["claude", "--session-id", "{id}", "--settings", "{settings}", "--mcp-config", "{mcp}", "--strict-mcp-config"],
       "codex": ["codex"]
     },
-    // Writable besides the workspace, the dossier, the repository's .git and the runtime folder (/tmp is private to
-    // the session): the agents' own state.
     // Agent name -> the command that continues an ended session (legionctl session resume <id>).
     "resume": {
       "claude": ["claude", "--resume", "{id}", "--settings", "{settings}", "--mcp-config", "{mcp}", "--strict-mcp-config"]
@@ -115,7 +113,12 @@
     },
     // Each session in its own systemd user scope (legionctl-session-<id>), for limits, pause and stop.
     "scope": true,
+    // Writable besides the workspace, the dossier, the repository's .git and the runtime folder (/tmp is private to
+    // the session): the agents' own state.
     "writable": ["~/.claude", "~/.claude.json", "~/.codex", "~/.cache"],
+    // Skills from the package store: "<package>" or "<package>/<folder in it>", each a folder with SKILL.md. When
+    // set, Claude Code and Codex see exactly these (read-only, hash-checked at session start); null keeps the user's.
+    "skills": null,
     // Hidden in the sandbox: a container or VM manager would let the agent run anything on the host's files. The
     // runtime folder (session bus, systemd, GnuPG, ssh and keyring agents) is hidden always, but legionctl's part.
     "hidden": ["/run/docker.sock", "/var/run/docker.sock", "/run/containerd", "/run/podman", "/run/libvirt", "/var/run/libvirt"]

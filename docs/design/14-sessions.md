@@ -50,8 +50,16 @@ manifest with the BLAKE2b-256 hash of the tree; `legionctl packages list` checks
 can name a package: `session start` checks the hash (a changed package stops the session before a dossier is bound)
 and writes the store command into `mcp.json`; the proxy runs it in `bwrap --unshare-net` unless the package allows
 network. The e2e test fetches a git package, runs it through the generated proxy command (only loopback, only the
-allowed tool), changes a store file and sees the refusal. Not yet: skills from the store (Claude Code reads skills
-from the real home), remote servers with keyring credentials.
+allowed tool), changes a store file and sees the refusal.
+
+Built (2026-10-13): skills from the store. `session.skills` lists `<package>` or `<package>/<folder in it>`, each a
+folder with `SKILL.md`. When set, `session start` and `session resume` check each package's hash, then the sandbox
+puts an empty tmpfs over Claude Code's and Codex's skills folders (`~/.claude/skills` and `~/.codex/skills`, or the
+account profile's) and binds each skill read-only into it, so the agents see exactly that set; null keeps the
+user's own. An entry with no package, with `..`, without `SKILL.md`, a repeated name, or a changed package stops the
+session before a dossier is bound. The skills folders are made on the host if missing (mount points in a read-only
+home). Fixed with it: a `path` package of a folder was stored one level down, under the folder's name; its contents
+are now at the package root, as for git.
 
 Built (2026-10-13): remote MCP servers. `mcp.servers.<name>.url` names a streamable-HTTP server; `keyring_headers`
 maps a header to a keyring entry (`secret-tool lookup legionctl-mcp <entry>`), read by `session start` outside the

@@ -229,12 +229,13 @@ impl Store {
             PackageKind::Path => {
                 let source = crate::config::expand_home(&p.source)?;
                 ensure!(source.exists(), "{} does not exist", source.display());
-                vec![
-                    "cp".into(),
-                    "-a".into(),
-                    format!("{}", source.display()),
-                    target,
-                ]
+                // a folder's contents at the package root, as a git package has them; a file keeps its name
+                let from = if source.is_dir() {
+                    source.join(".")
+                } else {
+                    source
+                };
+                vec!["cp".into(), "-a".into(), from.display().to_string(), target]
             }
         };
         if let Err(e) = sandboxed(&dir, &argv, hidden) {
@@ -257,11 +258,11 @@ impl Store {
         Ok(manifest)
     }
 
-    /// The command that runs `name`'s server from the store; refuses a tree that changed since it was fetched.
+    /// The folder of `name` in the store, after a fresh hash check.
     ///
     /// # Errors
     /// The package is not fetched, or its tree no longer has the recorded hash.
-    pub fn command(&self, name: &str, p: &PackageConfig) -> Result<Vec<String>> {
+    pub fn checked(&self, name: &str, p: &PackageConfig) -> Result<PathBuf> {
         let dir = self.dir(name, p);
         let Some(manifest) = Self::manifest(&dir) else {
             bail!("package {name} is not fetched; run `legionctl packages fetch {name}`")
@@ -271,6 +272,15 @@ impl Store {
             "package {name} changed since it was fetched ({}); fetch it again with force",
             dir.display()
         );
+        Ok(dir)
+    }
+
+    /// The command that runs `name`'s server from the store; refuses a tree that changed since it was fetched.
+    ///
+    /// # Errors
+    /// As [`Store::checked`].
+    pub fn command(&self, name: &str, p: &PackageConfig) -> Result<Vec<String>> {
+        let dir = self.checked(name, p)?;
         Ok(p.run
             .iter()
             .map(|a| a.replace("{dir}", &dir.to_string_lossy()))

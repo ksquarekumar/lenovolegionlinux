@@ -1073,6 +1073,140 @@ fn a_store_package_runs_pinned_and_offline_and_a_changed_one_is_refused() {
     assert!(!String::from_utf8_lossy(&cli(&["dossier", "locks"]).stdout).contains("other"));
 }
 
+/// `~/kit` with skills alpha and beta, and a skill of the user's own in `~/.claude/skills`.
+fn skills_kit(home: &Path) {
+    let kit = home.join("kit");
+    write(
+        &kit.join("skills/alpha/SKILL.md"),
+        "---\nname: alpha\n---\nALPHA_BODY\n",
+    );
+    write(&kit.join("skills/beta/SKILL.md"), "---\nname: beta\n---\n");
+    write(
+        &home.join(".claude/skills/mine/SKILL.md"),
+        "the user's own\n",
+    );
+}
+
+/// Package `kit` (the folder `~/kit`) and agent `probe`, which lists both skills folders, reads skill alpha and
+/// tries to write into it; `session.skills` as given.
+fn configure_skills(home: &Path, skills: &Value) {
+    let probe = "ls \"$HOME/.claude/skills\" \"$HOME/.codex/skills\"; cat \"$HOME/.claude/skills/alpha/SKILL.md\"; \
+                 touch \"$HOME/.claude/skills/alpha/x\" 2>/dev/null || echo SKILL_READONLY";
+    write(
+        &home.join(".config/legionctl/session.jsonc"),
+        &json!({
+            "packages": {"kit": {"kind": "path", "source": home.join("kit")}},
+            "session": {"agents": {"probe": ["sh", "-c", probe]}, "writable": [], "skills": skills}
+        })
+        .to_string(),
+    );
+}
+
+/// Skills from the store: the session's agents see exactly the configured skills (Claude Code's and Codex's skills
+/// folders), read-only, and not the user's own; an entry that is not a hash-checked skill stops the session first.
+#[test]
+fn session_skills_are_exactly_the_configured_store_skills_read_only() {
+    let (op, home) = operator("skills");
+    let repo = repository(&home);
+    let env = [("HOME", home.to_str().unwrap())];
+    let cli = |args: &[&str]| op.run(&repo, &env, args, "");
+    skills_kit(&home);
+    let configure = |skills: Value| configure_skills(&home, &skills);
+    let start = || {
+        cli(&[
+            "session",
+            "start",
+            "probe",
+            "--dossier",
+            "skills",
+            "--create",
+            "--json",
+        ])
+    };
+    configure(json!(["kit/skills/alpha"]));
+    let not_fetched = start();
+    assert!(String::from_utf8_lossy(&not_fetched.stderr).contains("package kit is not fetched"));
+    assert!(cli(&["packages", "fetch", "kit"]).status.success());
+    for (skills, error) in [
+        (json!(["kit"]), "session.skills: kit has no SKILL.md"),
+        (json!(["kit/../kit/skills/alpha"]), "leaves its package"),
+        (json!(["nope/alpha"]), "session.skills: no package nope"),
+        (
+            json!(["kit/skills/alpha", "kit/skills/alpha"]),
+            "two skills are named alpha",
+        ),
+    ] {
+        configure(skills);
+        let refused = start();
+        assert!(
+            !refused.status.success() && String::from_utf8_lossy(&refused.stderr).contains(error),
+            "{error}: {}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+    }
+
+    configure(json!(["kit/skills/alpha"]));
+    let started = start();
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let out = run_launch(
+        &op,
+        &home,
+        &serde_json::from_slice(&started.stdout).unwrap(),
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    let listed: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.is_empty() && !l.ends_with(':'))
+        .take(2)
+        .collect();
+    assert_eq!(
+        listed,
+        ["alpha", "alpha"],
+        "{text}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("ALPHA_BODY") && text.contains("SKILL_READONLY") && !text.contains("mine"),
+        "{text}"
+    );
+    assert!(
+        home.join(".claude/skills/mine/SKILL.md").exists(),
+        "the user's own skill stays outside"
+    );
+
+    // a changed store file stops the next session before it binds a dossier
+    write(
+        &home
+            .join(".local/share/legionctl/store/kit")
+            .read_dir()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path()
+            .join("skills/alpha/SKILL.md"),
+        "changed\n",
+    );
+    let refused = cli(&[
+        "session",
+        "start",
+        "probe",
+        "--dossier",
+        "other",
+        "--create",
+    ]);
+    assert!(
+        String::from_utf8_lossy(&refused.stderr)
+            .contains("package kit changed since it was fetched"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+}
+
 /// A headless run through an ACP adapter (a stand-in agent): it gets the session's MCP servers at session/new, its
 /// permission ask is answered and logged, it works inside the same sandbox and git gate as an interactive session,
 /// and its answer comes back.

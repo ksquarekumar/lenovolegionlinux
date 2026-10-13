@@ -193,6 +193,9 @@ pub struct SessionConfig {
     /// Hidden in the sandbox: sockets and folders that would give a way out (a container or VM with the host's
     /// files). A folder becomes empty, a file or socket `/dev/null`.
     pub hidden: Vec<String>,
+    /// Skills from the store, as `<package>` or `<package>/<folder in it>` (a folder with `SKILL.md`). When set,
+    /// the agents see exactly these skills, read-only, instead of the user's own; when null, the user's own.
+    pub skills: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
