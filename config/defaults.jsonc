@@ -94,9 +94,10 @@
   // Sessions that legionctl starts (`legionctl session start <agent>`, note 14): the agent runs in a sandbox where
   // your home is read-only.
   "session": {
-    // Agent name -> command line; {id} is the session id (Claude Code's hooks then find the session's dossier).
+    // Agent name -> command line; {id} is the session id (Claude Code's hooks then find the session's dossier);
+    // {settings} is the session's generated Claude Code settings file (the gates as permissions.deny).
     "agents": {
-      "claude": ["claude", "--session-id", "{id}"],
+      "claude": ["claude", "--session-id", "{id}", "--settings", "{settings}"],
       "codex": ["codex"]
     },
     // Writable besides the workspace, the dossier, the repository's .git and the runtime folder (/tmp is private to

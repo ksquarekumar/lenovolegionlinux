@@ -27,6 +27,12 @@ Builds on 12-operator (harness, sandbox, gateway) and 13-daemon (one-writer data
   home. Not yet: agent permission generation (layer 1 below), overlay copies for plain folders, ACP
   (pause/offload/resume, sessions as model calls), the tool proxy and cache.
 
+Built (2026-10-13, S2a): agent permission generation. `session start` writes
+`$XDG_RUNTIME_DIR/legionctl/sessions/<id>/claude-settings.json` with each `gates.git.deny` rule as a Claude Code
+`permissions.deny` entry (`Bash(git push:*)`), and the `claude` template passes it with `--settings {settings}`. The
+e2e session test reads the file from inside the sandbox. Codex keeps its command: its own sandbox inside bwrap is
+still to be checked live.
+
 ## Session record
 
 One row per session in the user database (plus child tables), changed only through the event log:

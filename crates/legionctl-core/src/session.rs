@@ -58,6 +58,20 @@ fn bind(args: &mut Vec<String>, path: &Path) {
     args.extend(["--bind".into(), path.clone(), path]);
 }
 
+/// Claude Code settings for a session (layer 1 of the gates, note 14): the git gate's refusals as `permissions.deny`,
+/// so the agent learns them before it runs a command; the git shim in the sandbox stays the authority.
+#[must_use]
+pub fn claude_settings(config: &Config) -> serde_json::Value {
+    let deny: Vec<String> = config
+        .gates
+        .git
+        .deny
+        .iter()
+        .map(|rule| format!("Bash(git {rule}:*)"))
+        .collect();
+    serde_json::json!({ "permissions": { "deny": deny } })
+}
+
 impl Dossiers {
     /// Prepare a session of `agent` on `dossier` in the repository that contains `dir`: bind the dossier to a new
     /// session id, open its workspace, record the session, and return how to start it.
@@ -95,6 +109,8 @@ impl Dossiers {
         std::fs::create_dir_all(&session_dir)?;
         let real_git = session_dir.join("git");
         std::fs::write(&real_git, "")?;
+        let settings = session_dir.join("claude-settings.json");
+        std::fs::write(&settings, claude_settings(config).to_string())?;
 
         // paths under /tmp (tests, other runtimes) are bound after the private /tmp, so they stay visible
         let mut sandbox: Vec<String> = [
@@ -144,7 +160,13 @@ impl Dossiers {
                 "--".into(),
             ],
             sandbox,
-            agent: command.iter().map(|a| a.replace("{id}", &id)).collect(),
+            agent: command
+                .iter()
+                .map(|a| {
+                    a.replace("{id}", &id)
+                        .replace("{settings}", &settings.to_string_lossy())
+                })
+                .collect(),
             real_git,
             id,
         })

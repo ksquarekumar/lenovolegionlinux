@@ -686,10 +686,11 @@ fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_h
                  git push origin main 2>&1 | grep -q gates.git.deny && echo PUSH_REFUSED; \
                  git reset --hard HEAD 2>&1 | grep -q gates.git.deny && echo RESET_REFUSED; \
                  touch \"$HOME/outside\" 2>/dev/null || echo HOME_READONLY; \
-                 touch .agentworkspace/MEMORY/probe.md && echo DOSSIER_WRITABLE; echo \"SESSION=$LEGIONCTL_SESSION\"";
+                 touch .agentworkspace/MEMORY/probe.md && echo DOSSIER_WRITABLE; echo \"SESSION=$LEGIONCTL_SESSION\"; \
+                 echo \"SETTINGS=$(cat \"$1\")\"";
     write(
         &home.join(".config/legionctl/session.jsonc"),
-        &json!({"session": {"agents": {"probe": ["sh", "-c", probe]}, "writable": []}}).to_string(),
+        &json!({"session": {"agents": {"probe": ["sh", "-c", probe, "probe", "{settings}"]}, "writable": []}}).to_string(),
     );
     let started = op.run(
         &repo,
@@ -758,9 +759,11 @@ fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_h
     }
     assert!(!home.join("outside").exists());
     let id = launch["id"].as_str().unwrap();
+    // the session id, and layer 1 of the gates: the git gate's refusals as the agent's own deny rules, in the sandbox
+    let settings = r#"SETTINGS={"permissions":{"deny":["Bash(git push:*)","Bash(git fetch:*)""#;
     assert!(
-        text.contains(&format!("SESSION={id}")),
-        "the session id reaches the agent: {text}"
+        text.contains(&format!("SESSION={id}")) && text.contains(settings),
+        "{text}"
     );
     let workspace = home.join("worktrees/repo/port");
     assert_eq!(
