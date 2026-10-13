@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::{ACTOR_HEADER, Op, SOCKET};
+use crate::{ACTOR_HEADER, API_HEADER, Op, SOCKET, api_fingerprint};
 use anyhow::{Context, Result, bail};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
@@ -46,9 +46,27 @@ impl Client {
             .header("host", "legionctl")
             .header("content-type", "application/json")
             .header(ACTOR_HEADER, self.actor)
+            .header(API_HEADER, api_fingerprint())
             .body(Full::new(Bytes::from(serde_json::to_vec(input)?)))?;
         let response = sender.send_request(request).await?;
         let status = response.status();
+        let operator_build = response
+            .headers()
+            .get(API_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        if operator_build
+            .as_deref()
+            .is_some_and(|b| b != api_fingerprint())
+        {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                eprintln!(
+                    "legionctl: the running operator is a different build than this client; restart it \
+                     (systemctl --user restart legionctl-operator)"
+                );
+            });
+        }
         let body: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())
             .context("the operator's answer is not JSON")?;
         if !status.is_success() {

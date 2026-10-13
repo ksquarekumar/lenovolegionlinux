@@ -9,7 +9,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
-use legionctl_api::{ACTOR_HEADER, Ctx, DispatchError, OPS};
+use legionctl_api::{ACTOR_HEADER, API_HEADER, Ctx, DispatchError, OPS, api_fingerprint};
 use serde_json::{Value, json};
 
 use crate::engine::Operator;
@@ -66,6 +66,16 @@ async fn call(
     Path(name): Path<String>,
     headers: HeaderMap,
     Json(input): Json<Value>,
+) -> (StatusCode, [(&'static str, &'static str); 1], Json<Value>) {
+    let (status, body) = run(operator, name, &headers, input).await;
+    (status, [(API_HEADER, api_fingerprint())], body)
+}
+
+async fn run(
+    operator: Arc<Operator>,
+    name: String,
+    headers: &HeaderMap,
+    input: Value,
 ) -> (StatusCode, Json<Value>) {
     let ctx = Ctx {
         actor: headers
@@ -82,7 +92,20 @@ async fn call(
     match result {
         Ok(Ok(output)) => (StatusCode::OK, Json(output)),
         Ok(Err(DispatchError::Unknown(name))) => {
-            error(StatusCode::NOT_FOUND, &format!("unknown operation {name}"))
+            // after an upgrade the running operator is the old build until it restarts
+            let other_build = headers
+                .get(API_HEADER)
+                .is_some_and(|v| v != api_fingerprint());
+            let hint = if other_build {
+                "; this operator is a different build than the client: restart it \
+                 (systemctl --user restart legionctl-operator)"
+            } else {
+                ""
+            };
+            error(
+                StatusCode::NOT_FOUND,
+                &format!("unknown operation {name}{hint}"),
+            )
         }
         Ok(Err(DispatchError::Input(e))) => {
             error(StatusCode::BAD_REQUEST, &format!("invalid input: {e}"))

@@ -1488,6 +1488,44 @@ fn images_scan_describes_services_and_their_build_cache() {
     assert_eq!(written, scan["services"]);
 }
 
+/// After an upgrade the running operator is the old build: an operation it does not know says to restart it, while
+/// the same request from a client of its own build gets the plain error.
+#[test]
+fn an_unknown_operation_from_another_build_says_to_restart_the_operator() {
+    let (op, _home) = operator("build");
+    op.ok(&["load"]);
+    let ask = |fingerprint: &str| {
+        let mut stream =
+            std::os::unix::net::UnixStream::connect(op.runtime.join("legionctl/api.sock")).unwrap();
+        let request = format!(
+            "POST /v1/ops/packages.newer HTTP/1.1\r\nhost: l\r\nconnection: close\r\ncontent-type: application/json\r\n\
+             x-legionctl-api: {fingerprint}\r\ncontent-length: 2\r\n\r\n{{}}"
+        );
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut response = String::new();
+        std::io::Read::read_to_string(&mut stream, &mut response).unwrap();
+        response
+    };
+    let other = ask("0000000000000000");
+    assert!(
+        other.contains("404")
+            && other.contains("restart it (systemctl --user restart legionctl-operator)"),
+        "{other}"
+    );
+    let same = ask(legionctl_api::api_fingerprint());
+    assert!(
+        same.contains("unknown operation packages.newer\"") && !same.contains("restart"),
+        "{same}"
+    );
+    assert!(
+        same.contains(&format!(
+            "x-legionctl-api: {}",
+            legionctl_api::api_fingerprint()
+        )),
+        "{same}"
+    );
+}
+
 /// Run a `session start` launch as the client does, without the systemd scope (CI has no user systemd): the
 /// sandbox, this binary bound over git as the gate, then the agent.
 fn run_launch(op: &Operator, home: &Path, launch: &Value) -> std::process::Output {

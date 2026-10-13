@@ -73,6 +73,9 @@ fn module_warnings(root: &SysRoot, profile: &Profile) -> Vec<String> {
 pub fn doctor(machine: &Machine) -> Vec<String> {
     let (root, profile) = (machine.root, machine.profile);
     let mut w = Vec::new();
+    if let Some(reason) = root.read("/run/legionctl/safe-mode") {
+        w.push(format!("safe mode: {reason}"));
+    }
     if !dmi_mismatches(root, profile).is_empty() {
         w.push("DMI does not match this repo profile".into());
     }

@@ -90,6 +90,7 @@ install: ## install into DESTDIR; the PKGBUILD calls this (on this machine: `mak
 	install -Dm644 $(PROFILE) "$(DESTDIR)$(DATADIR)/profiles/$(notdir $(PROFILE))"
 	install -d "$(DESTDIR)$(DATADIR)" && cp -r integrations/agent-plugin "$(DESTDIR)$(DATADIR)/"
 	install -Dm644 systemd/legionctl-system.service "$(DESTDIR)$(UNITDIR)/legionctl-system.service"
+	install -Dm644 systemd/legionctl-safe.service "$(DESTDIR)$(UNITDIR)/legionctl-safe.service"
 	install -Dm644 -t "$(DESTDIR)$(USERUNITDIR)" systemd/user/legionctl-operator.service systemd/user/legionctl-operator.socket
 	install -Dm644 systemd/power-profiles-daemon.service.d/10-legionctl.conf "$(DESTDIR)$(UNITDIR)/power-profiles-daemon.service.d/10-legionctl.conf"
 	install -Dm644 dbus/org.legionctl.System1.conf "$(DESTDIR)$(PREFIX)/share/dbus-1/system.d/org.legionctl.System1.conf"

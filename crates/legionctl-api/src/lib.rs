@@ -28,6 +28,23 @@ pub use render::Render;
 pub const SOCKET: &str = "legionctl/api.sock";
 /// HTTP header that says which surface made a call: cli, mcp or tui.
 pub const ACTOR_HEADER: &str = "x-legionctl-actor";
+/// The fingerprint of the operation registry a client and the operator were built with ([`api_fingerprint`]).
+pub const API_HEADER: &str = "x-legionctl-api";
+
+/// FNV-1a over every operation's name and input schema: equal for a client and an operator of the same build, and
+/// different after an upgrade until the running operator restarts.
+pub fn api_fingerprint() -> &'static str {
+    static FINGERPRINT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    FINGERPRINT.get_or_init(|| {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for op in OPS {
+            for byte in op.name.bytes().chain((op.input)().to_string().into_bytes()) {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+        format!("{hash:016x}")
+    })
+}
 
 /// What an operation may change, and so which gate applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

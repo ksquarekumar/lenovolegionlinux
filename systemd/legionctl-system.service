@@ -1,6 +1,10 @@
 [Unit]
 Description=legionctl machine daemon (power policy, Fn keys, D-Bus API)
 After=power-profiles-daemon.service nvidia-persistenced.service dbus.service
+# three failures in five minutes: stop restarting and hand the machine to the firmware (note 13)
+StartLimitIntervalSec=300
+StartLimitBurst=3
+OnFailure=legionctl-safe.service
 
 [Service]
 Type=notify
@@ -8,6 +12,8 @@ ExecStart=/usr/lib/legionctl/legionctl-system
 Restart=on-failure
 RestartSec=2
 StateDirectory=legionctl
+RuntimeDirectory=legionctl
+RuntimeDirectoryPreserve=yes
 ProtectSystem=strict
 ReadWritePaths=/etc/udev/rules.d
 

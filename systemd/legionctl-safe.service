@@ -1,0 +1,8 @@
+[Unit]
+Description=legionctl safe mode (the machine daemon failed repeatedly: firmware balanced mode, reason for doctor)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/legionctl/legionctl-system --safe
+RuntimeDirectory=legionctl
+RuntimeDirectoryPreserve=yes

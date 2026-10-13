@@ -38,6 +38,38 @@ use zbus::object_server::SignalEmitter;
 use zbus::zvariant::Value;
 
 const TICK: Duration = Duration::from_secs(30);
+/// Written by `legionctl-system --safe` (legionctl-safe.service, after repeated failures); `doctor` reports it.
+const SAFE_MODE: &str = "/run/legionctl/safe-mode";
+
+/// Safe mode (note 13): the daemon failed again and again, so nothing enforces the policy. Hand the machine to the
+/// firmware's balanced mode and leave the reason where `doctor` reads it.
+fn safe(root: &SysRoot) -> Result<()> {
+    let (profile, _) = profile::load(None)?;
+    let choices = root
+        .read(&profile.paths.platform_profile_choices)
+        .unwrap_or_default();
+    let mut done = Vec::new();
+    if choices.split_whitespace().any(|c| c == "balanced") {
+        std::fs::write(root.path(&profile.paths.platform_profile), "balanced\n")?;
+        done.push("platform_profile balanced");
+    }
+    let marker = root.path(SAFE_MODE);
+    std::fs::create_dir_all(marker.parent().context("no parent")?)?;
+    std::fs::write(
+        &marker,
+        format!(
+            "legionctl-system failed repeatedly and stopped; set: {}. See journalctl -u legionctl-system, then \
+             systemctl restart legionctl-system\n",
+            if done.is_empty() {
+                "nothing".to_string()
+            } else {
+                done.join(", ")
+            }
+        ),
+    )?;
+    eprintln!("safe mode: {}", std::fs::read_to_string(&marker)?.trim());
+    Ok(())
+}
 const BUS_NAME: &str = "org.legionctl.System1";
 const OBJECT_PATH: &str = "/org/legionctl/System1";
 /// How long to wait before looking for the Fn-key device again after it went away (resume, udev remove).
@@ -520,6 +552,9 @@ fn udev_event(e: &udev::Event) -> Option<Event> {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let root = SysRoot::from_env();
+    if std::env::args().nth(1).as_deref() == Some("--safe") {
+        return safe(&root);
+    }
     let tuning = Arc::new(AtomicBool::new(false));
     // a sensor that cannot load is reported (Sample, doctor), and the daemon runs without it (note 04)
     let runq = Arc::new(runq::Runq::start().map_err(|e| format!("{e:#}")));
@@ -564,6 +599,8 @@ async fn main() -> Result<()> {
     let mut announced = mode(&root);
     handle(&root, &emitter, Event::Start, &mut announced).await;
     notify(sd_notify::NotifyState::Ready);
+    // running again: safe mode is over
+    let _ = std::fs::remove_file(root.path(SAFE_MODE));
 
     loop {
         tokio::select! {

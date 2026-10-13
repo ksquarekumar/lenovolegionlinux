@@ -517,6 +517,36 @@ fn virt_status_reads_docker_libvirt_and_the_kernel() {
     );
 }
 
+/// Safe mode: after repeated failures systemd runs `legionctl-system --safe`, which hands the machine to the
+/// firmware's balanced mode and leaves the reason, which `doctor` shows first.
+#[test]
+fn safe_mode_hands_the_machine_to_the_firmware_and_doctor_says_why() {
+    let m = Machine::new("safe");
+    assert_eq!(m.file(PROFILE_PATH), "max-power");
+    let daemon = Path::new(env!("CARGO_BIN_EXE_legionctl")).with_file_name("legionctl-system");
+    let out = std::process::Command::new(daemon)
+        .arg("--safe")
+        .env_clear()
+        .env("LEGIONCTL_SYSROOT", m.dir.join("root"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(m.file(PROFILE_PATH), "balanced");
+    let doctor = String::from_utf8(m.legion(&["doctor"]).stdout).unwrap();
+    assert_eq!(
+        doctor.lines().nth(1),
+        Some(
+            "- safe mode: legionctl-system failed repeatedly and stopped; set: platform_profile balanced. See \
+             journalctl -u legionctl-system, then systemctl restart legionctl-system"
+        ),
+        "{doctor}"
+    );
+}
+
 #[test]
 fn cleanup_plans_to_disable_running_conflicts_and_leaves_packages_to_the_human() {
     let m = Machine::new("cleanup");

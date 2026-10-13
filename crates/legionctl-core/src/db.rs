@@ -101,7 +101,7 @@ impl Db {
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        migrate(&mut conn, migrations)?;
+        migrate(&mut conn, migrations, path)?;
         Ok(Db { conn })
     }
 
@@ -353,8 +353,16 @@ pub struct EventRow {
     pub payload: serde_json::Value,
 }
 
-fn migrate(conn: &mut Connection, migrations: &[&str]) -> Result<()> {
+/// Apply the pending migrations; an existing database is first copied to `<db>.v<version>.bak` (note 13: a failed
+/// migration leaves the previous version's data in place).
+fn migrate(conn: &mut Connection, migrations: &[&str], path: &Path) -> Result<()> {
     let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if current > 0 && usize::try_from(current).unwrap_or(usize::MAX) < migrations.len() {
+        let backup = PathBuf::from(format!("{}.v{current}.bak", path.display()));
+        let _ = std::fs::remove_file(&backup);
+        conn.execute("VACUUM INTO ?1", params![backup.to_string_lossy()])
+            .with_context(|| format!("backing up {} before its migration", path.display()))?;
+    }
     for (index, sql) in migrations
         .iter()
         .enumerate()
@@ -379,6 +387,29 @@ pub(crate) fn temp_db(tag: &str) -> Db {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_migration_keeps_a_backup_of_the_previous_version() {
+        let dir = std::env::temp_dir().join(format!("legionctl-db-backup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("operator.db");
+        let old = Db::open(&path, &OPERATOR[..3]).unwrap();
+        old.record("cli", "before.upgrade", &serde_json::json!({}))
+            .unwrap();
+        drop(old);
+        let new = Db::open(&path, OPERATOR).unwrap();
+        assert_eq!(
+            new.schema_version().unwrap(),
+            i64::try_from(OPERATOR.len()).unwrap()
+        );
+        let backup = Db::open(&dir.join("operator.db.v3.bak"), &OPERATOR[..3]).unwrap();
+        assert_eq!(
+            backup.schema_version().unwrap(),
+            3,
+            "the backup is the previous version, unmigrated"
+        );
+        assert_eq!(backup.events(0, 10).unwrap()[0].kind, "before.upgrade");
+    }
 
     #[test]
     fn migrates_once_and_reopens_cleanly() {

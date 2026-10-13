@@ -73,6 +73,17 @@ system down.
 4. Write the running version; on failure, leave the previous version's database in place and start the daemon in
    safe mode (read-only API, firmware defaults), with a desktop notification that says what failed.
 
+Built (2026-10-13, part 1), without a separate `legionctl-bootstrap` binary:
+- Migrations with a backup: `Db::open` copies an existing database to `<db>.v<version>.bak` (SQLite `VACUUM INTO`)
+  before its first pending migration, for every legionctl database.
+- The build check: the client sends a fingerprint of the operation registry (`x-legionctl-api`); the operator sends
+  its own back. A different build makes the client say once that the operator must restart, and an operation the
+  old operator does not know says the same (after a package upgrade the running operator is the old build).
+- Safe mode for the machine daemon: `legionctl-system.service` stops after 3 failures in 5 minutes and runs
+  `legionctl-safe.service` (`legionctl-system --safe`): the firmware's balanced mode, and the reason in
+  `/run/legionctl/safe-mode`, which `doctor` shows first; the next successful start removes it.
+Not yet: the kernel prerequisite checks as a boot step (they are `doctor` checks), a desktop notification.
+
 ## Kernel and eBPF toolkit
 
 - Kernel modules and DKMS through the 08-kernel inventory; `acpi_call` use (fan RPM, future WMI calls) only inside
