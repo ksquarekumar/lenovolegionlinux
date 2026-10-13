@@ -24,6 +24,7 @@ pub use legionctl_machine::profile::Capability;
 pub use legionctl_machine::snapshot::Snapshot;
 pub use legionctl_machine::telemetry::Sample;
 pub use legionctl_machine::tune::TuneReport;
+pub use legionctl_machine::windows::WindowsState;
 
 pub type ConfigFiles = Vec<ConfigFile>;
 pub type Workspaces = Vec<Workspace>;
@@ -673,6 +674,13 @@ pub struct TuneIn {
 
 fn sixty() -> u32 {
     60
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct DryRunIn {
+    /// Show what would happen; change nothing.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

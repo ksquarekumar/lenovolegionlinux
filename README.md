@@ -50,6 +50,7 @@ legionctl tune --scenario cpu ppt_pl1_spl 60 75 90                # sweep a firm
 legionctl load                    # one-line load level, and which cgroup waits on I/O
 legionctl monitor --count 10      # power, temperatures, clocks, GPU, PSI, fans, throttle reasons (GET /v1/metrics too)
 legionctl trace                   # follow the event log: agents, people and the machine daemon
+legionctl windows status          # the Windows boot entry and what Windows left dirty; windows reboot restarts into it once
 legionctl gpu status              # which GPU drives each display; hybrid or discrete
 legionctl run --gpu nvidia -- blender
 legionctl run --cores e --nice 10 -- make -j16

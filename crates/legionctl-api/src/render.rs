@@ -6,8 +6,8 @@ use crate::io::{
     BenchCompare, BenchRun, CapabilityList, Changes, ConfigFile, ConfigView, DossierFindings,
     DossierInfo, EventRow, Explanation, Findings, GpuState, Guard, HookReply, HookTable, Knob,
     KnobDetail, Launch, LayerList, Lines, LoadState, Lock, Recording, Reminder, RunEnv, Sample,
-    SessionState, SetupReport, SkillInfo, Snapshot, Text, TuneReport, Validation, Workspace,
-    WorkspaceStatus,
+    SessionState, SetupReport, SkillInfo, Snapshot, Text, TuneReport, Validation, WindowsState,
+    Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -921,5 +921,24 @@ impl Render for TuneReport {
     /// A sweep that stopped early fails the command.
     fn success(&self) -> bool {
         self.aborted.is_none()
+    }
+}
+
+impl Render for WindowsState {
+    fn text(&self) -> String {
+        let mut out = vec![match (&self.boot_entry, &self.boot_entry_label) {
+            (Some(id), Some(label)) => format!("Windows boots from firmware entry {id} ({label})"),
+            _ => "no firmware entry starts Windows".into(),
+        }];
+        if let Some(next) = &self.boot_next {
+            out.push(format!("one-time boot set: {next}"));
+        }
+        out.extend(self.hazards.iter().map(|h| format!("- {h}")));
+        out.join("\n")
+    }
+
+    /// Hazards fail the command.
+    fn success(&self) -> bool {
+        self.hazards.is_empty()
     }
 }

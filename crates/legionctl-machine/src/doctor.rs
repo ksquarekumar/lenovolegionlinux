@@ -2,8 +2,6 @@
 //! (old Legion tooling, missing or unwanted kernel modules, DKMS builds, throttling, dirty NTFS volumes, GPU wiring,
 //! failed units, the OSD extension)?
 
-use std::process::Command;
-
 use crate::gpu;
 use crate::kernel;
 use crate::ledger::Key;
@@ -69,23 +67,6 @@ fn module_warnings(root: &SysRoot, profile: &Profile) -> Vec<String> {
         }
     }
     out
-}
-
-/// NTFS volumes the kernel reported as dirty since boot.
-fn dirty_ntfs() -> Vec<String> {
-    let Ok(out) = Command::new("journalctl")
-        .args(["-k", "-b", "-q", "--no-pager", "-g", "ntfs3.*dirty"])
-        .output()
-    else {
-        return vec![];
-    };
-    let mut volumes: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| Some(l.split_once("ntfs3(")?.1.split_once(')')?.0.to_string()))
-        .collect();
-    volumes.sort();
-    volumes.dedup();
-    volumes
 }
 
 /// Every finding, in a stable order; empty when nothing is wrong.
@@ -185,7 +166,7 @@ pub fn doctor(machine: &Machine) -> Vec<String> {
     {
         w.push(format!("CPU throttling logged: {}", reasons.join(", ")));
     }
-    for volume in dirty_ntfs() {
+    for volume in crate::windows::dirty_ntfs() {
         w.push(format!(
             "NTFS volume {volume} is marked dirty; run chkdsk in Windows (or ntfsfix -d, see docs/design/11-disks.md)"
         ));

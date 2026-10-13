@@ -25,6 +25,17 @@ while the volume is dirty or hibernated. So fixes happen inside Windows; Linux o
 `RebootToWindows()` sets `BootNext=0004` via efivars (efibootmgr equivalent) and reboots. One-shot: the next
 boot returns to Linux. Exposed in `legionctl`, the control center and as a polkit-guarded D-Bus method.
 
+Built (2026-10-13, M5 part 1): `legionctl windows status` (the entry whose path is `bootmgfw.efi`, whatever its
+label; a `BootNext` already set; NTFS volumes the kernel reported dirty, with the fix) and `legionctl windows reboot
+[--dry-run]` (`System1.RebootToWindows`, polkit action `org.legionctl.windows.reboot`): the daemon runs
+`efibootmgr --bootnext <id>`, and only when that succeeds, `systemctl reboot`. The e2e test uses this machine's
+captured `efibootmgr` list and checks the order and that a failed `BootNext` stops the reboot. Not run live (it
+restarts the machine).
+Not built yet: the registry checks (`RealTimeIsUniversal`, `HiberbootEnabled`). They need a read-only reader of the
+SYSTEM hive on the raw NTFS partition (as root, no mount); the only permissive crates found are `ntfs` 0.4 (MIT or
+Apache-2.0) and `notatin` (Apache-2.0, a large tree), and `nt-hive` is GPL-2.0-or-later. A test against the real
+partition needs root, so this waits for the user.
+
 ## Running the installed Windows under Linux
 
 | Option | What you get | Cost / limits |

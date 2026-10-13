@@ -1143,4 +1143,90 @@ mod operator_and_daemon {
             "{sample}"
         );
     }
+
+    /// Restart into Windows: the entry comes from the firmware's list (captured on this machine), the dry run changes
+    /// nothing, polkit is asked, `BootNext` is set before the reboot, and a failed `BootNext` stops the reboot.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn windows_reboot_sets_boot_next_first_and_never_reboots_without_it() {
+        let m = Machine::new("windows");
+        let bin = m.dir.join("bin");
+        let log = m.dir.join("commands.log");
+        std::fs::write(
+            m.dir.join("efibootmgr.txt"),
+            "BootCurrent: 0003\nTimeout: 0 seconds\nBootOrder: 0003,0004,2002,2001,2003\n\
+             Boot0003* Linpus lite\tHD(1,GPT,f35559dd-a341-4c88-9cef-b17064d991ae,0x800,0x200000)/\\EFI\\Boot\\grubx64.efiRC\n\
+             Boot0004* Windows Boot Manager\tHD(1,GPT,e86fb80b-1faa-4368-80ca-0e698ba355c8,0x800,0x82000)/\\EFI\\Microsoft\\Boot\\bootmgfw.efi5749\n\
+             Boot2001* EFI USB Device\tRC\n",
+        )
+        .unwrap();
+        let efibootmgr = |fail: &str| {
+            format!(
+                "if [ $# -eq 0 ]; then while IFS= read -r l; do echo \"$l\"; done < {}; exit 0; fi; \
+                 echo \"efibootmgr $*\" >> {}; {fail}",
+                m.dir.join("efibootmgr.txt").display(),
+                log.display()
+            )
+        };
+        Machine::script(&bin, "efibootmgr", &efibootmgr("exit 0"));
+        Machine::script(
+            &bin,
+            "systemctl",
+            &format!("echo \"systemctl $*\" >> {}", log.display()),
+        );
+        let (_stand_ins, asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "windows");
+        let commands = || {
+            std::fs::read_to_string(&log)
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| l.contains("bootnext") || l.contains("reboot"))
+                .map(String::from)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            op.ok(&["windows", "status"]),
+            "Windows boots from firmware entry 0004 (Windows Boot Manager)\n"
+        );
+        let plan = op.ok(&["windows", "reboot", "--dry-run"]);
+        assert_eq!(
+            plan,
+            "would run: efibootmgr --bootnext 0004\nwould run: systemctl reboot\n"
+        );
+        assert!(commands().is_empty(), "a dry run runs nothing");
+
+        op.ok(&["windows", "reboot"]);
+        assert_eq!(
+            commands(),
+            ["efibootmgr --bootnext 0004", "systemctl reboot"]
+        );
+        assert!(
+            asked
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, a, _, _)| a == "org.legionctl.windows.reboot"),
+            "polkit was asked"
+        );
+
+        std::fs::remove_file(&log).unwrap();
+        Machine::script(
+            &bin,
+            "efibootmgr",
+            &efibootmgr("echo 'Could not set BootNext' >&2; exit 1"),
+        );
+        let refused = op.cli(&["windows", "reboot"]);
+        assert!(!refused.status.success());
+        assert!(
+            String::from_utf8_lossy(&refused.stderr)
+                .contains("not rebooting: warning: command failed"),
+            "{}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+        assert_eq!(
+            commands(),
+            ["efibootmgr --bootnext 0004"],
+            "no reboot without BootNext"
+        );
+    }
 }

@@ -31,7 +31,7 @@ use legionctl_machine::ledger::{Key, Ledger};
 use legionctl_machine::policy::{self, Machine, Options, Source, Step};
 use legionctl_machine::react::{Event, react};
 use legionctl_machine::sysroot::SysRoot;
-use legionctl_machine::{cleanup, gpu, profile, telemetry, tune};
+use legionctl_machine::{cleanup, gpu, profile, telemetry, tune, windows};
 use tokio::io::unix::AsyncFd;
 use tokio::io::{Interest, Ready};
 use zbus::object_server::SignalEmitter;
@@ -379,6 +379,39 @@ impl System1 {
         lines.extend(reapplied.map_err(|e| failed(&e))?);
         Self::changed(&emitter, "Tune", &lines).await?;
         serde_json::to_string(&report).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    }
+
+    /// Boot Windows once (`BootNext` to its firmware entry), then reboot. Nothing reboots when setting `BootNext`
+    /// fails.
+    async fn reboot_to_windows(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.windows.reboot").await?;
+        let steps = windows::state()
+            .and_then(|state| windows::reboot_plan(&state))
+            .map_err(|e| failed(&e))?;
+        let ledger = Ledger::open(&self.root).map_err(|e| failed(&e))?;
+        let (boot_next, reboot) = steps.split_at(1);
+        let mut lines = policy::execute(&self.root, &ledger, boot_next);
+        if let Some(warning) = lines.iter().find(|l| l.starts_with("warning")) {
+            return Err(zbus::fdo::Error::Failed(format!(
+                "not rebooting: {warning}"
+            )));
+        }
+        lines.push(format!(
+            "BootNext set: {}",
+            boot_next
+                .iter()
+                .filter_map(policy::describe)
+                .collect::<String>()
+        ));
+        // the signal goes out before the reboot takes the bus down
+        Self::changed(&emitter, "RebootToWindows", &lines).await?;
+        lines.extend(policy::execute(&self.root, &ledger, reboot));
+        Ok(lines)
     }
 
     /// The readings only root can make (fan RPM, throttle reasons from the MSR), as JSON (`telemetry::RootSample`).

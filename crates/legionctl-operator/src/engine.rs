@@ -8,10 +8,10 @@ use anyhow::{Context, Result};
 use legionctl_api::{
     BenchCompare, BenchCompareIn, BenchIn, BenchResult, BenchRun, BenchRuns, DossierAddIn,
     DossierAppendIn, DossierCheckIn, DossierEditIn, DossierFindings, DossierList, DossierReadIn,
-    DossierSearchIn, DossierUseIn, DossierWriteIn, Events, EventsIn, GateIn, Guard, GuardIn,
-    HookReply, HookRunIn, InspectIn, KnobDetail, Knobs, Launch, Lines, Locks, MonitorIn, RecordIn,
-    Recording, ReplayIn, Sample, Samples, SessionId, SessionIdIn, SessionIn, SessionStartIn,
-    SessionState, Sessions, TuneIn, TuneReport,
+    DossierSearchIn, DossierUseIn, DossierWriteIn, DryRunIn, Events, EventsIn, GateIn, Guard,
+    GuardIn, HookReply, HookRunIn, InspectIn, KnobDetail, Knobs, Launch, Lines, Locks, MonitorIn,
+    RecordIn, Recording, ReplayIn, Sample, Samples, SessionId, SessionIdIn, SessionIn,
+    SessionStartIn, SessionState, Sessions, TuneIn, TuneReport, WindowsState,
 };
 use legionctl_api::{
     BranchIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath, CloseIn, ConfigFiles,
@@ -35,7 +35,7 @@ use legionctl_machine::profile::{self, Profile};
 use legionctl_machine::snapshot::Detail;
 use legionctl_machine::sysroot::SysRoot;
 use legionctl_machine::telemetry::{self, RootSample};
-use legionctl_machine::{bench, cleanup, gpu, knobs, load};
+use legionctl_machine::{bench, cleanup, gpu, knobs, load, windows};
 
 pub struct Operator {
     /// Runs the D-Bus calls of machine changes; engine methods run on blocking threads.
@@ -84,7 +84,13 @@ fn which(program: &str) -> Option<PathBuf> {
 }
 
 /// Operations that change the machine (or record it): their events go into a recording.
-const MACHINE_OPS: [&str; 4] = ["power.apply", "gpu.primary", "cleanup", "record"];
+const MACHINE_OPS: [&str; 5] = [
+    "power.apply",
+    "gpu.primary",
+    "cleanup",
+    "windows.reboot",
+    "record",
+];
 
 /// The machine, its profile and the Fn+Q ledger, as the planners need them.
 struct Plan {
@@ -876,6 +882,21 @@ impl Engine for Operator {
 
     fn events(&self, _: &Ctx, input: EventsIn) -> Result<Events> {
         Db::open_default()?.events(input.since, input.limit)
+    }
+
+    fn windows_status(&self, _: &Ctx, _: Empty) -> Result<WindowsState> {
+        windows::state()
+    }
+
+    fn windows_reboot(&self, ctx: &Ctx, input: DryRunIn) -> Result<Changes> {
+        if input.dry_run {
+            return Ok(dry_run(&windows::reboot_plan(&windows::state()?)?));
+        }
+        Self::record(ctx, "windows.reboot", &input)?;
+        Ok(Changes {
+            lines: self.system(async |p| p.reboot_to_windows().await)?,
+            dry_run: false,
+        })
     }
 
     fn record(&self, ctx: &Ctx, input: RecordIn) -> Result<Recording> {

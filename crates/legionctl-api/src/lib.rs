@@ -329,6 +329,10 @@ operations! {
     knobs / KnobsOp = "knobs", Read, ProfileIn => Knobs;
     /// One knob and its history from the event log.
     inspect / Inspect = "inspect", Read, InspectIn => KnobDetail;
+    /// Dual boot: the Windows boot entry, a pending one-time boot, NTFS volumes Windows left dirty, and what to fix.
+    windows_status / WindowsStatus = "windows.status", Read, Empty => WindowsState;
+    /// Restart into Windows once (the start after returns to Linux). A human approves it in the polkit dialog.
+    windows_reboot / WindowsReboot = "windows.reboot", Machine, DryRunIn => Changes;
     /// Record this machine into a directory: the files legionctl reads, the profile, the Fn+Q ledger and recent
     /// events. A bug report, a test fixture, or a before/after record of a BIOS or kernel update.
     record / Record = "record", Workspace, RecordIn => Recording;
