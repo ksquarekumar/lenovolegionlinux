@@ -1161,3 +1161,38 @@ impl Render for crate::io::VirtStatus {
         self.findings.is_empty()
     }
 }
+
+impl Render for crate::io::Scan {
+    fn text(&self) -> String {
+        if self.services.is_empty() {
+            return "no Dockerfile in this repository".into();
+        }
+        let mut out = Vec::new();
+        for (name, s) in &self.services {
+            let target = s
+                .build
+                .target
+                .as_deref()
+                .map(|t| format!(" (stage {t})"))
+                .unwrap_or_default();
+            out.push(format!(
+                "{name}: {}{target}, ports {}",
+                s.build.dockerfile,
+                s.ports.join(" ")
+            ));
+            out.extend(
+                s.entrypoints
+                    .iter()
+                    .map(|(k, v)| format!("  {k}: {}", v.join(" "))),
+            );
+            if let Some(c) = self.cache.get(name) {
+                out.push(format!(
+                    "  bases: {}; lockfiles: {}",
+                    c.bases.join(", "),
+                    c.lockfiles.join(", ")
+                ));
+            }
+        }
+        out.join("\n")
+    }
+}

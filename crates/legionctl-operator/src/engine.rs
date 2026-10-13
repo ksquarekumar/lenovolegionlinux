@@ -25,7 +25,6 @@ use legionctl_api::{
 use legionctl_core::config::{Dirs, Resolved, resolve};
 
 use crate::system1::System1Proxy;
-use legionctl_api::VirtStatus;
 use legionctl_api::{
     AgentName, AgentSetIn, AgentUsageIn, DossierGraphIn, Edit, GatewayUsage, GatewayUsageIn, Graph,
     SettingsScope, UsageReport,
@@ -33,6 +32,7 @@ use legionctl_api::{
 use legionctl_api::{
     CacheGetIn, CachePutIn, CacheValue, Manifest, PackageFetchIn, Packages, RunOutput, SessionRunIn,
 };
+use legionctl_api::{ImagesScanIn, Scan, VirtStatus};
 use legionctl_core::db::Db;
 use legionctl_core::dossier::{Dossiers, place_of};
 use legionctl_core::packages::Store;
@@ -1011,6 +1011,24 @@ impl Engine for Operator {
                 })
             })
             .collect()
+    }
+
+    fn images_scan(&self, _: &Ctx, input: ImagesScanIn) -> Result<Scan> {
+        let repo = input.repo.get()?;
+        let scan = legionctl_core::images::scan(repo);
+        if input.write {
+            let dir = repo.join(".legionctl");
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(
+                dir.join("docker-compose-services.json"),
+                serde_json::to_string_pretty(&scan.services)? + "\n",
+            )?;
+            std::fs::write(
+                dir.join("docker-compose-cache.json"),
+                serde_json::to_string_pretty(&scan.cache)? + "\n",
+            )?;
+        }
+        Ok(scan)
     }
 
     fn virt_status(&self, _: &Ctx, _: Empty) -> Result<VirtStatus> {

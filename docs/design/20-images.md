@@ -59,6 +59,16 @@ hand.
 the guest image store), adds the generated compose file, and sets the start command; the VM boots and starts all
 services with docker compose, offline. The overlay is copy-on-write over the base, so several VMs share one base.
 
+## Built (2026-10-13, I1 part 1)
+
+`legionctl images scan [--write]` reads every `Dockerfile`, `Containerfile` and `<name>.Dockerfile` (skipping
+`target/`, `node_modules/` and dot folders): a service per file (named by its folder, the repository for the root,
+or `<name>`), the last stage as the target, ports from `EXPOSE`, `ENTRYPOINT` + `CMD` as the run entrypoint (the
+shell form through `/bin/sh -c`), `HEALTHCHECK CMD` as health; the cache description lists the external bases (not
+earlier stages, not `scratch`) and the lockfiles in each build context. `--write` puts both descriptions into the
+repository's `.legionctl/`. Not yet: compose files (through `docker compose config --format json`; serde_yaml is
+unmaintained), mounts and resources, `build`, `run`, `status`, `pack-vm`.
+
 ## Operations
 
 `legionctl images scan | build | pack-vm | run | status`: scan writes the two JSON descriptions, build uses the cache

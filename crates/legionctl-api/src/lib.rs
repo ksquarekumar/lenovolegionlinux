@@ -349,6 +349,9 @@ operations! {
     cache_put / CachePut = "cache.put", Workspace, CachePutIn => Empty;
     /// MCP tool calls of session agents through legionctl mcp-proxy, oldest first.
     tools_calls / ToolsCalls = "tools.calls", Read, ToolCallsIn => ToolCalls;
+    /// A repository's Dockerfiles as a services description (build, entrypoints, ports) and a build-cache description
+    /// (base images, lockfiles); with write, into the repository's `.legionctl/`.
+    images_scan / ImagesScan = "images.scan", Workspace, ImagesScanIn => Scan;
     /// Virtualization, containers and emulation: each capability with its provider and health, the containers and VMs
     /// (`WinBoat` recognized), and what is wrong.
     virt_status / VirtStatusOp = "virt.status", Read, Empty => VirtStatus;

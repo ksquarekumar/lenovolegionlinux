@@ -14,6 +14,7 @@ pub use legionctl_core::db::EventRow;
 pub use legionctl_core::db::GatewayUsage;
 pub use legionctl_core::graph::Graph;
 pub use legionctl_core::hooks::{Action, Binding};
+pub use legionctl_core::images::Scan;
 pub use legionctl_core::packages::{Manifest, PackageState};
 pub use legionctl_core::reminders::Reminder;
 pub use legionctl_core::session::{Launch, SessionRecord};
@@ -767,6 +768,16 @@ pub struct CachePutIn {
 pub struct CacheValue {
     /// None: not cached or expired.
     pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ImagesScanIn {
+    /// The repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+    /// Write `.legionctl/docker-compose-services.json` and `docker-compose-cache.json` in the repository.
+    #[serde(default)]
+    pub write: bool,
 }
 
 /// One capability of the machine (note 17) and the provider that gives it.

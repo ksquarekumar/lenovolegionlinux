@@ -9,6 +9,7 @@ pub mod folder;
 pub mod gates;
 pub mod graph;
 pub mod hooks;
+pub mod images;
 pub mod packages;
 pub mod reminders;
 pub mod session;

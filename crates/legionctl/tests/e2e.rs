@@ -1428,6 +1428,66 @@ fn agent_usage_from_transcripts() {
     assert_eq!(usage["codex_limits"], json!({"primary (300 min)": 4.0}));
 }
 
+/// Images: a repository's Dockerfiles become the services and cache descriptions: the last stage is the target,
+/// external bases only (not earlier stages, not scratch), ENTRYPOINT + CMD as run, HEALTHCHECK CMD as health,
+/// continuation lines joined, the shell form through sh, and the lockfiles in each build context.
+#[test]
+fn images_scan_describes_services_and_their_build_cache() {
+    let (op, home) = operator("images");
+    let repo = home.join("app");
+    write(
+        &repo.join("Dockerfile"),
+        "FROM rust:1.90 AS build\nCOPY . .\nRUN cargo build --release\n\n# the runtime\nFROM debian:13-slim AS runtime\n\
+         COPY --from=build /target/release/api /app/api\nEXPOSE 8080\n\
+         HEALTHCHECK --interval=30s CMD [\"/app/api\", \"--check\"]\nENTRYPOINT [\"/app/api\"]\nCMD [\"--serve\"]\n",
+    );
+    write(&repo.join("Cargo.lock"), "");
+    write(
+        &repo.join("services/web/Dockerfile"),
+        "FROM node:22\nRUN npm ci \\\n    && npm run build\nEXPOSE 3000/tcp 9229\nCMD npm start\n",
+    );
+    write(&repo.join("services/web/package-lock.json"), "{}");
+    write(
+        &repo.join("tools/lint.Dockerfile"),
+        "FROM scratch\nCOPY lint /lint\n",
+    );
+    let out = op.run(
+        &repo,
+        &[("HOME", home.to_str().unwrap())],
+        &["images", "scan", "--write", "--json"],
+        "",
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let scan: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        scan["services"],
+        json!({
+            "app": {"build": {"context": ".", "dockerfile": "Dockerfile", "target": "runtime"},
+                    "entrypoints": {"health": ["/app/api", "--check"], "run": ["/app/api", "--serve"]}, "ports": ["8080"]},
+            "lint": {"build": {"context": "tools", "dockerfile": "tools/lint.Dockerfile", "target": null}, "entrypoints": {}, "ports": []},
+            "web": {"build": {"context": "services/web", "dockerfile": "services/web/Dockerfile", "target": null},
+                    "entrypoints": {"run": ["/bin/sh", "-c", "npm start"]}, "ports": ["3000/tcp", "9229"]}
+        })
+    );
+    assert_eq!(
+        scan["cache"],
+        json!({
+            "app": {"bases": ["rust:1.90", "debian:13-slim"], "lockfiles": ["Cargo.lock"]},
+            "lint": {"bases": [], "lockfiles": []},
+            "web": {"bases": ["node:22"], "lockfiles": ["services/web/package-lock.json"]}
+        })
+    );
+    let written: Value = serde_json::from_str(
+        &std::fs::read_to_string(repo.join(".legionctl/docker-compose-services.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(written, scan["services"]);
+}
+
 /// Run a `session start` launch as the client does, without the systemd scope (CI has no user systemd): the
 /// sandbox, this binary bound over git as the gate, then the agent.
 fn run_launch(op: &Operator, home: &Path, launch: &Value) -> std::process::Output {
