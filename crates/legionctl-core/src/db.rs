@@ -196,6 +196,16 @@ impl Db {
         )
     }
 
+    /// The id of the newest event; 0 when there is none.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn last_event_id(&self) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row("SELECT coalesce(max(id), 0) FROM events", [], |r| r.get(0))?)
+    }
+
     /// A cached tool result that has not expired.
     ///
     /// # Errors

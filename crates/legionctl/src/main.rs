@@ -12,7 +12,7 @@ use std::os::unix::process::CommandExt;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use legionctl_api::{ClientPath, Cores, EventsIn, GateIn, Launch, RunEnvIn, RunGpu, op};
+use legionctl_api::{ClientPath, Cores, GateIn, Launch, RunEnvIn, RunGpu, op};
 
 use legionctl_api::client::Client;
 
@@ -172,28 +172,15 @@ fn gate_git() -> Result<()> {
     Err(err).context("running the real git")
 }
 
-/// `legionctl trace`: print new events as they arrive (the backlog is skipped).
+/// `legionctl trace`: print new events as they arrive (the backlog is skipped), from the operator's event stream.
 fn trace() -> Result<()> {
     let client = Client::new("cli")?;
-    let runtime = tokio::runtime::Runtime::new()?;
-    let page =
-        |since: i64| runtime.block_on(client.call::<op::EventsOp>(&EventsIn { since, limit: 500 }));
-    let mut last = 0;
-    loop {
-        let events = page(last)?;
-        match events.last() {
-            Some(e) => last = e.id,
-            None => break,
+    tokio::runtime::Runtime::new()?.block_on(client.follow("now", |event| {
+        match serde_json::from_value::<legionctl_api::EventRow>(event) {
+            Ok(row) => println!("{}", legionctl_api::Render::text(&vec![row])),
+            Err(e) => eprintln!("legionctl: an event that does not parse: {e}"),
         }
-    }
-    loop {
-        let events = page(last)?;
-        if let Some(e) = events.last() {
-            last = e.id;
-            println!("{}", legionctl_api::Render::text(&events));
-        }
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
+    }))
 }
 
 /// `legionctl session start`: run the prepared session in this terminal, with this binary as the git gate.

@@ -41,6 +41,55 @@ impl Client {
     /// # Errors
     /// An [`ApiError`]: `unavailable` when the operator does not answer, else the operator's answer.
     pub async fn call_value(&self, name: &str, input: &Value) -> Result<Value> {
+        let request = hyper::Request::post(format!("/v1/ops/{name}"))
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(serde_json::to_vec(input)?)))?;
+        let response = self.send(request).await?;
+        let status = response.status();
+        let body: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())
+            .context("the operator's answer is not JSON")?;
+        if !status.is_success() {
+            return Err(refusal(status, &body, name).into());
+        }
+        Ok(body)
+    }
+
+    /// Follow the operator's event log from `offset` (an event id, or `now`): `each` gets every event as it comes.
+    ///
+    /// # Errors
+    /// As [`Client::call_value`], or the stream breaks.
+    pub async fn follow(&self, offset: &str, mut each: impl FnMut(Value)) -> Result<()> {
+        let request = hyper::Request::get(format!("/v1/events?offset={offset}"))
+            .body(Full::new(Bytes::new()))?;
+        let response = self.send(request).await?;
+        let status = response.status();
+        let mut body = response.into_body();
+        if !status.is_success() {
+            let body: Value =
+                serde_json::from_slice(&body.collect().await?.to_bytes()).unwrap_or(Value::Null);
+            return Err(refusal(status, &body, "events").into());
+        }
+        // server-sent events: blocks end with an empty line; the event is the `data:` line
+        let mut text = String::new();
+        while let Some(frame) = body.frame().await {
+            if let Some(data) = frame?.data_ref() {
+                text.push_str(&String::from_utf8_lossy(data));
+            }
+            while let Some(end) = text.find("\n\n") {
+                let block: String = text.drain(..end + 2).collect();
+                for data in block.lines().filter_map(|l| l.strip_prefix("data:")) {
+                    each(serde_json::from_str(data.trim())?);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Send `request` to the operator with this client's surface, build and token.
+    async fn send(
+        &self,
+        mut request: hyper::Request<Full<Bytes>>,
+    ) -> Result<hyper::Response<hyper::body::Incoming>> {
         let stream = tokio::net::UnixStream::connect(&self.socket)
             .await
             .map_err(|e| {
@@ -48,7 +97,7 @@ impl Client {
                     Code::Unavailable,
                     format!(
                         "legionctl-operator does not answer on {} ({e}); start it with \
-                         `systemctl --user enable --now legionctl-operator.socket`",
+                     `systemctl --user enable --now legionctl-operator.socket`",
                         self.socket.display()
                     ),
                 )
@@ -61,23 +110,22 @@ impl Client {
         let (mut sender, connection) =
             hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream)).await?;
         tokio::spawn(connection);
-        let request = hyper::Request::post(format!("/v1/ops/{name}"))
-            .header("host", "legionctl")
-            .header("content-type", "application/json")
-            .header(ACTOR_HEADER, self.actor)
-            .header(API_HEADER, api_fingerprint())
-            .header("authorization", format!("Bearer {token}"))
-            .body(Full::new(Bytes::from(serde_json::to_vec(input)?)))?;
+        let headers = request.headers_mut();
+        headers.insert("host", hyper::header::HeaderValue::from_static("legionctl"));
+        headers.insert(
+            ACTOR_HEADER,
+            hyper::header::HeaderValue::from_static(self.actor),
+        );
+        headers.insert(
+            API_HEADER,
+            hyper::header::HeaderValue::from_static(api_fingerprint()),
+        );
+        headers.insert("authorization", format!("Bearer {token}").parse()?);
         let response = sender.send_request(request).await?;
-        let status = response.status();
-        let operator_build = response
+        if response
             .headers()
             .get(API_HEADER)
-            .and_then(|v| v.to_str().ok())
-            .map(String::from);
-        if operator_build
-            .as_deref()
-            .is_some_and(|b| b != api_fingerprint())
+            .is_some_and(|b| b.as_bytes() != api_fingerprint().as_bytes())
         {
             static WARNED: std::sync::Once = std::sync::Once::new();
             WARNED.call_once(|| {
@@ -87,18 +135,7 @@ impl Client {
                 );
             });
         }
-        let body: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())
-            .context("the operator's answer is not JSON")?;
-        if !status.is_success() {
-            let error: ApiError =
-                serde_json::from_value(body["error"].clone()).unwrap_or(ApiError {
-                    code: Code::Failed,
-                    message: format!("operation failed with HTTP {status}"),
-                    op: name.to_string(),
-                });
-            return Err(error.into());
-        }
-        Ok(body)
+        Ok(response)
     }
 
     /// Run the typed operation `O`.
@@ -111,4 +148,13 @@ impl Client {
             .await?;
         Ok(serde_json::from_value(output)?)
     }
+}
+
+/// The operator's error envelope as an [`ApiError`].
+fn refusal(status: hyper::StatusCode, body: &Value, op: &str) -> ApiError {
+    serde_json::from_value(body["error"].clone()).unwrap_or(ApiError {
+        code: Code::Failed,
+        message: format!("{op} failed with HTTP {status}"),
+        op: op.to_string(),
+    })
 }

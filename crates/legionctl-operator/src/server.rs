@@ -39,6 +39,7 @@ pub fn router(operator: Arc<Operator>) -> axum::Router {
         .route("/v1/ops", get(list))
         .route("/v1/ops/{name}", post(call))
         .route("/v1/metrics", get(metrics))
+        .route("/v1/events", get(events))
         .with_state(operator)
 }
 
@@ -134,6 +135,89 @@ fn refusal(error: &ApiError) -> (StatusCode, Json<Value>) {
         StatusCode::from_u16(error.code.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
         Json(json!({"error": error})),
     )
+}
+
+/// The event log as a stream (Durable Streams semantics): `GET /v1/events?offset=<id>` sends every event after that
+/// id, then each new one as it comes, as server-sent events whose id is the event id; `offset=now` starts at the
+/// newest, and a reconnect with `Last-Event-ID` goes on where it stopped. For the user only: the log holds every
+/// session's calls.
+async fn events(
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+) -> Result<
+    axum::response::sse::Sse<
+        impl futures_util::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+    >,
+    (StatusCode, Json<Value>),
+> {
+    if principal(&headers).map_err(|e| refusal(&e))? != Principal::User {
+        return Err(refusal(&ApiError {
+            code: Code::Denied,
+            message: "the event stream is for the user; a session reads its events with the events operation".into(),
+            op: String::new(),
+        }));
+    }
+    let offset = headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from)
+        .or_else(|| {
+            uri.query()?
+                .split('&')
+                .find_map(|kv| kv.strip_prefix("offset="))
+                .map(String::from)
+        });
+    let start = match offset.as_deref() {
+        Some("now") => tokio::task::spawn_blocking(|| Db::open_default()?.last_event_id())
+            .await
+            .map_err(|e| refusal(&internal(&e.to_string())))?
+            .map_err(|e| refusal(&internal(&format!("{e:#}"))))?,
+        Some(id) => id.parse().map_err(|_| {
+            refusal(&ApiError {
+                code: Code::InvalidInput,
+                message: format!("offset {id} is not an event id or now"),
+                op: String::new(),
+            })
+        })?,
+        None => 0,
+    };
+    let stream = futures_util::stream::unfold(
+        (start, std::collections::VecDeque::new()),
+        |(mut last, mut pending): (
+            i64,
+            std::collections::VecDeque<legionctl_core::db::EventRow>,
+        )| async move {
+            loop {
+                if let Some(row) = pending.pop_front() {
+                    last = row.id;
+                    let event = axum::response::sse::Event::default()
+                        .id(row.id.to_string())
+                        .data(serde_json::to_string(&row).unwrap_or_default());
+                    return Some((Ok(event), (last, pending)));
+                }
+                // shortcut: a new event reaches the stream within 250 ms (it reads the log), wake it from Db::record if that is slow
+                let rows =
+                    tokio::task::spawn_blocking(move || Db::open_default()?.events(last, 500))
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or_default();
+                if rows.is_empty() {
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                pending.extend(rows);
+            }
+        },
+    );
+    Ok(axum::response::sse::Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()))
+}
+
+fn internal(message: &str) -> ApiError {
+    ApiError {
+        code: Code::Internal,
+        message: message.to_string(),
+        op: String::new(),
+    }
 }
 
 /// One telemetry sample in `OpenMetrics` text, for Prometheus or Grafana.

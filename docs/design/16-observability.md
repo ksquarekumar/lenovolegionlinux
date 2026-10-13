@@ -20,7 +20,7 @@ app and MCP. An agent can diagnose the machine with the same tools as a person.
 | --- | --- |
 | `legionctl knobs` | catalog of every knob: path, type, firmware min/max, current value, writable, policy (enforce / follow / observe) |
 | `legionctl inspect <knob>` | value, desired value, the configset layer that set it ("because" chain), last writer from the ledger (legionctl, firmware, another process), write history |
-| `legionctl trace [--filter]` | live stream: uevents, D-Bus signals, Fn keys, ledger decisions, writes, operator events, agent tool calls |
+| `legionctl trace` | live stream of the event log (`GET /v1/events`, server-sent events with Durable Streams semantics: `offset=<id>` or `now`, catch-up then live, `Last-Event-ID` to go on; for the user token only): machine daemon changes, Fn keys, operator audit, agent tool calls |
 | `legionctl monitor` | telemetry ring: package/GPU power, temperatures, clocks, fan RPM, PSI, throttle reasons, run-queue latency (1–10 Hz) |
 | `legionctl events [--since]` | the event log of both engines, with actor and payload |
 | `GET /v1/metrics` | the same telemetry in OpenMetrics format, for Prometheus or Grafana |

@@ -739,6 +739,63 @@ fn every_change_is_audited_with_its_outcome_and_errors_have_codes() {
     );
 }
 
+/// `legionctl trace` follows the operator's event stream: what happened before it started stays out, and a change
+/// made while it runs shows at once (no polling in the client).
+#[test]
+fn trace_shows_each_change_as_it_happens() {
+    let (op, home) = operator("trace");
+    let use_dossier = |name: &str| {
+        let out = op.run(
+            &home,
+            &[("LEGIONCTL_SESSION", "s1")],
+            &["dossier", "use", name],
+            "",
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    use_dossier("before");
+    let mut trace = Command::new(env!("CARGO_BIN_EXE_legionctl"))
+        .arg("trace")
+        .env_clear()
+        .env("XDG_RUNTIME_DIR", &op.runtime)
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (lines, seen) = std::sync::mpsc::channel();
+    let out = BufReader::new(trace.stdout.take().unwrap());
+    std::thread::spawn(move || {
+        for line in out.lines().map_while(Result::ok) {
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    // the stream starts at the newest event; give it a moment to connect
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let started = std::time::Instant::now();
+    use_dossier("during");
+    let line = seen
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("trace showed nothing");
+    let _ = trace.kill();
+    let _ = trace.wait();
+    assert!(
+        line.contains("dossier.use") && line.contains("during"),
+        "{line}"
+    );
+    assert!(!line.contains("before"), "the backlog stays out: {line}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
 /// The body of `GET <path>` on the operator's socket, with the user token.
 fn get(op: &Operator, path: &str) -> String {
     let token = std::fs::read_to_string(op.runtime.join(legionctl_api::USER_TOKEN)).unwrap();
