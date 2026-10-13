@@ -22,6 +22,16 @@ jobs:
       # runs a private dbus-daemon; the session test runs bwrap
       - name: Install libudev
         run: sudo apt-get update && sudo apt-get install -y libudev-dev dbus bubblewrap clang jq
+      # plain-folder workspaces mount an overlay with bwrap >= 0.10; Ubuntu 24.04 has 0.9 (Arch has the current one)
+      - name: bubblewrap 0.12.0
+        run: |
+          sudo apt-get install -y meson ninja-build libcap-dev
+          curl -sLO https://github.com/containers/bubblewrap/releases/download/v0.12.0/bubblewrap-0.12.0.tar.xz
+          echo "9760d007363e3abba7c747489910f9f82d9fca53ba3bd3282e396fa3c97a3314  bubblewrap-0.12.0.tar.xz" | sha256sum -c
+          tar xJf bubblewrap-0.12.0.tar.xz
+          meson setup bubblewrap-0.12.0/build bubblewrap-0.12.0 --prefix=/usr -Dman=disabled -Dtests=false -Dselinux=disabled
+          sudo ninja -C bubblewrap-0.12.0/build install
+          bwrap --version
       # the session test runs bwrap; Ubuntu blocks unprivileged user namespaces through AppArmor by default
       - name: Allow user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0

@@ -280,6 +280,11 @@ impl Dossiers {
         bind(&mut sandbox, &runtime.join("legionctl"));
         bind(&mut sandbox, &self.root.join(dossier));
         if ws.is_folder() {
+            let help = std::process::Command::new("bwrap").arg("--help").output()?;
+            anyhow::ensure!(
+                String::from_utf8_lossy(&help.stdout).contains("--overlay-src"),
+                "a plain folder's session needs bubblewrap 0.10 or newer (overlays); this bwrap has none"
+            );
             // the folder at its own path, every write into the dossier's layer
             sandbox.extend([
                 "--overlay-src".into(),
