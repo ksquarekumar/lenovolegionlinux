@@ -20,7 +20,7 @@ tokio = { version = "1.53.2", features = ["macros", "net", "rt-multi-thread", "i
 
 [dev-dependencies]
 legionctl-app = { path = "../legionctl-app" }
-gpui-kit = { version = "=0.7.0", features = ["test-support"] }
+gpui-kit = { version = "=0.7.3", features = ["gpui-fast", "test-support"] }
 zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }
 futures-util = "0.3.34"
 

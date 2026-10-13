@@ -9,7 +9,7 @@ publish.workspace = true
 [dependencies]
 legionctl-api = { path = "../legionctl-api", features = ["client"] }
 anyhow.workspace = true
-gpui-kit = "=0.7.0"
+gpui-kit = { version = "=0.7.3", features = ["gpui-fast"] }
 tokio = { version = "1.53.2", features = ["rt-multi-thread"] }
 
 [lints]
