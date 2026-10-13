@@ -10,6 +10,7 @@ pub use legionctl_core::dossier::{DossierInfo, EditMode, Lock};
 pub use legionctl_core::agents::ConfigFile;
 pub use legionctl_core::config::{Explanation, Layer as ConfigLayer};
 pub use legionctl_core::db::EventRow;
+pub use legionctl_core::db::GatewayUsage;
 pub use legionctl_core::graph::Graph;
 pub use legionctl_core::hooks::{Action, Binding};
 pub use legionctl_core::packages::{Manifest, PackageState};
@@ -765,6 +766,13 @@ pub struct CachePutIn {
 pub struct CacheValue {
     /// None: not cached or expired.
     pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct GatewayUsageIn {
+    /// Only rows after this id.
+    #[serde(default)]
+    pub since: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]

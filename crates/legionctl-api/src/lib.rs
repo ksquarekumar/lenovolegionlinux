@@ -336,6 +336,8 @@ operations! {
     packages_fetch / PackagesFetch = "packages.fetch", Workspace, PackageFetchIn => Manifest;
     /// Log one MCP tool call (legionctl mcp-proxy calls this for each call it forwards or refuses).
     tools_record / ToolsRecord = "tools.record", Workspace, ToolCall => Empty;
+    /// Calls through the model gateway: account, model, tokens in and out, replayed or not, status, duration.
+    gateway_usage / GatewayUsageOp = "gateway.usage", Read, GatewayUsageIn => Vec<GatewayUsage>;
     /// A reusable MCP tool result (legionctl mcp-proxy asks before it calls a tool its config lets it cache).
     cache_get / CacheGet = "cache.get", Read, CacheGetIn => CacheValue;
     /// Keep an MCP tool result for reuse.

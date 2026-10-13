@@ -28,7 +28,7 @@ use crate::system1::System1Proxy;
 use legionctl_api::{
     CacheGetIn, CachePutIn, CacheValue, Manifest, PackageFetchIn, Packages, RunOutput, SessionRunIn,
 };
-use legionctl_api::{DossierGraphIn, Graph};
+use legionctl_api::{DossierGraphIn, GatewayUsage, GatewayUsageIn, Graph};
 use legionctl_core::db::Db;
 use legionctl_core::dossier::{Dossiers, place_of};
 use legionctl_core::packages::Store;
@@ -936,6 +936,10 @@ impl Engine for Operator {
             input.force,
             &resolved.config.session.hidden,
         )
+    }
+
+    fn gateway_usage(&self, _: &Ctx, input: GatewayUsageIn) -> Result<Vec<GatewayUsage>> {
+        Db::open_default()?.gateway_usage(input.since)
     }
 
     fn cache_get(&self, _: &Ctx, input: CacheGetIn) -> Result<CacheValue> {

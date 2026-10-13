@@ -127,6 +127,22 @@
     "servers": {}
   },
 
+  // The model gateway in the operator: Anthropic and OpenAI APIs on 127.0.0.1:<port>, off until a port is set (for
+  // example 4711; then ANTHROPIC_BASE_URL or OPENAI_BASE_URL=http://127.0.0.1:4711). Accounts: name -> { "provider": anthropic|openai, "base_url",
+  // "keyring": true to use the key stored with `secret-tool store --label=... legionctl-account <name>` }; without
+  // keyring the caller's own credentials go through. Pool: model (or "*") -> accounts in order. Budgets:
+  // "account/model" -> tokens per day.
+  "gateway": {
+    "port": 0,
+    "accounts": {
+      "anthropic": { "provider": "anthropic", "base_url": "https://api.anthropic.com" },
+      "openai": { "provider": "openai", "base_url": "https://api.openai.com" }
+    },
+    "pool": { "*": ["anthropic", "openai"] },
+    "cache_ttl_s": 86400,
+    "budgets": {}
+  },
+
   // The package store: name -> { "kind": npm|pypi|cargo|git|path, "source", "version" (the pin), "run" (the MCP
   // server's command, {dir} = the package folder), "network" (default false) }. legionctl packages fetch installs one.
   "packages": {},

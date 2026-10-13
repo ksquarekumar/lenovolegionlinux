@@ -49,6 +49,25 @@ const OPERATOR: &[&str] = &[
         value   TEXT NOT NULL,
         expires INTEGER NOT NULL
      );",
+    // v4: the model gateway: replayable responses and one usage row per call (note 19)
+    "CREATE TABLE gateway_cache (
+        key          TEXT PRIMARY KEY,
+        status       INTEGER NOT NULL,
+        content_type TEXT NOT NULL,
+        body         BLOB NOT NULL,
+        expires      INTEGER NOT NULL
+     );
+     CREATE TABLE gateway_usage (
+        id         INTEGER PRIMARY KEY,
+        ts         INTEGER NOT NULL,
+        account    TEXT NOT NULL,
+        model      TEXT NOT NULL,
+        tokens_in  INTEGER NOT NULL,
+        tokens_out INTEGER NOT NULL,
+        cached     INTEGER NOT NULL,
+        status     INTEGER NOT NULL,
+        ms         INTEGER NOT NULL
+     );",
 ];
 
 pub struct Db {
@@ -157,6 +176,97 @@ impl Db {
         Ok(())
     }
 
+    /// A gateway response that may replay: status, content type, body.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn gateway_cached(&self, key: &str) -> Result<Option<(u16, String, Vec<u8>)>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT status, content_type, body FROM gateway_cache WHERE key = ?1 AND expires > ?2",
+                params![key, now()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?)
+    }
+
+    /// Keep a gateway response for `ttl_s` seconds.
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn gateway_keep(
+        &self,
+        key: &str,
+        status: u16,
+        content_type: &str,
+        body: &[u8],
+        ttl_s: u64,
+    ) -> Result<()> {
+        let expires = now().saturating_add(i64::try_from(ttl_s).unwrap_or(i64::MAX));
+        self.conn.execute(
+            "DELETE FROM gateway_cache WHERE expires <= ?1",
+            params![now()],
+        )?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO gateway_cache (key, status, content_type, body, expires) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![key, status, content_type, body, expires],
+        )?;
+        Ok(())
+    }
+
+    /// One usage row for a gateway call.
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn gateway_usage_add(&self, row: &GatewayUsage) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO gateway_usage (ts, account, model, tokens_in, tokens_out, cached, status, ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![now(), row.account, row.model, row.tokens_in, row.tokens_out, row.cached, row.status, row.ms],
+        )?;
+        Ok(())
+    }
+
+    /// Usage rows after `since` (a row id), oldest first.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn gateway_usage(&self, since: i64) -> Result<Vec<GatewayUsage>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, ts, account, model, tokens_in, tokens_out, cached, status, ms FROM gateway_usage
+             WHERE id > ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![since], |r| {
+            Ok(GatewayUsage {
+                id: r.get(0)?,
+                ts: r.get(1)?,
+                account: r.get(2)?,
+                model: r.get(3)?,
+                tokens_in: r.get(4)?,
+                tokens_out: r.get(5)?,
+                cached: r.get(6)?,
+                status: r.get(7)?,
+                ms: r.get(8)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Tokens (in + out) that `account` used on `model` in the last 24 hours, cached replays not counted.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn gateway_tokens_today(&self, account: &str, model: &str) -> Result<u64> {
+        let used: i64 = self.conn.query_row(
+            "SELECT COALESCE(SUM(tokens_in + tokens_out), 0) FROM gateway_usage
+             WHERE account = ?1 AND model = ?2 AND cached = 0 AND ts > ?3",
+            params![account, model, now() - 86_400],
+            |r| r.get(0),
+        )?;
+        Ok(u64::try_from(used).unwrap_or(0))
+    }
+
     /// Events of `kind`, oldest first.
     ///
     /// # Errors
@@ -213,6 +323,23 @@ impl Db {
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
+}
+
+/// One call through the model gateway.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct GatewayUsage {
+    pub id: i64,
+    /// Seconds since the epoch.
+    pub ts: i64,
+    pub account: String,
+    pub model: String,
+    pub tokens_in: i64,
+    pub tokens_out: i64,
+    /// Replayed from the cache: no provider call.
+    pub cached: bool,
+    /// The HTTP status returned to the caller.
+    pub status: u16,
+    pub ms: i64,
 }
 
 /// One entry of the event log: who did what, when.

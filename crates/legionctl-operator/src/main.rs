@@ -5,6 +5,7 @@
 mod acp;
 mod display;
 mod engine;
+mod gateway;
 mod recorder;
 mod server;
 mod session;
@@ -31,6 +32,19 @@ async fn main() -> Result<()> {
     tokio::spawn(async {
         if let Err(e) = session::run().await {
             eprintln!("operator: session module stopped: {e:#}");
+        }
+    });
+    tokio::spawn(async {
+        let port = legionctl_core::config::resolve(&legionctl_core::config::Dirs::from_env(), None)
+            .map(|r| r.config.gateway.port);
+        match port {
+            Ok(0) => {}
+            Ok(port) => {
+                if let Err(e) = gateway::serve(port).await {
+                    eprintln!("operator: model gateway stopped: {e:#}");
+                }
+            }
+            Err(e) => eprintln!("operator: model gateway not started: {e:#}"),
         }
     });
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;

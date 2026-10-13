@@ -34,7 +34,36 @@ pub struct Config {
     pub gates: GatesConfig,
     pub mcp: McpConfig,
     pub packages: BTreeMap<String, PackageConfig>,
+    pub gateway: GatewayConfig,
     pub load: Thresholds,
+}
+
+/// The model gateway in the operator (note 19).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GatewayConfig {
+    /// Port on 127.0.0.1; 0 turns the gateway off.
+    pub port: u16,
+    /// Account name -> provider, base URL and key.
+    pub accounts: BTreeMap<String, GatewayAccount>,
+    /// Model -> accounts in order; the first with quota and budget left serves the call. `*` serves any model.
+    pub pool: BTreeMap<String, Vec<String>>,
+    /// How long an exact-cache entry replays (0: no cache).
+    pub cache_ttl_s: u64,
+    /// `account/model` -> tokens (in + out) per day; the entry leaves the pool when they are used.
+    pub budgets: BTreeMap<String, u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GatewayAccount {
+    /// anthropic or openai: the API it speaks.
+    pub provider: String,
+    pub base_url: String,
+    /// The keyring entry with its API key (`secret-tool lookup legionctl-account <name>`); without one the caller's
+    /// own credentials go through (Claude Code and Codex logins).
+    #[serde(default)]
+    pub keyring: bool,
 }
 
 /// A package in the store: fetched once, pinned to `version` and a content hash (`legionctl packages`).

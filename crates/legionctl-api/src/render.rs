@@ -1059,3 +1059,25 @@ impl Render for crate::io::Graph {
         out.join("\n")
     }
 }
+
+impl Render for Vec<crate::io::GatewayUsage> {
+    fn text(&self) -> String {
+        self.iter()
+            .map(|u| {
+                format!(
+                    "{:>6} {} {:<14} {:<24} in {:>7} out {:>7} {} {} {} ms",
+                    u.id,
+                    u.ts,
+                    u.account,
+                    u.model,
+                    u.tokens_in,
+                    u.tokens_out,
+                    if u.cached { "cached" } else { "called" },
+                    u.status,
+                    u.ms
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}

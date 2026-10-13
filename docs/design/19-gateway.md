@@ -13,6 +13,22 @@ Inside `legionctl-operator` (decided 2026-10-12), on `$XDG_RUNTIME_DIR/legionctl
 for agents. Trade-off accepted: an operator restart interrupts model calls in flight (callers retry); one process,
 one database, one config, instead of the separate `legionctl-gateway` in 15-layout.
 
+## Built (2026-10-13, G1)
+
+`crates/legionctl-operator/src/gateway.rs`: axum on `127.0.0.1:<gateway.port>` (off with 0, the default) inside the
+operator; `/v1/messages` (Anthropic), `/v1/chat/completions` and `/v1/responses` (OpenAI). Accounts name a provider
+and a base URL; `keyring: true` takes the key from `secret-tool lookup legionctl-account <name>`, and such an account
+serves only callers that send `x-legionctl-token` (the per-user token in `~/.local/state/legionctl/gateway-token`,
+mode 600), because any local user reaches a local port. Without a key the caller's own credentials go through (Claude
+Code and Codex logins). Pool (model, then `*`) with fallback on 429; `account/model` without fallback; budgets in
+tokens per day per `account/model` (money needs a price table: not yet). Exact cache in `operator.db`
+(`gateway_cache`, key = BLAKE2b of the path and the request) with replay of JSON and SSE bodies, `x-legionctl-cache:
+off|refresh`; a usage row per call (`gateway_usage`; `legionctl gateway usage`). The usage row is written before the
+caller's stream ends, so a budget check right after sees it. Upstream TLS is native (OpenSSL): rustls would bring
+ISC-licensed crates that cargo-deny does not allow yet. Not built: translation between the two APIs (refused with the
+reason), the semantic cache, money budgets, durable ACP sessions, session environments. Tests: a stand-in provider
+(`tests/fixtures/fake-provider.py`) in `crates/legionctl/tests/gateway.rs`.
+
 ## Model addressing
 
 | Caller writes `model` as | The gateway uses |
