@@ -1519,6 +1519,86 @@ mod operator_and_daemon {
         assert!(!activity.to_string().contains("outside"), "{activity}");
     }
 
+    /// The arguments of `org.freedesktop.Notifications.Notify`: app, replaces id, icon, summary, body, actions, hints,
+    /// timeout.
+    type Notify = (
+        String,
+        u32,
+        String,
+        String,
+        String,
+        Vec<String>,
+        std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+        i32,
+    );
+
+    /// Safe mode reaches the desktop: the operator's session module finds the daemon's safe-mode reason and sends one
+    /// desktop notification (a stand-in `org.freedesktop.Notifications` on the private bus, which is also the session
+    /// bus here) with the reason and what to do.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn safe_mode_becomes_one_desktop_notification() {
+        let m = Machine::new("safenote");
+        let (_stand_ins, _asked, (_bus, daemon)) = start(&m).await;
+        // the daemon failed (it is gone) and legionctl-safe left its reason
+        drop(daemon);
+        m.set(
+            "/run/legionctl/safe-mode",
+            "set: platform_profile balanced\n",
+        );
+        let address = format!("unix:path={}", m.dir.join("bus").display());
+        let notices = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+        let desktop = zbus::connection::Builder::address(address.as_str())
+            .unwrap()
+            .name("org.freedesktop.Notifications")
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let seen = notices.clone();
+        let replies = desktop.clone();
+        tokio::spawn(async move {
+            let mut calls = zbus::MessageStream::from(&replies);
+            while let Some(Ok(call)) = futures_util::StreamExt::next(&mut calls).await {
+                if call
+                    .header()
+                    .member()
+                    .is_some_and(|m| m.as_str() == "Notify")
+                {
+                    let (_, _, _, summary, body, ..): Notify = call.body().deserialize().unwrap();
+                    seen.lock().unwrap().push((summary, body));
+                    replies.reply(&call.header(), &(1u32,)).await.unwrap();
+                }
+            }
+        });
+        let op = Operator::start(
+            "safenote",
+            &[
+                ("PATH", m.dir.join("bin").into()),
+                ("HOME", m.dir.join("home").into()),
+                ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+                ("DBUS_SYSTEM_BUS_ADDRESS", address.clone().into()),
+                ("DBUS_SESSION_BUS_ADDRESS", address.into()),
+            ],
+        );
+        // the first call starts the socket-activated operator, and with it the session module
+        op.ok(&["load"]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while notices.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert_eq!(
+            *notices.lock().unwrap(),
+            [(
+                "legionctl: safe mode".to_string(),
+                "set: platform_profile balanced\nSee journalctl -u legionctl-system, then systemctl restart \
+                 legionctl-system"
+                    .to_string()
+            )]
+        );
+        drop(desktop);
+    }
+
     /// Restart into Windows: the entry comes from the firmware's list (captured on this machine), the dry run changes
     /// nothing, polkit is asked, `BootNext` is set before the reboot, and a failed `BootNext` stops the reboot.
     #[tokio::test(flavor = "multi_thread")]

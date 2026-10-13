@@ -6,6 +6,7 @@
 //! | Mutter `MonitorsChanged` | OSD "refresh" when the built-in panel's rate changed |
 //! | `org.legionctl.System1.ModeChanged` | OSD "mode" |
 //! | `org.legionctl.System1.FnLock` | OSD "fnlock" |
+//! | `/run/legionctl/safe-mode` appears (the daemon failed and the firmware runs balanced) | a desktop notification |
 //!
 //! The OSD is drawn by the GNOME Shell extension `legionctl-osd@legionctl` (`org.legionctl.Osd.Show`); it is the only
 //! OSD path, so without the extension the operator logs that once and shows nothing.
@@ -48,6 +49,45 @@ impl OsdSink<'_> {
     }
 }
 
+/// Tell the user once per reason that the machine daemon is in safe mode (the marker `legionctl-safe` writes).
+async fn safe_mode_notice(session: &zbus::Connection, told: &mut Option<String>) {
+    let reason = legionctl_machine::sysroot::SysRoot::from_env().read("/run/legionctl/safe-mode");
+    if reason.is_none() || reason == *told {
+        *told = reason;
+        return;
+    }
+    let body = format!(
+        "{}\nSee journalctl -u legionctl-system, then systemctl restart legionctl-system",
+        reason.as_deref().unwrap_or_default().trim()
+    );
+    // urgency 2: critical, so it stays until the user closes it
+    let hints = std::collections::HashMap::from([("urgency", zbus::zvariant::Value::U8(2))]);
+    // org.freedesktop.Notifications.Notify: app, replaces id, icon, summary, body, actions, hints, timeout
+    let args = (
+        "legionctl",
+        0u32,
+        "dialog-warning",
+        "legionctl: safe mode",
+        body.as_str(),
+        Vec::<&str>::new(),
+        hints,
+        0i32,
+    );
+    match session
+        .call_method(
+            Some("org.freedesktop.Notifications"),
+            "/org/freedesktop/Notifications",
+            Some("org.freedesktop.Notifications"),
+            "Notify",
+            &args,
+        )
+        .await
+    {
+        Ok(_) => *told = reason,
+        Err(e) => eprintln!("operator: safe mode notice not shown: {e}"),
+    }
+}
+
 fn mode_detail(fn_q_choice: bool, source: &str) -> String {
     if fn_q_choice {
         "Fn+Q choice until unplug or reboot".into()
@@ -75,6 +115,10 @@ pub async fn run() -> Result<()> {
     let mut modes = machine.receive_mode_changed().await?;
     let mut fn_lock = machine.receive_fn_lock().await?;
     let mut monitors = mutter.receive_monitors_changed().await?;
+    let mut owners = machine.inner().receive_owner_changed().await?;
+    let mut told = None;
+    // the first tick is at once: a safe mode from before this start is told too
+    let mut check = tokio::time::interval(std::time::Duration::from_secs(30));
     let mut rate = display::built_in_rate(&mutter).await;
     eprintln!(
         "operator: session module running (built-in panel at {} Hz)",
@@ -107,6 +151,9 @@ pub async fn run() -> Result<()> {
             Some(signal) = fn_lock.next() => {
                 osd.show("fnlock", if signal.args()?.on { "on" } else { "off" }, "Fn+Esc").await;
             }
+            // the daemon stopping or starting, and a slow check besides (systemd starts legionctl-safe after it)
+            Some(_) = owners.next() => safe_mode_notice(&session, &mut told).await,
+            _ = check.tick() => safe_mode_notice(&session, &mut told).await,
         }
     }
 }

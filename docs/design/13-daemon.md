@@ -82,7 +82,10 @@ Built (2026-10-13, part 1), without a separate `legionctl-bootstrap` binary:
 - Safe mode for the machine daemon: `legionctl-system.service` stops after 3 failures in 5 minutes and runs
   `legionctl-safe.service` (`legionctl-system --safe`): the firmware's balanced mode, and the reason in
   `/run/legionctl/safe-mode`, which `doctor` shows first; the next successful start removes it.
-Not yet: the kernel prerequisite checks as a boot step (they are `doctor` checks), a desktop notification.
+- The desktop notification (part 2): the operator's session module reads `/run/legionctl/safe-mode` at its start,
+  every 30 s and whenever the daemon's bus name changes owner; a new reason becomes one critical notification
+  (`org.freedesktop.Notifications.Notify`: "legionctl: safe mode", the reason and what to run), once per reason.
+Not yet: the kernel prerequisite checks as a boot step (they are `doctor` checks).
 
 ## Kernel and eBPF toolkit
 
