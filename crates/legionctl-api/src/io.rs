@@ -846,6 +846,23 @@ pub struct VirtTuneIn {
     pub dry_run: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct VirtCreateIn {
+    /// The new container's name.
+    pub name: String,
+    /// A local image (`docker images`); legionctl does not pull.
+    pub image: String,
+    pub cores: Option<CoreClass>,
+    /// Its memory limit: bytes, or with k, m or g (powers of 1024).
+    pub memory: Option<String>,
+    /// All NVIDIA GPUs through the NVIDIA runtime (`virt status`: GPU compute in containers).
+    #[serde(default)]
+    pub gpu: bool,
+    /// Show the plan; create nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
 /// A compose service's container and its health.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ServiceState {

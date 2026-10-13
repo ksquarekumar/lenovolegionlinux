@@ -593,6 +593,61 @@ fn virt_tune_plans_then_pins_and_limits_a_container_and_a_vm() {
     );
 }
 
+/// Create: the plan alone with dry run; then the container through the Engine API (local image, CPU set, memory
+/// limit; not started); a taken name and a GPU without the NVIDIA runtime are refused before anything is created.
+#[test]
+fn virt_create_makes_a_container_with_cores_and_memory_and_refuses_what_cannot_work() {
+    let (m, _docker, op) = virt_machine("virtcreate", 20);
+    let create = [
+        "virt",
+        "create",
+        "box",
+        "busybox:1",
+        "--cores",
+        "p",
+        "--memory",
+        "1g",
+    ];
+    assert_eq!(
+        op.ok(&[&create[..], &["--dry-run"]].concat()),
+        "container box: image busybox:1\ncontainer box: CPUs 0-15\ncontainer box: memory limit 1.0 GiB\n\
+         dry run: nothing created\n"
+    );
+    assert!(!m.dir.join("docker.log").exists());
+    op.ok(&create);
+    let log = std::fs::read_to_string(m.dir.join("docker.log")).unwrap();
+    let body: serde_json::Value =
+        serde_json::from_str(log.strip_prefix("create box ").unwrap()).unwrap();
+    assert_eq!(
+        body,
+        serde_json::json!({"Image": "busybox:1", "HostConfig": {"CpusetCpus": "0-15", "Memory": 1_073_741_824}})
+    );
+    for (args, why) in [
+        (
+            &["virt", "create", "WinBoat", "x"][..],
+            "a container named WinBoat exists",
+        ),
+        (
+            &["virt", "create", "gpu-box", "x", "--gpu"][..],
+            "Docker has no nvidia runtime",
+        ),
+    ] {
+        let refused = op.cli(args);
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains(why),
+            "{}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(m.dir.join("docker.log"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+}
+
 /// Low host memory (4 of 32 GiB available, below the 15 % `load.busy` limit): the finding names what the guests
 /// hold, largest first, and how to free it; at 20 GiB available there is no such finding (the test above).
 #[test]

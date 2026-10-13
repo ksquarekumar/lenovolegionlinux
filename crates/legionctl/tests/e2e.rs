@@ -1929,6 +1929,15 @@ fn an_unknown_operation_from_another_build_says_to_restart_the_operator() {
     );
 }
 
+/// Removes a test's image when the test ends, a failed one too, so no run leaves images on the machine.
+struct RemoveImage(String);
+
+impl Drop for RemoveImage {
+    fn drop(&mut self) {
+        let _ = Command::new("docker").args(["rmi", "-f", &self.0]).output();
+    }
+}
+
 /// Images with the real Docker (CI has it; no registry pull: the image builds `FROM scratch`): build tags it
 /// `localhost/<repo>/<service>:<commit>`, run writes the compose file and passes compose's refusal on (a scratch
 /// image has no command), status lists the repository's containers.
@@ -1952,6 +1961,7 @@ fn images_build_tags_by_commit_and_run_reports_what_compose_says() {
         String::from_utf8_lossy(&built.stderr)
     );
     let image = format!("localhost/repo/svc:{commit}");
+    let _remove = RemoveImage(image.clone());
     assert_eq!(
         String::from_utf8_lossy(&built.stdout).trim(),
         format!("built {image}")
@@ -1993,7 +2003,6 @@ fn images_build_tags_by_commit_and_run_reports_what_compose_says() {
     )
     .unwrap();
     assert_eq!(status, json!([]), "down removed the container");
-    let _ = Command::new("docker").args(["rmi", &image]).output();
 }
 
 /// A repository with a compose file: service `backend` builds `services/api` (named `api` by its folder), with
@@ -2081,6 +2090,7 @@ fn images_run_of_a_compose_project_overrides_only_the_built_tags() {
     let env = [("HOME", home.to_str().unwrap())];
     let built = op.run(&repo, &env, &["images", "build"], "");
     let image = format!("localhost/repo/backend:{commit}");
+    let _remove = RemoveImage(image.clone());
     assert_eq!(
         String::from_utf8_lossy(&built.stdout).trim(),
         format!("built {image}"),
@@ -2117,7 +2127,6 @@ fn images_run_of_a_compose_project_overrides_only_the_built_tags() {
             "--volumes",
         ])
         .output();
-    let _ = Command::new("docker").args(["rmi", &image]).output();
 }
 
 /// Run a `session start` launch as the client does, without the systemd scope (CI has no user systemd): the

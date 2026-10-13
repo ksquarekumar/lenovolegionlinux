@@ -27,7 +27,8 @@ use legionctl_core::config::{Dirs, Resolved, resolve};
 use crate::system1::System1Proxy;
 use legionctl_api::{
     AgentName, AgentSetIn, AgentUsageIn, CoreClass, DossierGraphIn, Edit, GatewayUsage,
-    GatewayUsageIn, Graph, Plugin, PluginInstallIn, SettingsScope, UsageReport, VirtTuneIn,
+    GatewayUsageIn, Graph, Plugin, PluginInstallIn, SettingsScope, UsageReport, VirtCreateIn,
+    VirtTuneIn,
 };
 use legionctl_api::{
     CacheGetIn, CachePutIn, CacheValue, Manifest, PackageFetchIn, Packages, RunOutput, SessionRunIn,
@@ -109,6 +110,24 @@ fn scope_control(verb: &str, id: &str, done: &str) -> Result<Lines> {
     Ok(Lines {
         lines: vec![format!("session {} ({}) {done}", session.id, session.agent)],
     })
+}
+
+/// The CPU list of a core class: the P-cores, the E-cores or every online CPU.
+fn core_cpus(class: Option<CoreClass>) -> Result<Option<String>> {
+    let root = SysRoot::from_env();
+    let cpus = match class {
+        None => return Ok(None),
+        Some(CoreClass::All) => root
+            .read("/sys/devices/system/cpu/online")
+            .context("no /sys/devices/system/cpu/online")?,
+        Some(class) => {
+            let key = if class == CoreClass::P { "p" } else { "e" };
+            legionctl_machine::gpu::core_class_cpus(&root, key).with_context(|| {
+                format!("this CPU has no {key}-core class (/sys/devices/cpu_core, cpu_atom)")
+            })?
+        }
+    };
+    Ok(Some(cpus.trim().to_string()))
 }
 
 /// Bytes from `8589934592`, `8192m` or `8g` (k, m and g are powers of 1024).
@@ -1262,24 +1281,7 @@ impl Engine for Operator {
 
     fn virt_tune(&self, ctx: &Ctx, input: VirtTuneIn) -> Result<Lines> {
         Self::record(ctx, "virt.tune", &input)?;
-        let root = SysRoot::from_env();
-        let cpus = match input.cores {
-            None => None,
-            Some(CoreClass::All) => Some(
-                root.read("/sys/devices/system/cpu/online")
-                    .context("no /sys/devices/system/cpu/online")?,
-            ),
-            Some(class) => {
-                let key = if class == CoreClass::P { "p" } else { "e" };
-                Some(
-                    legionctl_machine::gpu::core_class_cpus(&root, key).with_context(|| {
-                        format!(
-                            "this CPU has no {key}-core class (/sys/devices/cpu_core, cpu_atom)"
-                        )
-                    })?,
-                )
-            }
-        };
+        let cpus = core_cpus(input.cores)?;
         let memory = input.memory.as_deref().map(parse_bytes).transpose()?;
         anyhow::ensure!(
             cpus.is_some() || memory.is_some(),
@@ -1287,7 +1289,7 @@ impl Engine for Operator {
         );
         let mut lines = self.runtime.block_on(crate::virt::tune(
             &input.name,
-            cpus.as_deref().map(str::trim),
+            cpus.as_deref(),
             memory,
             !input.dry_run,
         ))?;
@@ -1296,6 +1298,29 @@ impl Engine for Operator {
                 "dry run: nothing changed"
             } else {
                 "applied"
+            }
+            .into(),
+        );
+        Ok(Lines { lines })
+    }
+
+    fn virt_create(&self, ctx: &Ctx, input: VirtCreateIn) -> Result<Lines> {
+        Self::record(ctx, "virt.create", &input)?;
+        let spec = crate::virt::ContainerSpec {
+            name: input.name,
+            image: input.image,
+            cpus: core_cpus(input.cores)?,
+            memory: input.memory.as_deref().map(parse_bytes).transpose()?,
+            gpu: input.gpu,
+        };
+        let mut lines = self
+            .runtime
+            .block_on(crate::virt::create(&spec, !input.dry_run))?;
+        lines.push(
+            if input.dry_run {
+                "dry run: nothing created"
+            } else {
+                "created; start it with legionctl virt act --action start <name>"
             }
             .into(),
         );

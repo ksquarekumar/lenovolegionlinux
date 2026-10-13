@@ -4,7 +4,8 @@
 /version, /info (cgroupfs driver, no nvidia runtime), /containers/json (a running WinBoat container and an exited
 one) and the running one's stats (17 GiB used, 1 GiB of it inactive page cache);
 POST /containers/<name>/<action> appends `<action> <name>` (and the JSON body, when there is one) to the log and
-answers 204, or 404 for another name.
+answers 204, or 404 for another name; POST /containers/create?name=<name> appends `create <name> <body>` and answers
+201.
 """
 
 import json
@@ -35,6 +36,17 @@ class Docker(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("content-length", 0))).decode()
+        if self.path.startswith("/containers/create?name="):
+            with open(sys.argv[2], "a") as f:
+                f.write(f"create {self.path.split('=', 1)[1]} {body}\n")
+            answer = json.dumps({"Id": "new1", "Warnings": []}).encode()
+            self.send_response(201)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(answer)))
+            self.end_headers()
+            self.wfile.write(answer)
+            return
         _, _, name, action = self.path.split("/")
         names = [c["Names"][0].lstrip("/") for c in ANSWERS["/containers/json"]]
         if name not in names:
@@ -45,7 +57,6 @@ class Docker(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        body = self.rfile.read(int(self.headers.get("content-length", 0))).decode()
         with open(sys.argv[2], "a") as f:
             f.write(f"{action} {name}{' ' + body if body else ''}\n")
         self.send_response(204)

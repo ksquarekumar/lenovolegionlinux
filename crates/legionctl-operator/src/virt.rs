@@ -554,3 +554,55 @@ pub async fn tune(
     }
     Ok(plan)
 }
+
+/// A container to create: a local image, its CPUs, memory limit and the NVIDIA GPUs.
+pub struct ContainerSpec {
+    pub name: String,
+    pub image: String,
+    pub cpus: Option<String>,
+    pub memory: Option<u64>,
+    pub gpu: bool,
+}
+
+/// Create the container (not started), through the Engine API. The plan lines; with `apply`, the container too.
+///
+/// # Errors
+/// The name is taken, the GPU is asked without the NVIDIA runtime, or Docker refuses (a missing image: no pull).
+pub async fn create(spec: &ContainerSpec, apply: bool) -> Result<Vec<String>> {
+    let name = &spec.name;
+    anyhow::ensure!(!is_container(name).await, "a container named {name} exists");
+    let mut plan = vec![format!("container {name}: image {}", spec.image)];
+    let mut host = serde_json::Map::new();
+    if let Some(cpus) = &spec.cpus {
+        plan.push(format!("container {name}: CPUs {cpus}"));
+        host.insert("CpusetCpus".into(), cpus.as_str().into());
+    }
+    if let Some(bytes) = spec.memory {
+        plan.push(format!(
+            "container {name}: memory limit {}",
+            legionctl_machine::human_bytes(bytes)
+        ));
+        host.insert("Memory".into(), bytes.into());
+    }
+    if spec.gpu {
+        let info = docker("/info").await?;
+        anyhow::ensure!(
+            info["Runtimes"].get("nvidia").is_some(),
+            "Docker has no nvidia runtime: install nvidia-container-toolkit and run nvidia-ctk runtime configure"
+        );
+        plan.push(format!("container {name}: all NVIDIA GPUs"));
+        host.insert(
+            "DeviceRequests".into(),
+            serde_json::json!([{"Driver": "nvidia", "Count": -1, "Capabilities": [["gpu"]]}]),
+        );
+    }
+    if apply {
+        request(
+            "POST",
+            &format!("/containers/create?name={name}"),
+            Some(&serde_json::json!({"Image": spec.image, "HostConfig": host})),
+        )
+        .await?;
+    }
+    Ok(plan)
+}
