@@ -1,6 +1,6 @@
 //! Calls to `legionctl-operator` over its socket: HTTP/JSON on `$XDG_RUNTIME_DIR/legionctl/api.sock`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::{ACTOR_HEADER, API_HEADER, Op, SOCKET, api_fingerprint};
 use anyhow::{Context, Result, bail};
@@ -19,10 +19,16 @@ impl Client {
     /// `XDG_RUNTIME_DIR` is not set.
     pub fn new(actor: &'static str) -> Result<Client> {
         let runtime = std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?;
-        Ok(Client {
+        Ok(Client::at(actor, Path::new(&runtime)))
+    }
+
+    /// The operator of the runtime folder `runtime` (`$XDG_RUNTIME_DIR`).
+    #[must_use]
+    pub fn at(actor: &'static str, runtime: &Path) -> Client {
+        Client {
             actor,
-            socket: PathBuf::from(runtime).join(SOCKET),
-        })
+            socket: runtime.join(SOCKET),
+        }
     }
 
     /// Run the operation `name`.

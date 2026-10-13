@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=legionctl
+Comment=The machine at a glance: power, temperatures, fans, GPU wiring, health and bench
+Exec=legionctl-app
+Icon=preferences-system
+Categories=Settings;HardwareSettings;
+StartupWMClass=legionctl
+Actions=health;bench;
+
+[Desktop Action health]
+Name=Health
+Exec=legionctl-app health
+
+[Desktop Action bench]
+Name=Bench
+Exec=legionctl-app bench
