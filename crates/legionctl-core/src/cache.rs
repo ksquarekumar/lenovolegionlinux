@@ -22,6 +22,7 @@ const SCHEMA: &[&str] = &[
         meta    TEXT NOT NULL,
         bytes   INTEGER NOT NULL,
         expires INTEGER NOT NULL,
+        -- the order of use: one more than the newest, at each read and write (whole seconds would tie)
         used    INTEGER NOT NULL,
         PRIMARY KEY (ns, key)
      );
@@ -92,8 +93,8 @@ impl Cache {
             .optional()?;
         if found.is_some() {
             conn.execute(
-                "UPDATE entries SET used = ?3 WHERE ns = ?1 AND key = ?2",
-                params![ns, key, now()],
+                "UPDATE entries SET used = (SELECT COALESCE(MAX(used), 0) + 1 FROM entries) WHERE ns = ?1 AND key = ?2",
+                params![ns, key],
             )?;
         }
         Ok(found.map(|(value, meta)| Entry {
@@ -119,15 +120,14 @@ impl Cache {
         let bytes = i64::try_from(entry.value.len()).unwrap_or(i64::MAX);
         conn.execute(
             "INSERT OR REPLACE INTO entries (ns, key, value, meta, bytes, expires, used)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, (SELECT COALESCE(MAX(used), 0) + 1 FROM entries))",
             params![
                 ns,
                 key,
                 entry.value,
                 entry.meta.to_string(),
                 bytes,
-                now.saturating_add(i64::try_from(ttl_s).unwrap_or(i64::MAX)),
-                now
+                now.saturating_add(i64::try_from(ttl_s).unwrap_or(i64::MAX))
             ],
         )?;
         conn.execute(
