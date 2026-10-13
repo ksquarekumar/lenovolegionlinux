@@ -12,6 +12,8 @@ use crate::policy::Machine;
 use crate::profile::{Follow, ModePolicy, text};
 
 const FIRMWARE_ATTRIBUTES: &str = "/sys/class/firmware-attributes/lenovo-wmi-other-0/attributes";
+/// The `sched_ext` scheduler that runs now (`scx_lavd`, ...); missing when the kernel scheduler runs.
+const SCHED_EXT: &str = "/sys/kernel/sched_ext/root/ops";
 const CPUFREQ: &str = "/sys/devices/system/cpu/cpufreq";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -197,6 +199,12 @@ pub fn catalog(m: &Machine) -> Vec<Knob> {
         .as_deref()
         .and_then(|mode| m.profile.firmware_follow.get(mode));
     knobs.extend(cpu(m, policy, follow));
+    knobs.push(Knob::new(
+        "sched_ext",
+        SCHED_EXT,
+        m.root.read(SCHED_EXT),
+        KnobPolicy::Observe,
+    ));
     let ppd = follow
         .and_then(|f| f.power_profile.clone())
         .or_else(|| policy.power_profile.clone());

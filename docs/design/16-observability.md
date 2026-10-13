@@ -69,6 +69,13 @@ lines; checks as data with fix operations come with `approve` (M3g).
 - `legionctl undo <event-id>` applies the recorded inverse of a change from the event log.
 - `legionctl bench <scenario>`: repeatable workloads (CPU, GPU with gpu-burn, mixed) with telemetry captured and
   stored; `bench compare` shows two runs side by side (for example two scx modes, two power limits).
+  Built (2026-10-13, M3d): `bench run --scenario cpu|gpu|mixed --seconds N [--label L]` runs stress-ng
+  (`--cpu 0 --metrics-brief`), gpu-burn, or both, takes a telemetry sample each second, and stores one
+  `bench.result` event: the scores (stress-ng bogo ops/s in real time, gpu-burn Gflop/s from the last progress
+  line), a summary (package W mean/max, CPU °C max, CPU MHz mean, GPU W mean, GPU °C max, fan rpm max, throttle
+  reasons) and every knob value at the start (with the `sched_ext` scheduler). Failed stressors and gpu-burn
+  computation errors are problems: the command exits 1. `bench list` and `bench compare --a A --b B` (each number
+  with its change, then the knobs that differ) read the event log.
 - `legionctl power tune`: the sweep engine (06-tuning) writes a generated configset layer for review.
 - `legionctl wmi`: catalog of the firmware WMI methods this model has (10-gap), each marked read-only or write;
   read-only methods run directly, write methods only through an operation with approval. Parked: the measured

@@ -331,6 +331,13 @@ operations! {
     record / Record = "record", Workspace, RecordIn => Recording;
     /// What the daemon would write and what doctor finds on a recorded machine, with its events.
     replay / Replay = "replay", Read, ReplayIn => Recording;
+    /// Run a workload (stress-ng, gpu-burn or both) with telemetry each second; keeps the scores, a summary and the
+    /// knob values in the event log. Loads the machine fully for the duration.
+    bench_run / BenchRunOp = "bench.run", Workspace, BenchIn => BenchRun;
+    /// Bench runs, oldest first.
+    bench_list / BenchList = "bench.list", Read, Empty => BenchRuns;
+    /// Two bench runs side by side: scores, telemetry and the knobs that differ.
+    bench_compare / BenchCompareOp = "bench.compare", Read, BenchCompareIn => BenchCompare;
     /// Bind this session to a dossier (one writable dossier per session); create it from the pattern with create.
     dossier_use / DossierUse = "dossier.use", Workspace, DossierUseIn => Lines;
     /// This session's active dossier.

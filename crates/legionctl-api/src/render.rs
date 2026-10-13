@@ -3,10 +3,10 @@
 use std::collections::BTreeMap;
 
 use crate::io::{
-    CapabilityList, Changes, ConfigFile, ConfigView, DossierFindings, DossierInfo, EventRow,
-    Explanation, Findings, GpuState, Guard, HookReply, HookTable, Knob, KnobDetail, Launch,
-    LayerList, Lines, LoadState, Lock, Recording, Reminder, RunEnv, Sample, SessionState,
-    SetupReport, SkillInfo, Snapshot, Text, Validation, Workspace, WorkspaceStatus,
+    BenchCompare, BenchRun, CapabilityList, Changes, ConfigFile, ConfigView, DossierFindings,
+    DossierInfo, EventRow, Explanation, Findings, GpuState, Guard, HookReply, HookTable, Knob,
+    KnobDetail, Launch, LayerList, Lines, LoadState, Lock, Recording, Reminder, RunEnv, Sample,
+    SessionState, SetupReport, SkillInfo, Snapshot, Text, Validation, Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -719,5 +719,142 @@ impl Render for Recording {
             self.events.text()
         ));
         out.join("\n\n")
+    }
+}
+
+/// The numbers of a run that `bench compare` lines up: scores first, then the telemetry summary.
+fn bench_rows(run: &BenchRun) -> Vec<(String, Option<f64>)> {
+    let s = &run.result.summary;
+    let mut rows: Vec<(String, Option<f64>)> = run
+        .result
+        .scores
+        .iter()
+        .map(|(k, v)| (k.clone(), Some(*v)))
+        .collect();
+    rows.extend([
+        ("package W mean".into(), s.package_w_mean),
+        ("package W max".into(), s.package_w_max),
+        ("CPU °C max".into(), s.cpu_temp_max),
+        ("CPU MHz mean".into(), s.cpu_mhz_mean),
+        ("GPU W mean".into(), s.gpu_w_mean),
+        ("GPU °C max".into(), s.gpu_temp_max),
+        (
+            "fan rpm max".into(),
+            s.fan_rpm_max
+                .map(|r| f64::from(u32::try_from(r).unwrap_or(u32::MAX))),
+        ),
+    ]);
+    rows
+}
+
+fn bench_title(run: &BenchRun) -> String {
+    let r = &run.result;
+    let scenario = serde_json::to_value(r.scenario)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default();
+    format!(
+        "run {} {scenario} {} s{}",
+        run.id,
+        r.seconds,
+        r.label
+            .as_ref()
+            .map(|l| format!(" '{l}'"))
+            .unwrap_or_default()
+    )
+}
+
+impl Render for BenchRun {
+    fn text(&self) -> String {
+        let mut out = vec![bench_title(self)];
+        out.extend(
+            bench_rows(self)
+                .into_iter()
+                .map(|(k, v)| format!("  {k:<20} {}", some(v, ""))),
+        );
+        let throttle = &self.result.summary.throttle;
+        out.push(format!(
+            "  {:<20} {}",
+            "throttle",
+            if throttle.is_empty() {
+                "-".into()
+            } else {
+                throttle.join(", ")
+            }
+        ));
+        out.extend(self.result.problems.iter().map(|p| format!("problem: {p}")));
+        out.join("\n")
+    }
+
+    /// GPU computation errors or a failed stressor fail the command.
+    fn success(&self) -> bool {
+        self.result.problems.is_empty()
+    }
+}
+
+impl Render for Vec<BenchRun> {
+    fn text(&self) -> String {
+        self.iter()
+            .map(|r| {
+                let scores: Vec<String> = r
+                    .result
+                    .scores
+                    .iter()
+                    .map(|(k, v)| format!("{k} {v:.0}"))
+                    .collect();
+                format!("{:<36} {}", bench_title(r), scores.join(", "))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+impl Render for BenchCompare {
+    fn text(&self) -> String {
+        let (a, b) = (bench_rows(&self.a), bench_rows(&self.b));
+        let mut out = vec![format!(
+            "a: {}\nb: {}\n",
+            bench_title(&self.a),
+            bench_title(&self.b)
+        )];
+        out.push(format!(
+            "{:<20} {:>10} {:>10} {:>8}",
+            "", "a", "b", "change"
+        ));
+        for (name, va) in &a {
+            let vb = b.iter().find(|(n, _)| n == name).and_then(|(_, v)| *v);
+            let change = va
+                .zip(vb)
+                .filter(|(x, _)| *x != 0.0)
+                .map_or("-".into(), |(x, y)| format!("{:+.1}%", (y - x) / x * 100.0));
+            out.push(format!(
+                "{name:<20} {:>10} {:>10} {change:>8}",
+                some(*va, ""),
+                some(vb, "")
+            ));
+        }
+        let knobs: Vec<String> = self
+            .a
+            .result
+            .knobs
+            .iter()
+            .filter_map(|(id, va)| {
+                let vb = self.b.result.knobs.get(id).cloned().flatten();
+                (*va != vb).then(|| {
+                    format!(
+                        "{id}: {} -> {}",
+                        va.as_deref().unwrap_or("-"),
+                        vb.as_deref().unwrap_or("-")
+                    )
+                })
+            })
+            .collect();
+        out.push(String::new());
+        out.push(if knobs.is_empty() {
+            "knobs: the same".into()
+        } else {
+            format!("knobs that differ:\n  {}", knobs.join("\n  "))
+        });
+        out.join("\n")
     }
 }

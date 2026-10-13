@@ -121,6 +121,17 @@ impl Db {
         )
     }
 
+    /// Events of `kind`, oldest first.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn events_of(&self, kind: &str) -> Result<Vec<EventRow>> {
+        self.query_events(
+            "SELECT id, ts, actor, kind, payload FROM events WHERE kind = ?1 ORDER BY id",
+            params![kind],
+        )
+    }
+
     /// Events from `ts` (seconds since the epoch) on, oldest first.
     ///
     /// # Errors

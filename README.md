@@ -45,6 +45,7 @@ legionctl knobs                   # every knob: value, what the profile wants no
 legionctl inspect cpu.epp         # one knob and the events that changed it
 legionctl record --dir ~/rec-bios # the files legionctl reads, the profile and machine events: a bug report or fixture
 legionctl replay --dir ~/rec-bios # what the daemon and doctor decide on that recording
+legionctl bench run --scenario cpu --seconds 30 --label pl1-90   # stress-ng/gpu-burn with telemetry; bench compare --a A --b B
 legionctl load                    # one-line load level, and which cgroup waits on I/O
 legionctl monitor --count 10      # power, temperatures, clocks, GPU, PSI, fans, throttle reasons (GET /v1/metrics too)
 legionctl trace                   # follow the event log: agents, people and the machine daemon

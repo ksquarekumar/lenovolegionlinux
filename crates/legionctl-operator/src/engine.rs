@@ -6,19 +6,20 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use legionctl_api::{
+    BenchCompare, BenchCompareIn, BenchIn, BenchResult, BenchRun, BenchRuns, DossierAddIn,
+    DossierAppendIn, DossierCheckIn, DossierEditIn, DossierFindings, DossierList, DossierReadIn,
+    DossierSearchIn, DossierUseIn, DossierWriteIn, Events, EventsIn, GateIn, Guard, GuardIn,
+    HookReply, HookRunIn, InspectIn, KnobDetail, Knobs, Launch, Lines, Locks, MonitorIn, RecordIn,
+    Recording, ReplayIn, Sample, Samples, SessionId, SessionIdIn, SessionIn, SessionStartIn,
+    SessionState, Sessions,
+};
+use legionctl_api::{
     BranchIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath, CloseIn, ConfigFiles,
     ConfigView, Ctx, DesktopGpu, Empty, Engine, EventIn, ExplainIn, Explanation, Findings,
     GpuPrimaryIn, GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LayerList, LoadState,
     PowerApplyIn, PowerSource, ProfileIn, ProjectIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn,
     SetupApplyIn, SetupReport, SkillList, Snapshot, StatusIn, Text, Validation, Workspace,
     WorkspaceIn, WorkspaceOpenIn, WorkspaceStates, Workspaces,
-};
-use legionctl_api::{
-    DossierAddIn, DossierAppendIn, DossierCheckIn, DossierEditIn, DossierFindings, DossierList,
-    DossierReadIn, DossierSearchIn, DossierUseIn, DossierWriteIn, Events, EventsIn, GateIn, Guard,
-    GuardIn, HookReply, HookRunIn, InspectIn, KnobDetail, Knobs, Launch, Lines, Locks, MonitorIn,
-    RecordIn, Recording, ReplayIn, Sample, Samples, SessionId, SessionIdIn, SessionIn,
-    SessionStartIn, SessionState, Sessions,
 };
 use legionctl_core::config::{Dirs, Resolved, resolve};
 
@@ -34,7 +35,7 @@ use legionctl_machine::profile::{self, Profile};
 use legionctl_machine::snapshot::Detail;
 use legionctl_machine::sysroot::SysRoot;
 use legionctl_machine::telemetry::{self, RootSample};
-use legionctl_machine::{cleanup, gpu, knobs, load};
+use legionctl_machine::{bench, cleanup, gpu, knobs, load};
 
 pub struct Operator {
     /// Runs the D-Bus calls of machine changes; engine methods run on blocking threads.
@@ -67,6 +68,14 @@ fn home() -> PathBuf {
 
 fn path(p: Option<&ClientPath>) -> Result<Option<&Path>> {
     p.map(ClientPath::get).transpose()
+}
+
+fn bench_run_of(e: legionctl_api::EventRow) -> Result<BenchRun> {
+    Ok(BenchRun {
+        id: e.id,
+        ts: e.ts,
+        result: serde_json::from_value(e.payload)?,
+    })
 }
 
 /// Operations that change the machine (or record it): their events go into a recording.
@@ -899,6 +908,93 @@ impl Engine for Operator {
             .with_context(|| format!("{} is not a recording", dir.display()))?;
         Plan::at(SysRoot::new(dir.join("root")), None)?
             .decisions(dir, serde_json::from_slice(&events)?)
+    }
+
+    fn bench_run(&self, ctx: &Ctx, input: BenchIn) -> Result<BenchRun> {
+        anyhow::ensure!((1..=600).contains(&input.seconds), "seconds must be 1-600");
+        let knobs = knobs::catalog(&Plan::load(None)?.machine())
+            .into_iter()
+            .map(|k| (k.id, k.value))
+            .collect();
+        let runs = input
+            .scenario
+            .commands(input.seconds)
+            .into_iter()
+            .map(|argv| {
+                let child = std::process::Command::new(&argv[0])
+                    .args(&argv[1..])
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .with_context(|| format!("starting {} (is it installed?)", argv[0]))?;
+                // a thread drains the pipes, so a chatty workload never blocks on a full pipe
+                Ok((
+                    argv[0].clone(),
+                    std::thread::spawn(move || child.wait_with_output()),
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut samples = Vec::new();
+        while runs.iter().any(|(_, r)| !r.is_finished()) {
+            samples.push(self.sample(std::time::Duration::from_secs(1)));
+        }
+        let mut scores = bench::Scores::default();
+        for (program, run) in runs {
+            let out = run
+                .join()
+                .map_err(|_| anyhow::anyhow!("{program} panicked"))??;
+            let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+            if program == "gpu-burn" {
+                bench::gpu_burn(&text, &mut scores);
+            } else {
+                bench::stress_ng(&text, &mut scores);
+            }
+            if !out.status.success() {
+                scores
+                    .problems
+                    .push(format!("{program} exited with {}", out.status));
+            }
+        }
+        let result = BenchResult {
+            scenario: input.scenario,
+            label: input.label,
+            seconds: input.seconds,
+            scores: scores.scores,
+            problems: scores.problems,
+            summary: bench::summarize(&samples),
+            knobs,
+        };
+        let db = Db::open_default()?;
+        let id = db.record(&ctx.actor, "bench.result", &serde_json::to_value(&result)?)?;
+        bench_run_of(
+            db.events_of("bench.result")?
+                .into_iter()
+                .find(|e| e.id == id)
+                .context("the run was not stored")?,
+        )
+    }
+
+    fn bench_list(&self, _: &Ctx, _: Empty) -> Result<BenchRuns> {
+        Db::open_default()?
+            .events_of("bench.result")?
+            .into_iter()
+            .map(bench_run_of)
+            .collect()
+    }
+
+    fn bench_compare(&self, _: &Ctx, input: BenchCompareIn) -> Result<BenchCompare> {
+        let runs = Db::open_default()?.events_of("bench.result")?;
+        let run = |id: i64| {
+            runs.iter()
+                .find(|e| e.id == id)
+                .cloned()
+                .with_context(|| format!("no bench run {id} (see legionctl bench list)"))
+                .and_then(bench_run_of)
+        };
+        Ok(BenchCompare {
+            a: run(input.a)?,
+            b: run(input.b)?,
+        })
     }
 
     fn knobs(&self, _: &Ctx, input: ProfileIn) -> Result<Knobs> {

@@ -347,6 +347,88 @@ fn a_recording_replays_to_the_same_decisions_and_status() {
     assert!(!again.status.success(), "a recording is never overwritten");
 }
 
+/// Two bench runs around a power-limit change: the scores come from the tools' real output (captured on this machine,
+/// 2026-10-13), and compare shows the change and the knob that differs. GPU computation errors fail the command.
+#[test]
+fn bench_compare_shows_the_score_change_and_the_knob_that_caused_it() {
+    let m = Machine::new("bench");
+    let bin = m.dir.join("bin");
+    let score = m.dir.join("score");
+    std::fs::write(&score, "38017.46").unwrap();
+    Machine::script(
+        &bin,
+        "stress-ng",
+        &format!(
+            "/usr/bin/sleep 1.2; read -r s < {}; \
+             echo \"stress-ng: metrc: [697694] stressor       bogo ops real time  usr time  sys time   bogo ops/s     bogo ops/s\" >&2; \
+             echo \"stress-ng: metrc: [697694]                           (secs)    (secs)    (secs)   (real time) (usr+sys time)\" >&2; \
+             echo \"stress-ng: metrc: [697694] cpu              114043      3.00     91.33      0.08     $s        1247.63\" >&2; \
+             echo 'stress-ng: info:  [697694] failed: 0' >&2",
+            score.display()
+        ),
+    );
+    Machine::script(
+        &bin,
+        "gpu-burn",
+        "/usr/bin/sleep 1.2; printf 'Burning for 1 seconds.\\n\\r50.0%%  proc'\"'\"'d: 34 (21390 Gflop/s)   errors: 0   temps: 52 C \
+         \\r100.0%%  proc'\"'\"'d: 68 (21427 Gflop/s)   errors: 3   temps: 54 C \\n\\nTested 1 GPUs:\\n\\tGPU 0: FAULTY\\n'",
+    );
+    let op = m.operator();
+    let run = |args: &[&str]| -> serde_json::Value {
+        let out = op.cli(&[&["bench", "run"], args, &["--json"]].concat());
+        serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|_| panic!("{args:?}: {}", String::from_utf8_lossy(&out.stderr)))
+    };
+
+    let before = run(&["--scenario", "cpu", "--seconds", "1", "--label", "pl1-90"]);
+    assert_eq!(before["scores"]["cpu bogo ops/s"], 38017.46, "{before}");
+    assert!(
+        before["summary"]["samples"].as_u64().unwrap() >= 1,
+        "{before}"
+    );
+    assert_eq!(before["knobs"]["firmware.ppt_pl1_spl"], "90");
+    assert_eq!(before["problems"], serde_json::json!([]));
+
+    m.set(
+        "/sys/class/firmware-attributes/lenovo-wmi-other-0/attributes/ppt_pl1_spl/current_value",
+        "60",
+    );
+    std::fs::write(&score, "30413.97").unwrap();
+    let after = run(&["--scenario", "cpu", "--seconds", "1", "--label", "pl1-60"]);
+
+    let (a, b) = (before["id"].to_string(), after["id"].to_string());
+    let compare = op.ok(&["bench", "compare", "--a", &a, "--b", &b]);
+    assert!(
+        compare
+            .lines()
+            .any(|l| l.starts_with("cpu bogo ops/s") && l.ends_with("-20.0%")),
+        "{compare}"
+    );
+    assert!(
+        compare.contains("firmware.ppt_pl1_spl: 90 -> 60"),
+        "{compare}"
+    );
+    assert!(
+        !compare.contains("cpu.epp:"),
+        "only the knobs that differ: {compare}"
+    );
+
+    let gpu = op.cli(&["bench", "run", "--scenario", "gpu", "--seconds", "1"]);
+    assert_eq!(gpu.status.code(), Some(1), "GPU errors fail the command");
+    let text = String::from_utf8_lossy(&gpu.stdout);
+    assert!(text.contains("gpu Gflop/s"), "{text}");
+    assert!(
+        text.contains("21427"),
+        "the last progress line counts: {text}"
+    );
+    assert!(
+        text.contains("problem: gpu-burn: 3 computation errors"),
+        "{text}"
+    );
+    let list = op.ok(&["bench", "list"]);
+    assert_eq!(list.lines().count(), 3, "{list}");
+}
+
 #[test]
 fn cleanup_plans_to_disable_running_conflicts_and_leaves_packages_to_the_human() {
     let m = Machine::new("cleanup");

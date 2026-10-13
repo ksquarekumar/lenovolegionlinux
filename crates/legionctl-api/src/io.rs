@@ -16,6 +16,7 @@ pub use legionctl_core::session::{Launch, SessionRecord};
 pub use legionctl_core::setup::Report as SetupReport;
 pub use legionctl_core::skills::SkillInfo;
 pub use legionctl_core::workspace::{Workspace, WorkspaceStatus};
+pub use legionctl_machine::bench::{BenchResult, Scenario};
 pub use legionctl_machine::gpu::Output;
 pub use legionctl_machine::knobs::Knob;
 pub use legionctl_machine::load::Load as LoadState;
@@ -607,6 +608,47 @@ pub struct Recording {
     pub findings: Vec<String>,
     pub knobs: Knobs,
     pub events: Events,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BenchIn {
+    /// cpu: stress-ng on every CPU; gpu: gpu-burn on the NVIDIA GPU; mixed: both at once.
+    pub scenario: Scenario,
+    /// Duration (1-600).
+    #[serde(default = "thirty")]
+    pub seconds: u32,
+    /// A name for the run (`pl1-90`, `scx-lavd`).
+    pub label: Option<String>,
+}
+
+fn thirty() -> u32 {
+    30
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BenchRun {
+    /// The event id of the run; `bench compare` takes two.
+    pub id: i64,
+    /// Seconds since the epoch.
+    pub ts: i64,
+    #[serde(flatten)]
+    pub result: BenchResult,
+}
+
+pub type BenchRuns = Vec<BenchRun>;
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BenchCompareIn {
+    /// The earlier run (its id from bench list).
+    pub a: i64,
+    /// The later run.
+    pub b: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BenchCompare {
+    pub a: BenchRun,
+    pub b: BenchRun,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
