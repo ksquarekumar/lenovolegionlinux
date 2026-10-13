@@ -1,13 +1,14 @@
 //! `legionctl mcp-proxy`: the only way a session's agent reaches an MCP server (note 14). It starts the server as its
 //! child, offers the agent only the allowed tools, refuses the others, and logs every call to the operator
-//! (`tools.record`): session, server, tool, a hash of the arguments, duration, result size and outcome.
+//! (`tools.record`): session, server, tool, a hash of the arguments, duration, result size and outcome. Tools its
+//! config lets it cache are answered from the operator's cache while the result is valid (T2).
 
 use std::time::Instant;
 
 use blake2::digest::consts::U16;
 use blake2::{Blake2b, Digest};
 use legionctl_api::client::Client;
-use legionctl_api::{ToolCall, op};
+use legionctl_api::{CacheGetIn, CachePutIn, ToolCall, op};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
     PaginatedRequestParams, ServerCapabilities, ServerConfig,
@@ -16,10 +17,61 @@ use rmcp::service::{RequestContext, RunningService};
 use rmcp::transport::TokioChildProcess;
 use rmcp::{ErrorData, RoleClient, RoleServer, ServerHandler, ServiceExt};
 
+/// `--cache tool=ttl[:workspace]`: a tool whose result may be reused for `ttl_s`, keyed also by the git state when it
+/// reads the working copy.
+#[derive(Debug, Clone)]
+pub struct CacheRule {
+    pub tool: String,
+    pub ttl_s: u64,
+    pub workspace: bool,
+}
+
+impl std::str::FromStr for CacheRule {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<CacheRule> {
+        let (tool, rest) = s
+            .split_once('=')
+            .ok_or_else(|| anyhow::anyhow!("--cache {s}: want tool=ttl[:workspace]"))?;
+        let (ttl, workspace) = match rest.split_once(':') {
+            Some((ttl, "workspace")) => (ttl, true),
+            Some(_) => anyhow::bail!("--cache {s}: the scope can only be workspace"),
+            None => (rest, false),
+        };
+        Ok(CacheRule {
+            tool: tool.into(),
+            ttl_s: ttl.parse()?,
+            workspace,
+        })
+    }
+}
+
+/// The working copy's state for a cache key: HEAD, status and the diff against HEAD.
+async fn git_state() -> String {
+    let mut state = Vec::new();
+    for args in [
+        &["rev-parse", "HEAD"][..],
+        &["status", "--porcelain=v2"],
+        &["diff", "HEAD"],
+    ] {
+        if let Ok(out) = tokio::process::Command::new("git")
+            .args(args)
+            .output()
+            .await
+        {
+            state.extend(out.stdout);
+        }
+    }
+    format!("{:x}", Blake2b::<U16>::digest(&state))
+}
+
 struct Proxy {
     server: String,
+    /// The server's command: part of each cache key (for a package it names the store version).
+    command: Vec<String>,
     /// Empty: every tool.
     allow: Vec<String>,
+    cache: Vec<CacheRule>,
     upstream: RunningService<RoleClient, ()>,
     client: Client,
     session: String,
@@ -101,14 +153,54 @@ impl ServerHandler for Proxy {
                 None,
             ));
         }
+        let rule = self.cache.iter().find(|r| r.tool == tool);
+        let key = match rule {
+            Some(rule) => {
+                let state = if rule.workspace {
+                    git_state().await
+                } else {
+                    String::new()
+                };
+                let input = serde_json::to_vec(&(&self.command, &tool, &request.arguments, state))
+                    .unwrap_or_default();
+                Some(format!("{:x}", Blake2b::<U16>::digest(&input)))
+            }
+            None => None,
+        };
+        if let Some(key) = &key
+            && let Ok(hit) = self
+                .client
+                .call::<op::CacheGet>(&CacheGetIn { key: key.clone() })
+                .await
+            && let Some(result) = hit
+                .value
+                .and_then(|v| serde_json::from_str::<CallToolResult>(&v).ok())
+        {
+            self.log(&tool, args_hash, started, hit_size(&result), "cached")
+                .await;
+            return Ok(result.into());
+        }
         match self.upstream.peer().call_tool(request).await {
             Ok(result) => {
-                let bytes = serde_json::to_vec(&result).map_or(0, |b| b.len());
+                let bytes = hit_size(&result);
                 let outcome = if result.is_error == Some(true) {
                     "error"
                 } else {
                     "ok"
                 };
+                if let (Some(key), Some(rule), "ok") = (key, rule, outcome) {
+                    let put = CachePutIn {
+                        key,
+                        value: serde_json::to_string(&result).unwrap_or_default(),
+                        ttl_s: rule.ttl_s,
+                    };
+                    if let Err(e) = self.client.call::<op::CachePut>(&put).await {
+                        eprintln!(
+                            "legionctl mcp-proxy: cannot cache {}.{tool}: {e:#}",
+                            self.server
+                        );
+                    }
+                }
                 self.log(&tool, args_hash, started, bytes, outcome).await;
                 Ok(result.into())
             }
@@ -126,6 +218,10 @@ impl ServerHandler for Proxy {
     }
 }
 
+fn hit_size(result: &CallToolResult) -> usize {
+    serde_json::to_vec(result).map_or(0, |b| b.len())
+}
+
 /// Serve the agent on stdio, forwarding to `command`.
 ///
 /// # Errors
@@ -133,6 +229,7 @@ impl ServerHandler for Proxy {
 pub async fn serve(
     server: String,
     allow: Vec<String>,
+    cache: Vec<CacheRule>,
     no_network: bool,
     command: Vec<String>,
 ) -> anyhow::Result<()> {
@@ -158,7 +255,9 @@ pub async fn serve(
     let upstream = ().serve(TokioChildProcess::new(child)?).await?;
     let proxy = Proxy {
         server,
+        command,
         allow,
+        cache,
         upstream,
         client: Client::new("mcp-proxy")?,
         session: std::env::var("LEGIONCTL_SESSION").unwrap_or_default(),

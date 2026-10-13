@@ -700,8 +700,29 @@ pub struct ToolCall {
     pub ms: u64,
     /// Size of the result's JSON.
     pub bytes: u64,
-    /// ok, error (the tool reported one), failed (the server did not answer) or refused (not allowed).
+    /// ok, cached (an earlier result was reused), error (the tool reported one), failed (the server did not answer)
+    /// or refused (not allowed).
     pub outcome: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CacheGetIn {
+    /// The cache key (a hash; the proxy computes it).
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CachePutIn {
+    pub key: String,
+    /// The tool result as JSON.
+    pub value: String,
+    pub ttl_s: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct CacheValue {
+    /// None: not cached or expired.
+    pub value: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]

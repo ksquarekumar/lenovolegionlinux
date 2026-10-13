@@ -336,6 +336,10 @@ operations! {
     packages_fetch / PackagesFetch = "packages.fetch", Workspace, PackageFetchIn => Manifest;
     /// Log one MCP tool call (legionctl mcp-proxy calls this for each call it forwards or refuses).
     tools_record / ToolsRecord = "tools.record", Workspace, ToolCall => Empty;
+    /// A reusable MCP tool result (legionctl mcp-proxy asks before it calls a tool its config lets it cache).
+    cache_get / CacheGet = "cache.get", Read, CacheGetIn => CacheValue;
+    /// Keep an MCP tool result for reuse.
+    cache_put / CachePut = "cache.put", Workspace, CachePutIn => Empty;
     /// MCP tool calls of session agents through legionctl mcp-proxy, oldest first.
     tools_calls / ToolsCalls = "tools.calls", Read, ToolCallsIn => ToolCalls;
     /// Dual boot: the Windows boot entry, a pending one-time boot, NTFS volumes Windows left dirty, and what to fix.

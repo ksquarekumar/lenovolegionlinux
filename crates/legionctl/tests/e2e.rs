@@ -768,6 +768,74 @@ fn the_mcp_proxy_offers_only_allowed_tools_and_logs_every_call() {
     assert!(calls[0]["bytes"].as_u64().unwrap() > 0, "{calls}");
 }
 
+/// The cache of the proxy: a tool its config lets it cache answers from the cache with the same result, until the
+/// working copy changes; the log tells cached calls from real ones.
+#[test]
+fn the_proxy_reuses_a_cached_result_until_the_working_copy_changes() {
+    use rmcp::ServiceExt;
+    use rmcp::model::CallToolRequestParams;
+
+    let (op, home) = operator("cache");
+    let repo = repository(&home);
+    let exe = env!("CARGO_BIN_EXE_legionctl");
+    let results = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let mut proxy = tokio::process::Command::new(exe);
+        proxy
+            .args([
+                "mcp-proxy",
+                "--server",
+                "self",
+                "--cache",
+                "hooks_list=60:workspace",
+                "--",
+                exe,
+                "mcp",
+            ])
+            .current_dir(&repo)
+            .env("XDG_RUNTIME_DIR", &op.runtime)
+            .env("HOME", &home)
+            .env("LEGIONCTL_SESSION", "s-cache");
+        let agent =
+            ().serve(rmcp::transport::TokioChildProcess::new(proxy).unwrap())
+                .await
+                .unwrap();
+        let mut results = Vec::new();
+        for change in [false, false, true] {
+            if change {
+                write(&repo.join("README.md"), "changed\n");
+            }
+            results.push(
+                agent
+                    .peer()
+                    .call_tool(CallToolRequestParams::new("hooks_list"))
+                    .await
+                    .unwrap(),
+            );
+        }
+        results
+    });
+    assert_ne!(results[0].is_error, Some(true), "{:?}", results[0]);
+    assert_eq!(results[0], results[1], "the cached result is the same");
+    let calls = op.run(
+        &home,
+        &[("HOME", home.to_str().unwrap())],
+        &["tools", "calls", "--json"],
+        "",
+    );
+    let outcomes: Vec<String> = serde_json::from_slice::<Value>(&calls.stdout)
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["outcome"].as_str().unwrap().into())
+        .collect();
+    assert_eq!(
+        outcomes,
+        ["ok", "cached", "ok"],
+        "a changed working copy is a new key"
+    );
+}
+
 /// A git repository with tag v1: a server that notes the network it sees, then serves legionctl's own MCP tools;
 /// configured as package `probe` and as MCP server `probe` allowing only `load`.
 fn probe_package(home: &Path) {

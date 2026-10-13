@@ -25,7 +25,7 @@ use legionctl_api::{
 use legionctl_core::config::{Dirs, Resolved, resolve};
 
 use crate::system1::System1Proxy;
-use legionctl_api::{Manifest, PackageFetchIn, Packages};
+use legionctl_api::{CacheGetIn, CachePutIn, CacheValue, Manifest, PackageFetchIn, Packages};
 use legionctl_core::db::Db;
 use legionctl_core::dossier::{Dossiers, place_of};
 use legionctl_core::packages::Store;
@@ -905,6 +905,17 @@ impl Engine for Operator {
             input.force,
             &resolved.config.session.hidden,
         )
+    }
+
+    fn cache_get(&self, _: &Ctx, input: CacheGetIn) -> Result<CacheValue> {
+        Ok(CacheValue {
+            value: Db::open_default()?.cache_get(&input.key)?,
+        })
+    }
+
+    fn cache_put(&self, _: &Ctx, input: CachePutIn) -> Result<Empty> {
+        Db::open_default()?.cache_put(&input.key, &input.value, input.ttl_s)?;
+        Ok(Empty {})
     }
 
     fn tools_record(&self, ctx: &Ctx, input: ToolCall) -> Result<Empty> {

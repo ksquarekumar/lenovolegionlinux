@@ -74,6 +74,20 @@ pub struct McpServer {
     /// Tools the agent may call; empty: every tool the server offers.
     #[serde(default)]
     pub allow: Vec<String>,
+    /// Tools whose results may be reused: only tools that change nothing and give the same answer for the same
+    /// input. Nothing else is cached.
+    #[serde(default)]
+    pub cache: BTreeMap<String, CacheRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CacheRule {
+    /// How long a result stays valid.
+    pub ttl_s: u64,
+    /// The tool reads the working copy: the git state (HEAD, status, diff) is part of the key.
+    #[serde(default)]
+    pub workspace: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

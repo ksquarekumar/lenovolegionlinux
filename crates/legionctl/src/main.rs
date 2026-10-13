@@ -23,6 +23,12 @@ fn client_only() -> Vec<Command> {
             .about("A session agent's way to an MCP server: only the allowed tools, every call logged (tools calls)")
             .arg(Arg::new("server").long("server").required(true))
             .arg(Arg::new("allow").long("allow").action(ArgAction::Append).help("A tool the agent may call; none: all"))
+            .arg(
+                Arg::new("cache")
+                    .long("cache")
+                    .action(ArgAction::Append)
+                    .help("tool=ttl[:workspace]: reuse the tool's result for ttl seconds"),
+            )
             .arg(Arg::new("no-network").long("no-network").action(ArgAction::SetTrue).help("Run the server without network"))
             .arg(
                 Arg::new("command")
@@ -232,6 +238,10 @@ fn main() -> Result<()> {
             return tokio::runtime::Runtime::new()?.block_on(proxy::serve(
                 server,
                 strings("allow"),
+                strings("cache")
+                    .iter()
+                    .map(|r: &String| r.parse())
+                    .collect::<Result<_>>()?,
                 sub.get_flag("no-network"),
                 strings("command"),
             ));

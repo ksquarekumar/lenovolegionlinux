@@ -111,6 +111,10 @@ pub fn mcp_config(config: &Config, store: &crate::packages::Store) -> Result<ser
         for tool in &server.allow {
             args.extend(["--allow".into(), tool.clone()]);
         }
+        for (tool, rule) in &server.cache {
+            let scope = if rule.workspace { ":workspace" } else { "" };
+            args.extend(["--cache".into(), format!("{tool}={}{scope}", rule.ttl_s)]);
+        }
         let command = match &server.package {
             Some(package) => {
                 let p = config

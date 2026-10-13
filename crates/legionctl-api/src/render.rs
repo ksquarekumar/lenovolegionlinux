@@ -1004,3 +1004,9 @@ impl Render for Manifest {
         format!("{} {} pinned: {}", self.name, self.version, self.hash)
     }
 }
+
+impl Render for crate::io::CacheValue {
+    fn text(&self) -> String {
+        self.value.clone().unwrap_or_default()
+    }
+}

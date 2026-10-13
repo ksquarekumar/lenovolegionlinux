@@ -51,7 +51,14 @@ can name a package: `session start` checks the hash (a changed package stops the
 and writes the store command into `mcp.json`; the proxy runs it in `bwrap --unshare-net` unless the package allows
 network. The e2e test fetches a git package, runs it through the generated proxy command (only loopback, only the
 allowed tool), changes a store file and sees the refusal. Not yet: skills from the store (Claude Code reads skills
-from the real home), remote servers with keyring credentials, the cache (T2).
+from the real home), remote servers with keyring credentials.
+
+Built (2026-10-13, T2): the call cache. `mcp.servers.<name>.cache` lists the tools whose results may be reused,
+each with `ttl_s` and `workspace` (the tool reads the working copy). Nothing else is cached; a tool error is never
+kept. The proxy's key is a BLAKE2b-128 of the server's command (for a package, its store version), the tool, the
+arguments and, with `workspace`, the git state of its folder (HEAD, `status --porcelain=v2`, `diff HEAD`). Entries
+live in the operator database (`tool_cache`, migration v3) through `cache.get` and `cache.put`; a hit is logged as
+outcome `cached`. The e2e test sees ok, cached, then ok again after a file in the working copy changes.
 
 Fixed (2026-10-13): the sandbox bound the whole `$XDG_RUNTIME_DIR`, and `--ro-bind / /` does not stop a connect to a
 socket. The agent could reach the session bus and systemd's user manager (`systemd-run --user` runs outside the

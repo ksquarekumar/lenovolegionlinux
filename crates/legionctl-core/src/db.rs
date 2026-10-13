@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 /// Ordered schema migrations; index + 1 is the schema version after applying it. Never edit a released entry.
 const OPERATOR: &[&str] = &[
@@ -43,6 +43,12 @@ const OPERATOR: &[&str] = &[
     // v2: hook actions and bindings are config now (hooks.actions, hooks.bindings)
     "DROP TABLE hook_actions;
      DROP TABLE hook_bindings;",
+    // v3: results of MCP tools that mcp.servers.<name>.cache allows to reuse
+    "CREATE TABLE tool_cache (
+        key     TEXT PRIMARY KEY,
+        value   TEXT NOT NULL,
+        expires INTEGER NOT NULL
+     );",
 ];
 
 pub struct Db {
@@ -119,6 +125,36 @@ impl Db {
             "SELECT id, ts, actor, kind, payload FROM events WHERE id > ?1 ORDER BY id LIMIT ?2",
             params![since, limit],
         )
+    }
+
+    /// A cached tool result that has not expired.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn cache_get(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT value FROM tool_cache WHERE key = ?1 AND expires > ?2",
+                params![key, now()],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Keep a tool result for `ttl_s` seconds; expired entries go at the same time.
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn cache_put(&self, key: &str, value: &str, ttl_s: u64) -> Result<()> {
+        let expires = now().saturating_add(i64::try_from(ttl_s).unwrap_or(i64::MAX));
+        self.conn
+            .execute("DELETE FROM tool_cache WHERE expires <= ?1", params![now()])?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO tool_cache (key, value, expires) VALUES (?1, ?2, ?3)",
+            params![key, value, expires],
+        )?;
+        Ok(())
     }
 
     /// Events of `kind`, oldest first.
