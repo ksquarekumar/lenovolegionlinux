@@ -764,6 +764,169 @@ fn cleanup_plans_to_disable_running_conflicts_and_leaves_packages_to_the_human()
 }
 
 /// The daemon's reactions to events against the recorded machine. `react` is what legionctl-system runs per event.
+/// A registry hive file (regf) as Windows writes one: the base block, one bin of cells, keys (`nk`) with `lh` subkey
+/// lists, and DWORD values (`vk`) whose data is inline.
+struct HiveFile {
+    bin: Vec<u8>,
+}
+
+impl HiveFile {
+    fn new() -> HiveFile {
+        let mut bin = b"hbin".to_vec();
+        bin.resize(32, 0);
+        HiveFile { bin }
+    }
+
+    /// A cell holding `data`; its offset from the first bin.
+    fn cell(&mut self, data: &[u8]) -> u32 {
+        let at = u32::try_from(self.bin.len()).unwrap();
+        let size = (data.len() + 4).next_multiple_of(8);
+        self.bin
+            .extend_from_slice(&(-i32::try_from(size).unwrap()).to_le_bytes());
+        self.bin.extend_from_slice(data);
+        self.bin.resize(self.bin.len() + size - 4 - data.len(), 0);
+        at
+    }
+
+    /// A key named `name` with the keys at `children` and the DWORD `values`; its offset.
+    fn key(&mut self, name: &str, children: &[u32], values: &[(&str, u32)]) -> u32 {
+        let mut list = b"lh".to_vec();
+        list.extend_from_slice(&u16::try_from(children.len()).unwrap().to_le_bytes());
+        for child in children {
+            list.extend_from_slice(&child.to_le_bytes());
+            list.extend_from_slice(&[0; 4]);
+        }
+        let list = if children.is_empty() {
+            u32::MAX
+        } else {
+            self.cell(&list)
+        };
+        let vks: Vec<u8> = values
+            .iter()
+            .flat_map(|(value, data)| {
+                let mut vk = b"vk".to_vec();
+                vk.extend_from_slice(&u16::try_from(value.len()).unwrap().to_le_bytes());
+                vk.extend_from_slice(&0x8000_0004_u32.to_le_bytes());
+                vk.extend_from_slice(&data.to_le_bytes());
+                vk.extend_from_slice(&4_u32.to_le_bytes());
+                vk.extend_from_slice(&[1, 0, 0, 0]);
+                vk.extend_from_slice(value.as_bytes());
+                self.cell(&vk).to_le_bytes()
+            })
+            .collect();
+        let value_list = if values.is_empty() {
+            u32::MAX
+        } else {
+            self.cell(&vks)
+        };
+        let mut nk = b"nk".to_vec();
+        nk.extend_from_slice(&0x20_u16.to_le_bytes());
+        nk.resize(20, 0);
+        for field in [
+            u32::try_from(children.len()).unwrap(),
+            0,
+            list,
+            u32::MAX,
+            u32::try_from(values.len()).unwrap(),
+            value_list,
+        ] {
+            nk.extend_from_slice(&field.to_le_bytes());
+        }
+        nk.resize(72, 0);
+        nk.extend_from_slice(&u16::try_from(name.len()).unwrap().to_le_bytes());
+        nk.extend_from_slice(&[0, 0]);
+        nk.extend_from_slice(name.as_bytes());
+        self.cell(&nk)
+    }
+
+    /// A SYSTEM hive that starts control set 2, which holds `rtc` and `hiberboot`; control set 1 holds the opposite
+    /// values, so reading the wrong set shows.
+    fn system(rtc: u32, hiberboot: u32) -> Vec<u8> {
+        let mut h = HiveFile::new();
+        let mut set = |name: &str, rtc: u32, hiberboot: u32| {
+            let zone = h.key(
+                "TimeZoneInformation",
+                &[],
+                &[("Bias", 0), ("RealTimeIsUniversal", rtc)],
+            );
+            let power = h.key("Power", &[], &[("HiberbootEnabled", hiberboot)]);
+            let session = h.key("Session Manager", &[power], &[]);
+            let control = h.key("Control", &[session, zone], &[]);
+            h.key(name, &[control], &[])
+        };
+        let first = set("ControlSet001", 1 - rtc, 1 - hiberboot);
+        let second = set("ControlSet002", rtc, hiberboot);
+        let select = h.key("Select", &[], &[("Current", 2), ("Default", 2)]);
+        let root = h.key("ROOT", &[first, second, select], &[]);
+        let size = u32::try_from(h.bin.len().next_multiple_of(4096)).unwrap();
+        h.bin[8..12].copy_from_slice(&size.to_le_bytes());
+        h.bin.resize(size as usize, 0);
+        let mut base = b"regf".to_vec();
+        base.extend_from_slice(&[1, 0, 0, 0, 1, 0, 0, 0]);
+        base.resize(0x24, 0);
+        base.extend_from_slice(&root.to_le_bytes());
+        base.extend_from_slice(&size.to_le_bytes());
+        base.resize(4096, 0);
+        base.extend_from_slice(&h.bin);
+        base
+    }
+}
+
+/// The registry checks of the dual boot (D3): `windows status` finds the SYSTEM hive on the NTFS volume of the fstab
+/// (the read-only automount this machine has), reads the control set Windows starts with, and names each hazard with
+/// its fix in Windows; with the good values it reports none.
+#[test]
+fn windows_status_reads_the_registry_of_the_mounted_windows_volume() {
+    let m = Machine::new("registry");
+    Machine::script(
+        &m.dir.join("bin"),
+        "efibootmgr",
+        "printf 'BootCurrent: 0003\\nBoot0004* Windows Boot Manager\\tHD(1,GPT,e8,0x800,0x82000)/\\\\EFI\\\\Microsoft\\\\Boot\\\\bootmgfw.efi\\n'",
+    );
+    m.set(
+        "/etc/fstab",
+        "# <file system> <dir> <type> <options> <dump> <pass>\n\
+         UUID=1882270A8226EBC6 /mnt/windows\\040system ntfs3 ro,nofail,noauto,x-systemd.automount 0 0",
+    );
+    let hive = m
+        .dir
+        .join("root/mnt/windows system/Windows/System32/config/SYSTEM");
+    std::fs::create_dir_all(hive.parent().unwrap()).unwrap();
+
+    std::fs::write(&hive, HiveFile::system(0, 1)).unwrap();
+    let out = m.legion(&["windows", "status"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(!out.status.success(), "hazards fail the command: {text}");
+    assert!(
+        text.contains(&format!("registry: {}", hive.display())),
+        "{text}"
+    );
+    assert!(
+        text.contains("- Windows keeps the hardware clock in local time")
+            && text.contains("RealTimeIsUniversal /t REG_DWORD /d 1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("- Fast Startup is on") && text.contains("powercfg /h off"),
+        "{text}"
+    );
+
+    std::fs::write(&hive, HiveFile::system(1, 0)).unwrap();
+    let state: serde_json::Value =
+        serde_json::from_str(&m.ok(&["windows", "status", "--json"])).unwrap();
+    assert_eq!(state["rtc_utc"], true, "{state}");
+    assert_eq!(state["fast_startup"], false, "{state}");
+    assert_eq!(state["hazards"], serde_json::json!([]), "{state}");
+
+    std::fs::write(&hive, b"regf but cut short").unwrap();
+    let damaged = m.legion(&["windows", "status"]);
+    assert!(
+        String::from_utf8_lossy(&damaged.stdout).contains("- the Windows registry cannot be read"),
+        "{}",
+        String::from_utf8_lossy(&damaged.stdout)
+    );
+}
+
 mod daemon_events {
     use super::*;
     use legionctl_machine::policy::{self, Machine as Planner, Step};
@@ -2214,7 +2377,8 @@ mod operator_and_daemon {
 
         assert_eq!(
             op.ok(&["windows", "status"]),
-            "Windows boots from firmware entry 0004 (Windows Boot Manager)\n"
+            "Windows boots from firmware entry 0004 (Windows Boot Manager)\n\
+             registry: not checked (mount the Windows volume read-only with ntfs3 to check it)\n"
         );
         let plan = op.ok(&["windows", "reboot", "--dry-run"]);
         assert_eq!(

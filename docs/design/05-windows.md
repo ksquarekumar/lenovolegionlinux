@@ -31,10 +31,15 @@ label; a `BootNext` already set; NTFS volumes the kernel reported dirty, with th
 `efibootmgr --bootnext <id>`, and only when that succeeds, `systemctl reboot`. The e2e test uses this machine's
 captured `efibootmgr` list and checks the order and that a failed `BootNext` stops the reboot. Not run live (it
 restarts the machine).
-Not built yet: the registry checks (`RealTimeIsUniversal`, `HiberbootEnabled`). They need a read-only reader of the
-SYSTEM hive on the raw NTFS partition (as root, no mount); the only permissive crates found are `ntfs` 0.4 (MIT or
-Apache-2.0) and `notatin` (Apache-2.0, a large tree), and `nt-hive` is GPL-2.0-or-later. A test against the real
-partition needs root, so this waits for the user.
+Built (2026-10-14, decision D3): the registry checks. `windows status` reads the SYSTEM hive from an NTFS volume of the
+mount table or of `/etc/fstab` (this machine has `/mnt/windows-system`: ntfs3, read-only, automount, readable by the
+user), so no raw reader and no root. Its own hive reader (`legionctl-machine` `hive`, read-only, every offset checked)
+takes the control set of `Select\Current` and reads `RealTimeIsUniversal` and `HiberbootEnabled`; a missing value is
+Windows' default (local time, Fast Startup on). Each finding is a hazard with its fix in Windows. Without such a volume
+the output says `registry: not checked`. Not replayed: the hive's transaction logs (a value written just before a hard
+stop can be missing). Test: a generated hive whose control sets 1 and 2 disagree (a read of the wrong set fails it),
+the good values, and a damaged file. Live on this machine (2026-10-14): Windows keeps the RTC in local time (the
+cause of the clock jump above); Fast Startup is off.
 
 ## Running the installed Windows under Linux
 

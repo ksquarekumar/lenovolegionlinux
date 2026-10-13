@@ -950,6 +950,13 @@ impl Render for WindowsState {
         if let Some(next) = &self.boot_next {
             out.push(format!("one-time boot set: {next}"));
         }
+        out.push(match &self.system_hive {
+            Some(hive) => format!("registry: {hive}"),
+            None => {
+                "registry: not checked (mount the Windows volume read-only with ntfs3 to check it)"
+                    .into()
+            }
+        });
         out.extend(self.hazards.iter().map(|h| format!("- {h}")));
         out.join("\n")
     }

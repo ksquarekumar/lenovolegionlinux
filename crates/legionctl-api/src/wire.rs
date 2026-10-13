@@ -804,6 +804,12 @@ wire! {
         /// NTFS volumes the kernel reported dirty since boot: Windows was not shut down fully (Fast Startup or
         /// hibernation), so Linux must not write them.
         dirty_ntfs: Vec<String>,
+        /// The SYSTEM hive the registry values come from; None when no mounted NTFS volume holds one.
+        system_hive: Option<String>,
+        /// Windows keeps the hardware clock in UTC (`RealTimeIsUniversal` is 1), as Linux does.
+        rtc_utc: Option<bool>,
+        /// Fast Startup is on (`HiberbootEnabled` is 1): Windows hibernates at shut down and leaves its volumes dirty.
+        fast_startup: Option<bool>,
         /// What needs attention before booting Windows or mounting its volumes.
         hazards: Vec<String>,
     }

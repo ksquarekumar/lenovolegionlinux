@@ -6,6 +6,7 @@ pub mod cleanup;
 pub mod doctor;
 pub mod firmware;
 pub mod gpu;
+pub mod hive;
 pub mod kernel;
 pub mod keys;
 pub mod knobs;

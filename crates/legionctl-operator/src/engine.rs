@@ -1636,12 +1636,14 @@ impl Engine for Operator {
     }
 
     fn windows_status(&self, _: &Ctx, _: Empty) -> Result<WindowsState> {
-        Ok(windows::state()?.into_wire())
+        Ok(windows::state(&SysRoot::from_env())?.into_wire())
     }
 
     fn windows_reboot(&self, _: &Ctx, input: DryRunIn) -> Result<Changes> {
         if input.dry_run {
-            return Ok(dry_run(&windows::reboot_plan(&windows::state()?)?));
+            return Ok(dry_run(&windows::reboot_plan(&windows::state(
+                &SysRoot::from_env(),
+            )?)?));
         }
         Ok(Changes {
             lines: self.system(async |p| p.reboot_windows().await)?,

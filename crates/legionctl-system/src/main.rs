@@ -489,7 +489,7 @@ impl System1 {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.windows.reboot").await?;
-        let steps = windows::state()
+        let steps = windows::state(&self.root)
             .and_then(|state| windows::reboot_plan(&state))
             .map_err(|e| failed(&e))?;
         let ledger = Ledger::open(&self.root).map_err(|e| failed(&e))?;
