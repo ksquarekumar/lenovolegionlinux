@@ -25,7 +25,7 @@ pub struct SessionRecord {
     pub workdir: PathBuf,
     /// Seconds since the epoch.
     pub started: i64,
-    /// The account profile (`agents account-add`), if one was chosen.
+    /// The account profile (`agents accounts add`), if one was chosen.
     pub account: Option<String>,
 }
 
@@ -207,7 +207,7 @@ pub fn account_dir(account: &str) -> Result<PathBuf> {
     let dir = accounts_root().join(account);
     anyhow::ensure!(
         dir.is_dir(),
-        "no account profile {account}; make it with `legionctl agents account-add {account}`"
+        "no account profile {account}; make it with `legionctl agents accounts add {account}`"
     );
     Ok(dir)
 }

@@ -303,7 +303,7 @@ fn memory_finding(root: &SysRoot, instances: &[VirtInstance], low_percent: f64) 
         .map(|(name, bytes)| format!("{name} {}", human(*bytes)))
         .collect();
     Some(format!(
-        "memory is low ({} of {} available); guests hold {}: {}. Pause or stop one: legionctl virt act --action \
+        "memory is low ({} of {} available); guests hold {}: {}. Pause or stop one: legionctl virt act \
          pause <name>",
         human(available),
         human(total),

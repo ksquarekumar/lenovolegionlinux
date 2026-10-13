@@ -299,8 +299,8 @@ fn a_recording_replays_to_the_same_decisions_and_status() {
     );
     let dir = m.dir.join("recording");
     let dir = dir.to_str().unwrap();
-    let recorded = json(&op, &["record", "--dir", dir]);
-    let replayed = json(&op, &["replay", "--dir", dir]);
+    let recorded = json(&op, &["record", dir]);
+    let replayed = json(&op, &["replay", dir]);
 
     assert!(
         recorded["plan"].as_array().unwrap().iter().any(|l| l
@@ -345,7 +345,7 @@ fn a_recording_replays_to_the_same_decisions_and_status() {
     );
     assert_eq!(json(&on_recording, &["status"]), status);
 
-    let again = op.cli(&["record", "--dir", dir]);
+    let again = op.cli(&["record", dir]);
     assert!(!again.status.success(), "a recording is never overwritten");
 }
 
@@ -382,7 +382,7 @@ fn bench_compare_shows_the_score_change_and_the_knob_that_caused_it() {
             .unwrap_or_else(|_| panic!("{args:?}: {}", String::from_utf8_lossy(&out.stderr)))
     };
 
-    let before = run(&["--scenario", "cpu", "--seconds", "1", "--label", "pl1-90"]);
+    let before = run(&["cpu", "--seconds", "1", "--label", "pl1-90"]);
     assert_eq!(before["scores"]["cpu bogo ops/s"], 38017.46, "{before}");
     assert!(
         before["summary"]["samples"].as_u64().unwrap() >= 1,
@@ -396,10 +396,10 @@ fn bench_compare_shows_the_score_change_and_the_knob_that_caused_it() {
         "60",
     );
     std::fs::write(&score, "30413.97").unwrap();
-    let after = run(&["--scenario", "cpu", "--seconds", "1", "--label", "pl1-60"]);
+    let after = run(&["cpu", "--seconds", "1", "--label", "pl1-60"]);
 
     let (a, b) = (before["id"].to_string(), after["id"].to_string());
-    let compare = op.ok(&["bench", "compare", "--a", &a, "--b", &b]);
+    let compare = op.ok(&["bench", "compare", &a, &b]);
     assert!(
         compare
             .lines()
@@ -415,7 +415,7 @@ fn bench_compare_shows_the_score_change_and_the_knob_that_caused_it() {
         "only the knobs that differ: {compare}"
     );
 
-    let gpu = op.cli(&["bench", "run", "--scenario", "gpu", "--seconds", "1"]);
+    let gpu = op.cli(&["bench", "run", "gpu", "--seconds", "1"]);
     assert_eq!(gpu.status.code(), Some(1), "GPU errors fail the command");
     let text = String::from_utf8_lossy(&gpu.stdout);
     assert!(text.contains("gpu Gflop/s"), "{text}");
@@ -659,7 +659,7 @@ fn virt_status_names_what_guests_hold_when_memory_is_low() {
     assert_eq!(
         status["findings"].as_array().unwrap().last().unwrap(),
         "memory is low (4.0 GiB of 32.0 GiB available); guests hold 18.0 GiB: WinBoat 16.0 GiB, lab 2.0 GiB. Pause \
-         or stop one: legionctl virt act --action pause <name>"
+         or stop one: legionctl virt act pause <name>"
     );
 }
 
@@ -699,19 +699,16 @@ fn safe_mode_hands_the_machine_to_the_firmware_and_doctor_says_why() {
 fn virt_act_pauses_a_container_and_stops_a_vm_by_name() {
     let (m, _docker, op) = virt_machine("virtact", 20);
     assert_eq!(
-        op.ok(&["virt", "act", "--action", "pause", "WinBoat"]),
+        op.ok(&["virt", "act", "pause", "WinBoat"]),
         "container WinBoat: pause\n"
     );
-    assert_eq!(
-        op.ok(&["virt", "act", "--action", "stop", "win11"]),
-        "vm win11: stop\n"
-    );
+    assert_eq!(op.ok(&["virt", "act", "stop", "win11"]), "vm win11: stop\n");
     // start shares its schema entry with unpause; the CLI must still offer it
     assert_eq!(
-        op.ok(&["virt", "act", "--action", "start", "win11"]),
+        op.ok(&["virt", "act", "start", "win11"]),
         "vm win11: start\n"
     );
-    let refused = op.cli(&["virt", "act", "--action", "pause", "nothing"]);
+    let refused = op.cli(&["virt", "act", "pause", "nothing"]);
     assert!(
         String::from_utf8_lossy(&refused.stderr).contains("no container or VM named nothing"),
         "{}",
@@ -1285,13 +1282,12 @@ mod operator_and_daemon {
             let args = [
                 &[
                     "tune",
-                    "--scenario",
-                    "cpu",
                     "--seconds",
                     "1",
                     "--cooldown-s",
                     "0",
                     "ppt_pl1_spl",
+                    "cpu",
                 ][..],
                 values,
             ]
@@ -1351,13 +1347,12 @@ mod operator_and_daemon {
         let started = std::time::Instant::now();
         let hot = op.cli(&[
             "tune",
-            "--scenario",
-            "cpu",
             "--seconds",
             "30",
             "--cooldown-s",
             "0",
             "ppt_pl1_spl",
+            "cpu",
             "60",
             "80",
         ]);

@@ -130,10 +130,25 @@ fn argument(field: &Field) -> Arg {
     if let Some(help) = field.help {
         arg = arg.help(help.to_string());
     }
-    if field.kind == Kind::Text && field.required {
-        return arg.required(true);
+    // a required value with no default is a positional, in field order: `gpu primary nvidia`, `bench compare 1 2`
+    if field.required && field.default.is_none() {
+        match &field.kind {
+            Kind::Integer => return arg.required(true).value_parser(clap::value_parser!(i64)),
+            Kind::Choice(values) => {
+                return arg
+                    .required(true)
+                    .value_parser(clap::builder::PossibleValuesParser::new(values.clone()));
+            }
+            Kind::Text | Kind::Path => return arg.required(true),
+            Kind::Flag | Kind::List { .. } | Kind::Session | Kind::Stdin => {}
+        }
     }
-    arg = arg.long(field.key.replace('_', "-"));
+    argument_named(field, arg)
+}
+
+/// A field as `--name` (or a trailing list, or a field the client fills).
+fn argument_named(field: &Field, arg: Arg) -> Arg {
+    let mut arg = arg.long(field.key.replace('_', "-"));
     match &field.kind {
         Kind::Flag => return arg.action(ArgAction::SetTrue),
         Kind::Integer => arg = arg.value_parser(clap::value_parser!(i64)),
@@ -166,7 +181,14 @@ fn leaf(op: &OpInfo, word: &str) -> Command {
     let mut command = Command::new(word.to_string())
         .about(op.summary())
         .long_about(op.text());
-    for field in fields(&schema) {
+    let mut fields = fields(&schema);
+    // positionals in field order, and a trailing list after all of them
+    fields.sort_by_key(|f| match f.kind {
+        Kind::List { .. } => 2,
+        _ if f.required && f.default.is_none() => 0,
+        _ => 1,
+    });
+    for field in fields {
         command = command.arg(argument(&field));
     }
     command

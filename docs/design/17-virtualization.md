@@ -52,7 +52,7 @@ KVM, a cgroupfs driver on a systemd host, both libvirt daemons, more than one do
 command. Not in `doctor` yet (they depend on the host's Docker and would make the doctor test differ between
 machines). Live on this machine: up everywhere but the cgroupfs finding; WinBoat found.
 
-Built (2026-10-13, V1 part 2): `legionctl virt act --action pause|unpause|start|stop <name>`: a container through
+Built (2026-10-13, V1 part 2): `legionctl virt act pause|unpause|start|stop <name>`: a container through
 the Engine API (`POST /containers/<name>/<action>`), a VM through `virsh` (suspend, resume, start, shutdown); a name
 that is neither is refused. Checked live on a throwaway container (paused, running, exited).
 
@@ -76,7 +76,7 @@ the stand-in Docker and virsh, with the command forms checked against `virsh --h
 Built (2026-10-13, V1 part 5): `legionctl virt create <name> <image> [--cores p|e|all] [--memory <size>] [--gpu]
 [--dry-run]`: a container from a local image (no pull) through the Engine API (`POST /containers/create`: `Image`,
 `HostConfig.CpusetCpus`, `Memory`, and for `--gpu` a `DeviceRequests` entry for all NVIDIA GPUs), created and not
-started (`virt act --action start`). A taken name, and `--gpu` without Docker's nvidia runtime, are refused before
+started (`virt act start <name>`). A taken name, and `--gpu` without Docker's nvidia runtime, are refused before
 anything is created. Checked live: the same request makes a container with the CPU set and limit, in state
 `created` (removed again). VM create waits for W5 (base images, decision D5).
 

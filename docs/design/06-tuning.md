@@ -24,7 +24,7 @@
 - **Recommendation**: per scenario the knee (smallest limit within 2 % of the best score), constrained by no
   thermal throttle reasons in the steady-state half and GPU throughput within 2 % of its best for cross-load.
 
-Built (2026-10-13, M3e): `legionctl tune <attribute> <values...> --scenario cpu|gpu|mixed [--seconds 60]
+Built (2026-10-13, M3e): `legionctl tune <attribute> cpu|gpu|mixed <values...> [--seconds 60]
 [--cooldown-s 30] [--force]`. The operator refuses a machine that is not idle (unless `--force`), resolves the
 bench workloads (stress-ng, gpu-burn) to full paths, and calls `System1.Tune` (polkit action `org.legionctl.tune`).
 The daemon refuses an attribute outside the list above, a value outside the firmware range (and an attribute

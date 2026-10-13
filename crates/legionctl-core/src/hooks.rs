@@ -1,6 +1,6 @@
 //! Hook bindings: which actions run when an agent harness fires a hook event.
 //!
-//! The agent plugin calls one dispatcher (`legionctl hooks run --event <event>`); what it runs is config
+//! The agent plugin calls one dispatcher (`legionctl hook <event>`, which calls `internal.hooks.run`); what it runs is config
 //! (`hooks.bindings`, `hooks.actions`), so users change it without editing the plugin. Actions are built in
 //! (reminders, load notices, setup check) or user-defined shell commands with a timeout. One failing action never
 //! stops the others.

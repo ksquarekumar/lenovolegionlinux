@@ -95,7 +95,7 @@ drives a stand-in ACP agent (`tests/fixtures/fake-acp-agent.py`): it gets the MC
 answered, its commit lands in the workspace and the gate refuses its push. Not yet: streaming the answer while it
 runs, the real adapters live (they need the user's logins).
 
-Built (2026-10-13, S4): `session pause|thaw <id>` freeze and thaw the session's scope (cgroup freezer;
+Built (2026-10-13, S4): `session pause|unpause <id>` freeze and thaw the session's scope (cgroup freezer;
 `systemctl --user freeze|thaw`), `session stop <id>` stops it, `session resume <id>` prepares an ended session
 again (same id, dossier binding and workspace; the sandbox anew) with the agent's resume command (`session.resume`:
 `claude --resume {id} ...`; Codex has none by id). The e2e test resumes a session and sees the same id and folder,

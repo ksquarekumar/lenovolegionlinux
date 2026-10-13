@@ -15,11 +15,11 @@ use legionctl_api::{
     ToolCallRow, ToolCalls, ToolCallsIn, TuneIn, TuneReport, WindowsState, coded,
 };
 use legionctl_api::{
-    BranchIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath, CloseIn, ConfigFiles,
-    ConfigView, Ctx, DesktopGpu, Empty, Engine, ExplainIn, Explanation, Findings, GpuPrimaryIn,
-    GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LayerList, LoadState, PowerApplyIn,
-    PowerSource, ProfileIn, ProjectIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn, SetupApplyIn,
-    SetupReport, SkillList, Snapshot, StatusIn, Validation, Workspace, WorkspaceIn,
+    AccountAddIn, BranchIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath, CloseIn,
+    ConfigFiles, ConfigView, Ctx, DesktopGpu, Empty, Engine, ExplainIn, Explanation, Findings,
+    GpuPrimaryIn, GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LayerList, LoadState,
+    PowerApplyIn, PowerSource, ProfileIn, ProjectIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn,
+    SetupApplyIn, SetupReport, SkillList, Snapshot, StatusIn, Validation, Workspace, WorkspaceIn,
     WorkspaceOpenIn, WorkspaceStates, Workspaces,
 };
 use legionctl_core::config::{Dirs, Resolved, resolve};
@@ -687,7 +687,7 @@ impl Engine for Operator {
         Ok(agents::usage(&claude, &codex, input.days))
     }
 
-    fn agents_plugins(&self, _: &Ctx, _: Empty) -> Result<Vec<Plugin>> {
+    fn agents_plugins_list(&self, _: &Ctx, _: Empty) -> Result<Vec<Plugin>> {
         let plugins = config(None)?.config.plugins;
         let out = Command::new("claude")
             .args(["plugin", "list", "--json"])
@@ -714,7 +714,7 @@ impl Engine for Operator {
             .collect())
     }
 
-    fn agents_plugin_install(&self, _: &Ctx, input: PluginInstallIn) -> Result<Lines> {
+    fn agents_plugins_install(&self, _: &Ctx, input: PluginInstallIn) -> Result<Lines> {
         // the user's and the system's layers only: a repository must not widen the allowlist it is checked against
         let plugins = config(None)?.config.plugins;
         if let Some(why) = plugins.refusal(&input.id) {
@@ -745,7 +745,7 @@ impl Engine for Operator {
         })
     }
 
-    fn agents_accounts(&self, _: &Ctx, _: Empty) -> Result<Vec<Account>> {
+    fn agents_accounts_list(&self, _: &Ctx, _: Empty) -> Result<Vec<Account>> {
         let root = legionctl_core::session::accounts_root();
         let mut out: Vec<Account> = std::fs::read_dir(&root)
             .into_iter()
@@ -767,12 +767,12 @@ impl Engine for Operator {
         Ok(out)
     }
 
-    fn agents_account_add(&self, _: &Ctx, input: IdIn) -> Result<Lines> {
+    fn agents_accounts_add(&self, _: &Ctx, input: AccountAddIn) -> Result<Lines> {
         anyhow::ensure!(
-            legionctl_core::dossier::valid_name(&input.id),
+            legionctl_core::dossier::valid_name(&input.name),
             "an account name is a-z, 0-9 and '-', starting with a letter or digit"
         );
-        let dir = legionctl_core::session::accounts_root().join(&input.id);
+        let dir = legionctl_core::session::accounts_root().join(&input.name);
         for agent in ["claude", "codex"] {
             std::fs::create_dir_all(dir.join(agent))?;
         }
@@ -786,7 +786,7 @@ impl Engine for Operator {
                 format!("        CODEX_HOME={}/codex codex login", dir.display()),
                 format!(
                     "use it: legionctl session start claude --account {}",
-                    input.id
+                    input.name
                 ),
             ],
         })
@@ -1004,7 +1004,7 @@ impl Engine for Operator {
             &ctx.actor,
             &input.name,
             input.steal,
-            Some(&place_of(input.project.get()?)),
+            Some(&place_of(input.repo.get()?)),
         )?;
         Ok(Lines { lines })
     }
@@ -1033,7 +1033,7 @@ impl Engine for Operator {
         dossiers()?.locks()
     }
 
-    fn dossier_ls(&self, _: &Ctx, _: Empty) -> Result<DossierList> {
+    fn dossier_list(&self, _: &Ctx, _: Empty) -> Result<DossierList> {
         Ok(dossiers()?.list())
     }
 
@@ -1372,7 +1372,7 @@ impl Engine for Operator {
             if input.dry_run {
                 "dry run: nothing created"
             } else {
-                "created; start it with legionctl virt act --action start <name>"
+                "created; start it with legionctl virt act start <name>"
             }
             .into(),
         );
@@ -1559,8 +1559,8 @@ impl Engine for Operator {
                 .and_then(bench_run_of)
         };
         Ok(BenchCompare {
-            a: run(input.a)?,
-            b: run(input.b)?,
+            a: run(input.earlier)?,
+            b: run(input.later)?,
         })
     }
 
@@ -1667,7 +1667,7 @@ impl Engine for Operator {
         scope_control("freeze", &input.id, "paused")
     }
 
-    fn session_thaw(&self, _: &Ctx, input: SessionIdIn) -> Result<Lines> {
+    fn session_unpause(&self, _: &Ctx, input: SessionIdIn) -> Result<Lines> {
         scope_control("thaw", &input.id, "running again")
     }
 

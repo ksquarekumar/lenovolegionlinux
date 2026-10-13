@@ -223,7 +223,7 @@ contradicts an approved decision, and EVIDENCE whose linked symbols changed afte
 | --- | --- |
 | `legionctl dossier use <name> [--steal]` | Bind this session to the dossier; a new name makes it from the global pattern. The previous one is released. |
 | `legionctl dossier active`, `release`, `locks` | Show the binding; give it up; show which session holds which dossier and stale locks. |
-| `legionctl dossier ls`, `read <path>`, `search <pattern>` | Read any dossier; lines print as `<line>:<hash>\|<text>`. |
+| `legionctl dossier list`, `read <path>`, `search <pattern>` | Read any dossier; lines print as `<line>:<hash>\|<text>`. |
 | `legionctl dossier add <class> <slug>` | Create the next numbered artifact from stdin (`MEMORY/03-<slug>.md`); safe for parallel agents. |
 | `legionctl dossier edit <path> replace\|insert-after\|delete <line:hash>` | Change anchored lines; an anchor from an outdated read is refused. |
 | `legionctl dossier check`, `graph` | Routing and ledger findings; the work graph around a node. |

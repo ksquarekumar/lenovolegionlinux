@@ -44,10 +44,10 @@ legionctl status                  # power, mode, CPU, limits, GPU wiring, units,
 legionctl doctor                  # drift, conflicts, kernel modules and DKMS, NTFS, GPU placement, failed units, OSD, agent setup
 legionctl knobs                   # every knob: value, what the profile wants now, firmware range, policy
 legionctl inspect cpu.epp         # one knob and the events that changed it
-legionctl record --dir ~/rec-bios # the files legionctl reads, the profile and machine events: a bug report or fixture
-legionctl replay --dir ~/rec-bios # what the daemon and doctor decide on that recording
-legionctl bench run --scenario cpu --seconds 30 --label pl1-90   # stress-ng/gpu-burn with telemetry; bench compare --a A --b B
-legionctl tune --scenario cpu ppt_pl1_spl 60 75 90                # sweep a firmware limit (polkit); recommends the knee
+legionctl record ~/rec-bios       # the files legionctl reads, the profile and machine events: a bug report or fixture
+legionctl replay ~/rec-bios       # what the daemon and doctor decide on that recording
+legionctl bench run cpu --seconds 30 --label pl1-90   # stress-ng/gpu-burn with telemetry; bench compare <earlier> <later>
+legionctl tune ppt_pl1_spl cpu 60 75 90                # sweep a firmware limit (polkit); recommends the knee
 legionctl load                    # one-line load level, and which cgroup waits on I/O
 legionctl monitor --count 10      # power, temperatures, clocks, GPU, PSI, fans, throttle reasons (GET /v1/metrics too)
 legionctl trace                   # follow the event log: agents, people and the machine daemon
@@ -58,10 +58,10 @@ legionctl run --gpu nvidia -- blender
 legionctl run --cores e --nice 10 -- make -j16
 legionctl power apply --dry-run   # what the policy would change now
 legionctl power apply             # through the daemon; polkit asks you
-legionctl gpu primary --choice nvidia    # applies at the next login
+legionctl gpu primary nvidia             # applies at the next login
 legionctl validate                # profile structure, no hardware access
 legionctl config layers           # config files in merge order; `config explain <key>` says which file set a value
-legionctl dossier ls              # agent dossiers in ~/.agentworkspace (agents bind them; see Agents)
+legionctl dossier list            # agent dossiers in ~/.agentworkspace (agents bind them; see Agents)
 legionctl workspace list          # each dossier's git worktree: path, branch, base
 legionctl session start claude    # Claude Code in a sandbox on the dossier's workspace: home read-only, git gated
 legionctl tui                     # live dashboard

@@ -127,18 +127,18 @@ Operating directory, named workspace in `~/.agentworkspace`, dossier and change 
 - **Plugins, MCP servers and skills:** an allowlist of authorised marketplaces and items; install into Claude Code
   (`claude plugin …`) and Codex (`~/.codex/config.toml`) from one place, and show what each agent has loaded.
   Built (2026-10-13, A1 part 3): `plugins.marketplaces` (marketplace name -> `source` and `allow`, plugin names or
-  `*`). `legionctl agents plugin-install <plugin>@<marketplace> --scope user|project|project-local` refuses anything
+  `*`). `legionctl agents plugins install <plugin>@<marketplace> --scope user|project|project-local` refuses anything
   outside it (read from the user's and the system's layers only: a repository cannot widen it; a plugin name is
   a-z, 0-9 and '-', so it cannot pass as a flag), then runs `claude plugin install <plugin> --marketplace <source> --scope <scope> --json` in the
   project, never with `-y`: a command that the marketplace declares stays for a person to accept.
-  `legionctl agents plugins` lists Claude Code's installed plugins (`claude plugin list --json`) and marks those
+  `legionctl agents plugins list` lists Claude Code's installed plugins (`claude plugin list --json`) and marks those
   outside the allowlist. Codex has no plugin system; MCP servers for sessions go through `mcp.servers` (the proxy)
   and skills through `session.skills`, not into the agents' own files.
 - **Accounts:** one profile per account (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`), credentials in the keyring; an ACP
   session can be restarted on another account with the same worktree, plan and sandbox. Usage per account from local
   transcripts (token counts) and the gateway's rate-limit headers, shown against quotas.
-  Built (2026-10-13, A1 part 2): `legionctl agents account-add <name>` makes
-  `~/.local/share/legionctl/accounts/<name>/{claude,codex}` and prints the login commands; `agents accounts` lists the
+  Built (2026-10-13, A1 part 2): `legionctl agents accounts add <name>` makes
+  `~/.local/share/legionctl/accounts/<name>/{claude,codex}` and prints the login commands; `agents accounts list` lists the
   profiles and which agents have a login in them. `session start <agent> --account <name>` binds the profile writable
   into the sandbox and sets `CLAUDE_CONFIG_DIR` and `CODEX_HOME` there; the session keeps its account, so a resume
   uses it again. `agents usage --account <name>` reads the profile's transcripts. An account name has the dossier name

@@ -102,7 +102,7 @@ fn prompt_hook_injects_skill_reminders_and_user_actions_as_configured() {
 
     run(&["reminders", "off", "ste100"]);
     run(&["hooks", "add", "branch", "echo on-branch-main"]);
-    run(&["hooks", "bind", "--event", "prompt", "branch"]);
+    run(&["hooks", "bind", "prompt", "branch"]);
     let changed = hook_out(&op, &home, "prompt");
     assert!(
         !changed.contains("ste100"),
@@ -687,9 +687,7 @@ fn every_change_is_audited_with_its_outcome_and_errors_have_codes() {
         &[
             "agents",
             "set",
-            "--agent",
             "claude",
-            "--scope",
             "user",
             "env.TOKEN",
             token,
@@ -701,7 +699,7 @@ fn every_change_is_audited_with_its_outcome_and_errors_have_codes() {
         "{}",
         String::from_utf8_lossy(&set.stderr)
     );
-    assert!(run("s1", &["dossier", "ls"]).status.success());
+    assert!(run("s1", &["dossier", "list"]).status.success());
 
     let events: Vec<Value> =
         serde_json::from_slice(&run("s1", &["events", "--json"]).stdout).unwrap();
@@ -1582,7 +1580,7 @@ fn a_sandbox_acts_only_as_its_own_session() {
     let probe = format!(
         "grep -q mcpServers \"$0\" && echo mcp-config; \
          cat \"$XDG_RUNTIME_DIR/legionctl.token\" >/dev/null 2>&1 && echo token-visible || echo token-hidden; \
-         env -u LEGIONCTL_TOKEN {cli} dossier ls >/dev/null 2>/tmp/err && echo user-allowed; \
+         env -u LEGIONCTL_TOKEN {cli} dossier list >/dev/null 2>/tmp/err && echo user-allowed; \
          grep -o 'the token is not valid' /tmp/err; \
          LEGIONCTL_SESSION=victim {cli} dossier release"
     );
@@ -1940,14 +1938,7 @@ fn dossier_graph_keeps_each_status_change_with_its_session() {
             .unwrap()
             .to_string();
         ok(
-            &[
-                "dossier",
-                "edit",
-                "hist/plan.md",
-                "--mode",
-                "replace",
-                &anchor,
-            ],
+            &["dossier", "edit", "hist/plan.md", "replace", &anchor],
             row,
         );
     };
@@ -1973,7 +1964,6 @@ fn dossier_graph_keeps_each_status_change_with_its_session() {
             "dossier",
             "edit",
             &format!("hist/{note}"),
-            "--mode",
             "replace",
             &anchor,
         ],
@@ -2060,7 +2050,7 @@ fn plugin_installs_follow_the_allowlist() {
         // a name that claude would read as its own flag (-y accepts a marketplace's command)
         ("-y@open", "write it as <plugin>@<marketplace>"),
     ] {
-        let refused = run(&["agents", "plugin-install", "--scope", "user", "--", id]);
+        let refused = run(&["agents", "plugins", "install", "--", id, "user"]);
         assert!(
             !refused.status.success() && String::from_utf8_lossy(&refused.stderr).contains(why),
             "{id}: {}",
@@ -2077,7 +2067,7 @@ fn plugin_installs_follow_the_allowlist() {
     let from_repo = op.run(
         &repo,
         &[("HOME", home.to_str().unwrap())],
-        &["agents", "plugin-install", "x@evil", "--scope", "user"],
+        &["agents", "plugins", "install", "x@evil", "user"],
         "",
     );
     assert!(
@@ -2090,13 +2080,7 @@ fn plugin_installs_follow_the_allowlist() {
         !home.join("claude.log").exists(),
         "a refusal never reaches claude"
     );
-    let installed = run(&[
-        "agents",
-        "plugin-install",
-        "fmt@acme",
-        "--scope",
-        "project-local",
-    ]);
+    let installed = run(&["agents", "plugins", "install", "fmt@acme", "project-local"]);
     assert!(
         installed.status.success(),
         "{}",
@@ -2108,7 +2092,7 @@ fn plugin_installs_follow_the_allowlist() {
     );
 
     let listed: Value =
-        serde_json::from_slice(&run(&["agents", "plugins", "--json"]).stdout).unwrap();
+        serde_json::from_slice(&run(&["agents", "plugins", "list", "--json"]).stdout).unwrap();
     let marks: Vec<(&str, bool)> = listed
         .as_array()
         .unwrap()
@@ -2142,9 +2126,7 @@ fn agent_settings_edit_with_a_diff_and_a_backup() {
     let set = [
         "agents",
         "set",
-        "--agent",
         "claude",
-        "--scope",
         "user",
         "permissions.defaultMode",
         "acceptEdits",
@@ -2178,9 +2160,7 @@ fn agent_settings_edit_with_a_diff_and_a_backup() {
         json!({"allow": ["Read"], "defaultMode": "acceptEdits"})
     );
     assert_eq!(
-        ok(&[
-            "agents", "set", "--agent", "claude", "--scope", "user", "modle", "x", "--json"
-        ])["warnings"][0],
+        ok(&["agents", "set", "claude", "user", "modle", "x", "--json"])["warnings"][0],
         "modle is not a top-level key legionctl knows; check the spelling"
     );
 
@@ -2189,9 +2169,7 @@ fn agent_settings_edit_with_a_diff_and_a_backup() {
     let edit = ok(&[
         "agents",
         "set",
-        "--agent",
         "codex",
-        "--scope",
         "user",
         "mcp_servers.ctx.command",
         "ctx",
@@ -2704,7 +2682,7 @@ fn a_resumed_session_continues_on_another_account_with_its_transcript() {
         .to_string(),
     );
     for name in ["first", "second"] {
-        assert!(cli(&["agents", "account-add", name]).status.success());
+        assert!(cli(&["agents", "accounts", "add", name]).status.success());
     }
     write(&home.join("secret"), "hidden from the sandbox\n");
     let started = cli(&[
@@ -2763,7 +2741,7 @@ fn a_resumed_session_continues_on_another_account_with_its_transcript() {
 /// `agents accounts` sees the login in profile `work`; `agents usage` counts its transcript, not `~/.claude`.
 fn profile_listed_and_counted(op: &Operator, repo: &Path) {
     let accounts: Value = serde_json::from_slice(
-        &op.run(repo, &[], &["agents", "accounts", "--json"], "")
+        &op.run(repo, &[], &["agents", "accounts", "list", "--json"], "")
             .stdout,
     )
     .unwrap();
@@ -2837,12 +2815,12 @@ fn an_account_profile_gives_the_session_its_own_agent_logins_and_usage() {
         );
     }
     assert!(
-        !op.run(&repo, &[], &["agents", "account-add", "../x"], "")
+        !op.run(&repo, &[], &["agents", "accounts", "add", "../x"], "")
             .status
             .success()
     );
     assert!(
-        op.run(&repo, &[], &["agents", "account-add", "work"], "")
+        op.run(&repo, &[], &["agents", "accounts", "add", "work"], "")
             .status
             .success()
     );

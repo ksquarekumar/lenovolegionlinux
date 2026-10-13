@@ -69,7 +69,7 @@ lines; checks as data with fix operations come with `approve` (M3g).
 - `legionctl undo <event-id>` applies the recorded inverse of a change from the event log.
 - `legionctl bench <scenario>`: repeatable workloads (CPU, GPU with gpu-burn, mixed) with telemetry captured and
   stored; `bench compare` shows two runs side by side (for example two scx modes, two power limits).
-  Built (2026-10-13, M3d): `bench run --scenario cpu|gpu|mixed --seconds N [--label L]` runs stress-ng
+  Built (2026-10-13, M3d): `bench run cpu|gpu|mixed --seconds N [--label L]` runs stress-ng
   (`--cpu 0 --metrics-brief`), gpu-burn, or both, takes a telemetry sample each second, and stores one
   `bench.result` event: the scores (stress-ng bogo ops/s in real time, gpu-burn Gflop/s from the last progress
   line), a summary (package W mean/max, CPU °C max, CPU MHz mean, GPU W mean, GPU °C max, fan rpm max, throttle
@@ -93,11 +93,11 @@ lines; checks as data with fix operations come with `approve` (M3g).
 - an end-to-end test fixture (07-plan, 15-layout test policy),
 - a before/after record of a BIOS or kernel update.
 
-Built (2026-10-13, M3c): `legionctl record --dir <new dir>` runs `status`, `doctor`, `knobs` and the `power apply`
+Built (2026-10-13, M3c): `legionctl record <new dir>` runs `status`, `doctor`, `knobs` and the `power apply`
 plan through a traced sysroot, and writes each path that a read found (files, directories, the driver links) under
 `<dir>/root`, with the installed profile and the Fn+Q ledger. It also writes the last `--minutes` (default 10) of
 machine events to `<dir>/events.json`: the daemon's signals and the machine operations only, never agent payloads,
-because a recording is shared. `legionctl replay --dir <dir>` gives the plan, findings and knobs on the recording, and
+because a recording is shared. `legionctl replay <dir>` gives the plan, findings and knobs on the recording, and
 `LEGIONCTL_SYSROOT=<dir>/root` runs every read operation on it. The e2e test requires that a replay gives the same
 decisions and `status` as the live machine, so a read that bypasses the sysroot fails it. Limits: the results of
 commands (systemctl, nvidia-smi, journalctl) and the root-only values (MSR, fan RPM) are not in the tree; a replay

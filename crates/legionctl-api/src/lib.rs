@@ -386,17 +386,17 @@ operations! {
     /// Claude Code and Codex settings files (user and project): present, valid, which top-level sections.
     agents_list / AgentsList = "agents.list", Read, ProjectIn => ConfigFiles;
     /// Set one key of an agent's settings file (dotted: `permissions.defaultMode`, `mcp_servers.ctx.command`): the
-    /// changed lines, a backup of the file, then the write; with dry run only the changed lines.
+    /// changed lines, a backup of the file, then the write; with `--dry-run` only the changed lines.
     agents_set / AgentsSet = "agents.set", Workspace, AgentSetIn => Edit;
     /// Account profiles and which agents are logged in to each.
-    agents_accounts / AgentsAccounts = "agents.accounts", Read, Empty => Vec<Account>;
+    agents_accounts_list / AgentsAccountsList = "agents.accounts.list", Read, Empty => Vec<Account>;
     /// Make an account profile (its own Claude Code and Codex logins); `session start --account` uses it.
-    agents_account_add / AgentsAccountAdd = "agents.account-add", Workspace, IdIn => Lines;
+    agents_accounts_add / AgentsAccountsAdd = "agents.accounts.add", Workspace, AccountAddIn => Lines;
     /// Claude Code's installed plugins, each marked in or out of the allowlist (`plugins.marketplaces`).
-    agents_plugins / AgentsPlugins = "agents.plugins", Read, Empty => Vec<Plugin>;
+    agents_plugins_list / AgentsPluginsList = "agents.plugins.list", Read, Empty => Vec<Plugin>;
     /// Install a Claude Code plugin that `plugins.marketplaces` allows (`claude plugin install`); a command the
     /// marketplace declares still needs a person to accept it.
-    agents_plugin_install / AgentsPluginInstall = "agents.plugin-install", Workspace, PluginInstallIn => Lines;
+    agents_plugins_install / AgentsPluginsInstall = "agents.plugins.install", Workspace, PluginInstallIn => Lines;
     /// Tokens per agent, day and model from Claude Code's and Codex's own transcripts, and Codex's rate-limit use.
     agents_usage / AgentsUsage = "agents.usage", Read, AgentUsageIn => UsageReport;
     /// Open (or reopen) this session's dossier workspace in a repository: a worktree on legionctl/<dossier> with the
@@ -414,7 +414,7 @@ operations! {
     workspace_branch / WorkspaceBranch = "workspace.branch", Session, BranchIn => Lines;
     /// Rebase the branch onto the base, then fast-forward the base in the main checkout (which must be clean).
     workspace_merge / WorkspaceMerge = "workspace.merge", Workspace, WorkspaceIn => Lines;
-    /// Remove the worktree; the branch and the dossier stay. Refuses uncommitted changes unless force.
+    /// Remove the worktree; the branch and the dossier stay. Refuses uncommitted changes unless `--force`.
     workspace_close / WorkspaceClose = "workspace.close", Session, CloseIn => Lines;
     /// Whether ctx and legionctl are set up for Claude Code and Codex (skills, MCP servers).
     setup_check / SetupCheck = "setup.check", Read, Empty => SetupReport;
@@ -470,7 +470,7 @@ operations! {
     /// MCP tool calls of session agents through legionctl mcp-proxy, oldest first.
     tools_calls / ToolsCalls = "tools.calls", Read, ToolCallsIn => ToolCalls;
     /// A repository's Dockerfiles as a services description (build, entrypoints, ports) and a build-cache description
-    /// (base images, lockfiles); with write, into the repository's `.legionctl/`.
+    /// (base images, lockfiles); with `--write`, into the repository's `.legionctl/`.
     images_scan / ImagesScan = "images.scan", Workspace, ImagesScanIn => Scan;
     /// Build every service's image (`localhost/<repo>/<service>:<commit>`) with docker buildx.
     images_build / ImagesBuild = "images.build", Workspace, RepoIn => Lines;
@@ -509,7 +509,7 @@ operations! {
     tune / Tune = "tune", Machine, TuneIn => TuneReport;
     /// Two bench runs side by side: scores, telemetry and the knobs that differ.
     bench_compare / BenchCompareOp = "bench.compare", Read, BenchCompareIn => BenchCompare;
-    /// Bind this session to a dossier (one writable dossier per session); create it from the pattern with create.
+    /// Bind this session to a dossier (one writable dossier per session); a new name makes it from the pattern.
     dossier_use / DossierUse = "dossier.use", Session, DossierUseIn => Lines;
     /// This session's active dossier.
     dossier_active / DossierActive = "dossier.active", Read, SessionIn => Lines;
@@ -518,12 +518,12 @@ operations! {
     /// Which session holds which dossier, and stale bindings.
     dossier_locks / DossierLocks = "dossier.locks", Read, Empty => Locks;
     /// Dossiers, most recently changed first.
-    dossier_ls / DossierLs = "dossier.ls", Read, Empty => DossierList;
+    dossier_list / DossierListOp = "dossier.list", Read, Empty => DossierList;
     /// Read a dossier file; each line prints as <line>:<hash>|<text>, the anchors that edit takes.
     dossier_read / DossierRead = "dossier.read", Read, DossierReadIn => Lines;
     /// Search every dossier (or one) for a text; rows are <path>:<line>:<hash>|<text>.
     dossier_search / DossierSearch = "dossier.search", Read, DossierSearchIn => Lines;
-    /// Write a new file in this session's dossier (content from stdin); overwrite replaces an existing one.
+    /// Write a new file in this session's dossier (content from stdin); `--overwrite` replaces an existing one.
     dossier_write / DossierWrite = "dossier.write", Session, DossierWriteIn => Lines;
     /// Append to a file in this session's dossier (content from stdin).
     dossier_append / DossierAppend = "dossier.append", Session, DossierAppendIn => Lines;
@@ -552,10 +552,10 @@ operations! {
     session_stop / SessionStop = "session.stop", Workspace, SessionIdIn => Lines;
     /// The programs a session's processes started, oldest first (legionctl-system's eBPF sensor; needs its scope).
     session_activity / SessionActivity = "session.activity", Read, SessionIdIn => Vec<SessionExec>;
-    /// Freeze a session's processes (cgroup freezer): memory stays, the agent does nothing until thawed.
+    /// Freeze a session's processes (cgroup freezer): memory stays, the agent does nothing until `session unpause`.
     session_pause / SessionPause = "session.pause", Workspace, SessionIdIn => Lines;
     /// Let a paused session run again.
-    session_thaw / SessionThaw = "session.thaw", Workspace, SessionIdIn => Lines;
+    session_unpause / SessionUnpause = "session.unpause", Workspace, SessionIdIn => Lines;
     /// Continue an ended session: the same id, dossier and workspace, and the agent's resume command.
     session_resume / SessionResume = "session.resume", Workspace, SessionResumeIn => Launch;
     /// Whether a git command may run in a session sandbox (the git gate asks this before every git call).

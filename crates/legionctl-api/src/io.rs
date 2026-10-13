@@ -119,6 +119,7 @@ pub struct WorkspaceIn {
 pub struct CheckpointIn {
     /// Commit message: what this change set does (from the plan entry).
     pub message: String,
+    /// A folder in the repository; needed only when the dossier has workspaces in several repositories.
     #[serde(default)]
     pub repo: Option<ClientPath>,
     #[serde(default)]
@@ -130,6 +131,7 @@ pub struct BranchIn {
     /// The branch becomes legionctl/<dossier>--<topic> (created the first time); without it, legionctl/<dossier>.
     #[serde(default)]
     pub topic: Option<String>,
+    /// A folder in the repository; needed only when the dossier has workspaces in several repositories.
     #[serde(default)]
     pub repo: Option<ClientPath>,
     #[serde(default)]
@@ -141,6 +143,7 @@ pub struct CloseIn {
     /// Discard uncommitted changes.
     #[serde(default)]
     pub force: bool,
+    /// A folder in the repository; needed only when the dossier has workspaces in several repositories.
     #[serde(default)]
     pub repo: Option<ClientPath>,
     #[serde(default)]
@@ -155,7 +158,14 @@ pub struct SetupApplyIn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AccountAddIn {
+    /// Profile name: a-z, 0-9 and '-'.
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct IdIn {
+    /// The reminder's or hook action's id (`reminders list`, `hooks list`).
     pub id: String,
     /// Project directory; its repository's .legionctl layer applies.
     #[serde(default = "here")]
@@ -182,6 +192,7 @@ fn session_start() -> Event {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HookBindIn {
+    /// Hook event: session-start, prompt or stop.
     pub event: Event,
     /// Action id: a built-in (reminders, load, load-if-busy, setup-check) or one you defined.
     pub action: String,
@@ -192,6 +203,7 @@ pub struct HookBindIn {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HookAddIn {
+    /// Action id: a-z, 0-9 and '-'.
     pub id: String,
     /// One-line shell command; it runs as you with `sh -c`, and its stdout goes to the agent.
     pub command: String,
@@ -235,6 +247,7 @@ pub enum DesktopGpu {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GpuPrimaryIn {
+    /// The GPU that draws the desktop: nvidia, intel, or auto (Mutter decides).
     pub choice: DesktopGpu,
     /// Print what would change; change nothing.
     #[serde(default)]
@@ -328,6 +341,7 @@ pub struct HookTable {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HookRunIn {
+    /// Hook event: session-start, prompt or stop.
     pub event: Event,
     /// Project directory; its repository's .legionctl layer applies.
     #[serde(default = "here")]
@@ -369,9 +383,9 @@ pub struct DossierUseIn {
     pub steal: bool,
     #[serde(default)]
     pub session: SessionId,
-    /// Where the session works; the next session there is bound to this dossier.
+    /// A folder in the repository the session works in; the next session there gets this dossier if it is free.
     #[serde(default = "here")]
-    pub project: ClientPath,
+    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -397,8 +411,10 @@ pub struct DossierSearchIn {
     /// Only this dossier.
     #[serde(default)]
     pub dossier: Option<String>,
+    /// Match without regard to upper and lower case.
     #[serde(default)]
     pub ignore_case: bool,
+    /// At most this many lines.
     #[serde(default = "two_hundred")]
     pub limit: u32,
 }
@@ -411,6 +427,7 @@ fn two_hundred() -> u32 {
 pub struct DossierWriteIn {
     /// <dossier>/<file>, relative to the dossier root.
     pub path: String,
+    /// The file's text; default: stdin.
     pub content: StdinText,
     /// Replace an existing file.
     #[serde(default)]
@@ -423,6 +440,7 @@ pub struct DossierWriteIn {
 pub struct DossierAppendIn {
     /// <dossier>/<file>, relative to the dossier root.
     pub path: String,
+    /// The text to append; default: stdin.
     pub content: StdinText,
     #[serde(default)]
     pub session: SessionId,
@@ -432,6 +450,7 @@ pub struct DossierAppendIn {
 pub struct DossierEditIn {
     /// <dossier>/<file>, relative to the dossier root.
     pub path: String,
+    /// replace (the lines from start to end), insert-after (after start) or delete.
     pub mode: EditMode,
     /// Anchor <line>:<hash> from a read.
     pub start: String,
@@ -451,6 +470,7 @@ pub struct DossierAddIn {
     pub class: String,
     /// a-z, 0-9 and '-'.
     pub slug: String,
+    /// The artifact's text; default: stdin.
     pub content: StdinText,
     #[serde(default)]
     pub session: SessionId,
@@ -519,7 +539,7 @@ pub struct SessionStartIn {
     /// A folder in the repository to work on.
     #[serde(default = "here")]
     pub repo: ClientPath,
-    /// An account profile (`agents account-add`): its logins and transcripts instead of `~/.claude` and `~/.codex`.
+    /// An account profile (`agents accounts add`): its logins and transcripts instead of `~/.claude` and `~/.codex`.
     #[serde(default)]
     pub account: Option<String>,
 }
@@ -540,7 +560,7 @@ pub struct SessionRunIn {
     /// A folder in the repository to work on.
     #[serde(default = "here")]
     pub repo: ClientPath,
-    /// An account profile (`agents account-add`): its logins and transcripts instead of `~/.claude` and `~/.codex`.
+    /// An account profile (`agents accounts add`): its logins and transcripts instead of `~/.claude` and `~/.codex`.
     #[serde(default)]
     pub account: Option<String>,
 }
@@ -570,6 +590,7 @@ pub type Sessions = Vec<SessionState>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionIdIn {
+    /// Session id (`session list`).
     pub id: String,
 }
 
@@ -585,6 +606,7 @@ pub struct SessionExec {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionResumeIn {
+    /// Session id (`session list`).
     pub id: String,
     /// Continue on this account profile instead (its rate limits, its login); Claude Code's transcript is copied
     /// there, so the conversation goes on.
@@ -621,6 +643,7 @@ pub struct EventsIn {
     /// Only events after this id (0: from the start).
     #[serde(default)]
     pub since: i64,
+    /// At most this many events.
     #[serde(default = "two_hundred")]
     pub limit: u32,
 }
@@ -706,10 +729,10 @@ pub type BenchRuns = Vec<BenchRun>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct BenchCompareIn {
-    /// The earlier run (its id from bench list).
-    pub a: i64,
+    /// The earlier run (its id from `bench list`).
+    pub earlier: i64,
     /// The later run.
-    pub b: i64,
+    pub later: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -724,6 +747,7 @@ pub struct TuneIn {
     pub attribute: String,
     /// Values to step through (W, or °C for `cpu_temp`), each within the firmware range.
     pub values: Vec<u32>,
+    /// The workload of each step: cpu, gpu or mixed.
     pub scenario: Scenario,
     /// Duration of each step (1-600).
     #[serde(default = "sixty")]
@@ -746,7 +770,7 @@ pub type Packages = Vec<PackageState>;
 pub struct PackageFetchIn {
     /// A package from the config (`packages`).
     pub name: String,
-    /// Fetch again even when this version is in the store (after `packages` shows it changed).
+    /// Fetch again even when this version is in the store (after `packages list` shows it changed).
     #[serde(default)]
     pub force: bool,
 }
@@ -777,9 +801,11 @@ pub struct CacheGetIn {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CachePutIn {
+    /// The cache key the client computed.
     pub key: String,
     /// The tool result as JSON.
     pub value: String,
+    /// Seconds the entry stays valid.
     pub ttl_s: u64,
 }
 
@@ -812,6 +838,7 @@ pub enum VirtAction {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct VirtActIn {
+    /// start, stop, pause or unpause.
     pub action: VirtAction,
     /// A container or VM name from `virt status`.
     pub name: String,
@@ -847,6 +874,7 @@ pub struct VirtCreateIn {
     pub name: String,
     /// A local image (`docker images`); legionctl does not pull.
     pub image: String,
+    /// Pin the container to the P-cores, the E-cores, or all CPUs.
     pub cores: Option<CoreClass>,
     /// Its memory limit: bytes, or with k, m or g (powers of 1024).
     pub memory: Option<String>,
@@ -927,13 +955,16 @@ pub enum SettingsScope {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AgentSetIn {
+    /// claude or codex.
     pub agent: AgentName,
+    /// Which settings file: user, project or project-local.
     pub scope: SettingsScope,
     /// Dotted key: `permissions.defaultMode`, `mcp_servers.ctx.command`.
     pub key: String,
     /// JSON (`true`, `3`, `["a"]`, `{"k": 1}`) or plain text. Not kept in the audit: it can be a token.
     #[schemars(extend("x-secret" = true))]
     pub value: String,
+    /// The project whose settings files project and project-local mean.
     #[serde(default = "here")]
     pub project: ClientPath,
     /// Show the changed lines; write nothing.
@@ -943,7 +974,7 @@ pub struct AgentSetIn {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct AgentUsageIn {
-    /// Transcripts changed in the last days (default 7).
+    /// Transcripts changed in the last days.
     #[serde(default = "seven")]
     pub days: u64,
     /// An account profile's transcripts instead of `~/.claude` and `~/.codex`.
@@ -955,7 +986,9 @@ pub struct AgentUsageIn {
 pub struct PluginInstallIn {
     /// `<plugin>@<marketplace>`, both allowed in `plugins.marketplaces`.
     pub id: String,
+    /// Where Claude Code records the plugin: user, project or project-local.
     pub scope: SettingsScope,
+    /// The project for the project scopes.
     #[serde(default = "here")]
     pub project: ClientPath,
 }

@@ -1282,7 +1282,7 @@ impl Render for Vec<crate::io::Plugin> {
 impl Render for Vec<crate::io::Account> {
     fn text(&self) -> String {
         if self.is_empty() {
-            return "no account profiles (legionctl agents account-add <name>)".into();
+            return "no account profiles (legionctl agents accounts add <name>)".into();
         }
         self.iter()
             .map(|a| {
