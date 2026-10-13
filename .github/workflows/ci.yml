@@ -54,7 +54,10 @@ jobs:
           key: debian-13-genericcloud-v1
       - name: VM sessions
         run: |
-          sudo apt-get install -y qemu-system-x86 qemu-utils virtiofsd xorriso
+          sudo apt-get install -y qemu-system-x86 qemu-utils xorriso libcap-ng-dev libseccomp-dev
+          # read-only shares need virtiofsd --readonly (1.11 and newer); Ubuntu 24.04 has 1.10
+          cargo install --locked virtiofsd@1.14.0
+          sudo install -m 755 ~/.cargo/bin/virtiofsd /usr/libexec/virtiofsd
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
           cargo test --locked -p legionctl --test e2e -- --ignored --exact \

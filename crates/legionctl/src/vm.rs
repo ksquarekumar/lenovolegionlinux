@@ -141,6 +141,7 @@ fn share(
     let mut daemons = Daemons(Vec::new());
     for (i, (tag, dir, read_only)) in shares.iter().map(|s| (&s.0, &s.1, s.2)).enumerate() {
         let socket = folder.join(format!("fs{i}.sock"));
+        let log = folder.join(format!("fs{i}.log"));
         let _ = std::fs::remove_file(&socket);
         let mut daemon = Command::new(virtiofsd);
         daemon
@@ -148,7 +149,7 @@ fn share(
             .arg(format!("--shared-dir={}", dir.display()))
             .arg("--sandbox=namespace")
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(std::fs::File::create(&log)?);
         if read_only {
             daemon.arg("--readonly");
         }
@@ -159,11 +160,19 @@ fn share(
         );
         let deadline = Instant::now() + Duration::from_secs(10);
         while !socket.exists() {
-            anyhow::ensure!(
-                Instant::now() < deadline,
-                "{virtiofsd} did not share {}",
-                dir.display()
-            );
+            let ended = daemons
+                .0
+                .last_mut()
+                .map(Child::try_wait)
+                .transpose()?
+                .flatten();
+            if ended.is_some() || Instant::now() > deadline {
+                anyhow::bail!(
+                    "{virtiofsd} did not share {}: {}",
+                    dir.display(),
+                    std::fs::read_to_string(&log).unwrap_or_default().trim()
+                );
+            }
             std::thread::sleep(Duration::from_millis(20));
         }
         qemu.arg("-chardev")
