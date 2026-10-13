@@ -62,6 +62,12 @@ that session's id in every session field of its input, whatever it sent. Operati
 dossier guard, gates check, tools record, cache get/put, gpu run-env) are for legionctl's own parts and are not in
 the CLI or MCP.
 
+Built (2026-10-13, DESIGN/03 slice 3): the classes are `read`, `session` (changes only the caller's own session: its
+dossier, its workspace except merge, its hooks), `workspace` (the user's files and settings, other sessions) and
+`machine` (polkit in the daemon). An agent's `workspace` call, or a call with a field marked `x-approval` set (such
+as `dossier use --steal`), waits for the user: a desktop notification with Allow and Deny, 120 s; Deny, no answer, a
+closed notification or no desktop to ask is `denied`. The user's own calls never ask.
+
 ## Worktrees and sandboxes
 
 - **Copy-on-write:** this machine's disks are ext4, which cannot reflink. A worktree is a `git worktree` (shares the

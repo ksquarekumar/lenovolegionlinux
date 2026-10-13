@@ -363,8 +363,9 @@ pub struct SessionIn {
 pub struct DossierUseIn {
     /// Dossier name: a-z, 0-9 and '-'. A name that does not exist makes a new dossier from the pattern.
     pub name: String,
-    /// Take it over from another live session (with the user's agreement).
+    /// Take it over from another live session; for an agent, the operator asks the user first.
     #[serde(default)]
+    #[schemars(extend("x-approval" = true))]
     pub steal: bool,
     #[serde(default)]
     pub session: SessionId,

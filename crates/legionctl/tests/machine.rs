@@ -1605,6 +1605,167 @@ mod operator_and_daemon {
         drop(desktop);
     }
 
+    /// A stand-in desktop on the private bus: it records the body of each notification and answers the n-th with
+    /// the n-th of `answers` (an action key) as `ActionInvoked`.
+    async fn answering_desktop(
+        address: &str,
+        answers: &'static [&'static str],
+    ) -> (
+        zbus::Connection,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let desktop = zbus::connection::Builder::address(address)
+            .unwrap()
+            .name("org.freedesktop.Notifications")
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let seen = asked.clone();
+        let bus = desktop.clone();
+        tokio::spawn(async move {
+            let mut calls = zbus::MessageStream::from(&bus);
+            while let Some(Ok(call)) = futures_util::StreamExt::next(&mut calls).await {
+                if call
+                    .header()
+                    .member()
+                    .is_some_and(|m| m.as_str() == "Notify")
+                {
+                    let (_, _, _, _, body, actions, ..): Notify =
+                        call.body().deserialize().unwrap();
+                    assert_eq!(actions, ["allow", "Allow", "deny", "Deny"]);
+                    let n = {
+                        let mut seen = seen.lock().unwrap();
+                        seen.push(body);
+                        seen.len()
+                    };
+                    let id = u32::try_from(n).unwrap();
+                    bus.reply(&call.header(), &(id,)).await.unwrap();
+                    bus.emit_signal(
+                        None::<()>,
+                        "/org/freedesktop/Notifications",
+                        "org.freedesktop.Notifications",
+                        "ActionInvoked",
+                        &(id, answers[n - 1]),
+                    )
+                    .await
+                    .unwrap();
+                }
+            }
+        });
+        (desktop, asked)
+    }
+
+    /// A session's token in the operator database of `home`, as `session start` issues it (only its hash is kept).
+    fn add_session_token(home: &std::path::Path, token: &str, session: &str) {
+        let added = std::process::Command::new("python3")
+            .args([
+                "-c",
+                "import hashlib, sqlite3, sys; c = sqlite3.connect(sys.argv[1]); \
+                 c.execute('INSERT INTO tokens VALUES (?, ?, 0)', \
+                 (hashlib.blake2b(sys.argv[2].encode(), digest_size=32).hexdigest(), sys.argv[3])); c.commit()",
+            ])
+            .arg(home.join(".local/state/legionctl/operator.db"))
+            .args([token, session])
+            .status()
+            .unwrap();
+        assert!(added.success());
+    }
+
+    /// An agent's call outside its own session waits for the user (DESIGN/03): a `workspace` op from a session's
+    /// token shows a desktop notification with Allow and Deny (a stand-in desktop here, which denies the first and
+    /// allows the second); Deny is the `denied` code; the session's own ops ask nothing; the user's own calls ask
+    /// nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_agent_asks_the_user_before_it_changes_more_than_its_session() {
+        let m = Machine::new("approve");
+        let (_stand_ins, _asked, (_bus, _daemon)) = start(&m).await;
+        let address = format!("unix:path={}", m.dir.join("bus").display());
+        let (desktop, asked) = answering_desktop(&address, &["deny", "allow"]).await;
+        let home = m.dir.join("home");
+        let op = Operator::start(
+            "approve",
+            &[
+                ("PATH", m.dir.join("bin").into()),
+                ("HOME", home.clone().into()),
+                ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+                ("DBUS_SYSTEM_BUS_ADDRESS", address.clone().into()),
+                ("DBUS_SESSION_BUS_ADDRESS", address.into()),
+            ],
+        );
+        // `events` opens the operator database, so its tables exist
+        op.ok(&["events"]);
+        add_session_token(&home, "agent-token", "agent-1");
+        let agent = |args: &[&str]| {
+            op.run(
+                &home,
+                &[
+                    ("LEGIONCTL_TOKEN", "agent-token"),
+                    ("HOME", home.to_str().unwrap()),
+                ],
+                args,
+                "",
+            )
+        };
+        let hooks_add = ["hooks", "add", "greet", "echo hello"];
+
+        let denied = agent(&hooks_add);
+        assert!(!denied.status.success());
+        assert!(
+            String::from_utf8_lossy(&denied.stderr).contains(
+                "hooks.add changes more than this session, and the user did not allow it"
+            ),
+            "{}",
+            String::from_utf8_lossy(&denied.stderr)
+        );
+        let allowed = agent(&hooks_add);
+        assert!(
+            allowed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&allowed.stderr)
+        );
+        let own = agent(&["dossier", "use", "box"]);
+        assert!(
+            own.status.success(),
+            "{}",
+            String::from_utf8_lossy(&own.stderr)
+        );
+        op.ok(&["hooks", "rm", "greet"]);
+
+        let asked = asked.lock().unwrap().clone();
+        assert_eq!(
+            asked.len(),
+            2,
+            "only the agent's two workspace calls ask: {asked:?}"
+        );
+        assert!(asked[0].starts_with("hooks.add {"), "{asked:?}");
+        let audit: Value = serde_json::from_str(&op.ok(&["events", "--json"])).unwrap();
+        let outcomes: Vec<(String, Value, Value)> = audit
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["kind"] == "hooks.add")
+            .map(|e| {
+                (
+                    e["kind"].as_str().unwrap().to_string(),
+                    e["payload"]["principal"].clone(),
+                    e["payload"]["outcome"].clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            outcomes,
+            [(
+                "hooks.add".into(),
+                serde_json::json!({"session": "agent-1"}),
+                Value::Null
+            )],
+            "the denied call never ran; the allowed one is the agent's"
+        );
+        drop(desktop);
+    }
+
     /// Restart into Windows: the entry comes from the firmware's list (captured on this machine), the dry run changes
     /// nothing, polkit is asked, `BootNext` is set before the reboot, and a failed `BootNext` stops the reboot.
     #[tokio::test(flavor = "multi_thread")]

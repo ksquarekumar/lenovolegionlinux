@@ -3,6 +3,7 @@
 //! (Fn+R, OSD).
 
 mod acp;
+mod approval;
 mod display;
 mod engine;
 mod gateway;

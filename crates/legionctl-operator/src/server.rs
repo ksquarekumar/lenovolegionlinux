@@ -86,6 +86,40 @@ fn own_session(op: &OpInfo, principal: &Principal, input: &mut Value) {
     }
 }
 
+/// An agent's call outside its own session (a `workspace` op, or a field marked `x-approval` set) goes ahead only
+/// when the user allows it; the user's own calls and machine changes (polkit asks) go ahead.
+async fn approved(op: &OpInfo, principal: &Principal, input: &Value) -> Result<(), ApiError> {
+    let Principal::Session(session) = principal else {
+        return Ok(());
+    };
+    let schema = (op.input)();
+    let marked = schema["properties"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .any(|(field, prop)| prop["x-approval"] == true && input[field] == true);
+    if op.class != Class::Workspace && !marked {
+        return Ok(());
+    }
+    let what = format!("{} {}", op.name, redacted(op, input));
+    let denied = |message: String| ApiError {
+        code: Code::Denied,
+        message,
+        op: String::new(),
+    };
+    match crate::approval::ask(session, &what).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(denied(format!(
+            "{} changes more than this session, and the user did not allow it",
+            op.name
+        ))),
+        Err(e) => Err(denied(format!(
+            "{} changes more than this session and needs the user's approval, but nobody could be asked: {e:#}",
+            op.name
+        ))),
+    }
+}
+
 async fn list(headers: HeaderMap) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     principal(&headers).map_err(|e| refusal(&e))?;
     Ok(Json(Value::Array(
@@ -151,6 +185,10 @@ async fn run(
     let op = OPS.iter().find(|op| op.name == name);
     if let Some(op) = op {
         own_session(op, &principal, &mut input);
+        if let Err(mut e) = approved(op, &principal, &input).await {
+            e.op.clone_from(&name);
+            return refusal(&e);
+        }
     }
     let ctx = Ctx {
         actor: headers

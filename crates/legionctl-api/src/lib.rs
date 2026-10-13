@@ -107,7 +107,10 @@ pub fn api_fingerprint() -> &'static str {
 pub enum Class {
     /// Reads only; no gate.
     Read,
-    /// Writes in the user's workspaces and agent settings; the agent harness asks for tool permission.
+    /// Changes only the caller's own session: its dossier, its workspace, its hooks. An agent calls these freely.
+    Session,
+    /// Changes the user's files and settings or other sessions; when an agent calls it, the operator asks the user
+    /// first (a desktop notification, DESIGN/03).
     Workspace,
     /// Changes the machine; `legionctl-system` asks for polkit approval.
     Machine,
@@ -398,21 +401,21 @@ operations! {
     agents_usage / AgentsUsage = "agents.usage", Read, AgentUsageIn => UsageReport;
     /// Open (or reopen) this session's dossier workspace in a repository: a worktree on legionctl/<dossier> with the
     /// dossier linked as .agentworkspace. Change code there, not in the main checkout.
-    workspace_open / WorkspaceOpen = "workspace.open", Workspace, WorkspaceOpenIn => Workspace;
+    workspace_open / WorkspaceOpen = "workspace.open", Session, WorkspaceOpenIn => Workspace;
     /// Git state of this session's workspaces (ahead/behind the base, staged, unstaged, untracked, conflicts) and
     /// drift from the record.
     workspace_status / WorkspaceStatusOp = "workspace.status", Read, WorkspaceIn => WorkspaceStates;
     /// Every open workspace, of every dossier.
     workspace_list / WorkspaceList = "workspace.list", Read, Empty => Workspaces;
     /// Stage everything in the workspace and commit it with the message.
-    workspace_checkpoint / WorkspaceCheckpoint = "workspace.checkpoint", Workspace, CheckpointIn => Lines;
+    workspace_checkpoint / WorkspaceCheckpoint = "workspace.checkpoint", Session, CheckpointIn => Lines;
     /// Switch to legionctl/<dossier>--<topic>, created from the current branch the first time; without a topic, back
     /// to legionctl/<dossier>. It becomes the active branch; uncommitted changes stop it.
-    workspace_branch / WorkspaceBranch = "workspace.branch", Workspace, BranchIn => Lines;
+    workspace_branch / WorkspaceBranch = "workspace.branch", Session, BranchIn => Lines;
     /// Rebase the branch onto the base, then fast-forward the base in the main checkout (which must be clean).
     workspace_merge / WorkspaceMerge = "workspace.merge", Workspace, WorkspaceIn => Lines;
     /// Remove the worktree; the branch and the dossier stay. Refuses uncommitted changes unless force.
-    workspace_close / WorkspaceClose = "workspace.close", Workspace, CloseIn => Lines;
+    workspace_close / WorkspaceClose = "workspace.close", Session, CloseIn => Lines;
     /// Whether ctx and legionctl are set up for Claude Code and Codex (skills, MCP servers).
     setup_check / SetupCheck = "setup.check", Read, Empty => SetupReport;
     /// Set up ctx and legionctl for Claude Code and Codex. Changes user-level config files only, with backups.
@@ -439,7 +442,7 @@ operations! {
     hooks_rm / HooksRm = "hooks.rm", Workspace, IdIn => HookTable;
     /// Run everything bound to an event and return the combined output, or the reason the dossier gate blocks the
     /// prompt (the agent plugin calls this through `legionctl hook`).
-    hooks_run / HooksRun = "internal.hooks.run", Workspace, HookRunIn => HookReply;
+    hooks_run / HooksRun = "internal.hooks.run", Session, HookRunIn => HookReply;
     /// legionctl skills: where each agent has them and whether the reminder that keeps each in force is on.
     skills / Skills = "skills", Read, ProjectIn => SkillList;
     /// Telemetry: package and GPU power, temperatures, clocks, PSI, fan RPM and throttle reasons, one line per sample.
@@ -457,13 +460,13 @@ operations! {
     /// Fetch a package into the store (network, scratch home) and pin its content hash.
     packages_fetch / PackagesFetch = "packages.fetch", Workspace, PackageFetchIn => Manifest;
     /// Log one MCP tool call (legionctl mcp-proxy calls this for each call it forwards or refuses).
-    tools_record / ToolsRecord = "internal.tools.record", Workspace, ToolCall => Empty;
+    tools_record / ToolsRecord = "internal.tools.record", Session, ToolCall => Empty;
     /// Calls through the model gateway: account, model, tokens in and out, replayed or not, status, duration.
     gateway_usage / GatewayUsageOp = "gateway.usage", Read, GatewayUsageIn => Vec<GatewayUsage>;
     /// A reusable MCP tool result (legionctl mcp-proxy asks before it calls a tool its config lets it cache).
     cache_get / CacheGet = "internal.cache.get", Read, CacheGetIn => CacheValue;
     /// Keep an MCP tool result for reuse.
-    cache_put / CachePut = "internal.cache.put", Workspace, CachePutIn => Empty;
+    cache_put / CachePut = "internal.cache.put", Session, CachePutIn => Empty;
     /// MCP tool calls of session agents through legionctl mcp-proxy, oldest first.
     tools_calls / ToolsCalls = "tools.calls", Read, ToolCallsIn => ToolCalls;
     /// A repository's Dockerfiles as a services description (build, entrypoints, ports) and a build-cache description
@@ -507,11 +510,11 @@ operations! {
     /// Two bench runs side by side: scores, telemetry and the knobs that differ.
     bench_compare / BenchCompareOp = "bench.compare", Read, BenchCompareIn => BenchCompare;
     /// Bind this session to a dossier (one writable dossier per session); create it from the pattern with create.
-    dossier_use / DossierUse = "dossier.use", Workspace, DossierUseIn => Lines;
+    dossier_use / DossierUse = "dossier.use", Session, DossierUseIn => Lines;
     /// This session's active dossier.
     dossier_active / DossierActive = "dossier.active", Read, SessionIn => Lines;
     /// Give up this session's dossier.
-    dossier_release / DossierRelease = "dossier.release", Workspace, SessionIn => Lines;
+    dossier_release / DossierRelease = "dossier.release", Session, SessionIn => Lines;
     /// Which session holds which dossier, and stale bindings.
     dossier_locks / DossierLocks = "dossier.locks", Read, Empty => Locks;
     /// Dossiers, most recently changed first.
@@ -521,13 +524,13 @@ operations! {
     /// Search every dossier (or one) for a text; rows are <path>:<line>:<hash>|<text>.
     dossier_search / DossierSearch = "dossier.search", Read, DossierSearchIn => Lines;
     /// Write a new file in this session's dossier (content from stdin); overwrite replaces an existing one.
-    dossier_write / DossierWrite = "dossier.write", Workspace, DossierWriteIn => Lines;
+    dossier_write / DossierWrite = "dossier.write", Session, DossierWriteIn => Lines;
     /// Append to a file in this session's dossier (content from stdin).
-    dossier_append / DossierAppend = "dossier.append", Workspace, DossierAppendIn => Lines;
+    dossier_append / DossierAppend = "dossier.append", Session, DossierAppendIn => Lines;
     /// Change anchored lines of a file in this session's dossier; an anchor from an outdated read is refused.
-    dossier_edit / DossierEdit = "dossier.edit", Workspace, DossierEditIn => Lines;
+    dossier_edit / DossierEdit = "dossier.edit", Session, DossierEditIn => Lines;
     /// Create the next numbered artifact <CLASS>/NN-<slug>.md in this session's dossier (content from stdin).
-    dossier_add / DossierAdd = "dossier.add", Workspace, DossierAddIn => Lines;
+    dossier_add / DossierAdd = "dossier.add", Session, DossierAddIn => Lines;
     /// Ledger findings for a dossier (default: this session's): a missing plan.md or plan section.
     dossier_check / DossierCheck = "dossier.check", Read, DossierCheckIn => DossierFindings;
     /// The dossier's work graph: plan rows and artifacts, linked by supports, supersedes, code and plan references.
