@@ -969,7 +969,7 @@ impl Engine for Operator {
                 .active(session(&input.session)?)?
                 .context("this session has no active dossier; name one")?,
         };
-        Ok(ws.graph(&dossier, input.node.as_deref()))
+        ws.graph(&dossier, input.node.as_deref())
     }
 
     fn dossier_check(&self, _: &Ctx, input: DossierCheckIn) -> Result<DossierFindings> {

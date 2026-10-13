@@ -34,6 +34,57 @@ pub struct Edge {
 pub struct Graph {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
+    /// The status changes of the node asked for (`graph --node`), oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<StatusChange>,
+}
+
+/// A node's status changed in a write through legionctl (null: the node did not exist or had no status).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StatusChange {
+    /// Seconds since the epoch.
+    pub ts: i64,
+    pub session: String,
+    pub node: String,
+    pub from: Option<String>,
+    pub to: Option<String>,
+}
+
+/// The status of each node that `file` (relative to the dossier) holds in `text`: the plan rows, or the artifact.
+fn statuses(file: &str, text: &str) -> BTreeMap<String, Option<String>> {
+    if file == "plan.md" {
+        let mut graph = Graph::default();
+        plan_rows(text, &BTreeMap::new(), &mut graph);
+        return graph.nodes.into_iter().map(|n| (n.id, n.status)).collect();
+    }
+    if Path::new(file).extension().is_none_or(|e| e != "md") {
+        return BTreeMap::new();
+    }
+    let fm = front_matter(text);
+    let id = fm
+        .get("id")
+        .and_then(|v| v.first())
+        .cloned()
+        .unwrap_or_else(|| file.trim_end_matches(".md").to_string());
+    BTreeMap::from([(id, fm.get("status").and_then(|v| v.first()).cloned())])
+}
+
+/// The nodes of `file` whose status differs between `old` and `new`: node, from, to.
+#[must_use]
+pub fn status_changes(
+    file: &str,
+    old: &str,
+    new: &str,
+) -> Vec<(String, Option<String>, Option<String>)> {
+    let (before, after) = (statuses(file, old), statuses(file, new));
+    let ids: BTreeSet<&String> = before.keys().chain(after.keys()).collect();
+    ids.into_iter()
+        .filter_map(|id| {
+            let from = before.get(id).cloned().flatten();
+            let to = after.get(id).cloned().flatten();
+            (from != to).then(|| (id.clone(), from, to))
+        })
+        .collect()
 }
 
 /// `key: value` and `key: [a, b]` lines between the leading `---` lines.
@@ -230,6 +281,7 @@ impl Graph {
                 .cloned()
                 .collect(),
             edges,
+            history: Vec::new(),
         }
     }
 

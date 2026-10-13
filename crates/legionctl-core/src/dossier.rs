@@ -59,6 +59,15 @@ const SCHEMA: &[&str] = &[
      );",
     // v5: the account profile a session runs with (A1)
     "ALTER TABLE sessions ADD COLUMN account TEXT;",
+    // v6: status history of the work graph's nodes, from writes through legionctl (W4)
+    "CREATE TABLE status_changes (
+        ts          INTEGER NOT NULL,
+        session     TEXT NOT NULL,
+        dossier     TEXT NOT NULL,
+        node        TEXT NOT NULL,
+        from_status TEXT,
+        to_status   TEXT
+     );",
 ];
 
 /// Where a session works, for binding the next session there: the repository that contains `dir`, else `dir`.
@@ -477,11 +486,23 @@ impl Dossiers {
         Ok(full)
     }
 
-    fn log(&self, session: &str, kind: &str, rel: &str) -> Result<()> {
-        self.db.conn().execute(
+    /// Record a write of `rel` (`<dossier>/<file>`) from `old` to `new`, and each node status it changed.
+    fn log(&self, session: &str, kind: &str, rel: &str, (old, new): (&str, &str)) -> Result<()> {
+        let conn = self.db.conn();
+        let ts = now();
+        conn.execute(
             "INSERT INTO writes (ts, session, kind, path) VALUES (?1, ?2, ?3, ?4)",
-            params![now(), session, kind, rel],
+            params![ts, session, kind, rel],
         )?;
+        if let Some((dossier, file)) = rel.split_once('/') {
+            for (node, from, to) in crate::graph::status_changes(file, old, new) {
+                conn.execute(
+                    "INSERT INTO status_changes (ts, session, dossier, node, from_status, to_status)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![ts, session, dossier, node, from, to],
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -581,8 +602,10 @@ impl Dossiers {
             overwrite || !full.exists(),
             "{rel} exists; use edit, or pass overwrite"
         );
-        atomic_write(&full, &with_newline(content))?;
-        self.log(session, "write", rel)?;
+        let old = std::fs::read_to_string(&full).unwrap_or_default();
+        let new = with_newline(content);
+        atomic_write(&full, &new)?;
+        self.log(session, "write", rel, (&old, &new))?;
         Ok(full)
     }
 
@@ -597,8 +620,9 @@ impl Dossiers {
         } else {
             "\n"
         };
-        atomic_write(&full, &format!("{old}{sep}{}", with_newline(content)))?;
-        self.log(session, "append", rel)?;
+        let new = format!("{old}{sep}{}", with_newline(content));
+        atomic_write(&full, &new)?;
+        self.log(session, "append", rel, (&old, &new))?;
         Ok(full)
     }
 
@@ -617,8 +641,8 @@ impl Dossiers {
         content: &str,
     ) -> Result<Vec<String>> {
         let full = self.guard_write(session, rel)?;
-        let mut file =
-            lines(&std::fs::read_to_string(&full).with_context(|| format!("reading {rel}"))?);
+        let old = std::fs::read_to_string(&full).with_context(|| format!("reading {rel}"))?;
+        let mut file = lines(&old);
         let check = |anchor: &str| -> Result<usize> {
             let (line, hash) = parse_anchor(anchor)?;
             ensure!(
@@ -650,7 +674,7 @@ impl Dossiers {
         };
         let text: String = file.iter().flat_map(|l| [l.as_str(), "\n"]).collect();
         atomic_write(&full, &text)?;
-        self.log(session, "edit", rel)?;
+        self.log(session, "edit", rel, (&old, &text))?;
         Ok(file
             .iter()
             .enumerate()
@@ -710,7 +734,7 @@ impl Dossiers {
                 Ok(mut file) => {
                     file.write_all(with_newline(content).as_bytes())?;
                     let rel = format!("{folder_rel}/{name}");
-                    self.log(session, "add", &rel)?;
+                    self.log(session, "add", &rel, ("", &with_newline(content)))?;
                     return Ok(rel);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => next += 1,
@@ -766,14 +790,32 @@ impl Dossiers {
         findings
     }
 
-    /// The work graph of `dossier`, or the part around `node`.
-    #[must_use]
-    pub fn graph(&self, dossier: &str, node: Option<&str>) -> crate::graph::Graph {
+    /// The work graph of `dossier`, or the part around `node` with its status history.
+    ///
+    /// # Errors
+    /// The history cannot be read.
+    pub fn graph(&self, dossier: &str, node: Option<&str>) -> Result<crate::graph::Graph> {
         let graph = crate::graph::build(&self.root.join(dossier));
-        match node {
-            Some(id) => graph.around(id),
-            None => graph,
-        }
+        let Some(id) = node else {
+            return Ok(graph);
+        };
+        let mut around = graph.around(id);
+        let mut stmt = self.db.conn().prepare(
+            "SELECT ts, session, node, from_status, to_status FROM status_changes
+             WHERE dossier = ?1 AND node = ?2 ORDER BY ts, rowid",
+        )?;
+        around.history = stmt
+            .query_map(params![dossier, id], |r| {
+                Ok(crate::graph::StatusChange {
+                    ts: r.get(0)?,
+                    session: r.get(1)?,
+                    node: r.get(2)?,
+                    from: r.get(3)?,
+                    to: r.get(4)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(around)
     }
 }
 

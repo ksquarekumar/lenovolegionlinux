@@ -1508,6 +1508,112 @@ fn dossier_check_finds_dangling_links_unverified_acceptance_and_stale_evidence()
     assert_eq!(around["nodes"].as_array().unwrap().len(), 2);
 }
 
+/// The work graph keeps each status change made through legionctl (write, edit, add), with the session, oldest
+/// first; an edit that keeps the status adds nothing. `dossier graph --node` shows a plan row's and an artifact's.
+#[test]
+fn dossier_graph_keeps_each_status_change_with_its_session() {
+    let (op, home) = operator("history");
+    let repo = repository(&home);
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", "s1"),
+    ];
+    let ok = |args: &[&str], stdin: &str| {
+        let o = op.run(&repo, &env, args, stdin);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8_lossy(&o.stdout).to_string()
+    };
+    ok(&["dossier", "use", "hist", "--create"], "");
+    let plan = "# Plan\n\n## ToDo\n| id | item | status |\n| --- | --- | --- |\n| todo-1 | build it | planned |\n";
+    ok(&["dossier", "write", "hist/plan.md", "--overwrite"], plan);
+    // the row's anchor, then a new text for it
+    let set_row = |row: &str| {
+        let read = ok(&["dossier", "read", "hist/plan.md"], "");
+        let anchor = read
+            .lines()
+            .find(|l| l.contains("| todo-1 |"))
+            .and_then(|l| l.split('|').next())
+            .unwrap()
+            .to_string();
+        ok(
+            &[
+                "dossier",
+                "edit",
+                "hist/plan.md",
+                "--mode",
+                "replace",
+                &anchor,
+            ],
+            row,
+        );
+    };
+    set_row("| todo-1 | build it | in-progress |\n");
+    set_row("| todo-1 | build it well | in-progress |\n");
+    set_row("| todo-1 | build it well | done: abc123 |\n");
+    let note = ok(
+        &["dossier", "add", "MEMORY", "note"],
+        "---\nid: MEM-note\nstatus: pending\n---\n# Note\n",
+    );
+    let note = note.trim().trim_start_matches("hist/").to_string();
+    let read = ok(&["dossier", "read", &format!("hist/{note}")], "");
+    let anchor = read
+        .lines()
+        .nth(2)
+        .unwrap()
+        .split('|')
+        .next()
+        .unwrap()
+        .to_string();
+    ok(
+        &[
+            "dossier",
+            "edit",
+            &format!("hist/{note}"),
+            "--mode",
+            "replace",
+            &anchor,
+        ],
+        "status: done\n",
+    );
+
+    let history = |node: &str| -> Vec<(String, Value, Value)> {
+        let graph: Value =
+            serde_json::from_str(&ok(&["dossier", "graph", "--node", node, "--json"], "")).unwrap();
+        graph["history"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| {
+                (
+                    h["session"].as_str().unwrap().into(),
+                    h["from"].clone(),
+                    h["to"].clone(),
+                )
+            })
+            .collect()
+    };
+    let s1 = || String::from("s1");
+    assert_eq!(
+        history("plan#todo-1"),
+        [
+            (s1(), Value::Null, json!("planned")),
+            (s1(), json!("planned"), json!("in-progress")),
+            (s1(), json!("in-progress"), json!("done: abc123")),
+        ]
+    );
+    assert_eq!(
+        history("MEM-note"),
+        [
+            (s1(), Value::Null, json!("pending")),
+            (s1(), json!("pending"), json!("done"))
+        ]
+    );
+}
+
 /// Agent settings: a dry run shows only the changed lines and writes nothing; a write keeps a backup; TOML keeps its
 /// comments; an unknown top-level key is written with a warning.
 #[test]

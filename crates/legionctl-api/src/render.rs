@@ -1056,6 +1056,15 @@ impl Render for crate::io::Graph {
                 .iter()
                 .map(|e| format!("  {} -{}-> {}", e.from, e.kind, e.to)),
         );
+        out.extend(self.history.iter().map(|h| {
+            format!(
+                "  {} {}: {} -> {}",
+                h.ts,
+                h.session,
+                h.from.as_deref().unwrap_or("-"),
+                h.to.as_deref().unwrap_or("-")
+            )
+        }));
         out.join("\n")
     }
 }

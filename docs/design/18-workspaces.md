@@ -192,7 +192,14 @@ cell is an id (`plan#todo-3`, with its `status` column) and each artifact (its f
 without `.md`). Edges: `supports`, `supersedes` and `code` from front matter, and `refers-to` for an artifact path
 named in a plan row. `legionctl dossier graph [--node <id>]` shows it; `dossier check` adds dangling links,
 acceptance rows that no EVIDENCE supports, and EVIDENCE whose `code` paths have a commit in the dossier's
-repository after the file was written. Not yet: code-graph symbols (`touches`), status history, runnable state.
+repository after the file was written. Not yet: code-graph symbols (`touches`), runnable state.
+
+Built (2026-10-13, W4 part 2): status history. Each write through legionctl (`dossier write`, `append`, `edit`,
+`add`) compares the statuses of the nodes in the file before and after (the plan rows' `status` column, an
+artifact's front-matter `status`) and stores each change in `workspace.db` (`status_changes`: time, session, node,
+from, to; null when the node did not exist). `dossier graph --node <id>` returns the node's history, oldest first. A
+change made outside legionctl (an editor, a script) is not seen: agents write through the dossier tools. Code-graph
+symbols wait until CI has ctx: the code graph is ctx's index, and a test needs it.
 
 `legionctl dossier check` then reports what the practice asks for as concrete findings: missing plan sections, a
 claim or a `Done` row without EVIDENCE, an acceptance row with no `verified-by`, a dangling link, a DESIGN that
