@@ -194,7 +194,7 @@ fn mcp_server_has_one_tool_per_operation_and_calls_the_operator() {
     // an agent's relative path is its own working directory, not the operator's
     let result = mcp.call(
         "tools/call",
-        &json!({"name": "agents", "arguments": {"project": "some-project"}}),
+        &json!({"name": "agents_list", "arguments": {"project": "some-project"}}),
     );
     let text = result["content"][0]["text"].as_str().unwrap();
     let here = std::env::current_dir()
@@ -1289,6 +1289,143 @@ fn dossier_check_finds_dangling_links_unverified_acceptance_and_stale_evidence()
         "the plan row names the artifact by path and reaches its id"
     );
     assert_eq!(around["nodes"].as_array().unwrap().len(), 2);
+}
+
+/// Agent settings: a dry run shows only the changed lines and writes nothing; a write keeps a backup; TOML keeps its
+/// comments; an unknown top-level key is written with a warning.
+#[test]
+fn agent_settings_edit_with_a_diff_and_a_backup() {
+    let (op, home) = operator("agentset");
+    let env = [("HOME", home.to_str().unwrap())];
+    let ok = |args: &[&str]| {
+        let o = op.run(&home, &env, args, "");
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        serde_json::from_slice::<Value>(&o.stdout).unwrap()
+    };
+    let claude = home.join(".claude/settings.json");
+    write(
+        &claude,
+        "{\n  \"model\": \"opus\",\n  \"permissions\": {\n    \"allow\": [\"Read\"]\n  }\n}\n",
+    );
+    let original = std::fs::read_to_string(&claude).unwrap();
+    let set = [
+        "agents",
+        "set",
+        "--agent",
+        "claude",
+        "--scope",
+        "user",
+        "permissions.defaultMode",
+        "acceptEdits",
+        "--json",
+    ];
+    let dry = ok(&[&set[..], &["--dry-run"]].concat());
+    // the JSON is written pretty: a one-line list becomes lines (TOML keeps its formatting)
+    assert_eq!(
+        dry["changes"],
+        json!([
+            "-     \"allow\": [\"Read\"]",
+            "+     \"allow\": [",
+            "+       \"Read\"",
+            "+     ],",
+            "+     \"defaultMode\": \"acceptEdits\""
+        ])
+    );
+    assert_eq!(
+        std::fs::read_to_string(&claude).unwrap(),
+        original,
+        "a dry run writes nothing"
+    );
+    let done = ok(&set);
+    assert_eq!(
+        std::fs::read_to_string(done["backup"].as_str().unwrap()).unwrap(),
+        original
+    );
+    let now: Value = serde_json::from_str(&std::fs::read_to_string(&claude).unwrap()).unwrap();
+    assert_eq!(
+        now["permissions"],
+        json!({"allow": ["Read"], "defaultMode": "acceptEdits"})
+    );
+    assert_eq!(
+        ok(&[
+            "agents", "set", "--agent", "claude", "--scope", "user", "modle", "x", "--json"
+        ])["warnings"][0],
+        "modle is not a top-level key legionctl knows; check the spelling"
+    );
+
+    let codex = home.join(".codex/config.toml");
+    write(&codex, "# my settings\nmodel = \"gpt\"\n");
+    let edit = ok(&[
+        "agents",
+        "set",
+        "--agent",
+        "codex",
+        "--scope",
+        "user",
+        "mcp_servers.ctx.command",
+        "ctx",
+        "--json",
+    ]);
+    assert_eq!(
+        edit["changes"],
+        json!(["+ ", "+ [mcp_servers.ctx]", "+ command = \"ctx\""])
+    );
+    assert!(
+        std::fs::read_to_string(&codex)
+            .unwrap()
+            .starts_with("# my settings\nmodel = \"gpt\"\n")
+    );
+}
+
+/// Usage counts each Claude Code message once (its usage repeats on every content block) and each Codex turn, with
+/// Codex's rate-limit use.
+#[test]
+fn agent_usage_from_transcripts() {
+    let (op, home) = operator("agentuse");
+    let env = [("HOME", home.to_str().unwrap())];
+    let ok = |args: &[&str]| {
+        let o = op.run(&home, &env, args, "");
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        serde_json::from_slice::<Value>(&o.stdout).unwrap()
+    };
+    let message = |id: &str, text: &str| {
+        json!({"type": "assistant", "timestamp": "2026-10-13T01:00:00Z", "message": {"id": id, "model": "claude-x",
+            "content": [{"type": "text", "text": text}],
+            "usage": {"input_tokens": 3, "output_tokens": 7, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 5}}})
+        .to_string()
+    };
+    write(
+        &home.join(".claude/projects/p/s.jsonl"),
+        &[message("m1", "a"), message("m1", "b"), message("m2", "c")].join("\n"),
+    );
+    let turn = |input: u64, used: f64| {
+        json!({"timestamp": "2026-10-13T02:00:00Z", "type": "event_msg", "payload": {"type": "token_count",
+            "info": {"last_token_usage": {"input_tokens": input, "cached_input_tokens": 1, "output_tokens": 2}},
+            "rate_limits": {"primary": {"used_percent": used, "window_minutes": 300}}}})
+        .to_string()
+    };
+    let context = json!({"timestamp": "2026-10-13T02:00:00Z", "type": "turn_context", "payload": {"model": "gpt-x"}});
+    write(
+        &home.join(".codex/sessions/2026/10/13/r.jsonl"),
+        &[context.to_string(), turn(10, 3.0), turn(20, 4.0)].join("\n"),
+    );
+    let usage = ok(&["agents", "usage", "--json"]);
+    assert_eq!(
+        usage["rows"],
+        json!([
+            {"agent": "claude", "day": "2026-10-13", "model": "claude-x", "input": 6, "output": 14, "cache_read": 200, "cache_write": 10},
+            {"agent": "codex", "day": "2026-10-13", "model": "gpt-x", "input": 30, "output": 4, "cache_read": 2, "cache_write": 0}
+        ])
+    );
+    assert_eq!(usage["codex_limits"], json!({"primary (300 min)": 4.0}));
 }
 
 /// Run a `session start` launch as the client does, without the systemd scope (CI has no user systemd): the

@@ -8,6 +8,7 @@ use crate::{ClientPath, SessionId, StdinText};
 pub use legionctl_core::dossier::{DossierInfo, EditMode, Lock};
 
 pub use legionctl_core::agents::ConfigFile;
+pub use legionctl_core::agents::{Edit, UsageReport};
 pub use legionctl_core::config::{Explanation, Layer as ConfigLayer};
 pub use legionctl_core::db::EventRow;
 pub use legionctl_core::db::GatewayUsage;
@@ -766,6 +767,50 @@ pub struct CachePutIn {
 pub struct CacheValue {
     /// None: not cached or expired.
     pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentName {
+    Claude,
+    Codex,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum SettingsScope {
+    /// `~/.claude/settings.json`, `~/.codex/config.toml`.
+    User,
+    /// `<project>/.claude/settings.json`, `<project>/.codex/config.toml`.
+    Project,
+    /// `<project>/.claude/settings.local.json` (Claude Code only).
+    ProjectLocal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AgentSetIn {
+    pub agent: AgentName,
+    pub scope: SettingsScope,
+    /// Dotted key: `permissions.defaultMode`, `mcp_servers.ctx.command`.
+    pub key: String,
+    /// JSON (`true`, `3`, `["a"]`, `{"k": 1}`) or plain text.
+    pub value: String,
+    #[serde(default = "here")]
+    pub project: ClientPath,
+    /// Show the changed lines; write nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct AgentUsageIn {
+    /// Transcripts changed in the last days (default 7).
+    #[serde(default = "seven")]
+    pub days: u64,
+}
+
+fn seven() -> u64 {
+    7
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]

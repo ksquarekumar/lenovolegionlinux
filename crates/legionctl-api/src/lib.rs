@@ -271,7 +271,12 @@ operations! {
     /// removes conflicting packages. A human approves it in the polkit dialog.
     cleanup / Cleanup = "cleanup", Machine, CleanupIn => Changes;
     /// Claude Code and Codex settings files (user and project): present, valid, which top-level sections.
-    agents / Agents = "agents", Read, ProjectIn => ConfigFiles;
+    agents_list / AgentsList = "agents.list", Read, ProjectIn => ConfigFiles;
+    /// Set one key of an agent's settings file (dotted: `permissions.defaultMode`, `mcp_servers.ctx.command`): the
+    /// changed lines, a backup of the file, then the write; with dry run only the changed lines.
+    agents_set / AgentsSet = "agents.set", Workspace, AgentSetIn => Edit;
+    /// Tokens per agent, day and model from Claude Code's and Codex's own transcripts, and Codex's rate-limit use.
+    agents_usage / AgentsUsage = "agents.usage", Read, AgentUsageIn => UsageReport;
     /// Open (or reopen) this session's dossier workspace in a repository: a worktree on legionctl/<dossier> with the
     /// dossier linked as .agentworkspace. Change code there, not in the main checkout.
     workspace_open / WorkspaceOpen = "workspace.open", Workspace, WorkspaceOpenIn => Workspace;

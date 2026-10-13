@@ -189,7 +189,7 @@ pub fn run() -> Result<()> {
             let (snapshot, configs, workspaces) = runtime.block_on(async {
                 tokio::try_join!(
                     client.call::<op::Status>(&status),
-                    client.call::<op::Agents>(&project),
+                    client.call::<op::AgentsList>(&project),
                     client.call::<op::WorkspaceList>(&Empty {})
                 )
             })?;

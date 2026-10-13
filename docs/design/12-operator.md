@@ -86,9 +86,17 @@ Operating directory, named workspace in `~/.agentworkspace`, dossier and change 
 
 ## Agents, plugins and settings
 
-- **Settings:** read and validate Claude Code and Codex user/project settings (built: `legionctl agents`,
+- **Settings:** read and validate Claude Code and Codex user/project settings (built: `legionctl agents list`,
   `agents`). Editing: schema-checked (Claude's published settings schema; TOML parse plus known-keys check for
   Codex), shown as a diff, backed up, then written.
+  Built (2026-10-13, A1 part 1): `legionctl agents set --agent claude|codex --scope user|project|project-local <key>
+  <value> [--dry-run]` sets a dotted key (`permissions.defaultMode`, `mcp_servers.ctx.command`); the value is JSON
+  when it parses, else text. It returns only the changed lines (no context: these files hold tokens), copies the
+  file to `<file>.legionctl-<time>` first, and writes through a rename. TOML keeps its comments and layout
+  (`toml_edit`); JSON is written pretty, so a one-line list in the file becomes lines. An unknown top-level key is
+  written with a warning (the published schemas grow each release). `legionctl agents usage [--days N]` counts
+  tokens per agent, day and model from Claude Code's transcripts (each message once) and Codex's `token_count`
+  events, with Codex's rate-limit use. Not yet: plugin and MCP installs from an allowlist, account profiles.
 - **Plugins, MCP servers and skills:** an allowlist of authorised marketplaces and items; install into Claude Code
   (`claude plugin …`) and Codex (`~/.codex/config.toml`) from one place, and show what each agent has loaded.
 - **Accounts:** one profile per account (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`), credentials in the keyring; an ACP

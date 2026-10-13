@@ -1,6 +1,7 @@
 //! Claude Code and Codex configuration: find each settings file, parse it, and report whether it is valid and
-//! which top-level sections it sets. Values are never returned, because these files can hold tokens.
-//! Editing (schema-checked, previewed as a diff) is designed in docs/design/12-operator.md.
+//! which top-level sections it sets; edit one key (a diff of the changed lines only, a backup, then the write); and
+//! count each agent's tokens per day and model from its own transcripts. Values are never returned beyond the lines
+//! an edit changes, because these files can hold tokens.
 
 use std::path::{Path, PathBuf};
 
@@ -112,5 +113,347 @@ mod tests {
         let mcp = files.iter().find(|f| f.scope == "project-mcp").unwrap();
         assert_eq!(mcp.valid, Some(false));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Top-level keys of Claude Code's settings that legionctl knows; another key is written with a warning (the schema
+/// grows with each release).
+const CLAUDE_KEYS: &[&str] = &[
+    "$schema",
+    "apiKeyHelper",
+    "awsAuthRefresh",
+    "awsCredentialExport",
+    "cleanupPeriodDays",
+    "disableAllHooks",
+    "disabledMcpjsonServers",
+    "enableAllProjectMcpServers",
+    "enabledMcpjsonServers",
+    "enabledPlugins",
+    "env",
+    "extraKnownMarketplaces",
+    "forceLoginMethod",
+    "hooks",
+    "includeCoAuthoredBy",
+    "model",
+    "outputStyle",
+    "permissions",
+    "statusLine",
+    "alwaysThinkingEnabled",
+    "theme",
+];
+
+/// Top-level keys of Codex's `config.toml` that legionctl knows.
+const CODEX_KEYS: &[&str] = &[
+    "model",
+    "model_provider",
+    "model_reasoning_effort",
+    "approval_policy",
+    "sandbox_mode",
+    "mcp_servers",
+    "profiles",
+    "profile",
+    "model_providers",
+    "shell_environment_policy",
+    "tools",
+    "history",
+    "projects",
+    "notify",
+    "features",
+    "tui",
+    "sandbox_workspace_write",
+];
+
+/// What an edit did (or would do).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Edit {
+    pub path: PathBuf,
+    /// Only the changed lines, `-` before and `+` after.
+    pub changes: Vec<String>,
+    /// Where the previous file was copied; none for a dry run or a new file.
+    pub backup: Option<PathBuf>,
+    pub warnings: Vec<String>,
+    pub dry_run: bool,
+}
+
+/// A text as a JSON value when it parses as one (`true`, `3`, `{"a": 1}`), else as a string.
+#[must_use]
+pub fn value_of(text: &str) -> serde_json::Value {
+    serde_json::from_str(text).unwrap_or_else(|_| serde_json::Value::String(text.into()))
+}
+
+fn json_set(text: &str, key: &[&str], value: serde_json::Value) -> Result<String, String> {
+    let mut root: serde_json::Value = if text.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str(text).map_err(|e| format!("the file is not valid JSON: {e}"))?
+    };
+    let mut at = &mut root;
+    for part in &key[..key.len() - 1] {
+        let object = at
+            .as_object_mut()
+            .ok_or(format!("{part}: a parent is not an object"))?;
+        at = object
+            .entry((*part).to_string())
+            .or_insert_with(|| serde_json::json!({}));
+    }
+    let object = at
+        .as_object_mut()
+        .ok_or("the parent of the key is not an object")?;
+    object.insert(key[key.len() - 1].to_string(), value);
+    serde_json::to_string_pretty(&root)
+        .map(|t| t + "\n")
+        .map_err(|e| e.to_string())
+}
+
+fn toml_set(text: &str, key: &[&str], value: &serde_json::Value) -> Result<String, String> {
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|e| format!("the file is not valid TOML: {e}"))?;
+    let item: toml_edit::Item = match value {
+        serde_json::Value::Object(_) | serde_json::Value::Null => {
+            return Err("give a TOML value: a string, number, boolean or list".into());
+        }
+        other => {
+            let toml_text = format!("v = {other}");
+            let parsed: toml_edit::DocumentMut = toml_text.parse().map_err(|e| format!("{e}"))?;
+            parsed["v"].clone()
+        }
+    };
+    let mut at = doc.as_item_mut();
+    for part in &key[..key.len() - 1] {
+        let table = at
+            .as_table_like_mut()
+            .ok_or(format!("{part}: a parent is not a table"))?;
+        if table.get(part).is_none() {
+            // `[mcp_servers.ctx]` alone, without an empty `[mcp_servers]` above it
+            let mut parent = toml_edit::Table::new();
+            parent.set_implicit(true);
+            table.insert(part, toml_edit::Item::Table(parent));
+        }
+        at = table.get_mut(part).ok_or("no table")?;
+    }
+    let table = at
+        .as_table_like_mut()
+        .ok_or("the parent of the key is not a table")?;
+    table.insert(key[key.len() - 1], item);
+    Ok(doc.to_string())
+}
+
+/// Set `key` (dotted: `permissions.defaultMode`, `mcp_servers.ctx.command`) to `value` in an agent's settings file:
+/// the changed lines, a backup of the file as it was (`<file>.legionctl-<time>`), then the write. Unless `dry_run`.
+///
+/// # Errors
+/// The file does not parse, a parent of the key is not an object or table, or the write fails.
+pub fn set(
+    path: &Path,
+    key: &str,
+    value: serde_json::Value,
+    dry_run: bool,
+) -> anyhow::Result<Edit> {
+    let parts: Vec<&str> = key.split('.').collect();
+    anyhow::ensure!(
+        parts.iter().all(|p| !p.is_empty()),
+        "the key {key} has an empty part"
+    );
+    let before = std::fs::read_to_string(path).unwrap_or_default();
+    let toml = path.extension().is_some_and(|e| e == "toml");
+    let after = if toml {
+        toml_set(&before, &parts, &value)
+    } else {
+        json_set(&before, &parts, value)
+    }
+    .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    let known = if toml { CODEX_KEYS } else { CLAUDE_KEYS };
+    let mut warnings = Vec::new();
+    if !known.contains(&parts[0]) {
+        warnings.push(format!(
+            "{} is not a top-level key legionctl knows; check the spelling",
+            parts[0]
+        ));
+    }
+    let changes = similar::TextDiff::from_lines(&before, &after)
+        .iter_all_changes()
+        .filter_map(|c| match c.tag() {
+            similar::ChangeTag::Delete => Some(format!("- {}", c.value().trim_end())),
+            similar::ChangeTag::Insert => Some(format!("+ {}", c.value().trim_end())),
+            similar::ChangeTag::Equal => None,
+        })
+        .collect();
+    let mut edit = Edit {
+        path: path.into(),
+        changes,
+        backup: None,
+        warnings,
+        dry_run,
+    };
+    if dry_run || before == after {
+        return Ok(edit);
+    }
+    if path.exists() {
+        let backup = path.with_extension(format!(
+            "{}.legionctl-{}",
+            path.extension().and_then(|e| e.to_str()).unwrap_or("bak"),
+            crate::db::now()
+        ));
+        std::fs::copy(path, &backup)?;
+        edit.backup = Some(backup);
+    }
+    std::fs::create_dir_all(path.parent().unwrap_or(Path::new("/")))?;
+    let tmp = path.with_extension("legionctl-tmp");
+    std::fs::write(&tmp, &after)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(edit)
+}
+
+/// Tokens of one agent on one day with one model.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Usage {
+    pub agent: String,
+    /// YYYY-MM-DD (UTC).
+    pub day: String,
+    pub model: String,
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct UsageReport {
+    pub rows: Vec<Usage>,
+    /// Codex's own rate-limit windows from its latest session: name -> percent used.
+    pub codex_limits: std::collections::BTreeMap<String, f64>,
+}
+
+fn jsonl_files(dir: &Path, since: std::time::SystemTime, out: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            jsonl_files(&path, since, out);
+        } else if path.extension().is_some_and(|e| e == "jsonl")
+            && entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|m| m >= since)
+        {
+            out.push(path);
+        }
+    }
+}
+
+fn add(
+    rows: &mut std::collections::BTreeMap<(String, String, String), Usage>,
+    agent: &str,
+    day: &str,
+    model: &str,
+    u: [u64; 4],
+) {
+    let row = rows
+        .entry((agent.into(), day.into(), model.into()))
+        .or_insert_with(|| Usage {
+            agent: agent.into(),
+            day: day.into(),
+            model: model.into(),
+            ..Usage::default()
+        });
+    row.input += u[0];
+    row.output += u[1];
+    row.cache_read += u[2];
+    row.cache_write += u[3];
+}
+
+/// Tokens per agent, day and model in the transcripts changed in the last `days` days: Claude Code's
+/// `~/.claude/projects/**/*.jsonl` (each message once: its usage repeats on every content block) and Codex's
+/// `~/.codex/sessions/**/*.jsonl` (`token_count` events, each turn's `last_token_usage`).
+#[must_use]
+pub fn usage(home: &Path, days: u64) -> UsageReport {
+    let since = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
+    let mut rows = std::collections::BTreeMap::new();
+    let mut files = Vec::new();
+    jsonl_files(&home.join(".claude/projects"), since, &mut files);
+    let mut seen = std::collections::BTreeSet::new();
+    for file in &files {
+        for line in std::fs::read_to_string(file).unwrap_or_default().lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let message = &v["message"];
+            let (Some(id), Some(model)) = (message["id"].as_str(), message["model"].as_str())
+            else {
+                continue;
+            };
+            if model.starts_with('<') || !seen.insert(id.to_string()) {
+                continue;
+            }
+            let u = &message["usage"];
+            let n = |k: &str| u[k].as_u64().unwrap_or(0);
+            let day = v["timestamp"]
+                .as_str()
+                .unwrap_or("")
+                .get(..10)
+                .unwrap_or("");
+            add(
+                &mut rows,
+                "claude",
+                day,
+                model,
+                [
+                    n("input_tokens"),
+                    n("output_tokens"),
+                    n("cache_read_input_tokens"),
+                    n("cache_creation_input_tokens"),
+                ],
+            );
+        }
+    }
+    let mut files = Vec::new();
+    jsonl_files(&home.join(".codex/sessions"), since, &mut files);
+    files.sort();
+    let mut codex_limits = std::collections::BTreeMap::new();
+    for file in &files {
+        let mut model = String::from("?");
+        for line in std::fs::read_to_string(file).unwrap_or_default().lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let payload = &v["payload"];
+            if let Some(m) = payload["model"].as_str() {
+                model = m.to_string();
+            }
+            if payload["type"] != "token_count" {
+                continue;
+            }
+            let u = &payload["info"]["last_token_usage"];
+            let n = |k: &str| u[k].as_u64().unwrap_or(0);
+            let day = v["timestamp"]
+                .as_str()
+                .unwrap_or("")
+                .get(..10)
+                .unwrap_or("");
+            add(
+                &mut rows,
+                "codex",
+                day,
+                &model,
+                [
+                    n("input_tokens"),
+                    n("output_tokens"),
+                    n("cached_input_tokens"),
+                    0,
+                ],
+            );
+            for window in ["primary", "secondary"] {
+                if let Some(used) = payload["rate_limits"][window]["used_percent"].as_f64() {
+                    let minutes = payload["rate_limits"][window]["window_minutes"]
+                        .as_u64()
+                        .unwrap_or(0);
+                    codex_limits.insert(format!("{window} ({minutes} min)"), used);
+                }
+            }
+        }
+    }
+    UsageReport {
+        rows: rows.into_values().collect(),
+        codex_limits,
     }
 }

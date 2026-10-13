@@ -1081,3 +1081,47 @@ impl Render for Vec<crate::io::GatewayUsage> {
             .join("\n")
     }
 }
+
+impl Render for crate::io::Edit {
+    fn text(&self) -> String {
+        let mut out = vec![format!(
+            "{}{}",
+            self.path.display(),
+            if self.dry_run {
+                " (dry run: nothing written)"
+            } else {
+                ""
+            }
+        )];
+        if self.changes.is_empty() {
+            out.push("no change".into());
+        }
+        out.extend(self.changes.iter().cloned());
+        out.extend(self.warnings.iter().map(|w| format!("warning: {w}")));
+        if let Some(backup) = &self.backup {
+            out.push(format!("backup: {}", backup.display()));
+        }
+        out.join("\n")
+    }
+}
+
+impl Render for crate::io::UsageReport {
+    fn text(&self) -> String {
+        let mut out: Vec<String> = self
+            .rows
+            .iter()
+            .map(|u| {
+                format!(
+                    "{} {:<7} {:<28} in {:>10} out {:>9} cache read {:>11} write {:>10}",
+                    u.day, u.agent, u.model, u.input, u.output, u.cache_read, u.cache_write
+                )
+            })
+            .collect();
+        out.extend(
+            self.codex_limits
+                .iter()
+                .map(|(w, p)| format!("codex limit {w}: {p:.0}% used")),
+        );
+        out.join("\n")
+    }
+}

@@ -26,9 +26,12 @@ use legionctl_core::config::{Dirs, Resolved, resolve};
 
 use crate::system1::System1Proxy;
 use legionctl_api::{
+    AgentName, AgentSetIn, AgentUsageIn, DossierGraphIn, Edit, GatewayUsage, GatewayUsageIn, Graph,
+    SettingsScope, UsageReport,
+};
+use legionctl_api::{
     CacheGetIn, CachePutIn, CacheValue, Manifest, PackageFetchIn, Packages, RunOutput, SessionRunIn,
 };
-use legionctl_api::{DossierGraphIn, GatewayUsage, GatewayUsageIn, Graph};
 use legionctl_core::db::Db;
 use legionctl_core::dossier::{Dossiers, place_of};
 use legionctl_core::packages::Store;
@@ -554,8 +557,40 @@ impl Engine for Operator {
         })
     }
 
-    fn agents(&self, _: &Ctx, input: ProjectIn) -> Result<ConfigFiles> {
+    fn agents_list(&self, _: &Ctx, input: ProjectIn) -> Result<ConfigFiles> {
         Ok(agents::config_files(&home(), input.project.get()?))
+    }
+
+    fn agents_set(&self, ctx: &Ctx, input: AgentSetIn) -> Result<Edit> {
+        // the key, not the value: it can be a token
+        Self::record(
+            ctx,
+            "agents.set",
+            &serde_json::json!({ "agent": input.agent, "key": input.key }),
+        )?;
+        let project = input.project.get()?;
+        let path = match (input.agent, input.scope) {
+            (AgentName::Claude, SettingsScope::User) => home().join(".claude/settings.json"),
+            (AgentName::Claude, SettingsScope::Project) => project.join(".claude/settings.json"),
+            (AgentName::Claude, SettingsScope::ProjectLocal) => {
+                project.join(".claude/settings.local.json")
+            }
+            (AgentName::Codex, SettingsScope::User) => home().join(".codex/config.toml"),
+            (AgentName::Codex, SettingsScope::Project) => project.join(".codex/config.toml"),
+            (AgentName::Codex, SettingsScope::ProjectLocal) => {
+                anyhow::bail!("Codex has no project-local settings")
+            }
+        };
+        agents::set(
+            &path,
+            &input.key,
+            agents::value_of(&input.value),
+            input.dry_run,
+        )
+    }
+
+    fn agents_usage(&self, _: &Ctx, input: AgentUsageIn) -> Result<UsageReport> {
+        Ok(agents::usage(&home(), input.days))
     }
 
     fn workspace_open(&self, ctx: &Ctx, input: WorkspaceOpenIn) -> Result<Workspace> {
