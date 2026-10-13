@@ -304,6 +304,10 @@ pub struct DossierConfig {
     pub auto_bind: bool,
     /// Hook events at which the agent is told to set up a session that has no dossier.
     pub nudge: Vec<Event>,
+    /// Replies that change the workspace without a dossier write before the agent is told (info), told at the end of
+    /// a reply (warn, at twice this), and stopped at the end of each reply until it writes (block, three times);
+    /// 0 turns this off.
+    pub nudge_turns: u32,
     pub stale_hours: u64,
     /// Class name -> purpose.
     pub classes: BTreeMap<String, String>,

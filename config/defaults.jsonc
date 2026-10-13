@@ -73,6 +73,11 @@
     // Hook events at which the agent (not the user) is told to set up a session that has no dossier: at the start of
     // the session (in its context, before the first prompt) and before it ends a reply.
     "nudge": ["session-start", "stop"],
+    // Replies that change the workspace while the session does not write its dossier: at this many the agent is told
+    // on the next prompt (info), at twice this the end of its reply is stopped once (warn), at three times each reply
+    // is stopped until it writes the dossier (block). A dossier write is the answer and starts the count again. Each
+    // level and each answer is an event (`legionctl dossier nudges`). 0 turns this off.
+    "nudge_turns": 5,
     // A binding with no activity for this long can be taken over.
     "stale_hours": 12,
     // Artifact classes: <CLASS>/NN-<slug>.md. A layer may add classes; the canonical four stay.

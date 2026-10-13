@@ -539,6 +539,100 @@ fn ended_scope_frees_the_dossier(op: &Operator, home: &Path, notes: &Path, id: &
     );
 }
 
+/// Dossier nudges: replies that change the workspace without a dossier write raise the level (here every reply:
+/// `nudge_turns` 1). Info shows on the next prompt, warn stops the end of one reply, block stops each reply; a reply
+/// that changed nothing does not count; a dossier write answers it; `dossier nudges` replays it all.
+#[test]
+fn a_session_that_works_without_writing_its_dossier_is_nudged_until_it_writes() {
+    let (op, home) = operator("nudge");
+    let repo = repository(&home);
+    write(
+        &home.join(".config/legionctl/nudge.jsonc"),
+        r#"{ "dossier": { "nudge_turns": 1 } }"#,
+    );
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", "s1"),
+    ];
+    let ok = |args: &[&str], stdin: &str| {
+        let o = op.run(&repo, &env, args, stdin);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    let hook = |event: &str| {
+        let o = op.run(
+            &repo,
+            &[],
+            &["hook", event],
+            &claude_hook(event, &json!({"session_id": "s1", "cwd": repo})),
+        );
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    let blocked = |out: &str| -> Option<String> {
+        serde_json::from_str::<Value>(out)
+            .ok()
+            .map(|v| v["reason"].as_str().unwrap().to_string())
+    };
+    ok(&["dossier", "use", "port"], "");
+    ok(&["workspace", "open"], "");
+    let file = home.join("worktrees/repo/port/work.txt");
+    let mut n = 0;
+    let mut work = |stop: bool| {
+        n += 1;
+        write(&file, &format!("change {n}\n"));
+        if stop { hook("stop") } else { String::new() }
+    };
+
+    assert_eq!(hook("stop"), "", "the first reply sets the base");
+    assert_eq!(work(true), "", "info does not stop the reply");
+    assert!(
+        hook("prompt")
+            .contains("1 replies changed the workspace since this session last wrote dossier port"),
+        "info is in the context of the next prompt"
+    );
+    let warn = blocked(&work(true)).expect("warn stops the end of the reply");
+    assert!(warn.contains("2 replies changed"), "{warn}");
+    assert_eq!(
+        hook("stop"),
+        "",
+        "a reply that changed nothing does not count, and warn stops only once"
+    );
+    let block = blocked(&work(true)).expect("block");
+    assert!(block.contains("stops the end of each reply"), "{block}");
+    assert!(
+        blocked(&hook("stop")).is_some(),
+        "block stops each reply until a dossier write"
+    );
+
+    ok(&["dossier", "append", "port/plan.md"], "- state recorded\n");
+    assert_eq!(hook("stop"), "", "the write answered the nudge");
+    let replay: Vec<Value> =
+        serde_json::from_str(&ok(&["dossier", "nudges", "--of", "s1", "--json"], "")).unwrap();
+    let seen: Vec<(String, Value, Value)> = replay
+        .iter()
+        .map(|e| {
+            (
+                e["kind"].as_str().unwrap().to_string(),
+                e["payload"]["level"].clone(),
+                e["payload"]["turns"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("dossier.nudge".into(), json!("info"), json!(1)),
+            ("dossier.nudge".into(), json!("warn"), json!(2)),
+            ("dossier.nudge".into(), json!("block"), json!(3)),
+            ("dossier.ack".into(), Value::Null, json!(0)),
+        ]
+    );
+}
+
 /// Run one statement on the dossier database of the test's home (to age a binding; nothing else changes it).
 fn sql(home: &Path, statement: &str) {
     let out = Command::new("python3")

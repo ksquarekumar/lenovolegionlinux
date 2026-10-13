@@ -26,9 +26,9 @@ use legionctl_core::config::{Dirs, Resolved, resolve};
 
 use crate::system1::System1Proxy;
 use legionctl_api::{
-    AgentName, AgentSetIn, AgentUsageIn, CoreClass, DossierGraphIn, Edit, GatewayUsage,
-    GatewayUsageIn, Graph, Plugin, PluginInstallIn, SettingsScope, UsageReport, VirtCreateIn,
-    VirtTuneIn,
+    AgentName, AgentSetIn, AgentUsageIn, CoreClass, DossierGraphIn, DossierNudgesIn, Edit,
+    GatewayUsage, GatewayUsageIn, Graph, Plugin, PluginInstallIn, SettingsScope, UsageReport,
+    VirtCreateIn, VirtTuneIn,
 };
 use legionctl_api::{
     CacheGetIn, CachePutIn, CacheValue, Manifest, PackageFetchIn, Packages, RunOutput, SessionRunIn,
@@ -357,6 +357,60 @@ fn blocking_reason(
                 active.unwrap_or_default()
             )
         }))
+}
+
+/// What a dossier nudge tells the agent: a line in its context, or a stop at the end of its reply.
+enum Told {
+    Line(String),
+    Block(String),
+}
+
+/// The dossier nudge of a session that works in a workspace (`dossier.nudge_turns`): at the end of a reply, count it
+/// when it changed the workspace; past the levels, tell the agent (info on the next prompt, warn once at the end of
+/// a reply, block at the end of each reply). A dossier write answers it. Each new level and each answer is an event.
+fn dossier_nudge(
+    ctx: &Ctx,
+    resolved: &Resolved,
+    store: &Dossiers,
+    (session, dossier, place): (&str, &str, &Place),
+    event: Event,
+) -> Result<Option<Told>> {
+    let every = resolved.config.dossier.nudge_turns;
+    let Some(ws) = place.workspace.as_ref().filter(|_| every > 0) else {
+        return Ok(None);
+    };
+    let (turns, told) = match event {
+        Event::Stop => store.turn(session, &legionctl_core::workspace::work_state(store, ws)?)?,
+        Event::Prompt => store.nudge_state(session)?,
+        Event::SessionStart => return Ok(None),
+    };
+    let level = match turns / every {
+        0 => None,
+        1 => Some("info"),
+        2 => Some("warn"),
+        _ => Some("block"),
+    };
+    if level != told.as_deref() {
+        let db = Db::open_default()?;
+        let payload = serde_json::json!({"session": session, "dossier": dossier, "level": level, "turns": turns});
+        match level {
+            None => db.record(&ctx.actor, "dossier.ack", &payload)?,
+            Some(_) => db.record(&ctx.actor, "dossier.nudge", &payload)?,
+        };
+        store.told(session, level)?;
+    }
+    let text = format!(
+        "legionctl: {turns} replies changed the workspace since this session last wrote dossier {dossier}. Record \
+         the state in its plan.md and MEMORY now (MCP tools dossier_edit, dossier_add)."
+    );
+    Ok(match (event, level) {
+        (Event::Prompt, Some(_)) => Some(Told::Line(text)),
+        (Event::Stop, Some("warn")) if told.as_deref() != Some("warn") => Some(Told::Block(text)),
+        (Event::Stop, Some("block")) => Some(Told::Block(format!(
+            "{text} Until then, legionctl stops the end of each reply."
+        ))),
+        _ => None,
+    })
 }
 
 /// What the agent reads first in a session: its dossier and its workspace, or what to set up.
@@ -898,7 +952,7 @@ impl Engine for Operator {
         Ok(Self::hook_table(&config(Some(&input.project))?))
     }
 
-    fn hooks_run(&self, _: &Ctx, input: HookRunIn) -> Result<HookReply> {
+    fn hooks_run(&self, ctx: &Ctx, input: HookRunIn) -> Result<HookReply> {
         let resolved = config(Some(&input.project))?;
         let store = Dossiers::open(&resolved.config.dossier)?;
         let session = input.session.as_ref().filter(|s| !s.0.is_empty());
@@ -937,6 +991,19 @@ impl Engine for Operator {
             });
         }
         let mut lines = Vec::new();
+        if let (Some(s), Some(d), Some(p)) = (session, active.as_deref(), place.as_ref())
+            && let Some(told) = dossier_nudge(ctx, &resolved, &store, (&s.0, d, p), input.event)?
+        {
+            match told {
+                Told::Line(line) => lines.push(line),
+                Told::Block(reason) => {
+                    return Ok(HookReply {
+                        text: String::new(),
+                        block: Some(reason),
+                    });
+                }
+            }
+        }
         if input.event == Event::SessionStart
             && let Some(s) = session
         {
@@ -1058,6 +1125,20 @@ impl Engine for Operator {
             &input.content.0,
         )?;
         Ok(Lines { lines: vec![rel] })
+    }
+
+    fn dossier_nudges(&self, _: &Ctx, input: DossierNudgesIn) -> Result<Events> {
+        let db = Db::open_default()?;
+        let mut rows = db.events_of("dossier.nudge")?;
+        rows.extend(db.events_of("dossier.ack")?);
+        rows.retain(|e| {
+            input
+                .of
+                .as_deref()
+                .is_none_or(|s| e.payload["session"] == s)
+        });
+        rows.sort_by_key(|e| e.id);
+        Ok(rows)
     }
 
     fn dossier_graph(&self, _: &Ctx, input: DossierGraphIn) -> Result<Graph> {

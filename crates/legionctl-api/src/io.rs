@@ -481,6 +481,13 @@ pub struct DossierGraphIn {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct DossierNudgesIn {
+    /// Only this session (id from `session list` or `dossier locks`); default: every session.
+    #[serde(default)]
+    pub of: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct DossierCheckIn {
     /// Dossier to check; default: this session's.
     #[serde(default)]

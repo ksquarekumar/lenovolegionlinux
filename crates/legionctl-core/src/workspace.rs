@@ -37,6 +37,33 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// The content of a workspace as one hash: for a repository its HEAD, `git status`, the diff against HEAD and the
+/// size and change time of each untracked file; for a plain folder its changes. Equal hashes mean nothing changed.
+///
+/// # Errors
+/// git fails in the workspace.
+pub fn work_state(dossiers: &Dossiers, ws: &Workspace) -> Result<String> {
+    use blake2::{Blake2b, Digest, digest::consts::U16};
+    let mut hash = Blake2b::<U16>::new();
+    if ws.path.join(".git").exists() {
+        for args in [
+            &["rev-parse", "HEAD"][..],
+            &["status", "--porcelain=v1", "--untracked-files=all"],
+            &["diff", "HEAD"],
+        ] {
+            hash.update(git(&ws.path, args)?);
+        }
+        for file in git(&ws.path, &["ls-files", "--others", "--exclude-standard"])?.lines() {
+            if let Ok(meta) = ws.path.join(file).metadata() {
+                hash.update(format!("{file} {} {:?}", meta.len(), meta.modified().ok()));
+            }
+        }
+    } else {
+        hash.update(dossiers.workspace_status(ws)?.files.join("\n"));
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

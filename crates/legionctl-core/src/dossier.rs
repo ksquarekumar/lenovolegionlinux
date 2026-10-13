@@ -70,6 +70,14 @@ const SCHEMA: &[&str] = &[
      );",
     // v7: whether a session runs in its own systemd scope, which then tells whether it is still live
     "ALTER TABLE sessions ADD COLUMN scoped INTEGER NOT NULL DEFAULT 0;",
+    // v8: dossier nudges: per session, the workspace content at the last reply, the replies that changed it since the
+    // session last wrote its dossier, and the nudge level the agent was last told
+    "CREATE TABLE nudges (
+        session TEXT PRIMARY KEY,
+        work    TEXT,
+        turns   INTEGER NOT NULL DEFAULT 0,
+        level   TEXT
+     );",
 ];
 
 /// Where a session works, for binding the next session there: the repository that contains `dir`, else `dir`.
@@ -369,6 +377,51 @@ impl Dossiers {
         scoped != Some(true) || now - updated <= 60 || crate::session::scope_active(session)
     }
 
+    /// Count a reply of `session` that ended with the workspace content `work`: the reply counts when the content
+    /// changed since the last reply. Returns the replies counted since the session last wrote its dossier, and the
+    /// nudge level it was last told.
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn turn(&self, session: &str, work: &str) -> Result<(u32, Option<String>)> {
+        self.db.conn().execute(
+            "INSERT INTO nudges (session, work) VALUES (?1, ?2)
+             ON CONFLICT (session) DO UPDATE SET turns = turns + (work IS NOT excluded.work), work = excluded.work",
+            params![session, work],
+        )?;
+        self.nudge_state(session)
+    }
+
+    /// The replies counted since `session` last wrote its dossier, and the nudge level it was last told.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn nudge_state(&self, session: &str) -> Result<(u32, Option<String>)> {
+        Ok(self
+            .db
+            .conn()
+            .query_row(
+                "SELECT turns, level FROM nudges WHERE session = ?1",
+                [session],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+            .unwrap_or((0, None)))
+    }
+
+    /// Remember the nudge level `session` was told (none after its answer).
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn told(&self, session: &str, level: Option<&str>) -> Result<()> {
+        self.db.conn().execute(
+            "INSERT INTO nudges (session, level) VALUES (?1, ?2)
+             ON CONFLICT (session) DO UPDATE SET level = excluded.level",
+            params![session, level],
+        )?;
+        Ok(())
+    }
+
     /// Mark `session`'s binding as active now (the hooks call it on each prompt and stop).
     ///
     /// # Errors
@@ -512,6 +565,10 @@ impl Dossiers {
             );
         }
         self.touch(session)?;
+        // a write into its own dossier is the answer to a nudge
+        self.db
+            .conn()
+            .execute("UPDATE nudges SET turns = 0 WHERE session = ?1", [session])?;
         Ok(full)
     }
 

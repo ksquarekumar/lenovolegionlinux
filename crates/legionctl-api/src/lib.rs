@@ -441,6 +441,9 @@ operations! {
     dossier_check / DossierCheck = "dossier.check", Read, DossierCheckIn => DossierFindings;
     /// The dossier's work graph: plan rows and artifacts, linked by supports, supersedes, code and plan references.
     dossier_graph / DossierGraph = "dossier.graph", Read, DossierGraphIn => Graph;
+    /// The dossier nudges in order: each level a session reached (info, warn, block) with its count of replies that
+    /// changed the workspace, and each answer (a dossier write).
+    dossier_nudges / DossierNudges = "dossier.nudges", Read, DossierNudgesIn => Events;
     /// Whether this session may write a path: inside the dossier root only its active dossier (agent hooks use it).
     dossier_guard / DossierGuard = "dossier.guard", Read, GuardIn => Guard;
     /// Prepare a sandboxed session of an agent on a dossier's workspace; `legionctl session start` then runs it in the
