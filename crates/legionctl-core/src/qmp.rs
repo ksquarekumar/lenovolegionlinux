@@ -56,4 +56,25 @@ impl Qmp {
             }
         }
     }
+
+    /// Wait until QEMU sends `event` whose `data.device` is `device`, for at most `limit`.
+    ///
+    /// # Errors
+    /// The event does not come in time, or QEMU closes the connection.
+    pub fn wait_event(&mut self, event: &str, device: &str, limit: Duration) -> Result<()> {
+        let deadline = std::time::Instant::now() + limit;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            anyhow::ensure!(
+                !left.is_zero(),
+                "no {event} for {device} in {} s",
+                limit.as_secs()
+            );
+            self.stream.set_read_timeout(Some(left))?;
+            let message = self.read()?;
+            if message["event"] == event && message["data"]["device"] == device {
+                return Ok(());
+            }
+        }
+    }
 }

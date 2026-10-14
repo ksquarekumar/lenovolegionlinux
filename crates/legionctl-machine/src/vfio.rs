@@ -361,3 +361,82 @@ pub fn candidates(root: &SysRoot) -> Vec<Candidate> {
         })
         .collect()
 }
+
+/// NVIDIA's services that hold the GPU's device nodes; stopped while the GPU is not Linux's.
+const NVIDIA_SERVICES: [&str; 2] = ["nvidia-persistenced.service", "nvidia-powerd.service"];
+
+fn systemctl(verb: &str, units: &[String]) -> Result<()> {
+    if units.is_empty() {
+        return Ok(());
+    }
+    let out = std::process::Command::new("systemctl")
+        .arg(verb)
+        .args(units)
+        .output()?;
+    anyhow::ensure!(
+        out.status.success(),
+        "systemctl {verb} {}: {}",
+        units.join(" "),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(())
+}
+
+/// The NVIDIA GPU's whole IOMMU group.
+///
+/// # Errors
+/// No NVIDIA GPU with an IOMMU group.
+pub fn nvidia_group(root: &SysRoot) -> Result<Vec<String>> {
+    candidates(root)
+        .into_iter()
+        .find(|c| c.kind == "gpu" && c.ids.starts_with("10de:"))
+        .map(|c| c.members)
+        .context("no NVIDIA GPU with an IOMMU group on this machine")
+}
+
+/// Take the NVIDIA GPU from Linux: its services stopped, its group bound to vfio-pci for `uid`. Returns what it did
+/// and the services to start again at the return; on a refusal the services start again.
+///
+/// # Errors
+/// The host still uses the GPU (the reasons), or a step fails.
+pub fn release_nvidia(root: &SysRoot, uid: u32) -> Result<(Vec<String>, Vec<String>)> {
+    let group = nvidia_group(root)?;
+    let active: Vec<String> = NVIDIA_SERVICES
+        .iter()
+        .filter(|s| {
+            std::process::Command::new("systemctl")
+                .args(["is-active", "-q", s])
+                .status()
+                .is_ok_and(|st| st.success())
+        })
+        .map(|s| (*s).to_string())
+        .collect();
+    systemctl("stop", &active)?;
+    match bind(root, &group, uid) {
+        Ok(mut lines) => {
+            lines.extend(active.iter().map(|s| format!("{s}: stopped")));
+            Ok((lines, active))
+        }
+        Err(e) => {
+            let again = systemctl("start", &active);
+            let note = again.err().map_or_else(String::new, |e| {
+                format!(" (and starting {} again: {e:#})", active.join(" "))
+            });
+            Err(e.context(format!(
+                "the NVIDIA GPU stays with Linux{note}; if Mutter holds it, run `legionctl gpu primary intel --release-nvidia` \
+                 and log in again"
+            )))
+        }
+    }
+}
+
+/// Give the NVIDIA GPU back to Linux: its group back to `nvidia`, the services that `release_nvidia` stopped started.
+///
+/// # Errors
+/// The group is not on vfio-pci, or a step fails.
+pub fn return_nvidia(root: &SysRoot, services: &[String]) -> Result<Vec<String>> {
+    let mut lines = unbind(root, &nvidia_group(root)?)?;
+    systemctl("start", services)?;
+    lines.extend(services.iter().map(|s| format!("{s}: started")));
+    Ok(lines)
+}

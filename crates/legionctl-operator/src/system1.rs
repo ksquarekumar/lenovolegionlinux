@@ -7,7 +7,7 @@
 )]
 pub trait System1 {
     fn apply_power(&self, source: &str) -> zbus::Result<Vec<String>>;
-    fn set_primary_gpu(&self, choice: &str) -> zbus::Result<Vec<String>>;
+    fn set_primary_gpu(&self, choice: &str, release_nvidia: bool) -> zbus::Result<Vec<String>>;
     fn cleanup(&self, unload_modules: bool) -> zbus::Result<Vec<String>>;
     fn reboot_windows(&self) -> zbus::Result<Vec<String>>;
     /// Hold knobs at values against the policy (path -> value).
@@ -24,6 +24,10 @@ pub trait System1 {
     fn sample(&self) -> zbus::Result<String>;
     /// Give one whole IOMMU group to the caller's VM (`pid`: its runner, 0: none; `memlock`: bytes it may lock).
     fn passthrough(&self, devices: &[String], pid: u32, memlock: u64) -> zbus::Result<Vec<String>>;
+    /// Take the NVIDIA GPU from Linux (services stopped, group on vfio-pci).
+    fn gpu_release(&self) -> zbus::Result<Vec<String>>;
+    /// Give the NVIDIA GPU back to Linux.
+    fn gpu_return(&self) -> zbus::Result<Vec<String>>;
     /// Give devices back from vfio-pci to their own drivers.
     fn passthrough_end(&self, devices: &[String]) -> zbus::Result<Vec<String>>;
     /// Make the host ready for the caller's Windows VM; the lines and the MSDM table.

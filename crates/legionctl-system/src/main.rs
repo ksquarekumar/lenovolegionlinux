@@ -519,6 +519,46 @@ impl System1 {
         Ok(lines)
     }
 
+    /// Take the NVIDIA GPU from Linux (`gpu give nvidia none`): its services stopped, its group on vfio-pci for the
+    /// caller; refused while the host uses it.
+    async fn gpu_release(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.vfio").await?;
+        let uid = caller_uid(conn, &header).await?;
+        let ledger = Ledger::open(&self.root).map_err(|e| failed(&e))?;
+        let (lines, services) = vfio::release_nvidia(&self.root, uid).map_err(|e| failed(&e))?;
+        ledger
+            .set(Key::GpuServices, Some(&services.join(" ")))
+            .map_err(|e| failed(&e))?;
+        Self::changed(&emitter, "GpuRelease", &lines).await?;
+        Ok(lines)
+    }
+
+    /// Give the NVIDIA GPU back to Linux (`gpu give nvidia linux`).
+    async fn gpu_return(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.vfio").await?;
+        let ledger = Ledger::open(&self.root).map_err(|e| failed(&e))?;
+        let services: Vec<String> = ledger
+            .get(Key::GpuServices)
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(String::from)
+            .collect();
+        let lines = vfio::return_nvidia(&self.root, &services).map_err(|e| failed(&e))?;
+        ledger.set(Key::GpuServices, None).map_err(|e| failed(&e))?;
+        Self::changed(&emitter, "GpuReturn", &lines).await?;
+        Ok(lines)
+    }
+
     /// Give `devices` back from vfio-pci to their own drivers, after the VM ended.
     async fn passthrough_end(
         &self,
@@ -538,6 +578,7 @@ impl System1 {
     async fn set_primary_gpu(
         &self,
         choice: String,
+        release_nvidia: bool,
         #[zbus(header)] header: zbus::message::Header<'_>,
         #[zbus(connection)] conn: &zbus::Connection,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
@@ -546,8 +587,8 @@ impl System1 {
         let choice: gpu::DesktopGpu = choice
             .parse()
             .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("{e}")))?;
-        let lines =
-            carry_out(&self.root, |m| gpu::set_desktop(m, choice)).map_err(|e| failed(&e))?;
+        let lines = carry_out(&self.root, |m| gpu::set_desktop(m, choice, release_nvidia))
+            .map_err(|e| failed(&e))?;
         if !lines.is_empty() {
             Self::changed(&emitter, "SetPrimaryGpu", &lines).await?;
         }

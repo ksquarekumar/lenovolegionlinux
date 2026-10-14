@@ -93,6 +93,20 @@ the SPICE socket as a user service (the desktop's environment). `windows.vm.shar
 the folder's name) and shareable memory (memfd). QMP is one module in the core crate. e2e: the autostart rule's
 content, enable/disable and lingering (off mutation-checked), view refused without a VM; as root, the share's devices.
 
+Built (2026-10-14, part 3, todo-28 3b): `gpu give nvidia linux|windows|none`. The owner is read from the facts (on
+`nvidia`: Linux; on vfio-pci and `gpu0` in the VM per QMP `qom-list`: Windows; else none). To Windows, a running VM is
+checked first (nothing moves without one); from Linux, the daemon's `GpuRelease` stops nvidia-persistenced and
+nvidia-powerd (kept in the ledger) and binds group 17, and on a refusal starts them again and names the way out
+(`gpu primary intel --release-nvidia`: the udev rule also tags the NVIDIA card `mutter-device-ignore`, from the next
+login; refused with `nvidia`, before the polkit dialog); into Windows by QMP `device_add` into `gpu-port`, the other
+functions first and function 0 last (it starts the slot's hot-plug); from Windows by `device_del` and a wait of 30 s
+for `DEVICE_DELETED` (never forced); to Linux by `GpuReturn` (unbind, services started). The VM has an IVSHMEM device
+(`windows.vm.looking_glass_mib`, 128 holds 4K; `/dev/shm/legionctl-looking-glass`), and `windows vm view` opens
+`looking-glass-client` (keyboard, mouse and clipboard through the SPICE socket) while Windows has the GPU, else the
+SPICE viewer. The iGPU is refused with the reason (3c). e2e (real daemon, stand-in kernel, a stand-in QMP server):
+no VM refused with nothing moved (mutation-checked), Mutter's hold refused with the way out, the hot-plug order
+(mutation-checked) and port, `already`, the eject and the way back to `nvidia`, `--release-nvidia` and its refusal.
+
 ## Boot, VM and GPU journeys (for review, 2026-10-14; todo-28, todo-80, todo-81)
 
 GPUs have one owner each: `linux`, `windows` or `none` (on vfio-pci, used by no one). The iGPU drives the laptop

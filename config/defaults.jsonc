@@ -213,6 +213,7 @@
       "reserve_mib": 2048,
       "usb": ["046d:c548"],
       "shares": [],
+      "looking_glass_mib": 128,
       "ovmf_code": "/usr/share/edk2/x64/OVMF_CODE.4m.fd",
       "ovmf_vars": "/usr/share/edk2/x64/OVMF_VARS.4m.fd"
     }

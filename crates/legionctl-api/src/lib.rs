@@ -378,6 +378,10 @@ operations! {
     validate / Validate = "validate", Read, ProfileIn => Validation;
     /// GPU wiring: which GPU drives each display and which GPU draws the desktop.
     gpu_status / GpuStatus = "gpu.status", Read, Empty => GpuState;
+    /// Give a GPU to Linux, to the running Windows VM, or to no one: Linux's driver and services release it, Windows
+    /// gets it by hot-plug (and an eject request to take it back; never forced). Apps on a GPU that leaves lose it. A
+    /// human approves it in the polkit dialog.
+    gpu_give / GpuGive = "gpu.give", Machine, GpuGiveIn => Lines;
     /// The discrete GPUs and `NVMe` controllers that can go to a VM (VFIO): IOMMU group, driver, and what on the host
     /// uses them now.
     vfio_status / VfioStatus = "vfio.status", Read, Empty => VfioDevices;

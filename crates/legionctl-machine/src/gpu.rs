@@ -132,13 +132,37 @@ pub fn desktop_preference(root: &SysRoot) -> DesktopGpu {
         .map_or(DesktopGpu::Auto, |(gpu, _)| *gpu)
 }
 
+/// The udev rule for Mutter: the GPU it draws on (none for `auto`), and with `release_nvidia` the NVIDIA GPU it must
+/// not open, so that the GPU can go to a VM (`gpu give`).
 #[must_use]
-pub fn primary_rule(choice: DesktopGpu) -> Option<String> {
-    let (_, driver) = PRIMARY_DRIVERS.iter().find(|(gpu, _)| *gpu == choice)?;
-    Some(format!(
-        "# legionctl: GPU that Mutter uses to draw the desktop (read at login)\n\
-         SUBSYSTEM==\"drm\", KERNEL==\"card*\", DRIVERS==\"{driver}\", TAG+=\"mutter-device-preferred-primary\"\n"
-    ))
+pub fn primary_rule(choice: DesktopGpu, release_nvidia: bool) -> Option<String> {
+    let primary = PRIMARY_DRIVERS
+        .iter()
+        .find(|(gpu, _)| *gpu == choice)
+        .map(|(_, driver)| {
+            format!("SUBSYSTEM==\"drm\", KERNEL==\"card*\", DRIVERS==\"{driver}\", TAG+=\"mutter-device-preferred-primary\"\n")
+        });
+    let ignore = release_nvidia.then(|| {
+        format!(
+            "SUBSYSTEM==\"drm\", KERNEL==\"card*\", DRIVERS==\"nvidia\", TAG+=\"{IGNORE_TAG}\"\n"
+        )
+    });
+    (primary.is_some() || ignore.is_some()).then(|| {
+        format!(
+            "# legionctl: the GPU Mutter draws the desktop on, and a GPU it leaves alone (read at login)\n{}{}",
+            primary.unwrap_or_default(),
+            ignore.unwrap_or_default()
+        )
+    })
+}
+
+const IGNORE_TAG: &str = "mutter-device-ignore";
+
+/// Mutter leaves the NVIDIA GPU alone (from the udev rule), so it can go to a VM.
+#[must_use]
+pub fn nvidia_released(root: &SysRoot) -> bool {
+    root.read(PRIMARY_GPU_RULE)
+        .is_some_and(|rule| rule.contains(IGNORE_TAG))
 }
 
 /// CPU list of the performance (`p`) or efficiency (`e`) cores on hybrid Intel CPUs.
@@ -193,15 +217,22 @@ pub fn render_env(root: &SysRoot, gpu: &str) -> BTreeMap<&'static str, String> {
 ///
 /// # Errors
 /// The plan cannot be made.
-pub fn set_desktop(machine: &Machine, choice: DesktopGpu) -> Result<Vec<Step>> {
+pub fn set_desktop(
+    machine: &Machine,
+    choice: DesktopGpu,
+    release_nvidia: bool,
+) -> Result<Vec<Step>> {
+    if release_nvidia && choice == DesktopGpu::Nvidia {
+        bail!("the desktop cannot draw on the NVIDIA GPU and leave it alone: choose intel or auto");
+    }
     let mut steps = match choice {
-        DesktopGpu::Auto => vec![
+        DesktopGpu::Auto if !release_nvidia => vec![
             Step::Remove {
                 path: PRIMARY_GPU_RULE.into(),
             },
             Step::Info("Mutter picks the GPU of the built-in panel".into()),
         ],
-        _ => match primary_rule(choice) {
+        _ => match primary_rule(choice, release_nvidia) {
             Some(content) => vec![Step::Create {
                 path: PRIMARY_GPU_RULE.into(),
                 content,

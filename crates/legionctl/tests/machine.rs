@@ -1398,7 +1398,7 @@ mod daemon_process {
 
         // polkit's no: nothing changes, and the caller hears why
         let refused = system
-            .call::<_, _, Vec<String>>("SetPrimaryGpu", &("nvidia",))
+            .call::<_, _, Vec<String>>("SetPrimaryGpu", &("nvidia", false))
             .await
             .unwrap_err();
         assert!(
@@ -1436,7 +1436,7 @@ mod daemon_process {
 /// The operator on the same private bus as the daemon: machine changes reach the event log, and telemetry gets the
 /// root-only part from the daemon.
 mod operator_and_daemon {
-    use super::daemon_process::{daemon, start, wait_for};
+    use super::daemon_process::{Kill, daemon, start, wait_for};
     use super::*;
     use serde_json::Value;
 
@@ -2520,6 +2520,128 @@ mod operator_and_daemon {
         );
     }
 
+    /// A stand-in QEMU QMP server at the Windows VM's socket: it answers the handshake, lists the devices that were
+    /// added, logs every `device_add`/`device_del` to `qmp.log`, and sends `DEVICE_DELETED` after a `device_del`.
+    fn qmp_stand_in(m: &Machine) -> Kill {
+        let dir = m.dir.join("home/.local/share/legionctl/windows");
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("qmp.sock");
+        let script = r#"
+import json, os, socket, sys
+path, log = sys.argv[1], sys.argv[2]
+server = socket.socket(socket.AF_UNIX)
+server.bind(path)
+server.listen()
+devices = []
+while True:
+    conn, _ = server.accept()
+    f = conn.makefile("rw")
+    f.write(json.dumps({"QMP": {"version": {}}}) + "\n"); f.flush()
+    for line in f:
+        msg = json.loads(line)
+        cmd, args = msg["execute"], msg.get("arguments", {})
+        if cmd in ("device_add", "device_del"):
+            open(log, "a").write(cmd + " " + json.dumps(args, sort_keys=True) + "\n")
+        if cmd == "device_add":
+            devices.append(args["id"])
+        reply = {"return": [{"name": d} for d in devices] if cmd == "qom-list" else {}}
+        f.write(json.dumps(reply) + "\n"); f.flush()
+        if cmd == "device_del":
+            devices.clear()
+            f.write(json.dumps({"event": "DEVICE_DELETED", "data": {"device": args["id"]}}) + "\n"); f.flush()
+"#;
+        let child = std::process::Command::new("python3")
+            .args(["-c", script])
+            .arg(&socket)
+            .arg(m.dir.join("qmp.log"))
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !socket.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the stand-in QMP did not start"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        Kill(child)
+    }
+
+    /// GPU owners (note 05, `gpu give`): the NVIDIA GPU goes to Windows only when a VM runs (nothing moves before), is
+    /// refused while Mutter holds it (with the way to release it, and its services started again), goes to the VM by
+    /// hot-plug with function 0 last, and back to Linux by an eject request that Windows answers; `gpu primary intel
+    /// --release-nvidia` makes Mutter leave it alone, which `nvidia` refuses.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_nvidia_gpu_moves_between_linux_and_the_windows_vm_by_its_owner_rules() {
+        let m = Machine::new("gpugive");
+        let _kernel = windows_machine(&m);
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "gpugive");
+        let driver = || {
+            std::fs::read_link(m.dir.join("root/sys/bus/pci/devices/0000:01:00.0/driver")).unwrap()
+        };
+        let systemctl = || std::fs::read_to_string(m.dir.join("systemctl.log")).unwrap_or_default();
+        let refused = |args: &[&str], why: &str| {
+            let out = op.cli(args);
+            let text = String::from_utf8_lossy(&out.stderr).to_string();
+            assert!(
+                !out.status.success() && text.contains(why),
+                "{why} missing:\n{text}"
+            );
+        };
+
+        refused(&["gpu", "give", "nvidia", "windows"], "no Windows VM runs");
+        assert_eq!(driver(), Path::new("../../drivers/nvidia"), "nothing moved");
+        let _qmp = qmp_stand_in(&m);
+        refused(&["gpu", "give", "nvidia", "windows"], "--release-nvidia");
+        assert_eq!(driver(), Path::new("../../drivers/nvidia"));
+
+        std::fs::remove_file(m.dir.join("root/proc/4242/fd/7")).unwrap();
+        let given = op.ok(&["gpu", "give", "nvidia", "windows"]);
+        assert!(given.contains("nvidia: linux -> windows"), "{given}");
+        let qmp = std::fs::read_to_string(m.dir.join("qmp.log")).unwrap();
+        let adds: Vec<&str> = qmp
+            .lines()
+            .filter(|l| l.starts_with("device_add"))
+            .collect();
+        assert!(
+            adds.len() == 2
+                && adds[0].contains("\"host\": \"0000:01:00.1\"")
+                && adds[1].contains("\"host\": \"0000:01:00.0\"")
+                && adds[1].contains("\"multifunction\": \"on\"")
+                && adds.iter().all(|a| a.contains("\"bus\": \"gpu-port\"")),
+            "function 0 last, into the free port:\n{qmp}"
+        );
+        assert_eq!(driver(), Path::new("../../drivers/vfio-pci"));
+        assert!(
+            op.ok(&["gpu", "give", "nvidia", "windows"])
+                .contains("already windows")
+        );
+
+        let back = op.ok(&["gpu", "give", "nvidia", "linux"]);
+        assert!(
+            back.contains("Windows released it") && back.contains("windows -> linux"),
+            "{back}"
+        );
+        assert!(
+            std::fs::read_to_string(m.dir.join("qmp.log"))
+                .unwrap()
+                .contains("device_del {\"id\": \"gpu0\"}")
+        );
+        assert_eq!(driver(), Path::new("../../drivers/nvidia"));
+
+        refused(
+            &["gpu", "primary", "nvidia", "--release-nvidia"],
+            "choose intel or auto",
+        );
+        let plan = op.ok(&["gpu", "primary", "intel", "--release-nvidia", "--dry-run"]);
+        assert!(
+            plan.contains("DRIVERS==\"nvidia\", TAG+=\"mutter-device-ignore\""),
+            "{plan}"
+        );
+        let _ = systemctl;
+    }
+
     /// The Windows VM's full start, as root (only root may raise the memory lock this far): QEMU runs on the
     /// configured CPUs with the Windows disk through VFIO, the Bolt receiver, the firmware's MSDM table, a TPM and a
     /// free `PCIe` port for a GPU; when it ends, the host is given back.
@@ -2546,6 +2668,7 @@ mod operator_and_daemon {
             "q35,accel=kvm,smm=off,memory-backend=mem".into(),
             "memory-backend-memfd,id=mem,size=64M,share=on".into(),
             "vhost-user-fs-pci,chardev=fs0,tag=share".into(),
+            "ivshmem-plain,memdev=lg".into(),
         ] {
             assert!(
                 args.lines().any(|l| l == expected),

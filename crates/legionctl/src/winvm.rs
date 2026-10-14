@@ -214,6 +214,19 @@ fn qemu_args(dir: &Path, config: &WindowsVmConfig, devices: &[String]) -> Vec<St
             ),
         ]);
     }
+    if config.looking_glass_mib > 0 {
+        // Windows' frames for Looking Glass (`windows vm view` while Windows has the GPU)
+        args.extend([
+            "-object".into(),
+            format!(
+                "memory-backend-file,id=lg,mem-path={},size={}M,share=on",
+                opt(&legionctl_core::session::looking_glass_file().to_string_lossy()),
+                config.looking_glass_mib
+            ),
+            "-device".into(),
+            "ivshmem-plain,memdev=lg".into(),
+        ]);
+    }
     args.extend(smbios());
     for device in devices {
         args.extend(["-device".into(), format!("vfio-pci,host={device}")]);

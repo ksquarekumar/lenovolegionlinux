@@ -62,6 +62,19 @@
       <arg type="as" direction="out"/>
     </method>
     <!--
+     Take the NVIDIA GPU from Linux (`gpu give nvidia none`): its services stopped, its group on vfio-pci for the
+     caller; refused while the host uses it.
+     -->
+    <method name="GpuRelease">
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
+     Give the NVIDIA GPU back to Linux (`gpu give nvidia linux`).
+     -->
+    <method name="GpuReturn">
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
      Give `devices` back from vfio-pci to their own drivers, after the VM ended.
      -->
     <method name="PassthroughEnd">
@@ -73,6 +86,7 @@
      -->
     <method name="SetPrimaryGpu">
       <arg name="choice" type="s" direction="in"/>
+      <arg name="release_nvidia" type="b" direction="in"/>
       <arg type="as" direction="out"/>
     </method>
     <!--

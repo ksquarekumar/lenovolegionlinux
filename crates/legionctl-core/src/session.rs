@@ -129,6 +129,12 @@ pub fn windows_root() -> PathBuf {
     vm_root().with_file_name("windows")
 }
 
+/// The Windows VM's Looking Glass memory (`/dev/shm`, the user's).
+#[must_use]
+pub fn looking_glass_file() -> PathBuf {
+    PathBuf::from("/dev/shm/legionctl-looking-glass")
+}
+
 /// The user service that runs the Windows VM.
 pub const WINDOWS_UNIT: &str = "legionctl-windows-vm";
 

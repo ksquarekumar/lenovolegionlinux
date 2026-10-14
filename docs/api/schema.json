@@ -822,6 +822,68 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "gpu.give": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "gpu": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "igpu",
+              "description": "The Intel iGPU (the Linux desktop and the laptop panel)."
+            },
+            {
+              "type": "string",
+              "const": "nvidia",
+              "description": "The NVIDIA RTX GPU (the external ports)."
+            }
+          ]
+        },
+        "to": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "linux",
+                "windows"
+              ]
+            },
+            {
+              "type": "string",
+              "const": "none",
+              "description": "On vfio-pci, used by no one."
+            }
+          ]
+        }
+      },
+      "required": [
+        "gpu",
+        "to"
+      ],
+      "title": "GpuGiveIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "vfio.status": {
     "class": "read",
     "internal": false,
@@ -1131,6 +1193,11 @@
             }
           ],
           "description": "The GPU that draws the desktop: nvidia, intel, or auto (Mutter decides)."
+        },
+        "release_nvidia": {
+          "type": "boolean",
+          "description": "Mutter leaves the NVIDIA GPU alone (with intel or auto), so it can go to a VM (`gpu give`); from the next\nlogin.",
+          "default": false
         },
         "dry_run": {
           "type": "boolean",

@@ -65,6 +65,9 @@ pub struct WindowsVmConfig {
     /// Linux folders Windows gets through virtiofs (Windows needs the virtio-win drivers and `WinFsp`); the tag is
     /// the folder's name.
     pub shares: Vec<String>,
+    /// Shared memory for Looking Glass (Windows' frames in a Linux window while it has the GPU), MiB; 0 is off. 128
+    /// holds 4K.
+    pub looking_glass_mib: u64,
     /// UEFI firmware (OVMF) code, and the variables a first start copies.
     pub ovmf_code: String,
     pub ovmf_vars: String,

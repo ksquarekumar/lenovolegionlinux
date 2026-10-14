@@ -23,8 +23,9 @@ use legionctl_api::{
     WorkspaceOpenIn, WorkspaceStates, Workspaces,
 };
 use legionctl_api::{
-    Autostart, AutostartIn, FanCurveIn, FanState, KnobHoldIn, KnobIn, PackIn, PackKind, Switch,
-    SwitchIn, UndoIn, VfioBindIn, VfioDevices, VfioIn, WindowsVmBeginIn, WindowsVmBegun,
+    Autostart, AutostartIn, FanCurveIn, FanState, GpuGiveIn, GpuName, GpuOwner, KnobHoldIn, KnobIn,
+    PackIn, PackKind, Switch, SwitchIn, UndoIn, VfioBindIn, VfioDevices, VfioIn, WindowsVmBeginIn,
+    WindowsVmBegun,
 };
 use legionctl_api::{
     CachePurgeIn, CacheStat, CachedCall, EventRow, JobIdIn, Page, PageIn, Principal,
@@ -566,6 +567,21 @@ fn first_boot(disk: &Path, new: &Path, (iso, memory): (&Path, &str)) -> Result<(
         log.display()
     );
     Ok(())
+}
+
+/// Whether the running Windows VM (QMP at `socket`) has the GPU (`gpu give nvidia windows` added `gpu0`).
+fn windows_has_gpu(socket: &Path) -> bool {
+    legionctl_core::qmp::Qmp::connect(socket)
+        .and_then(|mut q| {
+            q.execute(
+                "qom-list",
+                Some(serde_json::json!({"path": "/machine/peripheral"})),
+            )
+        })
+        .is_ok_and(|ids| {
+            ids.as_array()
+                .is_some_and(|ids| ids.iter().any(|i| i["name"] == "gpu0"))
+        })
 }
 
 /// Whether user unit `unit` is active.
@@ -1136,6 +1152,71 @@ impl Engine for Operator {
         })
     }
 
+    fn gpu_give(&self, _: &Ctx, input: GpuGiveIn) -> Result<Lines> {
+        anyhow::ensure!(
+            input.gpu == GpuName::Nvidia,
+            "the iGPU drives the Linux desktop and the laptop panel: it moves only as SR-IOV functions, which this \
+             kernel's i915 does not offer yet (todo-28 3c)"
+        );
+        let root = SysRoot::from_env();
+        let group = legionctl_machine::vfio::nvidia_group(&root)?;
+        let qmp_socket = legionctl_core::session::windows_root().join("qmp.sock");
+        let in_vm = windows_has_gpu(&qmp_socket);
+        let now = match legionctl_machine::vfio::driver(&root, &group[0]).as_deref() {
+            Some("vfio-pci") if in_vm => GpuOwner::Windows,
+            Some("vfio-pci") => GpuOwner::None,
+            _ => GpuOwner::Linux,
+        };
+        let name = |o: GpuOwner| match o {
+            GpuOwner::Linux => "linux",
+            GpuOwner::Windows => "windows",
+            GpuOwner::None => "none",
+        };
+        if now == input.to {
+            return Ok(Lines {
+                lines: vec![format!("nvidia: already {}", name(now))],
+            });
+        }
+        if input.to == GpuOwner::Windows {
+            // before anything moves: without a VM the GPU would end with no owner
+            legionctl_core::qmp::Qmp::connect(&qmp_socket)
+                .context("no Windows VM runs (legionctl windows vm start)")?;
+        }
+        let mut lines = Vec::new();
+        if now == GpuOwner::Windows {
+            // the eject request: Windows releases the GPU (an app that holds it keeps it); never forced
+            let mut qmp = legionctl_core::qmp::Qmp::connect(&qmp_socket)?;
+            qmp.execute("device_del", Some(serde_json::json!({"id": "gpu0"})))?;
+            qmp.wait_event("DEVICE_DELETED", "gpu0", std::time::Duration::from_secs(30))
+                .context("Windows did not release the GPU: close what uses it in Windows, then try again")?;
+            lines.push("nvidia: Windows released it".into());
+        }
+        if now == GpuOwner::Linux {
+            lines.extend(self.system(async |p| p.gpu_release().await)?);
+        }
+        match input.to {
+            GpuOwner::Linux => lines.extend(self.system(async |p| p.gpu_return().await)?),
+            GpuOwner::Windows => {
+                let mut qmp = legionctl_core::qmp::Qmp::connect(&qmp_socket)
+                    .context("no Windows VM runs (legionctl windows vm start)")?;
+                // the other functions first: function 0 starts the hot-plug of the slot
+                for device in group.iter().rev() {
+                    let function = device.rsplit('.').next().unwrap_or("0");
+                    let id = format!("gpu{function}");
+                    let mut add = serde_json::json!({"driver": "vfio-pci", "host": device, "bus": "gpu-port", "id": id, "addr": format!("0.{function}")});
+                    if function == "0" {
+                        add["multifunction"] = "on".into();
+                    }
+                    qmp.execute("device_add", Some(add))?;
+                }
+                lines.push("nvidia: hot-plugged into Windows".into());
+            }
+            GpuOwner::None => {}
+        }
+        lines.push(format!("nvidia: {} -> {}", name(now), name(input.to)));
+        Ok(Lines { lines })
+    }
+
     fn vfio_status(&self, _: &Ctx, _: Empty) -> Result<VfioDevices> {
         let json = self.system(async move |p| p.passthroughs().await)?;
         let items: Vec<legionctl_machine::vfio::Candidate> = serde_json::from_str(&json)?;
@@ -1206,13 +1287,25 @@ impl Engine for Operator {
 
     fn gpu_primary(&self, _: &Ctx, input: GpuPrimaryIn) -> Result<Changes> {
         let choice = input.choice;
+        // checked here too, so an invalid choice does not ask for a password first
+        if input.release_nvidia && gpu::DesktopGpu::from(choice) == gpu::DesktopGpu::Nvidia {
+            return Err(coded(
+                Code::InvalidInput,
+                "the desktop cannot draw on the NVIDIA GPU and leave it alone: choose intel or auto",
+            ));
+        }
         if input.dry_run {
             let plan = Plan::load(None)?;
-            return Ok(dry_run(&gpu::set_desktop(&plan.machine(), choice.into())?));
+            return Ok(dry_run(&gpu::set_desktop(
+                &plan.machine(),
+                choice.into(),
+                input.release_nvidia,
+            )?));
         }
+        let release = input.release_nvidia;
         Ok(Changes {
             lines: self.system(async move |p| {
-                p.set_primary_gpu(gpu::DesktopGpu::from(choice).as_str())
+                p.set_primary_gpu(gpu::DesktopGpu::from(choice).as_str(), release)
                     .await
             })?,
             dry_run: false,
@@ -2101,23 +2194,39 @@ impl Engine for Operator {
             unit_active(&unit),
             "the Windows VM does not run (legionctl windows vm start)"
         );
-        let viewer = which("remote-viewer")
-            .context("remote-viewer is not installed: install the package virt-viewer")?;
-        let uri = format!(
-            "spice+unix://{}",
-            legionctl_core::session::windows_root()
-                .join("spice.sock")
-                .display()
-        );
+        let dir = legionctl_core::session::windows_root();
+        let spice = dir.join("spice.sock");
+        // with the GPU, Windows draws on it: Looking Glass shows its frames; else the SPICE display
+        let (viewer, args, shown) = if windows_has_gpu(&dir.join("qmp.sock")) {
+            let client = which("looking-glass-client").context(
+                "Windows has the GPU, and looking-glass-client is not installed (package looking-glass; Windows needs \
+                 the Looking Glass host)",
+            )?;
+            let file = legionctl_core::session::looking_glass_file();
+            let args = vec![
+                "-f".to_string(),
+                file.to_string_lossy().into_owned(),
+                "-c".into(),
+                spice.to_string_lossy().into_owned(),
+                "-p".into(),
+                "0".into(),
+            ];
+            (client, args, format!("Looking Glass on {}", file.display()))
+        } else {
+            let client = which("remote-viewer")
+                .context("remote-viewer is not installed: install the package virt-viewer")?;
+            let uri = format!("spice+unix://{}", spice.display());
+            (client, vec![uri.clone()], uri)
+        };
         // a user service gets the desktop's environment (WAYLAND_DISPLAY), which the operator may not have
         output(
             Command::new("systemd-run")
                 .args(["--user", "--collect", "--quiet", "--"])
                 .arg(viewer)
-                .arg(&uri),
+                .args(&args),
         )?;
         Ok(Lines {
-            lines: vec![format!("opened {uri}")],
+            lines: vec![format!("opened {shown}")],
         })
     }
 

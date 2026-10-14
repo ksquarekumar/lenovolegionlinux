@@ -263,6 +263,7 @@ impl LegionApp {
             client
                 .call::<op::GpuPrimary>(&GpuPrimaryIn {
                     choice,
+                    release_nvidia: false,
                     dry_run: true,
                 })
                 .await
@@ -292,6 +293,7 @@ impl LegionApp {
                     client
                         .call::<op::GpuPrimary>(&GpuPrimaryIn {
                             choice,
+                            release_nvidia: false,
                             dry_run: false,
                         })
                         .await

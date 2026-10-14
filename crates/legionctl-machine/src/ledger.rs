@@ -19,6 +19,8 @@ pub enum Key {
     Override,
     /// What a running Windows VM changed on the host (`winvm::Record` as JSON), for its end.
     WindowsVm,
+    /// The NVIDIA services that `GpuRelease` stopped (space-separated), for `GpuReturn`.
+    GpuServices,
 }
 
 impl Key {
@@ -27,6 +29,7 @@ impl Key {
             Key::Written => "firmware-written",
             Key::Override => "firmware-override",
             Key::WindowsVm => "windows-vm",
+            Key::GpuServices => "gpu-services",
         }
     }
 }

@@ -224,6 +224,10 @@ pub struct PowerApplyIn {
 pub struct GpuPrimaryIn {
     /// The GPU that draws the desktop: nvidia, intel, or auto (Mutter decides).
     pub choice: DesktopGpu,
+    /// Mutter leaves the NVIDIA GPU alone (with intel or auto), so it can go to a VM (`gpu give`); from the next
+    /// login.
+    #[serde(default)]
+    pub release_nvidia: bool,
     /// Print what would change; change nothing.
     #[serde(default)]
     pub dry_run: bool,
@@ -314,6 +318,30 @@ pub struct VfioBindIn {
     /// The memory it may lock, in MiB (the VM's memory and some more).
     #[serde(default)]
     pub memlock_mib: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum GpuName {
+    /// The Intel iGPU (the Linux desktop and the laptop panel).
+    Igpu,
+    /// The NVIDIA RTX GPU (the external ports).
+    Nvidia,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum GpuOwner {
+    Linux,
+    Windows,
+    /// On vfio-pci, used by no one.
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GpuGiveIn {
+    pub gpu: GpuName,
+    pub to: GpuOwner,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
