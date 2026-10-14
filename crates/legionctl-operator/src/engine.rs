@@ -708,6 +708,22 @@ fn dry_run(steps: &[policy::Step]) -> Changes {
 
 impl Operator {
     /// A machine change through `legionctl-system`; polkit asks the human.
+    /// A boot action: its plan for a dry run, else the daemon carries it out.
+    fn boot_action(
+        &self,
+        action: &'static str,
+        dry: bool,
+        plan: impl FnOnce(&SysRoot) -> Result<Vec<legionctl_machine::policy::Step>>,
+    ) -> Result<Changes> {
+        if dry {
+            return Ok(dry_run(&plan(&SysRoot::from_env())?));
+        }
+        Ok(Changes {
+            lines: self.system(async move |p| p.boot(action).await)?,
+            dry_run: false,
+        })
+    }
+
     fn system<T>(&self, call: impl AsyncFnOnce(&System1Proxy<'_>) -> zbus::Result<T>) -> Result<T> {
         self.runtime.block_on(async {
             let conn = zbus::Connection::system()
@@ -2109,6 +2125,38 @@ impl Engine for Operator {
             .into(),
         );
         Ok(Lines { lines })
+    }
+
+    fn boot_status(&self, _: &Ctx, _: Empty) -> Result<legionctl_api::BootState> {
+        Ok(legionctl_machine::boot::state(&SysRoot::from_env())?.into_wire())
+    }
+
+    fn boot_install(&self, _: &Ctx, input: DryRunIn) -> Result<Changes> {
+        self.boot_action("install", input.dry_run, |root| {
+            let mut plan = legionctl_machine::boot::install_plan(root)?;
+            plan.push(legionctl_machine::policy::Step::Info(
+                "then the next start tries legionctl's entry once (BootNext)".into(),
+            ));
+            Ok(plan)
+        })
+    }
+
+    fn boot_confirm(&self, _: &Ctx, input: DryRunIn) -> Result<Changes> {
+        self.boot_action("confirm", input.dry_run, |root| {
+            legionctl_machine::boot::confirm_plan(&legionctl_machine::boot::state(root)?)
+        })
+    }
+
+    fn boot_rebuild(&self, _: &Ctx, input: DryRunIn) -> Result<Changes> {
+        self.boot_action("rebuild", input.dry_run, |root| {
+            legionctl_machine::boot::rebuild_plan(root, &legionctl_machine::boot::state(root)?)
+        })
+    }
+
+    fn boot_remove(&self, _: &Ctx, input: DryRunIn) -> Result<Changes> {
+        self.boot_action("remove", input.dry_run, |root| {
+            legionctl_machine::boot::remove_plan(root, &legionctl_machine::boot::state(root)?)
+        })
     }
 
     fn windows_status(&self, _: &Ctx, _: Empty) -> Result<WindowsState> {

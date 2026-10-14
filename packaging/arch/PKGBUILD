@@ -21,6 +21,8 @@ optdepends=(
   "edk2-ovmf: UEFI firmware of the Windows VM (legionctl windows vm)"
   "swtpm: the Windows VM's TPM"
   "virt-viewer: legionctl windows vm view (SPICE)"
+  "systemd-ukify: legionctl boot install (signed kernel images)"
+  "sbsigntools: legionctl boot install (signing with the MOK key)"
   "stress-ng: the CPU workload of bench and tune"
   "scx-scheds: sched_ext schedulers (scx_lavd) for /etc/scx_loader.toml"
   "scx-tools: scx_loader service"

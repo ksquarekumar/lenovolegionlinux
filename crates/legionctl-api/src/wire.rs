@@ -603,6 +603,31 @@ wire! {
 
     }
 
+    /// A firmware boot entry.
+    struct BootEntry from machine::boot::Entry {
+        /// `0003`
+        id: String,
+        label: String,
+    }
+
+    /// How the computer starts.
+    struct BootState from machine::boot::BootState {
+        /// The ESP's mount point.
+        esp: Option<String>,
+        entries: Vec<BootEntry>,
+        order: Vec<String>,
+        /// This start's entry.
+        current: Option<String>,
+        /// The next start's entry, once.
+        next: Option<String>,
+        /// legionctl's entry, when there is one.
+        ours: Option<String>,
+        /// Kernels in /boot.
+        kernels: Vec<String>,
+        /// legionctl's kernel images on the ESP.
+        ukis: Vec<String>,
+    }
+
     /// A device that can go to a VM (VFIO): a discrete GPU or an `NVMe` controller.
     struct VfioDevice from machine::vfio::Candidate {
         /// PCI address (`0000:01:00.0`).

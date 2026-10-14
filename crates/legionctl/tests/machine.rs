@@ -2642,6 +2642,188 @@ while True:
         let _ = systemctl;
     }
 
+    /// The recorded machine's boot chain for `boot` (todo-80): an ESP at /boot/efi with shim and `MokManager` (rEFInd
+    /// behind them), two kernels, the MOK key, systemd-boot; a stand-in `efibootmgr` that keeps the firmware's entries
+    /// in a file (0003 rEFInd, 0004 Windows; this start 0003), and stand-in `ukify`/`sbsign` that write what they were
+    /// given into their output.
+    fn boot_machine(m: &Machine) -> PathBuf {
+        let bin = m.dir.join("bin");
+        // the daemon's PATH in the test has only stand-ins; the boot plans use these system tools
+        for tool in ["mkdir", "install", "rm"] {
+            std::os::unix::fs::symlink(format!("/usr/bin/{tool}"), bin.join(tool)).unwrap();
+        }
+        m.set(
+            "/proc/self/mounts",
+            "/dev/nvme1n1p2 / btrfs rw 0 0\n/dev/nvme1n1p1 /boot/efi vfat rw 0 0",
+        );
+        m.set(
+            "/proc/cmdline",
+            "quiet rw root=UUID=a9e6 initrd=\\initramfs-linux-cachyos-bore-lto.img",
+        );
+        for file in [
+            "/boot/efi/EFI/BOOT/bootx64.efi",
+            "/boot/efi/EFI/BOOT/mmx64.efi",
+            "/boot/vmlinuz-linux-cachyos",
+            "/boot/initramfs-linux-cachyos.img",
+            "/boot/vmlinuz-linux-cachyos-bore-lto",
+            "/boot/initramfs-linux-cachyos-bore-lto.img",
+            "/boot/intel-ucode.img",
+            "/etc/refind.d/keys/refind_local.key",
+            "/etc/refind.d/keys/refind_local.crt",
+            "/usr/lib/systemd/boot/efi/systemd-bootx64.efi",
+        ] {
+            m.set(file, "");
+        }
+        m.set(
+            "/sys/devices/pci0000:00/0000:7c:00.0/nvme/nvme1/nvme1n1/nvme1n1p1/partition",
+            "1",
+        );
+        let link = m.dir.join("root/sys/class/block/nvme1n1p1");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(
+            "../../devices/pci0000:00/0000:7c:00.0/nvme/nvme1/nvme1n1/nvme1n1p1",
+            link,
+        )
+        .unwrap();
+        let state = m.dir.join("efivars.json");
+        std::fs::write(
+            &state,
+            r#"{"entries": {"0003": "Linpus lite", "0004": "Windows Boot Manager"}, "order": ["0003", "0004"], "current": "0003", "next": null}"#,
+        )
+        .unwrap();
+        let efibootmgr = format!(
+            r#"exec /usr/bin/python3 -c '
+import json, sys
+path = "{state}"
+s = json.load(open(path)); a = sys.argv[1:]
+open(path + ".log", "a").write(" ".join(a) + "\n")
+if "--create-only" in a:
+    s["entries"]["0007"] = a[a.index("--label") + 1]
+elif "--bootnext" in a:
+    s["next"] = a[a.index("--bootnext") + 1]
+elif "--bootorder" in a:
+    s["order"] = a[a.index("--bootorder") + 1].split(",")
+elif "--delete-bootnum" in a:
+    n = a[a.index("--bootnum") + 1]; s["entries"].pop(n); s["order"] = [o for o in s["order"] if o != n]
+json.dump(s, open(path, "w"))
+print("BootCurrent: " + s["current"])
+if s["next"]: print("BootNext: " + s["next"])
+print("BootOrder: " + ",".join(s["order"]))
+for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,GPT,x)/File")
+' "$@""#,
+            state = state.display()
+        );
+        Machine::script(&bin, "efibootmgr", &efibootmgr);
+        let writer = |name: &str| {
+            format!(
+                "out=; prev=; for a in \"$@\"; do [ \"$prev\" = --output ] && out=$a; prev=$a; done; \
+                 [ -z \"$out\" ] || echo \"{name} $*\" > \"$out\""
+            )
+        };
+        Machine::script(&bin, "ukify", &writer("ukify"));
+        Machine::script(&bin, "sbsign", &writer("sbsign"));
+        state
+    }
+
+    /// The boot takeover (todo-80): legionctl's entry comes beside the old chain, never first and never alone: the
+    /// next start tries it once (`BootNext`), `confirm` puts it first only after a start through it, `rebuild` follows
+    /// the kernels, and `remove` leaves the old chain as it was. Each kernel's image is signed with the MOK key and has
+    /// the running system's kernel line; systemd-boot is shim's signed second stage.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn legionctl_boot_comes_beside_the_old_chain_and_is_tried_once_before_it_leads() {
+        let m = Machine::new("boot");
+        let state = boot_machine(&m);
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "boot");
+        let esp = m.dir.join("root/boot/efi");
+        let efivars = || -> Value {
+            serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap()
+        };
+
+        let plan = op.ok(&["boot", "install", "--dry-run"]);
+        for expected in [
+            "default legionctl-linux-cachyos-bore-lto.efi",
+            "--create-only --disk /dev/nvme1n1 --part 1 --label legionctl",
+            "then the next start tries legionctl's entry once",
+        ] {
+            assert!(plan.contains(expected), "{expected} missing:\n{plan}");
+        }
+        assert_eq!(
+            efivars()["order"],
+            serde_json::json!(["0003", "0004"]),
+            "a dry run changes nothing"
+        );
+
+        op.ok(&["boot", "install"]);
+        let loader = std::fs::read_to_string(esp.join("EFI/legionctl/grubx64.efi")).unwrap();
+        assert!(
+            loader.contains("sbsign")
+                && loader.contains("refind_local.key")
+                && loader.contains("systemd-bootx64.efi"),
+            "{loader}"
+        );
+        for kernel in ["linux-cachyos", "linux-cachyos-bore-lto"] {
+            let image =
+                std::fs::read_to_string(esp.join(format!("EFI/Linux/legionctl-{kernel}.efi")))
+                    .unwrap();
+            assert!(
+                image.contains(&format!("vmlinuz-{kernel}"))
+                    && image.contains("intel-ucode.img")
+                    && image.contains("--cmdline quiet rw root=UUID=a9e6 --")
+                    && image.contains("--secureboot-private-key"),
+                "{image}"
+            );
+        }
+        assert!(
+            esp.join("EFI/legionctl/shimx64.efi").exists()
+                && esp.join("EFI/legionctl/mmx64.efi").exists()
+        );
+        let vars = efivars();
+        assert_eq!(vars["entries"]["0007"], "legionctl");
+        assert_eq!(
+            vars["order"],
+            serde_json::json!(["0003", "0004"]),
+            "not first: the old chain still leads"
+        );
+        assert_eq!(vars["next"], "0007", "the next start tries it once");
+
+        let refused = op.cli(&["boot", "confirm"]);
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("this start came through entry 0003")
+        );
+        let mut vars = efivars();
+        vars["current"] = "0007".into();
+        std::fs::write(&state, vars.to_string()).unwrap();
+        op.ok(&["boot", "confirm"]);
+        assert_eq!(
+            efivars()["order"],
+            serde_json::json!(["0007", "0003", "0004"])
+        );
+
+        std::fs::remove_file(m.dir.join("root/boot/vmlinuz-linux-cachyos")).unwrap();
+        op.ok(&["boot", "rebuild"]);
+        assert!(
+            !esp.join("EFI/Linux/legionctl-linux-cachyos.efi").exists(),
+            "the image of a removed kernel goes"
+        );
+
+        op.ok(&["boot", "remove"]);
+        let vars = efivars();
+        assert_eq!(vars["order"], serde_json::json!(["0003", "0004"]));
+        assert!(vars["entries"].get("0007").is_none());
+        assert!(
+            !esp.join("EFI/legionctl").exists()
+                && !esp
+                    .join("EFI/Linux/legionctl-linux-cachyos-bore-lto.efi")
+                    .exists()
+        );
+        assert!(!esp.join("loader/loader.conf").exists());
+        assert!(
+            esp.join("EFI/BOOT/bootx64.efi").exists(),
+            "the old chain is as it was"
+        );
+    }
+
     /// The Windows VM's full start, as root (only root may raise the memory lock this far): QEMU runs on the
     /// configured CPUs with the Windows disk through VFIO, the Bolt receiver, the firmware's MSDM table, a TPM and a
     /// free `PCIe` port for a GPU; when it ends, the host is given back.

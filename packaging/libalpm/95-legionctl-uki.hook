@@ -1,0 +1,14 @@
+# legionctl's signed kernel images (legionctl boot install): made again after each kernel or initramfs change, after
+# mkinitcpio's own hook (90); nothing happens when legionctl's boot entry does not exist
+[Trigger]
+Type = Path
+Operation = Install
+Operation = Upgrade
+Target = usr/lib/modules/*/vmlinuz
+Target = usr/lib/initcpio/*
+Target = boot/*-ucode.img
+
+[Action]
+Description = legionctl: making the signed kernel images again...
+When = PostTransaction
+Exec = /usr/lib/legionctl/legionctl-system --boot-rebuild

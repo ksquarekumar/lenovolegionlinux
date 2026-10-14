@@ -75,6 +75,13 @@
       <arg type="as" direction="out"/>
     </method>
     <!--
+     The boot takeover (todo-80): `install` (then the next start tries it once), `confirm`, `rebuild`, `remove`.
+     -->
+    <method name="Boot">
+      <arg name="action" type="s" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
      Give `devices` back from vfio-pci to their own drivers, after the VM ended.
      -->
     <method name="PassthroughEnd">

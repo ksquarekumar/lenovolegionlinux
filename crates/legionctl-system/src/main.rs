@@ -33,7 +33,9 @@ use legionctl_machine::ledger::{Key, Ledger};
 use legionctl_machine::policy::{self, Machine, Options, Source, Step};
 use legionctl_machine::react::{Event, react};
 use legionctl_machine::sysroot::SysRoot;
-use legionctl_machine::{cleanup, fan, gpu, knobs, profile, telemetry, tune, vfio, windows, winvm};
+use legionctl_machine::{
+    boot, cleanup, fan, gpu, knobs, profile, telemetry, tune, vfio, windows, winvm,
+};
 use tokio::io::unix::AsyncFd;
 use tokio::io::{Interest, Ready};
 use zbus::object_server::SignalEmitter;
@@ -222,6 +224,44 @@ async fn handle(
         }
     }
     *announced = now;
+}
+
+/// Carry out a boot plan step by step, stopping at the first failure: a later step (a firmware entry) must not follow a
+/// failed one (an unsigned loader).
+fn boot_steps(root: &SysRoot, steps: &[Step]) -> Result<Vec<String>> {
+    let ledger = Ledger::open(root)?;
+    let mut lines = Vec::new();
+    for step in steps {
+        let done = policy::execute(root, &ledger, std::slice::from_ref(step));
+        if let Some(failure) = done.iter().find(|l| l.starts_with("warning")) {
+            anyhow::bail!("{failure}\ndone before it:\n- {}", lines.join("\n- "));
+        }
+        lines.extend(done);
+    }
+    Ok(lines)
+}
+
+/// A mode that runs once and ends, instead of the daemon: `--safe` (the safe-mode unit), `--boot-rebuild` (the pacman
+/// hook after a kernel or initramfs change).
+fn one_shot(root: &SysRoot) -> Option<Result<()>> {
+    match std::env::args().nth(1).as_deref() {
+        Some("--safe") => Some(safe(root)),
+        Some("--boot-rebuild") => Some(boot_rebuild(root).map(|lines| {
+            for line in lines {
+                println!("{line}");
+            }
+        })),
+        _ => None,
+    }
+}
+
+/// Every kernel's UKI again (the pacman hook); nothing when legionctl does not own the boot.
+fn boot_rebuild(root: &SysRoot) -> Result<Vec<String>> {
+    let state = boot::state(root)?;
+    if state.ours.is_none() {
+        return Ok(vec!["no legionctl boot entry: nothing to rebuild".into()]);
+    }
+    boot_steps(root, &boot::rebuild_plan(root, &state)?)
 }
 
 /// The uid of the caller of a method.
@@ -556,6 +596,43 @@ impl System1 {
         let lines = vfio::return_nvidia(&self.root, &services).map_err(|e| failed(&e))?;
         ledger.set(Key::GpuServices, None).map_err(|e| failed(&e))?;
         Self::changed(&emitter, "GpuReturn", &lines).await?;
+        Ok(lines)
+    }
+
+    /// The boot takeover (todo-80): `install` (then the next start tries it once), `confirm`, `rebuild`, `remove`.
+    async fn boot(
+        &self,
+        action: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.boot").await?;
+        let root = self.root.clone();
+        let lines = tokio::task::spawn_blocking(move || -> Result<Vec<String>> {
+            match action.as_str() {
+                "install" => {
+                    let mut lines = boot_steps(&root, &boot::install_plan(&root)?)?;
+                    let once = boot::try_once(&boot::state(&root)?)?;
+                    lines.extend(boot_steps(&root, &[once])?);
+                    lines.push(
+                        "the next start tries legionctl once; after it, run `legionctl boot confirm`".into(),
+                    );
+                    Ok(lines)
+                }
+                "confirm" => boot_steps(&root, &boot::confirm_plan(&boot::state(&root)?)?),
+                "rebuild" => boot_rebuild(&root),
+                "remove" => {
+                    let state = boot::state(&root)?;
+                    boot_steps(&root, &boot::remove_plan(&root, &state)?)
+                }
+                other => anyhow::bail!("boot action must be install, confirm, rebuild or remove, not {other}"),
+            }
+        })
+        .await
+        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
+        .map_err(|e| failed(&e))?;
+        Self::changed(&emitter, "Boot", &lines).await?;
         Ok(lines)
     }
 
@@ -1015,8 +1092,8 @@ fn sensors(root: &SysRoot) -> (Arc<Result<runq::Runq, String>>, Execs) {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let root = SysRoot::from_env();
-    if std::env::args().nth(1).as_deref() == Some("--safe") {
-        return safe(&root);
+    if let Some(done) = one_shot(&root) {
+        return done;
     }
     let tuning = Arc::new(AtomicBool::new(false));
     let (runq, execs) = sensors(&root);

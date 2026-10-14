@@ -3,11 +3,12 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    BenchCompare, BenchRun, CapabilityList, Changes, ConfigFile, ConfigView, DossierFindings,
-    DossierInfo, Empty, EventRow, Explanation, Findings, GpuState, Guard, HookReply, HookTable,
-    Knob, KnobDetail, Launch, LayerList, Lines, LoadState, Lock, Manifest, PackageState, Recording,
-    Reminder, RunEnv, Sample, SessionState, SetupReport, SkillInfo, Snapshot, ToolCallRow,
-    TuneReport, Validation, VfioDevices, WindowsState, WindowsVmBegun, Workspace, WorkspaceStatus,
+    BenchCompare, BenchRun, BootState, CapabilityList, Changes, ConfigFile, ConfigView,
+    DossierFindings, DossierInfo, Empty, EventRow, Explanation, Findings, GpuState, Guard,
+    HookReply, HookTable, Knob, KnobDetail, Launch, LayerList, Lines, LoadState, Lock, Manifest,
+    PackageState, Recording, Reminder, RunEnv, Sample, SessionState, SetupReport, SkillInfo,
+    Snapshot, ToolCallRow, TuneReport, Validation, VfioDevices, WindowsState, WindowsVmBegun,
+    Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -231,6 +232,54 @@ impl Render for GpuState {
                 o.card,
                 o.driver,
                 if o.connected { "connected" } else { "-" }
+            )
+        }));
+        out.join("\n")
+    }
+}
+
+impl Render for BootState {
+    fn text(&self) -> String {
+        let label = |id: &str| {
+            self.entries
+                .iter()
+                .find(|e| e.id == id)
+                .map_or_else(|| id.to_string(), |e| format!("{id} {}", e.label))
+        };
+        let mut out = vec![
+            format!(
+                "this start: {}",
+                self.current.as_deref().map_or("unknown".into(), label)
+            ),
+            format!(
+                "next start: {}",
+                self.next
+                    .as_deref()
+                    .map_or("the first in the order".into(), label)
+            ),
+            format!(
+                "order: {}",
+                self.order
+                    .iter()
+                    .map(|id| label(id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            match &self.ours {
+                Some(id) => format!("legionctl's entry: {}", label(id)),
+                None => "legionctl's entry: none (legionctl boot install)".into(),
+            },
+            format!("ESP: {}", self.esp.as_deref().unwrap_or("not mounted")),
+        ];
+        out.extend(self.kernels.iter().map(|k| {
+            let image = format!("legionctl-{k}.efi");
+            format!(
+                "kernel {k}: {}",
+                if self.ukis.contains(&image) {
+                    image
+                } else {
+                    "no legionctl image".into()
+                }
             )
         }));
         out.join("\n")

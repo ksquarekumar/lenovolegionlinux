@@ -85,3 +85,24 @@ legionctl/legionctl-system manages the initramfs module set as part of the GPU m
   re-signed by the `kernel-sbsign` post hook (Secure Boot via shim + rEFInd key), then rebuild the next. The other
   kernel is the fallback until the first boots successfully.
 - The machine boots rEFInd via shim; kernel options live in `/boot/refind_linux.conf`, not `/etc/default/grub`.
+
+## Boot takeover (built 2026-10-14, todo-80; decided by the user: systemd-boot + UKI)
+
+The chain here: the firmware entry "Linpus lite" starts shim (`/boot/efi/EFI/BOOT/bootx64.efi`), shim starts rEFInd
+(`grubx64.efi`, signed with the "Locally-generated rEFInd key" that MOK trusts), rEFInd starts the CachyOS kernels.
+`legionctl boot install` adds, beside it and without changing it: `EFI/legionctl/` with a copy of shim and MokManager
+and systemd-boot as shim's second stage (`grubx64.efi`, signed by `sbsign` with `/etc/refind.d/keys/refind_local.key`),
+one UKI per kernel in `/boot` (`EFI/Linux/legionctl-<kernel>.efi` by `ukify`, signed with the same key, the microcode
+and the initramfs, and the running system's kernel line from `/proc/cmdline` without `initrd=`), `loader/loader.conf`
+(the running kernel, from rEFInd's `initrd=`, as default; no menu: hold a key at start for it), and a firmware entry
+`legionctl` made with `--create-only` (not first in the order); then BootNext tries it once, so a failed start falls
+back to the old chain. `boot confirm` puts the entry first only when this start came through it; `boot rebuild` (also
+the pacman hook `95-legionctl-uki.hook`, after mkinitcpio's) makes the UKIs again and removes those of kernels that
+are gone; `boot remove` takes the entry, the folder, the UKIs and our `loader.conf` away. The daemon (D-Bus `Boot`,
+polkit `org.legionctl.boot`, no kept authorization) carries a plan out step by step and stops at the first failure,
+so no entry follows an unsigned loader. Windows stays reachable through `windows reboot` (BootNext into its entry) and
+the firmware menu: systemd-boot cannot start the boot manager on the other disk's ESP. e2e (real daemon, a fake ESP,
+a stand-in efibootmgr with its own state, stand-in ukify/sbsign): the dry run changes nothing; install signs the loader
+and each kernel's image with the kernel line, adds the entry not first and sets BootNext (mutation-checked); confirm
+is refused unless this start came through it (mutation-checked); rebuild drops a removed kernel's image; remove leaves
+the old chain as it was. Live: the first install and the test start are the user's.

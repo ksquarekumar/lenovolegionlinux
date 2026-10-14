@@ -2,6 +2,7 @@
 //! the machine and against recorded trees (tests, replays).
 
 pub mod bench;
+pub mod boot;
 pub mod cleanup;
 pub mod doctor;
 pub mod fan;

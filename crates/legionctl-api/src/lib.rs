@@ -545,6 +545,19 @@ operations! {
     /// Create a container from a local image with a core class, a memory limit and the NVIDIA GPUs: the plan, then
     /// the container (not started), unless dry run.
     virt_create / VirtCreate = "virt.create", Workspace, VirtCreateIn => Lines;
+    /// How the computer starts: the firmware's entries and order, this start's entry, the next one, legionctl's entry
+    /// and its kernel images.
+    boot_status / BootStatus = "boot.status", Read, Empty => BootState;
+    /// Add legionctl's boot entry beside the one there is (systemd-boot and a signed kernel image for each kernel,
+    /// started through a copy of shim): Linux first, no wait. The next start tries it once; if that start fails, the
+    /// one after uses the old entry. A human approves it in the polkit dialog.
+    boot_install / BootInstall = "boot.install", Machine, DryRunIn => Changes;
+    /// After a start through legionctl's entry: make it the first entry.
+    boot_confirm / BootConfirm = "boot.confirm", Machine, DryRunIn => Changes;
+    /// Make the kernel images again (the package does it after each kernel change).
+    boot_rebuild / BootRebuild = "boot.rebuild", Machine, DryRunIn => Changes;
+    /// Remove legionctl's boot entry and its files; the old entry stays as it was.
+    boot_remove / BootRemove = "boot.remove", Machine, DryRunIn => Changes;
     /// Dual boot: the Windows boot entry, a pending one-time boot, NTFS volumes Windows left dirty, and what to fix.
     windows_status / WindowsStatus = "windows.status", Read, Empty => WindowsState;
     /// Restart into Windows once (the start after returns to Linux). A human approves it in the polkit dialog.
