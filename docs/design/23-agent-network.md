@@ -698,3 +698,17 @@ Each phase ends with its e2e tests, mutation checks named in the commit, `make l
 7. Who checks forgotten steps? Recommendation: deterministic watch rules in the operator (no model cost); model
    observers only for judgment.
 8. Build order? Recommendation: P1 to P4 (graphs and tests) first, then P5 and P6 (threads), then P7 and P8 (UI).
+
+## Decisions (user, 2026-10-15)
+
+The user approved this design and chose the recommendation for each question:
+
+1. Observers run as operator ACP sessions with a durable outbox; the role files also serve as plugin subagent types.
+2. Test evidence: `cargo-mutants` on the files of the change set, and the agents' mutation records.
+3. Test gate at `workspace checkpoint`: refuse a new or changed test with no kill or no assertion;
+   `--accept-test --reason` lets one through and records the reason.
+4. Planning folder: `planning/` with one JSONC file per feature and `planning/units.jsonc`.
+5. Command groups: `code` and `thread`.
+6. Snapshot retention: heads, bases, merge-bases, open threads' trees and the newest 20 others.
+7. Forgotten steps: deterministic watch rules in the operator; model observers only for judgment.
+8. Build order: P1-P4 (graphs, planning, tests), then P5-P6 (threads, observers), then P7-P8 (UI, with todo-78).
