@@ -345,8 +345,8 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
             "- the OSD extension legionctl-osd@legionctl is ERROR; Fn+Q, Fn+R and Fn lock show no OSD (see journalctl --user -b /usr/bin/gnome-shell)",
             "- legionctl-system does not answer (fans, throttle reasons and the eBPF sensor are unknown): connecting to the system bus: Failed to connect to address `unix:path=/nonexistent/bus`: No such file or directory (os error 2): \
              No such file or directory (os error 2)",
-            "- switcheroo-control does not run: GNOME has no \"Launch using Discrete Graphics Card\" (sudo systemctl enable --now switcheroo-control)",
-            "- OpenCL reaches the Intel GPU only through Mesa's rusticl, which needs RUSTICL_ENABLE=iris (or install intel-compute-runtime)",
+            "- [switcheroo] switcheroo-control does not run: GNOME has no \"Launch using Discrete Graphics Card\" (sudo systemctl enable --now switcheroo-control)",
+            "- [opencl-iris] OpenCL reaches the Intel GPU only through Mesa's rusticl, which needs RUSTICL_ENABLE=iris from the next login (legionctl display fix opencl-iris, or install intel-compute-runtime)",
         ]
     );
 }
@@ -3485,24 +3485,40 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         )
     }
 
-    /// Monitors and fonts (todo-81 part 2) through a stand-in Mutter on the session bus: `display status` and `doctor`
-    /// name an external monitor below its highest refresh rate and grayscale antialiasing where subpixel is sharper
-    /// (integer scale, normal density from the EDID); an Electron app through `XWayland` only at a fractional scale
-    /// (at integer scales Chromium on Wayland draws grayscale text, which was worse here: user report 2026-10-14).
-    #[tokio::test(flavor = "multi_thread")]
-    async fn monitors_and_fonts_are_checked_against_the_scale_and_density_in_use() {
-        let m = Machine::new("display");
-        let (_stand_ins, _asked, (_bus, _daemon)) = start(&m).await;
-        // the EDID's physical size: 80 x 34 cm
+    /// What the stand-in Mutter shows (scale, refresh rate of DP-3), and the method of each `ApplyMonitorsConfig`.
+    type Shown = std::sync::Arc<std::sync::Mutex<(f64, f64)>>;
+    type Methods = std::sync::Arc<std::sync::Mutex<Vec<u32>>>;
+
+    /// A desktop session on the machine's private bus: a stand-in Mutter (`GetCurrentState` from `shown`;
+    /// `ApplyMonitorsConfig` sets DP-3's rate from the mode id and logs the method), the MSI's EDID (80 x 34 cm),
+    /// VS Code and Thorium installed, a stand-in gsettings that keeps its values in `<dir>/dconf`, and an operator
+    /// with a temp HOME.
+    async fn desktop(
+        m: &Machine,
+        tag: &str,
+        shown: Shown,
+        methods: Methods,
+    ) -> (zbus::Connection, Operator) {
+        type Member = (String, String, Props);
+        type Logical = (i32, i32, f64, u32, bool, Vec<Member>);
         let mut edid = vec![0u8; 128];
         (edid[21], edid[22]) = (80, 34);
         let edid_path = m.dir.join("root/sys/class/drm/card0-DP-3/edid");
         std::fs::create_dir_all(edid_path.parent().unwrap()).unwrap();
         std::fs::write(edid_path, edid).unwrap();
         m.set("/usr/bin/code", "");
-        Machine::script(&m.dir.join("bin"), "gsettings", "echo \"'grayscale'\"");
+        m.set("/usr/bin/thorium-browser", "");
+        let dconf = m.dir.join("dconf");
+        std::fs::create_dir_all(&dconf).unwrap();
+        Machine::script(
+            &m.dir.join("bin"),
+            "gsettings",
+            &format!(
+                "case $1 in get) read -r v < '{0}'/\"$3\" && printf '%s\\n' \"$v\" ;; set) printf '%s\\n' \"$4\" > '{0}'/\"$3\" ;; esac",
+                dconf.display()
+            ),
+        );
         let address = format!("unix:path={}", m.dir.join("bus").display());
-        let state = std::sync::Arc::new(std::sync::Mutex::new((1.0f64, 100.0f64)));
         let mutter = zbus::connection::Builder::address(address.as_str())
             .unwrap()
             .name("org.gnome.Mutter.DisplayConfig")
@@ -3510,27 +3526,33 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             .build()
             .await
             .unwrap();
-        let (now, replies) = (state.clone(), mutter.clone());
+        let replies = mutter.clone();
         tokio::spawn(async move {
             let mut calls = zbus::MessageStream::from(&replies);
             while let Some(Ok(call)) = futures_util::StreamExt::next(&mut calls).await {
-                if call
-                    .header()
-                    .member()
-                    .is_some_and(|m| m.as_str() == "GetCurrentState")
-                {
-                    let (scale, hz) = *now.lock().unwrap();
-                    let body = mutter_state(scale, hz);
-                    let reply = zbus::message::Message::method_return(&call.header())
-                        .unwrap()
-                        .build(&body)
-                        .unwrap();
-                    replies.send(&reply).await.unwrap();
-                }
+                let member = call.header().member().map(ToString::to_string);
+                let reply = zbus::message::Message::method_return(&call.header()).unwrap();
+                let reply = match member.as_deref() {
+                    Some("GetCurrentState") => {
+                        let (scale, hz) = *shown.lock().unwrap();
+                        reply.build(&mutter_state(scale, hz)).unwrap()
+                    }
+                    Some("ApplyMonitorsConfig") => {
+                        let (_, method, logical, _): (u32, u32, Vec<Logical>, Props) =
+                            call.body().deserialize().unwrap();
+                        let mode = &logical[0].5[0].1;
+                        let hz = mode.split_once('@').unwrap().1.parse().unwrap();
+                        shown.lock().unwrap().1 = hz;
+                        methods.lock().unwrap().push(method);
+                        reply.build(&()).unwrap()
+                    }
+                    _ => continue,
+                };
+                replies.send(&reply).await.unwrap();
             }
         });
         let op = Operator::start(
-            "display",
+            tag,
             &[
                 ("PATH", m.dir.join("bin").into()),
                 ("HOME", m.dir.join("home").into()),
@@ -3539,12 +3561,27 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
                 ("DBUS_SESSION_BUS_ADDRESS", address.into()),
             ],
         );
+        (mutter, op)
+    }
+
+    /// Monitors and fonts (todo-81 part 2) through a stand-in Mutter on the session bus: `display status` and `doctor`
+    /// name an external monitor below its highest refresh rate and grayscale antialiasing where subpixel is sharper
+    /// (integer scale, normal density from the EDID); an Electron app through `XWayland` only at a fractional scale
+    /// (at integer scales Chromium on Wayland draws grayscale text, which was worse here: user report 2026-10-14).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn monitors_and_fonts_are_checked_against_the_scale_and_density_in_use() {
+        let m = Machine::new("display");
+        let (_stand_ins, _asked, (_bus, _daemon)) = start(&m).await;
+        let state = Shown::new(std::sync::Mutex::new((1.0, 100.0)));
+        let (_mutter, op) = desktop(&m, "display", state.clone(), Methods::default()).await;
+        std::fs::write(m.dir.join("dconf/font-antialiasing"), "'grayscale'\n").unwrap();
         let shown = op.ok(&["display", "status"]);
         for expected in [
             "DP-3 Microstep 34\": 3440x1440 at 100 Hz (up to 144), scale 1, 109 PPI",
             "fonts: grayscale antialiasing",
-            "runs at 100 Hz, and 144 Hz is available at 3440x1440",
-            "every monitor has an integer scale at normal density, where subpixel is sharper",
+            "- [refresh-DP-3] Microstep 34\" (DP-3) runs at 100 Hz, and 144 Hz is available at 3440x1440",
+            "- [antialiasing] fonts use grayscale antialiasing, and every monitor has an integer scale at normal \
+             density, where subpixel antialiasing (RGB order) is sharper",
         ] {
             assert!(shown.contains(expected), "{expected} missing:\n{shown}");
         }
@@ -3554,18 +3591,151 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         );
         // findings make doctor exit 1
         let doctor = String::from_utf8_lossy(&op.cli(&["doctor"]).stdout).to_string();
-        assert!(doctor.contains("144 Hz is available"), "{doctor}");
+        assert!(doctor.contains("[refresh-DP-3]"), "{doctor}");
 
         *state.lock().unwrap() = (1.25, 144.0);
         let fractional = op.ok(&["display", "status"]);
         assert!(
-            fractional
-                .contains("/usr/bin/code draws through XWayland, blurry at this fractional scale"),
+            fractional.contains(
+                "[xwayland-code] /usr/bin/code draws through XWayland, blurry at this fractional scale"
+            ),
             "{fractional}"
         );
         assert!(
-            !fractional.contains("subpixel is sharper") && !fractional.contains("Hz is available"),
+            !fractional.contains("subpixel") && !fractional.contains("Hz is available"),
             "{fractional}"
+        );
+    }
+
+    /// `display fix` with `args`: the event that `undo` takes.
+    fn fixed(op: &Operator, args: &[&str]) -> String {
+        let done = op.ok(&[["display", "fix"].as_slice(), args].concat());
+        done.split_once("legionctl undo ")
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            .unwrap_or_else(|| panic!("no undo event:\n{done}"))
+            .to_string()
+    }
+
+    /// The findings among `ids` that doctor names now.
+    fn found<'a>(op: &Operator, ids: &[&'a str]) -> Vec<&'a str> {
+        let doctor = String::from_utf8_lossy(&op.cli(&["doctor"]).stdout).to_string();
+        ids.iter()
+            .copied()
+            .filter(|id| doctor.contains(&format!("[{id}]")))
+            .collect()
+    }
+
+    /// The fixes of the user's own settings and files as operations (todo-81 part 3): `display fix all --dry-run`
+    /// changes nothing; `display fix all` changes each value (the fonts' antialiasing, a flags file, a monitor's mode,
+    /// the session's environment), and its findings go; `undo` gives back each exact old value (the dconf text, the
+    /// file's bytes or its absence, the mode, with Mutter's method of the fix); a system change is refused. Both
+    /// directions of the flags file: the Wayland line comes out at an integer scale and goes in at a fractional one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn display_fixes_change_your_settings_and_undo_gives_back_the_exact_old_values() {
+        let m = Machine::new("displayfix");
+        let (_stand_ins, _asked, (_bus, _daemon)) = start(&m).await;
+        let state = Shown::new(std::sync::Mutex::new((1.0, 100.0)));
+        let methods = Methods::default();
+        let (_mutter, op) = desktop(&m, "displayfix", state.clone(), methods.clone()).await;
+        let dconf = |key: &str| std::fs::read_to_string(m.dir.join("dconf").join(key)).unwrap();
+        std::fs::write(m.dir.join("dconf/font-antialiasing"), "'grayscale'\n").unwrap();
+        std::fs::write(m.dir.join("dconf/font-rgba-order"), "'bgr'\n").unwrap();
+        let config = m.dir.join("home/.config");
+        std::fs::create_dir_all(&config).unwrap();
+        // no newline at the end: the bytes must come back as they were
+        let thorium_flags = "--enable-features=X\n--ozone-platform=wayland\n--force-dark-mode";
+        std::fs::write(config.join("thorium-flags.conf"), thorium_flags).unwrap();
+        std::fs::write(config.join("code-flags.conf"), "--disable-gpu").unwrap();
+        let read = |name: &str| std::fs::read_to_string(config.join(name)).ok();
+        let opencl = "environment.d/legionctl-opencl.conf";
+        let fixable = [
+            "refresh-DP-3",
+            "antialiasing",
+            "wayland-thorium",
+            "opencl-iris",
+        ];
+
+        let planned = op.ok(&["display", "fix", "all", "--dry-run"]);
+        for expected in [
+            "org.gnome.desktop.interface font-antialiasing: 'rgba' (was 'grayscale')".to_string(),
+            "org.gnome.desktop.interface font-rgba-order: 'rgb' (was 'bgr')".into(),
+            "DP-3 mode: 3440x1440@144 (was 3440x1440@100)".into(),
+            format!(
+                "{}: \"--enable-features=X\\n--force-dark-mode\" (was {thorium_flags:?})",
+                config.join("thorium-flags.conf").display()
+            ),
+            format!(
+                "{}: \"RUSTICL_ENABLE=iris\\n\" (was no file)",
+                config.join(opencl).display()
+            ),
+            "not changed, a system change: [switcheroo]".into(),
+        ] {
+            assert!(
+                planned.contains(&expected),
+                "{expected} missing:\n{planned}"
+            );
+        }
+        assert!(!planned.contains("legionctl undo"), "{planned}");
+        assert_eq!(
+            (dconf("font-antialiasing"), dconf("font-rgba-order")),
+            ("'grayscale'\n".into(), "'bgr'\n".into())
+        );
+        assert_eq!(read("thorium-flags.conf").as_deref(), Some(thorium_flags));
+        assert_eq!(read(opencl), None);
+        assert!(
+            methods.lock().unwrap().is_empty(),
+            "the dry run applied a mode"
+        );
+
+        let refused = op.cli(&["display", "fix", "switcheroo"]);
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(
+            !refused.status.success() && stderr.contains("switcheroo is a system change"),
+            "{stderr}"
+        );
+
+        let event = fixed(&op, &["all"]);
+        assert_eq!(
+            (dconf("font-antialiasing"), dconf("font-rgba-order")),
+            ("'rgba'\n".into(), "'rgb'\n".into())
+        );
+        assert_eq!(
+            read("thorium-flags.conf").as_deref(),
+            Some("--enable-features=X\n--force-dark-mode")
+        );
+        assert_eq!(read(opencl).as_deref(), Some("RUSTICL_ENABLE=iris\n"));
+        assert_eq!(state.lock().unwrap().1, 144.0);
+        let ids = [fixable.as_slice(), &["switcheroo"]].concat();
+        assert_eq!(found(&op, &ids), ["switcheroo"]);
+
+        op.ok(&["undo", &event]);
+        assert_eq!(
+            (dconf("font-antialiasing"), dconf("font-rgba-order")),
+            ("'grayscale'\n".into(), "'bgr'\n".into())
+        );
+        assert_eq!(read("thorium-flags.conf").as_deref(), Some(thorium_flags));
+        assert_eq!(read(opencl), None);
+        assert_eq!(state.lock().unwrap().1, 100.0);
+        assert_eq!(*methods.lock().unwrap(), [1, 1], "temporary, as the fix");
+        assert_eq!(found(&op, &fixable), fixable);
+
+        // at a fractional scale the Wayland line goes in, and a persistent mode is undone persistently
+        *state.lock().unwrap() = (1.25, 100.0);
+        let event = fixed(&op, &["all", "--persistent"]);
+        assert_eq!(
+            read("code-flags.conf").as_deref(),
+            Some("--disable-gpu\n--ozone-platform-hint=auto\n")
+        );
+        assert_eq!(read("thorium-flags.conf").as_deref(), Some(thorium_flags));
+        op.ok(&["undo", &event]);
+        assert_eq!(read("code-flags.conf").as_deref(), Some("--disable-gpu"));
+        assert_eq!(*methods.lock().unwrap(), [1, 1, 2, 2]);
+
+        let unknown = op.cli(&["display", "fix", "refresh-HDMI-1"]);
+        assert!(
+            String::from_utf8_lossy(&unknown.stderr).contains("no finding refresh-HDMI-1 now"),
+            "{}",
+            String::from_utf8_lossy(&unknown.stderr)
         );
     }
 

@@ -386,6 +386,11 @@ operations! {
     /// The monitors as GNOME uses them: resolution, refresh rate and the highest available, scale, pixel density,
     /// VRR and HDR; the fonts' antialiasing; and what makes the picture worse than it can be.
     display_status / DisplayStatus = "display.status", Read, Empty => Lines;
+    /// Fix a finding of `display status` or `doctor` (its id in brackets), or all of them, where the fix is your own
+    /// setting or file: the fonts' antialiasing, an app's flags file, a monitor's refresh rate, the session's
+    /// environment. Each line shows the new and the old value; the event log keeps the old values, and `legionctl
+    /// undo <event>` gives them back. System changes (packages, the kernel line, system services) stay text.
+    display_fix / DisplayFix = "display.fix", Workspace, DisplayFixIn => Changes;
     /// The discrete GPUs and `NVMe` controllers that can go to a VM (VFIO): IOMMU group, driver, and what on the host
     /// uses them now.
     vfio_status / VfioStatus = "vfio.status", Read, Empty => VfioDevices;
@@ -520,7 +525,8 @@ operations! {
     /// EC: an incorrect write can stop fan control. `--dry-run` shows the writes.
     fan_lock / FanLock = "fan.lock", Machine, SwitchIn => Changes;
     /// Turn back the writes of a machine change in the event log: each file goes back to what it was before and is
-    /// held there (`knobs release` gives it back to the policy).
+    /// held there (`knobs release` gives it back to the policy). A change of your own settings (`display fix`) goes
+    /// back without the daemon, and its undo is an event too.
     undo / Undo = "undo", Machine, UndoIn => Changes;
     /// The package store: each configured package, its pin, and whether its folder still has the hash recorded at
     /// fetch time.

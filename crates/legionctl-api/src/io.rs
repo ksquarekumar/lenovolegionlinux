@@ -1406,7 +1406,20 @@ pub struct KnobIn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DisplayFixIn {
+    /// The finding's id (`refresh-DP-3`, `antialiasing`, `xwayland-code`, ...), or `all`.
+    pub finding: String,
+    /// A monitor's new mode stays after the next login (GNOME's monitors.xml); without it, until then.
+    #[serde(default)]
+    pub persistent: bool,
+    /// Show what would happen; change nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct UndoIn {
-    /// The event of the change (`events`): a machine change with writes (`machine.apply-power`, ...).
+    /// The event of the change (`events`): a machine change with writes (`machine.apply-power`, ...) or a change of
+    /// your own settings (`display.change`, from `display fix`).
     pub event: i64,
 }

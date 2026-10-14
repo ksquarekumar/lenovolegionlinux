@@ -910,6 +910,55 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "display.fix": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "finding": {
+          "type": "string",
+          "description": "The finding's id (`refresh-DP-3`, `antialiasing`, `xwayland-code`, ...), or `all`."
+        },
+        "persistent": {
+          "type": "boolean",
+          "description": "A monitor's new mode stays after the next login (GNOME's monitors.xml); without it, until then.",
+          "default": false
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Show what would happen; change nothing.",
+          "default": false
+        }
+      },
+      "required": [
+        "finding"
+      ],
+      "title": "DisplayFixIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "vfio.status": {
     "class": "read",
     "internal": false,
@@ -5097,7 +5146,7 @@
         "event": {
           "type": "integer",
           "format": "int64",
-          "description": "The event of the change (`events`): a machine change with writes (`machine.apply-power`, ...)."
+          "description": "The event of the change (`events`): a machine change with writes (`machine.apply-power`, ...) or a change of\nyour own settings (`display.change`, from `display fix`)."
         }
       },
       "required": [

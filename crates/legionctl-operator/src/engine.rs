@@ -23,9 +23,9 @@ use legionctl_api::{
     WorkspaceOpenIn, WorkspaceStatus, Workspaces,
 };
 use legionctl_api::{
-    Autostart, AutostartIn, FanCurveIn, FanState, GpuGiveIn, GpuName, GpuOwner, KnobHoldIn, KnobIn,
-    PackIn, PackKind, Switch, SwitchIn, UndoIn, VfioBindIn, VfioDevices, VfioIn, WindowsVmBeginIn,
-    WindowsVmBegun,
+    Autostart, AutostartIn, DisplayFixIn, FanCurveIn, FanState, GpuGiveIn, GpuName, GpuOwner,
+    KnobHoldIn, KnobIn, PackIn, PackKind, Switch, SwitchIn, UndoIn, VfioBindIn, VfioDevices,
+    VfioIn, WindowsVmBeginIn, WindowsVmBegun,
 };
 use legionctl_api::{
     CachePurgeIn, CacheStat, CachedCall, EventRow, JobIdIn, Page, PageIn, Principal,
@@ -56,6 +56,7 @@ use legionctl_core::session::Start;
 use legionctl_core::workspace::Place;
 use legionctl_core::{agents, hooks, reminders, setup, skills};
 use legionctl_machine::configset::{self, Folder, Layer};
+use legionctl_machine::graphics::{Finding, Fix};
 use legionctl_machine::ledger::Ledger;
 use legionctl_machine::policy::{self, Machine, Options, Source};
 use legionctl_machine::profile::{self, Profile};
@@ -78,6 +79,44 @@ fn ppd_current() -> Option<String> {
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// The `GSettings` schema of the fonts' antialiasing.
+const INTERFACE: &str = "org.gnome.desktop.interface";
+
+/// Run `gsettings` (the user's dconf); its output, trimmed (`get` gives the value as `GVariant` text).
+fn gsettings(args: &[&str]) -> Result<String> {
+    let out = Command::new("gsettings")
+        .args(args)
+        .output()
+        .context("running gsettings")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "gsettings {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// What a user-level change changes, as `display fix` and `undo` show it.
+fn target(fix: &Fix) -> String {
+    match fix {
+        Fix::File { path, .. } => path.display().to_string(),
+        Fix::Setting { key, .. } => format!("{INTERFACE} {key}"),
+        Fix::Mode { connector, .. } => format!("{connector} mode"),
+    }
+}
+
+/// The value a user-level change sets.
+fn value(fix: &Fix) -> String {
+    match fix {
+        Fix::File { content, .. } => content
+            .as_ref()
+            .map_or_else(|| "no file".into(), |c| format!("{c:?}")),
+        Fix::Setting { value, .. } => value.clone(),
+        Fix::Mode { mode, .. } => mode.clone(),
+    }
 }
 
 fn home() -> PathBuf {
@@ -748,27 +787,132 @@ fn dry_run(steps: &[policy::Step]) -> Changes {
 }
 
 impl Operator {
-    /// A machine change through `legionctl-system`; polkit asks the human.
-    /// The active monitors from Mutter, and the fonts' antialiasing.
-    fn monitors(&self) -> Result<(Vec<crate::display::Shown>, String)> {
-        let state = self.runtime.block_on(async {
+    /// Mutter's monitor state, from the desktop session.
+    fn mutter_state(&self) -> Result<crate::display::State> {
+        Ok(self.runtime.block_on(async {
             let session = zbus::Connection::session().await?;
             crate::display::DisplayConfigProxy::new(&session)
                 .await?
                 .get_current_state()
                 .await
-        })?;
-        let out = Command::new("gsettings")
-            .args(["get", "org.gnome.desktop.interface", "font-antialiasing"])
-            .output()?;
-        let antialiasing = String::from_utf8_lossy(&out.stdout)
-            .trim()
+        })?)
+    }
+
+    /// The active monitors from Mutter, and the fonts' antialiasing.
+    fn monitors(&self) -> Result<(Vec<crate::display::Shown>, String)> {
+        let state = self.mutter_state()?;
+        let antialiasing = gsettings(&["get", INTERFACE, "font-antialiasing"])?
             .trim_matches('\'')
             .to_string();
         Ok((
             crate::display::shown(&SysRoot::from_env(), &state),
             antialiasing,
         ))
+    }
+
+    /// The graphics findings, and with a desktop session (Mutter on the session bus) the monitors' findings.
+    fn display_findings(&self) -> Vec<Finding> {
+        let (root, home) = (SysRoot::from_env(), home());
+        let mut out = legionctl_machine::graphics::findings(&root, &home);
+        if let Ok((monitors, antialiasing)) = self.monitors() {
+            out.extend(crate::display::findings(
+                &root,
+                &home,
+                &monitors,
+                &antialiasing,
+            ));
+        }
+        out
+    }
+
+    /// The value that `fix` changes, as the change that gives it back.
+    fn current(&self, fix: &Fix) -> Result<Fix> {
+        Ok(match fix {
+            Fix::File { path, .. } => Fix::File {
+                path: path.clone(),
+                content: match std::fs::read(path) {
+                    Ok(bytes) => Some(String::from_utf8(bytes).with_context(|| {
+                        format!("{} is not text; it stays as it is", path.display())
+                    })?),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+                },
+            },
+            Fix::Setting { key, .. } => Fix::Setting {
+                key: key.clone(),
+                value: gsettings(&["get", INTERFACE, key])?,
+            },
+            Fix::Mode { connector, .. } => Fix::Mode {
+                connector: connector.clone(),
+                mode: crate::display::mode_of(&self.mutter_state()?, connector)
+                    .with_context(|| format!("{connector} is not active"))?,
+            },
+        })
+    }
+
+    fn apply(&self, fix: &Fix, method: u32) -> Result<()> {
+        match fix {
+            Fix::File {
+                path,
+                content: Some(content),
+            } => {
+                if let Some(dir) = path.parent() {
+                    std::fs::create_dir_all(dir)?;
+                }
+                std::fs::write(path, content)
+                    .with_context(|| format!("writing {}", path.display()))?;
+            }
+            Fix::File {
+                path,
+                content: None,
+            } => std::fs::remove_file(path)
+                .with_context(|| format!("removing {}", path.display()))?,
+            Fix::Setting { key, value } => {
+                gsettings(&["set", INTERFACE, key, value])?;
+            }
+            Fix::Mode { connector, mode } => self.runtime.block_on(async {
+                let session = zbus::Connection::session().await?;
+                let mutter = crate::display::DisplayConfigProxy::new(&session).await?;
+                let state = mutter.get_current_state().await?;
+                crate::display::apply_mode(&mutter, &state, connector, mode, method).await
+            })?,
+        }
+        Ok(())
+    }
+
+    /// Make the user-level changes `fixes` (Mutter's `method` for a monitor's mode): each line names the new value
+    /// and the old one. The event log keeps the old values first (an event `display.change`), so that `undo` gives
+    /// them back even when a change fails half way.
+    fn change(&self, ctx: &Ctx, fixes: &[Fix], method: u32, dry: bool) -> Result<Changes> {
+        let mut was = fixes
+            .iter()
+            .map(|f| self.current(f))
+            .collect::<Result<Vec<_>>>()?;
+        let mut lines: Vec<String> = fixes
+            .iter()
+            .zip(&was)
+            .map(|(new, old)| format!("{}: {} (was {})", target(new), value(new), value(old)))
+            .collect();
+        if dry || fixes.is_empty() {
+            return Ok(Changes {
+                lines,
+                dry_run: dry,
+            });
+        }
+        was.reverse();
+        let event = Db::open_default()?.record(
+            &ctx.actor,
+            "display.change",
+            &serde_json::json!({"undo": was, "method": method}),
+        )?;
+        for fix in fixes {
+            self.apply(fix, method)?;
+        }
+        lines.push(format!("legionctl undo {event} gives the old values back"));
+        Ok(Changes {
+            lines,
+            dry_run: false,
+        })
     }
 
     /// A boot action: its plan for a dry run, else the daemon carries it out.
@@ -805,6 +949,7 @@ impl Operator {
         })
     }
 
+    /// A machine change through `legionctl-system`; polkit asks the human.
     fn system<T>(&self, call: impl AsyncFnOnce(&System1Proxy<'_>) -> zbus::Result<T>) -> Result<T> {
         self.runtime.block_on(async {
             let conn = zbus::Connection::system()
@@ -1218,12 +1363,7 @@ impl Engine for Operator {
                     .into(),
             );
         }
-        findings.extend(legionctl_machine::graphics::findings(&SysRoot::from_env()));
-        // without a desktop session (Mutter on the session bus) there are no monitors to check
-        if let Ok((monitors, antialiasing)) = self.monitors() {
-            let apps = legionctl_machine::graphics::xwayland_apps(&SysRoot::from_env(), &home());
-            findings.extend(crate::display::findings(&monitors, &antialiasing, apps));
-        }
+        findings.extend(self.display_findings().iter().map(ToString::to_string));
         findings.extend(agent_findings()?);
         Ok(Findings { findings })
     }
@@ -2288,13 +2428,54 @@ impl Engine for Operator {
             })
             .collect();
         lines.push(format!("fonts: {antialiasing} antialiasing"));
-        let apps = legionctl_machine::graphics::xwayland_apps(&SysRoot::from_env(), &home());
         lines.extend(
-            crate::display::findings(&monitors, &antialiasing, apps)
-                .into_iter()
+            crate::display::findings(&SysRoot::from_env(), &home(), &monitors, &antialiasing)
+                .iter()
                 .map(|f| format!("- {f}")),
         );
         Ok(Lines { lines })
+    }
+
+    fn display_fix(&self, ctx: &Ctx, input: DisplayFixIn) -> Result<Changes> {
+        let all = input.finding == "all";
+        let found: Vec<Finding> = self
+            .display_findings()
+            .into_iter()
+            .filter(|f| all || f.id == input.finding)
+            .collect();
+        let Some(first) = found.first() else {
+            return Err(coded(
+                Code::NotFound,
+                format!(
+                    "no finding {} now; legionctl display status and doctor show the findings with their ids",
+                    input.finding
+                ),
+            ));
+        };
+        if !all && first.fixes.is_empty() {
+            return Err(coded(
+                Code::InvalidInput,
+                format!(
+                    "{} is a system change, not one of your own settings: {}",
+                    first.id, first.text
+                ),
+            ));
+        }
+        let method = if input.persistent {
+            crate::display::PERSISTENT
+        } else {
+            crate::display::TEMPORARY
+        };
+        let (fixes, system): (Vec<Finding>, Vec<Finding>) =
+            found.into_iter().partition(|f| !f.fixes.is_empty());
+        let fixes: Vec<Fix> = fixes.into_iter().flat_map(|f| f.fixes).collect();
+        let mut changes = self.change(ctx, &fixes, method, input.dry_run)?;
+        changes.lines.extend(
+            system
+                .iter()
+                .map(|f| format!("not changed, a system change: {f}")),
+        );
+        Ok(changes)
     }
 
     fn boot_status(&self, _: &Ctx, _: Empty) -> Result<legionctl_api::BootState> {
@@ -2771,13 +2952,22 @@ impl Engine for Operator {
         })
     }
 
-    fn undo(&self, _: &Ctx, input: UndoIn) -> Result<Changes> {
+    fn undo(&self, ctx: &Ctx, input: UndoIn) -> Result<Changes> {
         let event = Db::open_default()?.event(input.event)?.ok_or_else(|| {
             coded(
                 Code::NotFound,
                 format!("no event {}; see legionctl events", input.event),
             )
         })?;
+        // the user's own settings and files (`display fix`): no daemon, no polkit
+        if event.kind == "display.change" {
+            let fixes: Vec<Fix> = serde_json::from_value(event.payload["undo"].clone())?;
+            let method = event.payload["method"]
+                .as_u64()
+                .and_then(|m| u32::try_from(m).ok())
+                .context("the event has no Mutter method")?;
+            return self.change(ctx, &fixes, method, false);
+        }
         let values: std::collections::BTreeMap<String, String> = event.payload["lines"]
             .as_array()
             .into_iter()

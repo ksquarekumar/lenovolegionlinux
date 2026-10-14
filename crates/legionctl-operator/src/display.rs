@@ -1,10 +1,12 @@
-//! The built-in panel through Mutter's `DisplayConfig` API: its current refresh rate, and the Fn+R toggle between the
-//! highest rate and ~60 Hz at the current resolution and VRR state. Changes use the TEMPORARY method, which applies
-//! without GNOME's "Keep these display settings?" dialog; the saved layout returns at the next login or hotplug.
+//! The monitors through Mutter's `DisplayConfig` API: the built-in panel's current refresh rate, the Fn+R toggle
+//! between the highest rate and ~60 Hz at the current resolution and VRR state, `display status` and its findings,
+//! and a monitor's mode for `display fix`. Fn+R uses the TEMPORARY method, which applies without GNOME's "Keep these
+//! display settings?" dialog; the saved layout returns at the next login or hotplug.
 
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
+use legionctl_machine::graphics::{Finding, Fix};
 use zbus::zvariant::{OwnedValue, Value};
 
 /// (id, width, height, refresh rate, preferred scale, supported scales, properties)
@@ -47,7 +49,8 @@ pub type LogicalMonitorConfig<'a> = (
     Vec<(String, String, HashMap<String, Value<'a>>)>,
 );
 
-const TEMPORARY: u32 = 1;
+pub const TEMPORARY: u32 = 1;
+pub const PERSISTENT: u32 = 2;
 const LOW_HZ: f64 = 60.0;
 
 #[zbus::proxy(
@@ -130,40 +133,57 @@ pub async fn built_in_rate(mutter: &DisplayConfigProxy<'_>) -> Option<String> {
 
 /// Fn+R: switch the built-in panel to the other rate, keeping every other monitor as it is.
 pub async fn toggle_refresh(mutter: &DisplayConfigProxy<'_>) -> Result<String> {
-    let (serial, monitors, logical, _) = mutter.get_current_state().await?;
-    let Some((panel, modes)) = built_in(&monitors, &logical) else {
+    let state = mutter.get_current_state().await?;
+    let Some((panel, modes)) = built_in(&state.1, &state.2) else {
         return Ok("built-in panel is not active; nothing to toggle".into());
     };
     let current = current_mode(&modes).context("built-in panel has no current mode")?;
     let target = pick_target(&modes, current);
-    let current_of = |connector: &str| -> Option<String> {
-        let (_, modes, _) = monitors.iter().find(|m| m.0.0 == connector)?;
-        current_mode(modes).map(|m| m.0.clone())
-    };
-    let config: Vec<LogicalMonitorConfig> = logical
+    apply_mode(mutter, &state, &panel, &target.0, TEMPORARY).await?;
+    Ok(format!(
+        "{panel}: {:.0} Hz -> {:.0} Hz",
+        current.3, target.3
+    ))
+}
+
+/// The current mode id of `connector` in Mutter's `state`.
+#[must_use]
+pub fn mode_of(state: &State, connector: &str) -> Option<String> {
+    let (_, modes, _) = state.1.iter().find(|m| m.0.0 == connector)?;
+    current_mode(modes).map(|m| m.0.clone())
+}
+
+/// Put `connector` at `mode` with `method` (`TEMPORARY`, or `PERSISTENT`: kept in GNOME's monitors.xml), and every
+/// other monitor as Mutter's `state` has it.
+pub async fn apply_mode(
+    mutter: &DisplayConfigProxy<'_>,
+    state: &State,
+    connector: &str,
+    mode: &str,
+    method: u32,
+) -> Result<()> {
+    let config: Vec<LogicalMonitorConfig> = state
+        .2
         .iter()
         .map(|l| {
             let members =
                 l.5.iter()
                     .map(|spec| {
-                        let mode = if spec.0 == panel {
-                            target.0.clone()
+                        let id = if spec.0 == connector {
+                            mode.to_string()
                         } else {
-                            current_of(&spec.0).unwrap_or_default()
+                            mode_of(state, &spec.0).unwrap_or_default()
                         };
-                        (spec.0.clone(), mode, HashMap::new())
+                        (spec.0.clone(), id, HashMap::new())
                     })
                     .collect();
             (l.0, l.1, l.2, l.3, l.4, members)
         })
         .collect();
     mutter
-        .apply_monitors_config(serial, TEMPORARY, config, HashMap::new())
+        .apply_monitors_config(state.0, method, config, HashMap::new())
         .await?;
-    Ok(format!(
-        "{panel}: {:.0} Hz -> {:.0} Hz",
-        current.3, target.3
-    ))
+    Ok(())
 }
 
 /// One active monitor as `display status` shows it.
@@ -174,8 +194,9 @@ pub struct Shown {
     pub width: i32,
     pub height: i32,
     pub refresh: f64,
-    /// The highest rate at the current resolution and refresh kind.
+    /// The highest rate at the current resolution and refresh kind, and its mode id.
     pub max_refresh: f64,
+    pub max_mode: String,
     pub scale: f64,
     /// Pixels per inch, from the EDID's physical size.
     pub ppi: Option<f64>,
@@ -214,11 +235,11 @@ pub fn shown(root: &legionctl_machine::sysroot::SysRoot, state: &State) -> Vec<S
                 .iter()
                 .filter(|m| (m.1, m.2) == (current.1, current.2))
                 .collect();
-            let max_refresh = same_size
+            let max = same_size
                 .iter()
+                .copied()
                 .filter(|m| refresh_kind(m) == refresh_kind(current))
-                .map(|m| m.3)
-                .fold(current.3, f64::max);
+                .fold(current, |a, b| if b.3 > a.3 { b } else { a });
             let prop = |key: &str| monitor.2.get(key).and_then(|v| v.try_clone().ok());
             let name = prop("display-name")
                 .and_then(|v| String::try_from(v).ok())
@@ -241,7 +262,8 @@ pub fn shown(root: &legionctl_machine::sysroot::SysRoot, state: &State) -> Vec<S
                 width: current.1,
                 height: current.2,
                 refresh: current.3,
-                max_refresh,
+                max_refresh: max.3,
+                max_mode: max.0.clone(),
                 scale: l.2,
                 ppi,
                 vrr: (
@@ -258,35 +280,58 @@ pub fn shown(root: &legionctl_machine::sysroot::SysRoot, state: &State) -> Vec<S
     out
 }
 
-/// What makes the picture worse than it can be: an external monitor below its highest rate, apps through `XWayland`
-/// at a fractional scale (`xwayland_apps`: the apps without a Wayland flag), and grayscale
-/// antialiasing where subpixel is sharper (integer scales at normal density; grayscale helps only at fractional or
-/// high-density scales: user report 2026-10-14).
+/// What makes the picture worse than it can be: an external monitor below its highest rate, Electron/Chromium apps
+/// whose flags file does not suit the scale (`app_findings`), and grayscale antialiasing where subpixel is sharper
+/// (integer scales at normal density; grayscale helps only at fractional or high-density scales: user report
+/// 2026-10-14).
 #[must_use]
-pub fn findings(monitors: &[Shown], antialiasing: &str, xwayland_apps: Vec<String>) -> Vec<String> {
-    let mut out: Vec<String> = monitors
+pub fn findings(
+    root: &legionctl_machine::sysroot::SysRoot,
+    home: &std::path::Path,
+    monitors: &[Shown],
+    antialiasing: &str,
+) -> Vec<Finding> {
+    let mut out: Vec<Finding> = monitors
         .iter()
         .filter(|m| !m.builtin && m.max_refresh - m.refresh > 0.5)
         .map(|m| {
-            format!(
-                "{} ({}) runs at {:.0} Hz, and {:.0} Hz is available at {}x{} (Settings, Displays, Refresh Rate)",
-                m.name, m.connector, m.refresh, m.max_refresh, m.width, m.height
-            )
+            let id = format!("refresh-{}", m.connector);
+            Finding {
+                text: format!(
+                    "{} ({}) runs at {:.0} Hz, and {:.0} Hz is available at {}x{} (legionctl display fix {id})",
+                    m.name, m.connector, m.refresh, m.max_refresh, m.width, m.height
+                ),
+                id,
+                fixes: vec![Fix::Mode {
+                    connector: m.connector.clone(),
+                    mode: m.max_mode.clone(),
+                }],
+            }
         })
         .collect();
+    if monitors.is_empty() {
+        return out;
+    }
+    let fractional = monitors.iter().any(|m| m.scale.fract() != 0.0);
+    out.extend(legionctl_machine::graphics::app_findings(
+        root, home, fractional,
+    ));
     let sharp_subpixel = monitors
         .iter()
         .all(|m| m.scale.fract() == 0.0 && m.ppi.is_none_or(|p| p < 160.0));
-    // XWayland is blurry only at a fractional scale; at integer scales Chromium on Wayland is the worse one
-    if monitors.iter().any(|m| m.scale.fract() != 0.0) {
-        out.extend(xwayland_apps);
-    }
-    if antialiasing == "grayscale" && !monitors.is_empty() && sharp_subpixel {
-        out.push(
-            "fonts use grayscale antialiasing, and every monitor has an integer scale at normal density, where \
-             subpixel is sharper (gsettings set org.gnome.desktop.interface font-antialiasing rgba)"
+    if antialiasing == "grayscale" && sharp_subpixel {
+        out.push(Finding {
+            id: "antialiasing".into(),
+            text: "fonts use grayscale antialiasing, and every monitor has an integer scale at normal density, where \
+                   subpixel antialiasing (RGB order) is sharper (legionctl display fix antialiasing)"
                 .into(),
-        );
+            fixes: [("font-antialiasing", "'rgba'"), ("font-rgba-order", "'rgb'")]
+                .map(|(key, value)| Fix::Setting {
+                    key: key.into(),
+                    value: value.into(),
+                })
+                .into(),
+        });
     }
     out
 }

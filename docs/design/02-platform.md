@@ -184,4 +184,18 @@ subpixel is sharper (integer scales below 160 PPI), and Electron/Chromium apps t
 scale. Lesson (user report 2026-10-14, on the MSI 34" at scale 1.0, 111 PPI): grayscale antialiasing and the Wayland
 flags for VS Code and Thorium both made text worse; at integer scales XWayland is not blurry, and Chromium on Wayland
 draws grayscale text. Both were reverted. e2e with a stand-in Mutter: both scales, the findings that belong to each
-(the scale gate mutation-checked). Next: fixes as operations with the old values kept.
+(the scale gate mutation-checked). Part 3 (built 2026-10-14): each finding has a stable id, in brackets in `doctor`
+and `display status` (`refresh-DP-3`, `antialiasing`, `xwayland-code`, `wayland-thorium`, `opencl-iris`,
+`switcheroo`, ...). `legionctl display fix <id>|all [--dry-run] [--persistent]` makes the fixes that change only your
+own settings and files: the fonts' antialiasing (`font-antialiasing` 'rgba' and `font-rgba-order` 'rgb', where
+subpixel is sharper), an app's flags file (the Wayland line in at a fractional scale, out at integer scales), a
+monitor's highest rate at its resolution (Mutter `ApplyMonitorsConfig`: temporary until the next login, or with
+`--persistent` in GNOME's monitors.xml) and `RUSTICL_ENABLE=iris` for the session (`~/.config/environment.d/
+legionctl-opencl.conf`, from the next login). Each line shows the new and the old value. Before the first change, the
+event log keeps the old values (event `display.change`: the dconf text, the file's bytes or that there was no file,
+the mode, the Mutter method), so `legionctl undo <event>` gives back each exact old value, also after a change that
+failed half way; the undo is an event too. Fixes that need root (switcheroo-control, the kernel line, packages) stay
+text: they belong to the daemon and the boot takeover; `display fix <id>` refuses them, `all` lists them. A flags file
+that is not text stays as it is. e2e with the stand-in Mutter, a stand-in gsettings and a temp HOME: the dry run
+changes nothing, the fix changes each value and its findings go, undo gives back each exact value with the method of
+the fix, a system change is refused.
