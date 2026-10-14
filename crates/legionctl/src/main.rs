@@ -47,6 +47,11 @@ fn client_only() -> Vec<Command> {
             .arg(Arg::new("spec").required(true))
             .arg(Arg::new("agent").num_args(1..).required(true).last(true)),
         Command::new("relay").hide(true).arg(Arg::new("socket").required(true)),
+        Command::new("forward")
+            .hide(true)
+            .arg(Arg::new("port").required(true).value_parser(clap::value_parser!(u16)))
+            .arg(Arg::new("socket").required(true))
+            .arg(Arg::new("agent").num_args(1..).required(true).last(true)),
         Command::new("guest").hide(true),
         Command::new("trace").about("Follow the event log: agents, people and the machine daemon, as it happens"),
         Command::new("hook")
@@ -286,6 +291,17 @@ fn main() -> Result<()> {
             let socket = sub.get_one::<String>("socket").context("the socket")?;
             return tokio::runtime::Runtime::new()?
                 .block_on(vm::relay(std::path::Path::new(socket)));
+        }
+        Some(("forward", sub)) => {
+            let port = *sub.get_one::<u16>("port").context("the port")?;
+            let socket = sub.get_one::<String>("socket").context("the socket")?;
+            let agent: Vec<String> = sub
+                .get_many::<String>("agent")
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect();
+            return vm::forward(port, std::path::Path::new(socket), &agent);
         }
         Some(("guest", _)) => return vm::guest(),
         Some(("trace", _)) => return trace(),

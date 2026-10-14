@@ -1,6 +1,8 @@
 //! End-to-end: the binary as the agent plugin uses it (hook dispatch, MCP over stdio), in an isolated HOME.
 
 mod common;
+#[path = "common/provider.rs"]
+mod provider;
 
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
@@ -58,21 +60,25 @@ fn operator(tag: &str) -> (Operator, PathBuf) {
     let home = Path::new("/var/tmp").join(format!("legionctl-e2e-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
+    (operator_in(tag, &home), home)
+}
+
+/// The operator of `home`, which keeps its files (an operator that starts again reads the config anew).
+fn operator_in(tag: &str, home: &Path) -> Operator {
     let skills =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integrations/agent-plugin/skills");
     // an empty machine: no /etc/legionctl unless a test writes one
     let root = home.join("root");
     std::fs::create_dir_all(&root).unwrap();
-    let operator = Operator::start(
+    Operator::start(
         tag,
         &[
             ("LEGIONCTL_SYSROOT", root.into()),
-            ("HOME", home.clone().into()),
-            ("PATH", path_with_keyring(&home)),
+            ("HOME", home.into()),
+            ("PATH", path_with_keyring(home)),
             ("LEGIONCTL_PLUGIN_SKILLS", OsString::from(skills)),
         ],
-    );
-    (operator, home)
+    )
 }
 
 /// This build's `PATH` behind a stand-in `secret-tool` that keeps entries as files in `home/keyring`
@@ -1883,14 +1889,15 @@ fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
 }
 
 /// A repository whose own image (its Dockerfile) has Python, with the stand-in ACP agent in it (a container sees only
-/// the mounted folders), and a config for sessions in a container with the static client of `make static`; the
-/// interactive agent `probe` tries what an agent would.
-fn container_repository(home: &Path) -> PathBuf {
+/// the mounted folders), and a config for sessions in a container with the static client of `make static` and the
+/// gateway on `gateway` in front of the stand-in provider on `provider`; the interactive agent `probe` tries what an
+/// agent would, also a model call to the gateway at 127.0.0.1, as its base URL would say on the host.
+fn container_repository(home: &Path, (gateway, provider): (u16, u16)) -> PathBuf {
     let probe = "echo x > note.txt && git add note.txt && git commit -qm probe && echo COMMIT_OK; \
                  git push origin main 2>&1 | grep -q gates.git.deny && echo PUSH_REFUSED; \
                  touch \"$HOME/outside\" && touch .agentworkspace/MEMORY/probe.md && echo WROTE; \
                  [ -f /.dockerenv ] && echo IN_CONTAINER; echo \"SESSION=$LEGIONCTL_SESSION\"; \
-                 grep -q logged-in \"$HOME/.agent-state.json\" && echo STATE_READ";
+                 grep -q logged-in \"$HOME/.agent-state.json\" && echo STATE_READ; python3 ask-gateway.py";
     let client =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/static/release/legionctl");
     assert!(
@@ -1908,6 +1915,16 @@ fn container_repository(home: &Path) -> PathBuf {
         &repo.join("Dockerfile"),
         "FROM public.ecr.aws/docker/library/python:3.12-slim\n",
     );
+    write(
+        &repo.join("ask-gateway.py"),
+        &format!(
+            "import json, urllib.request as u\n\
+             body = json.dumps({{'model': 'in-sandbox', 'max_tokens': 5, 'messages': [{{'role': 'user', 'content': 'hi'}}]}})\n\
+             headers = {{'x-api-key': 'caller-key', 'anthropic-version': '2023-06-01', 'content-type': 'application/json'}}\n\
+             r = u.urlopen(u.Request('http://127.0.0.1:{gateway}/v1/messages', body.encode(), headers), timeout=20)\n\
+             print('GATEWAY_' + str(r.status))\n"
+        ),
+    );
     git(home, &repo, &["add", "."]);
     git(home, &repo, &["commit", "--quiet", "-m", "agent and image"]);
     // a writable file of the home, like ~/.claude.json
@@ -1921,10 +1938,34 @@ fn container_repository(home: &Path) -> PathBuf {
             "scope": false,
             "writable": [state],
             "container": {"base": "unused", "npm": [], "client": client},
+        },
+        "gateway": {
+            "port": gateway,
+            "accounts": {"main": {"provider": "anthropic", "base_url": format!("http://127.0.0.1:{provider}/ok")}},
+            "pool": {"*": ["main"]},
         }})
         .to_string(),
     );
     repo
+}
+
+/// The stand-in provider and the gateway's port for `container_repository`; the operator must start again to serve
+/// the gateway of the config.
+fn gateway_ports(home: &Path) -> (provider::Kill, (u16, u16)) {
+    let port = provider::free_port();
+    (
+        provider::provider(port, &home.join("provider.log")),
+        (provider::free_port(), port),
+    )
+}
+
+/// The calls that reached the stand-in provider through the gateway from inside a sandbox.
+fn sandbox_calls(home: &Path) -> usize {
+    std::fs::read_to_string(home.join("provider.log"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.starts_with("ok in-sandbox caller-key"))
+        .count()
 }
 
 /// W5 (note 18): `workspace pack` puts the agent layer on the repository's own image (its Dockerfile, built by I1),
@@ -1936,11 +1977,13 @@ fn container_repository(home: &Path) -> PathBuf {
 #[test]
 fn sessions_in_a_container_work_on_the_mounted_workspace_behind_the_git_gate() {
     let (op, home) = operator("container");
-    let repo = container_repository(&home);
+    let (_provider, ports) = gateway_ports(&home);
+    let repo = container_repository(&home, ports);
+    drop(op);
+    let op = operator_in("container2", &home);
     let run = |args: &[&str]| op.run(&repo, &[("HOME", home.to_str().unwrap())], args, "");
-    let in_container: Vec<&str> = "session run fake fix --dossier port --in container --json"
-        .split(' ')
-        .collect();
+    let words = |line: &'static str| line.split(' ').collect::<Vec<_>>();
+    let in_container = words("session run fake fix --dossier port --in container --json");
     let image = "localhost/repo/legionctl-agent:latest";
     let rmi = || {
         std::process::Command::new("docker")
@@ -1989,15 +2032,7 @@ fn sessions_in_a_container_work_on_the_mounted_workspace_behind_the_git_gate() {
         "the commit is in the workspace on the host"
     );
 
-    let started = run(&[
-        "session",
-        "start",
-        "probe",
-        "--dossier",
-        "talk",
-        "--in",
-        "container",
-    ]);
+    let started = run(&words("session start probe --dossier talk --in container"));
     let text = String::from_utf8_lossy(&started.stdout);
     for expected in [
         "COMMIT_OK",
@@ -2006,6 +2041,7 @@ fn sessions_in_a_container_work_on_the_mounted_workspace_behind_the_git_gate() {
         "IN_CONTAINER",
         "SESSION=",
         "STATE_READ",
+        "GATEWAY_200",
     ] {
         assert!(
             text.contains(expected),
@@ -2016,6 +2052,11 @@ fn sessions_in_a_container_work_on_the_mounted_workspace_behind_the_git_gate() {
     assert!(
         !home.join("outside").exists(),
         "the container's home is its own"
+    );
+    assert_eq!(
+        sandbox_calls(&home),
+        1,
+        "the model call from the container went through the host's gateway"
     );
     let workspace = home.join("worktrees/repo/talk");
     assert_eq!(
@@ -2064,7 +2105,10 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
         }
     }
     let (op, home) = operator("vm");
-    let repo = container_repository(&home);
+    let (_provider, ports) = gateway_ports(&home);
+    let repo = container_repository(&home, ports);
+    drop(op);
+    let op = operator_in("vm2", &home);
     let virtiofsd = ["/usr/lib/virtiofsd", "/usr/libexec/virtiofsd"]
         .into_iter()
         .find(|p| Path::new(p).exists())
@@ -2115,6 +2159,7 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
         "WROTE",
         "SESSION=",
         "STATE_READ",
+        "GATEWAY_200",
     ] {
         assert!(
             text.contains(expected),
@@ -2123,6 +2168,11 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
         );
     }
     assert!(!home.join("outside").exists(), "the VM's home is its own");
+    assert_eq!(
+        sandbox_calls(&home),
+        1,
+        "the model call from the VM went through the host's gateway"
+    );
     let talk = home.join("worktrees/repo/talk");
     assert_eq!(git(&home, &talk, &["log", "-1", "--format=%s"]), "probe");
     assert!(

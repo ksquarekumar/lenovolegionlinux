@@ -335,7 +335,11 @@ Built (2026-10-14, parts 1 and 2): `workspace pack [--service <name>]` makes one
 layer does not depend on the dossier, since D5 mounts the work), `localhost/<repo>/legionctl-agent:latest`, as a job
 (resumed after a restart); `session run|start --in container`; the sessions table records `inside`, and pause,
 unpause, stop, `session list`, binding liveness and the idle freeze use the container. The client adds `-t` when it
-runs in a terminal. Not built yet: the gateway from a container or VM (it listens on 127.0.0.1), GPU per run.
+runs in a terminal. The gateway (2026-10-14): when `gateway.port` is set, the operator also serves it on
+`$XDG_RUNTIME_DIR/legionctl/gateway.sock`; a container's agent runs under `legionctl forward <port> <socket> --` (the
+image's static client), and a VM's `legionctl guest` listens on 127.0.0.1:<port> and relays to 10.0.2.100:81, which
+QEMU forwards to `legionctl relay <gateway socket>`. So `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL=http://127.0.0.1:<port>`
+works in a sandbox as on the host, and the TCP port stays on the host's loopback. Not built yet: GPU per run.
 Test (e2e, docker): the repository's Dockerfile image gets the layer; a headless run and an interactive session
 through the real client commit into their workspaces on the host, the gate in the image refuses the push (an agent
 layer without the gate fails the test), the dossier is writable, the home is private, and a run without a pack says

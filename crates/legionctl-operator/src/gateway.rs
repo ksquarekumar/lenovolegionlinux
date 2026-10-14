@@ -134,9 +134,24 @@ pub async fn serve(port: u16, ready: crate::Ready) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await
         .with_context(|| format!("gateway port {port}"))?;
-    eprintln!("operator: model gateway on 127.0.0.1:{port}");
+    // sessions in a container or VM reach the gateway through this socket (their 127.0.0.1 is their own)
+    let socket = std::path::PathBuf::from(
+        std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?,
+    )
+    .join("legionctl")
+    .join(legionctl_core::session::GATEWAY_SOCKET);
+    let _ = std::fs::remove_file(&socket);
+    let local = tokio::net::UnixListener::bind(&socket)
+        .with_context(|| format!("binding {}", socket.display()))?;
+    eprintln!(
+        "operator: model gateway on 127.0.0.1:{port} and {}",
+        socket.display()
+    );
     ready.set();
-    axum::serve(listener, app).await?;
+    tokio::try_join!(
+        axum::serve(listener, app.clone()).into_future(),
+        axum::serve(local, app).into_future()
+    )?;
     Ok(())
 }
 

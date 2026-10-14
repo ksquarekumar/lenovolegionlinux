@@ -5,32 +5,17 @@
 //! streams, tool calls both ways), or is refused with the reason.
 
 mod common;
+#[path = "common/provider.rs"]
+mod provider;
 
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use common::Operator;
+use provider::{Kill, free_port};
 use serde_json::{Value, json};
-
-struct Kill(Child);
-
-impl Drop for Kill {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
 
 fn wait_for(port: u16) {
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -112,16 +97,7 @@ fn setup(tag: &str) -> Setup {
     std::fs::create_dir_all(home.join(".config/legionctl")).unwrap();
     let (provider_port, port) = (free_port(), free_port());
     let log = home.join("provider.log");
-    let fixture =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-provider.py");
-    let provider = Kill(
-        Command::new("python3")
-            .arg(fixture)
-            .arg(provider_port.to_string())
-            .arg(&log)
-            .spawn()
-            .unwrap(),
-    );
+    let provider = provider::provider(provider_port, &log);
     let base = |prefix: &str| format!("http://127.0.0.1:{provider_port}/{prefix}");
     std::fs::write(
         home.join(".config/legionctl/gateway.jsonc"),

@@ -93,7 +93,13 @@ pub struct GuestSpec {
     /// Set by `legionctl vm`: the agent's command, and whether it runs in a terminal.
     pub argv: Vec<String>,
     pub interactive: bool,
+    /// The gateway's port (`gateway.port`): the guest serves it on 127.0.0.1, relayed to the host's gateway socket.
+    pub gateway: Option<u16>,
 }
+
+/// The gateway's socket in the runtime folder `legionctl/` (beside the operator's): a container or VM reaches the
+/// host's gateway through it, so its own 127.0.0.1:`gateway.port` works as on the host.
+pub const GATEWAY_SOCKET: &str = "gateway.sock";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GuestMount {
@@ -623,8 +629,7 @@ fn bwrap_sandbox(
 /// `docker run ...` of `image` as this user, with a private home, then `mounts` and `env`. The client adds `-t` when
 /// it runs the session in a terminal.
 fn docker_sandbox(
-    id: &str,
-    image: &str,
+    (id, image, gateway): (&str, &str, Option<u16>),
     (runtime, workdir): (&Path, &Path),
     mut mounts: Vec<Mount>,
     env: &[(String, String)],
@@ -660,6 +665,20 @@ fn docker_sandbox(
     }
     docker_args(&mut args, &mounts, env)?;
     args.push(image.into());
+    if let Some(port) = gateway {
+        // the image's static client: 127.0.0.1:<port> in the container goes to the host's gateway socket
+        args.extend([
+            "legionctl".into(),
+            "forward".into(),
+            port.to_string(),
+            runtime
+                .join("legionctl")
+                .join(GATEWAY_SOCKET)
+                .to_string_lossy()
+                .into_owned(),
+            "--".into(),
+        ]);
+    }
     Ok(args)
 }
 
@@ -695,7 +714,7 @@ fn vm_sandbox(
     id: &str,
     disk: &Path,
     vm: &crate::config::VmConfig,
-    runtime: &Path,
+    (runtime, gateway): (&Path, Option<u16>),
     (workdir, mounts, env): (&Path, Vec<Mount>, &[(String, String)]),
 ) -> Result<Vec<String>> {
     let me = std::fs::metadata("/proc/self")?;
@@ -770,6 +789,7 @@ fn vm_sandbox(
             uid: std::os::unix::fs::MetadataExt::uid(&me),
             gid: std::os::unix::fs::MetadataExt::gid(&me),
             socket: legionctl.join("api.sock"),
+            gateway,
             ..GuestSpec::default()
         },
     };
@@ -1142,19 +1162,20 @@ impl Dossiers {
             skill_mounts(&mut mounts, account, skills)?;
         }
 
+        let gateway = (config.gateway.port != 0).then_some(config.gateway.port);
         let sandbox = match runs {
             Runs::Host => {
                 mounts.push(Mount::ReadOnly("/usr/bin/git".into(), real_git.clone()));
                 bwrap_sandbox(ws, &runtime, &config.session.hidden, &mounts, &env)?
             }
             Runs::Container(image) => {
-                docker_sandbox(&id, image, (&runtime, &workdir), mounts, &env)?
+                docker_sandbox((&id, image, gateway), (&runtime, &workdir), mounts, &env)?
             }
             Runs::Vm(disk) => vm_sandbox(
                 &id,
                 disk,
                 &config.session.vm,
-                &runtime,
+                (&runtime, gateway),
                 (&workdir, mounts, &env),
             )?,
         };

@@ -11,11 +11,13 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use legionctl_core::session::{GuestMount, GuestSpec, VmSpec};
+use legionctl_core::session::{GATEWAY_SOCKET, GuestMount, GuestSpec, VmSpec};
 use tokio::io::AsyncWriteExt;
 
-/// The operator as the guest reaches it: QEMU's user network runs `legionctl relay` for each connection.
+/// The operator and the gateway as the guest reaches them: QEMU's user network runs `legionctl relay` for each
+/// connection.
 const OPERATOR: &str = "10.0.2.100:80";
+const GATEWAY: &str = "10.0.2.100:81";
 /// The share with `guest.json`, and where the guest mounts it.
 const SPEC_TAG: &str = "legionctl-spec";
 const SPEC_DIR: &str = "/run/legionctl-spec";
@@ -97,11 +99,7 @@ pub fn run(spec_path: &Path, argv: Vec<String>) -> Result<()> {
         format!("virtserialport,chardev=agent,name={PORT}")
     })
     .arg("-netdev")
-    .arg(format!(
-        "user,id=net,guestfwd=tcp:{OPERATOR}-cmd:'{}' relay '{}'",
-        me.display(),
-        spec.socket.display()
-    ))
+    .arg(netdev(&me, &spec))
     .args(["-device", "virtio-net-pci,netdev=net"]);
     let spec_share = (SPEC_TAG.to_string(), guest_dir, true);
     let shares: Vec<_> = spec.shares.iter().chain([&spec_share]).collect();
@@ -129,6 +127,22 @@ pub fn run(spec_path: &Path, argv: Vec<String>) -> Result<()> {
         console.display()
     );
     Ok(())
+}
+
+/// QEMU's user network with the guest's forwards: the operator socket, and the gateway socket when it serves.
+fn netdev(me: &Path, spec: &VmSpec) -> String {
+    let relay = |to: &str, socket: &Path| {
+        format!(
+            ",guestfwd=tcp:{to}-cmd:'{}' relay '{}'",
+            me.display(),
+            socket.display()
+        )
+    };
+    let mut netdev = format!("user,id=net{}", relay(OPERATOR, &spec.socket));
+    if spec.guest.gateway.is_some() {
+        netdev.push_str(&relay(GATEWAY, &spec.socket.with_file_name(GATEWAY_SOCKET)));
+    }
+    netdev
 }
 
 /// A virtiofs daemon for each of `shares` (tag, folder, read-only), and its device on `qemu`.
@@ -205,6 +219,35 @@ pub async fn relay(socket: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `legionctl forward <port> <socket> -- <agent>` (a session's container): while the agent runs, each connection to
+/// 127.0.0.1:`port` goes to `socket` (the host's gateway, in the mounted runtime folder). Ends with the agent's status.
+///
+/// # Errors
+/// The port is taken, or the agent cannot start.
+pub fn forward(port: u16, socket: &Path, agent: &[String]) -> Result<()> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    let listener = runtime
+        .block_on(tokio::net::TcpListener::bind(("127.0.0.1", port)))
+        .with_context(|| format!("port {port}"))?;
+    let socket = socket.to_path_buf();
+    runtime.spawn(async move {
+        while let Ok((mut caller, _)) = listener.accept().await {
+            let socket = socket.clone();
+            tokio::spawn(async move {
+                if let Ok(mut gateway) = tokio::net::UnixStream::connect(&socket).await {
+                    let _ = tokio::io::copy_bidirectional(&mut caller, &mut gateway).await;
+                }
+            });
+        }
+    });
+    let (program, args) = agent.split_first().context("no agent command")?;
+    let status = Command::new(program)
+        .args(args)
+        .status()
+        .with_context(|| format!("running {program}"))?;
+    std::process::exit(status.code().unwrap_or(1));
+}
+
 fn mount(args: &[&str], path: &Path) -> Result<()> {
     std::fs::create_dir_all(path)?;
     let out = Command::new("mount").args(args).arg(path).output()?;
@@ -277,6 +320,19 @@ fn session() -> Result<()> {
             });
         }
     });
+    if let Some(port) = spec.gateway {
+        // the gateway at 127.0.0.1:<port>, as on the host: each connection goes to the host's gateway socket
+        let gateway = runtime.block_on(tokio::net::TcpListener::bind(("127.0.0.1", port)))?;
+        runtime.spawn(async move {
+            while let Ok((mut agent, _)) = gateway.accept().await {
+                tokio::spawn(async move {
+                    if let Ok(mut host) = tokio::net::TcpStream::connect(GATEWAY).await {
+                        let _ = tokio::io::copy_bidirectional(&mut agent, &mut host).await;
+                    }
+                });
+            }
+        });
+    }
     let channel = if spec.interactive {
         CONSOLE.to_string()
     } else {
