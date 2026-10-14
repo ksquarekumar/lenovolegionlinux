@@ -242,20 +242,28 @@ pub(crate) fn now() -> i64 {
 }
 
 impl Db {
-    /// Open the database at `path` and apply the `migrations` it has not run yet (index + 1 is the schema version).
+    /// Open the database at `path`, made with `schema` when there is none.
     ///
     /// # Errors
-    /// The folder or database cannot be created or opened, or a migration fails.
+    /// The folder or database cannot be created or opened, or the file has another schema version.
     pub fn open(path: &Path, schema: &Schema) -> Result<Db> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
-        let mut conn =
-            Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
+        if !path.exists() {
+            make(path, schema)?;
+        }
+        let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         conn.busy_timeout(Duration::from_secs(5))?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        make(&mut conn, schema, path)?;
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        anyhow::ensure!(
+            version == schema.version,
+            "{} has schema v{version}, and this legionctl reads only v{}: it is from another release. Move the \
+             file away to start with an empty one (its data is not read), or install the release that made it",
+            path.display(),
+            schema.version
+        );
         Ok(Db { conn })
     }
 
@@ -538,27 +546,31 @@ pub struct EventRow {
     pub payload: serde_json::Value,
 }
 
-/// Make `schema` in a new database; an existing one must be at its version. A file of another version (from before
-/// the merged schemas, or from a newer legionctl) is refused and left as it is.
-fn make(conn: &mut Connection, schema: &Schema, path: &Path) -> Result<()> {
-    // the write lock first, then the version: another process may make the schema meanwhile
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    match tx.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? {
-        0 => {
-            tx.execute_batch(schema.sql)
-                .with_context(|| format!("making the schema of {}", path.display()))?;
-            tx.pragma_update(None, "user_version", schema.version)?;
+/// Make the database at `path`: whole (WAL mode, `schema`, its version) in a file of this process and thread, then
+/// linked into place, which fails when another opener was first. So no connection sees a file that is half made
+/// (opening one while another switches it to WAL or makes its tables can fail at once with "database is locked").
+fn make(path: &Path, schema: &Schema) -> Result<()> {
+    let new = PathBuf::from(format!(
+        "{}.new-{}-{:?}",
+        path.display(),
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_file(&new);
+    let conn = Connection::open(&new).with_context(|| format!("creating {}", new.display()))?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.execute_batch(schema.sql)
+        .with_context(|| format!("making the schema of {}", path.display()))?;
+    conn.pragma_update(None, "user_version", schema.version)?;
+    drop(conn);
+    let linked = std::fs::hard_link(&new, path);
+    std::fs::remove_file(&new)?;
+    match linked {
+        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => {
+            Err(e).with_context(|| format!("creating {}", path.display()))
         }
-        v if v == schema.version => {}
-        v => anyhow::bail!(
-            "{} has schema v{v}, and this legionctl reads only v{}: it is from another release. Move the file \
-             away to start with an empty one (its data is not read), or install the release that made it",
-            path.display(),
-            schema.version
-        ),
+        _ => Ok(()),
     }
-    tx.commit()?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -625,5 +637,11 @@ mod tests {
                 assert_eq!(open.join().unwrap().unwrap(), OPERATOR.version);
             }
         });
+        let mode: String = Db::open(&path, OPERATOR)
+            .unwrap()
+            .conn()
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal", "readers go on while one process writes");
     }
 }

@@ -74,9 +74,10 @@ system down.
    safe mode (read-only API, firmware defaults), with a desktop notification that says what failed.
 
 Built (2026-10-13, part 1), without a separate `legionctl-bootstrap` binary:
-- One schema per database (todo-68, 2026-10-14, after the first full release install): `Db::open` makes the whole
-  schema in a new file (`operator.db` v10, `workspace.db` v9, `cache.db` v1); a file at that version opens; a file of
-  another version (from before the merge, or from a newer legionctl) is refused with its version and left as it is.
+- One schema per database (todo-68, 2026-10-14, after the first full release install): `operator.db` v10,
+  `workspace.db` v9, `cache.db` v1. `Db::open` makes a new database whole in a private file (WAL mode, schema,
+  version) and links it into place, so no opener sees it half made; a file at that version opens; a file of another
+  version (from before the merge, or from a newer legionctl) is refused with its version and left as it is.
   The steps up to the merge are gone. The next schema change adds steps after these versions again, with a backup
   of the file before the first step.
 - The build check: the client sends a fingerprint of the operation registry (`x-legionctl-api`); the operator sends
