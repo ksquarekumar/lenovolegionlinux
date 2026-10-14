@@ -568,6 +568,13 @@ operations! {
     boot_rebuild / BootRebuild = "boot.rebuild", Machine, DryRunIn => Changes;
     /// Remove legionctl's boot entry and its files; the old entry stays as it was.
     boot_remove / BootRemove = "boot.remove", Machine, DryRunIn => Changes;
+    /// The login screen: legionctl's greeter (greetd) or GDM, and what the greeter needs that is not installed.
+    greeter_status / GreeterStatus = "greeter.status", Read, Empty => GreeterState;
+    /// Put legionctl's greeter in place of GDM at the next start (GDM stays installed and disabled; the old greetd
+    /// configuration is kept). A human approves it in the polkit dialog.
+    greeter_install / GreeterInstall = "greeter.install", Machine, DryRunIn => Changes;
+    /// GDM back in place of legionctl's greeter at the next start, with the old greetd configuration.
+    greeter_remove / GreeterRemove = "greeter.remove", Machine, DryRunIn => Changes;
     /// Dual boot: the Windows boot entry, a pending one-time boot, NTFS volumes Windows left dirty, and what to fix.
     windows_status / WindowsStatus = "windows.status", Read, Empty => WindowsState;
     /// Restart into Windows once (the start after returns to Linux). A human approves it in the polkit dialog.

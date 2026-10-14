@@ -746,6 +746,24 @@ impl Operator {
         })
     }
 
+    /// A greeter action: its plan for a dry run, else the daemon carries it out (the plan refuses first, before the
+    /// polkit dialog).
+    fn greeter_action(
+        &self,
+        action: &'static str,
+        dry: bool,
+        plan: fn(&SysRoot) -> Result<Vec<legionctl_machine::policy::Step>>,
+    ) -> Result<Changes> {
+        let steps = plan(&SysRoot::from_env())?;
+        if dry {
+            return Ok(dry_run(&steps));
+        }
+        Ok(Changes {
+            lines: self.system(async move |p| p.greeter(action).await)?,
+            dry_run: false,
+        })
+    }
+
     fn system<T>(&self, call: impl AsyncFnOnce(&System1Proxy<'_>) -> zbus::Result<T>) -> Result<T> {
         self.runtime.block_on(async {
             let conn = zbus::Connection::system()
@@ -2272,6 +2290,26 @@ impl Engine for Operator {
         self.boot_action("remove", input.dry_run, |root| {
             legionctl_machine::boot::remove_plan(root, &legionctl_machine::boot::state(root)?)
         })
+    }
+
+    fn greeter_status(&self, _: &Ctx, _: Empty) -> Result<legionctl_api::GreeterState> {
+        Ok(legionctl_machine::greeter::state(&SysRoot::from_env()).into_wire())
+    }
+
+    fn greeter_install(&self, _: &Ctx, input: DryRunIn) -> Result<Changes> {
+        self.greeter_action(
+            "install",
+            input.dry_run,
+            legionctl_machine::greeter::install_plan,
+        )
+    }
+
+    fn greeter_remove(&self, _: &Ctx, input: DryRunIn) -> Result<Changes> {
+        self.greeter_action(
+            "remove",
+            input.dry_run,
+            legionctl_machine::greeter::remove_plan,
+        )
     }
 
     fn windows_status(&self, _: &Ctx, _: Empty) -> Result<WindowsState> {

@@ -34,6 +34,8 @@ pub trait System1 {
     fn set_usb_charging(&self, on: bool) -> zbus::Result<Vec<String>>;
     /// The boot takeover: install, confirm, rebuild or remove.
     fn boot(&self, action: &str) -> zbus::Result<Vec<String>>;
+    /// The greeter in place of GDM: install or remove.
+    fn greeter(&self, action: &str) -> zbus::Result<Vec<String>>;
     /// Give devices back from vfio-pci to their own drivers.
     fn passthrough_end(&self, devices: &[String]) -> zbus::Result<Vec<String>>;
     /// Make the host ready for the caller's Windows VM; the lines and the MSDM table.

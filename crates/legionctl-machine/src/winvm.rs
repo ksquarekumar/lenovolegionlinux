@@ -9,8 +9,12 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::policy::Step;
 use crate::sysroot::SysRoot;
 use crate::{vfio, windows};
+
+/// The user service that runs the Windows VM.
+pub const UNIT: &str = "legionctl-windows-vm";
 
 /// What a Windows VM asks of the host.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -114,6 +118,37 @@ fn fstab_targets(root: &SysRoot, disk: &str) -> Vec<PathBuf> {
             .then(|| PathBuf::from(target.replace("\\040", " ")))
         })
         .collect()
+}
+
+/// The steps that give the Windows disk's partitions to Linux (`attach`: their automounts started) or take them away
+/// (their automounts and mounts stopped), as a VM start does.
+///
+/// # Errors
+/// No Windows disk, or no fstab entry on it.
+pub fn disk_plan(root: &SysRoot, attach: bool) -> Result<Vec<Step>> {
+    let disk = windows_disk(root)?;
+    let units: Vec<String> = fstab_targets(root, &disk)
+        .iter()
+        .flat_map(|target| {
+            let unit = unit_name(target);
+            if attach {
+                vec![format!("{unit}.automount")]
+            } else {
+                vec![format!("{unit}.automount"), format!("{unit}.mount")]
+            }
+        })
+        .collect();
+    anyhow::ensure!(
+        !units.is_empty(),
+        "no /etc/fstab entry is on the Windows disk {disk}"
+    );
+    let verb = if attach { "start" } else { "stop" };
+    Ok(vec![Step::Run(
+        std::iter::once("systemctl".to_string())
+            .chain(std::iter::once(verb.to_string()))
+            .chain(units)
+            .collect(),
+    )])
 }
 
 /// Whether Windows is hibernated on its volume (mounted at `target`): `hiberfil.sys` starts with `hibr` (a resume
@@ -268,6 +303,26 @@ pub fn msdm(root: &SysRoot) -> Result<Vec<u8>> {
 /// polkit agent can ask, and a prompt at every login is no autostart). Only this action, only this user.
 pub const AUTOSTART_RULE: &str = "/etc/polkit-1/rules.d/49-legionctl-windows-vm.rules";
 
+/// The autostart rule of `user`.
+///
+/// # Errors
+/// The user name has characters a rule cannot hold.
+pub fn autostart_rule(user: &str) -> Result<String> {
+    anyhow::ensure!(
+        !user.is_empty()
+            && user
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)),
+        "{user} is not a user name a rule can hold"
+    );
+    Ok(format!(
+        "// legionctl windows vm autostart: {user} may start and end the Windows VM without a prompt\n\
+         polkit.addRule(function(action, subject) {{\n    \
+         if (action.id == \"org.legionctl.windows.vm\" && subject.user == \"{user}\") {{\n        \
+         return polkit.Result.YES;\n    }}\n}});\n"
+    ))
+}
+
 /// Write (`Some(user)`) or remove (`None`) the autostart rule.
 ///
 /// # Errors
@@ -283,19 +338,7 @@ pub fn set_autostart_rule(root: &SysRoot, user: Option<&str>) -> Result<String> 
             Err(e) => return Err(e).with_context(|| format!("removing {AUTOSTART_RULE}")),
         }
     };
-    anyhow::ensure!(
-        !user.is_empty()
-            && user
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)),
-        "{user} is not a user name a rule can hold"
-    );
-    let rule = format!(
-        "// legionctl windows vm autostart: {user} may start and end the Windows VM without a prompt\n\
-         polkit.addRule(function(action, subject) {{\n    \
-         if (action.id == \"org.legionctl.windows.vm\" && subject.user == \"{user}\") {{\n        \
-         return polkit.Result.YES;\n    }}\n}});\n"
-    );
+    let rule = autostart_rule(user)?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }

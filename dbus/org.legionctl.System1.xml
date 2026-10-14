@@ -82,6 +82,22 @@
       <arg type="as" direction="out"/>
     </method>
     <!--
+     The greeter in place of GDM (todo-83): `install` or `remove`.
+     -->
+    <method name="Greeter">
+      <arg name="action" type="s" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
+     A choice of the greeter before login for `user`: `vm-start`, `vm-stop`, `autostart-off|login|boot`,
+     `disk-attach`, `disk-detach`, `gpu-linux`, `gpu-none`.
+     -->
+    <method name="GreeterAct">
+      <arg name="user" type="s" direction="in"/>
+      <arg name="action" type="s" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
      Give `devices` back from vfio-pci to their own drivers, after the VM ended.
      -->
     <method name="PassthroughEnd">

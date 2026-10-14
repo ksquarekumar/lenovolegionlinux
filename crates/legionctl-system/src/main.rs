@@ -34,7 +34,8 @@ use legionctl_machine::policy::{self, Machine, Options, Source, Step};
 use legionctl_machine::react::{Event, react};
 use legionctl_machine::sysroot::SysRoot;
 use legionctl_machine::{
-    battery, boot, cleanup, fan, gpu, knobs, profile, telemetry, tune, vfio, windows, winvm,
+    battery, boot, cleanup, fan, gpu, greeter, knobs, profile, telemetry, tune, vfio, windows,
+    winvm,
 };
 use tokio::io::unix::AsyncFd;
 use tokio::io::{Interest, Ready};
@@ -242,16 +243,63 @@ fn boot_steps(root: &SysRoot, steps: &[Step]) -> Result<Vec<String>> {
 }
 
 /// A mode that runs once and ends, instead of the daemon: `--safe` (the safe-mode unit), `--boot-rebuild` (the pacman
-/// hook after a kernel or initramfs change).
+/// hook after a kernel or initramfs change), `--greeter-remove` (the package's removal: GDM back, so the computer keeps
+/// a login screen).
 fn one_shot(root: &SysRoot) -> Option<Result<()>> {
+    let print = |lines: Vec<String>| {
+        for line in lines {
+            println!("{line}");
+        }
+    };
     match std::env::args().nth(1).as_deref() {
         Some("--safe") => Some(safe(root)),
-        Some("--boot-rebuild") => Some(boot_rebuild(root).map(|lines| {
-            for line in lines {
-                println!("{line}");
-            }
-        })),
+        Some("--boot-rebuild") => Some(boot_rebuild(root).map(print)),
+        Some("--greeter-remove") if greeter::state(root).installed => Some(
+            greeter::remove_plan(root)
+                .and_then(|plan| boot_steps(root, &plan))
+                .map(print),
+        ),
+        Some("--greeter-remove") => Some(Ok(())),
         _ => None,
+    }
+}
+
+/// Take the NVIDIA GPU from Linux for `uid` (its services kept in the ledger for the return).
+fn gpu_release(root: &SysRoot, uid: u32) -> Result<Vec<String>> {
+    let ledger = Ledger::open(root)?;
+    let (lines, services) = vfio::release_nvidia(root, uid)?;
+    ledger.set(Key::GpuServices, Some(&services.join(" ")))?;
+    Ok(lines)
+}
+
+/// Give the NVIDIA GPU back to Linux, with the services that the release stopped.
+fn gpu_return(root: &SysRoot) -> Result<Vec<String>> {
+    let ledger = Ledger::open(root)?;
+    let services: Vec<String> = ledger
+        .get(Key::GpuServices)
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(String::from)
+        .collect();
+    let lines = vfio::return_nvidia(root, &services)?;
+    ledger.set(Key::GpuServices, None)?;
+    Ok(lines)
+}
+
+/// A choice of the greeter before login, for `user` (a person's account): the Windows VM (`vm-start`, `vm-stop`,
+/// `autostart-off|login|boot`), the Windows disk's partitions (`disk-attach` to Linux, `disk-detach`), the NVIDIA GPU
+/// (`gpu-linux`, `gpu-none`: on vfio-pci for the user's VM).
+fn greeter_act(root: &SysRoot, user: &str, action: &str) -> Result<Vec<String>> {
+    let uid = greeter::person(root, user)?;
+    let vm_runs = Ledger::open(root)?.get(Key::WindowsVm).is_some();
+    match action {
+        "disk-attach" | "disk-detach" => {
+            anyhow::ensure!(!vm_runs, "the Windows VM has the disk now");
+            boot_steps(root, &winvm::disk_plan(root, action == "disk-attach")?)
+        }
+        "gpu-none" => gpu_release(root, uid),
+        "gpu-linux" => gpu_return(root),
+        _ => boot_steps(root, &greeter::vm_plan(root, user, uid, action)?),
     }
 }
 
@@ -569,11 +617,7 @@ impl System1 {
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.vfio").await?;
         let uid = caller_uid(conn, &header).await?;
-        let ledger = Ledger::open(&self.root).map_err(|e| failed(&e))?;
-        let (lines, services) = vfio::release_nvidia(&self.root, uid).map_err(|e| failed(&e))?;
-        ledger
-            .set(Key::GpuServices, Some(&services.join(" ")))
-            .map_err(|e| failed(&e))?;
+        let lines = gpu_release(&self.root, uid).map_err(|e| failed(&e))?;
         Self::changed(&emitter, "GpuRelease", &lines).await?;
         Ok(lines)
     }
@@ -586,15 +630,7 @@ impl System1 {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.vfio").await?;
-        let ledger = Ledger::open(&self.root).map_err(|e| failed(&e))?;
-        let services: Vec<String> = ledger
-            .get(Key::GpuServices)
-            .unwrap_or_default()
-            .split_whitespace()
-            .map(String::from)
-            .collect();
-        let lines = vfio::return_nvidia(&self.root, &services).map_err(|e| failed(&e))?;
-        ledger.set(Key::GpuServices, None).map_err(|e| failed(&e))?;
+        let lines = gpu_return(&self.root).map_err(|e| failed(&e))?;
         Self::changed(&emitter, "GpuReturn", &lines).await?;
         Ok(lines)
     }
@@ -633,6 +669,51 @@ impl System1 {
         .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
         .map_err(|e| failed(&e))?;
         Self::changed(&emitter, "Boot", &lines).await?;
+        Ok(lines)
+    }
+
+    /// The greeter in place of GDM (todo-83): `install` or `remove`.
+    async fn greeter(
+        &self,
+        action: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.greeter").await?;
+        let root = self.root.clone();
+        let lines = tokio::task::spawn_blocking(move || -> Result<Vec<String>> {
+            let plan = match action.as_str() {
+                "install" => greeter::install_plan(&root)?,
+                "remove" => greeter::remove_plan(&root)?,
+                other => anyhow::bail!("greeter action must be install or remove, not {other}"),
+            };
+            boot_steps(&root, &plan)
+        })
+        .await
+        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
+        .map_err(|e| failed(&e))?;
+        Self::changed(&emitter, "Greeter", &lines).await?;
+        Ok(lines)
+    }
+
+    /// A choice of the greeter before login for `user`: `vm-start`, `vm-stop`, `autostart-off|login|boot`,
+    /// `disk-attach`, `disk-detach`, `gpu-linux`, `gpu-none`.
+    async fn greeter_act(
+        &self,
+        user: String,
+        action: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.greeter.act").await?;
+        let root = self.root.clone();
+        let lines = tokio::task::spawn_blocking(move || greeter_act(&root, &user, &action))
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
+            .map_err(|e| failed(&e))?;
+        Self::changed(&emitter, "GreeterAct", &lines).await?;
         Ok(lines)
     }
 

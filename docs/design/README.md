@@ -24,6 +24,7 @@ the design is explored and are meant to change; decisions and open questions are
 | [18-workspaces.md](18-workspaces.md) | Operating directory and dossier per session, git handled by legionctl, scope-dossier artifact classes linked into a work graph and code graphs, the no-dossier gate |
 | [19-gateway.md](19-gateway.md) | Gateway in the operator: model addressing (`account/model` or the pool), quotas, budgets, exact and semantic cache, durable ACP, session environment images |
 | [20-images.md](20-images.md) | Distributables: Dockerfiles and images mapped to services and cache JSON, VM format, packing a repo's images into a VM |
+| [21-greeter.md](21-greeter.md) | greetd and legionctl's login screen in place of GDM: login protocol, actions before login, polkit rule, install and remove, the way back |
 | [issues.md](issues.md) | Issues found on this machine and cleanups to do |
 
 Evidence for every machine-specific claim was collected on 2026-10-12 (CachyOS, kernel 7.2.9, GNOME 51,

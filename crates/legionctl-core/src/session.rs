@@ -136,7 +136,7 @@ pub fn looking_glass_file() -> PathBuf {
 }
 
 /// The user service that runs the Windows VM.
-pub const WINDOWS_UNIT: &str = "legionctl-windows-vm";
+pub const WINDOWS_UNIT: &str = legionctl_machine::winvm::UNIT;
 
 /// The VM disk of the repository that holds `dir` (`legionctl workspace pack --as vm` makes it).
 #[must_use]

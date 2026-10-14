@@ -2871,6 +2871,117 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         );
     }
 
+    /// The greeter in place of GDM (todo-83), through the operator and the daemon: refused, with nothing changed, while
+    /// cage is not installed; then greetd's configuration is legionctl's (the old file kept byte for byte), GDM is
+    /// disabled before greetd is enabled (the display-manager alias is one link); a second install cannot overwrite the
+    /// kept file; remove puts the old file and GDM back. A stand-in systemctl moves the alias as systemd does.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_greeter_replaces_gdm_keeps_the_old_greetd_config_and_remove_puts_both_back() {
+        let m = Machine::new("greeter");
+        let root = m.dir.join("root");
+        let units = "/usr/lib/systemd/system";
+        for file in [
+            "/usr/bin/greetd",
+            "/usr/lib/legionctl/legionctl-greeter",
+            "/usr/lib/systemd/system/gdm.service",
+            "/usr/lib/systemd/system/greetd.service",
+        ] {
+            m.set(file, "");
+        }
+        let original = "[terminal]\nvt = 1\n\n[default_session]\ncommand = \"agreety --cmd /bin/sh\"\nuser = \"greeter\"\n";
+        std::fs::create_dir_all(root.join("etc/greetd")).unwrap();
+        std::fs::write(root.join("etc/greetd/config.toml"), original).unwrap();
+        let alias = root.join("etc/systemd/system/display-manager.service");
+        std::fs::create_dir_all(alias.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(format!("{units}/gdm.service"), &alias).unwrap();
+        let log = m.dir.join("systemctl.log");
+        Machine::script(
+            &m.dir.join("bin"),
+            "systemctl",
+            &format!(
+                "echo \"$*\" >> {log}\n\
+                 case \"$1\" in\n\
+                 enable) /usr/bin/ln -sfn {units}/$2 {alias} ;;\n\
+                 disable) [ \"$(/usr/bin/readlink {alias})\" = {units}/$2 ] && /usr/bin/rm {alias} ;;\n\
+                 esac\nexit 0",
+                log = log.display(),
+                alias = alias.display()
+            ),
+        );
+        let (_stand_ins, asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "greeter");
+        let config = || std::fs::read_to_string(root.join("etc/greetd/config.toml")).unwrap();
+        let unit_changes = || -> Vec<String> {
+            std::fs::read_to_string(&log)
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| l.starts_with("enable ") || l.starts_with("disable "))
+                .map(String::from)
+                .collect()
+        };
+
+        let refused = op.cli(&["greeter", "install"]);
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("cage (pacman -S cage)"),
+            "{}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+        assert_eq!(config(), original);
+        assert!(unit_changes().is_empty(), "{:?}", unit_changes());
+
+        m.set("/usr/bin/cage", "");
+        op.ok(&["greeter", "install"]);
+        let ours = config();
+        assert!(
+            ours.starts_with("# legionctl greeter")
+                && ours.contains("command = \"cage -s -- /usr/lib/legionctl/legionctl-greeter\"")
+                && ours.contains("user = \"greeter\""),
+            "{ours}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("etc/greetd/config.toml.before")).unwrap(),
+            original
+        );
+        assert_eq!(
+            unit_changes(),
+            ["disable gdm.service", "enable greetd.service"]
+        );
+        assert!(
+            asked
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, action, _, _)| action == "org.legionctl.greeter")
+        );
+        let status = op.ok(&["greeter", "status"]);
+        assert!(
+            status.contains("login screen: legionctl's greeter")
+                && status.contains("display manager at the next start: greetd.service"),
+            "{status}"
+        );
+
+        let again = op.cli(&["greeter", "install"]);
+        assert!(String::from_utf8_lossy(&again.stderr).contains("installed already"));
+        assert_eq!(
+            std::fs::read_to_string(root.join("etc/greetd/config.toml.before")).unwrap(),
+            original,
+            "the kept file is not overwritten with ours"
+        );
+
+        op.ok(&["greeter", "remove"]);
+        assert_eq!(config(), original);
+        assert!(!root.join("etc/greetd/config.toml.before").exists());
+        assert_eq!(
+            unit_changes()[2..],
+            ["disable greetd.service", "enable gdm.service"]
+        );
+        let status = op.ok(&["greeter", "status"]);
+        assert!(
+            status.contains("display manager at the next start: gdm.service"),
+            "{status}"
+        );
+    }
+
     /// The battery (todo-82): `battery status` shows the charge mode in use (the bracketed charge type), the health
     /// (full vs design capacity), the cycles and USB charging while off; `battery mode` writes the charge type the
     /// battery offers and refuses one it does not; `usb-charging` writes ideapad's setting; the operator records a

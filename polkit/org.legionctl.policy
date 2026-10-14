@@ -64,6 +64,27 @@
     </defaults>
   </action>
 
+  <action id="org.legionctl.greeter">
+    <description>Put legionctl's greeter (greetd) in place of GDM, or GDM back</description>
+    <message>Authentication is required to change the login screen</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+
+  <!-- the greeter's choices before login; nobody by default: 50-legionctl-greeter.rules allows greetd's user greeter -->
+  <action id="org.legionctl.greeter.act">
+    <description>Change the Windows VM, the Windows disk or the NVIDIA GPU of a user before login</description>
+    <message>Only the login screen can change the Windows VM, the Windows disk or the GPU before login</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>no</allow_active>
+    </defaults>
+  </action>
+
   <action id="org.legionctl.vfio">
     <description>Give a GPU or a disk controller to a virtual machine, or give it back</description>
     <message>Authentication is required to give a device to a virtual machine</message>

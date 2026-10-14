@@ -110,6 +110,7 @@ install: ## install into DESTDIR; the PKGBUILD calls this (on this machine: `mak
 	@test -x target/release/legionctl || { echo "target/release/legionctl missing: run 'make build' first"; exit 1; }
 	install -Dm755 target/release/legionctl "$(DESTDIR)$(BINDIR)/legionctl"
 	install -Dm755 target/release/legionctl-app "$(DESTDIR)$(BINDIR)/legionctl-app"
+	install -Dm755 target/release/legionctl-greeter "$(DESTDIR)$(LIBDIR)/legionctl-greeter"
 	install -Dm644 desktop/legionctl.desktop "$(DESTDIR)$(PREFIX)/share/applications/legionctl.desktop"
 	install -Dm755 target/release/legionctl-system "$(DESTDIR)$(LIBDIR)/legionctl-system"
 	install -Dm755 target/release/legionctl-operator "$(DESTDIR)$(LIBDIR)/legionctl-operator"
@@ -123,6 +124,7 @@ install: ## install into DESTDIR; the PKGBUILD calls this (on this machine: `mak
 	install -Dm644 systemd/power-profiles-daemon.service.d/10-legionctl.conf "$(DESTDIR)$(UNITDIR)/power-profiles-daemon.service.d/10-legionctl.conf"
 	install -Dm644 dbus/org.legionctl.System1.conf "$(DESTDIR)$(PREFIX)/share/dbus-1/system.d/org.legionctl.System1.conf"
 	install -Dm644 polkit/org.legionctl.policy "$(DESTDIR)$(PREFIX)/share/polkit-1/actions/org.legionctl.policy"
+	install -Dm644 polkit/50-legionctl-greeter.rules "$(DESTDIR)$(PREFIX)/share/polkit-1/rules.d/50-legionctl-greeter.rules"
 	install -d "$(DESTDIR)$(PREFIX)/share/gnome-shell/extensions/$(EXTENSION)"
 	install -m644 gnome-extension/$(EXTENSION)/* "$(DESTDIR)$(PREFIX)/share/gnome-shell/extensions/$(EXTENSION)/"
 	install -Dm644 tuning/scx_loader.toml "$(DESTDIR)$(SYSCONFDIR)/scx_loader.toml"

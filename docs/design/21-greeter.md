@@ -1,0 +1,113 @@
+# 21 — Greeter: greetd and legionctl's login screen in place of GDM
+
+Decided by the user 2026-10-14 (todo-83). Built 2026-10-14, part 1. The MUX mode with a restart is not in this part:
+it waits for todo-17, and the screen shows nothing for it.
+
+## What it does
+
+- greetd starts `legionctl-greeter` in `cage` (a kiosk Wayland compositor) as greetd's user `greeter`.
+- You log in with the keyboard or the mouse: type the user name, push Enter, type the answer, push Enter.
+- PAM behind greetd does the password and the fingerprint. The screen shows each PAM message as the prompt. A secret
+  prompt hides the text. An info message (for example "Place your finger on the fingerprint reader") shows while PAM
+  waits.
+- You choose the session from `/usr/share/wayland-sessions`. GNOME is first and is the default. The screen does not
+  show sessions with `Hidden=true` or `NoDisplay=true`.
+- Before login, for the user name that you typed, the screen changes these through the daemon:
+
+| Row | Buttons | Daemon method (polkit action) |
+| --- | --- | --- |
+| Windows VM | Start, Stop | `GreeterAct(user, vm-start / vm-stop)` (`org.legionctl.greeter.act`) |
+| VM autostart | Off, At login, At boot | `GreeterAct(user, autostart-off / -login / -boot)` |
+| Windows disk | Attach to Linux, Detach | `GreeterAct(user, disk-attach / disk-detach)` |
+| NVIDIA GPU | Linux, Free for the VM | `GreeterAct(user, gpu-linux / gpu-none)` |
+| Desktop GPU | Intel, NVIDIA, Auto | `SetPrimaryGpu(choice, false)` (`org.legionctl.gpu.primary`) |
+
+How each action works:
+
+- **VM start and stop**: the daemon starts `user@<uid>.service` (the user's service manager), then
+  `systemctl --user -M <user>@ start --no-block legionctl-windows-vm.service`. Stop stops that unit: the unit sends
+  the power button and waits for Windows (note 05).
+- **VM start needs autostart**: the VM's runner asks polkit as the user. Before login, no polkit agent can ask a person.
+  Thus the daemon refuses a start when the user's autostart rule (note 05) does not exist.
+- **Autostart**: the same as `legionctl windows vm autostart`, for the user that you typed. The daemon writes or
+  removes the user's polkit rule and enables or disables the unit in the user's service manager. `At boot` also does
+  `loginctl enable-linger`.
+- **Windows disk**: `Detach` stops the automount and mount units of the fstab entries on the Windows disk, as a VM
+  start does. `Attach to Linux` starts the automounts again. The daemon refuses both while the Windows VM runs.
+- **NVIDIA GPU**: `Free for the VM` is `gpu give nvidia none` for the typed user (`/dev/vfio/<group>` goes to that
+  user). `Linux` gives the GPU back. To give the GPU to a running Windows, use `legionctl gpu give nvidia windows`
+  after login (QMP is in the user's session).
+- **Desktop GPU**: the same as `legionctl gpu primary`. It has an effect at the next login.
+
+The daemon acts only for a person's account (uid 1000 to 65533 in `/etc/passwd`), never for a system account.
+
+## The protocol (greetd-ipc(7))
+
+Each message is one frame on `$GREETD_SOCK`: a u32 length in native byte order, then JSON.
+
+1. `{"type":"create_session","username":U}`.
+2. greetd answers `auth_message` (`visible`, `secret`, `info`, `error`), `success` or `error`.
+3. The screen answers each message with `{"type":"post_auth_message_response","response":R}`. R is the text for
+   `visible` and `secret`. R is `null` for `info` and `error`.
+4. On `success`: `{"type":"start_session","cmd":Exec,"env":["XDG_SESSION_TYPE=wayland","XDG_SESSION_DESKTOP=<id>",
+   "XDG_CURRENT_DESKTOP=<DesktopNames>"]}`. Then the greeter stops, and greetd starts the session.
+5. On `error` (for example a wrong password): greetd keeps the failed session. The screen sends `cancel_session`, shows
+   the reason, and starts a new login of the same user. `Cancel` also sends `cancel_session`.
+
+## The polkit rule
+
+The package installs `/usr/share/polkit-1/rules.d/50-legionctl-greeter.rules`. It lets the user `greeter` do two
+actions without a prompt: `org.legionctl.greeter.act` and `org.legionctl.gpu.primary`. It does not let other users do
+them, and it does not let `greeter` do other actions. `org.legionctl.greeter.act` is `no` for all other subjects, so
+only the login screen can do it.
+
+Risk: a person at the keyboard can do these actions before login without a password. The user accepted this when
+deciding the feature. The daemon limits it to the actions above and to people's accounts.
+
+## Install and remove
+
+`legionctl greeter status|install|remove`. Install and remove go through the daemon's `Greeter(action)` (polkit
+`org.legionctl.greeter`, always a password, no kept authorization). The operator makes the plan first, so a refusal
+comes before the polkit dialog. `--dry-run` shows the plan.
+
+Install refuses when:
+
+- greetd, cage or `legionctl-greeter` is not installed (the message names each, with its package);
+- the display manager is not `gdm.service` (legionctl replaces only GDM, because GDM is the way back);
+- legionctl's greeter is installed already (a second install must not overwrite the kept file).
+
+Install does these steps in this order:
+
+1. It keeps `/etc/greetd/config.toml` as `/etc/greetd/config.toml.before`.
+2. It writes `/etc/greetd/config.toml` (first line `# legionctl greeter`): VT 1, `cage -s -- legionctl-greeter` as
+   `greeter`.
+3. `systemctl disable gdm.service`. GDM stays installed.
+4. `systemctl enable greetd.service`. The `display-manager.service` alias is one link, so GDM must go first.
+
+The change has an effect at the next start.
+
+## The way back to GDM
+
+- `legionctl greeter remove`: it puts the kept file back (or removes ours when there was no file), then
+  `systemctl disable greetd.service` and `systemctl enable gdm.service`. It refuses when GDM is not installed.
+- When the package is removed, its `pre_remove` runs `legionctl-system --greeter-remove`: the same steps, so the
+  computer keeps a login screen.
+- When the greeter does not start: switch to a text console (Ctrl+Alt+F2), log in, and run
+  `sudo systemctl disable greetd.service && sudo systemctl enable gdm.service`, then restart.
+
+## Tests (e2e)
+
+- The greetd client against a stand-in greetd with the real framing and greetd's session rules: a password login
+  (the start request with the command and environment), a wrong password and a new try, the fingerprint message then
+  the password, a cancelled login.
+- The screen through gpui-kit's test support: the session list (GNOME first, hidden sessions not shown), a click on
+  another session, the user name, Enter, the password, Enter: greetd gets `start_session` with that session's command.
+- Install and remove through the operator and the real daemon on the recorded machine: refused without cage (nothing
+  changed); the old file kept byte for byte; GDM disabled before greetd is enabled; a second install refused; remove
+  puts the old file and GDM back.
+
+## Live (the user's first run)
+
+1. `sudo pacman -S greetd cage`, then install the package (`make package install-package`).
+2. `legionctl greeter install --dry-run`, then `legionctl greeter install`.
+3. Restart. To go back: `legionctl greeter remove`, then restart.

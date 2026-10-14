@@ -645,6 +645,18 @@ wire! {
         ukis: Vec<String>,
     }
 
+    /// The login screen.
+    struct GreeterState from machine::greeter::GreeterState {
+        /// greetd's configuration is legionctl's.
+        installed: bool,
+        /// The display manager that starts at boot.
+        display_manager: Option<String>,
+        /// The greetd configuration before legionctl's is kept.
+        kept: bool,
+        /// What the greeter needs and is not installed.
+        missing: Vec<String>,
+    }
+
     /// A device that can go to a VM (VFIO): a discrete GPU or an `NVMe` controller.
     struct VfioDevice from machine::vfio::Candidate {
         /// PCI address (`0000:01:00.0`).

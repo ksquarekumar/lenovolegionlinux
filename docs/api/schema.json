@@ -6444,6 +6444,124 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "greeter.status": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "installed": {
+          "type": "boolean",
+          "description": "greetd's configuration is legionctl's."
+        },
+        "display_manager": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The display manager that starts at boot."
+        },
+        "kept": {
+          "type": "boolean",
+          "description": "The greetd configuration before legionctl's is kept."
+        },
+        "missing": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "What the greeter needs and is not installed."
+        }
+      },
+      "required": [
+        "installed",
+        "kept",
+        "missing"
+      ],
+      "description": "The login screen.",
+      "title": "GreeterState",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "greeter.install": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "dry_run": {
+          "type": "boolean",
+          "description": "Show what would happen; change nothing.",
+          "default": false
+        }
+      },
+      "title": "DryRunIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "greeter.remove": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "dry_run": {
+          "type": "boolean",
+          "description": "Show what would happen; change nothing.",
+          "default": false
+        }
+      },
+      "title": "DryRunIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "windows.status": {
     "class": "read",
     "internal": false,

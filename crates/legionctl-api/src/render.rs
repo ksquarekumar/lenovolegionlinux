@@ -5,10 +5,10 @@ use std::collections::BTreeMap;
 use crate::{
     BatteryState, BenchCompare, BenchRun, BootState, CapabilityList, Changes, ConfigFile,
     ConfigView, DossierFindings, DossierInfo, Empty, EventRow, Explanation, Findings, GpuState,
-    Guard, HookReply, HookTable, Knob, KnobDetail, Launch, LayerList, Lines, LoadState, Lock,
-    Manifest, PackageState, Recording, Reminder, RunEnv, Sample, SessionState, SetupReport,
-    SkillInfo, Snapshot, ToolCallRow, TuneReport, Validation, VfioDevices, WindowsState,
-    WindowsVmBegun, Workspace, WorkspaceStatus,
+    GreeterState, Guard, HookReply, HookTable, Knob, KnobDetail, Launch, LayerList, Lines,
+    LoadState, Lock, Manifest, PackageState, Recording, Reminder, RunEnv, Sample, SessionState,
+    SetupReport, SkillInfo, Snapshot, ToolCallRow, TuneReport, Validation, VfioDevices,
+    WindowsState, WindowsVmBegun, Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -321,6 +321,30 @@ impl Render for BootState {
                 }
             )
         }));
+        out.join("\n")
+    }
+}
+
+impl Render for GreeterState {
+    fn text(&self) -> String {
+        let mut out = vec![
+            format!(
+                "login screen: {}",
+                if self.installed {
+                    "legionctl's greeter (greetd)"
+                } else {
+                    "not legionctl's greeter (legionctl greeter install)"
+                }
+            ),
+            format!(
+                "display manager at the next start: {}",
+                self.display_manager.as_deref().unwrap_or("none")
+            ),
+        ];
+        if self.kept {
+            out.push("the greetd configuration before legionctl's is kept".into());
+        }
+        out.extend(self.missing.iter().map(|m| format!("not installed: {m}")));
         out.join("\n")
     }
 }

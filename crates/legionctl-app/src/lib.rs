@@ -2,6 +2,8 @@
 //! Every value comes from an operation; every change is an operation that shows its plan first (a dry run), and the
 //! daemon asks polkit when it is applied.
 
+pub mod greeter;
+
 use std::sync::Arc;
 use std::time::Duration;
 

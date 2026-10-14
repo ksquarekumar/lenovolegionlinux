@@ -4516,7 +4516,10 @@ dependencies = [
  "anyhow",
  "gpui-kit",
  "legionctl-api",
+ "serde",
+ "serde_json",
  "tokio",
+ "zbus",
 ]
 
 [[package]]

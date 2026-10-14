@@ -10,6 +10,7 @@ pub mod fan;
 pub mod firmware;
 pub mod gpu;
 pub mod graphics;
+pub mod greeter;
 pub mod hive;
 pub mod kernel;
 pub mod keys;
