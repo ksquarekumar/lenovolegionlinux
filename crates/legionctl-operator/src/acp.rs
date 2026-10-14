@@ -10,9 +10,11 @@ use agent_client_protocol::schema::v1::McpServer;
 use anyhow::{Context, Result};
 use legionctl_api::RunOutput;
 use legionctl_core::db::Db;
+use legionctl_core::dossier::Dossiers;
 use legionctl_core::session::{self, Inside, Launch};
 
-/// Run `prompt` in the prepared session and return the agent's answer.
+/// Run `prompt` in the prepared session and return the agent's answer; then the session ends where it runs and
+/// releases its dossier (in `dossiers`).
 ///
 /// # Errors
 /// The adapter does not start or speak ACP, or the prompt fails.
@@ -20,6 +22,7 @@ pub async fn run(
     launch: Launch,
     prompt: &str,
     stop: tokio::sync::oneshot::Receiver<()>,
+    dossiers: &Dossiers,
 ) -> Result<RunOutput> {
     let (id, inside) = (launch.id.clone(), launch.inside);
     let out = drive(launch, prompt, stop).await;
@@ -28,6 +31,10 @@ pub async fn run(
         && let Err(e) = session::control(&id, inside, session::Control::Stop)
     {
         eprintln!("operator: session {id}: cannot stop it after its run: {e:#}");
+    }
+    // the dossier is free at once, also when the run failed in the hold's first minute
+    if let Err(e) = dossiers.release(&id) {
+        eprintln!("operator: session {id}: cannot release its dossier: {e:#}");
     }
     out
 }

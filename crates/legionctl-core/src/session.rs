@@ -105,7 +105,7 @@ pub enum GuestMount {
     },
     /// A private empty folder owned by the agent's user.
     Empty(PathBuf),
-    /// A small file (the git identity), written in.
+    /// A file written in: the git identity, a writable file's copy.
     File(PathBuf, String),
 }
 
@@ -718,6 +718,11 @@ fn vm_sandbox(
                 guest_mounts.push(GuestMount::Empty(p.clone()));
                 let files = p.join("sessions").join(id);
                 guest_mounts.push(share(files.clone(), files, false));
+            }
+            // virtiofs shares only folders: a writable file (~/.claude.json) is the VM's own copy, so the
+            // agent's changes to it stay in the VM
+            Mount::Writable(p) if p.is_file() => {
+                guest_mounts.push(GuestMount::File(p.clone(), std::fs::read_to_string(&p)?));
             }
             Mount::Writable(p) => guest_mounts.push(share(p.clone(), p, false)),
             Mount::ReadOnly(from, to) if from.is_dir() => guest_mounts.push(share(from, to, true)),

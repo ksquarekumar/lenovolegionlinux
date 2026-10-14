@@ -999,7 +999,7 @@ impl Operator {
              Go on with the task:\n\n{prompt}"
         );
         self.runtime
-            .block_on(crate::acp::run(launch, &note, stoppable(job)))
+            .block_on(crate::acp::run(launch, &note, stoppable(job), &store))
     }
 }
 
@@ -2251,9 +2251,12 @@ impl Engine for Operator {
             "session.run",
             &serde_json::json!({"session": launch.id, "prompt": input.prompt}),
         )?;
-        let out = self
-            .runtime
-            .block_on(crate::acp::run(launch, &input.prompt, stoppable(job)));
+        let out = self.runtime.block_on(crate::acp::run(
+            launch,
+            &input.prompt,
+            stoppable(job),
+            &store,
+        ));
         STOPS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

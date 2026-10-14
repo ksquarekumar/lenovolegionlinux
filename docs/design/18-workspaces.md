@@ -310,10 +310,13 @@ instead of the systemd scope.
   unpause and stop act on the scope, as for a host session): a virtiofs daemon per shared folder, then QEMU on a
   throwaway layer over the disk (`snapshot=on`), the agent on the virtio console (the runner's stdio: JSON-RPC for a
   headless run, a terminal for an interactive one). In the guest, `legionctl guest` mounts the shares at their own
-  paths, makes the runtime folder its own with only the session's files shared, and listens on the operator socket's
+  paths (a writable file such as `~/.claude.json` cannot be a virtiofs share: the VM gets its own copy, and the agent's
+  changes to it stay in the VM), makes the runtime folder its own with only the session's files shared, and listens on the operator socket's
   path: each connection goes to 10.0.2.100:80, which QEMU's user network forwards to `legionctl relay` on the host,
   into the operator socket. So every client keeps one transport (the unix socket). The agent runs as the user without
-  root's groups; the VM powers off when it ends, and after an error (the console log says why).
+  root's groups; the VM powers off when it ends, and after an error (the console log says why). After a headless run,
+  in a container or a VM, the operator stops the session where it runs (the real adapters do not end when their input
+  closes, and a killed client does not stop its container) and releases its dossier.
 
 `session run|start --in container` starts `docker run` with: the session's user and group; a private tmpfs home with
 the agent's account folders (A1: login files written in at start, copied back at end) and `session.writable` paths;

@@ -1869,6 +1869,17 @@ fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
     );
     let events = op.run(&repo, &env, &["events", "--json"], "");
     assert!(String::from_utf8_lossy(&events.stdout).contains("session.permission"));
+    let again = op.run(
+        &repo,
+        &env,
+        &["session", "run", "fake", "go on", "--dossier", "port"],
+        "",
+    );
+    assert!(
+        again.status.success(),
+        "a run that ended releases its dossier: {}",
+        String::from_utf8_lossy(&again.stderr)
+    );
 }
 
 /// A repository whose own image (its Dockerfile) has Python, with the stand-in ACP agent in it (a container sees only
@@ -1878,7 +1889,8 @@ fn container_repository(home: &Path) -> PathBuf {
     let probe = "echo x > note.txt && git add note.txt && git commit -qm probe && echo COMMIT_OK; \
                  git push origin main 2>&1 | grep -q gates.git.deny && echo PUSH_REFUSED; \
                  touch \"$HOME/outside\" && touch .agentworkspace/MEMORY/probe.md && echo WROTE; \
-                 [ -f /.dockerenv ] && echo IN_CONTAINER; echo \"SESSION=$LEGIONCTL_SESSION\"";
+                 [ -f /.dockerenv ] && echo IN_CONTAINER; echo \"SESSION=$LEGIONCTL_SESSION\"; \
+                 grep -q logged-in \"$HOME/.agent-state.json\" && echo STATE_READ";
     let client =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/static/release/legionctl");
     assert!(
@@ -1898,13 +1910,16 @@ fn container_repository(home: &Path) -> PathBuf {
     );
     git(home, &repo, &["add", "."]);
     git(home, &repo, &["commit", "--quiet", "-m", "agent and image"]);
+    // a writable file of the home, like ~/.claude.json
+    let state = home.join(".agent-state.json");
+    write(&state, "{\"logged-in\": true}");
     write(
         &home.join(".config/legionctl/run.jsonc"),
         &json!({"session": {
             "acp": {"fake": ["python3", "fake-acp-agent.py"]},
             "agents": {"probe": ["sh", "-c", probe]},
             "scope": false,
-            "writable": [],
+            "writable": [state],
             "container": {"base": "unused", "npm": [], "client": client},
         }})
         .to_string(),
@@ -1990,6 +2005,7 @@ fn sessions_in_a_container_work_on_the_mounted_workspace_behind_the_git_gate() {
         "WROTE",
         "IN_CONTAINER",
         "SESSION=",
+        "STATE_READ",
     ] {
         assert!(
             text.contains(expected),
@@ -2070,17 +2086,8 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
         String::from_utf8_lossy(&packed.stdout),
         String::from_utf8_lossy(&packed.stderr)
     );
-    let out = run(&[
-        "session",
-        "run",
-        "fake",
-        "fix",
-        "--dossier",
-        "port",
-        "--in",
-        "vm",
-        "--json",
-    ]);
+    let words = |line: &'static str| line.split(' ').collect::<Vec<_>>();
+    let out = run(&words("session run fake fix --dossier port --in vm --json"));
     assert!(
         out.status.success(),
         "{}",
@@ -2100,17 +2107,15 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
         "the commit is in the workspace on the host"
     );
 
-    let started = run(&[
-        "session",
-        "start",
-        "probe",
-        "--dossier",
-        "talk",
-        "--in",
-        "vm",
-    ]);
+    let started = run(&words("session start probe --dossier talk --in vm"));
     let text = String::from_utf8_lossy(&started.stdout);
-    for expected in ["COMMIT_OK", "PUSH_REFUSED", "WROTE", "SESSION="] {
+    for expected in [
+        "COMMIT_OK",
+        "PUSH_REFUSED",
+        "WROTE",
+        "SESSION=",
+        "STATE_READ",
+    ] {
         assert!(
             text.contains(expected),
             "{expected} missing:\n{text}\n{}",
