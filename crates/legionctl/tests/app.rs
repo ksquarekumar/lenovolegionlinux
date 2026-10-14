@@ -83,6 +83,8 @@ fn unplugged_machine(tag: &'static str) -> Operator {
             ("PATH", bin.into()),
             ("HOME", dir.join("home").into()),
             ("LEGIONCTL_SYSROOT", root.into()),
+            // never this machine's Docker (its WinBoat): the pages list containers and run their actions
+            ("DOCKER_HOST", "unix:///nonexistent/docker.sock".into()),
         ],
     )
 }
@@ -277,4 +279,67 @@ fn the_resources_page_lists_the_resources_and_an_action_click_calls_its_operatio
         "{events}"
     );
     drop(runtime);
+}
+
+/// The TUI's resources view (note 22) in a terminal (a pty) against the real operator on the recorded machine, without
+/// a daemon or Docker: `r` shows the list (the desktop GPU, then the layers), Down twice selects the layer 20-ac, `1`
+/// shows its first action's route (rules.disable has no dry run of its own, so nothing runs), and Enter runs the
+/// routed operation as a call of its own: the operator refuses it without the system bus, and the event log names it
+/// with the TUI as its actor.
+#[test]
+fn the_tui_resources_view_lists_the_resources_and_a_key_runs_the_route() {
+    let op = unplugged_machine("tui");
+    // keys in order, each after the text it waits for; prints the screen text without escape codes
+    let driver = r#"
+import os, pty, re, select, struct, sys, fcntl, termios, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(sys.argv[1], [sys.argv[1], "tui"])
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 220, 0, 0))
+seen = ""
+def until(text, limit=20):
+    global seen
+    end = time.time() + limit
+    while text not in seen:
+        if time.time() > end:
+            sys.stdout.write(seen); sys.exit("timed out waiting for " + text)
+        r, _, _ = select.select([fd], [], [], 0.2)
+        if r:
+            try:
+                seen += re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", " ", os.read(fd, 65536).decode("utf-8", "replace"))
+            except OSError:
+                break
+for wait, key in [("r resources", b"r"), ("used by", b"\x1b[B"), ("", b"\x1b[B"), ("", b"1"),
+                  ("Enter applies it", b"\r"), ("system bus", b"q")]:
+    until(wait)
+    os.write(fd, key)
+os.waitpid(pid, 0)
+sys.stdout.write(seen)
+"#;
+    let out = std::process::Command::new("python3")
+        .args(["-c", driver, env!("CARGO_BIN_EXE_legionctl")])
+        .env_clear()
+        .env("XDG_RUNTIME_DIR", &op.runtime)
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .env("TERM", "xterm")
+        .output()
+        .unwrap();
+    let screen = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{screen}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(screen.contains("layer:shipped/20-ac"), "the list: {screen}");
+    assert!(
+        screen.contains(r#"disable layer:shipped/20-ac: dry run: would run rules.disable {"layer":"shipped/20-ac"}"#),
+        "the route of the selected row: {screen}"
+    );
+    let events = op.ok(&["events"]);
+    assert!(
+        events
+            .lines()
+            .any(|l| l.contains(" tui ") && l.contains("rules.disable")),
+        "rules.disable by the TUI: {events}"
+    );
 }

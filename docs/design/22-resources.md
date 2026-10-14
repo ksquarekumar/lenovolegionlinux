@@ -138,6 +138,14 @@ efibootmgr, ukify, sbverify):
   next start without it puts the selection before back.
 - `the_resources_page_lists_the_resources_and_an_action_click_calls_its_operation` (`tests/app.rs`, gpui-kit test
   support).
+- `the_windows_vm_pauses_and_resumes_through_qmp_and_the_list_follows` (`tests/machine.rs`, the stand-in QMP of the
+  GPU tests): pause without a VM is refused and nothing reaches QMP; pause sends `stop`, the list says paused,
+  resume sends `cont`.
+- `the_tui_resources_view_lists_the_resources_and_a_key_runs_the_route` (`tests/app.rs`): `legionctl tui` in a pty;
+  `r`, Down, `1` show the route of a layer's disable, Enter runs `rules.disable` with the TUI as its actor.
+
+The operator of the app and TUI tests gets `DOCKER_HOST` to a socket that does not exist: those tests click
+actions, and must not reach this machine's containers.
 
 ## Built (2026-10-15)
 

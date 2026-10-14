@@ -3030,8 +3030,9 @@ mod operator_and_daemon {
     }
 
     /// A stand-in QEMU QMP server at the Windows VM's socket: it answers the handshake, lists the devices that were
-    /// added, logs every `device_add`/`device_del` to `qmp.log`, and sends `DEVICE_DELETED` after a `device_del`.
-    fn qmp_stand_in(m: &Machine) -> Kill {
+    /// added, logs every `device_add`/`device_del`/`stop`/`cont` to `qmp.log`, sends `DEVICE_DELETED` after a
+    /// `device_del`, and answers `query-status` with running or paused (after `stop`, until `cont`).
+    pub(super) fn qmp_stand_in(m: &Machine) -> Kill {
         let dir = m.dir.join("home/.local/share/legionctl/windows");
         std::fs::create_dir_all(&dir).unwrap();
         let socket = dir.join("qmp.sock");
@@ -3042,6 +3043,7 @@ server = socket.socket(socket.AF_UNIX)
 server.bind(path)
 server.listen()
 devices = []
+status = "running"
 while True:
     conn, _ = server.accept()
     f = conn.makefile("rw")
@@ -3049,11 +3051,13 @@ while True:
     for line in f:
         msg = json.loads(line)
         cmd, args = msg["execute"], msg.get("arguments", {})
-        if cmd in ("device_add", "device_del"):
+        if cmd in ("device_add", "device_del", "stop", "cont"):
             open(log, "a").write(cmd + " " + json.dumps(args, sort_keys=True) + "\n")
+        if cmd in ("stop", "cont"):
+            status = "paused" if cmd == "stop" else "running"
         if cmd == "device_add":
             devices.append(args["id"])
-        reply = {"return": [{"name": d} for d in devices] if cmd == "qom-list" else {}}
+        reply = {"return": [{"name": d} for d in devices] if cmd == "qom-list" else {"status": status} if cmd == "query-status" else {}}
         f.write(json.dumps(reply) + "\n"); f.flush()
         if cmd == "device_del":
             devices.clear()
@@ -5192,7 +5196,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
 /// Resources after the start (todo-85, note 22): one list, and one action that runs an existing operation.
 mod resources {
     use super::daemon_process::{daemon, start, wait_for};
-    use super::operator_and_daemon::{boot_machine, on_bus, windows_machine};
+    use super::operator_and_daemon::{boot_machine, on_bus, qmp_stand_in, windows_machine};
     use super::*;
     use serde_json::Value;
 
@@ -5776,6 +5780,68 @@ mod resources {
         });
         assert!(!m.ledger().sets().contains_key("before-boot"));
         assert_eq!(held(&op, "sysctl.vm.swappiness"), Value::Null);
+    }
+
+    /// The Windows VM's pause and resume (note 22): without a running VM, a pause is refused and nothing reaches QMP,
+    /// and the list offers start only; with it, pause sends QMP `stop`, the list says paused and offers resume, and
+    /// resume sends `cont`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_windows_vm_pauses_and_resumes_through_qmp_and_the_list_follows() {
+        let m = Machine::new("vmpause");
+        let _kernel = windows_machine(&m);
+        let unit = m.dir.join("vm-unit");
+        Machine::script(
+            &m.dir.join("bin"),
+            "systemctl",
+            &format!(
+                "case \"$*\" in *is-active*legionctl-windows-vm*) [ -e {} ];; *is-active*) exit 3;; esac",
+                unit.display()
+            ),
+        );
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "vmpause");
+        let qmp = || std::fs::read_to_string(m.dir.join("qmp.log")).unwrap_or_default();
+
+        let refused = op.cli(&["windows", "vm", "pause"]);
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("no Windows VM runs"),
+            "{refused:?}"
+        );
+        let stopped = resource(&op, "vm:windows");
+        assert_eq!(stopped["state"], "stopped");
+        assert_eq!(
+            actions(&stopped),
+            triples(&[("start", "windows.vm.start", "machine")])
+        );
+        let not_now = op.cli(&["resources", "act", "vm:windows", "pause"]);
+        assert!(!not_now.status.success());
+        assert_eq!(qmp(), "", "nothing reached QMP");
+
+        std::fs::write(&unit, "").unwrap();
+        let _qmp = qmp_stand_in(&m);
+        let running = resource(&op, "vm:windows");
+        assert_eq!(running["state"], "running");
+        assert_eq!(
+            actions(&running),
+            triples(&[
+                ("pause", "windows.vm.pause", "workspace"),
+                ("stop", "windows.vm.stop", "machine")
+            ])
+        );
+        op.ok(&["resources", "act", "vm:windows", "pause"]);
+        assert_eq!(qmp(), "stop {}\n");
+        let paused = resource(&op, "vm:windows");
+        assert_eq!(paused["state"], "paused");
+        assert_eq!(
+            actions(&paused),
+            triples(&[
+                ("resume", "windows.vm.resume", "workspace"),
+                ("stop", "windows.vm.stop", "machine")
+            ])
+        );
+        op.ok(&["resources", "act", "vm:windows", "resume"]);
+        assert_eq!(qmp(), "stop {}\ncont {}\n");
+        assert_eq!(resource(&op, "vm:windows")["state"], "running");
     }
 }
 
