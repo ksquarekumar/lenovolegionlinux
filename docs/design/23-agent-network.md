@@ -1,6 +1,7 @@
 # 23 — Agent network, two code graphs and the thread UI
 
 Status: proposed (2026-10-15). Plan rows todo-90 (two code graphs), todo-91 (agent network), todo-92 (thread UI).
+Part B+ (todo-97 presence, todo-98 agent configs and pools) is an addition, proposed 2026-10-15, with its own questions.
 The user reviews this design before any part is built. The user's request (verbatim) and the decisions are in the
 dossier: `MEMORY/11-agent-network-and-code-graphs.md`.
 
@@ -13,6 +14,7 @@ dossier: `MEMORY/11-agent-network-and-code-graphs.md`.
 | A. Planned-code graph (todo-90) | Features, objectives, stories, work items, planned units | JSONC files in `planning/` in the repository, versioned with the code |
 | A. Tests (todo-90) | Tests linked to stories, test runs, test review | Mutation kills per test are the main signal; the gate is `workspace checkpoint` |
 | B. Agent network (todo-91) | `#main0` and observers in one durable thread | Recommended: observers are operator ACP sessions with a durable outbox; messages reach the main agent through its hooks |
+| B+. Configs, pools, presence (todo-97, todo-98) | Three archetypes, one team `vanilla`, one config per agent, peers | Archetype files are the lowest config layer; members are operator sessions that sleep until a trigger; the main agent's critical path comes first |
 | C. Thread UI (todo-92) | Triple pane, chat bar, `/` commands, views | One layout in the TUI (ratatui) and the app (GPUI); views are declarative JSONC from a closed widget set |
 
 Each part has: what, why, data model, API, hooks, storage, failure and restart behaviour, tests and phases. The
@@ -68,6 +70,20 @@ Each phrase of the user's request maps to a section. "Open" means a question at 
 | fire subagents to watch main, fire tools, send messages and hints that main misses | B |
 | all use the dossier as memory; store the embedded graphs in the dossier? | A10 (no: decisions 1 and 2; the dossier keeps links) |
 | bound to one dossier does not mean it cannot read others; all agents read all dossiers | B4 (reads are open today) |
+| see who else is in the topic / ACP sessions that share writes to common dossiers | B+1 Presence (`thread peers`) |
+| send messages to them or observe their state | B+1 (`thread send --to`, `thread observe`, `SendMessage` recorded) |
+| harness plugin enables agent teams, launches non-main agents as subagents, keeps them alive, sends them events | B+3 run paths, B+4 (team mode, opt-in), B+4 keep-alive |
+| launched subagents visible in Claude Code / Codex like spawned subagents | B+3 visibility table |
+| config tracks account, model, tools, skills, MCP, commands allow/deny/prompt per agent | B+2 Agent config |
+| own-added role-specific instructions, tools, skills, composable in a pool | B+3 Composition |
+| a pool has its own flow conditions on top of what an agent can | B+4 (`flow`: may, gates, stop, restart) |
+| tuned and instructed to work on the dossier with dossier tooling, with examples | B+5 |
+| skills not redundant or verbose; short ordered sentences; refs at declared paths | B+5 (convention, `agents/refs/<kind>-<slug>.md`) |
+| main-agent, thread-observer, ui-composer are the 3 types; team `vanilla` | B+3, B+4 |
+| thread-observer assumes test-reviewer, process and verifier | B+3 (three jobs of one agent) |
+| process steps are automated: the observer does them and tells main; nudges for the rest | B+3 Process job |
+| main agent is the load bearing worker on critical path | B+0 rule 1, B+4 Cost |
+| others work less, sleep more | B+0 rule 2, B5 `on-trigger`, B+4 wake budgets |
 
 ## What exists today (research, 2026-10-15)
 
@@ -320,14 +336,14 @@ Signals for a low-value test (each computed per new or changed test of the chang
 | Internals only | The test's callees (ctx `graph_callees`, depth 3) reach no boundary: the CLI binary run helper, HTTP `/v1/ops`, D-Bus, MCP, `legionctl hook`. | soft |
 | Duplicate | Its killed mutants are a subset of another test's killed mutants. | soft |
 | Unit test in `src/` | A new `#[test]` in `src/` (the rule says e2e only). | soft |
-| Constant only | Each assertion compares with a literal that the code under test returns as a literal (for example help text). | soft, reviewed by the test-reviewer observer |
+| Constant only | Each assertion compares with a literal that the code under test returns as a literal (for example help text). | soft, reviewed by the thread-observer (test review job) |
 
 Hook points:
 
 | Point | What it does |
 | --- | --- |
 | `pre-tool` on `Write`/`Edit` of a test file | Static signals only (no assertion, unit test in `src/`). A note to the agent. Does not deny. |
-| Observer `test-reviewer` at `stop` | Runs the cheap signals, reads the test, and sends `soft-block` or `hint` messages (B3). |
+| `thread-observer` at `stop` (test review job) | Runs the cheap signals, reads the test, and sends `soft-block` or `hint` messages (B3). |
 | `workspace checkpoint` | Gate: each new or changed test needs a mutant record with a kill at this change set. A hard signal refuses the checkpoint with the test names and the reasons. `--accept-test <test> --reason <text>` passes one; the reason is an annotation and an event. |
 | `pre-commit` (`.pre-commit-config.yaml`) | `legionctl tests review --staged` with the same rules, for commits made outside legionctl. |
 
@@ -400,14 +416,9 @@ A thread is one task with a pool of agents: `#main0` owns the task and its compl
 `#observer1`, ...) watch the main agent's events and act by role. The main agent forgets steps, writes weak tests
 and loses state at a compaction. An observer with its own context remembers and checks.
 
-Roles (one file each, `integrations/agent-plugin/agents/<role>.md`, used as the observer's instructions):
-
-| Role | It watches | It does |
-| --- | --- | --- |
-| `test-reviewer` | test files in the change set, `code tests` results | runs `code tests review`, mutation runs; soft-blocks or hard-blocks weak tests |
-| `process` | tool calls, dossier writes, checkpoints | reminds forgotten steps (lint, dossier record, checkpoint) with counts |
-| `verifier` | `declare` events ("done", "ready") | runs the suite and `code plan status`; reports what is not complete |
-| `ui-composer` | the thread's query and progress | makes and updates views (C4) |
+Agent types: three archetypes (`main-agent`, `thread-observer`, `ui-composer`) and one team archetype that
+composes them (the shipped team is `vanilla`). One `thread-observer` does the three observer jobs at once: test
+review, process and verification. Part B+ has the files, the config of each agent and the pools.
 
 How observers run (open question 1):
 
@@ -417,8 +428,8 @@ How observers run (open question 1):
 | B. Claude Code subagents | Plugin `agents/<role>.md` gives subagent types `legionctl:test-reviewer` and others; the main agent starts them. | No new runtime; the main agent can call one at once. | Starts only from the main agent's turn; ends with the session; no durable state; Claude only; the main agent must remember to start it (the failure that observers must fix). |
 | C. Both | The role files serve as subagent types and as the ACP observers' instructions. | One source of roles; a quick check in the main turn. | Two run paths to test. |
 
-Recommendation: A for observers. The same role files also exist as plugin agents (option C at no extra cost),
-because Claude Code reads `agents/` from the plugin; but only A is a member of a thread.
+Recommendation: A for observers. The same archetype files also exist as plugin agents (option C at no extra cost),
+because Claude Code reads `agents/` from the plugin; but only A is a member of a thread (B+3).
 
 Deterministic watch rules (B3) run in the operator without a model. A model observer is used for judgment only.
 
@@ -430,10 +441,10 @@ projections, written in the same transaction as their event.
 | Table | Columns |
 | --- | --- |
 | `threads` | id, title, account, root prompt, dossier, repo, parent thread, parent event (for a branch), created, state (`open`, `closed`) |
-| `members` | thread, name (`main0`, `observer0`), role, session id, pace, cursor (last event id seen), state |
+| `members` | thread, name (`main0`, `observer0`), agent config (B+2), session id, pace, cursor (last event id seen), state |
 | `messages` (the outbox) | id, thread, from, to, kind, body, refs (keys, events), state (`pending`, `delivered`, `acked`, `retracted`, `expired`), created, delivered, acked |
 | `watch_rules` | id, thread, member, trigger (event pattern), expect (event pattern), window (count or seconds), message kind |
-| `watch_counts` | rule, count, first seen, last seen (since the member started to watch) |
+| `watch_counts` | rule, count, done for main (B+3), first seen, last seen (since the member started to watch) |
 | `effects` | id, member, kind (`checkpoint`, `tests.run`, `message`), ref, compensation (`revert <sha>`, `retract <msg>`), state |
 
 ### B3. Messages, watch rules and counts
@@ -445,11 +456,12 @@ projections, written in the same transaction as their event.
 | `reminder` | From a watch rule: "observer0: no `make lint` after 4 edits of `crates/` — 3rd time since 10:42". |
 | `soft-block` | The `stop` hook stops the end of one reply with the reason (like a nudge `warn`). |
 | `hard-block` | The `pre-tool` hook denies the matched tool (for example `workspace_checkpoint`) until the message is acked or retracted; the `stop` hook stops each reply. |
+| `notice` | A step that the observer did for the main agent (B+3, process job), with the count of the miss. |
 | `result` | A test run, a review or a patch (a commit on the observer's topic branch). |
 
 A watch rule example: trigger `agent.tool` with `Edit` on `crates/**`, expect `agent.tool` with `Bash(make lint*)`
 within the same reply, kind `reminder`. At each miss the count goes up, and the message carries the count since the
-member joined. The `process` role has default rules: lint after a code edit, dossier write after a checkpoint, the
+member joined. The `thread-observer` has default rules (process job): lint after a code edit, dossier write after a checkpoint, the
 suite before `declare done`.
 
 ### B4. Delivery, dossiers and workspaces
@@ -459,7 +471,7 @@ hooks in both; to check live with `claude-code-acp`):
 
 | Hook | Reads | Gives |
 | --- | --- | --- |
-| `prompt` | pending `note`, `hint`, `reminder`, `result` | `additionalContext`; marks them `delivered` |
+| `prompt` | pending `note`, `hint`, `reminder`, `notice`, `result` | `additionalContext`; marks them `delivered` |
 | `pre-tool` (matcher extended to all tools) | open `hard-block` messages that name the tool | deny with the reason |
 | `stop` | `soft-block`, `hard-block` | block with the reason |
 | new `post-tool` | the tool name, the path, the outcome | records an `agent.tool` event (the observers' input) |
@@ -478,12 +490,13 @@ agent's workspace. A patch is a `result` message with its commit; the main agent
 
 | Pace | When the observer wakes |
 | --- | --- |
-| `on-stop` (default) | After each `stop` of the main agent and each `declare` |
+| `on-trigger` (default, B+0) | Only at its triggers (B+3), and only when the operator's watch rules find work for a model |
+| `on-stop` | After each `stop` of the main agent and each `declare` |
 | `on-declare` | Only at `declare` |
-| `on-event <seconds>` | After new matched events, at most once per period (debounce) |
-| `poll <seconds>` | At a fixed period, with the events since its cursor |
+| `on-event <seconds>` | After new matched events, at most once per period (debounce); opt-in per pool |
+| `poll <seconds>` | At a fixed period, with the events since its cursor; opt-in per pool |
 
-A wake is one ACP prompt into the observer's session: its role, the new events since its cursor, its messages and
+A wake is one ACP prompt into the observer's session: its instructions, the new events since its cursor, its messages and
 their acks. The cursor moves only after the prompt ends, so a cut-off wake sends the same events again (the
 observer's message ids are idempotent by `(member, cursor, index)`).
 
@@ -511,7 +524,7 @@ New group `thread` (question 5).
 | --- | --- | --- |
 | `thread.start` | `thread start <agent> "<prompt>" [--account] [--dossier]` | workspace |
 | `thread.list`, `thread.show` | `thread list`, `thread show <id>` (members, messages, counts) | read |
-| `thread.join`, `thread.leave` | `thread join <id> --role <role> [--pace] [--account]` | workspace |
+| `thread.join`, `thread.leave` | `thread join <id> --agent <config> [--pace] [--account]` | workspace |
 | `thread.send`, `thread.inbox`, `thread.ack` | messages between members | session |
 | `thread.declare` | `thread declare <word> [--note]` | session |
 | `thread.pace` | `thread pace <member> <pace>` | session |
@@ -522,7 +535,7 @@ Each is also an MCP tool (`thread_send`, ...). The events have kind `thread.*`, 
 
 ### B9. Tests (e2e, high diagnostic value)
 
-The observer is the stand-in ACP agent of `tests/fixtures/fake-acp-agent.py` with a role script; the hooks are the
+The observer is the stand-in ACP agent of `tests/fixtures/fake-acp-agent.py` with a script per archetype; the hooks are the
 real `legionctl hook` commands with Claude Code's hook JSON.
 
 | Test | It catches |
@@ -531,6 +544,346 @@ real `legionctl hook` commands with Claude Code's hook JSON.
 | `an_observer_survives_an_operator_restart_and_delivers_each_message_once` | Kill the operator during a wake: the wake goes on in its loaded session; the main agent sees each message once. |
 | `a_branched_thread_keeps_the_history_up_to_the_point` | The branch has the events up to `--at`, its own workspace branch, and the parent is unchanged. |
 | `an_observer_writes_only_its_own_dossier_and_workspace` | Its write into the main dossier is denied; its patch arrives as a commit on its topic branch. |
+
+## Part B+: agent configs, pools and presence (todo-97, todo-98)
+
+Status: proposed (2026-10-15), an addition to the approved Part B. The user's words are in the dossier
+(`MEMORY/11-agent-network-and-code-graphs.md`, "Addition" and "Archetypes"). The harness facts are in
+`MEMORY/12-research-agent-teams-2026-10-15.md`; "to check" marks a fact that comes from a search snippet or is not
+documented, and that a live check must confirm before its phase starts.
+
+Binding: three agent archetypes (`main-agent`, `thread-observer`, `ui-composer`); one team archetype that composes
+them, shipped as the team `vanilla`; one `thread-observer` does the three observer jobs (test review, process,
+verification); observers run as operator ACP sessions with a durable outbox; watch rules run in the operator.
+
+### B+0. Two rules of the pool (user, 2026-10-15)
+
+1. "Main agent is the load bearing worker on critical path." The `main-agent` does the critical-path work. The
+   `thread-observer` and the `ui-composer` take work off it and keep it correct; they never slow it:
+   - they work off the critical path: in their own context, on their own topic branch, or in the main agent's idle
+     windows; the main agent never waits on a lock that a member holds;
+   - their steps for the main agent never touch a file that the main agent has changed since its last checkpoint
+     or has open in the current reply (B+3, process job);
+   - nudges are short, batched and timed: they arrive at the next prompt after a `stop` or `declare`, as one block;
+     only a hard fault arrives at once;
+   - `hard-block` is only for a fault that makes the main agent's result wrong (for example a weak test that is
+     about to be committed, a checkpoint with a failing suite); all else is `soft-block` or a nudge;
+   - the cost to the main agent is measured and shown (B+4): the wait its hooks add and the tokens of the context
+     they inject.
+2. "Others work less sleep more." The `thread-observer` and the `ui-composer` sleep by default (pace `on-trigger`,
+   B5). While they sleep, the operator's watch rules (no model) keep the counts and decide if a wake is worth a
+   model call. Each wake has a budget (tokens and time). Watching or polling is an opt-in per pool.
+
+### B+1. Presence (todo-97)
+
+An agent sees its peers, their state, and sends to them or observes them. A peer is a session that shares one of
+these with the asking session:
+
+| Shared | Source (all in `workspace.db`, nothing new to collect) |
+| --- | --- |
+| the topic workspace | the workspace row of each session (18-workspaces) |
+| a dossier it writes | the dossier binding of each session (`session start --dossier`, the hooks' session id) |
+| a thread | the `members` table (B2) |
+
+`thread.peers` joins the three and adds the live state of each peer:
+
+| Field | From |
+| --- | --- |
+| `session`, `agent` (claude, codex), `account`, `agent config` (B+2) | the session record |
+| `state`: `running`, `idle`, `paused`, `offloaded`, `failed`, `ended` | the systemd scope (14-sessions) and the last hook event (`prompt` = running, `stop` = idle) |
+| `last` (time, tool, path) and `declared` (the last `thread declare` word) | the newest `agent.tool` and `thread.declare` events |
+| `pending` | the count of outbox messages to the peer that are not `acked` |
+| `channel`: `outbox`, plus `claude-inbox` | `claude-inbox` when the peer is a Claude Code session that was not started with `--bare` (it binds an inbox socket, so `ListAgents` shows it) |
+
+Send: `thread.send --to <peer>` writes the outbox (B2), which is the one legionctl path for all peers. The receiver
+gets it as in B4 (its hooks) or, for an operator member, in its next wake (B5). An idle Claude Code peer in a
+terminal gets it at its next prompt; to reach it at once, a Claude Code sender uses the harness's own `SendMessage`
+(cross-session messaging; the receiver's `crossSessionInbound` decides accept, hold or refuse). legionctl does not
+send through the inbox socket. The `post-tool` hook records each `SendMessage` call as a `thread.message` event, so
+the thread log stays complete (question 1).
+
+Rules: any peer can send `note` and `hint`. Only a member of the same thread with the `thread-observer` archetype
+can send `soft-block` and `hard-block` (B3), so a peer from another thread cannot stop the main agent.
+
+Observe: `thread.observe <peer> [--follow]` gives the peer's events (the same rows as `trace`); `--follow` streams
+them. It reads only; to watch with rules, join the thread (`thread join`).
+
+| Operation | CLI | MCP tool | Class |
+| --- | --- | --- | --- |
+| `thread.peers` | `thread peers [--dossier <d>] [--topic <t>] [--thread <id>]` (default: the caller's own) | `thread_peers` | read |
+| `thread.observe` | `thread observe <peer> [--follow] [--kinds <k,...>]` | `thread_observe` | read |
+| `thread.send` (B8, `--to` now also takes a peer that is not a member) | `thread send --to <peer> <kind> "<text>"` | `thread_send` | session |
+
+### B+2. Agent config (todo-98)
+
+One config per agent. It has the fields below, and it resolves in layers like all legionctl config (14-sessions,
+"Config model"):
+
+1. The archetype file (B+3) is the lowest layer: its frontmatter and its instruction text.
+2. The key `agents.configs.<name>` in the config layers is above it: defaults, `/etc/legionctl/`, the user's
+   `~/.config/legionctl/`, the repository's `.legionctl/`, the session. The repository layer may only narrow
+   (fewer tools, fewer commands, a smaller budget), as the plugin allowlist does (12-operator); `/etc` can lock a
+   key.
+3. The team's flow (B+4) is the top layer, and it may only narrow.
+
+`legionctl config explain agents.configs.observer.model` shows each layer that set the field, the archetype file
+first. A session stores its resolved config (14-sessions), so an edit changes a running member only at its next
+start or resume.
+
+```jsonc
+// ~/.config/legionctl/agents.jsonc
+{
+  "agents": { "configs": {
+    "observer": {
+      "archetype": "thread-observer",
+      "harness": "claude",                 // claude | codex
+      "account": "work2",                  // an `agents accounts` profile
+      "model": "sonnet", "effort": "medium",
+      "tools": { "deny+": ["WebFetch"] },
+      "skills+": ["verify-and-ship"],
+      "mcp": ["legionctl", "ctx"],         // names in `mcp.servers`, through the proxy
+      "commands": { "deny+": ["Bash(cargo publish*)"], "ask+": ["Bash(cargo mutants*)"] },
+      "instructions+": "integrations/agent-plugin/agents/refs/reference-observer-local-rules.md",
+      "pace": "on-trigger",
+      "budget": { "tokens_per_day": 2000000 }
+    }
+  } }
+}
+```
+
+How the operator applies each field. The plugin path cannot carry four fields (plugin agents ignore
+`permissionMode`, `hooks`, `mcpServers` and `initialPrompt`), and Codex subagents inherit sandbox, approval and MCP.
+So the operator sets these fields itself for each session it starts:
+
+| Field | Claude Code, operator session | Claude Code, plugin subagent of the main agent | Codex, operator session | Codex subagent (`~/.codex/agents`) |
+| --- | --- | --- | --- | --- |
+| instructions | `--agent legionctl:<archetype>` (to check) and the first ACP prompt | the archetype file's text | `developer_instructions` in the member's own `CODEX_HOME` agent file, and the first prompt | `developer_instructions` |
+| account | `CLAUDE_CONFIG_DIR` of the profile | the main agent's account | `CODEX_HOME` of the profile | the main agent's |
+| model, effort | `--model`; `effort` from the frontmatter, or the settings file the operator writes | frontmatter `model`, `effort` | `-c model=`, `-c model_reasoning_effort=` | the TOML fields |
+| tools allow and deny | `permissions.allow/deny` in the session's `claude-settings.json` (S2a) and frontmatter `tools`/`disallowedTools` | frontmatter `tools`/`disallowedTools` | sandbox mode and approval policy (`-c`) | inherited: cannot narrow |
+| skills | `session.skills` (the sandbox shows only these) and frontmatter `skills` | frontmatter `skills` (preload) | `session.skills` | `skills.config` |
+| MCP | `mcp.json` through the proxy, `--strict-mcp-config` (S2b) | the main agent's servers; `disallowedTools` hides tools | `mcp_servers` in the member's `CODEX_HOME` | inherited: cannot narrow |
+| commands allow, deny, ask | `permissions.allow/deny/ask` in the settings file, and the git and command shims (layer 2 of the gates) | the main agent's permissions; the `pre-tool` hook adds the agent's own deny list if the hook input names the subagent's type (to check), else the config is refused for this path | approval policy and the shims | inherited |
+| env | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` for a team-mode lead (B+4), `LEGIONCTL_MEMBER=<thread>/<member>` | — | `LEGIONCTL_MEMBER` | — |
+| pace, budget | the operator (B5, 19-gateway) | — (lives only in the main turn) | the operator | — |
+
+Rule: a field that a run path cannot apply is not dropped in silence. `thread join` and `session start` refuse the
+config for that path and name the field; `agents check` (B+3) lists such fields for each file.
+
+### B+3. Archetypes, files and run paths
+
+Three archetype files, each one source for both run paths (approved option C):
+
+| File | Archetype | Does | May write | Message kinds it may send |
+| --- | --- | --- | --- | --- |
+| `integrations/agent-plugin/agents/main-agent.md` | `main-agent` | Owns the task and its completion; acks messages; declares states. | its topic workspace, its dossier | `note` |
+| `integrations/agent-plugin/agents/thread-observer.md` | `thread-observer` | The three jobs below, in one context. | its own dossier `<main>--<member>`, its own topic workspace | all of B3 |
+| `integrations/agent-plugin/agents/ui-composer.md` | `ui-composer` | Makes and places views (C4). | the thread's views | `note`, `result` |
+
+The `thread-observer`'s three jobs. One wake handles all three. Its triggers (pace `on-trigger`) are the union
+below, and a trigger wakes it only when an operator watch rule finds work that needs a model:
+
+| Job | Triggers | It does |
+| --- | --- | --- |
+| Test review | a change to a test file in the change set (`agent.tool`); a `code tests` result | runs `code tests review` and mutation runs; sends `hint`, or `hard-block` for a weak test that is about to be committed (A7) |
+| Process | the main agent's `stop`; a checkpoint; a hard fault from a watch rule | does the steps it can do and sends a `notice`; sends a nudge for the others (table below) |
+| Verification | `declare done`, `declare ready` | runs the suite and `code plan status`; sends a `result` that names each open item, and a `hard-block` on `workspace_checkpoint` when the suite fails |
+
+The `ui-composer`'s triggers: a view request (`/view`, `views place`), and the main agent's `stop` while a TUI or
+the app shows the thread.
+
+Process job: "tool calls, dossier writes, checkpoints are automated and observer can do it and tell main agents,
+other things it sends nudges to main agent instead" (user, 2026-10-15). A step that the observer can do itself, it
+does, then it sends a `notice` (B3). All else is a nudge (`reminder` or `hint`):
+
+| Missed step | Done by the observer, with | Where, without a race |
+| --- | --- | --- |
+| lint | the repository's lint command (`make lint` here), check mode only | an overlay of the main agent's workspace (14-sessions: read-only lower layer, the observer's own upper layer), so the main agent's files do not change |
+| a targeted test run | `code tests run --changed` | the same overlay; the run's budget is the wake's |
+| a graph refresh, `dossier check` | `code graph refresh`, `dossier_check` | read operations; no race |
+| the dossier record of a checkpoint | `dossier_append` of a ledger line marked `by observer0` | the main agent's dossier, append only, through the dossier lock, only while the main agent is `idle` (question 5) |
+| a checkpoint | `workspace checkpoint` with the same test gate (A7) | the main agent's topic branch, only while the main agent is `idle`: a commit from a private index (`commit-tree`) and an `update-ref` that compares the old value; if the main agent wrote in the meantime, the update fails and the observer tries at the next idle window. The main agent's index and files do not change. |
+
+Nudge, not a step, for: a lint or test failure (the fix touches the main agent's files), a change to a file that the
+main agent changed since its last checkpoint, a judgment (design, scope, test value), and a step that the observer's
+config denies. Counts stay as in B3: a watch rule counts the main agent's miss whether the observer did the step
+or not; `watch_counts.done for main` counts the steps the observer did. A `notice` reads: "observer0: ran `make
+lint` after 4 edits of `crates/` (clean) — 3rd miss since 10:42, 2 done for you".
+
+Frontmatter: only fields that the plugin path honours (`name`, `description`, `tools`, `disallowedTools`, `model`,
+`effort`, `skills`, `background`). The operator-only fields (B+2) live in `agents.configs` defaults, compiled into
+the binary with `config/defaults.jsonc`, with one entry per archetype. No field is in both places.
+
+Composition: one agent = one archetype file + its config layers (B+2). A config may:
+
+- change `account`, `model`, `effort`, `pace`, `budget`;
+- add skills, MCP servers (from the `mcp.servers` allowlist), instruction refs (`instructions+`), and watch rules;
+- narrow tools and commands.
+
+A config may not change the archetype's write area or its message kinds, and may not add tools or commands that
+the archetype denies. `legionctl agents check` (run by `make static`) refuses a config or team that widens, and a
+reference to a ref file that does not exist.
+
+Install and visibility:
+
+- Claude Code: the plugin ships `agents/*.md`, so the subagent types are `legionctl:main-agent`,
+  `legionctl:thread-observer`, `legionctl:ui-composer`. Claude Code must read `agents/` without its subfolders, as
+  `agents/refs/` is not an agent folder (to check; if it reads subfolders, refs move to `agent-refs/`).
+- Codex: `legionctl agents install --agent codex [--scope user|project]` writes `~/.codex/agents/<archetype>.toml`
+  (or `.codex/agents/`) from the same files, through the `agents set` writer (diff, backup, rename).
+
+| Where | Operator member (thread member) | Plugin subagent | Claude Code teammate (team mode, B+4) | Codex subagent |
+| --- | --- | --- | --- | --- |
+| `thread show`, `thread peers`, TUI pane 2 | yes | yes, from the `SubagentStart`/`SubagentStop` hooks | yes, from the hooks | yes if Codex hooks run (to check) |
+| Claude Code `/tasks`, background panel | no (another process) | yes | the team panel or tmux panes | — |
+| Claude Code `ListAgents` | yes, when not `--bare` | — | yes | — |
+| Codex agent list | — | — | — | yes |
+| Durable (survives restart, compaction, `/resume`) | yes (B6) | no; a background one resumes by `SendMessage` while its session lives | no: not restored after `/resume` | no |
+
+Limits from the research that shape this: one team per Claude Code session, no nested teams, a fixed lead,
+teammates only in an interactive session (in `-p` they run as plain subagents), and in-process teammates are not
+restored after `/resume`. So the thread's members are operator sessions; the other paths are for a quick check in
+the main turn and for visibility.
+
+### B+4. Pools: the team archetype and `vanilla`
+
+A pool is a thread's members plus flow conditions. A team file defines a pool; later teams are more files of the
+same form. Paths: shipped `integrations/agent-plugin/teams/<team>.jsonc` (next to `agents/`; Claude Code does not
+read `teams/`), the user's `~/.config/legionctl/teams/`, the repository's `.legionctl/teams/` (narrow only, as
+B+2). `legionctl thread start --team vanilla "<prompt>"` starts a thread with its members.
+
+```jsonc
+// integrations/agent-plugin/teams/vanilla.jsonc
+{
+  "name": "vanilla",
+  "members": {
+    "main0":     { "agent": "main-agent" },
+    "observer0": { "agent": "thread-observer", "pace": "on-trigger",
+                   "wake_budget": { "tokens": 40000, "seconds": 300 } },
+    "ui0":       { "agent": "ui-composer", "pace": "on-trigger", "when": "ui",  // only when a TUI or app shows the thread
+                   "wake_budget": { "tokens": 15000, "seconds": 60 } }
+  },
+  "flow": {
+    "may": { "ui0": ["note", "result"] },                // narrows the archetype's kinds
+    "gates": {
+      "checkpoint": ["observer0: no open hard-block"],
+      "declare:done": ["observer0: result verification ok"]
+    },
+    "stop": ["main0 ended and idle 30m", "declare:done acked", "budget"],
+    "restart": { "max": 3, "within": "1h" }
+  }
+}
+```
+
+Each `members` entry names an agent config (B+2) by name, or an archetype for its defaults; a member may also set
+`account`, `model`, `pace` (narrow only for tools and commands).
+
+How events reach each member and how it answers:
+
+| Member runs as | Events in | Out |
+| --- | --- | --- |
+| `main-agent` in a terminal or ACP | hooks `prompt`, `pre-tool`, `stop` (B4) | `thread ack`, `thread declare`, `thread send` |
+| operator member (default) | its wake prompt: the events since its cursor (B5) | `thread_send` (MCP tool) into the outbox |
+| Claude Code teammate (team mode) | the `TeammateIdle` hook answers exit 2 with its pending outbox messages, so the teammate keeps working on them; `TaskCompleted` exit 2 holds a task until the pool's gate passes | `thread_send`; `SendMessage` is recorded by `post-tool` |
+| plugin subagent | `SubagentStop` blocks with the pending messages as its reason | `thread_send` |
+
+Triggers come from the archetype (B+3); a team file can narrow them, or opt in to `on-event` or `poll` (B5) for
+one member. A wake that reaches its `wake_budget` ends; its events stay after the cursor for the next wake.
+
+Cost (rule 1 and 2 of B+0), recorded per thread and shown by `thread show`, `thread peers` and the TUI's pane 2:
+
+| Measure | From |
+| --- | --- |
+| added wait of the main agent | the time each `prompt`, `pre-tool` and `stop` hook spends on thread work, and the time a gate holds a tool |
+| injected tokens into the main agent | the size of each `additionalContext` that the hooks give (counted as tokens with the gateway's counter, 19-gateway) |
+| each member's tokens and time | per wake, from the member's session usage (`agents usage`) |
+| observers' total next to the main agent's | the sum per thread, as a ratio |
+
+Gates: `gates.checkpoint` is checked by the `pre-tool` hook (as a `hard-block`) and by `workspace checkpoint`
+itself; `gates.declare:done` makes `thread declare done` return the open items instead of a done state.
+
+Keep-alive and restart: an operator member is a job (B6); at a crash or budget end it goes to `failed`, and the
+pool restarts it within `restart` (`session/load` first, a new session with the thread log second). Past the limit
+it stays `failed`, its hard blocks expire, and the main agent gets a `note`. A teammate lost at `/resume` (the
+`SessionStart` hook with source `resume` sees the team without it) is recorded as `lost` and restarted as an
+operator member. A pool ends at its first `stop` condition; its members end, its log stays.
+
+Team mode (Claude Code agent teams) is not the default. The operator can set `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`
+only for a lead it starts (a plugin's `settings.json` cannot set env), and the limits in B+3 apply. A team file may
+set `"run": "claude-team"` after the live check (question 4).
+
+### B+5. Dossier tooling, instruction text and refs
+
+- Each archetype file tells the agent to use the dossier tools, in the order of its work. The rules of the dossier
+  stay in one place, the `dossier-practice` skill; the archetype file names the skill in `skills` and does not
+  repeat it.
+- The instruction text follows the skill convention (memory `skill-writing-convention`): short ordered sentences
+  that build on each other, each rule once, no conflict with a skill or another archetype. `agents check` is the
+  place where todo-99's skill check also reads the archetype files.
+- Examples, scenarios and references are ref files, not instruction text: `integrations/agent-plugin/agents/refs/
+  <kind>-<slug>.md`, `kind` = `example`, `scenario` or `reference`, as for skills
+  (`integrations/agent-plugin/skills/<skill>/refs/<kind>-<slug>.md`). The instruction text names each ref by its
+  path; `agents check` refuses a missing one.
+
+The start of `thread-observer.md` (a sketch of the form, not the final text):
+
+```markdown
+1. #main0 owns the task and works on the critical path. You keep it correct and never slow it.
+2. You wake only on a trigger. Each wake gives the events since your cursor; act only on them, within the budget.
+3. Read the dossier of #main0; write your own dossier (skill dossier-practice).
+4. Test review: read each changed test and its kill record. Weak test: hint; about to be committed: hard-block.
+5. Process: do each missed step that you can do, while #main0 is idle, then send a notice. Nudge for the rest.
+6. Verification: at "done" or "ready", run the suite and `code plan status`. Name each open item in a result.
+7. Each message is short and names the fact you verified and how #main0 clears it.
+Refs: agents/refs/example-observer-hard-block-weak-test.md, agents/refs/scenario-observer-declare-done-fails.md.
+```
+
+Shipped refs (first set): `example-main-ack-and-declare`, `example-observer-hard-block-weak-test`,
+`scenario-observer-declare-done-fails`, `scenario-peer-message-to-idle-session`, `reference-message-kinds`,
+`example-ui-composer-place-tests-view`.
+
+### B+6. Phases and tests
+
+P5 grows by presence (B+1, about 300 lines). P6 splits; the order stays P5, then P6:
+
+| Phase | Content | Size (new lines, estimate) | Needs |
+| --- | --- | --- | --- |
+| P6a | Archetype files, refs, `agents.configs` resolution, per-harness application (B+2 table), `agents check`, `agents install --agent codex` | M (700) | P5 |
+| P6b | Operator members through ACP, pace `on-trigger` and wake budgets, branch, compensation, team files, `vanilla`, flow (may, gates, stop, restart), the process job's steps (overlay, private-index checkpoint), cost measures | L (1100) | P6a |
+| P6c | Team mode (`run: claude-team`): `TeammateIdle`/`TaskCompleted` delivery and gates, lost teammates | S (300) | P6b, question 4, live check |
+
+Tests (e2e, high diagnostic value; the stand-ins of B9, and stand-in `claude` and `codex` commands that record
+their argv, env and the files they get):
+
+| Test | It catches |
+| --- | --- |
+| `peers_show_the_sessions_on_the_dossier_with_their_state_and_a_message_reaches_an_idle_peer_once` | A session on another dossier shown; a stale state after `stop`; a message delivered twice or never; a peer from another thread able to hard-block. |
+| `each_config_field_reaches_the_harness_or_the_config_is_refused` | A field dropped in silence on a path that ignores it (for example `mcp` on a plugin subagent, tools on a Codex subagent); the wrong account folder; the teams env var set on a session that is not a lead. |
+| `a_repository_config_or_team_that_widens_is_refused_and_explain_names_the_file` | The repository layer adding a tool or a message kind; `config explain` not showing the archetype file as the lowest layer. |
+| `vanilla_wakes_the_observer_on_its_events_and_the_gates_hold_checkpoint_and_done` | A wake missed for `declare done` or a test edit; checkpoint passes with an open hard block; done passes with a failed verification. |
+| `the_observer_sleeps_until_a_rule_finds_work_and_a_wake_stops_at_its_budget` | A model wake for a `stop` with nothing to do; a wake that runs past its token or time budget; events lost after a cut-off wake. |
+| `the_observer_does_a_missed_step_without_touching_main_work_and_counts_it` | Lint run in the main workspace (a file changes); a checkpoint while main is running, or one that wins over a main commit made at the same time (the compare must fail); a step done on a file main changed (must be a nudge); the miss not counted because the observer did it. |
+| `the_cost_to_main_is_measured_and_shown_next_to_the_observers_cost` | Hook wait or injected tokens not recorded; nudges given one by one instead of as one block at the next prompt. |
+| `a_failed_member_restarts_within_its_limit_then_its_blocks_expire` | A restart loop past `max`; a dead observer that still blocks the main agent. |
+| `a_teammate_gets_its_messages_through_the_idle_hook_and_a_lost_one_restarts_as_a_member` (P6c) | Messages lost for a teammate; a teammate lost at `/resume` and not seen. |
+
+### B+7. Questions for the user
+
+1. Messages between Claude Code peers: is the outbox the only legionctl path? Recommendation: yes. legionctl sends
+   only through the outbox; a Claude Code agent may still use the harness's `SendMessage` for an urgent message to
+   an idle peer, and the `post-tool` hook records it in the thread log.
+2. Where does an agent config live? Recommendation: the archetype file is the lowest layer; `agents.configs.<name>`
+   in the legionctl config layers is above it; the repository layer and the team flow may only narrow.
+3. A config field that a run path cannot apply (for example per-agent MCP on a plugin subagent): drop it with a
+   warning, or refuse? Recommendation: refuse and name the field, so a policy never looks applied when it is not.
+4. Claude Code agent teams: when do we use them? Recommendation: `vanilla` runs its members as operator sessions;
+   team mode is an opt-in per team file (`run: claude-team`) in P6c, after a live check of the teammate hooks.
+5. The process job writes the missing dossier record. Approved B4 says an observer writes only its own dossier.
+   Recommendation: allow one exception: an append-only ledger line marked `by <member>` in the main agent's dossier,
+   through the dossier lock, only while the main agent is idle; all other writes stay in the observer's dossier.
+6. Codex members: Codex subagents inherit sandbox, approval and MCP. Recommendation: a Codex member of a pool always
+   runs as its own operator session; `~/.codex/agents` files are installed only for quick use in a Codex session,
+   with instructions, model and effort.
 
 ## Part C: thread UI (todo-92)
 
@@ -574,7 +927,7 @@ The chat bar sends text to `#main0` as an ACP prompt. A line that starts with `/
 | Source | Example | How it runs |
 | --- | --- | --- |
 | legionctl registry | `/code plan status --feature code-graphs` | The operation, with the CLI's words and options. |
-| Thread | `/join test-reviewer`, `/branch`, `/fold 2`, `/view tests` | A `thread.*` or `views.*` operation. |
+| Thread | `/join thread-observer`, `/branch`, `/fold 2`, `/view tests` | A `thread.*` or `views.*` operation. |
 | Agent's ACP commands | `/agent:review src/` | Sent as the prompt text `/review src/` (D1). |
 
 Completion lists all three sources, filtered by the typed prefix, with each description and input hint.
@@ -609,7 +962,7 @@ A view is a declarative JSONC file, not code. It binds one widget from a closed 
 - Reusable: a view has a name and params; threads refer to views, and each thread stores its layout.
 - Safe: only read operations, schema-checked by `views check`. A view cannot run a change.
 
-The `ui-composer` observer reads the query and the progress, picks views, makes new ones (`views save`), and sets
+The `ui-composer` member reads the query and the progress, picks views, makes new ones (`views save`), and sets
 the thread's pane 3 (`views place`). The person changes the same views by hand or with `/view`.
 
 Operations: `views.list`, `views.show`, `views.save`, `views.check`, `views.place`, `views.render` (text for agents
@@ -654,7 +1007,7 @@ No, not in Claude Code. Claude Code names a plugin's MCP tool `mcp__plugin_<plug
 legionctl's are `mcp__plugin_legionctl_legionctl__workspace_checkpoint`. A plugin cannot change this name.
 ToolSearch takes `select:<exact name>`, keywords, or `+<word>` to require a word in the name: `+legionctl
 checkpoint` is the closest form to `legionctl/checkpoint`. Skills and commands of a plugin are `legionctl:<name>`;
-plugin agents would be subagent types `legionctl:<role>`. In legionctl's own UI, `/` commands use the CLI words
+plugin agents are subagent types `legionctl:<archetype>` (B+3). In legionctl's own UI, `/` commands use the CLI words
 (`/workspace checkpoint`), which map one to one to the registry name (`workspace.checkpoint`) and the MCP tool name.
 
 ## Relation to todo-78 (the CLI and app regrouping, decided last)
@@ -675,8 +1028,8 @@ plugin agents would be subagent types `legionctl:<role>`. In legionctl's own UI,
 | P2 | Change graph, stable keys, content hashes, annotations, A8 skill text | M (700) | P1 |
 | P3 | `planning/` format, `code plan check/status`, tokei LOC, `dossier check` findings | M (600) | P2 |
 | P4 | Test runs, mutant records, review signals, checkpoint gate, pre-commit | L (900) | P3, question 2 |
-| P5 | Threads, members, outbox, hook delivery, `post-tool`, watch rules and counts | L (1000) | P4 for the test rules |
-| P6 | Model observers through ACP, pace, branch, compensation, role files | L (900) | P5, question 1 |
+| P5 | Threads, members, outbox, hook delivery, `post-tool`, watch rules and counts, presence (B+1) | L (1300) | P4 for the test rules |
+| P6 | Model observers through ACP, pace, branch, compensation; agent configs, archetypes, pools (split in B+6) | L (1700) | P5, question 1 |
 | P7 | TUI triple pane, chat bar, `/` commands, ACP commands | L (1200) | P5 |
 | P8 | App thread page, views, `ui-composer`, import | L (1500) | P7 |
 
