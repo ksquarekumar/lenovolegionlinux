@@ -2124,6 +2124,15 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
         talk.join(".agentworkspace/MEMORY/probe.md").exists(),
         "the dossier is shared"
     );
+    let left = Command::new("pgrep")
+        .args(["-af", &format!("qemu-system.*{}", home.display())])
+        .output()
+        .unwrap();
+    assert!(
+        left.stdout.is_empty(),
+        "the VMs end with their sessions: {}",
+        String::from_utf8_lossy(&left.stdout)
+    );
 }
 
 /// Jobs (DESIGN/02): a headless run is a job; when the operator stops in the middle of it, the next operator goes on

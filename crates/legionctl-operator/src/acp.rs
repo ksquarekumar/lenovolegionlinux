@@ -10,7 +10,7 @@ use agent_client_protocol::schema::v1::McpServer;
 use anyhow::{Context, Result};
 use legionctl_api::RunOutput;
 use legionctl_core::db::Db;
-use legionctl_core::session::Launch;
+use legionctl_core::session::{self, Inside, Launch};
 
 /// Run `prompt` in the prepared session and return the agent's answer.
 ///
@@ -21,16 +21,32 @@ pub async fn run(
     prompt: &str,
     stop: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<RunOutput> {
+    let (id, inside) = (launch.id.clone(), launch.inside);
+    let out = drive(launch, prompt, stop).await;
+    // the adapter can outlive its closed stdio, and a container or VM outlives its killed client
+    if session::active(&id, inside)
+        && let Err(e) = session::control(&id, inside, session::Control::Stop)
+    {
+        eprintln!("operator: session {id}: cannot stop it after its run: {e:#}");
+    }
+    out
+}
+
+async fn drive(
+    launch: Launch,
+    prompt: &str,
+    stop: tokio::sync::oneshot::Receiver<()>,
+) -> Result<RunOutput> {
     let started = Instant::now();
     // legionctl is the git gate on the host and a VM's runner; a container's image has its own gate
     let mut sandbox = launch.sandbox;
     let mut gate = Vec::new();
-    if launch.inside != legionctl_core::session::Inside::Container {
+    if launch.inside != Inside::Container {
         let legionctl = crate::engine::which("legionctl")
             .context("legionctl is not on PATH (the git gate and the VM runner are its binary)")?
             .display()
             .to_string();
-        if launch.inside == legionctl_core::session::Inside::Vm {
+        if launch.inside == Inside::Vm {
             sandbox.insert(0, legionctl);
         } else {
             gate.extend([

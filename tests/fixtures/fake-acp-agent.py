@@ -4,13 +4,15 @@
 On a prompt it asks one permission, commits a file and tries a push in its working folder (inside the session's
 sandbox), then answers with what it saw: the prompt, the MCP servers from session/new, the permission outcome, and
 whether the commit and the push went through. A prompt that starts with SLOW waits 30 s first (a long run, for the
-test that stops the operator in the middle of one).
+test that stops the operator in the middle of one). Like the real adapters, it does not end when its input
+closes: the operator must end the session.
 """
 
 import json
 import os
 import subprocess
 import sys
+import threading
 import time
 
 mcp_servers = []
@@ -105,3 +107,5 @@ for line in sys.stdin:
         continue
     if ident is not None:
         send({"jsonrpc": "2.0", "id": ident, "result": result})
+
+threading.Event().wait()
