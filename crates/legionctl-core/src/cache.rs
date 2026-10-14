@@ -11,11 +11,12 @@ use rusqlite::{OptionalExtension, params};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::db::Db;
+use crate::db::{Db, Schema};
 
-const SCHEMA: &[&str] = &[
-    // v1: entries of every namespace; the semantic cache's prompt embeddings beside the answers they find
-    "CREATE TABLE entries (
+/// Entries of every namespace; the semantic cache's prompt embeddings beside the answers they find.
+const SCHEMA: &Schema = &Schema {
+    version: 1,
+    sql: "CREATE TABLE entries (
         ns      TEXT NOT NULL,
         key     TEXT NOT NULL,
         value   BLOB NOT NULL,
@@ -34,7 +35,7 @@ const SCHEMA: &[&str] = &[
         vector BLOB NOT NULL,
         PRIMARY KEY (ns, key)
      );",
-];
+};
 
 /// One namespace's size now.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

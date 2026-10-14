@@ -16,17 +16,21 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::DossierConfig;
-use crate::db::Db;
+use crate::db::{Db, Schema};
 
-const SCHEMA: &[&str] = &[
-    // v1: one open binding per dossier and per session; released rows stay as history
-    "CREATE TABLE bindings (
+/// The workspace database at v9 (the steps of v1-v9 merged into one; todo-68).
+const SCHEMA: &Schema = &Schema {
+    version: 9,
+    sql: "-- one open binding per dossier and per session; released rows stay as history; place: where the session worked
+     -- (repository root, else its folder), for binding the next session there
+     CREATE TABLE bindings (
         session  TEXT NOT NULL,
         tool     TEXT NOT NULL,
         dossier  TEXT NOT NULL,
         acquired INTEGER NOT NULL,
         updated  INTEGER NOT NULL,
-        released INTEGER
+        released INTEGER,
+        place    TEXT
      );
      CREATE UNIQUE INDEX open_dossier ON bindings (dossier) WHERE released IS NULL;
      CREATE UNIQUE INDEX open_session ON bindings (session) WHERE released IS NULL;
@@ -35,11 +39,9 @@ const SCHEMA: &[&str] = &[
         session TEXT NOT NULL,
         kind    TEXT NOT NULL,
         path    TEXT NOT NULL
-     );",
-    // v2: where the session worked (repository root, else its folder), for binding the next session there
-    "ALTER TABLE bindings ADD COLUMN place TEXT;",
-    // v3: workspaces, the operating directories of dossiers (one open per dossier and repository)
-    "CREATE TABLE workspaces (
+     );
+     -- workspaces, the operating directories of dossiers (one open per dossier and repository)
+     CREATE TABLE workspaces (
         dossier TEXT NOT NULL,
         repo    TEXT NOT NULL,
         path    TEXT NOT NULL,
@@ -48,39 +50,37 @@ const SCHEMA: &[&str] = &[
         opened  INTEGER NOT NULL,
         closed  INTEGER
      );
-     CREATE UNIQUE INDEX open_workspace ON workspaces (dossier, repo) WHERE closed IS NULL;",
-    // v4: sessions that legionctl started (note 14)
-    "CREATE TABLE sessions (
+     CREATE UNIQUE INDEX open_workspace ON workspaces (dossier, repo) WHERE closed IS NULL;
+     -- sessions that legionctl started (note 14): the account profile (A1); scoped: in its own systemd scope, which
+     -- then tells whether it is still live; inside: host (a bwrap sandbox), container or vm (W5)
+     CREATE TABLE sessions (
         id      TEXT PRIMARY KEY,
         agent   TEXT NOT NULL,
         dossier TEXT NOT NULL,
         workdir TEXT NOT NULL,
-        started INTEGER NOT NULL
-     );",
-    // v5: the account profile a session runs with (A1)
-    "ALTER TABLE sessions ADD COLUMN account TEXT;",
-    // v6: status history of the work graph's nodes, from writes through legionctl (W4)
-    "CREATE TABLE status_changes (
+        started INTEGER NOT NULL,
+        account TEXT,
+        scoped  INTEGER NOT NULL DEFAULT 0,
+        inside  TEXT NOT NULL DEFAULT 'host'
+     );
+     -- status history of the work graph's nodes, from writes through legionctl (W4)
+     CREATE TABLE status_changes (
         ts          INTEGER NOT NULL,
         session     TEXT NOT NULL,
         dossier     TEXT NOT NULL,
         node        TEXT NOT NULL,
         from_status TEXT,
         to_status   TEXT
-     );",
-    // v7: whether a session runs in its own systemd scope, which then tells whether it is still live
-    "ALTER TABLE sessions ADD COLUMN scoped INTEGER NOT NULL DEFAULT 0;",
-    // v8: dossier nudges: per session, the workspace content at the last reply, the replies that changed it since the
-    // session last wrote its dossier, and the nudge level the agent was last told
-    "CREATE TABLE nudges (
+     );
+     -- dossier nudges: per session, the workspace content at the last reply, the replies that changed it since the
+     -- session last wrote its dossier, and the nudge level the agent was last told
+     CREATE TABLE nudges (
         session TEXT PRIMARY KEY,
         work    TEXT,
         turns   INTEGER NOT NULL DEFAULT 0,
         level   TEXT
      );",
-    // v9: where a session runs: host (a bwrap sandbox) or container (W5)
-    "ALTER TABLE sessions ADD COLUMN inside TEXT NOT NULL DEFAULT 'host';",
-];
+};
 
 /// Where a session works, for binding the next session there: the repository that contains `dir`, else `dir`.
 #[must_use]

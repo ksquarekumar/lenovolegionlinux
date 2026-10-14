@@ -15,50 +15,25 @@ use std::fmt::Write as _;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-/// Ordered schema migrations; index + 1 is the schema version after applying it. Never edit a released entry.
-const OPERATOR: &[&str] = &[
-    // v1: event log, hook actions and bindings, with the default bindings the agent plugin relies on
-    "CREATE TABLE events (
+/// A database's schema: the tables of `version`, made at once in a new file.
+pub struct Schema {
+    pub version: i64,
+    pub sql: &'static str,
+}
+
+/// The operator database at v10 (the steps of v1-v10 merged into one; todo-68, after the first full release install).
+const OPERATOR: &Schema = &Schema {
+    version: 10,
+    sql: "CREATE TABLE events (
         id      INTEGER PRIMARY KEY,
         ts      INTEGER NOT NULL,
         actor   TEXT NOT NULL,
         kind    TEXT NOT NULL,
         payload TEXT NOT NULL
      );
-     CREATE TABLE hook_actions (
-        id        TEXT PRIMARY KEY,
-        command   TEXT NOT NULL,
-        timeout_s INTEGER NOT NULL DEFAULT 5
-     );
-     CREATE TABLE hook_bindings (
-        event    TEXT NOT NULL,
-        action   TEXT NOT NULL,
-        position INTEGER NOT NULL,
-        PRIMARY KEY (event, action)
-     );
-     INSERT INTO hook_bindings (event, action, position) VALUES
-        ('session-start', 'reminders', 0),
-        ('session-start', 'load', 1),
-        ('session-start', 'setup-check', 2),
-        ('prompt', 'reminders', 0),
-        ('prompt', 'load-if-busy', 1);",
-    // v2: hook actions and bindings are config now (hooks.actions, hooks.bindings)
-    "DROP TABLE hook_actions;
-     DROP TABLE hook_bindings;",
-    // v3: results of MCP tools that mcp.servers.<name>.cache allows to reuse
-    "CREATE TABLE tool_cache (
-        key     TEXT PRIMARY KEY,
-        value   TEXT NOT NULL,
-        expires INTEGER NOT NULL
-     );",
-    // v4: the model gateway: replayable responses and one usage row per call (note 19)
-    "CREATE TABLE gateway_cache (
-        key          TEXT PRIMARY KEY,
-        status       INTEGER NOT NULL,
-        content_type TEXT NOT NULL,
-        body         BLOB NOT NULL,
-        expires      INTEGER NOT NULL
-     );
+     -- pages of the log by kind (DESIGN/03): `kind = ? AND id > ?` uses this
+     CREATE INDEX events_kind ON events (kind, id);
+     -- the model gateway: one usage row per call, with its cost from gateway.prices (note 19)
      CREATE TABLE gateway_usage (
         id         INTEGER PRIMARY KEY,
         ts         INTEGER NOT NULL,
@@ -68,29 +43,18 @@ const OPERATOR: &[&str] = &[
         tokens_out INTEGER NOT NULL,
         cached     INTEGER NOT NULL,
         status     INTEGER NOT NULL,
-        ms         INTEGER NOT NULL
-     );",
-    // v5: the cost of each gateway call, from gateway.prices (money budgets)
-    "ALTER TABLE gateway_usage ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0;",
-    // v6: the semantic cache: the prompt's embedding for each kept answer (gateway.semantic)
-    "CREATE TABLE gateway_semantic (
-        key    TEXT PRIMARY KEY,
-        scope  TEXT NOT NULL,
-        vector BLOB NOT NULL
-     );",
-    // v7: session tokens (DESIGN/03): the hash of each sandbox's token and its session; the user token is a file
-    "CREATE TABLE tokens (
+        ms         INTEGER NOT NULL,
+        cost_usd   REAL NOT NULL DEFAULT 0
+     );
+     -- session tokens (DESIGN/03): the hash of each sandbox's token and its session; the user token is a file
+     CREATE TABLE tokens (
         hash    TEXT PRIMARY KEY,
         session TEXT NOT NULL,
         created INTEGER NOT NULL
-     );",
-    // v8: pages of the log by kind (DESIGN/03): `kind = ? AND id > ?` uses this
-    "CREATE INDEX events_kind ON events (kind, id);",
-    // v9: the caches moved to the disposable cache.db (legionctl_core::cache)
-    "DROP TABLE tool_cache; DROP TABLE gateway_semantic; DROP TABLE gateway_cache;",
-    // v10: jobs, the long operations (DESIGN/02): what ran, its input, and how it ended; the operator resumes the ones
-    // a restart cut off
-    "CREATE TABLE jobs (
+     );
+     -- jobs, the long operations (DESIGN/02): what ran, its input, and how it ended; the operator resumes the ones a
+     -- restart cut off
+     CREATE TABLE jobs (
         id       INTEGER PRIMARY KEY,
         kind     TEXT NOT NULL,
         input    TEXT NOT NULL,
@@ -101,7 +65,7 @@ const OPERATOR: &[&str] = &[
         result   TEXT,
         error    TEXT
      );",
-];
+};
 
 pub struct Db {
     conn: Connection,
@@ -282,7 +246,7 @@ impl Db {
     ///
     /// # Errors
     /// The folder or database cannot be created or opened, or a migration fails.
-    pub fn open(path: &Path, migrations: &[&str]) -> Result<Db> {
+    pub fn open(path: &Path, schema: &Schema) -> Result<Db> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
@@ -291,7 +255,7 @@ impl Db {
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        migrate(&mut conn, migrations, path)?;
+        make(&mut conn, schema, path)?;
         Ok(Db { conn })
     }
 
@@ -574,90 +538,79 @@ pub struct EventRow {
     pub payload: serde_json::Value,
 }
 
-/// Apply the pending migrations; an existing database is first copied to `<db>.v<version>.bak` (note 13: a failed
-/// migration leaves the previous version's data in place).
-fn migrate(conn: &mut Connection, migrations: &[&str], path: &Path) -> Result<()> {
-    let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if current > 0 && usize::try_from(current).unwrap_or(usize::MAX) < migrations.len() {
-        let backup = PathBuf::from(format!("{}.v{current}.bak", path.display()));
-        // a backup of this version that exists is kept: another process that opens the database now makes the same
-        // one, and deleting it under that process breaks its write
-        if !backup.exists()
-            && let Err(e) = conn.execute("VACUUM INTO ?1", params![backup.to_string_lossy()])
-            && !backup.exists()
-        {
-            return Err(e)
-                .with_context(|| format!("backing up {} before its migration", path.display()));
+/// Make `schema` in a new database; an existing one must be at its version. A file of another version (from before
+/// the merged schemas, or from a newer legionctl) is refused and left as it is.
+fn make(conn: &mut Connection, schema: &Schema, path: &Path) -> Result<()> {
+    // the write lock first, then the version: another process may make the schema meanwhile
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    match tx.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? {
+        0 => {
+            tx.execute_batch(schema.sql)
+                .with_context(|| format!("making the schema of {}", path.display()))?;
+            tx.pragma_update(None, "user_version", schema.version)?;
         }
+        v if v == schema.version => {}
+        v => anyhow::bail!(
+            "{} has schema v{v}, and this legionctl reads only v{}: it is from another release. Move the file \
+             away to start with an empty one (its data is not read), or install the release that made it",
+            path.display(),
+            schema.version
+        ),
     }
-    for (index, sql) in migrations
-        .iter()
-        .enumerate()
-        .skip(usize::try_from(current).unwrap_or(0))
-    {
-        // the write lock first, then the version again: another process may have applied this step meanwhile
-        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let applied: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if usize::try_from(applied).unwrap_or(0) > index {
-            continue;
-        }
-        tx.execute_batch(sql)
-            .with_context(|| format!("applying schema migration {}", index + 1))?;
-        tx.pragma_update(None, "user_version", i64::try_from(index + 1)?)?;
-        tx.commit()?;
-    }
+    tx.commit()?;
     Ok(())
-}
-
-#[cfg(test)]
-pub(crate) fn temp_db(tag: &str) -> Db {
-    let dir = std::env::temp_dir().join(format!("legionctl-db-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    Db::open(&dir.join("operator.db"), OPERATOR).unwrap()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A file from another release (an old step-by-step version, or a newer schema) is refused, names its version,
+    /// and keeps its data; a file at this version opens with its data.
     #[test]
-    fn a_migration_keeps_a_backup_of_the_previous_version() {
-        let dir = std::env::temp_dir().join(format!("legionctl-db-backup-{}", std::process::id()));
+    fn a_database_of_another_schema_version_is_refused_and_kept() {
+        let dir = std::env::temp_dir().join(format!("legionctl-db-version-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("operator.db");
-        let old = Db::open(&path, &OPERATOR[..3]).unwrap();
-        old.record("cli", "before.upgrade", &serde_json::json!({}))
-            .unwrap();
-        drop(old);
-        let new = Db::open(&path, OPERATOR).unwrap();
+        let db = Db::open(&path, OPERATOR).unwrap();
+        db.record("cli", "kept", &serde_json::json!({})).unwrap();
+        drop(db);
+        let reopened = Db::open(&path, OPERATOR).unwrap();
+        assert_eq!(reopened.schema_version().unwrap(), OPERATOR.version);
         assert_eq!(
-            new.schema_version().unwrap(),
-            i64::try_from(OPERATOR.len()).unwrap()
-        );
-        let backup = Db::open(&dir.join("operator.db.v3.bak"), &OPERATOR[..3]).unwrap();
-        assert_eq!(
-            backup.schema_version().unwrap(),
-            3,
-            "the backup is the previous version, unmigrated"
-        );
-        assert_eq!(
-            backup
+            reopened
                 .events_page(&EventFilter::default(), 0, 10)
                 .unwrap()
                 .0[0]
                 .kind,
-            "before.upgrade"
+            "kept"
         );
+        drop(reopened);
+        for version in [OPERATOR.version - 1, OPERATOR.version + 1] {
+            Connection::open(&path)
+                .unwrap()
+                .pragma_update(None, "user_version", version)
+                .unwrap();
+            let refused = Db::open(&path, OPERATOR).err().unwrap().to_string();
+            assert!(
+                refused.contains(&format!("has schema v{version}")),
+                "{refused}"
+            );
+            let left: i64 = Connection::open(&path)
+                .unwrap()
+                .query_row("SELECT count(*) FROM events", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(left, 1, "the refused file keeps its data");
+        }
     }
 
-    /// The operator opens its database for each call, from several threads, while the recorder writes: an old
-    /// database that many connections open at once is migrated once, and every open succeeds.
+    /// The operator opens its database for each call, from several threads, while the recorder writes: a new
+    /// database that many connections open at once gets its schema once, and every open succeeds.
     #[test]
-    fn many_connections_that_open_an_old_database_at_once_all_succeed() {
+    fn many_connections_that_open_a_new_database_at_once_all_succeed() {
         let dir = std::env::temp_dir().join(format!("legionctl-db-race-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("operator.db");
-        drop(Db::open(&path, &OPERATOR[..2]).unwrap());
         let start = std::sync::Barrier::new(16);
         std::thread::scope(|scope| {
             let opens: Vec<_> = (0..16)
@@ -669,38 +622,8 @@ mod tests {
                 })
                 .collect();
             for open in opens {
-                assert_eq!(
-                    open.join().unwrap().unwrap(),
-                    i64::try_from(OPERATOR.len()).unwrap()
-                );
+                assert_eq!(open.join().unwrap().unwrap(), OPERATOR.version);
             }
         });
-    }
-
-    #[test]
-    fn migrates_once_and_reopens_cleanly() {
-        let db = temp_db("migrate");
-        assert_eq!(
-            db.schema_version().unwrap(),
-            i64::try_from(OPERATOR.len()).unwrap()
-        );
-        let path = db.conn().path().unwrap().to_owned();
-        drop(db);
-        // a second run of v2 would fail on DROP TABLE: reopening must not migrate again
-        let again = Db::open(Path::new(&path), OPERATOR).unwrap();
-        let hook_tables: i64 = again
-            .conn()
-            .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE name LIKE 'hook_%'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(hook_tables, 0, "hook bindings are config since v2");
-        let mode: String = again
-            .conn()
-            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(mode, "wal");
     }
 }

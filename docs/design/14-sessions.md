@@ -233,7 +233,7 @@ each a folder of `*.jsonc` files merged in name order:
   key below it, lowest first. Each session will store its resolved snapshot, so later config edits do not change
   running sessions until they are resumed or explicitly re-resolved.
 - **Readers today:** `worktree.root`, `reminders.*` (built-in and your own), `hooks.actions` and `hooks.bindings`
-  (the operator database no longer holds them; migration v2 drops its hook tables), `load.*` (the load classifier's
+  (the operator database no longer holds them), `load.*` (the load classifier's
   thresholds).
 - `/etc` (root-owned, bind-mounted read-only into every sandbox) is the trust root; the boot partition is not needed.
 
