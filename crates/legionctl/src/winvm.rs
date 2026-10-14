@@ -43,6 +43,11 @@ fn vm(dir: &Path, state: &Path) -> Result<()> {
     let config = resolve(&Dirs::from_env(), None)?.config.windows.vm;
     enough_memory(&config)?;
     let runtime = tokio::runtime::Runtime::new()?;
+    // a SIGTERM (the unit's stop) must not end the runner before it gives the host back: the stop sends the power
+    // button, and the runner ends when QEMU does
+    let _term = runtime.block_on(async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+    })?;
     let client = Client::new("cli")?;
     let begun = runtime.block_on(
         client.call::<op::InternalWindowsVmBegin>(&WindowsVmBeginIn {
@@ -132,8 +137,13 @@ fn smbios() -> Vec<String> {
     ]
 }
 
-/// The QEMU command of the VM in `dir`.
+/// The QEMU command of the VM in `dir`; with shares, its memory is shareable (virtiofs needs that).
 fn qemu_args(dir: &Path, config: &WindowsVmConfig, devices: &[String]) -> Vec<String> {
+    let machine = if config.shares.is_empty() {
+        "q35,accel=kvm,smm=off".to_string()
+    } else {
+        "q35,accel=kvm,smm=off,memory-backend=mem".to_string()
+    };
     let path = |name: &str| opt(&dir.join(name).to_string_lossy());
     let mut args: Vec<String> = vec![
         "taskset".into(),
@@ -145,7 +155,7 @@ fn qemu_args(dir: &Path, config: &WindowsVmConfig, devices: &[String]) -> Vec<St
         "-nodefaults".into(),
         // no SMM: this kernel's KVM resets a guest with SMM (note 18)
         "-machine".into(),
-        "q35,accel=kvm,smm=off".into(),
+        machine,
         "-cpu".into(),
         "host,hv_relaxed,hv_vapic,hv_spinlocks=0x1fff,hv_time,hv_vpindex,hv_synic,hv_stimer,hv_frequencies,hv_reset,hv_tlbflush,hv_ipi".into(),
         "-smp".into(),
@@ -195,6 +205,15 @@ fn qemu_args(dir: &Path, config: &WindowsVmConfig, devices: &[String]) -> Vec<St
         "-monitor".into(),
         "none".into(),
     ];
+    if !config.shares.is_empty() {
+        args.extend([
+            "-object".into(),
+            format!(
+                "memory-backend-memfd,id=mem,size={}M,share=on",
+                config.memory_mib
+            ),
+        ]);
+    }
     args.extend(smbios());
     for device in devices {
         args.extend(["-device".into(), format!("vfio-pci,host={device}")]);
@@ -254,12 +273,31 @@ fn boot(
     );
     wait_for(&tpm_socket, &mut tpm.0, "swtpm")?;
     let args = qemu_args(dir, config, &begun.devices);
-    let mut qemu = Kill(
-        Command::new(&args[0])
-            .args(&args[1..])
-            .spawn()
-            .context("starting qemu-system-x86_64")?,
-    );
+    let mut command = Command::new(&args[0]);
+    command.args(&args[1..]);
+    let shares: Vec<(String, std::path::PathBuf, bool)> = config
+        .shares
+        .iter()
+        .map(|folder| {
+            let path = legionctl_core::config::expand_home(folder)?;
+            let tag = path
+                .file_name()
+                .map_or_else(|| "share".into(), |n| n.to_string_lossy().into_owned());
+            Ok((tag, path, false))
+        })
+        .collect::<Result<_>>()?;
+    let virtiofsd = resolve(&Dirs::from_env(), None)?
+        .config
+        .session
+        .vm
+        .virtiofsd;
+    let _daemons = crate::vm::share(
+        &mut command,
+        dir,
+        &virtiofsd,
+        &shares.iter().collect::<Vec<_>>(),
+    )?;
+    let mut qemu = Kill(command.spawn().context("starting qemu-system-x86_64")?);
     let spice = dir.join("spice.sock");
     std::fs::write(
         state,
@@ -272,4 +310,38 @@ fn boot(
     let status = qemu.0.wait()?;
     anyhow::ensure!(status.success(), "QEMU ended with {status}");
     Ok(())
+}
+
+/// `legionctl windows-vm-stop` (the unit's stop): the power button through QMP; after 2 minutes the VM is ended. Waits
+/// until the runner (`$MAINPID`) gave the host back and ended.
+///
+/// # Errors
+/// QMP refuses, or the runner does not end.
+pub fn stop() -> Result<()> {
+    let socket = legionctl_core::session::windows_root().join("qmp.sock");
+    let runner = std::env::var("MAINPID").ok().filter(|p| !p.is_empty());
+    let alive = || {
+        runner
+            .as_ref()
+            .is_some_and(|p| Path::new("/proc").join(p).exists())
+    };
+    let mut qmp = legionctl_core::qmp::Qmp::connect(&socket)?;
+    qmp.execute("system_powerdown", None)?;
+    for (limit, last) in [
+        (Duration::from_mins(2), "quit"),
+        (Duration::from_secs(30), ""),
+    ] {
+        let deadline = Instant::now() + limit;
+        while alive() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        if !alive() {
+            return Ok(());
+        }
+        if !last.is_empty() {
+            eprintln!("legionctl: Windows did not shut down in 2 minutes: the VM is ended");
+            qmp.execute(last, None)?;
+        }
+    }
+    anyhow::bail!("the Windows VM's runner did not end")
 }

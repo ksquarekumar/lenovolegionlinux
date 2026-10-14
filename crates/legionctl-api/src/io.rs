@@ -316,6 +316,22 @@ pub struct VfioBindIn {
     pub memlock_mib: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Autostart {
+    /// Only `windows vm start` starts it.
+    Off,
+    /// It starts when you log in.
+    Login,
+    /// It starts when the machine starts, before you log in (your user's services run without a login).
+    Boot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AutostartIn {
+    pub mode: Autostart,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WindowsVmBeginIn {
     /// The runner, which may lock the VM's memory.

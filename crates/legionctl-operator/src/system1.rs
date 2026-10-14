@@ -33,6 +33,8 @@ pub trait System1 {
         pid: u32,
         memlock: u64,
     ) -> zbus::Result<(Vec<String>, Vec<String>, Vec<u8>)>;
+    /// The caller may start and end the Windows VM without a prompt (autostart), or not.
+    fn set_windows_autostart(&self, on: bool) -> zbus::Result<Vec<String>>;
     /// Give back what the Windows VM's start changed.
     fn windows_vm_end(&self) -> zbus::Result<Vec<String>>;
     /// The devices that can go to a VM, as JSON (`vfio::Candidate`).

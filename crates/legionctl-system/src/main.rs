@@ -473,6 +473,32 @@ impl System1 {
         Ok((lines, record.devices, msdm))
     }
 
+    /// Let the caller start and end the Windows VM without a prompt (`on`: a polkit rule for this user and this
+    /// action only, for autostart), or ask again (`off`).
+    async fn set_windows_autostart(
+        &self,
+        on: bool,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.windows.vm").await?;
+        let uid = caller_uid(conn, &header).await?;
+        let passwd = std::fs::read_to_string(self.root.path("/etc/passwd"))
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        let user = passwd
+            .lines()
+            .map(|l| l.split(':').collect::<Vec<_>>())
+            .find(|f| f.get(2) == Some(&uid.to_string().as_str()))
+            .and_then(|f| f.first().map(|n| (*n).to_string()))
+            .ok_or_else(|| zbus::fdo::Error::Failed(format!("uid {uid} is not in /etc/passwd")))?;
+        let line = winvm::set_autostart_rule(&self.root, on.then_some(user.as_str()))
+            .map_err(|e| failed(&e))?;
+        let lines = vec![line];
+        Self::changed(&emitter, "SetWindowsAutostart", &lines).await?;
+        Ok(lines)
+    }
+
     /// Undo what the Windows VM's start changed on the host (after the VM ended, or after it failed).
     async fn windows_vm_end(
         &self,

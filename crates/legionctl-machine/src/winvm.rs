@@ -263,3 +263,44 @@ pub fn msdm(root: &SysRoot) -> Result<Vec<u8>> {
     std::fs::read(root.path("/sys/firmware/acpi/tables/MSDM"))
         .context("the firmware has no MSDM table")
 }
+
+/// The polkit rule that lets user `user` start and end the Windows VM without a prompt (autostart: at boot no
+/// polkit agent can ask, and a prompt at every login is no autostart). Only this action, only this user.
+pub const AUTOSTART_RULE: &str = "/etc/polkit-1/rules.d/49-legionctl-windows-vm.rules";
+
+/// Write (`Some(user)`) or remove (`None`) the autostart rule.
+///
+/// # Errors
+/// The user name has characters a rule cannot hold, or the file cannot be written or removed.
+pub fn set_autostart_rule(root: &SysRoot, user: Option<&str>) -> Result<String> {
+    let path = root.path(AUTOSTART_RULE);
+    let Some(user) = user else {
+        match std::fs::remove_file(&path) {
+            Ok(()) => return Ok(format!("removed {AUTOSTART_RULE}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok("no autostart rule".into());
+            }
+            Err(e) => return Err(e).with_context(|| format!("removing {AUTOSTART_RULE}")),
+        }
+    };
+    anyhow::ensure!(
+        !user.is_empty()
+            && user
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)),
+        "{user} is not a user name a rule can hold"
+    );
+    let rule = format!(
+        "// legionctl windows vm autostart: {user} may start and end the Windows VM without a prompt\n\
+         polkit.addRule(function(action, subject) {{\n    \
+         if (action.id == \"org.legionctl.windows.vm\" && subject.user == \"{user}\") {{\n        \
+         return polkit.Result.YES;\n    }}\n}});\n"
+    );
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, rule).with_context(|| format!("writing {AUTOSTART_RULE}"))?;
+    Ok(format!(
+        "wrote {AUTOSTART_RULE}: {user} starts the Windows VM without a prompt"
+    ))
+}

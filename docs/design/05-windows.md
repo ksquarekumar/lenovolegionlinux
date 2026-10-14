@@ -83,6 +83,16 @@ What it changed is in the ledger, so `WindowsVmEnd` (also after an error, or by 
 back to their drivers, services and automounts started again. Live: the first boot is the user's (drivers for the
 virtual hardware install once; the NVIDIA driver may need the GPU's VBIOS as `romfile` on a laptop GPU, error 43).
 
+Built (2026-10-14, part 2): the user unit `legionctl-windows-vm.service` (packaged): `windows vm start` starts it
+(after giving back what a crashed run left), its stop (`legionctl windows-vm-stop`, also at logout and shutdown)
+sends the power button through QMP and waits, after 2 minutes ends the VM, and the runner (which ignores SIGTERM) gives
+the host back; `windows vm stop` stops the unit. `windows vm autostart off|login|boot`: on writes, after one polkit
+approval, `/etc/polkit-1/rules.d/49-legionctl-windows-vm.rules` (this user, this action only; removed by off and by
+the package's removal) and enables the unit; boot also enables lingering. `windows vm view` opens `remote-viewer` on
+the SPICE socket as a user service (the desktop's environment). `windows.vm.shares`: one virtiofsd per folder (tag:
+the folder's name) and shareable memory (memfd). QMP is one module in the core crate. e2e: the autostart rule's
+content, enable/disable and lingering (off mutation-checked), view refused without a VM; as root, the share's devices.
+
 ## Boot, VM and GPU journeys (for review, 2026-10-14; todo-28, todo-80, todo-81)
 
 GPUs have one owner each: `linux`, `windows` or `none` (on vfio-pci, used by no one). The iGPU drives the laptop

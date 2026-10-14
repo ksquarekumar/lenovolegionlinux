@@ -1,0 +1,14 @@
+[Unit]
+Description=Windows in a VM (legionctl windows vm)
+Requires=legionctl-operator.socket
+After=legionctl-operator.socket
+
+[Service]
+ExecStart=/usr/bin/legionctl windows-vm
+# the power button first: Windows shuts down, then the runner gives the host back and ends
+ExecStop=/usr/bin/legionctl windows-vm-stop
+TimeoutStopSec=180
+KillMode=mixed
+
+[Install]
+WantedBy=default.target

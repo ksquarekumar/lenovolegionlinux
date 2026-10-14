@@ -55,6 +55,7 @@ fn client_only() -> Vec<Command> {
             .arg(Arg::new("agent").num_args(1..).required(true).last(true)),
         Command::new("guest").hide(true),
         Command::new("windows-vm").hide(true),
+        Command::new("windows-vm-stop").hide(true),
         Command::new("trace").about("Follow the event log: agents, people and the machine daemon, as it happens"),
         Command::new("hook")
             .about("Claude Code hook adapter: reads the hook's JSON from stdin, answers in Claude Code's hook protocol")
@@ -350,6 +351,7 @@ fn main() -> Result<()> {
         }
         Some(("guest", _)) => return vm::guest(),
         Some(("windows-vm", _)) => return winvm::run(),
+        Some(("windows-vm-stop", _)) => return winvm::stop(),
         Some(("trace", _)) => return trace(),
         Some(("run", sub)) => return run(sub),
         Some(("hook", sub)) => {

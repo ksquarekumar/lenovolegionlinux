@@ -48,6 +48,14 @@
       <arg type="ay" direction="out"/>
     </method>
     <!--
+     Let the caller start and end the Windows VM without a prompt (`on`: a polkit rule for this user and this
+     action only, for autostart), or ask again (`off`).
+     -->
+    <method name="SetWindowsAutostart">
+      <arg name="on" type="b" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
      Undo what the Windows VM's start changed on the host (after the VM ended, or after it failed).
      -->
     <method name="WindowsVmEnd">

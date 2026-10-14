@@ -62,6 +62,9 @@ pub struct WindowsVmConfig {
     pub reserve_mib: u64,
     /// USB devices for Windows, as vendor:product (`lsusb`).
     pub usb: Vec<String>,
+    /// Linux folders Windows gets through virtiofs (Windows needs the virtio-win drivers and `WinFsp`); the tag is
+    /// the folder's name.
+    pub shares: Vec<String>,
     /// UEFI firmware (OVMF) code, and the variables a first start copies.
     pub ovmf_code: String,
     pub ovmf_vars: String,

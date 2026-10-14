@@ -2331,6 +2331,18 @@ mod operator_and_daemon {
             "exec python3 -c 'import re,socket,sys,time; s=socket.socket(socket.AF_UNIX); \
              s.bind(re.search(r\"path=([^ ]+)\", \" \".join(sys.argv)).group(1)); s.listen(); time.sleep(60)' \"$@\"",
         );
+        std::fs::create_dir_all(m.dir.join("share")).unwrap();
+        Machine::script(
+            &bin,
+            "virtiofsd",
+            "exec python3 -c 'import re,socket,sys,time; s=socket.socket(socket.AF_UNIX); \
+             s.bind(re.search(r\"--socket-path=([^ ]+)\", \" \".join(sys.argv)).group(1)); s.listen(); time.sleep(60)' \"$@\"",
+        );
+        Machine::script(
+            &bin,
+            "loginctl",
+            &format!("echo \"loginctl $*\" >> {}", log.display()),
+        );
         let vars = m.dir.join("OVMF_VARS.fd");
         std::fs::write(&vars, "vars").unwrap();
         m.set("/home/.config/legionctl/windows.jsonc", "");
@@ -2338,7 +2350,11 @@ mod operator_and_daemon {
         std::fs::create_dir_all(config.parent().unwrap()).unwrap();
         std::fs::write(
             &config,
-            serde_json::json!({"windows": {"vm": {"memory_mib": 64, "reserve_mib": 0, "ovmf_vars": vars}}}).to_string(),
+            serde_json::json!({
+                "windows": {"vm": {"memory_mib": 64, "reserve_mib": 0, "ovmf_vars": vars, "shares": [m.dir.join("share")]}},
+                "session": {"vm": {"virtiofsd": bin.join("virtiofsd")}}
+            })
+            .to_string(),
         )
         .unwrap();
         kernel
@@ -2451,6 +2467,59 @@ mod operator_and_daemon {
         );
     }
 
+    /// Autostart (note 05): `login` and `boot` let this user, and only for the Windows VM action, start and end the VM
+    /// without a prompt (a polkit rule, after one approval) and enable its unit; `boot` also starts the user's services
+    /// at boot; `off` takes the rule away. `view` needs a running VM.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn windows_vm_autostart_is_a_rule_for_this_user_and_this_action_only() {
+        let m = Machine::new("winauto");
+        let _kernel = windows_machine(&m);
+        let uid = std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/proc/self").unwrap());
+        m.set(
+            "/etc/passwd",
+            &format!("root:x:0:0::/root:/bin/sh\ntester:x:{uid}:{uid}::/home/tester:/bin/sh"),
+        );
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "winauto");
+        let rule = m
+            .dir
+            .join("root/etc/polkit-1/rules.d/49-legionctl-windows-vm.rules");
+        let log = || std::fs::read_to_string(m.dir.join("systemctl.log")).unwrap_or_default();
+
+        op.ok(&["windows", "vm", "autostart", "login"]);
+        let text = std::fs::read_to_string(&rule).unwrap();
+        assert!(
+            text.contains(
+                "action.id == \"org.legionctl.windows.vm\" && subject.user == \"tester\""
+            ) && text.matches("polkit.Result.YES").count() == 1,
+            "{text}"
+        );
+        assert!(
+            log().contains("--user enable legionctl-windows-vm.service"),
+            "{}",
+            log()
+        );
+        assert!(!log().contains("enable-linger"), "login: no lingering");
+
+        op.ok(&["windows", "vm", "autostart", "boot"]);
+        assert!(log().contains("loginctl enable-linger"), "{}", log());
+
+        op.ok(&["windows", "vm", "autostart", "off"]);
+        assert!(!rule.exists(), "off asks again");
+        assert!(
+            log().contains("--user disable legionctl-windows-vm.service"),
+            "{}",
+            log()
+        );
+
+        let view = op.cli(&["windows", "vm", "view"]);
+        assert!(
+            String::from_utf8_lossy(&view.stderr).contains("the Windows VM does not run"),
+            "{}",
+            String::from_utf8_lossy(&view.stderr)
+        );
+    }
+
     /// The Windows VM's full start, as root (only root may raise the memory lock this far): QEMU runs on the
     /// configured CPUs with the Windows disk through VFIO, the Bolt receiver, the firmware's MSDM table, a TPM and a
     /// free `PCIe` port for a GPU; when it ends, the host is given back.
@@ -2474,6 +2543,9 @@ mod operator_and_daemon {
             "pcie-root-port,id=gpu-port,chassis=1,slot=1".into(),
             "tpm-crb,tpmdev=tpm0".into(),
             "64M".into(),
+            "q35,accel=kvm,smm=off,memory-backend=mem".into(),
+            "memory-backend-memfd,id=mem,size=64M,share=on".into(),
+            "vhost-user-fs-pci,chardev=fs0,tag=share".into(),
         ] {
             assert!(
                 args.lines().any(|l| l == expected),

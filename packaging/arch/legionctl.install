@@ -14,4 +14,6 @@ post_upgrade() {
 pre_remove() {
   # the daemon's pinned eBPF sensors (they detach when the daemon stops)
   rm -rf /sys/fs/bpf/legionctl
+  # the Windows VM's autostart rule (legionctl windows vm autostart)
+  rm -f /etc/polkit-1/rules.d/49-legionctl-windows-vm.rules
 }

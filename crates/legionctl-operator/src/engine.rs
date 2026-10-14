@@ -23,12 +23,12 @@ use legionctl_api::{
     WorkspaceOpenIn, WorkspaceStates, Workspaces,
 };
 use legionctl_api::{
-    CachePurgeIn, CacheStat, CachedCall, EventRow, JobIdIn, Page, PageIn, Principal,
-    SessionActivityIn,
+    Autostart, AutostartIn, FanCurveIn, FanState, KnobHoldIn, KnobIn, PackIn, PackKind, Switch,
+    SwitchIn, UndoIn, VfioBindIn, VfioDevices, VfioIn, WindowsVmBeginIn, WindowsVmBegun,
 };
 use legionctl_api::{
-    FanCurveIn, FanState, KnobHoldIn, KnobIn, PackIn, PackKind, Switch, SwitchIn, UndoIn,
-    VfioBindIn, VfioDevices, VfioIn, WindowsVmBeginIn, WindowsVmBegun,
+    CachePurgeIn, CacheStat, CachedCall, EventRow, JobIdIn, Page, PageIn, Principal,
+    SessionActivityIn,
 };
 use legionctl_core::cache::Cache;
 use legionctl_core::config::{Dirs, Resolved, resolve};
@@ -574,28 +574,6 @@ fn unit_active(unit: &str) -> bool {
         .args(["--user", "is-active", "-q", unit])
         .status()
         .is_ok_and(|s| s.success())
-}
-
-/// One QMP command to the QEMU at `socket` (after the capabilities handshake).
-fn qmp_command(socket: &Path, command: &str) -> Result<()> {
-    use std::io::{BufRead, Write};
-    let stream = std::os::unix::net::UnixStream::connect(socket)
-        .with_context(|| format!("connecting to {}", socket.display()))?;
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
-    let mut reader = std::io::BufReader::new(stream.try_clone()?);
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
-    for execute in ["qmp_capabilities", command] {
-        writeln!(&stream, "{}", serde_json::json!({ "execute": execute }))?;
-        line.clear();
-        reader.read_line(&mut line)?;
-        anyhow::ensure!(
-            !line.contains("\"error\""),
-            "QEMU refused {execute}: {}",
-            line.trim()
-        );
-    }
-    Ok(())
 }
 
 /// A `workspace.pack` job from its input (`repo`, `service`, `as`, `gpu`): at its start, and when a restart cut it off.
@@ -2062,19 +2040,13 @@ impl Engine for Operator {
             !unit_active(&unit),
             "the Windows VM runs already (legionctl windows vm status)"
         );
+        // a run that crashed left the host changed: give it back first
+        self.system(async |p| p.windows_vm_end().await)?;
         let dir = legionctl_core::session::windows_root();
         std::fs::create_dir_all(&dir)?;
         let state = dir.join("state");
         std::fs::write(&state, "starting")?;
-        let legionctl = which("legionctl").context("legionctl is not on PATH")?;
-        output(
-            Command::new("systemd-run")
-                .args(["--user", "--collect", "--quiet", "--unit"])
-                .arg(&unit)
-                .arg("--")
-                .arg(legionctl)
-                .arg("windows-vm"),
-        )?;
+        output(Command::new("systemctl").args(["--user", "start", "--no-block", &unit]))?;
         // the runner says how its start went (the polkit dialog waits for a human)
         let deadline = std::time::Instant::now() + std::time::Duration::from_mins(2);
         loop {
@@ -2097,26 +2069,56 @@ impl Engine for Operator {
 
     fn windows_vm_stop(&self, _: &Ctx, _: Empty) -> Result<Lines> {
         let unit = format!("{}.service", legionctl_core::session::WINDOWS_UNIT);
-        let qmp = legionctl_core::session::windows_root().join("qmp.sock");
         let mut lines = Vec::new();
         if unit_active(&unit) {
-            qmp_command(&qmp, "system_powerdown")?;
-            lines.push("sent the power button to Windows".into());
-            let deadline = std::time::Instant::now() + std::time::Duration::from_mins(2);
-            while unit_active(&unit) && std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(500));
-            }
-            if unit_active(&unit) {
-                qmp_command(&qmp, "quit")?;
-                lines.push("Windows did not shut down in 2 minutes: the VM was ended".into());
-                while unit_active(&unit) {
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                }
-            }
+            // the unit's stop sends the power button and waits for Windows (legionctl windows-vm-stop)
+            output(Command::new("systemctl").args(["--user", "stop", &unit]))?;
+            lines.push("Windows shut down".into());
         }
         // the runner gives the host back when QEMU ends; after a crash, this does it
         lines.extend(self.system(async |p| p.windows_vm_end().await)?);
         Ok(Lines { lines })
+    }
+
+    fn windows_vm_autostart(&self, _: &Ctx, input: AutostartIn) -> Result<Lines> {
+        let unit = format!("{}.service", legionctl_core::session::WINDOWS_UNIT);
+        let on = input.mode != Autostart::Off;
+        let mut lines = self.system(async move |p| p.set_windows_autostart(on).await)?;
+        let verb = if on { "enable" } else { "disable" };
+        output(Command::new("systemctl").args(["--user", verb, &unit]))?;
+        lines.push(format!("{unit}: {verb}d"));
+        // at boot only with lingering: the user's services start without a login (loginctl lets a user set it)
+        if input.mode == Autostart::Boot {
+            output(Command::new("loginctl").arg("enable-linger"))?;
+            lines.push("your services start at boot (loginctl enable-linger)".into());
+        }
+        Ok(Lines { lines })
+    }
+
+    fn windows_vm_view(&self, _: &Ctx, _: Empty) -> Result<Lines> {
+        let unit = format!("{}.service", legionctl_core::session::WINDOWS_UNIT);
+        anyhow::ensure!(
+            unit_active(&unit),
+            "the Windows VM does not run (legionctl windows vm start)"
+        );
+        let viewer = which("remote-viewer")
+            .context("remote-viewer is not installed: install the package virt-viewer")?;
+        let uri = format!(
+            "spice+unix://{}",
+            legionctl_core::session::windows_root()
+                .join("spice.sock")
+                .display()
+        );
+        // a user service gets the desktop's environment (WAYLAND_DISPLAY), which the operator may not have
+        output(
+            Command::new("systemd-run")
+                .args(["--user", "--collect", "--quiet", "--"])
+                .arg(viewer)
+                .arg(&uri),
+        )?;
+        Ok(Lines {
+            lines: vec![format!("opened {uri}")],
+        })
     }
 
     fn windows_vm_status(&self, _: &Ctx, _: Empty) -> Result<Lines> {

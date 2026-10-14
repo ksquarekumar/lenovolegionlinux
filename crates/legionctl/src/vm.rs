@@ -27,7 +27,7 @@ const CONSOLE: &str = "/dev/hvc0";
 const PORT: &str = "org.legionctl.agent";
 
 /// The virtiofs daemons of a VM; they go when the VM ends.
-struct Daemons(Vec<Child>);
+pub(crate) struct Daemons(Vec<Child>);
 
 impl Drop for Daemons {
     fn drop(&mut self) {
@@ -226,7 +226,7 @@ fn netdev(me: &Path, spec: &VmSpec) -> String {
 }
 
 /// A virtiofs daemon for each of `shares` (tag, folder, read-only), and its device on `qemu`.
-fn share(
+pub(crate) fn share(
     qemu: &mut Command,
     folder: &Path,
     virtiofsd: &str,

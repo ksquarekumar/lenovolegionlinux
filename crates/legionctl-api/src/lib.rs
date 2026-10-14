@@ -551,6 +551,11 @@ operations! {
     windows_vm_start / WindowsVmStart = "windows.vm.start", Machine, Empty => Lines;
     /// Shut the Windows VM down (the ACPI power button; after 2 minutes it is ended) and give its disk back.
     windows_vm_stop / WindowsVmStop = "windows.vm.stop", Machine, Empty => Lines;
+    /// When the Windows VM starts by itself: off, at login, or at boot (before login). On asks once in the polkit
+    /// dialog and then lets your user start and end the VM without a prompt; off asks again each time.
+    windows_vm_autostart / WindowsVmAutostart = "windows.vm.autostart", Machine, AutostartIn => Lines;
+    /// Show the running Windows VM in a window on this desktop (SPICE: `remote-viewer`, package virt-viewer).
+    windows_vm_view / WindowsVmView = "windows.vm.view", Workspace, Empty => Lines;
     /// Whether the Windows VM runs, and where its display is.
     windows_vm_status / WindowsVmStatus = "windows.vm.status", Read, Empty => Lines;
     /// The Windows VM's runner, before QEMU starts: the host made ready (`legionctl-system`), and the MSDM table.

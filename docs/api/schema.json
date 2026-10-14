@@ -6058,6 +6058,82 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "windows.vm.autostart": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "off",
+              "description": "Only `windows vm start` starts it."
+            },
+            {
+              "type": "string",
+              "const": "login",
+              "description": "It starts when you log in."
+            },
+            {
+              "type": "string",
+              "const": "boot",
+              "description": "It starts when the machine starts, before you log in (your user's services run without a login)."
+            }
+          ]
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "title": "AutostartIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "windows.vm.view": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "windows.vm.status": {
     "class": "read",
     "internal": false,
