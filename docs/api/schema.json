@@ -2108,6 +2108,11 @@
           ],
           "description": "What to make: the agent image (container) or the VM disk (vm).",
           "default": "container"
+        },
+        "gpu": {
+          "type": "boolean",
+          "description": "With `--as vm`: also the NVIDIA driver in the disk, for sessions `--in vm --gpu` (a longer first boot).",
+          "default": false
         }
       },
       "title": "PackIn",
@@ -8182,6 +8187,11 @@
           ],
           "description": "Where the session runs: host (a bwrap sandbox) or container (the repository's agent image from `legionctl\nworkspace pack`, with the workspace and the dossier mounted).",
           "default": "host"
+        },
+        "gpu": {
+          "type": "boolean",
+          "description": "The NVIDIA GPU: its device nodes on the host and in a container (the host's driver); the GPU itself in a VM\n(VFIO: the desktop must not use it, see `vfio status`; the VM disk needs `workspace pack --as vm --gpu`).",
+          "default": false
         }
       },
       "required": [
@@ -8332,6 +8342,11 @@
           ],
           "description": "Where the session runs: host (a bwrap sandbox) or container (the repository's agent image from `legionctl\nworkspace pack`, with the workspace and the dossier mounted).",
           "default": "host"
+        },
+        "gpu": {
+          "type": "boolean",
+          "description": "The NVIDIA GPU: its device nodes on the host and in a container (the host's driver); the GPU itself in a VM\n(VFIO: the desktop must not use it, see `vfio status`; the VM disk needs `workspace pack --as vm --gpu`).",
+          "default": false
         },
         "tag": {
           "type": [

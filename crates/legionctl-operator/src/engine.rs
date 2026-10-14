@@ -412,8 +412,20 @@ fn vm_base(url: &str) -> Result<PathBuf> {
 
 /// cloud-init's user data for a repository's disk: git, Node.js and the agents, the static client as `legionctl`,
 /// the git gate and the guest service; then a mark on the serial console, and power off.
-fn vm_user_data(npm: &[String]) -> String {
+fn vm_user_data(npm: &[String], gpu: bool) -> String {
     let node = if npm.is_empty() { "" } else { ", nodejs, npm" };
+    // NVIDIA's own repository (Debian's nvidia-open 550 does not build on its current kernel, 2026-10-14); its DKMS
+    // module needs the generic kernel (the cloud kernel has no DRM)
+    let nvidia = if gpu {
+        "cd /tmp; curl -fsSLO https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/cuda-keyring_1.1-1_all.deb; \
+         dpkg -i cuda-keyring_1.1-1_all.deb; apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y \
+         linux-image-amd64 linux-headers-amd64 nvidia-open || \
+         { tail -n 60 /var/lib/dkms/nvidia*/*/build/make.log; false; }; \
+         DEBIAN_FRONTEND=noninteractive apt-get purge -y \"linux-image-*-cloud-amd64\" linux-image-cloud-amd64; \
+         update-grub; ls /lib/modules/*/updates/dkms/nvidia.ko*; cd /; "
+    } else {
+        ""
+    };
     let agents = if npm.is_empty() {
         String::new()
     } else {
@@ -424,7 +436,7 @@ fn vm_user_data(npm: &[String]) -> String {
          package_update: true\n\
          packages: [git, ca-certificates{node}]\n\
          runcmd:\n  \
-         - [sh, -ec, 'mount -o ro LABEL=cidata /mnt; install -m 755 /mnt/legionctl /usr/local/bin/legionctl; \
+         - [sh, -ec, '{nvidia}mount -o ro LABEL=cidata /mnt; install -m 755 /mnt/legionctl /usr/local/bin/legionctl; \
          install -m 644 /mnt/legionctl-guest.service /etc/systemd/system/; umount /mnt; \
          mkdir -p /usr/local/libexec/legionctl; mv \"$(command -v git)\" /usr/local/libexec/legionctl/git; \
          ln -s /usr/local/bin/legionctl /usr/bin/git; {agents}\
@@ -444,6 +456,7 @@ fn pack_vm(
     dir: &Path,
     container: &legionctl_core::config::ContainerConfig,
     vm: &legionctl_core::config::VmConfig,
+    gpu: bool,
 ) -> Result<Lines> {
     let base = vm_base(&vm.base)?;
     let disk = legionctl_core::session::vm_disk(dir);
@@ -457,7 +470,7 @@ fn pack_vm(
         )
     })?;
     std::fs::write(seed.join("legionctl-guest.service"), GUEST_UNIT)?;
-    std::fs::write(seed.join("user-data"), vm_user_data(&container.npm))?;
+    std::fs::write(seed.join("user-data"), vm_user_data(&container.npm, gpu))?;
     std::fs::write(
         seed.join("meta-data"),
         "instance-id: legionctl-pack\nlocal-hostname: legionctl\n",
@@ -477,6 +490,29 @@ fn pack_vm(
             .arg(&new)
             .arg(format!("{}G", vm.disk_gib)),
     )?;
+    // the NVIDIA module is a large compile
+    first_boot(&disk, &new, (&iso, if gpu { "4096" } else { "2048" }))?;
+    std::fs::rename(&new, &disk)?;
+    let mark = legionctl_core::session::vm_gpu_mark(&disk);
+    if gpu {
+        std::fs::write(&mark, "")?;
+    } else {
+        let _ = std::fs::remove_file(&mark);
+    }
+    std::fs::remove_file(&iso)?;
+    std::fs::remove_dir_all(&seed)?;
+    Ok(Lines {
+        lines: vec![format!(
+            "packed {} from {}{}",
+            disk.display(),
+            vm.base,
+            if gpu { " with the NVIDIA driver" } else { "" }
+        )],
+    })
+}
+
+/// The first boot of a new VM disk `new` with the cloud-init seed `iso`: it must end with the mark on the console.
+fn first_boot(disk: &Path, new: &Path, (iso, memory): (&Path, &str)) -> Result<()> {
     let log = disk.with_extension("pack.log");
     let mut first_boot = Command::new("qemu-system-x86_64")
         .args([
@@ -485,7 +521,7 @@ fn pack_vm(
             "-cpu",
             "host",
             "-m",
-            "2048",
+            memory,
             "-smp",
             "2",
         ])
@@ -529,12 +565,23 @@ fn pack_vm(
         "the first boot did not set up the disk ({status}); see {}",
         log.display()
     );
-    std::fs::rename(&new, &disk)?;
-    std::fs::remove_file(&iso)?;
-    std::fs::remove_dir_all(&seed)?;
-    Ok(Lines {
-        lines: vec![format!("packed {} from {}", disk.display(), vm.base)],
-    })
+    Ok(())
+}
+
+/// A `workspace.pack` job from its input (`repo`, `service`, `as`, `gpu`): at its start, and when a restart cut it off.
+fn pack_job(
+    input: &serde_json::Value,
+    session: &legionctl_core::config::SessionConfig,
+) -> Result<Lines> {
+    let repo = Path::new(
+        input["repo"]
+            .as_str()
+            .context("the job has no repository")?,
+    );
+    match serde_json::from_value(input["as"].clone())? {
+        PackKind::Container => pack(repo, input["service"].as_str(), &session.container),
+        PackKind::Vm => pack_vm(repo, &session.container, &session.vm, input["gpu"] == true),
+    }
 }
 
 /// The CPU list of a core class: the P-cores, the E-cores or every online CPU.
@@ -967,13 +1014,8 @@ impl Operator {
                     }
                     "workspace.pack" => {
                         let repo = PathBuf::from(job.input["repo"].as_str().unwrap_or_default());
-                        let out = config(Some(&ClientPath(repo.clone()))).and_then(|r| {
-                            pack(
-                                &repo,
-                                job.input["service"].as_str(),
-                                &r.config.session.container,
-                            )
-                        });
+                        let out = config(Some(&ClientPath(repo)))
+                            .and_then(|r| pack_job(&job.input, &r.config.session));
                         end_job(&db, job.id, &out)
                     }
                     other => db.job_end(job.id, &Err(format!("no way to resume a {other} job"))),
@@ -1846,14 +1888,9 @@ impl Engine for Operator {
         let repo = input.repo.get()?;
         let session = config(Some(&input.repo))?.config.session;
         let db = Db::open_default()?;
-        let job = db.job_begin(
-            "workspace.pack",
-            &serde_json::json!({"repo": repo, "service": input.service, "as": input.kind}),
-        )?;
-        let out = match input.kind {
-            PackKind::Container => pack(repo, input.service.as_deref(), &session.container),
-            PackKind::Vm => pack_vm(repo, &session.container, &session.vm),
-        };
+        let job_input = serde_json::json!({"repo": repo, "service": input.service, "as": input.kind, "gpu": input.gpu});
+        let job = db.job_begin("workspace.pack", &job_input)?;
+        let out = pack_job(&job_input, &session);
         end_job(&db, job, &out)?;
         out
     }
@@ -2317,6 +2354,7 @@ impl Engine for Operator {
             headless: false,
             account: input.account.as_deref(),
             inside: input.inside.into(),
+            gpu: input.gpu,
         };
         let launch = store.start_session(&start, &resolved.config)?;
         Db::open_default()?.issue_token(&launch.id, &token)?;
@@ -2343,6 +2381,7 @@ impl Engine for Operator {
             headless: true,
             account: input.account.as_deref(),
             inside: input.inside.into(),
+            gpu: input.gpu,
         };
         let launch = store.start_session(&start, &resolved.config)?;
         let db = Db::open_default()?;

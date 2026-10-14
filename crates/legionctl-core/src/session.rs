@@ -76,6 +76,8 @@ pub struct VmSpec {
     pub shares: Vec<(String, PathBuf, bool)>,
     /// The operator socket the guest's connections go to.
     pub socket: PathBuf,
+    /// The NVIDIA GPU's IOMMU group goes to the VM for the run (`vfio bind`).
+    pub gpu: bool,
     pub guest: GuestSpec,
 }
 
@@ -145,6 +147,8 @@ pub struct Start<'a> {
     pub headless: bool,
     pub account: Option<&'a str>,
     pub inside: Inside,
+    /// The NVIDIA GPU: its device nodes on the host and in a container, the GPU itself (VFIO) in a VM.
+    pub gpu: bool,
 }
 
 /// Where account profiles live: `~/.local/share/legionctl/accounts/<name>/{claude,codex}`.
@@ -585,6 +589,27 @@ fn docker_args(args: &mut Vec<String>, mounts: &[Mount], env: &[(String, String)
     Ok(())
 }
 
+/// The NVIDIA GPU's device nodes in a bwrap sandbox (its `--dev` has none): the host's driver does the work.
+fn gpu_nodes(args: &mut Vec<String>) -> Result<()> {
+    let nodes: Vec<PathBuf> = std::fs::read_dir("/dev")?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("nvidia"))
+        })
+        .collect();
+    anyhow::ensure!(
+        !nodes.is_empty(),
+        "no NVIDIA device nodes (/dev/nvidia*): is the NVIDIA driver loaded?"
+    );
+    for node in nodes.iter().chain([&PathBuf::from("/dev/dri")]) {
+        let node = node.to_string_lossy().into_owned();
+        args.extend(["--dev-bind".into(), node.clone(), node]);
+    }
+    Ok(())
+}
+
 /// `bwrap ...` over the host's root, read-only, with the ways out hidden, then `mounts` and `env`.
 fn bwrap_sandbox(
     ws: &crate::workspace::Workspace,
@@ -629,7 +654,7 @@ fn bwrap_sandbox(
 /// `docker run ...` of `image` as this user, with a private home, then `mounts` and `env`. The client adds `-t` when
 /// it runs the session in a terminal.
 fn docker_sandbox(
-    (id, image, gateway): (&str, &str, Option<u16>),
+    (id, image, gateway, gpu): (&str, &str, Option<u16>, bool),
     (runtime, workdir): (&Path, &Path),
     mut mounts: Vec<Mount>,
     env: &[(String, String)],
@@ -664,6 +689,10 @@ fn docker_sandbox(
         mounts.push(Mount::ReadOnly(gitconfig.clone(), gitconfig));
     }
     docker_args(&mut args, &mounts, env)?;
+    if gpu {
+        // the host's driver through the NVIDIA Container Toolkit's CDI spec (`nvidia-ctk cdi generate`)
+        args.extend(["--device".into(), "nvidia.com/gpu=all".into()]);
+    }
     args.push(image.into());
     if let Some(port) = gateway {
         // the image's static client: 127.0.0.1:<port> in the container goes to the host's gateway socket
@@ -714,9 +743,14 @@ fn vm_sandbox(
     id: &str,
     disk: &Path,
     vm: &crate::config::VmConfig,
-    (runtime, gateway): (&Path, Option<u16>),
+    (runtime, gateway, gpu): (&Path, Option<u16>, bool),
     (workdir, mounts, env): (&Path, Vec<Mount>, &[(String, String)]),
 ) -> Result<Vec<String>> {
+    anyhow::ensure!(
+        !gpu || vm_gpu_mark(disk).exists(),
+        "the VM disk {} has no NVIDIA driver: make it with `legionctl workspace pack --as vm --gpu`",
+        disk.display()
+    );
     let me = std::fs::metadata("/proc/self")?;
     let home = PathBuf::from(std::env::var("HOME").context("HOME is not set")?);
     let legionctl = runtime.join("legionctl");
@@ -782,6 +816,7 @@ fn vm_sandbox(
         virtiofsd: vm.virtiofsd.clone(),
         shares,
         socket: legionctl.join("api.sock"),
+        gpu,
         guest: GuestSpec {
             mounts: guest_mounts,
             env: guest_env,
@@ -801,6 +836,12 @@ fn vm_sandbox(
         path.to_string_lossy().into_owned(),
         "--".into(),
     ])
+}
+
+/// The mark beside a VM disk that `workspace pack --as vm --gpu` made: its guest has the NVIDIA driver.
+#[must_use]
+pub fn vm_gpu_mark(disk: &Path) -> PathBuf {
+    disk.with_extension("gpu")
 }
 
 /// The agent image of the repository that holds `dir` (`legionctl workspace pack` makes it).
@@ -1048,14 +1089,18 @@ impl Dossiers {
             // a container tells whether its session is live, as a scope does
             params![id, agent, start.dossier, agent_dir(&ws).to_string_lossy(), now(), start.account, config.session.scope || start.inside == Inside::Container, start.inside.as_str()],
         )?;
+        // a start that fails here (no GPU, no GPU driver in the disk) holds nothing
         self.launch(
-            id,
+            id.clone(),
             (&ws, bound, start.token),
             config,
             (command, start.account),
             (mcp_json, skills.as_deref()),
-            &runs,
+            (&runs, start.gpu),
         )
+        .inspect_err(|_| {
+            let _ = self.release(&id);
+        })
     }
 
     /// Prepare an ended session again: the same id, dossier and workspace, and the agent's resume command
@@ -1110,7 +1155,8 @@ impl Dossiers {
             config,
             (command, record.account.as_deref()),
             (mcp_json, skills.as_deref()),
-            &runs,
+            // the GPU is asked for each start: a resumed session runs without it
+            (&runs, false),
         )
     }
 
@@ -1122,7 +1168,7 @@ impl Dossiers {
         config: &Config,
         (command, account): (&[String], Option<&str>),
         (mcp_json, skills): (serde_json::Value, Option<&[(String, PathBuf)]>),
-        runs: &Runs,
+        (runs, gpu): (&Runs, bool),
     ) -> Result<Launch> {
         let dossier = ws.dossier.as_str();
         let runtime = PathBuf::from(
@@ -1166,16 +1212,24 @@ impl Dossiers {
         let sandbox = match runs {
             Runs::Host => {
                 mounts.push(Mount::ReadOnly("/usr/bin/git".into(), real_git.clone()));
-                bwrap_sandbox(ws, &runtime, &config.session.hidden, &mounts, &env)?
+                let mut sandbox =
+                    bwrap_sandbox(ws, &runtime, &config.session.hidden, &mounts, &env)?;
+                if gpu {
+                    gpu_nodes(&mut sandbox)?;
+                }
+                sandbox
             }
-            Runs::Container(image) => {
-                docker_sandbox((&id, image, gateway), (&runtime, &workdir), mounts, &env)?
-            }
+            Runs::Container(image) => docker_sandbox(
+                (&id, image, gateway, gpu),
+                (&runtime, &workdir),
+                mounts,
+                &env,
+            )?,
             Runs::Vm(disk) => vm_sandbox(
                 &id,
                 disk,
                 &config.session.vm,
-                (&runtime, gateway),
+                (&runtime, gateway, gpu),
                 (&workdir, mounts, &env),
             )?,
         };

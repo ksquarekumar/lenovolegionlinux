@@ -101,6 +101,16 @@ pub fn run(spec_path: &Path, argv: Vec<String>) -> Result<()> {
     .arg("-netdev")
     .arg(netdev(&me, &spec))
     .args(["-device", "virtio-net-pci,netdev=net"]);
+    // the GPU's whole IOMMU group, bound to vfio-pci for this run (a polkit dialog); given back when this ends
+    let gpu = if spec.gpu {
+        let devices = nvidia_group()?;
+        for device in &devices {
+            qemu.arg("-device").arg(format!("vfio-pci,host={device}"));
+        }
+        Some(Passthrough::begin(devices, spec.memory_mib + 1024)?)
+    } else {
+        None
+    };
     let spec_share = (SPEC_TAG.to_string(), guest_dir, true);
     let shares: Vec<_> = spec.shares.iter().chain([&spec_share]).collect();
     let daemons = share(&mut qemu, folder, &spec.virtiofsd, &shares)?;
@@ -121,12 +131,82 @@ pub fn run(spec_path: &Path, argv: Vec<String>) -> Result<()> {
         status
     };
     drop(daemons);
+    drop(gpu);
     anyhow::ensure!(
         status.success(),
         "the VM failed ({status}); its console is in {}",
         console.display()
     );
     Ok(())
+}
+
+/// The NVIDIA GPU's IOMMU group: every device in it (the GPU and its audio function).
+fn nvidia_group() -> Result<Vec<String>> {
+    let pci = Path::new("/sys/bus/pci/devices");
+    let read = |p: &Path| {
+        std::fs::read_to_string(p)
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
+    let gpu = std::fs::read_dir(pci)?
+        .flatten()
+        .map(|e| e.path())
+        .find(|d| read(&d.join("vendor")) == "0x10de" && read(&d.join("class")).starts_with("0x03"))
+        .context("no NVIDIA GPU on this machine")?;
+    let group = std::fs::read_link(gpu.join("iommu_group"))
+        .context("the NVIDIA GPU has no IOMMU group: turn on the IOMMU (intel_iommu=on)")?;
+    let mut devices: Vec<String> = std::fs::read_dir(gpu.join("iommu_group/devices"))
+        .with_context(|| format!("reading IOMMU group {}", group.display()))?
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    devices.sort();
+    Ok(devices)
+}
+
+/// Devices bound to vfio-pci for this VM; they go back to their drivers when it is dropped.
+struct Passthrough {
+    devices: Vec<String>,
+    runtime: tokio::runtime::Runtime,
+    client: legionctl_api::client::Client,
+}
+
+impl Passthrough {
+    fn begin(devices: Vec<String>, memlock_mib: u64) -> Result<Passthrough> {
+        let runtime = tokio::runtime::Runtime::new()?;
+        let client = legionctl_api::client::Client::new("cli")?;
+        runtime.block_on(client.call::<legionctl_api::op::VfioBind>(
+            &legionctl_api::VfioBindIn {
+                devices: devices.clone(),
+                pid: Some(std::process::id()),
+                memlock_mib: Some(memlock_mib),
+            },
+        ))?;
+        Ok(Passthrough {
+            devices,
+            runtime,
+            client,
+        })
+    }
+}
+
+impl Drop for Passthrough {
+    fn drop(&mut self) {
+        let back =
+            self.runtime
+                .block_on(self.client.call::<legionctl_api::op::VfioUnbind>(
+                    &legionctl_api::VfioIn {
+                        devices: self.devices.clone(),
+                    },
+                ));
+        if let Err(e) = back {
+            eprintln!(
+                "legionctl vm: the GPU did not go back to its driver ({e:#}); run `legionctl vfio unbind {}`",
+                self.devices.join(" ")
+            );
+        }
+    }
 }
 
 /// QEMU's user network with the guest's forwards: the operator socket, and the gateway socket when it serves.

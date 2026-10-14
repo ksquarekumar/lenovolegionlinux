@@ -339,7 +339,19 @@ runs in a terminal. The gateway (2026-10-14): when `gateway.port` is set, the op
 `$XDG_RUNTIME_DIR/legionctl/gateway.sock`; a container's agent runs under `legionctl forward <port> <socket> --` (the
 image's static client), and a VM's `legionctl guest` listens on 127.0.0.1:<port> and relays to 10.0.2.100:81, which
 QEMU forwards to `legionctl relay <gateway socket>`. So `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL=http://127.0.0.1:<port>`
-works in a sandbox as on the host, and the TCP port stays on the host's loopback. Not built yet: GPU per run.
+works in a sandbox as on the host, and the TCP port stays on the host's loopback. GPU per run (2026-10-14, the
+user: containers and VMs): `session run|start --gpu`. On the host, bwrap gets the NVIDIA nodes and `/dev/dri` (a
+session without `--gpu` sees none); in a container, `--device nvidia.com/gpu=all` (the NVIDIA Container Toolkit's
+CDI spec; the host's driver); in a VM, the runner binds the NVIDIA GPU's whole IOMMU group to vfio-pci for the run
+(`vfio bind` with its own pid and the VM's memory plus 1 GiB to lock; a polkit dialog; refused while the desktop or
+any process uses the GPU) and gives it back after, also after an error. A VM needs a disk made with `workspace pack
+--as vm --gpu` (the generic Debian kernel, `nvidia-open-kernel-dkms`, the GSP firmware, `nvidia-smi`, `libcuda1`
+from non-free; a mark beside the disk), else `--gpu` is refused with that command. A resumed session runs without the
+GPU. A start that fails after its dossier was bound releases it. Tests: the host session sees the nodes only with
+`--gpu` (mutation-checked; without NVIDIA nodes the start is refused with the reason); the VM test refuses `--gpu` on
+a disk without the driver and the dossier stays free; an ignored test packs with `--gpu` and finds the built module
+(slow; run by hand). Not tested live: a GPU container (rules: no live GPU containers by the agent) and a GPU VM (the
+user's first run).
 Test (e2e, docker): the repository's Dockerfile image gets the layer; a headless run and an interactive session
 through the real client commit into their workspaces on the host, the gate in the image refuses the push (an agent
 layer without the gate fails the test), the dossier is writable, the home is private, and a run without a pack says

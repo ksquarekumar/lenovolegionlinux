@@ -2116,15 +2116,12 @@ fn sessions_in_a_container_work_on_the_mounted_workspace_behind_the_git_gate() {
     let _ = rmi();
 }
 
-/// W5 part 3 (note 18): `workspace pack --as vm` makes the repository's disk from a cloud image (checked against its
-/// SHA512SUMS) in one cloud-init boot, and sessions `--in vm` run on a throwaway layer over it, headless and through
-/// the real client: the workspace, its git data and the dossier are virtiofs shares at their own paths, so commits
-/// land in the workspaces on the host; the disk's `/usr/bin/git` is the static client, which reaches the operator
-/// through the guest's relay and QEMU's forward, and refuses the push. Boots VMs: needs KVM, QEMU, virtiofsd,
-/// xorriso, `make static` and the Debian cloud image (downloaded once into /var/tmp/legionctl-test-cache).
-#[test]
-#[ignore = "boots VMs (KVM, QEMU, virtiofsd, a cloud image): CI runs it in its own step"]
-fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
+/// A repository for sessions in a VM (`container_repository` with its gateway, the operator started again to serve
+/// it) and a config whose VM base is the Debian cloud image, downloaded once into /var/tmp/legionctl-test-cache.
+fn vm_repository(
+    tag: &'static str,
+    again: &'static str,
+) -> (Operator, PathBuf, PathBuf, provider::Kill) {
     let cache = Path::new("/var/tmp/legionctl-test-cache");
     let url = "https://cloud.debian.org/images/cloud/trixie/latest";
     let file = "debian-13-genericcloud-amd64.qcow2";
@@ -2140,11 +2137,11 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
             assert!(got.success(), "downloading {url}/{name}");
         }
     }
-    let (op, home) = operator("vm");
-    let (_provider, ports) = gateway_ports(&home);
+    let (op, home) = operator(tag);
+    let (provider, ports) = gateway_ports(&home);
     let repo = container_repository(&home, ports);
     drop(op);
-    let op = operator_in("vm2", &home);
+    let op = operator_in(again, &home);
     let virtiofsd = ["/usr/lib/virtiofsd", "/usr/libexec/virtiofsd"]
         .into_iter()
         .find(|p| Path::new(p).exists())
@@ -2157,6 +2154,19 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
         }}})
         .to_string(),
     );
+    (op, home, repo, provider)
+}
+
+/// W5 part 3 (note 18): `workspace pack --as vm` makes the repository's disk from a cloud image (checked against its
+/// SHA512SUMS) in one cloud-init boot, and sessions `--in vm` run on a throwaway layer over it, headless and through
+/// the real client: the workspace, its git data and the dossier are virtiofs shares at their own paths, so commits
+/// land in the workspaces on the host; the disk's `/usr/bin/git` is the static client, which reaches the operator
+/// through the guest's relay and QEMU's forward, and refuses the push. Boots VMs: needs KVM, QEMU, virtiofsd,
+/// xorriso, `make static` and the Debian cloud image (downloaded once into /var/tmp/legionctl-test-cache).
+#[test]
+#[ignore = "boots VMs (KVM, QEMU, virtiofsd, a cloud image): CI runs it in its own step"]
+fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
+    let (op, home, repo, _provider) = vm_repository("vm", "vm2");
     let run = |args: &[&str]| op.run(&repo, &[("HOME", home.to_str().unwrap())], args, "");
 
     let packed = run(&["workspace", "pack", "--as", "vm"]);
@@ -2167,6 +2177,14 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
         String::from_utf8_lossy(&packed.stderr)
     );
     let words = |line: &'static str| line.split(' ').collect::<Vec<_>>();
+    let gpu = run(&words("session run fake fix --dossier port --in vm --gpu"));
+    assert!(
+        String::from_utf8_lossy(&gpu.stderr).contains(
+            "has no NVIDIA driver: make it with `legionctl workspace pack --as vm --gpu`"
+        ),
+        "{}",
+        String::from_utf8_lossy(&gpu.stderr)
+    );
     let out = run(&words("session run fake fix --dossier port --in vm --json"));
     assert!(
         out.status.success(),
@@ -3426,7 +3444,8 @@ fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_h
                  touch \"$HOME/outside\" 2>/dev/null || echo HOME_READONLY; \
                  touch .agentworkspace/MEMORY/probe.md && echo DOSSIER_WRITABLE; echo \"SESSION=$LEGIONCTL_SESSION\"; \
                  echo \"SETTINGS=$(cat \"$1\")\"; \
-                 [ -e \"$XDG_RUNTIME_DIR/bus\" ] || echo BUS_HIDDEN; [ -S \"$HOME/decoy.sock\" ] || echo SOCKET_HIDDEN";
+                 [ -e \"$XDG_RUNTIME_DIR/bus\" ] || echo BUS_HIDDEN; [ -S \"$HOME/decoy.sock\" ] || echo SOCKET_HIDDEN; \
+                 [ -e /dev/nvidiactl ] && echo NVIDIA_NODES || echo NO_GPU";
     // a session bus in the runtime folder, and a listening socket like docker's: neither may reach the agent
     write(&op.runtime.join("bus"), "");
     let _decoy = std::os::unix::net::UnixListener::bind(home.join("decoy.sock")).unwrap();
@@ -3461,6 +3480,7 @@ fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_h
         "DOSSIER_WRITABLE",
         "BUS_HIDDEN",
         "SOCKET_HIDDEN",
+        "NO_GPU",
     ] {
         assert!(
             text.contains(expected),
@@ -3492,6 +3512,33 @@ fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_h
     assert!(String::from_utf8_lossy(&active.stdout).contains("active dossier port"));
     let listed = op.run(&repo, &[], &["session", "list"], "");
     assert!(String::from_utf8_lossy(&listed.stdout).contains(id));
+    gpu_on_request(&op, &home, &repo);
+}
+
+/// `--gpu` gives a host session the NVIDIA device nodes (the host's driver), which a session without it does not see;
+/// a machine without them refuses the start with the reason.
+fn gpu_on_request(op: &Operator, home: &Path, repo: &Path) {
+    let args = [
+        "session",
+        "start",
+        "probe",
+        "--dossier",
+        "gpu",
+        "--gpu",
+        "--json",
+    ];
+    let started = op.run(repo, &[("HOME", home.to_str().unwrap())], &args, "");
+    if Path::new("/dev/nvidiactl").exists() {
+        let launch: Value = serde_json::from_slice(&started.stdout).unwrap();
+        let out = run_launch(op, home, &launch);
+        assert!(String::from_utf8_lossy(&out.stdout).contains("NVIDIA_NODES"));
+    } else {
+        let refused = String::from_utf8_lossy(&started.stderr);
+        assert!(
+            refused.contains("no NVIDIA device nodes (/dev/nvidia*)"),
+            "{refused}"
+        );
+    }
 }
 
 /// A session continues on another account: `session resume --account` copies Claude Code's transcript into that
@@ -3780,5 +3827,34 @@ fn an_account_profile_gives_the_session_its_own_agent_logins_and_usage() {
     assert!(
         resumed["sandbox"].to_string().contains("CLAUDE_CONFIG_DIR"),
         "{resumed}"
+    );
+}
+
+/// `workspace pack --as vm --gpu` builds the NVIDIA open module (DKMS) for the guest's generic kernel, with the GSP
+/// firmware and nvidia-smi, from Debian's non-free sections, and marks the disk for `--gpu` sessions. Slow (packages
+/// and a module build), so neither CI nor the VM step runs it: run it when the guest's packages may have changed.
+#[test]
+#[ignore = "downloads the NVIDIA packages and builds the module in a VM: run by hand"]
+fn a_vm_disk_packed_with_the_gpu_has_the_nvidia_module() {
+    let (op, home, repo, _provider) = vm_repository("vmgpu", "vmgpu2");
+    let packed = op.run(
+        &repo,
+        &[("HOME", home.to_str().unwrap())],
+        &["workspace", "pack", "--as", "vm", "--gpu"],
+        "",
+    );
+    let disk = home.join(".local/share/legionctl/vm/repo.qcow2");
+    let log = std::fs::read_to_string(disk.with_extension("pack.log")).unwrap_or_default();
+    assert!(
+        String::from_utf8_lossy(&packed.stdout).contains("with the NVIDIA driver")
+            && log.contains("updates/dkms/nvidia.ko"),
+        "{}{}\n{}",
+        String::from_utf8_lossy(&packed.stdout),
+        String::from_utf8_lossy(&packed.stderr),
+        &log[log.len().saturating_sub(3000)..]
+    );
+    assert!(
+        disk.with_extension("gpu").exists(),
+        "the disk is marked for --gpu"
     );
 }

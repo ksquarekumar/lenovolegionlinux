@@ -549,6 +549,10 @@ pub struct SessionStartIn {
     /// workspace pack`, with the workspace and the dossier mounted).
     #[serde(default = "on_host", rename = "in")]
     pub inside: Inside,
+    /// The NVIDIA GPU: its device nodes on the host and in a container (the host's driver); the GPU itself in a VM
+    /// (VFIO: the desktop must not use it, see `vfio status`; the VM disk needs `workspace pack --as vm --gpu`).
+    #[serde(default)]
+    pub gpu: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -574,6 +578,10 @@ pub struct SessionRunIn {
     /// workspace pack`, with the workspace and the dossier mounted).
     #[serde(default = "on_host", rename = "in")]
     pub inside: Inside,
+    /// The NVIDIA GPU: its device nodes on the host and in a container (the host's driver); the GPU itself in a VM
+    /// (VFIO: the desktop must not use it, see `vfio status`; the VM disk needs `workspace pack --as vm --gpu`).
+    #[serde(default)]
+    pub gpu: bool,
     /// A tag for the run's live output events (`session.output`), so a client can follow them; `legionctl session
     /// run` sets one.
     #[serde(default)]
@@ -959,6 +967,9 @@ pub struct PackIn {
     /// What to make: the agent image (container) or the VM disk (vm).
     #[serde(default = "as_container", rename = "as")]
     pub kind: PackKind,
+    /// With `--as vm`: also the NVIDIA driver in the disk, for sessions `--in vm --gpu` (a longer first boot).
+    #[serde(default)]
+    pub gpu: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
