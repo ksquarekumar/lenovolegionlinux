@@ -7,7 +7,7 @@ use crate::{
     DossierInfo, Empty, EventRow, Explanation, Findings, GpuState, Guard, HookReply, HookTable,
     Knob, KnobDetail, Launch, LayerList, Lines, LoadState, Lock, Manifest, PackageState, Recording,
     Reminder, RunEnv, Sample, SessionState, SetupReport, SkillInfo, Snapshot, ToolCallRow,
-    TuneReport, Validation, VfioDevices, WindowsState, Workspace, WorkspaceStatus,
+    TuneReport, Validation, VfioDevices, WindowsState, WindowsVmBegun, Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -234,6 +234,12 @@ impl Render for GpuState {
             )
         }));
         out.join("\n")
+    }
+}
+
+impl Render for WindowsVmBegun {
+    fn text(&self) -> String {
+        self.lines.join("\n")
     }
 }
 

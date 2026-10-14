@@ -2253,6 +2253,254 @@ mod operator_and_daemon {
         );
     }
 
+    /// The recorded machine with its Windows install (note 05): the SK hynix `NVMe` of `pci_machine` holds
+    /// `nvme0n1p3` (system, read-only automount, Fast Startup off, not hibernated) and `nvme0n1p4` (data, read-write
+    /// automount), the firmware has an `MSDM` table, the Bolt receiver is plugged in; `systemctl` logs its calls and
+    /// `swtpm`, `taskset` and QEMU are stand-ins (QEMU writes its arguments). Returns the stand-in kernel's thread.
+    fn windows_machine(m: &Machine) -> std::thread::JoinHandle<()> {
+        let kernel = pci_machine(m);
+        let root = m.dir.join("root");
+        let bin = m.dir.join("bin");
+        let link = |from: &str, to: &str| {
+            let at = root.join(from);
+            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(to, at).unwrap();
+        };
+        m.set(
+            "/etc/fstab",
+            "UUID=1882270A8226EBC6 /mnt/windows-system ntfs3 ro,noauto,x-systemd.automount 0 0\n\
+             UUID=46648D34648D282F /mnt/windows-data ntfs3 rw,noauto,x-systemd.automount 0 0\n\
+             UUID=0d4f /home ext4 defaults 0 2",
+        );
+        link("dev/disk/by-uuid/1882270A8226EBC6", "../../nvme0n1p3");
+        link("dev/disk/by-uuid/46648D34648D282F", "../../nvme0n1p4");
+        link("dev/disk/by-uuid/0d4f", "../../nvme1n1p2");
+        link(
+            "sys/class/nvme/nvme0/device",
+            "../../../devices/pci0000:00/0000:00:06.0/0000:06:00.0",
+        );
+        link(
+            "sys/class/nvme/nvme1/device",
+            "../../../devices/pci0000:00/0000:00:1d.0/0000:7c:00.0",
+        );
+        let hive = root.join("mnt/windows-system/Windows/System32/config/SYSTEM");
+        std::fs::create_dir_all(hive.parent().unwrap()).unwrap();
+        std::fs::write(&hive, HiveFile::system(1, 0)).unwrap();
+        std::fs::write(root.join("mnt/windows-system/hiberfil.sys"), [0u8; 64]).unwrap();
+        m.set("/sys/firmware/acpi/tables/MSDM", "MSDM-license");
+        for (file, value) in [
+            ("idVendor", "046d"),
+            ("idProduct", "c548"),
+            ("busnum", "1"),
+            ("devnum", "5"),
+        ] {
+            m.set(&format!("/sys/bus/usb/devices/1-5/{file}"), value);
+        }
+        m.set("/dev/bus/usb/001/005", "");
+        let log = m.dir.join("systemctl.log");
+        Machine::script(
+            &bin,
+            "systemctl",
+            // no unit runs in the test: is-active answers inactive (3), as systemd does
+            &format!(
+                "echo \"$*\" >> {}; case \"$*\" in *is-active*) exit 3;; esac",
+                log.display()
+            ),
+        );
+        Machine::script(
+            &bin,
+            "efibootmgr",
+            "printf 'BootCurrent: 0003\\nBoot0004* Windows Boot Manager\\tHD(1,GPT,e8,0x800,0x82000)/\\\\EFI\\\\Microsoft\\\\Boot\\\\bootmgfw.efi\\n'",
+        );
+        Machine::script(
+            &bin,
+            "taskset",
+            &format!(
+                "echo \"$2\" > {}/taskset.cpus; shift 2; exec \"$@\"",
+                m.dir.display()
+            ),
+        );
+        Machine::script(
+            &bin,
+            "qemu-system-x86_64",
+            &format!("printf '%s\\n' \"$@\" > {}/qemu.args", m.dir.display()),
+        );
+        Machine::script(
+            &bin,
+            "swtpm",
+            "exec python3 -c 'import re,socket,sys,time; s=socket.socket(socket.AF_UNIX); \
+             s.bind(re.search(r\"path=([^ ]+)\", \" \".join(sys.argv)).group(1)); s.listen(); time.sleep(60)' \"$@\"",
+        );
+        let vars = m.dir.join("OVMF_VARS.fd");
+        std::fs::write(&vars, "vars").unwrap();
+        m.set("/home/.config/legionctl/windows.jsonc", "");
+        let config = m.dir.join("home/.config/legionctl/windows.jsonc");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(
+            &config,
+            serde_json::json!({"windows": {"vm": {"memory_mib": 64, "reserve_mib": 0, "ovmf_vars": vars}}}).to_string(),
+        )
+        .unwrap();
+        kernel
+    }
+
+    /// The Windows VM's runner as the operator's user: a wrapper writes its own pid's status into the recorded `/proc`
+    /// (the daemon checks whose process may lock memory) and becomes `legionctl windows-vm`.
+    fn windows_runner(m: &Machine, op: &Operator) -> std::process::Output {
+        let uid = std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/proc/self").unwrap());
+        let legionctl = Path::new(env!("CARGO_BIN_EXE_legionctl"));
+        let wrapper = format!(
+            "mkdir -p {root}/proc/$$ && printf 'Name:\\tlegionctl\\nUid:\\t{uid}\\t{uid}\\t{uid}\\t{uid}\\n' > {root}/proc/$$/status \
+             && exec {legionctl} windows-vm",
+            root = m.dir.join("root").display(),
+            legionctl = legionctl.display()
+        );
+        let path = std::env::join_paths([m.dir.join("bin"), "/usr/bin".into()]).unwrap();
+        std::process::Command::new("sh")
+            .args(["-c", &wrapper])
+            .env_clear()
+            .env("HOME", m.dir.join("home"))
+            .env("XDG_RUNTIME_DIR", &op.runtime)
+            .env("PATH", path)
+            .output()
+            .unwrap()
+    }
+
+    fn windows_state(m: &Machine) -> String {
+        std::fs::read_to_string(m.dir.join("home/.local/share/legionctl/windows/state"))
+            .unwrap_or_default()
+    }
+
+    /// The Windows VM's guards and their undo (note 05): a mounted Windows partition is refused before anything is
+    /// bound, and the stopped automounts start again; then a start that fails half way (here: the memory lock, which
+    /// only root may raise this far) gives the disk back to its driver, starts the automounts again and leaves no
+    /// record, and the runner's state says why; QEMU never runs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_windows_vm_start_is_refused_or_undone_without_leaving_the_host_changed() {
+        let m = Machine::new("winvm");
+        let _kernel = windows_machine(&m);
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "winvm");
+        let driver = || {
+            std::fs::read_link(m.dir.join("root/sys/bus/pci/devices/0000:06:00.0/driver")).unwrap()
+        };
+        let systemctl = || std::fs::read_to_string(m.dir.join("systemctl.log")).unwrap_or_default();
+
+        // a hibernated Windows: refused before anything changes
+        let hiberfil = m.dir.join("root/mnt/windows-system/hiberfil.sys");
+        std::fs::write(&hiberfil, b"hibr and a resume image").unwrap();
+        assert!(!windows_runner(&m, &op).status.success());
+        assert!(
+            windows_state(&m).contains("Windows is hibernated"),
+            "{}",
+            windows_state(&m)
+        );
+        assert!(
+            !systemctl().contains("automount"),
+            "nothing changed: {}",
+            systemctl()
+        );
+        std::fs::write(&hiberfil, [0u8; 64]).unwrap();
+
+        let out = windows_runner(&m, &op);
+        assert!(!out.status.success());
+        let state = windows_state(&m);
+        assert!(
+            state.contains("failed: ")
+                && state.contains("/dev/nvme0n1p3 is mounted at /mnt/windows-system"),
+            "{state}"
+        );
+        assert_eq!(driver(), Path::new("../../drivers/nvme"), "nothing bound");
+        let log = systemctl();
+        for line in [
+            "stop mnt-windows\\x2dsystem.automount mnt-windows\\x2dsystem.mount",
+            "stop mnt-windows\\x2ddata.automount mnt-windows\\x2ddata.mount",
+            "start mnt-windows\\x2dsystem.automount mnt-windows\\x2ddata.automount",
+        ] {
+            assert!(log.contains(line), "{line} missing:\n{log}");
+        }
+        assert!(
+            !log.contains("home"),
+            "only the Windows disk's automounts: {log}"
+        );
+
+        m.set("/proc/self/mounts", "/dev/nvme1n1p2 / btrfs rw 0 0");
+        std::fs::remove_file(m.dir.join("systemctl.log")).unwrap();
+        let out = windows_runner(&m, &op);
+        assert!(!out.status.success());
+        let state = windows_state(&m);
+        assert!(
+            state.contains("setting the memory lock limit")
+                && state.contains("0000:06:00.0: given back"),
+            "{state}"
+        );
+        assert_eq!(
+            driver(),
+            Path::new("../../drivers/nvme"),
+            "the disk is back with its driver"
+        );
+        assert!(
+            systemctl()
+                .contains("start mnt-windows\\x2dsystem.automount mnt-windows\\x2ddata.automount")
+        );
+        assert!(!m.dir.join("qemu.args").exists(), "QEMU never ran");
+        assert!(
+            op.ok(&["windows", "vm", "stop"])
+                .contains("no Windows VM ran"),
+            "no record is left"
+        );
+    }
+
+    /// The Windows VM's full start, as root (only root may raise the memory lock this far): QEMU runs on the
+    /// configured CPUs with the Windows disk through VFIO, the Bolt receiver, the firmware's MSDM table, a TPM and a
+    /// free `PCIe` port for a GPU; when it ends, the host is given back.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs root: CI runs it with sudo"]
+    async fn as_root_the_windows_vm_starts_with_its_disk_and_gives_the_host_back() {
+        let m = Machine::new("winvmroot");
+        let _kernel = windows_machine(&m);
+        m.set("/proc/self/mounts", "/dev/nvme1n1p2 / btrfs rw 0 0");
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "winvmroot");
+        let out = windows_runner(&m, &op);
+        assert!(out.status.success(), "{}", windows_state(&m));
+        assert_eq!(windows_state(&m), "stopped");
+        let args = std::fs::read_to_string(m.dir.join("qemu.args")).unwrap();
+        let dir = m.dir.join("home/.local/share/legionctl/windows");
+        for expected in [
+            "vfio-pci,host=0000:06:00.0".to_string(),
+            "usb-host,bus=xhci.0,vendorid=0x046d,productid=0xc548".into(),
+            format!("file={}", dir.join("msdm.bin").display()),
+            "pcie-root-port,id=gpu-port,chassis=1,slot=1".into(),
+            "tpm-crb,tpmdev=tpm0".into(),
+            "64M".into(),
+        ] {
+            assert!(
+                args.lines().any(|l| l == expected),
+                "{expected} missing:\n{args}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.join("msdm.bin"))
+                .unwrap()
+                .trim(),
+            "MSDM-license"
+        );
+        assert_eq!(
+            std::fs::read_to_string(m.dir.join("taskset.cpus"))
+                .unwrap()
+                .trim(),
+            "0-7,16-19"
+        );
+        let driver =
+            std::fs::read_link(m.dir.join("root/sys/bus/pci/devices/0000:06:00.0/driver")).unwrap();
+        assert_eq!(driver, Path::new("../../drivers/nvme"), "the disk is back");
+        assert!(
+            op.ok(&["windows", "vm", "stop"])
+                .contains("no Windows VM ran")
+        );
+    }
+
     /// The D-Bus contract is reviewed: the running daemon's interface is `dbus/org.legionctl.System1.xml`, word for
     /// word (`LEGIONCTL_WRITE_DBUS=1` writes it after a deliberate change), and its `Version` is that file's hash,
     /// which the operator's doctor compares with its own.

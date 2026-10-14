@@ -40,6 +40,31 @@ pub struct Config {
     pub events: EventsConfig,
     /// Namespace -> its limit in the disposable cache (`tools`, `gateway`).
     pub cache: BTreeMap<String, CacheLimit>,
+    pub windows: WindowsConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WindowsConfig {
+    pub vm: WindowsVmConfig,
+}
+
+/// The installed Windows in a VM (note 05).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WindowsVmConfig {
+    /// Host CPUs the VM runs on (a CPU list); Linux keeps the others.
+    pub host_cpus: String,
+    /// vCPUs Windows sees.
+    pub vcpus: u32,
+    pub memory_mib: u64,
+    /// Memory that must stay free for Linux when the VM starts (VFIO locks all of the VM's memory).
+    pub reserve_mib: u64,
+    /// USB devices for Windows, as vendor:product (`lsusb`).
+    pub usb: Vec<String>,
+    /// UEFI firmware (OVMF) code, and the variables a first start copies.
+    pub ovmf_code: String,
+    pub ovmf_vars: String,
 }
 
 /// The agent plugins a user may install through legionctl (A1).

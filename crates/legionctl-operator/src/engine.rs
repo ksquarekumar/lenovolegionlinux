@@ -28,7 +28,7 @@ use legionctl_api::{
 };
 use legionctl_api::{
     FanCurveIn, FanState, KnobHoldIn, KnobIn, PackIn, PackKind, Switch, SwitchIn, UndoIn,
-    VfioBindIn, VfioDevices, VfioIn,
+    VfioBindIn, VfioDevices, VfioIn, WindowsVmBeginIn, WindowsVmBegun,
 };
 use legionctl_core::cache::Cache;
 use legionctl_core::config::{Dirs, Resolved, resolve};
@@ -565,6 +565,36 @@ fn first_boot(disk: &Path, new: &Path, (iso, memory): (&Path, &str)) -> Result<(
         "the first boot did not set up the disk ({status}); see {}",
         log.display()
     );
+    Ok(())
+}
+
+/// Whether user unit `unit` is active.
+fn unit_active(unit: &str) -> bool {
+    Command::new("systemctl")
+        .args(["--user", "is-active", "-q", unit])
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// One QMP command to the QEMU at `socket` (after the capabilities handshake).
+fn qmp_command(socket: &Path, command: &str) -> Result<()> {
+    use std::io::{BufRead, Write};
+    let stream = std::os::unix::net::UnixStream::connect(socket)
+        .with_context(|| format!("connecting to {}", socket.display()))?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+    let mut reader = std::io::BufReader::new(stream.try_clone()?);
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    for execute in ["qmp_capabilities", command] {
+        writeln!(&stream, "{}", serde_json::json!({ "execute": execute }))?;
+        line.clear();
+        reader.read_line(&mut line)?;
+        anyhow::ensure!(
+            !line.contains("\"error\""),
+            "QEMU refused {execute}: {}",
+            line.trim()
+        );
+    }
     Ok(())
 }
 
@@ -2023,6 +2053,110 @@ impl Engine for Operator {
         Ok(Changes {
             lines: self.system(async |p| p.reboot_windows().await)?,
             dry_run: false,
+        })
+    }
+
+    fn windows_vm_start(&self, _: &Ctx, _: Empty) -> Result<Lines> {
+        let unit = format!("{}.service", legionctl_core::session::WINDOWS_UNIT);
+        anyhow::ensure!(
+            !unit_active(&unit),
+            "the Windows VM runs already (legionctl windows vm status)"
+        );
+        let dir = legionctl_core::session::windows_root();
+        std::fs::create_dir_all(&dir)?;
+        let state = dir.join("state");
+        std::fs::write(&state, "starting")?;
+        let legionctl = which("legionctl").context("legionctl is not on PATH")?;
+        output(
+            Command::new("systemd-run")
+                .args(["--user", "--collect", "--quiet", "--unit"])
+                .arg(&unit)
+                .arg("--")
+                .arg(legionctl)
+                .arg("windows-vm"),
+        )?;
+        // the runner says how its start went (the polkit dialog waits for a human)
+        let deadline = std::time::Instant::now() + std::time::Duration::from_mins(2);
+        loop {
+            let now = std::fs::read_to_string(&state).unwrap_or_default();
+            if let Some(why) = now.strip_prefix("failed: ") {
+                anyhow::bail!("the Windows VM did not start: {why}");
+            }
+            if now.starts_with("running") {
+                return Ok(Lines {
+                    lines: now.lines().map(String::from).collect(),
+                });
+            }
+            anyhow::ensure!(
+                std::time::Instant::now() < deadline,
+                "the Windows VM did not start in 2 minutes; see journalctl --user -u {unit}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    }
+
+    fn windows_vm_stop(&self, _: &Ctx, _: Empty) -> Result<Lines> {
+        let unit = format!("{}.service", legionctl_core::session::WINDOWS_UNIT);
+        let qmp = legionctl_core::session::windows_root().join("qmp.sock");
+        let mut lines = Vec::new();
+        if unit_active(&unit) {
+            qmp_command(&qmp, "system_powerdown")?;
+            lines.push("sent the power button to Windows".into());
+            let deadline = std::time::Instant::now() + std::time::Duration::from_mins(2);
+            while unit_active(&unit) && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            if unit_active(&unit) {
+                qmp_command(&qmp, "quit")?;
+                lines.push("Windows did not shut down in 2 minutes: the VM was ended".into());
+                while unit_active(&unit) {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+            }
+        }
+        // the runner gives the host back when QEMU ends; after a crash, this does it
+        lines.extend(self.system(async |p| p.windows_vm_end().await)?);
+        Ok(Lines { lines })
+    }
+
+    fn windows_vm_status(&self, _: &Ctx, _: Empty) -> Result<Lines> {
+        let unit = format!("{}.service", legionctl_core::session::WINDOWS_UNIT);
+        let dir = legionctl_core::session::windows_root();
+        let state =
+            std::fs::read_to_string(dir.join("state")).unwrap_or_else(|_| "never started".into());
+        let mut lines = vec![if unit_active(&unit) {
+            "running".to_string()
+        } else {
+            format!(
+                "not running (last: {})",
+                state.lines().next().unwrap_or_default()
+            )
+        }];
+        if unit_active(&unit) {
+            lines.extend(state.lines().skip(1).map(String::from));
+        }
+        Ok(Lines { lines })
+    }
+
+    fn internal_windows_vm_begin(
+        &self,
+        _: &Ctx,
+        input: WindowsVmBeginIn,
+    ) -> Result<WindowsVmBegun> {
+        let usb = config(None)?.config.windows.vm.usb;
+        let memlock = input.memlock_mib << 20;
+        let (lines, devices, msdm) =
+            self.system(async move |p| p.windows_vm_begin(&usb, input.pid, memlock).await)?;
+        Ok(WindowsVmBegun {
+            lines,
+            devices,
+            msdm,
+        })
+    }
+
+    fn internal_windows_vm_end(&self, _: &Ctx, _: Empty) -> Result<Lines> {
+        Ok(Lines {
+            lines: self.system(async |p| p.windows_vm_end().await)?,
         })
     }
 

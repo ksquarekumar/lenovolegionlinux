@@ -33,7 +33,7 @@ use legionctl_machine::ledger::{Key, Ledger};
 use legionctl_machine::policy::{self, Machine, Options, Source, Step};
 use legionctl_machine::react::{Event, react};
 use legionctl_machine::sysroot::SysRoot;
-use legionctl_machine::{cleanup, fan, gpu, knobs, profile, telemetry, tune, vfio, windows};
+use legionctl_machine::{cleanup, fan, gpu, knobs, profile, telemetry, tune, vfio, windows, winvm};
 use tokio::io::unix::AsyncFd;
 use tokio::io::{Interest, Ready};
 use zbus::object_server::SignalEmitter;
@@ -434,6 +434,62 @@ impl System1 {
             }
         }
         Self::changed(&emitter, "Passthrough", &lines).await?;
+        Ok(lines)
+    }
+
+    /// Make the host ready for the caller's Windows VM (note 05): the guards, then the Windows disk on vfio-pci, the
+    /// USB devices `usb` (vendor:product) and the memory lock of `pid`. Returns what it did, the devices it bound (for
+    /// QEMU) and the firmware's `MSDM` table (the Windows license, root-only on the host) for the VM.
+    async fn windows_vm_begin(
+        &self,
+        usb: Vec<String>,
+        pid: u32,
+        memlock: u64,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<(Vec<String>, Vec<String>, Vec<u8>)> {
+        authorize(conn, &header, "org.legionctl.windows.vm").await?;
+        let uid = caller_uid(conn, &header).await?;
+        let ledger = Ledger::open(&self.root).map_err(|e| failed(&e))?;
+        if ledger.get(Key::WindowsVm).is_some() {
+            return Err(zbus::fdo::Error::Failed(
+                "a Windows VM runs already (legionctl windows vm stop)".into(),
+            ));
+        }
+        let msdm = winvm::msdm(&self.root).map_err(|e| failed(&e))?;
+        let ask = winvm::Ask { usb, pid, memlock };
+        let (lines, record) = winvm::begin(&self.root, uid, &ask).map_err(|e| failed(&e))?;
+        let kept =
+            serde_json::to_string(&record).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        if let Err(e) = ledger.set(Key::WindowsVm, Some(&kept)) {
+            let undone = winvm::end(&self.root, &record);
+            return Err(zbus::fdo::Error::Failed(format!(
+                "{e:#}; undone: {}",
+                undone.join("; ")
+            )));
+        }
+        Self::changed(&emitter, "WindowsVmBegin", &lines).await?;
+        Ok((lines, record.devices, msdm))
+    }
+
+    /// Undo what the Windows VM's start changed on the host (after the VM ended, or after it failed).
+    async fn windows_vm_end(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.windows.vm").await?;
+        let ledger = Ledger::open(&self.root).map_err(|e| failed(&e))?;
+        let Some(kept) = ledger.get(Key::WindowsVm) else {
+            return Ok(vec!["no Windows VM ran".into()]);
+        };
+        let record: winvm::Record =
+            serde_json::from_str(&kept).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        let lines = winvm::end(&self.root, &record);
+        ledger.set(Key::WindowsVm, None).map_err(|e| failed(&e))?;
+        Self::changed(&emitter, "WindowsVmEnd", &lines).await?;
         Ok(lines)
     }
 

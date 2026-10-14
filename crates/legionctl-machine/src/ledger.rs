@@ -17,6 +17,8 @@ pub enum Key {
     Written,
     /// The firmware mode the user chose with Fn+Q; kept until the power source changes or `apply` runs.
     Override,
+    /// What a running Windows VM changed on the host (`winvm::Record` as JSON), for its end.
+    WindowsVm,
 }
 
 impl Key {
@@ -24,6 +26,7 @@ impl Key {
         match self {
             Key::Written => "firmware-written",
             Key::Override => "firmware-override",
+            Key::WindowsVm => "windows-vm",
         }
     }
 }

@@ -34,6 +34,16 @@
     </defaults>
   </action>
 
+  <action id="org.legionctl.windows.vm">
+    <description>Start the installed Windows in a virtual machine, or end it</description>
+    <message>Authentication is required to give the Windows disk to a virtual machine</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
   <action id="org.legionctl.vfio">
     <description>Give a GPU or a disk controller to a virtual machine, or give it back</description>
     <message>Authentication is required to give a device to a virtual machine</message>

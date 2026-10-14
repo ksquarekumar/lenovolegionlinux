@@ -123,6 +123,15 @@ pub fn vm_root() -> PathBuf {
     crate::packages::Store::default_root().with_file_name("vm")
 }
 
+/// The Windows VM's folder (`~/.local/share/legionctl/windows`): UEFI variables, TPM state, sockets, its state file.
+#[must_use]
+pub fn windows_root() -> PathBuf {
+    vm_root().with_file_name("windows")
+}
+
+/// The user service that runs the Windows VM.
+pub const WINDOWS_UNIT: &str = "legionctl-windows-vm";
+
 /// The VM disk of the repository that holds `dir` (`legionctl workspace pack --as vm` makes it).
 #[must_use]
 pub fn vm_disk(dir: &Path) -> PathBuf {

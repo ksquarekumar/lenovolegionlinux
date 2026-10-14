@@ -35,6 +35,25 @@
       <arg type="as" direction="out"/>
     </method>
     <!--
+     Make the host ready for the caller's Windows VM (note 05): the guards, then the Windows disk on vfio-pci, the
+     USB devices `usb` (vendor:product) and the memory lock of `pid`. Returns what it did, the devices it bound (for
+     QEMU) and the firmware's `MSDM` table (the Windows license, root-only on the host) for the VM.
+     -->
+    <method name="WindowsVmBegin">
+      <arg name="usb" type="as" direction="in"/>
+      <arg name="pid" type="u" direction="in"/>
+      <arg name="memlock" type="t" direction="in"/>
+      <arg type="as" direction="out"/>
+      <arg type="as" direction="out"/>
+      <arg type="ay" direction="out"/>
+    </method>
+    <!--
+     Undo what the Windows VM's start changed on the host (after the VM ended, or after it failed).
+     -->
+    <method name="WindowsVmEnd">
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
      Give `devices` back from vfio-pci to their own drivers, after the VM ended.
      -->
     <method name="PassthroughEnd">

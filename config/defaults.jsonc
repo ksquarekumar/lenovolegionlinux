@@ -203,6 +203,20 @@
   "packages": {},
 
   // Gates on commands in a session sandbox. /etc/legionctl can lock them.
+  // The installed Windows in a VM (note 05; `legionctl windows vm start`): its own NVMe disk through VFIO, the GPU when
+  // you give it (`legionctl gpu give windows`), a SPICE display, these CPUs and this memory (VFIO locks all of it).
+  "windows": {
+    "vm": {
+      "host_cpus": "0-7,16-19",
+      "vcpus": 12,
+      "memory_mib": 24576,
+      "reserve_mib": 2048,
+      "usb": ["046d:c548"],
+      "ovmf_code": "/usr/share/edk2/x64/OVMF_CODE.4m.fd",
+      "ovmf_vars": "/usr/share/edk2/x64/OVMF_VARS.4m.fd"
+    }
+  },
+
   "gates": {
     "git": {
       // Refused: a subcommand and the flags that make it unsafe. Merge goes through workspace_merge; pushes and

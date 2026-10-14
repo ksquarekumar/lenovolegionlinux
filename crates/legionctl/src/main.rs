@@ -8,6 +8,7 @@ mod mcp;
 mod proxy;
 mod tui;
 mod vm;
+mod winvm;
 
 use std::os::unix::process::CommandExt;
 
@@ -53,6 +54,7 @@ fn client_only() -> Vec<Command> {
             .arg(Arg::new("socket").required(true))
             .arg(Arg::new("agent").num_args(1..).required(true).last(true)),
         Command::new("guest").hide(true),
+        Command::new("windows-vm").hide(true),
         Command::new("trace").about("Follow the event log: agents, people and the machine daemon, as it happens"),
         Command::new("hook")
             .about("Claude Code hook adapter: reads the hook's JSON from stdin, answers in Claude Code's hook protocol")
@@ -347,6 +349,7 @@ fn main() -> Result<()> {
             return vm::forward(port, std::path::Path::new(socket), &agent);
         }
         Some(("guest", _)) => return vm::guest(),
+        Some(("windows-vm", _)) => return winvm::run(),
         Some(("trace", _)) => return trace(),
         Some(("run", sub)) => return run(sub),
         Some(("hook", sub)) => {

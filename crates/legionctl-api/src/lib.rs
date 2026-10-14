@@ -545,6 +545,18 @@ operations! {
     windows_status / WindowsStatus = "windows.status", Read, Empty => WindowsState;
     /// Restart into Windows once (the start after returns to Linux). A human approves it in the polkit dialog.
     windows_reboot / WindowsReboot = "windows.reboot", Machine, DryRunIn => Changes;
+    /// Start the installed Windows in a VM: its own disk (VFIO), a SPICE display, `windows.vm` CPUs, memory and USB
+    /// devices. Refused while Windows is hibernated or set to start next, while its partitions are in use, or with too
+    /// little free memory. A human approves it in the polkit dialog.
+    windows_vm_start / WindowsVmStart = "windows.vm.start", Machine, Empty => Lines;
+    /// Shut the Windows VM down (the ACPI power button; after 2 minutes it is ended) and give its disk back.
+    windows_vm_stop / WindowsVmStop = "windows.vm.stop", Machine, Empty => Lines;
+    /// Whether the Windows VM runs, and where its display is.
+    windows_vm_status / WindowsVmStatus = "windows.vm.status", Read, Empty => Lines;
+    /// The Windows VM's runner, before QEMU starts: the host made ready (`legionctl-system`), and the MSDM table.
+    internal_windows_vm_begin / InternalWindowsVmBegin = "internal.windows_vm_begin", Machine, WindowsVmBeginIn => WindowsVmBegun;
+    /// The Windows VM's runner, after QEMU ended: the host given back.
+    internal_windows_vm_end / InternalWindowsVmEnd = "internal.windows_vm_end", Machine, Empty => Lines;
     /// Record this machine into a directory: the files legionctl reads, the profile, the Fn+Q ledger and recent
     /// events. A bug report, a test fixture, or a before/after record of a BIOS or kernel update.
     record / Record = "record", Workspace, RecordIn => Recording;

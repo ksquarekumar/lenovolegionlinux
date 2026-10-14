@@ -77,8 +77,10 @@ pub fn dirty_ntfs() -> Vec<String> {
     volumes
 }
 
-/// The SYSTEM hive on an NTFS volume of the mount table or of `/etc/fstab` (an automount mounts it on access).
-fn system_hive(root: &SysRoot) -> Option<PathBuf> {
+/// The Windows volume: an NTFS volume of the mount table or of `/etc/fstab` (an automount mounts it on access) that
+/// holds the SYSTEM hive; its source (`/dev/...` or `UUID=...`) and mount point.
+#[must_use]
+pub fn volume(root: &SysRoot) -> Option<(String, PathBuf)> {
     ["/proc/self/mounts", "/etc/fstab"]
         .iter()
         .filter_map(|table| std::fs::read_to_string(root.path(table)).ok())
@@ -87,14 +89,18 @@ fn system_hive(root: &SysRoot) -> Option<PathBuf> {
                 .filter(|l| !l.trim_start().starts_with('#'))
                 .filter_map(|l| {
                     let mut fields = l.split_whitespace();
-                    let target = fields.nth(1)?;
+                    let source = fields.next()?.to_string();
+                    let target = fields.next()?;
                     matches!(fields.next()?, "ntfs3" | "ntfs" | "ntfs-3g" | "fuseblk")
-                        .then(|| target.replace("\\040", " "))
+                        .then(|| (source, PathBuf::from(target.replace("\\040", " "))))
                 })
                 .collect::<Vec<_>>()
         })
-        .map(|target| root.path(target).join(SYSTEM_HIVE))
-        .find(|hive| hive.is_file())
+        .find(|(_, target)| root.path(target).join(SYSTEM_HIVE).is_file())
+}
+
+fn system_hive(root: &SysRoot) -> Option<PathBuf> {
+    volume(root).map(|(_, target)| root.path(target).join(SYSTEM_HIVE))
 }
 
 /// `RealTimeIsUniversal` and `HiberbootEnabled` of the control set Windows starts with.

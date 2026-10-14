@@ -26,6 +26,15 @@ pub trait System1 {
     fn passthrough(&self, devices: &[String], pid: u32, memlock: u64) -> zbus::Result<Vec<String>>;
     /// Give devices back from vfio-pci to their own drivers.
     fn passthrough_end(&self, devices: &[String]) -> zbus::Result<Vec<String>>;
+    /// Make the host ready for the caller's Windows VM; the lines and the MSDM table.
+    fn windows_vm_begin(
+        &self,
+        usb: &[String],
+        pid: u32,
+        memlock: u64,
+    ) -> zbus::Result<(Vec<String>, Vec<String>, Vec<u8>)>;
+    /// Give back what the Windows VM's start changed.
+    fn windows_vm_end(&self) -> zbus::Result<Vec<String>>;
     /// The devices that can go to a VM, as JSON (`vfio::Candidate`).
     fn passthroughs(&self) -> zbus::Result<String>;
     /// The fan controls as JSON (`fan::FanState`).

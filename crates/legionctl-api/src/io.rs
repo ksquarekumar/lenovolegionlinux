@@ -317,6 +317,22 @@ pub struct VfioBindIn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WindowsVmBeginIn {
+    /// The runner, which may lock the VM's memory.
+    pub pid: u32,
+    pub memlock_mib: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WindowsVmBegun {
+    pub lines: Vec<String>,
+    /// The PCI devices bound to vfio-pci for the VM (the Windows disk).
+    pub devices: Vec<String>,
+    /// The firmware's MSDM table (the Windows license) for the VM's ACPI tables.
+    pub msdm: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct VfioIn {
     /// PCI addresses to give back to their own drivers.
     pub devices: Vec<String>,

@@ -23,6 +23,7 @@ pub mod telemetry;
 pub mod tune;
 pub mod vfio;
 pub mod windows;
+pub mod winvm;
 
 #[must_use]
 pub fn human_bytes(bytes: u64) -> String {
