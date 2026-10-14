@@ -2,7 +2,15 @@ name: ci
 
 on:
   push:
+    # design notes alone change no behavior (docs/api/schema.json is checked by a test, so it is not here)
+    paths-ignore: ["docs/design/**", "**/*.md"]
   pull_request:
+    paths-ignore: ["docs/design/**", "**/*.md"]
+
+# a new push stops the run of the one before on the same branch
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint:
@@ -16,6 +24,13 @@ jobs:
           tool: cargo-machete,cargo-deny
       - name: Rust toolchain
         run: rustup toolchain install stable --profile minimal -c clippy,rustfmt && rustup default stable
+      # compiled dependencies (the workspace and the static client), keyed on Cargo.lock and the toolchain: only
+      # legionctl's own crates compile again
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            . -> target/static
       - name: Install tools
         run: make tools
       # legionctl-system reads udev events through libudev and compiles its eBPF program with clang; legionctl-app
@@ -53,12 +68,21 @@ jobs:
         with:
           path: /var/tmp/legionctl-test-cache
           key: debian-13-genericcloud-v1
+      # read-only shares need virtiofsd --readonly (1.11 and newer); Ubuntu 24.04 has 1.10: built once, then cached
+      - name: Cache virtiofsd
+        id: virtiofsd
+        uses: actions/cache@v4
+        with:
+          path: ~/virtiofsd-bin
+          key: virtiofsd-1.14.0-${{ runner.os }}
       - name: VM sessions
         run: |
           sudo apt-get install -y qemu-system-x86 qemu-utils xorriso libcap-ng-dev libseccomp-dev
-          # read-only shares need virtiofsd --readonly (1.11 and newer); Ubuntu 24.04 has 1.10
-          cargo install --locked virtiofsd@1.14.0
-          sudo install -m 755 ~/.cargo/bin/virtiofsd /usr/libexec/virtiofsd
+          if [ ! -x ~/virtiofsd-bin/virtiofsd ]; then
+            cargo install --locked --root ~/virtiofsd-root virtiofsd@1.14.0
+            mkdir -p ~/virtiofsd-bin && cp ~/virtiofsd-root/bin/virtiofsd ~/virtiofsd-bin/
+          fi
+          sudo install -m 755 ~/virtiofsd-bin/virtiofsd /usr/libexec/virtiofsd
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
           cargo test --locked -p legionctl --test e2e -- --ignored --exact \
