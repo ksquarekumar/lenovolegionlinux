@@ -171,20 +171,24 @@ impl LegionApp {
                 });
             }
             Page::Bench => {
-                let task = self.operator(
-                    cx,
-                    // shortcut: the first 1000 runs, oldest first; follow `next` when someone has more
-                    async move {
-                        let first = PageIn {
-                            cursor: None,
-                            limit: 1000,
-                        };
-                        client
-                            .call::<op::BenchList>(&first)
-                            .await
-                            .map(|page| page.items)
-                    },
-                );
+                // every page, so the newest runs are there too
+                let task = self.operator(cx, async move {
+                    let mut runs = Vec::new();
+                    let mut cursor = None;
+                    loop {
+                        let page = client
+                            .call::<op::BenchList>(&PageIn {
+                                cursor,
+                                limit: 1000,
+                            })
+                            .await?;
+                        runs.extend(page.items);
+                        match page.next {
+                            Some(next) => cursor = Some(next),
+                            None => break Ok(runs),
+                        }
+                    }
+                });
                 self.finish(cx, task, |app, runs| app.state.runs = Some(runs));
             }
         }

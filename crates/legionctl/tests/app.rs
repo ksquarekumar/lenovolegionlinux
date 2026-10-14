@@ -133,15 +133,6 @@ fn the_app_shows_the_machine_previews_the_policy_reports_a_refused_apply_and_lis
         assert!(changes.lines.iter().any(|l| l == governor), "{changes:?}");
     });
 
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        eprintln!(
-            "DEBUG window {:?} apply {:?} preview {:?}",
-            window.viewport_size(),
-            window.find("apply").bounds(),
-            window.find("preview-policy").bounds()
-        );
-    });
     // apply: no daemon on this bus, so the operator refuses; the app says why and keeps running
     cx.update(|window, cx| window.click("apply", cx));
     wait(cx, &app, "the apply result", |a| {
@@ -174,5 +165,30 @@ fn the_app_shows_the_machine_previews_the_policy_reports_a_refused_apply_and_lis
             .any(|l| l.contains(" app ") && l.contains("power.apply")),
         "{events}"
     );
+
+    // the Bench tab: every run in the log, also past its first page (1000), so the newest is there
+    let db = std::env::temp_dir().join(format!(
+        "legionctl-app-{}/home/.local/state/legionctl/operator.db",
+        std::process::id()
+    ));
+    let runs = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1001) \
+                INSERT INTO events (ts, actor, kind, payload) SELECT 1700000000 + i, 'cli', 'bench.result', \
+                json_object('scenario', 'cpu', 'label', 'run-' || i, 'seconds', 5, 'scores', json_object(), \
+                'problems', json_array(), 'summary', json_object('samples', 1, 'throttle', json_array()), \
+                'knobs', json_object()) FROM n";
+    let stored = std::process::Command::new("sqlite3")
+        .arg(&db)
+        .arg(runs)
+        .status()
+        .unwrap();
+    assert!(stored.success());
+    cx.update(|window, cx| window.within("pages").click(3usize, cx));
+    wait(cx, &app, "the runs", |a| a.state.runs.is_some());
+    app.read_with(cx, |a, _| {
+        assert_eq!(a.page, Page::Bench);
+        let runs = a.state.runs.as_ref().unwrap();
+        assert_eq!(runs.len(), 1001);
+        assert_eq!(runs[1000].result.label.as_deref(), Some("run-1001"));
+    });
     drop(runtime);
 }
