@@ -179,9 +179,10 @@ through `platform_profile` and on each Fn+Q into custom mode: the last table wri
 - The module uses the WMI buffer API (`wmidev_invoke_method`, `notify_new`) of Linux 7.0 and later. DKMS does not
   build it for older kernels (`BUILD_EXCLUSIVE_KERNEL_MIN`).
 - The package installs the source to `/usr/src/legionctl-wmi-<version>/` (DKMS builds it for each installed kernel)
-  and `/usr/lib/modprobe.d/legionctl-wmi.conf`, the blacklist of the five upstream drivers. The blacklist is in the
-  same package as the module: do not install it alone. The profile requires `legionctl_wmi` in place of the upstream
-  drivers (`legionctl doctor`).
+  and the blacklist of the five upstream drivers to `/usr/share/legionctl/legionctl-wmi.conf` only (review on
+  merge, 2026-10-14): a package install must not make an untested module replace the upstream drivers at the next
+  start. The blacklist goes to `/etc/modprobe.d` in step 6 below, after the user's first live load; until then the
+  profile keeps requiring the upstream drivers.
 - Secure Boot is on: DKMS must sign the module with the enrolled key, as for `acpi_call` and `nvidia`.
 - Test (`crates/legionctl/tests/e2e.rs`, `the_legionctl_wmi_module_gives_the_legion_wmi_through_sysfs`, also in the
   CI VM step): a Debian VM with the generic 7.x kernel builds the module with DKMS. A stand-in of the firmware
@@ -211,7 +212,7 @@ user's:
    default curve), read them back, and make sure that the RPM follows the ladder. Write `pwm1_enable` 0, then 2.
    Write `fan_max_mode` 1, then 0. Push Fn+Q and make sure that `platform_profile` follows.
 5. To go back: `sudo modprobe -r legionctl_wmi`, then
-   `sudo modprobe lenovo_wmi_gamezone lenovo_wmi_other lenovo_wmi_events lenovo_wmi_hotkey_utilities` (a blacklist
-   stops only automatic loads). To remove the module permanently, remove the package: the blacklist goes with it.
-6. After a restart, the module binds automatically. Run `lsmod | grep -E 'legionctl_wmi|lenovo_wmi'`: only
-   `legionctl_wmi` must show.
+   `sudo modprobe lenovo_wmi_gamezone lenovo_wmi_other lenovo_wmi_events lenovo_wmi_hotkey_utilities`.
+6. Only when steps 3 and 4 are right: `sudo install -m644 /usr/share/legionctl/legionctl-wmi.conf /etc/modprobe.d/`,
+   restart, and `lsmod | grep -E 'legionctl_wmi|lenovo_wmi'` shows `legionctl_wmi` only. The switch part then moves
+   the profile and the daemon to the module (no acpi_call). To go back for good: remove that file and restart.

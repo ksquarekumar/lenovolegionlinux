@@ -24,9 +24,10 @@ const UNITS: [&str; 4] = [
     "nvidia-powerd.service",
     "nvidia-persistenced.service",
 ];
-const MODULES: [&str; 5] = [
+const MODULES: [&str; 6] = [
     "ideapad_laptop",
-    "legionctl_wmi",
+    "lenovo_wmi_gamezone",
+    "lenovo_wmi_events",
     "thinkpad_acpi",
     "legion_laptop",
     "lenovo_legion",
