@@ -1137,6 +1137,10 @@ impl Engine for Operator {
                     .into(),
             );
         }
+        findings.extend(legionctl_machine::graphics::findings(
+            &SysRoot::from_env(),
+            &home(),
+        ));
         findings.extend(agent_findings()?);
         Ok(Findings { findings })
     }

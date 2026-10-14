@@ -166,3 +166,17 @@ Generic, works on any machine where the package is installed:
   as root, so the user no longer needs to be in `input`; the operator performs session-side actions.
 - The hwdb remap `KEYBOARD_KEY_110=f18` and its GNOME shortcut are deleted in the switch (15-layout).
 - Logitech: logiops (logid) stays external; HID-BPF is an option for in-kernel remaps later (04-ebpf).
+
+## Graphics stack checks (built 2026-10-14, todo-81 part 1)
+
+`doctor` names each gap of the stack that rendering on both GPUs needs, with its fix (`legionctl-machine` graphics):
+the NVIDIA libraries (`libnvidia-glcore.so.<version>`) that do not match the loaded module (`/proc/driver/nvidia/
+version`), NVIDIA's DRM without modesetting, a missing Vulkan ICD or EGL vendor file for a loaded GPU driver, with
+both GPUs switcheroo-control not running (GNOME's "Launch using Discrete Graphics Card") and `OpenCL` for the iGPU only
+through rusticl (`RUSTICL_ENABLE=iris`, or intel-compute-runtime), and Electron/Chromium apps whose flags file has no
+Wayland flag (they draw through XWayland, blurry at fractional scales). e2e on the recorded machine: each gap found,
+each gone once fixed (the version compare mutation-checked). Found here on 2026-10-14: switcheroo-control inactive,
+Intel OpenCL only through rusticl. Next part: monitors, scaling and fonts from Mutter (the session bus): antialiasing
+against each monitor's scale and pixel density (`rgba` at integer scales and normal density; `grayscale` helped
+nothing at scale 1.0 on the 34" 3440x1440, user report 2026-10-14), refresh rate, VRR and HDR, as checks and fixes with
+the old values to go back to.

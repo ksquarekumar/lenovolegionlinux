@@ -339,6 +339,8 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
             "- the OSD extension legionctl-osd@legionctl is ERROR; Fn+Q, Fn+R and Fn lock show no OSD (see journalctl --user -b /usr/bin/gnome-shell)",
             "- legionctl-system does not answer (fans, throttle reasons and the eBPF sensor are unknown): connecting to the system bus: Failed to connect to address `unix:path=/nonexistent/bus`: No such file or directory (os error 2): \
              No such file or directory (os error 2)",
+            "- switcheroo-control does not run: GNOME has no \"Launch using Discrete Graphics Card\" (sudo systemctl enable --now switcheroo-control)",
+            "- OpenCL reaches the Intel GPU only through Mesa's rusticl, which needs RUSTICL_ENABLE=iris (or install intel-compute-runtime)",
         ]
     );
 }
@@ -939,6 +941,54 @@ impl HiveFile {
         base.resize(4096, 0);
         base.extend_from_slice(&h.bin);
         base
+    }
+}
+
+/// The graphics stack (todo-81) on the recorded machine (the NVIDIA and Intel cards): `doctor` names each gap with
+/// its fix (NVIDIA libraries that do not match the loaded module, a missing Vulkan driver, `OpenCL` for the iGPU only
+/// through rusticl, switcheroo-control not running, an Electron app without a Wayland flag) and drops it once the
+/// stack is complete.
+#[test]
+fn doctor_names_each_gap_of_the_graphics_stack_with_its_fix() {
+    let m = Machine::new("graphics");
+    // the recorded stack is complete: break it as a half-done driver update and a missing package would
+    let root = m.dir.join("root");
+    std::fs::remove_file(root.join("usr/lib/libnvidia-glcore.so.580.178.04")).unwrap();
+    std::fs::remove_file(root.join("usr/share/vulkan/icd.d/intel_icd.json")).unwrap();
+    m.set("/usr/lib/libnvidia-glcore.so.570.86.16", "");
+    m.set("/usr/bin/code", "");
+    let doctor = || String::from_utf8_lossy(&m.legion(&["doctor"]).stdout).to_string();
+    let found = doctor();
+    for expected in [
+        "the NVIDIA kernel module is 580.178.04 and its libraries are 570.86.16",
+        "/usr/share/vulkan/icd.d/intel_icd.json is missing: install the Intel Vulkan driver (vulkan-intel)",
+        "OpenCL reaches the Intel GPU only through Mesa's rusticl",
+        "switcheroo-control does not run",
+        "/usr/bin/code draws through XWayland (blurry at fractional scales): add --ozone-platform-hint=auto",
+    ] {
+        assert!(found.contains(expected), "{expected} missing:\n{found}");
+    }
+
+    std::fs::remove_file(m.dir.join("root/usr/lib/libnvidia-glcore.so.570.86.16")).unwrap();
+    m.set("/usr/lib/libnvidia-glcore.so.580.178.04", "");
+    m.set("/usr/share/vulkan/icd.d/intel_icd.json", "");
+    m.set("/etc/OpenCL/vendors/intel.icd", "");
+    std::fs::create_dir_all(m.dir.join("home/.config")).unwrap();
+    std::fs::write(
+        m.dir.join("home/.config/code-flags.conf"),
+        "--ozone-platform-hint=auto\n",
+    )
+    .unwrap();
+    Machine::script(&m.dir.join("bin"), "systemctl", "echo active");
+    let fixed = doctor();
+    for gone in [
+        "NVIDIA kernel module",
+        "intel_icd",
+        "rusticl",
+        "switcheroo",
+        "XWayland",
+    ] {
+        assert!(!fixed.contains(gone), "{gone} still found:\n{fixed}");
     }
 }
 

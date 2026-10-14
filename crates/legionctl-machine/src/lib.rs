@@ -9,6 +9,7 @@ pub mod doctor;
 pub mod fan;
 pub mod firmware;
 pub mod gpu;
+pub mod graphics;
 pub mod hive;
 pub mod kernel;
 pub mod keys;
