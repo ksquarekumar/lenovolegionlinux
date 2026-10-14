@@ -273,14 +273,46 @@ fn mkdir(root: &SysRoot, dir: impl AsRef<Path>) -> Step {
     Step::Run(vec!["mkdir".into(), "-p".into(), text(&root.path(dir))])
 }
 
+/// The saved sets with boot entries (`rules sets save --boot`, todo-85).
+fn boot_sets(root: &SysRoot) -> Vec<String> {
+    crate::ledger::Ledger::open(root)
+        .map(|l| l.sets())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, s)| s.boot)
+        .map(|(name, _)| name)
+        .collect()
+}
+
 /// The image of the kernel `name` with `line`: made beside the old one, signed by `ukify` with the MOK key, its
-/// signature checked, and only then put in place of the old one.
+/// signature checked, and only then put in place of the old one. Each saved set with boot entries is a profile of the
+/// image (a multi-profile UKI): its entry starts the kernel with `line` and `legionctl.set=<set>`; profile 0, the
+/// default entry, has the kernel's own line.
 fn build(root: &SysRoot, esp: &str, name: &str, line: &str) -> Vec<Step> {
     let ucode = ["/boot/intel-ucode.img", "/boot/amd-ucode.img"]
         .into_iter()
         .find(|u| root.exists(u));
     let target = text(&root.path(Path::new(esp).join("EFI/Linux").join(image(name))));
     let new = format!("{target}.new");
+    let profiles: Vec<(String, String)> = boot_sets(root)
+        .into_iter()
+        .map(|set| (format!("{target}.{set}.profile"), set))
+        .collect();
+    let mut steps: Vec<Step> = profiles
+        .iter()
+        .map(|(file, set)| {
+            Step::Run(vec![
+                "ukify".into(),
+                "build".into(),
+                "--profile".into(),
+                format!("ID={set}\nTITLE={name} with {set}"),
+                "--cmdline".into(),
+                format!("{line} {}{set}", crate::sets::PARAMETER),
+                "--output".into(),
+                file.clone(),
+            ])
+        })
+        .collect();
     let mut argv: Vec<String> = vec![
         "ukify".into(),
         "build".into(),
@@ -302,7 +334,13 @@ fn build(root: &SysRoot, esp: &str, name: &str, line: &str) -> Vec<Step> {
         "--output".into(),
         new.clone(),
     ]);
-    vec![
+    if !profiles.is_empty() {
+        argv.extend(["--profile".into(), format!("TITLE={name}")]);
+        for (file, _) in &profiles {
+            argv.extend(["--join-profile".into(), file.clone()]);
+        }
+    }
+    steps.extend([
         Step::Run(argv),
         Step::Run(vec![
             "sbverify".into(),
@@ -311,7 +349,16 @@ fn build(root: &SysRoot, esp: &str, name: &str, line: &str) -> Vec<Step> {
             new.clone(),
         ]),
         Step::Run(vec!["mv".into(), new, target]),
-    ]
+    ]);
+    if !profiles.is_empty() {
+        steps.push(Step::Run(
+            ["rm".to_string(), "-f".into()]
+                .into_iter()
+                .chain(profiles.into_iter().map(|(file, _)| file))
+                .collect(),
+        ));
+    }
+    steps
 }
 
 /// The image steps of every kernel in `/boot`, each with its own command line. A kernel without one gets the running
@@ -342,7 +389,10 @@ fn uki_steps(root: &SysRoot, esp: &str) -> Result<Vec<Step>> {
 }
 
 /// legionctl's firmware entry and the ESP, or why the boot takeover is not there.
-fn takeover(state: &BootState) -> Result<(String, String)> {
+///
+/// # Errors
+/// The boot takeover is not installed.
+pub fn takeover(state: &BootState) -> Result<(String, String)> {
     match (&state.ours, &state.esp) {
         (Some(id), Some(esp)) => Ok((id.clone(), esp.clone())),
         _ => bail!(

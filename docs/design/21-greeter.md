@@ -34,6 +34,8 @@ How each action works:
   `loginctl enable-linger`.
 - **Windows disk**: `Detach` stops the automount and mount units of the fstab entries on the Windows disk, as a VM
   start does. `Attach to Linux` starts the automounts again. The daemon refuses both while the Windows VM runs.
+- After login, `legionctl windows disk attach|detach` (D-Bus `WindowsDisk`, polkit `org.legionctl.windows.vm`) runs
+  the same function (note 22).
 - **NVIDIA GPU**: `Free for the VM` is `gpu give nvidia none` for the typed user (`/dev/vfio/<group>` goes to that
   user). `Linux` gives the GPU back. To give the GPU to a running Windows, use `legionctl gpu give nvidia windows`
   after login (QMP is in the user's session).

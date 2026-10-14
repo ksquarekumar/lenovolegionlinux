@@ -120,6 +120,14 @@ fn fstab_targets(root: &SysRoot, disk: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The mount points of the Windows disk's partitions in `/etc/fstab`: what `disk_plan` attaches and detaches.
+///
+/// # Errors
+/// No Windows disk.
+pub fn disk_targets(root: &SysRoot) -> Result<Vec<PathBuf>> {
+    Ok(fstab_targets(root, &windows_disk(root)?))
+}
+
 /// The steps that give the Windows disk's partitions to Linux (`attach`: their automounts started) or take them away
 /// (their automounts and mounts stopped), as a VM start does.
 ///

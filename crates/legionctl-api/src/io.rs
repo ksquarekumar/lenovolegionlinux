@@ -1496,3 +1496,100 @@ pub struct UndoIn {
     /// your own settings (`display.change`, from `display fix`).
     pub event: i64,
 }
+
+/// One thing of the machine that a person attaches, starts, pauses or switches to (note 22).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Resource {
+    /// vm, gpu, disk, configset or session.
+    pub group: String,
+    /// `vm:windows`, `mount:/mnt/windows-data`, `knob:sysctl.vm.swappiness`, ...: what `resources act` takes.
+    pub id: String,
+    pub name: String,
+    pub state: String,
+    /// What uses it: processes (`<pid> <program>`), sessions, an app.
+    pub users: Vec<String>,
+    /// The actions that apply in this state.
+    pub actions: Vec<ResourceAction>,
+}
+
+/// An action of a resource: the operation it runs, with this input.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResourceAction {
+    pub name: String,
+    /// The operation (`knobs.release`), which runs as a call of its own.
+    pub op: String,
+    pub input: serde_json::Value,
+    /// The operation's permission class.
+    pub class: crate::Class,
+    /// The operation has a dry run of its own.
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResourceList {
+    pub resources: Vec<Resource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResourceActIn {
+    /// The resource's id (`resources list`).
+    pub id: String,
+    /// One of its actions.
+    pub action: String,
+    /// Show what would happen; change nothing. An operation without a dry run of its own does not run: the answer
+    /// shows its route.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// The route of an action, and the routed operation's output once the operator ran it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Acted {
+    pub op: String,
+    pub input: serde_json::Value,
+    /// The operator runs the routed operation; false for the dry run of an operation without its own.
+    pub run: bool,
+    /// The routed operation's output (null before it ran, or when it did not run).
+    pub output: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum DiskAction {
+    /// The Windows disk's partitions to Linux: their automounts start.
+    Attach,
+    /// Away from Linux: their automounts and mounts stop.
+    Detach,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WindowsDiskIn {
+    pub action: DiskAction,
+    /// Show what would happen; change nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetSaveIn {
+    /// The set's name: a-z, 0-9 and '-'.
+    pub name: String,
+    /// Each kernel's image gets a boot entry for the set (it needs the boot takeover).
+    #[serde(default)]
+    pub boot: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetSwitchIn {
+    /// The set's name; `previous` is the selection before the last switch (the undo).
+    pub name: String,
+    /// Show what would happen; change nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetIn {
+    /// The set's name.
+    pub name: String,
+}

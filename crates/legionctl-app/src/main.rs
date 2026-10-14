@@ -5,8 +5,9 @@ use legionctl_app::{LegionApp, Page};
 
 fn main() -> anyhow::Result<()> {
     let page = match std::env::args().nth(1) {
-        Some(word) => Page::named(&word)
-            .ok_or_else(|| anyhow::anyhow!("usage: legionctl-app [now|gpu|health|bench]"))?,
+        Some(word) => Page::named(&word).ok_or_else(|| {
+            anyhow::anyhow!("usage: legionctl-app [now|gpu|health|bench|resources]")
+        })?,
         None => Page::Now,
     };
     let client = Client::new("app")?;

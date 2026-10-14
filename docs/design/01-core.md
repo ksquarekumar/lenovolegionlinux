@@ -113,6 +113,14 @@ clears the choice).
 `Layers()` and `Plan()` on D-Bus (point 9 of the design) are not built: each planner reads the same files (the
 workload too), so the operator gives the same answer without a second path.
 
+### Saved sets
+
+Built 2026-10-15 (todo-85, note 22). A saved set is a named copy of the layer states and the holds, in the table
+`sets` of `system.db`. `legionctl rules sets save <name> [--boot]`, `rules sets switch <name> [--dry-run]` (one
+change; `switch previous` is the undo) and `rules sets remove <name>` go through the daemon's `Sets(action, name,
+boot)` (polkit `org.legionctl.rules`). With `--boot`, each kernel's image gets a hidden boot entry for the set, and
+the daemon applies `legionctl.set=<name>` from the kernel line for that start only.
+
 ### Migration
 
 The shipped profile is in the package, and holds stay in `system.db`, so nothing moves on the machine. The proof:

@@ -381,6 +381,14 @@ fn operation(matches: &ArgMatches) -> Result<()> {
     if op.name == "session.start" || op.name == "session.resume" {
         return start_session(serde_json::from_value(output)?);
     }
+    // a resource's start of a session runs the session in this terminal too
+    if op.name == "resources.act"
+        && let Ok(acted) = serde_json::from_value::<legionctl_api::Acted>(output.clone())
+        && (acted.op == "session.start" || acted.op == "session.resume")
+        && let Some(launch) = acted.output
+    {
+        return start_session(serde_json::from_value(launch)?);
+    }
     let (text, success) = legionctl_api::render(op.name, output)?;
     // a streamed answer was shown; the rest of it (the stream lags behind the run's end) and the result follow
     let rest = text.strip_prefix(shown.as_str()).unwrap_or(&text);

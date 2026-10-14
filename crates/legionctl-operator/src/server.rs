@@ -12,8 +12,8 @@ use axum::routing::{get, post};
 use std::fmt::Write as _;
 
 use legionctl_api::{
-    ACTOR_HEADER, API_HEADER, ApiError, Class, Code, Ctx, DispatchError, OPS, OpInfo, Principal,
-    api_fingerprint, user_token,
+    ACTOR_HEADER, API_HEADER, Acted, ApiError, Class, Code, Ctx, DispatchError, OPS, Op, OpInfo,
+    Principal, api_fingerprint, op, user_token,
 };
 use legionctl_core::db::Db;
 use serde_json::{Value, json};
@@ -330,10 +330,10 @@ async fn run(
     let started = std::time::Instant::now();
     // engine methods read files and run programs; keep them off the async threads
     let call = name.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        legionctl_api::dispatch(&*operator, &ctx, &call, input)
-    })
-    .await;
+    let engine = operator.clone();
+    let result =
+        tokio::task::spawn_blocking(move || legionctl_api::dispatch(&*engine, &ctx, &call, input))
+            .await;
     let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let answer = match result {
         Ok(Ok(output)) => Ok(output),
@@ -368,9 +368,38 @@ async fn run(
         }
     }
     match answer {
+        Ok(output) if name == op::ResourcesAct::NAME => routed(operator, headers, output).await,
         Ok(output) => (StatusCode::OK, Json(output)),
         Err(error) => refusal(&error),
     }
+}
+
+/// `resources.act` found the route only (note 22): the routed operation runs here as a call of its own, with its
+/// input check, its approval and its event, and its output goes back inside the route.
+async fn routed(
+    operator: Arc<Operator>,
+    headers: &HeaderMap,
+    route: Value,
+) -> (StatusCode, Json<Value>) {
+    let mut acted: Acted = match serde_json::from_value(route) {
+        Ok(acted) => acted,
+        Err(e) => return refusal(&internal(&format!("the route: {e}"))),
+    };
+    if !acted.run {
+        return (StatusCode::OK, Json(json!(acted)));
+    }
+    let (status, Json(output)) = Box::pin(run(
+        operator,
+        acted.op.clone(),
+        headers,
+        acted.input.clone(),
+    ))
+    .await;
+    if status != StatusCode::OK {
+        return (status, Json(output));
+    }
+    acted.output = Some(output);
+    (StatusCode::OK, Json(json!(acted)))
 }
 
 /// The input as the audit keeps it: fields whose schema says `x-secret` become `<secret>`, and strings over 512

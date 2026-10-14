@@ -1,4 +1,5 @@
-//! `legionctl-app` (note 09): the machine at a glance, GPU wiring, health and bench, from `legionctl-operator`.
+//! `legionctl-app` (note 09): the machine at a glance, GPU wiring, health, bench and the resources (note 22), from
+//! `legionctl-operator`.
 //! Every value comes from an operation; every change is an operation that shows its plan first (a dry run), and the
 //! daemon asks polkit when it is applied.
 
@@ -18,9 +19,9 @@ use gpui_kit::{
 };
 use legionctl_api::client::Client;
 use legionctl_api::{
-    BenchIn, BenchRun, Changes, DesktopGpu, Empty, FanState, Findings, GpuPrimaryIn, GpuState,
-    MonitorIn, PageIn, PowerApplyIn, PowerSource, ProfileIn, Sample, Scenario, Snapshot, StatusIn,
-    op,
+    Acted, BenchIn, BenchRun, Changes, DesktopGpu, Empty, FanState, Findings, GpuPrimaryIn,
+    GpuState, MonitorIn, PageIn, PowerApplyIn, PowerSource, ProfileIn, Render as _, ResourceActIn,
+    ResourceList, Sample, Scenario, Snapshot, StatusIn, op,
 };
 
 /// How often the glance values refresh.
@@ -32,12 +33,19 @@ pub enum Page {
     Gpu,
     Health,
     Bench,
+    Resources,
 }
 
 impl Page {
-    pub const ALL: [Page; 4] = [Page::Now, Page::Gpu, Page::Health, Page::Bench];
+    pub const ALL: [Page; 5] = [
+        Page::Now,
+        Page::Gpu,
+        Page::Health,
+        Page::Bench,
+        Page::Resources,
+    ];
 
-    /// The page a command-line word names: now, gpu, health, bench.
+    /// The page a command-line word names: now, gpu, health, bench, resources.
     #[must_use]
     pub fn named(word: &str) -> Option<Page> {
         Page::ALL
@@ -51,6 +59,7 @@ impl Page {
             Page::Gpu => "Apps & GPU",
             Page::Health => "Health",
             Page::Bench => "Bench",
+            Page::Resources => "Resources",
         }
     }
 }
@@ -60,6 +69,8 @@ impl Page {
 pub enum Pending {
     Policy(Changes),
     DesktopGpu(DesktopGpu, Changes),
+    /// A resource's action (id, action): its dry run, or its route when its operation has no dry run.
+    Resource(String, String, Acted),
 }
 
 /// What the app knows; each field is `None` until its first answer.
@@ -72,6 +83,7 @@ pub struct State {
     pub gpu: Option<GpuState>,
     pub findings: Option<Vec<String>>,
     pub runs: Option<Vec<BenchRun>>,
+    pub resources: Option<ResourceList>,
     pub pending: Option<Pending>,
     /// The last result or error, in one line.
     pub message: Option<String>,
@@ -198,6 +210,12 @@ impl LegionApp {
                 });
                 self.finish(cx, task, |app, runs| app.state.runs = Some(runs));
             }
+            Page::Resources => {
+                let task = self.operator(cx, async move {
+                    client.call::<op::ResourcesList>(&Empty {}).await
+                });
+                self.finish(cx, task, |app, list| app.state.resources = Some(list));
+            }
         }
     }
 
@@ -275,40 +293,66 @@ impl LegionApp {
         });
     }
 
+    /// What the action `action` of the resource `id` would do: its operation's dry run, or its route.
+    pub fn preview_resource(&mut self, id: String, action: String, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+        let input = ResourceActIn {
+            id: id.clone(),
+            action: action.clone(),
+            dry_run: true,
+        };
+        let task = self.operator(
+            cx,
+            async move { client.call::<op::ResourcesAct>(&input).await },
+        );
+        self.finish(cx, task, move |app, acted| {
+            app.state.pending = Some(Pending::Resource(id, action, acted));
+        });
+    }
+
     /// Apply the pending change; the daemon asks polkit.
     pub fn apply(&mut self, cx: &mut Context<Self>) {
         let Some(pending) = self.state.pending.take() else {
             return;
         };
         let client = self.client.clone();
+        let changed = |changes: Changes| {
+            if changes.lines.is_empty() {
+                "nothing to change".to_string()
+            } else {
+                changes.lines.join("; ")
+            }
+        };
         let task = self.operator(cx, async move {
-            match pending {
-                Pending::Policy(_) => {
+            Ok(match pending {
+                Pending::Policy(_) => changed(
                     client
                         .call::<op::PowerApply>(&PowerApplyIn {
                             source: PowerSource::Auto,
                             dry_run: false,
                         })
-                        .await
-                }
-                Pending::DesktopGpu(choice, _) => {
+                        .await?,
+                ),
+                Pending::DesktopGpu(choice, _) => changed(
                     client
                         .call::<op::GpuPrimary>(&GpuPrimaryIn {
                             choice,
                             release_nvidia: false,
                             dry_run: false,
                         })
-                        .await
-                }
-            }
+                        .await?,
+                ),
+                Pending::Resource(id, action, _) => client
+                    .call::<op::ResourcesAct>(&ResourceActIn {
+                        id,
+                        action,
+                        dry_run: false,
+                    })
+                    .await?
+                    .text(),
+            })
         });
-        self.finish(cx, task, |app, changes: Changes| {
-            app.state.message = Some(if changes.lines.is_empty() {
-                "nothing to change".into()
-            } else {
-                changes.lines.join("; ")
-            });
-        });
+        self.finish(cx, task, |app, message| app.state.message = Some(message));
     }
 
     pub fn discard(&mut self, cx: &mut Context<Self>) {
@@ -413,10 +457,17 @@ impl LegionApp {
     fn pending(&self, cx: &mut Context<Self>) -> Option<Div> {
         let pending = self.state.pending.as_ref()?;
         let (title, lines) = match pending {
-            Pending::Policy(c) => ("The power policy would change:", &c.lines),
+            Pending::Policy(c) => (
+                "The power policy would change:".to_string(),
+                c.lines.clone(),
+            ),
             Pending::DesktopGpu(_, c) => (
-                "The desktop GPU choice would change (next login):",
-                &c.lines,
+                "The desktop GPU choice would change (next login):".to_string(),
+                c.lines.clone(),
+            ),
+            Pending::Resource(id, action, acted) => (
+                format!("{action} {id} runs {}:", acted.op),
+                acted.text().lines().map(String::from).collect(),
             ),
         };
         // the buttons first: a long plan must not push them out of reach
@@ -515,6 +566,7 @@ impl LegionApp {
                     .map(|line| div().text_sm().child(format!("• {line}")))
                     .collect(),
             }),
+            Page::Resources => self.resources(cx),
             Page::Bench => div()
                 .v_flex()
                 .gap_2()
@@ -540,6 +592,48 @@ impl LegionApp {
                     ))
                 })),
         }
+    }
+}
+
+impl LegionApp {
+    /// Each resource with its state and users, and a button for each action (its dry run first).
+    fn resources(&self, cx: &mut Context<Self>) -> Div {
+        let Some(list) = &self.state.resources else {
+            return div().child("reading the resources…");
+        };
+        let mut page = div().v_flex().gap_2();
+        let mut group = "";
+        for r in &list.resources {
+            if r.group != group {
+                group = &r.group;
+                page = page.child(div().font_semibold().child(group.to_string()));
+            }
+            let mut row = div()
+                .h_flex()
+                .flex_wrap()
+                .gap_2()
+                .text_sm()
+                .child(format!("{} · {} · {}", r.id, r.name, r.state));
+            if !r.users.is_empty() {
+                row = row.child(
+                    div()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!("used by {}", r.users.join(", "))),
+                );
+            }
+            for a in &r.actions {
+                let (id, action) = (r.id.clone(), a.name.clone());
+                row = row.child(
+                    Button::new(format!("{}/{}", r.id, a.name))
+                        .label(a.name.clone())
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.preview_resource(id.clone(), action.clone(), cx);
+                        })),
+                );
+            }
+            page = page.child(row);
+        }
+        page
     }
 }
 

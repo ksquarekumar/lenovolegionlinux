@@ -1,6 +1,6 @@
 # 22 — Resources: one list and one action for the machine after start
 
-Decided by the user 2026-10-14 (todo-85). This note is the design; "Built" below says what exists.
+Decided by the user 2026-10-14 (todo-85). Designed and built 2026-10-15 ("Built" below says what exists).
 
 The user wants to attach, detach, start, pause, resume and switch to the resources, configurations and mounts of
 the machine after the start, from two places that use one model:
@@ -138,6 +138,23 @@ efibootmgr, ukify, sbverify):
   next start without it puts the selection before back.
 - `the_resources_page_lists_the_resources_and_an_action_click_calls_its_operation` (`tests/app.rs`, gpui-kit test
   support).
+
+## Built (2026-10-15)
+
+- `legionctl-api`: `resources.list`, `resources.act`, `windows.vm.pause|resume`, `windows.disk`,
+  `rules.sets.save|switch|remove`; the schema in `docs/api/schema.json`.
+- Operator: `crates/legionctl-operator/src/resources.rs` makes the list and finds the route; `server.rs` runs the
+  routed operation through the same `run` as a direct call. `undo` of a `machine.switch-set` event refuses with the
+  pointer to `rules sets switch previous`.
+- Daemon: `WindowsDisk(attach)` (the greeter's `disk-attach` and `disk-detach` use the same function), `Sets(action,
+  name, boot)`, and the set of the start before the first apply. `system.db` has the table `sets`.
+- Machine crate: `mounts.rs` (mounts and the processes that use them, from `/proc/<pid>/cwd` and `fd`), `sets.rs`
+  (the selection, the names, the dry-run lines), the profiles in `boot.rs`'s one image build.
+- App: the page **Resources**. TUI: the key `r`. The CLI runs a session that `resources act` starts in the
+  terminal, as `session start` does.
+
+What uses a mount is found only for the processes whose links the operator may read: your own processes. A process
+of another user (root) is not shown.
 
 ## Open
 

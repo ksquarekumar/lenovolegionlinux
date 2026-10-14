@@ -56,9 +56,10 @@ fn wait(
     }
 }
 
-/// The operator on a copy of the recorded machine, unplugged with the AC policy still applied, without a daemon.
-fn unplugged_machine() -> Operator {
-    let dir = std::env::temp_dir().join(format!("legionctl-app-{}", std::process::id()));
+/// The operator on a copy of the recorded machine, unplugged with the AC policy still applied, without a daemon; `tag`
+/// keeps the folders of tests that run at the same time apart.
+fn unplugged_machine(tag: &'static str) -> Operator {
+    let dir = std::env::temp_dir().join(format!("legionctl-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let root = dir.join("root");
     copy_tree(&Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE), &root);
@@ -77,7 +78,7 @@ fn unplugged_machine() -> Operator {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     Operator::start(
-        "app",
+        tag,
         &[
             ("PATH", bin.into()),
             ("HOME", dir.join("home").into()),
@@ -90,7 +91,7 @@ fn unplugged_machine() -> Operator {
 fn the_app_shows_the_machine_previews_the_policy_reports_a_refused_apply_and_lists_findings(
     cx: &mut TestAppContext,
 ) {
-    let op = unplugged_machine();
+    let op = unplugged_machine("app");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let client = Client::at("app", &op.runtime);
     let handle = runtime.handle().clone();
@@ -195,5 +196,85 @@ fn the_app_shows_the_machine_previews_the_policy_reports_a_refused_apply_and_lis
         assert_eq!(runs.len(), 1001);
         assert_eq!(runs[1000].result.label.as_deref(), Some("run-1001"));
     });
+    drop(runtime);
+}
+
+/// The Resources page (note 22) against the real operator on the recorded machine, without a daemon: it lists the
+/// configset layers with their actions; a click on an action shows its route first (rules.disable has no dry run of
+/// its own, so nothing runs), and Apply runs the routed operation as a call of its own: the operator refuses it
+/// without the system bus, the page says why, and the event log names `rules.disable` with the app as its actor.
+#[gpui_kit::test]
+fn the_resources_page_lists_the_resources_and_an_action_click_calls_its_operation(
+    cx: &mut TestAppContext,
+) {
+    let op = unplugged_machine("resources");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let client = Client::at("app", &op.runtime);
+    let handle = runtime.handle().clone();
+    cx.update(gpui_kit::init);
+    let window: WindowHandle<gpui_kit::base::Root> = cx.update(|cx| {
+        let (window, _) = gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| {
+            cx.new(|cx| LegionApp::new(client, handle, Page::Resources, cx))
+        })
+        .unwrap();
+        window.downcast().unwrap()
+    });
+    let app: Entity<LegionApp> = window
+        .update(cx, |root, _, _| root.view().clone().downcast().unwrap())
+        .unwrap();
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let cx = &mut vcx;
+
+    wait(cx, &app, "the resources", |a| a.state.resources.is_some());
+    app.read_with(cx, |a, _| {
+        let list = &a.state.resources.as_ref().unwrap().resources;
+        let ac = list
+            .iter()
+            .find(|r| r.id == "layer:shipped/20-ac")
+            .unwrap_or_else(|| panic!("{list:?}"));
+        assert_eq!(ac.group, "configset");
+        let actions: Vec<(&str, &str)> = ac
+            .actions
+            .iter()
+            .map(|a| (a.name.as_str(), a.op.as_str()))
+            .collect();
+        assert_eq!(actions, [("disable", "rules.disable")]);
+    });
+
+    cx.update(|window, cx| window.click("layer:shipped/20-ac/disable", cx));
+    wait(cx, &app, "the route", |a| a.state.pending.is_some());
+    app.read_with(cx, |a, _| {
+        let Some(Pending::Resource(id, action, acted)) = &a.state.pending else {
+            panic!("{:?}", a.state.pending)
+        };
+        assert_eq!(
+            (id.as_str(), action.as_str()),
+            ("layer:shipped/20-ac", "disable")
+        );
+        assert_eq!(acted.op, "rules.disable");
+        assert_eq!(acted.input, serde_json::json!({"layer": "shipped/20-ac"}));
+        assert!(
+            !acted.run && acted.output.is_none(),
+            "a dry run runs nothing: {acted:?}"
+        );
+    });
+    let before = op.ok(&["events"]);
+    assert!(!before.contains("rules.disable"), "{before}");
+
+    cx.update(|window, cx| window.click("apply", cx));
+    wait(cx, &app, "the apply result", |a| {
+        a.state.message.is_some() && !a.state.busy
+    });
+    app.read_with(cx, |a, _| {
+        let message = a.state.message.as_deref().unwrap();
+        assert!(message.contains("system bus"), "{message}");
+    });
+    let events = op.ok(&["events"]);
+    assert!(
+        events
+            .lines()
+            .any(|l| l.contains(" app ") && l.contains("rules.disable")),
+        "{events}"
+    );
     drop(runtime);
 }

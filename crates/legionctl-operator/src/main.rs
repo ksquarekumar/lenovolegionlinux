@@ -10,6 +10,7 @@ mod gateway;
 mod kernels;
 mod policy;
 mod recorder;
+mod resources;
 mod rules;
 mod semantic;
 mod server;

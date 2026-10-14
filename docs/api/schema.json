@@ -4724,6 +4724,133 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "rules.sets.save": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The set's name: a-z, 0-9 and '-'."
+        },
+        "boot": {
+          "type": "boolean",
+          "description": "Each kernel's image gets a boot entry for the set (it needs the boot takeover).",
+          "default": false
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "SetSaveIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "rules.sets.switch": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The set's name; `previous` is the selection before the last switch (the undo)."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Show what would happen; change nothing.",
+          "default": false
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "SetSwitchIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "rules.sets.remove": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The set's name."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "SetIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "knobs.hold": {
     "class": "machine",
     "internal": false,
@@ -8030,6 +8157,112 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "windows.vm.pause": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "windows.vm.resume": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "windows.disk": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "attach",
+              "description": "The Windows disk's partitions to Linux: their automounts start."
+            },
+            {
+              "type": "string",
+              "const": "detach",
+              "description": "Away from Linux: their automounts and mounts stop."
+            }
+          ]
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Show what would happen; change nothing.",
+          "default": false
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "title": "WindowsDiskIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "windows.vm.view": {
     "class": "workspace",
     "internal": false,
@@ -11276,6 +11509,169 @@
         "problems"
       ],
       "title": "LayerList",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "resources.list": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "resources": {
+          "type": "array",
+          "items": {
+            "description": "One thing of the machine that a person attaches, starts, pauses or switches to (note 22).",
+            "type": "object",
+            "properties": {
+              "group": {
+                "description": "vm, gpu, disk, configset or session.",
+                "type": "string"
+              },
+              "id": {
+                "description": "`vm:windows`, `mount:/mnt/windows-data`, `knob:sysctl.vm.swappiness`, ...: what `resources act` takes.",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              },
+              "users": {
+                "description": "What uses it: processes (`<pid> <program>`), sessions, an app.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "actions": {
+                "description": "The actions that apply in this state.",
+                "type": "array",
+                "items": {
+                  "description": "An action of a resource: the operation it runs, with this input.",
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "op": {
+                      "description": "The operation (`knobs.release`), which runs as a call of its own.",
+                      "type": "string"
+                    },
+                    "input": true,
+                    "class": {
+                      "description": "The operation's permission class.",
+                      "oneOf": [
+                        {
+                          "description": "Reads only; no gate.",
+                          "type": "string",
+                          "const": "read"
+                        },
+                        {
+                          "description": "Changes only the caller's own session: its dossier, its workspace, its hooks. An agent calls these freely.",
+                          "type": "string",
+                          "const": "session"
+                        },
+                        {
+                          "description": "Changes the user's files and settings or other sessions; when an agent calls it, the operator asks the user\nfirst (a desktop notification, DESIGN/03).",
+                          "type": "string",
+                          "const": "workspace"
+                        },
+                        {
+                          "description": "Changes the machine; `legionctl-system` asks for polkit approval.",
+                          "type": "string",
+                          "const": "machine"
+                        }
+                      ]
+                    },
+                    "dry_run": {
+                      "description": "The operation has a dry run of its own.",
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "op",
+                    "input",
+                    "class",
+                    "dry_run"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "group",
+              "id",
+              "name",
+              "state",
+              "users",
+              "actions"
+            ]
+          }
+        }
+      },
+      "required": [
+        "resources"
+      ],
+      "title": "ResourceList",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "resources.act": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The resource's id (`resources list`)."
+        },
+        "action": {
+          "type": "string",
+          "description": "One of its actions."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Show what would happen; change nothing. An operation without a dry run of its own does not run: the answer\nshows its route.",
+          "default": false
+        }
+      },
+      "required": [
+        "id",
+        "action"
+      ],
+      "title": "ResourceActIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "type": "string"
+        },
+        "input": true,
+        "run": {
+          "type": "boolean",
+          "description": "The operator runs the routed operation; false for the dry run of an operation without its own."
+        },
+        "output": {
+          "description": "The routed operation's output (null before it ran, or when it did not run)."
+        }
+      },
+      "required": [
+        "op",
+        "input",
+        "run"
+      ],
+      "description": "The route of an action, and the routed operation's output once the operator ran it.",
+      "title": "Acted",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   }

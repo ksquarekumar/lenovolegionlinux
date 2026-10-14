@@ -1783,3 +1783,46 @@ impl Render for crate::Job {
         )
     }
 }
+
+impl Render for crate::ResourceList {
+    fn text(&self) -> String {
+        let mut out = Vec::new();
+        let mut group = "";
+        for r in &self.resources {
+            if r.group != group {
+                group = &r.group;
+                out.push(format!("{group}:"));
+            }
+            out.push(format!("  {}  {}  {}", r.id, r.name, r.state));
+            if !r.users.is_empty() {
+                out.push(format!("    used by: {}", r.users.join(", ")));
+            }
+            if !r.actions.is_empty() {
+                let actions: Vec<String> = r
+                    .actions
+                    .iter()
+                    .map(|a| format!("{} ({})", a.name, a.op))
+                    .collect();
+                out.push(format!("    actions: {}", actions.join(", ")));
+            }
+        }
+        out.join("\n")
+    }
+}
+
+impl Render for crate::Acted {
+    fn text(&self) -> String {
+        match &self.output {
+            // as the routed operation shows it
+            Some(output) => crate::render(&self.op, output.clone())
+                .map_or_else(|e| format!("{}: {e:#}", self.op), |(text, _)| text),
+            None => format!("dry run: would run {} {}", self.op, self.input),
+        }
+    }
+
+    fn success(&self) -> bool {
+        self.output.as_ref().is_none_or(|output| {
+            crate::render(&self.op, output.clone()).is_ok_and(|(_, success)| success)
+        })
+    }
+}

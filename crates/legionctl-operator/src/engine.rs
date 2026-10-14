@@ -644,6 +644,25 @@ fn first_boot(disk: &Path, new: &Path, (iso, memory): (&Path, &str)) -> Result<(
     Ok(())
 }
 
+/// QMP of the running Windows VM.
+pub(crate) fn windows_qmp() -> Result<legionctl_core::qmp::Qmp> {
+    legionctl_core::qmp::Qmp::connect(&legionctl_core::session::windows_root().join("qmp.sock"))
+        .context("no Windows VM runs (legionctl windows vm start)")
+}
+
+/// The NVIDIA GPU's IOMMU group and who has it: Linux (its driver), Windows (on vfio-pci and in the running VM), or
+/// no one (on vfio-pci).
+pub(crate) fn nvidia_owner(root: &SysRoot) -> Result<(Vec<String>, GpuOwner)> {
+    let group = legionctl_machine::vfio::nvidia_group(root)?;
+    let in_vm = windows_has_gpu(&legionctl_core::session::windows_root().join("qmp.sock"));
+    let owner = match legionctl_machine::vfio::driver(root, &group[0]).as_deref() {
+        Some("vfio-pci") if in_vm => GpuOwner::Windows,
+        Some("vfio-pci") => GpuOwner::None,
+        _ => GpuOwner::Linux,
+    };
+    Ok((group, owner))
+}
+
 /// Whether the running Windows VM (QMP at `socket`) has the GPU (`gpu give nvidia windows` added `gpu0`).
 fn windows_has_gpu(socket: &Path) -> bool {
     legionctl_core::qmp::Qmp::connect(socket)
@@ -660,7 +679,7 @@ fn windows_has_gpu(socket: &Path) -> bool {
 }
 
 /// Whether user unit `unit` is active.
-fn unit_active(unit: &str) -> bool {
+pub(crate) fn unit_active(unit: &str) -> bool {
     Command::new("systemctl")
         .args(["--user", "is-active", "-q", unit])
         .status()
@@ -1437,15 +1456,8 @@ impl Engine for Operator {
             "the iGPU drives the Linux desktop and the laptop panel: it moves only as SR-IOV functions, which this \
              kernel's i915 does not offer yet (todo-28 3c)"
         );
-        let root = SysRoot::from_env();
-        let group = legionctl_machine::vfio::nvidia_group(&root)?;
+        let (group, now) = nvidia_owner(&SysRoot::from_env())?;
         let qmp_socket = legionctl_core::session::windows_root().join("qmp.sock");
-        let in_vm = windows_has_gpu(&qmp_socket);
-        let now = match legionctl_machine::vfio::driver(&root, &group[0]).as_deref() {
-            Some("vfio-pci") if in_vm => GpuOwner::Windows,
-            Some("vfio-pci") => GpuOwner::None,
-            _ => GpuOwner::Linux,
-        };
         let name = |o: GpuOwner| match o {
             GpuOwner::Linux => "linux",
             GpuOwner::Windows => "windows",
@@ -2703,6 +2715,33 @@ impl Engine for Operator {
         Ok(Lines { lines })
     }
 
+    fn windows_vm_pause(&self, _: &Ctx, _: Empty) -> Result<Lines> {
+        windows_qmp()?.execute("stop", None)?;
+        Ok(Lines {
+            lines: vec!["Windows: paused".into()],
+        })
+    }
+
+    fn windows_vm_resume(&self, _: &Ctx, _: Empty) -> Result<Lines> {
+        windows_qmp()?.execute("cont", None)?;
+        Ok(Lines {
+            lines: vec!["Windows: running again".into()],
+        })
+    }
+
+    fn windows_disk(&self, _: &Ctx, input: legionctl_api::WindowsDiskIn) -> Result<Changes> {
+        let attach = input.action == legionctl_api::DiskAction::Attach;
+        // the plan refuses first, before the polkit dialog
+        let steps = legionctl_machine::winvm::disk_plan(&SysRoot::from_env(), attach)?;
+        if input.dry_run {
+            return Ok(dry_run(&steps));
+        }
+        Ok(Changes {
+            lines: self.system(async move |p| p.windows_disk(attach).await)?,
+            dry_run: false,
+        })
+    }
+
     fn windows_vm_view(&self, _: &Ctx, _: Empty) -> Result<Lines> {
         let unit = format!("{}.service", legionctl_core::session::WINDOWS_UNIT);
         anyhow::ensure!(
@@ -3069,6 +3108,13 @@ impl Engine for Operator {
                 .context("the event has no Mutter method")?;
             return self.change(ctx, &fixes, method, false);
         }
+        // a set switch changes the selection, not single values: holding its writes would not give the old selection
+        if event.kind == "machine.switch-set" {
+            return Err(coded(
+                Code::InvalidInput,
+                "a set switch is undone with: legionctl rules sets switch previous",
+            ));
+        }
         let values: std::collections::BTreeMap<String, String> = event.payload["lines"]
             .as_array()
             .into_iter()
@@ -3259,6 +3305,63 @@ impl Engine for Operator {
             lines,
             dry_run: false,
         })
+    }
+
+    fn rules_sets_save(&self, _: &Ctx, input: legionctl_api::SetSaveIn) -> Result<Changes> {
+        // refused before the polkit dialog
+        legionctl_machine::sets::check_name(&input.name)
+            .map_err(|e| coded(Code::InvalidInput, format!("{e:#}")))?;
+        if input.boot {
+            legionctl_machine::boot::takeover(&legionctl_machine::boot::state(
+                &SysRoot::from_env(),
+            )?)?;
+        }
+        Ok(Changes {
+            lines: self.system(async |p| p.sets("save", &input.name, input.boot).await)?,
+            dry_run: false,
+        })
+    }
+
+    fn rules_sets_switch(&self, _: &Ctx, input: legionctl_api::SetSwitchIn) -> Result<Changes> {
+        let ledger = Ledger::open(&SysRoot::from_env())?;
+        let to = ledger.sets().remove(&input.name).ok_or_else(|| {
+            coded(
+                Code::NotFound,
+                format!(
+                    "no saved set {} (legionctl resources list shows the sets)",
+                    input.name
+                ),
+            )
+        })?;
+        if input.dry_run {
+            return Ok(Changes {
+                lines: legionctl_machine::sets::changes(&ledger.selection(), &to),
+                dry_run: true,
+            });
+        }
+        Ok(Changes {
+            lines: self.system(async |p| p.sets("switch", &input.name, false).await)?,
+            dry_run: false,
+        })
+    }
+
+    fn rules_sets_remove(&self, _: &Ctx, input: legionctl_api::SetIn) -> Result<Changes> {
+        Ok(Changes {
+            lines: self.system(async |p| p.sets("remove", &input.name, false).await)?,
+            dry_run: false,
+        })
+    }
+
+    fn resources_list(&self, ctx: &Ctx, _: Empty) -> Result<legionctl_api::ResourceList> {
+        crate::resources::list(self, ctx)
+    }
+
+    fn resources_act(
+        &self,
+        ctx: &Ctx,
+        input: legionctl_api::ResourceActIn,
+    ) -> Result<legionctl_api::Acted> {
+        crate::resources::route(self, ctx, &input)
     }
 
     fn knobs_show(&self, _: &Ctx, input: InspectIn) -> Result<KnobDetail> {

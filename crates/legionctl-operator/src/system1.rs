@@ -41,6 +41,10 @@ pub trait System1 {
     fn greeter(&self, action: &str) -> zbus::Result<Vec<String>>;
     /// Give devices back from vfio-pci to their own drivers.
     fn passthrough_end(&self, devices: &[String]) -> zbus::Result<Vec<String>>;
+    /// The Windows disk's partitions to Linux (`attach`) or away from it.
+    fn windows_disk(&self, attach: bool) -> zbus::Result<Vec<String>>;
+    /// Saved sets: `save` (with `boot`: boot entries), `switch` or `remove` the set `name`.
+    fn sets(&self, action: &str, name: &str, boot: bool) -> zbus::Result<Vec<String>>;
     /// Make the host ready for the caller's Windows VM; the lines and the MSDM table.
     fn windows_vm_begin(
         &self,

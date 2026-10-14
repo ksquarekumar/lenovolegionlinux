@@ -160,6 +160,13 @@ the MOK certificate checks its signature, and `mv` puts it in place of the old i
 goes to `<name>.cmdline.old` and the new line to `<name>.cmdline`. A failed step leaves the old image and the old
 line. `boot rebuild` uses the same checks and steps for each kernel.
 
+### Boot entries for saved sets (todo-85)
+
+A saved set with `--boot` (note 22) is one profile of each kernel's image (a multi-profile UKI): the kernel's line
+and `legionctl.set=<name>`. The build makes one profile file for each such set with `ukify build --profile
+--cmdline`, then the image with `--join-profile` for each, signed and checked as before, and removes the profile
+files. Profile 0 is the kernel's own line, the default entry. `timeout 0` keeps the menu hidden until a key is held.
+
 ### The `kernel` condition of the configsets
 
 A configset layer can apply to one kernel: `{ "when": { "kernel": "linux-cachyos" }, "set": { ... } }`, or

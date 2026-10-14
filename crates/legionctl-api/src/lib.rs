@@ -105,7 +105,7 @@ pub fn api_fingerprint() -> &'static str {
 }
 
 /// What an operation may change, and so which gate applies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Class {
     /// Reads only; no gate.
@@ -502,6 +502,14 @@ operations! {
     /// Back to the shipped state: remove your layers and holds (for one knob, or all); with `--system`, the system
     /// layers and the layers' on/off states. Holds and system changes go through polkit.
     rules_reset / RulesReset = "rules.reset", Machine, RuleResetIn => Changes;
+    /// Keep the layer states and the knob holds of now as a saved set. With `--boot`, each kernel's image gets a boot
+    /// entry for the set (hold a key at start for the menu).
+    rules_sets_save / RulesSetsSave = "rules.sets.save", Machine, SetSaveIn => Changes;
+    /// Switch to a saved set as one change: its layer states and its holds. `previous` is the selection before the
+    /// last switch (the undo).
+    rules_sets_switch / RulesSetsSwitch = "rules.sets.switch", Machine, SetSwitchIn => Changes;
+    /// Remove a saved set, and its boot entries.
+    rules_sets_remove / RulesSetsRemove = "rules.sets.remove", Machine, SetIn => Changes;
     /// Hold a knob at a value against the policy (D1): it is written now, and the policy leaves it alone until
     /// `knobs release`. A human approves it in the polkit dialog.
     knobs_hold / KnobsHold = "knobs.hold", Machine, KnobHoldIn => Changes;
@@ -634,6 +642,13 @@ operations! {
     /// When the Windows VM starts by itself: off, at login, or at boot (before login). On asks once in the polkit
     /// dialog and then lets your user start and end the VM without a prompt; off asks again each time.
     windows_vm_autostart / WindowsVmAutostart = "windows.vm.autostart", Machine, AutostartIn => Lines;
+    /// Pause the running Windows VM (QEMU stops its CPUs; the memory stays).
+    windows_vm_pause / WindowsVmPause = "windows.vm.pause", Workspace, Empty => Lines;
+    /// Let the paused Windows VM run again.
+    windows_vm_resume / WindowsVmResume = "windows.vm.resume", Workspace, Empty => Lines;
+    /// Attach the Windows disk's partitions to Linux (their automounts start) or detach them (their automounts and
+    /// mounts stop), after login; refused while the Windows VM runs.
+    windows_disk / WindowsDisk = "windows.disk", Machine, WindowsDiskIn => Changes;
     /// Show the running Windows VM in a window on this desktop (SPICE: `remote-viewer`, package virt-viewer).
     windows_vm_view / WindowsVmView = "windows.vm.view", Workspace, Empty => Lines;
     /// Whether the Windows VM runs, and where its display is.
@@ -716,4 +731,10 @@ operations! {
     config_explain / ConfigExplain = "config.explain", Read, ExplainIn => Explanation;
     /// The config layers in merge order, their files, and the locked keys.
     config_layers / ConfigLayers = "config.layers", Read, ProjectIn => LayerList;
+    /// Each resource of the machine (VMs, GPU, mounts, configsets, sessions and workspaces): its state, what uses it,
+    /// and its actions with the operation each runs.
+    resources_list / ResourcesList = "resources.list", Read, Empty => ResourceList;
+    /// Run an action of a resource: the operator runs the action's operation as a call of its own (its class, its
+    /// approval, its event). This operation only finds the route.
+    resources_act / ResourcesAct = "resources.act", Read, ResourceActIn => Acted;
 }

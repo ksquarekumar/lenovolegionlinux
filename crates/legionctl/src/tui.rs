@@ -1,16 +1,20 @@
-//! Live dashboard: load pressure, machine state, workspaces and agent configs on one screen.
+//! Live dashboard: load pressure, machine state, workspaces and agent configs on one screen; `r` shows the resources
+//! (note 22) and runs their actions, each with its dry run first.
 
 use std::time::Duration;
 
 use anyhow::Result;
-use legionctl_api::{ClientPath, ConfigFile, Empty, ProjectIn, Snapshot, StatusIn, Workspace, op};
+use legionctl_api::{
+    ClientPath, ConfigFile, Empty, ProjectIn, Render as _, ResourceActIn, ResourceList, Snapshot,
+    StatusIn, Workspace, op,
+};
 use legionctl_api::{Level, Pressure};
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Gauge, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Gauge, Paragraph, Row, Table, TableState};
 
 use legionctl_api::client::Client;
 
@@ -168,9 +172,128 @@ fn draw(f: &mut Frame, s: &Snapshot, workspaces: &[Workspace], configs: &[Config
     f.render_widget(configs_table(configs), cfg_area);
 
     f.render_widget(
-        Paragraph::new(" q quit · state refreshes every second").dim(),
+        Paragraph::new(" q quit · r resources · state refreshes every second").dim(),
         footer,
     );
+}
+
+/// The resources view: what is selected, and the action whose dry run is shown.
+#[derive(Default)]
+struct View {
+    selected: usize,
+    /// (id, action, the dry run's text)
+    pending: Option<(String, String, String)>,
+    /// The last result or error.
+    message: String,
+}
+
+fn draw_resources(f: &mut Frame, list: &ResourceList, view: &View) {
+    let [table_area, detail, footer] = Layout::vertical([
+        Constraint::Min(8),
+        Constraint::Length(8),
+        Constraint::Length(1),
+    ])
+    .areas(f.area());
+    let rows = list.resources.iter().map(|r| {
+        let actions: Vec<String> = r
+            .actions
+            .iter()
+            .enumerate()
+            .map(|(i, a)| format!("{} {}", i + 1, a.name))
+            .collect();
+        Row::new(vec![
+            r.group.clone(),
+            r.id.clone(),
+            r.state.clone(),
+            r.users.join(", "),
+            actions.join("  "),
+        ])
+    });
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(10),
+            Constraint::Percentage(30),
+            Constraint::Length(22),
+            Constraint::Percentage(20),
+            Constraint::Min(10),
+        ],
+    )
+    .header(Row::new(vec!["group", "id", "state", "used by", "actions"]).bold())
+    .row_highlight_style(Style::default().reversed())
+    .block(Block::bordered().title(" resources "));
+    let mut state = TableState::default().with_selected(Some(view.selected));
+    f.render_stateful_widget(table, table_area, &mut state);
+    let text = match &view.pending {
+        Some((id, action, plan)) => {
+            format!("{action} {id}:\n{plan}\n\nEnter applies it, Esc discards it")
+        }
+        None => view.message.clone(),
+    };
+    f.render_widget(
+        Paragraph::new(text).block(Block::bordered().title(" action ")),
+        detail,
+    );
+    f.render_widget(
+        Paragraph::new(" r back · Up/Down select · 1-9 an action (dry run first) · q quit").dim(),
+        footer,
+    );
+}
+
+/// The resources view until `r` (back, `Ok(false)`) or `q` (`Ok(true)`).
+fn resources(
+    terminal: &mut ratatui::DefaultTerminal,
+    client: &Client,
+    runtime: &tokio::runtime::Runtime,
+) -> Result<bool> {
+    let mut view = View::default();
+    loop {
+        let list = runtime.block_on(client.call::<op::ResourcesList>(&Empty {}))?;
+        view.selected = view.selected.min(list.resources.len().saturating_sub(1));
+        terminal.draw(|f| draw_resources(f, &list, &view))?;
+        if !event::poll(Duration::from_secs(1))? {
+            continue;
+        }
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        let act = |id: &str, action: &str, dry_run: bool| {
+            let input = ResourceActIn {
+                id: id.into(),
+                action: action.into(),
+                dry_run,
+            };
+            runtime
+                .block_on(client.call::<op::ResourcesAct>(&input))
+                .map_or_else(|e| format!("{e:#}"), |acted| acted.text())
+        };
+        match key.code {
+            KeyCode::Char('q') => return Ok(true),
+            KeyCode::Char('r') => return Ok(false),
+            KeyCode::Up => view.selected = view.selected.saturating_sub(1),
+            KeyCode::Down => view.selected += 1,
+            KeyCode::Esc => view.pending = None,
+            KeyCode::Enter => {
+                if let Some((id, action, _)) = view.pending.take() {
+                    view.message = act(&id, &action, false);
+                }
+            }
+            KeyCode::Char(c @ '1'..='9') => {
+                let chosen = list.resources.get(view.selected).and_then(|r| {
+                    let i = c.to_digit(10)? as usize - 1;
+                    Some((r.id.clone(), r.actions.get(i)?.name.clone()))
+                });
+                if let Some((id, action)) = chosen {
+                    let plan = act(&id, &action, true);
+                    view.pending = Some((id, action, plan));
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 pub fn run() -> Result<()> {
@@ -200,6 +323,9 @@ pub fn run() -> Result<()> {
             {
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                    KeyCode::Char('r') if resources(&mut terminal, &client, &runtime)? => {
+                        return Ok(());
+                    }
                     _ => {}
                 }
             }

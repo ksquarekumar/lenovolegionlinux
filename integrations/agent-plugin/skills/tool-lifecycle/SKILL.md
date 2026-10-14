@@ -51,13 +51,13 @@ Class: R read, S session, W workspace, M machine (polkit). A group with more tha
 | `cleanup` | Turns off units of earlier Legion tooling. | M | daemon | `events`, `doctor` | machine-tools |
 | `knobs` | `list`, `show`, `hold`, `release` the knobs. | R, M | daemon | `knobs show` (history) | machine-tools |
 | `plan` | The desired state and the writes the daemon would make. | R | operator | - | machine-tools |
-| `rules` | `list`, `show`, `enable`, `disable`, `edit`, `reset` the configset layers. | R, M | daemon (yours: as you, then a reload) | `rules list`, `plan` | machine-tools |
+| `rules` | `list`, `show`, `enable`, `disable`, `edit`, `reset` the configset layers; `sets save\|switch\|remove` saved sets (`switch previous` is the undo). | R, M | daemon (yours: as you, then a reload) | `rules list`, `plan` | machine-tools |
 | `fan` | `status`, `curve set\|reset`, `max`, `clean`, `lock`. | R, M | daemon | `fan status`, `monitor` | machine-tools |
 | `battery` | `status`, `mode`, `usb-charging`. | R, M | daemon | `battery status` | machine-tools |
 | `boot` | `status`, `install`, `confirm`, `rebuild`, `remove` legionctl's boot entry. | R, M | daemon; next start | `boot status` | machine-tools |
 | `kernel` | `list`, `default`, `try` (restarts), `cmdline set\|undo`. | R, M | daemon; next start | `kernel list` | machine-tools |
 | `greeter` | `status`, `install`, `remove` legionctl's login screen. | R, M | daemon; next start | `greeter status` | machine-tools |
-| `windows` | `status`, `reboot` (restarts), `vm start\|stop\|autostart\|view\|status`. | R, W, M | daemon, QEMU | `windows vm status` | machine-tools |
+| `windows` | `status`, `reboot` (restarts), `vm start\|stop\|pause\|resume\|autostart\|view\|status`, `disk attach\|detach`. | R, W, M | daemon, QEMU | `windows vm status` | machine-tools |
 | `virt` | `status`, `act`, `tune`, `create` containers and VMs. | R, W | docker, virsh, as you | `virt status` | machine-tools |
 | `undo` | Turns back a change from the event log. | M | daemon (`display.change`: as you) | `events` | machine-tools |
 | `record` | Records this machine into a directory. | W | operator | the directory | machine-tools |
@@ -81,6 +81,7 @@ Class: R read, S session, W workspace, M machine (polkit). A group with more tha
 | `hooks` | `list`, `bind`, `unbind`, `add`, `rm` hook actions. | R, W | operator | `hooks list` | workspace-practice |
 | `skills` | The legionctl skills, where each agent has them, and their reminders. | R | operator | - | - |
 | `config` | `show`, `explain`, `layers` of the merged config. | R | operator | `config explain <key>` | - |
+| `resources` | `list` each resource (VMs, GPU, mounts, configsets, sessions, workspaces) with its state, users and actions; `act <id> <action> [--dry-run]` runs the action's own operation. | R (the routed operation has its own class) | operator, then the routed operation | `events` (the routed operation's kind) | machine-tools |
 | `events` | The event log. | R | operator | - | - |
 | `trace` | The event log live. | - | client only | - | - |
 | `tui` | A live dashboard. | - | client only | - | - |

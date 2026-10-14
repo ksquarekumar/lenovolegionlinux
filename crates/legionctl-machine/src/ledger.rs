@@ -6,6 +6,7 @@
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
+use crate::sets::Selection;
 use crate::sysroot::SysRoot;
 
 pub const DB: &str = "/var/lib/legionctl/system.db";
@@ -93,6 +94,11 @@ impl Ledger {
                      CREATE TABLE IF NOT EXISTS layers (
                         id      TEXT PRIMARY KEY,
                         enabled INTEGER NOT NULL
+                     );
+                     -- saved sets (`legionctl rules sets`, todo-85): a copy of the layers and holds tables as JSON
+                     CREATE TABLE IF NOT EXISTS sets (
+                        name      TEXT PRIMARY KEY,
+                        selection TEXT NOT NULL
                      );",
                 )
                 .is_ok()
@@ -172,6 +178,78 @@ impl Ledger {
             None => conn.execute("DELETE FROM layers WHERE id = ?1", [id]),
         }
         .with_context(|| format!("writing the state of layer {id} to {DB}"))?;
+        Ok(())
+    }
+
+    /// The selection now: the layer states and the holds (not a set's `boot`).
+    #[must_use]
+    pub fn selection(&self) -> Selection {
+        let layers = self.conn.as_ref().map_or_else(Default::default, |conn| {
+            conn.prepare("SELECT id, enabled FROM layers")
+                .and_then(|mut stmt| {
+                    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                        .collect::<rusqlite::Result<_>>()
+                })
+                .unwrap_or_default()
+        });
+        Selection {
+            layers,
+            holds: self.holds(),
+            boot: false,
+        }
+    }
+
+    /// The saved sets by name.
+    #[must_use]
+    pub fn sets(&self) -> std::collections::BTreeMap<String, Selection> {
+        let Some(conn) = self.conn.as_ref() else {
+            return std::collections::BTreeMap::new();
+        };
+        conn.prepare("SELECT name, selection FROM sets")
+            .and_then(|mut stmt| {
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(name, json)| Some((name, serde_json::from_str(&json).ok()?)))
+            .collect()
+    }
+
+    /// Keep `selection` as the set `name`; `None` removes the set.
+    ///
+    /// # Errors
+    /// `system.db` is not open for writing, or the write fails.
+    pub fn save_set(&self, name: &str, selection: Option<&Selection>) -> Result<()> {
+        let conn = self.conn.as_ref().context("system.db is not available")?;
+        match selection {
+            Some(s) => conn.execute(
+                "INSERT INTO sets (name, selection) VALUES (?1, ?2) ON CONFLICT(name) DO UPDATE SET selection = excluded.selection",
+                params![name, serde_json::to_string(s)?],
+            ),
+            None => conn.execute("DELETE FROM sets WHERE name = ?1", [name]),
+        }
+        .with_context(|| format!("writing the set {name} to {DB}"))?;
+        Ok(())
+    }
+
+    /// The layer states become those of `selection`, in one transaction (the holds change through the policy's
+    /// steps, which write the files too).
+    ///
+    /// # Errors
+    /// `system.db` is not open for writing, or the write fails.
+    pub fn set_layers(&self, selection: &Selection) -> Result<()> {
+        let conn = self.conn.as_ref().context("system.db is not available")?;
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM layers", [])?;
+        for (id, on) in &selection.layers {
+            tx.execute(
+                "INSERT INTO layers (id, enabled) VALUES (?1, ?2)",
+                params![id, on],
+            )?;
+        }
+        tx.commit()
+            .with_context(|| format!("writing the layer states to {DB}"))?;
         Ok(())
     }
 

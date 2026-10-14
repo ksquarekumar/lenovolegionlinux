@@ -46,6 +46,7 @@ it. Test changes against a recording (`record`, `replay`) or in the e2e tests, n
 | `fan status`, `battery status` | Fan table, curve, fan max mode; battery mode, health, cycles, health trend. |
 | `display status` | Monitors (mode, highest rate, scale, VRR, HDR), font antialiasing, findings with ids. |
 | `gpu status`, `vfio status` | Which GPU drives each display and draws the desktop; which devices can go to a VM. |
+| `resources list` | Each resource (VMs, GPU, mounts with the processes that use them, layers, held knobs, saved sets, sessions, workspaces), its state and its actions with the operation each runs. |
 | `kernel list`, `boot status` | Installed kernels (scheduler, LTO, image, command line, DKMS state, running, default); firmware boot entries. |
 | `greeter status`, `windows status`, `windows vm status` | Login screen; dual boot and dirty NTFS volumes; the Windows VM. |
 | `virt status` | Containers and VMs (WinBoat recognized) and what is wrong. |
@@ -73,6 +74,9 @@ it. Test changes against a recording (`record`, `replay`) or in the e2e tests, n
 | `greeter install\|remove [--dry-run]` | legionctl's greeter in place of GDM, or back. | Next start |
 | `windows reboot [--dry-run]` | Restarts into Windows once. | Restarts now |
 | `windows vm start\|stop`, `windows vm autostart off\|login\|boot` | The installed Windows in a VM (its own disk by VFIO). | Now |
+| `windows disk attach\|detach [--dry-run]` | The Windows disk's partitions to Linux (automounts start) or away (automounts and mounts stop). Refused while the VM runs. | Now |
+| `rules sets save <name> [--boot]`, `rules sets switch <name> [--dry-run]`, `rules sets remove <name>` | A saved set: the layer states and the holds. A switch is one change; `switch previous` is the undo. `--boot` adds a hidden boot entry for each kernel (needs `boot install`). | Now; a boot entry at the next start |
+| `resources act <id> <action> [--dry-run]` | Runs the action's own operation (see `resources list`): its class, its polkit dialog, its event. | As that operation |
 | `cleanup [--unload-modules] [--dry-run]` | Turns off conflicting units of earlier Legion tooling. | Now |
 | `tune <attribute> <scenario> <values>... [--seconds <s>] [--cooldown-s <s>] [--per-kernel]` | Steps a firmware power limit with a bench at each step; the original value comes back. Needs AC and an idle machine. The result is a layer (`tuned`, or `tuned-<package>` with `--per-kernel`), off until `rules enable`. | During the sweep |
 | `undo <event>` | Turns back the writes of a machine change (each file is then held: `knobs release` gives it back), or a `display.change`. | Now |
@@ -86,6 +90,7 @@ Workspace-class tools (no polkit, but an agent's call asks the user):
 - `virt act start|stop|pause|unpause <name>`, `virt tune <name> [--cores p|e|all] [--memory <size>] [--dry-run]`,
   `virt create <name> <image> [--cores ...] [--memory ...] [--gpu] [--dry-run]`.
 - `windows vm view`: a SPICE window of the running Windows VM.
+- `windows vm pause|resume`: stops and continues the running Windows VM's CPUs (QMP).
 
 ## How to track a change
 

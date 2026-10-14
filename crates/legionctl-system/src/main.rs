@@ -38,8 +38,8 @@ use legionctl_machine::policy::{self, Machine, Options, Source, Step};
 use legionctl_machine::react::{Event, react};
 use legionctl_machine::sysroot::SysRoot;
 use legionctl_machine::{
-    battery, boot, cleanup, configset, fan, gpu, greeter, knobs, profile, telemetry, tune, vfio,
-    windows, winvm,
+    battery, boot, cleanup, configset, fan, gpu, greeter, knobs, profile, sets, telemetry, tune,
+    vfio, windows, winvm,
 };
 use tokio::io::unix::AsyncFd;
 use tokio::io::{Interest, Ready};
@@ -298,15 +298,127 @@ fn gpu_return(root: &SysRoot) -> Result<Vec<String>> {
 /// (`gpu-linux`, `gpu-none`: on vfio-pci for the user's VM).
 fn greeter_act(root: &SysRoot, user: &str, action: &str) -> Result<Vec<String>> {
     let uid = greeter::person(root, user)?;
-    let vm_runs = Ledger::open(root)?.get(Key::WindowsVm).is_some();
     match action {
-        "disk-attach" | "disk-detach" => {
-            anyhow::ensure!(!vm_runs, "the Windows VM has the disk now");
-            boot_steps(root, &winvm::disk_plan(root, action == "disk-attach")?)
-        }
+        "disk-attach" | "disk-detach" => windows_disk(root, action == "disk-attach"),
         "gpu-none" => gpu_release(root, uid),
         "gpu-linux" => gpu_return(root),
         _ => boot_steps(root, &greeter::vm_plan(root, user, uid, action)?),
+    }
+}
+
+/// The Windows disk's partitions to Linux (`attach`: their automounts start) or away (their automounts and mounts
+/// stop); refused while the Windows VM has the disk.
+fn windows_disk(root: &SysRoot, attach: bool) -> Result<Vec<String>> {
+    anyhow::ensure!(
+        Ledger::open(root)?.get(Key::WindowsVm).is_none(),
+        "the Windows VM has the disk now"
+    );
+    boot_steps(root, &winvm::disk_plan(root, attach)?)
+}
+
+/// Keep the selection now (layer states and holds) as the set `name`; `boot`: each kernel's image gets an entry for
+/// it, which needs the boot takeover. The images are made again when the set has, or had, boot entries.
+fn save_set(root: &SysRoot, name: &str, boot: bool) -> Result<Vec<String>> {
+    sets::check_name(name)?;
+    if boot {
+        boot::takeover(&boot::state(root)?)?;
+    }
+    let ledger = Ledger::open(root)?;
+    let had_boot = ledger.sets().get(name).is_some_and(|s| s.boot);
+    let selection = sets::Selection {
+        boot,
+        ..ledger.selection()
+    };
+    ledger.save_set(name, Some(&selection))?;
+    let mut lines = vec![format!(
+        "set {name}: {} layer states, {} holds{}",
+        selection.layers.len(),
+        selection.holds.len(),
+        if boot { ", with boot entries" } else { "" }
+    )];
+    if boot || had_boot {
+        lines.extend(boot_rebuild(root)?);
+    }
+    Ok(lines)
+}
+
+/// Remove the set `name`, and its boot entries.
+fn remove_set(root: &SysRoot, name: &str) -> Result<Vec<String>> {
+    let ledger = Ledger::open(root)?;
+    let set = ledger
+        .sets()
+        .remove(name)
+        .with_context(|| format!("no saved set {name}"))?;
+    ledger.save_set(name, None)?;
+    let mut lines = vec![format!("set {name}: removed")];
+    if set.boot {
+        lines.extend(boot_rebuild(root)?);
+    }
+    Ok(lines)
+}
+
+/// Switch to the set `name` as one change: the holds it does not have are released, the layer states become its own,
+/// its holds are written, and the layers apply. The selection before is kept as `previous` (the undo).
+fn switch_set(root: &SysRoot, name: &str) -> Result<Vec<String>> {
+    let ledger = Ledger::open(root)?;
+    let to = ledger.sets().remove(name).with_context(|| {
+        format!("no saved set {name} (legionctl resources list shows the sets)")
+    })?;
+    // its holds are checked before anything changes
+    on_machine(root, |m| knobs::hold_plan(m, &to.holds))?;
+    let now = ledger.selection();
+    ledger.save_set(sets::PREVIOUS, Some(&now))?;
+    let mut lines = sets::changes(&now, &to);
+    lines.extend(carry_out(root, |m| {
+        Ok(m.ledger
+            .holds()
+            .into_keys()
+            .filter(|path| !to.holds.contains_key(path))
+            .map(|path| Step::Hold { path, value: None })
+            .collect())
+    })?);
+    ledger.set_layers(&to)?;
+    lines.extend(carry_out(root, |m| knobs::hold_plan(m, &to.holds))?);
+    lines.extend(carry_out(root, |m| react(m, Event::Reload))?);
+    Ok(lines)
+}
+
+/// The set of this start's boot entry (`legionctl.set=<name>`, todo-85), for this start only: the selection before
+/// is kept as `before-boot` (once, so a second start through the menu keeps the first), and a start without the
+/// parameter goes back to it.
+fn boot_set(root: &SysRoot) -> Result<Vec<String>> {
+    let ledger = Ledger::open(root)?;
+    let line = root.read("/proc/cmdline").unwrap_or_default();
+    let saved = ledger.sets();
+    match sets::chosen(&line) {
+        Some(name) => {
+            anyhow::ensure!(
+                saved.contains_key(name),
+                "no saved set {name}: the selection stays"
+            );
+            if !saved.contains_key(sets::BEFORE_BOOT) {
+                ledger.save_set(sets::BEFORE_BOOT, Some(&ledger.selection()))?;
+            }
+            switch_set(root, name)
+        }
+        None if saved.contains_key(sets::BEFORE_BOOT) => {
+            let lines = switch_set(root, sets::BEFORE_BOOT)?;
+            ledger.save_set(sets::BEFORE_BOOT, None)?;
+            Ok(lines)
+        }
+        None => Ok(Vec::new()),
+    }
+}
+
+/// [`boot_set`] before the first apply; a failure leaves the selection as it is.
+fn start_set(root: &SysRoot) {
+    match boot_set(root) {
+        Ok(lines) => {
+            for line in lines {
+                eprintln!("Start: set: {line}");
+            }
+        }
+        Err(e) => eprintln!("Start: the boot entry's set: {e:#}"),
     }
 }
 
@@ -885,6 +997,65 @@ impl System1 {
         Ok(lines)
     }
 
+    /// The Windows disk's partitions to Linux (`attach`) or away from it, after login (the greeter's `disk-attach`
+    /// and `disk-detach` before it); refused while the Windows VM runs.
+    async fn windows_disk(
+        &self,
+        attach: bool,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.windows.vm").await?;
+        let root = self.root.clone();
+        let lines = tokio::task::spawn_blocking(move || windows_disk(&root, attach))
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
+            .map_err(|e| failed(&e))?;
+        Self::changed(&emitter, "WindowsDisk", &lines).await?;
+        Ok(lines)
+    }
+
+    /// Saved sets (todo-85): `save` the layer states and holds of now as `name` (`boot`: with an entry in each
+    /// kernel's image), `switch` to `name` as one change, or `remove` it. polkit `org.legionctl.rules`, and
+    /// `org.legionctl.boot` when the images change.
+    async fn sets(
+        &self,
+        action: String,
+        name: String,
+        boot: bool,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.rules").await?;
+        let had_boot = Ledger::open(&self.root)
+            .ok()
+            .and_then(|l| l.sets().get(&name).map(|s| s.boot))
+            .unwrap_or(false);
+        if (action == "save" && boot) || (action != "switch" && had_boot) {
+            authorize(conn, &header, "org.legionctl.boot").await?;
+        }
+        if self.tuning.load(Ordering::SeqCst) {
+            return Err(zbus::fdo::Error::Failed(
+                "a tune runs; change the sets after it".into(),
+            ));
+        }
+        let root = self.root.clone();
+        let switch = action == "switch";
+        let lines = tokio::task::spawn_blocking(move || match action.as_str() {
+            "save" => save_set(&root, &name, boot),
+            "switch" => switch_set(&root, &name),
+            "remove" => remove_set(&root, &name),
+            other => anyhow::bail!("sets action must be save, switch or remove, not {other}"),
+        })
+        .await
+        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
+        .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("{e:#}")))?;
+        Self::changed(&emitter, if switch { "SwitchSet" } else { "Sets" }, &lines).await?;
+        Ok(lines)
+    }
+
     /// Give `devices` back from vfio-pci to their own drivers, after the VM ended.
     async fn passthrough_end(
         &self,
@@ -1431,6 +1602,7 @@ async fn main() -> Result<()> {
         .ok();
     // announce later changes only; the session asks for the current state when it starts
     let mut announced = mode(&root);
+    start_set(&root);
     handle(&root, &emitter, Event::Start, &mut announced).await;
     notify(sd_notify::NotifyState::Ready);
     // running again: safe mode is over

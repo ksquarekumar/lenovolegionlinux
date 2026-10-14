@@ -134,6 +134,25 @@
       <arg type="as" direction="out"/>
     </method>
     <!--
+     The Windows disk's partitions to Linux (`attach`) or away from it, after login (the greeter's `disk-attach`
+     and `disk-detach` before it); refused while the Windows VM runs.
+     -->
+    <method name="WindowsDisk">
+      <arg name="attach" type="b" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
+     Saved sets (todo-85): `save` the layer states and holds of now as `name` (`boot`: with an entry in each
+     kernel's image), `switch` to `name` as one change, or `remove` it. polkit `org.legionctl.rules`, and
+     `org.legionctl.boot` when the images change.
+     -->
+    <method name="Sets">
+      <arg name="action" type="s" direction="in"/>
+      <arg name="name" type="s" direction="in"/>
+      <arg name="boot" type="b" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
      Give `devices` back from vfio-pci to their own drivers, after the VM ended.
      -->
     <method name="PassthroughEnd">

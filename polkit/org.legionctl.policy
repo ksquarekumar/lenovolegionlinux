@@ -35,7 +35,7 @@
   </action>
 
   <action id="org.legionctl.rules">
-    <description>Change the system power rules (configset layers)</description>
+    <description>Change the system power rules (configset layers and saved sets)</description>
     <message>Authentication is required to change the system power rules</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
@@ -45,7 +45,7 @@
   </action>
 
   <action id="org.legionctl.windows.vm">
-    <description>Start the installed Windows in a virtual machine, or end it</description>
+    <description>Start the installed Windows in a virtual machine or end it, or attach its disk to Linux or detach it</description>
     <message>Authentication is required to give the Windows disk to a virtual machine</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
@@ -65,7 +65,7 @@
   </action>
 
   <action id="org.legionctl.boot">
-    <description>Add, confirm, rebuild or remove legionctl's boot entry (systemd-boot and signed kernel images), choose its kernel, change a kernel's command line, or install a kernel that legionctl built</description>
+    <description>Add, confirm, rebuild or remove legionctl's boot entry (systemd-boot and signed kernel images), choose its kernel, change a kernel's command line, install a kernel that legionctl built, or add boot entries for saved sets</description>
     <message>Authentication is required to change how the computer starts</message>
     <defaults>
       <allow_any>auth_admin</allow_any>

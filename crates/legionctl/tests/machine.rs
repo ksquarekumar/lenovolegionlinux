@@ -2766,7 +2766,7 @@ mod operator_and_daemon {
     /// `nvme0n1p3` (system, read-only automount, Fast Startup off, not hibernated) and `nvme0n1p4` (data, read-write
     /// automount), the firmware has an `MSDM` table, the Bolt receiver is plugged in; `systemctl` logs its calls and
     /// `swtpm`, `taskset` and QEMU are stand-ins (QEMU writes its arguments). Returns the stand-in kernel's thread.
-    fn windows_machine(m: &Machine) -> std::thread::JoinHandle<()> {
+    pub(super) fn windows_machine(m: &Machine) -> std::thread::JoinHandle<()> {
         let kernel = pci_machine(m);
         let root = m.dir.join("root");
         let bin = m.dir.join("bin");
@@ -3155,7 +3155,7 @@ while True:
     /// behind them), two kernels, the MOK key, systemd-boot; a stand-in `efibootmgr` that keeps the firmware's entries
     /// in a file (0003 rEFInd, 0004 Windows; this start 0003), and stand-in `ukify`/`sbsign` that write what they were
     /// given into their output.
-    fn boot_machine(m: &Machine) -> PathBuf {
+    pub(super) fn boot_machine(m: &Machine) -> PathBuf {
         let bin = m.dir.join("bin");
         // the daemon's PATH in the test has only stand-ins; the boot plans use these system tools
         for tool in ["mkdir", "install", "rm", "mv"] {
@@ -5186,6 +5186,596 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             ["efibootmgr --bootnext 0004"],
             "no reboot without BootNext"
         );
+    }
+}
+
+/// Resources after the start (todo-85, note 22): one list, and one action that runs an existing operation.
+mod resources {
+    use super::daemon_process::{daemon, start, wait_for};
+    use super::operator_and_daemon::{boot_machine, on_bus, windows_machine};
+    use super::*;
+    use serde_json::Value;
+
+    const SWAPPINESS: &str = "/proc/sys/vm/swappiness";
+
+    fn json(op: &Operator, args: &[&str]) -> Value {
+        serde_json::from_str(&op.ok(&[args, &["--json"]].concat())).unwrap()
+    }
+
+    /// The resource `id` of `resources list`.
+    fn resource(op: &Operator, id: &str) -> Value {
+        let list = json(op, &["resources", "list"]);
+        list["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {id} in {list}"))
+    }
+
+    /// (name, operation, class) of each action of a resource.
+    fn actions(r: &Value) -> Vec<(String, String, String)> {
+        r["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| {
+                (
+                    a["name"].as_str().unwrap().into(),
+                    a["op"].as_str().unwrap().into(),
+                    a["class"].as_str().unwrap().into(),
+                )
+            })
+            .collect()
+    }
+
+    fn triples(list: &[(&str, &str, &str)]) -> Vec<(String, String, String)> {
+        list.iter()
+            .map(|(a, b, c)| ((*a).into(), (*b).into(), (*c).into()))
+            .collect()
+    }
+
+    /// The kinds of the events after event `after`, once the recorder has them (the daemon's signals come late).
+    fn kinds_after(op: &Operator, after: i64) -> Vec<String> {
+        json(op, &["events", "--limit", "1000"])["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["id"].as_i64().unwrap() > after)
+            .map(|e| e["kind"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn last_event(op: &Operator) -> i64 {
+        json(op, &["events", "--limit", "1000"])["items"]
+            .as_array()
+            .unwrap()
+            .last()
+            .map_or(0, |e| e["id"].as_i64().unwrap())
+    }
+
+    /// A session of the stand-in agent `probe` in `repo`; its id.
+    fn probe_session(op: &Operator, repo: &Path) -> String {
+        let started = op.run(
+            repo,
+            &[],
+            &["session", "start", "probe", "--dossier", "res", "--json"],
+            "",
+        );
+        assert!(
+            started.status.success(),
+            "{}",
+            String::from_utf8_lossy(&started.stderr)
+        );
+        serde_json::from_slice::<Value>(&started.stdout).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// polkit was asked for `action`.
+    fn was_asked(asked: &super::daemon_process::Asked, action: &str) -> bool {
+        asked.lock().unwrap().iter().any(|(_, a, _, _)| a == action)
+    }
+
+    /// The recorded machine with its Windows disk (`windows_machine`): the data partition mounted with `vim` working in
+    /// it, `steam` with the NVIDIA device open, a `systemctl` that logs each call and runs and freezes session
+    /// scopes, and a repository for a session. Returns the stand-in kernel's thread and the repository.
+    fn resource_machine(m: &Machine) -> (std::thread::JoinHandle<()>, PathBuf) {
+        let kernel = windows_machine(m);
+        m.set(
+            "/proc/self/mounts",
+            "/dev/nvme1n1p2 / btrfs rw 0 0\n/dev/nvme0n1p4 /mnt/windows-data ntfs3 rw 0 0",
+        );
+        let link = |from: &str, to: &str| {
+            let at = m.dir.join("root").join(from);
+            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(to, at).unwrap();
+        };
+        link("proc/4242/cwd", "/mnt/windows-data/docs");
+        m.set("/proc/4242/comm", "vim");
+        link("proc/4343/cwd", "/home/u");
+        link("proc/4343/fd/7", "/dev/nvidia0");
+        m.set("/proc/4343/comm", "steam");
+        // the systemctl of windows_machine, and a session scope that runs and freezes
+        let log = m.dir.join("systemctl.log");
+        let freezer = m.dir.join("freezer");
+        std::fs::write(&freezer, "running").unwrap();
+        Machine::script(
+            &m.dir.join("bin"),
+            "systemctl",
+            &format!(
+                "echo \"$*\" >> {log}; case \"$*\" in *is-active*legionctl-session*) echo active;; \
+                 *is-active*) exit 3;; *FreezerState*) /usr/bin/cat {f};; *freeze*) echo frozen > {f};; esac",
+                log = log.display(),
+                f = freezer.display()
+            ),
+        );
+        let home = m.dir.join("home");
+        let repo = home.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(
+            home.join(".gitconfig"),
+            "[user]\n  name = Test\n  email = test@example.com\n",
+        )
+        .unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "x",
+            ],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(&repo)
+                    .env("HOME", &home)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        std::fs::write(
+            home.join(".config/legionctl/session.jsonc"),
+            serde_json::json!({
+                "session": {"agents": {"probe": ["true"]}, "writable": []},
+                "workspace": {"root": home.join("worktrees")}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        // what a session start runs; the rest of the operator's PATH stays stand-ins only
+        for tool in ["git", "true"] {
+            std::os::unix::fs::symlink(format!("/usr/bin/{tool}"), m.dir.join("bin").join(tool))
+                .unwrap();
+        }
+        (kernel, repo)
+    }
+
+    /// The groups, states, users and actions that `resources list` shows on the resource machine.
+    fn assert_listed(op: &Operator, session: &str) {
+        let data = resource(op, "mount:/mnt/windows-data");
+        assert_eq!(
+            (&data["group"], &data["state"], &data["users"]),
+            (
+                &"disk".into(),
+                &"mounted".into(),
+                &serde_json::json!(["4242 vim"])
+            ),
+            "{data}"
+        );
+        assert_eq!(
+            actions(&data),
+            triples(&[("detach", "windows.disk", "machine")])
+        );
+        let system = resource(op, "mount:/mnt/windows-system");
+        assert_eq!(system["state"], "not mounted");
+        assert_eq!(
+            actions(&system),
+            triples(&[
+                ("attach", "windows.disk", "machine"),
+                ("detach", "windows.disk", "machine")
+            ])
+        );
+        let root_fs = resource(op, "mount:/");
+        assert_eq!(
+            (actions(&root_fs).len(), &root_fs["users"]),
+            (0, &serde_json::json!([])),
+            "the root file system has no action, and is not every process's: {root_fs}"
+        );
+        let nvidia = resource(op, "gpu:nvidia");
+        assert_eq!(
+            (&nvidia["state"], &nvidia["users"]),
+            (&"linux".into(), &serde_json::json!(["4343 steam"])),
+            "{nvidia}"
+        );
+        assert_eq!(
+            actions(&nvidia),
+            triples(&[
+                ("give-windows", "gpu.give", "machine"),
+                ("give-none", "gpu.give", "machine")
+            ])
+        );
+        let knob = resource(op, "knob:sysctl.vm.swappiness");
+        assert_eq!(knob["state"], "held at 10");
+        assert_eq!(
+            actions(&knob),
+            triples(&[("release", "knobs.release", "machine")])
+        );
+        let running = resource(op, &format!("session:{session}"));
+        assert_eq!(running["state"], "running");
+        assert_eq!(
+            actions(&running),
+            triples(&[
+                ("pause", "session.pause", "workspace"),
+                ("stop", "session.stop", "workspace")
+            ])
+        );
+        assert_eq!(resource(op, "layer:shipped/20-ac")["state"], "on, used now");
+        let windows = resource(op, "vm:windows");
+        assert_eq!(windows["state"], "stopped");
+        assert_eq!(
+            actions(&windows),
+            triples(&[("start", "windows.vm.start", "machine")])
+        );
+    }
+
+    /// The list shows each group with its state and users: the mounted Windows partition with the process in it, the
+    /// NVIDIA GPU with the process that has it open, a held knob, a running session and the layers. Each act runs the
+    /// existing operation as a call of its own (its effect, its polkit question, its event); the dry run of the disk
+    /// detach shows the plan and changes nothing; an action that does not apply now is refused with nothing changed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resources_show_each_group_and_each_action_runs_the_existing_operation() {
+        let m = Machine::new("resources");
+        let (_kernel, repo) = resource_machine(&m);
+        let systemctl = || std::fs::read_to_string(m.dir.join("systemctl.log")).unwrap_or_default();
+        let (_stand_ins, asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "resources");
+        let session = probe_session(&op, &repo);
+        op.ok(&["knobs", "hold", "sysctl.vm.swappiness", "10"]);
+        assert_eq!(m.file(SWAPPINESS), "10");
+        // the recorder subscribes after the operator's first call
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        assert_listed(&op, &session);
+
+        // the dry run: the plan of the routed operation, nothing changed, no polkit question
+        let before = last_event(&op);
+        let dry = op.ok(&[
+            "resources",
+            "act",
+            "mount:/mnt/windows-data",
+            "detach",
+            "--dry-run",
+        ]);
+        assert!(
+            dry.contains("would run: systemctl stop mnt-windows\\x2dsystem.automount"),
+            "{dry}"
+        );
+        assert!(!systemctl().contains("stop mnt-windows"), "{}", systemctl());
+        assert!(!was_asked(&asked, "org.legionctl.windows.vm"));
+
+        // each act: the routed operation's effect, polkit for a machine change, and its own event
+        op.ok(&["resources", "act", "mount:/mnt/windows-data", "detach"]);
+        assert!(
+            systemctl().contains(
+                "stop mnt-windows\\x2dsystem.automount mnt-windows\\x2dsystem.mount \
+                 mnt-windows\\x2ddata.automount mnt-windows\\x2ddata.mount"
+            ),
+            "{}",
+            systemctl()
+        );
+        op.ok(&["resources", "act", "knob:sysctl.vm.swappiness", "release"]);
+        assert_eq!(
+            json(&op, &["knobs", "show", "sysctl.vm.swappiness"])["knob"]["held"],
+            Value::Null
+        );
+        assert_eq!(m.file(SWAPPINESS), "150", "the policy has the knob again");
+        for action in ["org.legionctl.windows.vm", "org.legionctl.knobs.hold"] {
+            assert!(was_asked(&asked, action), "{action}");
+        }
+        op.ok(&["resources", "act", &format!("session:{session}"), "pause"]);
+        assert!(
+            systemctl().contains(&format!("freeze legionctl-session-{session}.scope")),
+            "{}",
+            systemctl()
+        );
+        let paused = resource(&op, &format!("session:{session}"));
+        assert_eq!(paused["state"], "paused", "{paused}");
+        assert_eq!(
+            actions(&paused),
+            triples(&[
+                ("resume", "session.unpause", "workspace"),
+                ("stop", "session.stop", "workspace")
+            ])
+        );
+        wait_for("the daemon's events", || {
+            kinds_after(&op, before)
+                .iter()
+                .any(|k| k == "machine.release")
+        });
+        let kinds = kinds_after(&op, before);
+        for kind in [
+            "windows.disk",
+            "machine.windows-disk",
+            "knobs.release",
+            "machine.release",
+            "session.pause",
+        ] {
+            assert!(kinds.iter().any(|k| k == kind), "{kind}: {kinds:?}");
+        }
+        assert!(
+            !kinds.iter().any(|k| k == "resources.act"),
+            "the routed operation is the event: {kinds:?}"
+        );
+
+        // an action that does not apply now, and a resource that does not exist: refused, nothing changed
+        // the reads (is-active, show) are not changes
+        let changes = || {
+            systemctl()
+                .lines()
+                .filter(|l| !l.contains("is-active") && !l.contains("show "))
+                .count()
+        };
+        let changed_before = changes();
+        let refused = op.cli(&["resources", "act", &format!("session:{session}"), "pause"]);
+        assert!(
+            String::from_utf8_lossy(&refused.stderr)
+                .contains("has no action pause; its actions now: resume, stop"),
+            "{refused:?}"
+        );
+        let unknown = op.cli(&["resources", "act", "vm:nowhere", "start"]);
+        assert!(
+            String::from_utf8_lossy(&unknown.stderr).contains("no resource vm:nowhere"),
+            "{unknown:?}"
+        );
+        assert_eq!(changes(), changed_before, "{}", systemctl());
+    }
+
+    /// The state of the layer `id` in `resources list` (on, off: why).
+    fn layer(op: &Operator, id: &str) -> String {
+        resource(op, &format!("layer:{id}"))["state"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    fn held(op: &Operator, knob: &str) -> Value {
+        json(op, &["knobs", "show", knob])["knob"]["held"].clone()
+    }
+
+    /// A saved set (note 22) keeps the layer states and the holds; a switch makes them the set's as one change (the
+    /// holds it does not have are released, its own are written, the layer states follow), one event; its dry run
+    /// changes nothing; undo of the switch event points to `switch previous`, which goes back, and a second time
+    /// forward again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_saved_set_switches_layers_and_holds_as_one_change_and_switch_previous_undoes_it() {
+        let m = Machine::new("sets");
+        let (_stand_ins, asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "sets");
+        let max_perf = json(&op, &["knobs", "show", "cpu.max_perf_pct"])["knob"]["path"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(m.file(&max_perf), "100");
+        op.ok(&["knobs", "hold", "sysctl.vm.swappiness", "10"]);
+        op.ok(&["rules", "disable", "30-fnq-quiet"]);
+        let saved = op.ok(&["rules", "sets", "save", "quiet"]);
+        assert!(
+            saved.contains("set quiet: 1 layer states, 1 holds"),
+            "{saved}"
+        );
+        assert!(
+            asked
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, a, _, _)| a == "org.legionctl.rules")
+        );
+
+        // another selection: no swappiness hold, the layer on, max_perf_pct held
+        op.ok(&["knobs", "release", "sysctl.vm.swappiness"]);
+        op.ok(&["rules", "enable", "30-fnq-quiet"]);
+        op.ok(&["knobs", "hold", "cpu.max_perf_pct", "80"]);
+        let other = || {
+            assert_eq!(m.file(SWAPPINESS), "150");
+            assert_eq!(m.file(&max_perf), "80");
+            assert_eq!(held(&op, "cpu.max_perf_pct"), "80");
+            assert_eq!(held(&op, "sysctl.vm.swappiness"), Value::Null);
+            assert!(layer(&op, "shipped/30-fnq-quiet").starts_with("on"));
+        };
+        let quiet = || {
+            assert_eq!(m.file(SWAPPINESS), "10");
+            assert_eq!(m.file(&max_perf), "100", "released: the policy's value");
+            assert_eq!(held(&op, "sysctl.vm.swappiness"), "10");
+            assert_eq!(held(&op, "cpu.max_perf_pct"), Value::Null);
+            assert!(layer(&op, "shipped/30-fnq-quiet").starts_with("off"));
+        };
+        other();
+
+        let dry = op.ok(&["rules", "sets", "switch", "quiet", "--dry-run"]);
+        assert_eq!(
+            dry.lines().collect::<Vec<_>>(),
+            [
+                "layer shipped/30-fnq-quiet: on -> off",
+                &format!("release {max_perf}"),
+                "hold /proc/sys/vm/swappiness at 10",
+            ],
+            "{dry}"
+        );
+        other();
+
+        let before = last_event(&op);
+        op.ok(&["rules", "sets", "switch", "quiet"]);
+        quiet();
+        wait_for("the switch event", || {
+            kinds_after(&op, before)
+                .iter()
+                .any(|k| k == "machine.switch-set")
+        });
+        let machine: Vec<String> = kinds_after(&op, before)
+            .into_iter()
+            .filter(|k| k.starts_with("machine."))
+            .collect();
+        assert_eq!(machine, ["machine.switch-set"], "one change");
+        let event = json(&op, &["events", "--limit", "1000"])["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["kind"] == "machine.switch-set")
+            .unwrap()["id"]
+            .to_string();
+        let undo = op.cli(&["undo", &event]);
+        assert!(
+            String::from_utf8_lossy(&undo.stderr).contains("legionctl rules sets switch previous"),
+            "{undo:?}"
+        );
+        quiet();
+
+        op.ok(&["rules", "sets", "switch", "previous"]);
+        other();
+        op.ok(&["rules", "sets", "switch", "previous"]);
+        quiet();
+
+        let set = resource(&op, "set:quiet");
+        assert_eq!(
+            actions(&set),
+            triples(&[
+                ("switch", "rules.sets.switch", "machine"),
+                ("remove", "rules.sets.remove", "machine")
+            ])
+        );
+        assert_eq!(
+            actions(&resource(&op, "set:previous")),
+            triples(&[("switch", "rules.sets.switch", "machine")])
+        );
+        let reserved = op.cli(&["rules", "sets", "save", "previous"]);
+        assert!(
+            String::from_utf8_lossy(&reserved.stderr).contains("legionctl's own name"),
+            "{reserved:?}"
+        );
+    }
+
+    /// Boot entries (note 22): `--boot` is refused without the boot takeover, before polkit; with it, each kernel's
+    /// image gets a profile for the set with `legionctl.set=<set>`, signed with the image, and the menu stays hidden; a
+    /// set without `--boot` gets none. A daemon start with `legionctl.set=` applies the set for that start, and the next
+    /// start without it puts the selection before back.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn boot_entries_for_each_kernel_and_set_and_the_set_of_the_start_applies_at_daemon_start()
+    {
+        let m = Machine::new("bootsets");
+        let _efivars = boot_machine(&m);
+        let log = m.dir.join("ukify.log");
+        Machine::script(
+            &m.dir.join("bin"),
+            "ukify",
+            &format!(
+                "printf '%s\\n' \"$*\" >> {}; out=; prev=; for a in \"$@\"; do [ \"$prev\" = --output ] && out=$a; \
+                 prev=$a; done; [ -z \"$out\" ] || echo \"ukify $*\" > \"$out\"",
+                log.display()
+            ),
+        );
+        let ukify = || std::fs::read_to_string(&log).unwrap_or_default();
+        let (stand_ins, asked, (_bus, first)) = start(&m).await;
+        let op = on_bus(&m, "bootsets");
+        let esp = m.dir.join("root/boot/efi");
+        op.ok(&["knobs", "hold", "sysctl.vm.swappiness", "10"]);
+
+        let refused = op.cli(&["rules", "sets", "save", "quiet", "--boot"]);
+        assert!(
+            String::from_utf8_lossy(&refused.stderr)
+                .contains("install the boot takeover first (legionctl boot install)"),
+            "{refused:?}"
+        );
+        assert!(m.ledger().sets().is_empty(), "nothing saved");
+        assert!(
+            !asked
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, a, _, _)| a == "org.legionctl.rules"),
+            "refused before the polkit dialog"
+        );
+
+        op.ok(&["boot", "install"]);
+        assert!(!ukify().contains("--join-profile"), "no set, no profile");
+        op.ok(&["rules", "sets", "save", "quiet", "--boot"]);
+        op.ok(&["rules", "sets", "save", "plain"]);
+        // the images made again (the pacman hook does it after a kernel update): still no entry for plain
+        op.ok(&["boot", "rebuild"]);
+        assert!(
+            asked
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, a, _, _)| a == "org.legionctl.boot")
+        );
+        for kernel in ["linux-cachyos", "linux-cachyos-bore-lto"] {
+            let image = esp.join(format!("EFI/Linux/legionctl-{kernel}.efi"));
+            let profile = format!("{}.quiet.profile", image.display());
+            assert!(
+                ukify().contains(&format!(
+                    "--profile ID=quiet\nTITLE={kernel} with quiet --cmdline quiet rw root=UUID=a9e6 \
+                     legionctl.set=quiet --output {profile}"
+                )),
+                "{}",
+                ukify()
+            );
+            let built = std::fs::read_to_string(&image).unwrap();
+            assert!(
+                built.contains(&format!(
+                    "--profile TITLE={kernel} --join-profile {profile}"
+                )) && built.contains("--secureboot-private-key")
+                    && built.contains("--cmdline quiet rw root=UUID=a9e6 --"),
+                "{built}"
+            );
+            assert!(
+                !built.contains("plain"),
+                "a set without --boot has no entry: {built}"
+            );
+            assert!(
+                !Path::new(&profile).exists(),
+                "the profile file goes after the build"
+            );
+        }
+        let loader = std::fs::read_to_string(esp.join("loader/loader.conf")).unwrap();
+        assert!(
+            loader.contains("timeout 0\n"),
+            "the menu stays hidden: {loader}"
+        );
+
+        // a start through the set's entry: the daemon applies the set for this start
+        op.ok(&["knobs", "release", "sysctl.vm.swappiness"]);
+        assert_eq!(m.file(SWAPPINESS), "150");
+        drop(first);
+        m.set(
+            "/proc/cmdline",
+            "quiet rw root=UUID=a9e6 legionctl.set=quiet initrd=\\initramfs-linux-cachyos.img",
+        );
+        let second = daemon(&m, &stand_ins).await;
+        wait_for("the set at start", || m.file(SWAPPINESS) == "10");
+        assert!(m.ledger().sets().contains_key("before-boot"));
+        // the next start without the parameter: the selection before
+        drop(second);
+        m.set(
+            "/proc/cmdline",
+            "quiet rw root=UUID=a9e6 initrd=\\initramfs-linux-cachyos.img",
+        );
+        let _third = daemon(&m, &stand_ins).await;
+        wait_for("the selection before at the next start", || {
+            m.file(SWAPPINESS) == "150"
+        });
+        assert!(!m.ledger().sets().contains_key("before-boot"));
+        assert_eq!(held(&op, "sysctl.vm.swappiness"), Value::Null);
     }
 }
 
