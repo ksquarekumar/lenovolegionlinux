@@ -198,4 +198,5 @@ expect led-mute "ok 04000000" "$(write /sys/class/leds/platform::mute/brightness
 if modprobe -r legionctl_wmi && [ ! -e /sys/class/firmware-attributes/lenovo-wmi-other-0 ]; then ok unload; else
   fail unload "the module or its firmware attributes stay"
 fi
-expect kernel-clean "" "$(dmesg | grep -E 'BUG|WARNING:|Oops|refcount_t|list_del corruption')"
+# from the module's first line on: the host CPU can warn at boot (SRSO on the AMD CI runner)
+expect kernel-clean "" "$(dmesg | sed -n '/legionctl_wmi/,$p' | grep -E 'BUG|WARNING:|Oops|refcount_t|list_del corruption')"
