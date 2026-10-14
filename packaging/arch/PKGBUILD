@@ -1,7 +1,7 @@
 # Maintainer: ksquare
 # shellcheck shell=bash disable=SC2034,SC2154  # makepkg reads these variables and provides $pkgdir
 pkgname=legionctl
-pkgver=0.2.0
+pkgver=0.2.0.r187.g79bf2fd
 pkgrel=1
 pkgdesc="Operator for the Lenovo Legion Pro 7 16IRX8H (82WQ): power policy daemon, session OSD and agent tooling"
 arch=("x86_64")
@@ -11,6 +11,9 @@ license=("MIT" "GPL-2.0-only")
 depends=("systemd" "systemd-libs" "dkms" "dbus" "polkit" "power-profiles-daemon" "cpupower" "nvidia-utils" "bubblewrap"
   "libxkbcommon" "libxkbcommon-x11" "libxcb" "wayland" "vulkan-icd-loader" "fontconfig")
 makedepends=("git" "cargo" "clang" "docker")
+# no GCC LTO for the C parts (bundled SQLite): with makepkg's lto, GCC's link step gives a false -Wstringop-overread
+# in sqlite3Strlen30 (a path GCC thinks has a NULL pointer). Cargo's own release profile decides the Rust LTO
+options=("!lto")
 optdepends=(
   "gnome-shell: the legionctl-osd OSD extension"
   "acpi_call-dkms: firmware fan RPM through Lenovo WMI"
