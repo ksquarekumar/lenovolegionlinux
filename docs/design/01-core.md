@@ -118,8 +118,16 @@ holds, and changes only where the desired state comes from.
    system.db. So nothing moves on the machine; the first daemon with configsets plans the same writes as today
    (e2e: the recorded machine gets the same plan before and after, for AC, battery, Fn+Q and resume).
 
-Questions for the review: JSONC (1)? `/etc/legionctl/configsets/` for your own layers (2)? Conditions in the first
-part only `power` and `fnq` (3)? The name `rules` for the CLI (7)?
+Review answers (user, 2026-10-14): format JSONC (default, not changed); own layers in two places:
+`/etc/legionctl/configsets/` (system defaults) and `~/.config/legionctl/configsets/` (the user's); conditions:
+`power`, `fnq` and `workload` in the first part (with the eBPF workload sensor); CLI `legionctl rules`.
+Consequences: the order is shipped, generated (`tuned`, when enabled), `/etc`, the user's, then holds. The root
+daemon reads the user layers of the active local session's user only (logind seat0), as that user's files, never
+following a link out of the folder; values stay within the catalog's choices and the firmware's min/max, and a knob
+that an `/etc` layer lists in `"locked"` cannot be set by a user layer (the same rule as `config.locked`).
+`workload` comes from a general exec/exit sensor (the session exec sensor watches only session scopes): a classifier
+over the program and its cgroup (game: Steam, Proton, Wine, gamescope; build: compilers and build tools; vm: QEMU,
+VirtualBox) that is active while one such process lives.
 
 ## Knob policies
 
