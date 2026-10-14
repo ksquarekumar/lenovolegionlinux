@@ -84,7 +84,6 @@ fn unplugged_machine(tag: &'static str) -> Operator {
             ("HOME", dir.join("home").into()),
             ("LEGIONCTL_SYSROOT", root.into()),
             // never this machine's Docker (its WinBoat): the pages list containers and run their actions
-            ("DOCKER_HOST", "unix:///nonexistent/docker.sock".into()),
         ],
     )
 }

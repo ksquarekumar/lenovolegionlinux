@@ -65,20 +65,38 @@ fn operator(tag: &str) -> (Operator, PathBuf) {
 
 /// The operator of `home`, which keeps its files (an operator that starts again reads the config anew).
 fn operator_in(tag: &str, home: &Path) -> Operator {
+    operator_with(tag, home, &[])
+}
+
+/// An operator that reaches this machine's Docker, for the tests that build and run their own images and containers.
+fn docker_operator(tag: &str) -> (Operator, PathBuf) {
+    let (op, home) = operator(tag);
+    drop(op);
+    (operator_with(tag, &home, &docker()), home)
+}
+
+/// This machine's Docker (the harness points every other operator nowhere).
+fn docker() -> [(&'static str, OsString); 1] {
+    [(
+        "DOCKER_HOST",
+        std::env::var_os("DOCKER_HOST").unwrap_or_else(|| "unix:///var/run/docker.sock".into()),
+    )]
+}
+
+fn operator_with(tag: &str, home: &Path, extra: &[(&str, OsString)]) -> Operator {
     let skills =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integrations/agent-plugin/skills");
     // an empty machine: no /etc/legionctl unless a test writes one
     let root = home.join("root");
     std::fs::create_dir_all(&root).unwrap();
-    Operator::start(
-        tag,
-        &[
-            ("LEGIONCTL_SYSROOT", root.into()),
-            ("HOME", home.into()),
-            ("PATH", path_with_keyring(home)),
-            ("LEGIONCTL_PLUGIN_SKILLS", OsString::from(skills)),
-        ],
-    )
+    let mut env = vec![
+        ("LEGIONCTL_SYSROOT", root.into()),
+        ("HOME", home.into()),
+        ("PATH", path_with_keyring(home)),
+        ("LEGIONCTL_PLUGIN_SKILLS", OsString::from(skills)),
+    ];
+    env.extend(extra.iter().cloned());
+    Operator::start(tag, &env)
 }
 
 /// This build's `PATH` behind a stand-in `secret-tool` that keeps entries as files in `home/keyring`
@@ -2105,11 +2123,11 @@ fn sandbox_calls(home: &Path) -> usize {
 /// to make one. Needs docker and `make static`.
 #[test]
 fn sessions_in_a_container_work_on_the_mounted_workspace_behind_the_git_gate() {
-    let (op, home) = operator("container");
+    let (op, home) = docker_operator("container");
     let (_provider, ports) = gateway_ports(&home);
     let repo = container_repository(&home, ports);
     drop(op);
-    let op = operator_in("container2", &home);
+    let op = operator_with("container2", &home, &docker());
     let run = |args: &[&str]| op.run(&repo, &[("HOME", home.to_str().unwrap())], args, "");
     let words = |line: &'static str| line.split(' ').collect::<Vec<_>>();
     let in_container = words("session run fake fix --dossier port --in container --json");
@@ -3309,7 +3327,7 @@ impl Drop for RemoveImage {
 /// image has no command), status lists the repository's containers.
 #[test]
 fn images_build_tags_by_commit_and_run_reports_what_compose_says() {
-    let (op, home) = operator("imgbuild");
+    let (op, home) = docker_operator("imgbuild");
     let repo = repository(&home);
     write(
         &repo.join("svc/Dockerfile"),
@@ -3404,7 +3422,7 @@ fn compose_repo(home: &Path) -> PathBuf {
 /// in the description or the written files.
 #[test]
 fn images_scan_reads_the_compose_file_but_not_its_environment() {
-    let (op, home) = operator("compose");
+    let (op, home) = docker_operator("compose");
     let repo = compose_repo(&home);
     let out = op.run(
         &repo,
@@ -3452,7 +3470,7 @@ fn images_scan_reads_the_compose_file_but_not_its_environment() {
 /// sets the built tag of each built service; the prebuilt image is not built.
 #[test]
 fn images_run_of_a_compose_project_overrides_only_the_built_tags() {
-    let (op, home) = operator("composerun");
+    let (op, home) = docker_operator("composerun");
     let repo = compose_repo(&home);
     let commit = git(&home, &repo, &["rev-parse", "--short", "HEAD"]);
     let env = [("HOME", home.to_str().unwrap())];

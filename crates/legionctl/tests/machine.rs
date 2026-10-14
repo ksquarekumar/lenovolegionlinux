@@ -212,8 +212,10 @@ impl AcpiCall {
                 } else {
                     "0x0".into()
                 };
-                firmware.calls.lock().unwrap().push(call);
+                // counted only once the daemon took the reply: a test that waits for a call and then stops the daemon
+                // must not leave this write waiting for a reader that is gone (the next daemon's call would wait too)
                 std::fs::write(&path, reply).unwrap();
+                firmware.calls.lock().unwrap().push(call);
             }
         });
         acpi
@@ -750,6 +752,34 @@ fn virt_status_names_what_guests_hold_when_memory_is_low() {
         status["findings"].as_array().unwrap().last().unwrap(),
         "memory is low (4.0 GiB of 32.0 GiB available); guests hold 18.0 GiB: WinBoat 16.0 GiB, lab 2.0 GiB. Pause \
          or stop one: legionctl virt act pause <name>"
+    );
+}
+
+/// No test reaches the user's own containers: an operator that no test gives a Docker sees none (on this machine the
+/// real Docker runs `WinBoat`, which a test once started by mistake through a resource action).
+#[test]
+fn an_operator_without_a_docker_of_its_own_reaches_no_docker() {
+    let m = Machine::new("nodocker");
+    let status: serde_json::Value =
+        serde_json::from_slice(&m.legion(&["virt", "status", "--json"]).stdout).unwrap();
+    let containers = status["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "Containers")
+        .unwrap();
+    assert_eq!(containers["up"], false, "{containers}");
+    assert!(
+        containers.to_string().contains("/nonexistent/docker.sock"),
+        "{containers}"
+    );
+    assert!(
+        !status["instances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["kind"] == "container"),
+        "{status}"
     );
 }
 

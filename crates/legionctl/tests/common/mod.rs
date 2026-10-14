@@ -25,10 +25,12 @@ impl Operator {
         let nowhere = OsString::from("unix:path=/nonexistent/bus");
         let mut cmd = Command::new("systemd-socket-activate");
         cmd.env_clear().arg("-l").arg(&socket);
-        // the buses point nowhere unless the test gives its own
+        // the buses and Docker point nowhere unless the test gives its own: no test reaches the user's own containers
+        // (WinBoat) or buses by default
         let defaults = [
             ("DBUS_SESSION_BUS_ADDRESS", nowhere.clone()),
             ("DBUS_SYSTEM_BUS_ADDRESS", nowhere),
+            ("DOCKER_HOST", "unix:///nonexistent/docker.sock".into()),
             ("XDG_RUNTIME_DIR", runtime.clone().into()),
         ];
         let unset = defaults
