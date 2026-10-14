@@ -6,6 +6,9 @@ DATADIR ?= $(PREFIX)/share/legionctl
 LIBDIR ?= $(PREFIX)/lib/legionctl
 BINDIR ?= $(PREFIX)/bin
 PROFILE ?= profiles/lenovo-82wq-legion-pro-7-16irx8h.json
+# where cargo puts the release binaries; the PKGBUILD gives the package its own (makepkg's RUSTFLAGS differ from a
+# dev build's, and in one folder each build compiles every crate again)
+CARGO_TARGET_DIR ?= target
 EXTENSION = legionctl-osd@legionctl
 PRE_COMMIT ?= pre-commit
 KMOD = kernel/legionctl-wmi
@@ -107,13 +110,13 @@ lint-pkg: ## namcap the PKGBUILD (Arch only)
 
 .PHONY: install
 install: ## install into DESTDIR; the PKGBUILD calls this (on this machine: `make package install-package`)
-	@test -x target/release/legionctl || { echo "target/release/legionctl missing: run 'make build' first"; exit 1; }
-	install -Dm755 target/release/legionctl "$(DESTDIR)$(BINDIR)/legionctl"
-	install -Dm755 target/release/legionctl-app "$(DESTDIR)$(BINDIR)/legionctl-app"
-	install -Dm755 target/release/legionctl-greeter "$(DESTDIR)$(LIBDIR)/legionctl-greeter"
+	@test -x $(CARGO_TARGET_DIR)/release/legionctl || { echo "$(CARGO_TARGET_DIR)/release/legionctl missing: run 'make build' first"; exit 1; }
+	install -Dm755 $(CARGO_TARGET_DIR)/release/legionctl "$(DESTDIR)$(BINDIR)/legionctl"
+	install -Dm755 $(CARGO_TARGET_DIR)/release/legionctl-app "$(DESTDIR)$(BINDIR)/legionctl-app"
+	install -Dm755 $(CARGO_TARGET_DIR)/release/legionctl-greeter "$(DESTDIR)$(LIBDIR)/legionctl-greeter"
 	install -Dm644 desktop/legionctl.desktop "$(DESTDIR)$(PREFIX)/share/applications/legionctl.desktop"
-	install -Dm755 target/release/legionctl-system "$(DESTDIR)$(LIBDIR)/legionctl-system"
-	install -Dm755 target/release/legionctl-operator "$(DESTDIR)$(LIBDIR)/legionctl-operator"
+	install -Dm755 $(CARGO_TARGET_DIR)/release/legionctl-system "$(DESTDIR)$(LIBDIR)/legionctl-system"
+	install -Dm755 $(CARGO_TARGET_DIR)/release/legionctl-operator "$(DESTDIR)$(LIBDIR)/legionctl-operator"
 	install -Dm755 target/static/release/legionctl "$(DESTDIR)$(LIBDIR)/legionctl-static"
 	install -Dm644 packaging/libalpm/95-legionctl-uki.hook "$(DESTDIR)$(PREFIX)/share/libalpm/hooks/95-legionctl-uki.hook"
 	install -Dm644 $(PROFILE) "$(DESTDIR)$(DATADIR)/profiles/$(notdir $(PROFILE))"

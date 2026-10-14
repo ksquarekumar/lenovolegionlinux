@@ -42,6 +42,9 @@ pkgver() {
   printf '0.2.0.r%s.g%s' "$(git -C "${repo_root}" rev-list --count HEAD)" "$(git -C "${repo_root}" rev-parse --short HEAD)"
 }
 
+# its own cargo folder: makepkg's RUSTFLAGS (target-cpu, mold) differ from a dev build's, which then keeps its cache
+export CARGO_TARGET_DIR="${startdir}/../../target/package"
+
 build() {
   make -C "${startdir}/../.." build
 }
