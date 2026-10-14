@@ -422,18 +422,16 @@ operations! {
     /// Tokens per agent, day and model from Claude Code's and Codex's own transcripts, and Codex's rate-limit use.
     agents_usage / AgentsUsage = "agents.usage", Read, AgentUsageIn => UsageReport;
     /// Open (or reopen) this session's dossier workspace in a repository: a worktree on legionctl/<dossier> with the
-    /// dossier linked as .agentworkspace. Change code there, not in the main checkout.
+    /// dossier linked as .agentworkspace. Change code there, not in the main checkout. With `--topic`, a separate
+    /// worktree on legionctl/<dossier>--<topic>, so that agents of one dossier work in parallel.
     workspace_open / WorkspaceOpen = "workspace.open", Session, WorkspaceOpenIn => Workspace;
-    /// Git state of this session's workspaces (ahead/behind the base, staged, unstaged, untracked, conflicts) and
-    /// drift from the record.
-    workspace_status / WorkspaceStatusOp = "workspace.status", Read, WorkspaceIn => WorkspaceStates;
-    /// Every open workspace, of every dossier.
+    /// Git state of the workspace where you are (or of `--topic`): ahead/behind the base, staged, unstaged,
+    /// untracked, conflicts, and drift from the record.
+    workspace_status / WorkspaceStatusOp = "workspace.status", Read, WorkspaceIn => WorkspaceStatus;
+    /// Every open workspace (topic workspaces too), of every dossier.
     workspace_list / WorkspaceList = "workspace.list", Read, Empty => Workspaces;
     /// Stage everything in the workspace and commit it with the message.
     workspace_checkpoint / WorkspaceCheckpoint = "workspace.checkpoint", Session, CheckpointIn => Lines;
-    /// Switch to legionctl/<dossier>--<topic>, created from the current branch the first time; without a topic, back
-    /// to legionctl/<dossier>. It becomes the active branch; uncommitted changes stop it.
-    workspace_branch / WorkspaceBranch = "workspace.branch", Session, BranchIn => Lines;
     /// Rebase the branch onto the base, then fast-forward the base in the main checkout (which must be clean).
     workspace_merge / WorkspaceMerge = "workspace.merge", Workspace, WorkspaceIn => Lines;
     /// Remove the worktree; the branch and the dossier stay. Refuses uncommitted changes unless `--force`.

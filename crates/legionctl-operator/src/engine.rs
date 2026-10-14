@@ -15,12 +15,12 @@ use legionctl_api::{
     WindowsState, coded,
 };
 use legionctl_api::{
-    AccountAddIn, BranchIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath, CloseIn,
+    AccountAddIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath, CloseIn,
     ConfigFiles, ConfigView, Ctx, Empty, Engine, ExplainIn, Explanation, Findings, GpuPrimaryIn,
     GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LayerList, LoadState, PowerApplyIn,
     PowerSource, ProfileIn, ProjectIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn, SetupApplyIn,
     SetupReport, SkillList, Snapshot, StatusIn, Validation, Workspace, WorkspaceIn,
-    WorkspaceOpenIn, WorkspaceStates, Workspaces,
+    WorkspaceOpenIn, WorkspaceStatus, Workspaces,
 };
 use legionctl_api::{
     Autostart, AutostartIn, FanCurveIn, FanState, GpuGiveIn, GpuName, GpuOwner, KnobHoldIn, KnobIn,
@@ -1580,25 +1580,20 @@ impl Engine for Operator {
                 session(&input.session)?,
                 input.repo.get()?,
                 input.base.as_deref(),
+                input.topic.as_deref(),
                 &root,
             )?
             .into_wire())
     }
 
-    fn workspace_status(&self, _: &Ctx, input: WorkspaceIn) -> Result<WorkspaceStates> {
+    fn workspace_status(&self, _: &Ctx, input: WorkspaceIn) -> Result<WorkspaceStatus> {
         let store = dossiers()?;
-        let id = session(&input.session)?;
-        let open = if let Some(repo) = path(input.repo.as_ref())? {
-            vec![store.workspace_of(id, Some(repo))?]
-        } else {
-            let dossier = store
-                .active(id)?
-                .context("this session has no active dossier")?;
-            store.workspaces(Some(&dossier))?
-        };
-        open.iter()
-            .map(|ws| Ok(store.workspace_status(ws)?.into_wire()))
-            .collect()
+        let ws = store.workspace_of(
+            session(&input.session)?,
+            input.repo.get()?,
+            input.topic.as_deref(),
+        )?;
+        Ok(store.workspace_status(&ws)?.into_wire())
     }
 
     fn workspace_list(&self, _: &Ctx, _: Empty) -> Result<Workspaces> {
@@ -1607,26 +1602,23 @@ impl Engine for Operator {
 
     fn workspace_checkpoint(&self, _: &Ctx, input: CheckpointIn) -> Result<Lines> {
         let store = dossiers()?;
-        let ws = store.workspace_of(session(&input.session)?, path(input.repo.as_ref())?)?;
+        let ws = store.workspace_of(
+            session(&input.session)?,
+            input.repo.get()?,
+            input.topic.as_deref(),
+        )?;
         Ok(Lines {
             lines: vec![store.checkpoint(&ws, &input.message)?],
         })
     }
 
-    fn workspace_branch(&self, _: &Ctx, input: BranchIn) -> Result<Lines> {
-        let store = dossiers()?;
-        let ws = store.workspace_of(session(&input.session)?, path(input.repo.as_ref())?)?;
-        Ok(Lines {
-            lines: vec![format!(
-                "on {}",
-                store.switch_branch(&ws, input.topic.as_deref())?
-            )],
-        })
-    }
-
     fn workspace_merge(&self, _: &Ctx, input: WorkspaceIn) -> Result<Lines> {
         let store = dossiers()?;
-        let ws = store.workspace_of(session(&input.session)?, path(input.repo.as_ref())?)?;
+        let ws = store.workspace_of(
+            session(&input.session)?,
+            input.repo.get()?,
+            input.topic.as_deref(),
+        )?;
         Ok(Lines {
             lines: store.merge(&ws)?,
         })
@@ -1634,7 +1626,11 @@ impl Engine for Operator {
 
     fn workspace_close(&self, _: &Ctx, input: CloseIn) -> Result<Lines> {
         let store = dossiers()?;
-        let ws = store.workspace_of(session(&input.session)?, path(input.repo.as_ref())?)?;
+        let ws = store.workspace_of(
+            session(&input.session)?,
+            input.repo.get()?,
+            input.topic.as_deref(),
+        )?;
         Ok(Lines {
             lines: vec![store.close(&ws, input.force)?],
         })

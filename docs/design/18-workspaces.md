@@ -55,7 +55,7 @@ Replaces the "plan workspaces" section of 12-operator. Sessions (14) and sandbox
   ref, registered in `workspace.db`; `workspace.open` links the dossier as `.agentworkspace` and commits the
   `/.agentworkspace` ignore line on the dossier branch when it is missing. `status` reports ahead/behind, staged,
   unstaged, untracked, conflicts and drift (a branch switched outside legionctl, a missing worktree);
-  `checkpoint` commits everything; `branch` starts `legionctl/<dossier>--<topic>`; `merge` rebases onto the base
+  `checkpoint` commits everything; `merge` rebases onto the base
   and fast-forwards the base in a clean main checkout (decided 2026-10-13); `close` removes the worktree and keeps
   the branch. Writes into the main checkout are not blocked (decided 2026-10-13: nudge only): the session-start
   line names the workspace (with its drift) or says to open one, and the stop hook tells the agent when the main
@@ -102,11 +102,21 @@ For a git source, legionctl does the git work around the agent; the agent edits 
 
 | Operation | What legionctl does |
 | --- | --- |
-| open | A worktree from a recorded base ref on the dossier's active branch `legionctl/<dossier>` (created on first open, reused after). If the session started inside the source checkout, the agent is moved to the worktree path. |
-| branch | Switch to another branch of the same dossier (`legionctl/<dossier>--<topic>`, created the first time) or back to `legionctl/<dossier>`; it becomes the active branch. Uncommitted changes stop it. |
+| open | A worktree from a recorded base ref on the dossier's branch `legionctl/<dossier>` (created on first open, reused after). If the session started inside the source checkout, the agent is moved to the worktree path. With `--topic <t>`: a separate topic workspace (below). |
 | checkpoint | Stage and commit the change set's files with a message from the plan entry; update the code graph. |
-| merge | With approval: rebase or merge the active branch into the base ref; conflicts become git state (14) that the agent resolves in the worktree. |
-| close | Remove the worktree; keep the branch until merged; the dossier stays. |
+| merge | With approval: rebase the workspace's branch onto the base ref, then fast-forward the base in the main checkout; conflicts become git state (14) that the agent resolves in the worktree. |
+| close | Remove the worktree; keep the branch until merged; the dossier stays. Uncommitted changes stop it without `--force`. |
+
+Topic workspaces (decided 2026-10-14): parallel agents of one dossier each get their own worktree.
+`workspace open --topic <t>` makes the worktree `<workspace.root>/<repo>/<dossier>--<t>` on the branch
+`legionctl/<dossier>--<t>` (from the base ref the first time; a reopen uses the branch again), with the dossier linked
+as `.agentworkspace`. `status`, `checkpoint`, `merge` and `close` act on the workspace that contains the working
+directory, else on the dossier's own workspace in that repository; `--topic <t>` selects a topic workspace from
+anywhere in the repository. `workspace list` shows all workspaces, topic workspaces too. An agent that shares its
+session's MCP server with other agents gives `topic` (or `repo` as its workspace path) to each workspace tool,
+because the server's working directory is the main checkout. The topic workspaces replaced `workspace branch`, which
+switched the branch inside the one worktree. `workspace.db` v10 adds the `topic` column (`''` for the dossier's own
+workspace); a v9 file goes to v10 at its first open.
 
 Reconciliation runs on every hook call and after every operation. It reads the git state (branch, base ref,
 merge-base, ahead/behind, staged, unstaged, untracked, conflicted, resolved-but-not-committed; 14), compares it with
@@ -122,7 +132,7 @@ in the layer. The session sandbox mounts the folder at its own path with `--over
 work <folder>` (bwrap >= 0.8, no root), so the source does not change. `workspace status` lists the changes from
 the upper layer (`A`/`M` files, `D` whiteouts, `R` folders marked `user.overlay.opaque`); `checkpoint` copies them
 to `checkpoints/<time>/` with `DELETED` and `MESSAGE`; `merge` applies them to the folder and empties the layer;
-`close` drops the layer (it refuses unmerged changes without force); `branch` is refused. An agent outside a
+`close` drops the layer (it refuses unmerged changes without force); `--topic` is refused. An agent outside a
 session works on the folder directly; the layer exists only inside sessions. The e2e test covers an edit, a new
 file, a deletion and a replaced folder.
 

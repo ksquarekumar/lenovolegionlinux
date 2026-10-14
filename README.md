@@ -83,8 +83,8 @@ Claude Code plugin (`/plugin marketplace add /data/git/lenovolegionlinux`, then
 - hooks (`legionctl hook <event>`): reminders, load and setup notices; one dossier per session, bound again at
   session start where the last session worked; the agent is told first when a session has none (`dossier.nudge`),
   prompts are blocked until it has one (`dossier.gate`), and writes into another session's dossier are denied;
-- workspaces: a git worktree per dossier and repository (`/legionctl:workspace`: open, status, checkpoint, branch,
-  merge, close); the agent is told to open one at session start and when it changed the main checkout instead;
+- workspaces: a git worktree per dossier and repository, and one per topic for parallel agents
+  (`/legionctl:workspace`: open, status, checkpoint, merge, close); the agent is told to open one at session start and when it changed the main checkout instead;
 - commands `/legionctl:dossier`, `/legionctl:workspace`, `/legionctl:status`, `/legionctl:act`, `/legionctl:setup`,
   `/legionctl:reminders`, `/legionctl:hooks`, `/legionctl:skills`.
 

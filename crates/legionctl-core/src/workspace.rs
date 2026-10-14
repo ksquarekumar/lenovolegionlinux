@@ -1,8 +1,10 @@
 //! Workspaces (note 18): the operating directory of a dossier in one repository. A workspace is a `git worktree` at
 //! `<workspace.root>/<repo>/<dossier>` on the dossier's branch `legionctl/<dossier>`, made from a recorded base ref,
-//! with the dossier linked in as `.agentworkspace`. legionctl does the git work around the agent: open, new branch,
-//! checkpoint, merge (rebase onto the base, then fast-forward the base) and close; `status` reports git state and
-//! drift (a branch switched outside legionctl, a missing worktree, a base that moved).
+//! with the dossier linked in as `.agentworkspace`. A topic workspace (for agents of one dossier that work in
+//! parallel) is a separate worktree at `<workspace.root>/<repo>/<dossier>--<topic>` on `legionctl/<dossier>--<topic>`.
+//! legionctl does the git work around the agent: open, checkpoint, merge (rebase onto the base, then fast-forward the
+//! base) and close; `status` reports git state and drift (a branch switched outside legionctl, a missing worktree, a
+//! base that moved).
 //!
 //! The disks here are ext4, which cannot reflink, so the copy is a worktree: it shares the repo's object store.
 
@@ -82,6 +84,32 @@ pub fn git_state(dir: &Path) -> Result<String> {
     Ok(format!("{:x}", hash.finalize()))
 }
 
+/// Commit the `/.agentworkspace` ignore line on the worktree's branch when it is missing.
+fn ignore_link(path: &Path) -> Result<()> {
+    let ignore = path.join(".gitignore");
+    let text = std::fs::read_to_string(&ignore).unwrap_or_default();
+    if text.lines().any(|l| l.trim() == IGNORE_LINE) {
+        return Ok(());
+    }
+    let sep = if text.is_empty() || text.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    std::fs::write(&ignore, format!("{text}{sep}{IGNORE_LINE}\n"))?;
+    git(path, &["add", ".gitignore"])?;
+    git(
+        path,
+        &[
+            "commit",
+            "--quiet",
+            "-m",
+            "legionctl: ignore the dossier link (/.agentworkspace)",
+        ],
+    )?;
+    Ok(())
+}
+
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -96,7 +124,7 @@ pub struct Workspace {
     pub repo: PathBuf,
     /// The operating directory: work here, not in the main checkout.
     pub path: PathBuf,
-    /// The active branch: `legionctl/<dossier>` or `legionctl/<dossier>--<topic>`.
+    /// The branch: `legionctl/<dossier>`, or `legionctl/<dossier>--<topic>` for a topic workspace.
     pub branch: String,
     /// The ref the branch started from and merges into.
     pub base: String,
@@ -175,25 +203,32 @@ pub struct Place {
 }
 
 impl Dossiers {
-    /// The repository that contains `dir`, the dossier's open workspace there, and whether the main checkout is
-    /// dirty; `None` when `dir` is not in a git repository.
+    /// The repository that contains `dir`, the dossier's open workspace there (the one that contains `dir`, else the
+    /// dossier's own workspace), and whether the main checkout is dirty; `None` when `dir` is not in a git repository.
     #[must_use]
     pub fn place(&self, dossier: &str, dir: &Path) -> Option<Place> {
         let repo = main_checkout(dir).ok()?;
         let (staged, unstaged, untracked, conflicted) = changes(&repo).ok()?;
+        let dir = std::fs::canonicalize(dir).ok()?;
+        let containing = self
+            .workspaces(Some(dossier))
+            .ok()?
+            .into_iter()
+            .find(|ws| std::fs::canonicalize(&ws.path).is_ok_and(|path| dir.starts_with(path)));
         Some(Place {
-            workspace: self.row(dossier, &repo).ok().flatten(),
+            workspace: containing.or_else(|| self.row(dossier, &repo, "").ok().flatten()),
             main_dirty: staged + unstaged + untracked + conflicted > 0,
             repo,
         })
     }
 
-    fn row(&self, dossier: &str, repo: &Path) -> Result<Option<Workspace>> {
+    fn row(&self, dossier: &str, repo: &Path, topic: &str) -> Result<Option<Workspace>> {
         Ok(self
             .db()
             .query_row(
-                "SELECT path, branch, base FROM workspaces WHERE dossier = ?1 AND repo = ?2 AND closed IS NULL",
-                params![dossier, repo.to_string_lossy()],
+                "SELECT path, branch, base FROM workspaces
+                 WHERE dossier = ?1 AND repo = ?2 AND topic = ?3 AND closed IS NULL",
+                params![dossier, repo.to_string_lossy(), topic],
                 |r| {
                     Ok(Workspace {
                         dossier: dossier.to_string(),
@@ -233,52 +268,62 @@ impl Dossiers {
             .context("this session has no active dossier; run `legionctl dossier use <name>` first")
     }
 
-    /// The workspace of this session's dossier in `repo`, or its only one when `repo` is not given.
+    /// The workspace of this session's dossier for `dir`: with a topic, that topic's workspace in the repository of
+    /// `dir`; else the workspace that contains `dir`, else the dossier's own workspace in its repository (a plain
+    /// folder: by its own path).
     ///
     /// # Errors
-    /// The session has no dossier, or the workspace is not open (or `repo` is needed to choose).
-    pub fn workspace_of(&self, session: &str, repo: Option<&Path>) -> Result<Workspace> {
+    /// The session has no dossier, or the workspace is not open.
+    pub fn workspace_of(
+        &self,
+        session: &str,
+        dir: &Path,
+        topic: Option<&str>,
+    ) -> Result<Workspace> {
         let dossier = self.active_dossier(session)?;
-        if let Some(dir) = repo {
-            // a repository by its main checkout, a plain folder by its own path
-            let key = main_checkout(dir)
-                .or_else(|_| Ok::<_, anyhow::Error>(std::fs::canonicalize(dir)?))?;
-            return self.row(&dossier, &key)?.with_context(|| {
-                format!(
-                    "dossier {dossier} has no workspace for {}; run `legionctl workspace open` there",
-                    dir.display()
-                )
-            });
-        }
-        let mut open = self.workspaces(Some(&dossier))?;
-        ensure!(
-            !open.is_empty(),
-            "dossier {dossier} has no open workspace; run `legionctl workspace open` in the repository"
-        );
-        ensure!(
-            open.len() == 1,
-            "dossier {dossier} has several workspaces; add --repo <folder>"
-        );
-        Ok(open.remove(0))
+        let found = if let Some(topic) = topic {
+            self.row(&dossier, &main_checkout(dir)?, topic)?
+        } else if let Some(place) = self.place(&dossier, dir) {
+            place.workspace
+        } else {
+            self.row(&dossier, &std::fs::canonicalize(dir)?, "")?
+        };
+        found.with_context(|| {
+            let topic = topic.map(|t| format!(" --topic {t}")).unwrap_or_default();
+            format!(
+                "dossier {dossier} has no workspace{topic} for {}; run `legionctl workspace open{topic}` there",
+                dir.display()
+            )
+        })
     }
 
     /// Open (or reopen) the workspace of this session's dossier in the repository that contains `dir`: a worktree on
     /// `legionctl/<dossier>` from `base` (default: the main checkout's current branch), with the dossier linked in.
+    /// With a topic, a separate worktree on `legionctl/<dossier>--<topic>` (created from `base` the first time,
+    /// reused after), so that agents of one dossier work in parallel.
     ///
     /// # Errors
-    /// The session has no dossier, `dir` is not in a git repository, or git refuses.
+    /// The session has no dossier, the topic is not valid, `dir` is not in a git repository (for a topic), or git
+    /// refuses.
     pub fn open_workspace(
         &self,
         session: &str,
         dir: &Path,
         base: Option<&str>,
+        topic: Option<&str>,
         root: &Path,
     ) -> Result<Workspace> {
         let dossier = self.active_dossier(session)?;
+        ensure!(
+            topic.is_none_or(crate::dossier::valid_name),
+            "topic must be a-z, 0-9 and '-', starting with a letter or digit"
+        );
         let Ok(repo) = main_checkout(dir) else {
+            ensure!(topic.is_none(), "a plain folder's workspace has no topics");
             return self.open_folder(dossier, dir, root);
         };
-        if let Some(open) = self.row(&dossier, &repo)?
+        let topic = topic.unwrap_or_default();
+        if let Some(open) = self.row(&dossier, &repo, topic)?
             && open.path.join(".git").exists()
         {
             return Ok(open);
@@ -296,9 +341,15 @@ impl Dossiers {
         let name = repo
             .file_name()
             .context("the repository folder has no name")?;
-        let path = root.join(name).join(&dossier);
+        // not legionctl/<dossier>/<topic>: git cannot nest a ref under the existing branch legionctl/<dossier>
+        let own = if topic.is_empty() {
+            dossier.clone()
+        } else {
+            format!("{dossier}--{topic}")
+        };
+        let path = root.join(name).join(&own);
         let path_str = path.to_str().context("the workspace path is not UTF-8")?;
-        let branch = format!("legionctl/{dossier}");
+        let branch = format!("legionctl/{own}");
         std::fs::create_dir_all(path.parent().context("no parent folder")?)?;
         let exists = git(
             &repo,
@@ -322,33 +373,23 @@ impl Dossiers {
                 Err(e)
             }
         })?;
-        let ignore = path.join(".gitignore");
-        let text = std::fs::read_to_string(&ignore).unwrap_or_default();
-        if !text.lines().any(|l| l.trim() == IGNORE_LINE) {
-            let sep = if text.is_empty() || text.ends_with('\n') {
-                ""
-            } else {
-                "\n"
-            };
-            std::fs::write(&ignore, format!("{text}{sep}{IGNORE_LINE}\n"))?;
-            git(&path, &["add", ".gitignore"])?;
-            git(
-                &path,
-                &[
-                    "commit",
-                    "--quiet",
-                    "-m",
-                    "legionctl: ignore the dossier link (/.agentworkspace)",
-                ],
-            )?;
-        }
+        ignore_link(&path)?;
         self.db().execute(
-            "UPDATE workspaces SET closed = ?1 WHERE dossier = ?2 AND repo = ?3 AND closed IS NULL",
-            params![now(), dossier, repo.to_string_lossy()],
+            "UPDATE workspaces SET closed = ?1 WHERE dossier = ?2 AND repo = ?3 AND topic = ?4 AND closed IS NULL",
+            params![now(), dossier, repo.to_string_lossy(), topic],
         )?;
         self.db().execute(
-            "INSERT INTO workspaces (dossier, repo, path, branch, base, opened) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![dossier, repo.to_string_lossy(), path_str, branch, base, now()],
+            "INSERT INTO workspaces (dossier, repo, path, branch, base, opened, topic)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                dossier,
+                repo.to_string_lossy(),
+                path_str,
+                branch,
+                base,
+                now(),
+                topic
+            ],
         )?;
         Ok(Workspace {
             dossier,
@@ -362,7 +403,7 @@ impl Dossiers {
     /// A plain folder's workspace: an overlay layer at `<root>/<folder name>/<dossier>` over `dir`.
     fn open_folder(&self, dossier: String, dir: &Path, root: &Path) -> Result<Workspace> {
         let source = std::fs::canonicalize(dir)?;
-        if let Some(open) = self.row(&dossier, &source)? {
+        if let Some(open) = self.row(&dossier, &source, "")? {
             return Ok(open);
         }
         let name = source.file_name().context("the folder has no name")?;
@@ -429,7 +470,7 @@ impl Dossiers {
             .unwrap_or_else(|_| "(detached)".into());
         if head != ws.branch {
             status.drift.push(format!(
-                "the branch is {head}, recorded {}: switched outside legionctl (use workspace branch)",
+                "the branch is {head}, recorded {}: switched outside legionctl (switch it back)",
                 ws.branch
             ));
         }
@@ -471,59 +512,6 @@ impl Dossiers {
         }
         git(&ws.path, &["commit", "--quiet", "-m", message])?;
         git(&ws.path, &["log", "-1", "--format=%h %s"])
-    }
-
-    /// Switch to `legionctl/<dossier>--<topic>`, created from the current branch the first time; without a topic,
-    /// back to `legionctl/<dossier>`. It becomes the active branch. Uncommitted changes stop it, so that work does
-    /// not move between branches unseen.
-    ///
-    /// # Errors
-    /// The topic is not valid, the workspace has uncommitted changes, or git refuses.
-    pub fn switch_branch(&self, ws: &Workspace, topic: Option<&str>) -> Result<String> {
-        ensure!(
-            !ws.is_folder(),
-            "a plain folder's workspace has no branches"
-        );
-        // not legionctl/<dossier>/<topic>: git cannot nest a ref under the existing branch legionctl/<dossier>
-        let branch = match topic {
-            Some(topic) => {
-                ensure!(
-                    crate::dossier::valid_name(topic),
-                    "topic must be a-z, 0-9 and '-', starting with a letter or digit"
-                );
-                format!("legionctl/{}--{topic}", ws.dossier)
-            }
-            None => format!("legionctl/{}", ws.dossier),
-        };
-        ensure!(
-            git(&ws.path, &["status", "--porcelain"])?.is_empty(),
-            "the workspace has uncommitted changes; checkpoint first"
-        );
-        let exists = git(
-            &ws.path,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{branch}"),
-            ],
-        )
-        .is_ok();
-        let create = if exists { None } else { Some("-c") };
-        git(
-            &ws.path,
-            &[
-                &["switch", "--quiet"][..],
-                create.as_slice(),
-                &[branch.as_str()],
-            ]
-            .concat(),
-        )?;
-        self.db().execute(
-            "UPDATE workspaces SET branch = ?1 WHERE dossier = ?2 AND repo = ?3 AND closed IS NULL",
-            params![branch, ws.dossier, ws.repo.to_string_lossy()],
-        )?;
-        Ok(branch)
     }
 
     /// Rebase the branch onto the base, then fast-forward the base in the main checkout. Conflicts stop the rebase in
@@ -597,8 +585,8 @@ impl Dossiers {
             git(&ws.repo, &args)?;
         }
         self.db().execute(
-            "UPDATE workspaces SET closed = ?1 WHERE dossier = ?2 AND repo = ?3 AND closed IS NULL",
-            params![now(), ws.dossier, ws.repo.to_string_lossy()],
+            "UPDATE workspaces SET closed = ?1 WHERE path = ?2 AND closed IS NULL",
+            params![now(), ws.path.to_string_lossy()],
         )?;
         Ok(if ws.is_folder() {
             format!(

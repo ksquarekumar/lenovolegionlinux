@@ -16,6 +16,7 @@ use crate::db::{Db, Schema};
 /// Entries of every namespace; the semantic cache's prompt embeddings beside the answers they find.
 const SCHEMA: &Schema = &Schema {
     version: 1,
+    steps: &[],
     sql: "CREATE TABLE entries (
         ns      TEXT NOT NULL,
         key     TEXT NOT NULL,

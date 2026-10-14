@@ -514,34 +514,33 @@ impl Render for Vec<Workspace> {
     }
 }
 
-impl Render for Vec<WorkspaceStatus> {
+impl Render for WorkspaceStatus {
     fn text(&self) -> String {
-        if self.is_empty() {
-            return "this dossier has no open workspace".into();
+        let mut out = vec![self.workspace.text()];
+        if self.workspace.branch.is_empty() {
+            out.push(format!(
+                "  {} changes over {}",
+                self.files.len(),
+                self.workspace.repo.display()
+            ));
+            out.extend(self.files.iter().map(|f| format!("  {f}")));
+        } else {
+            out.push(format!(
+                "  {} ahead, {} behind; staged {}, unstaged {}, untracked {}, conflicts {}",
+                self.ahead,
+                self.behind,
+                self.staged,
+                self.unstaged,
+                self.untracked,
+                self.conflicted
+            ));
         }
-        let mut out = Vec::new();
-        for s in self {
-            out.push(s.workspace.text());
-            if s.workspace.branch.is_empty() {
-                out.push(format!(
-                    "  {} changes over {}",
-                    s.files.len(),
-                    s.workspace.repo.display()
-                ));
-                out.extend(s.files.iter().map(|f| format!("  {f}")));
-            } else {
-                out.push(format!(
-                    "  {} ahead, {} behind; staged {}, unstaged {}, untracked {}, conflicts {}",
-                    s.ahead, s.behind, s.staged, s.unstaged, s.untracked, s.conflicted
-                ));
-            }
-            out.extend(s.drift.iter().map(|d| format!("  drift: {d}")));
-        }
+        out.extend(self.drift.iter().map(|d| format!("  drift: {d}")));
         out.join("\n")
     }
 
     fn success(&self) -> bool {
-        self.iter().all(|s| s.drift.is_empty())
+        self.drift.is_empty()
     }
 }
 

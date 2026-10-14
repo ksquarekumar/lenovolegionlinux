@@ -15,15 +15,19 @@ use std::fmt::Write as _;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-/// A database's schema: the tables of `version`, made at once in a new file.
+/// A database's schema: the tables of `version`, made at once in a new file, and the steps that bring a file of an
+/// older version to it.
 pub struct Schema {
     pub version: i64,
     pub sql: &'static str,
+    /// `(from, sql)`: the SQL that takes a file at version `from` to `from + 1`.
+    pub steps: &'static [(i64, &'static str)],
 }
 
 /// The operator database at v10 (the steps of v1-v10 merged into one; todo-68, after the first full release install).
 const OPERATOR: &Schema = &Schema {
     version: 10,
+    steps: &[],
     sql: "CREATE TABLE events (
         id      INTEGER PRIMARY KEY,
         ts      INTEGER NOT NULL,
@@ -268,7 +272,10 @@ impl Db {
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        let mut version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version < schema.version {
+            version = upgrade(&conn, schema)?;
+        }
         anyhow::ensure!(
             version == schema.version,
             "{} has schema v{version}, and this legionctl reads only v{}: it is from another release. Move the \
@@ -556,6 +563,21 @@ pub struct EventRow {
     pub actor: String,
     pub kind: String,
     pub payload: serde_json::Value,
+}
+
+/// Apply the steps from the file's version on, in one write transaction: an opener that comes second reads the new
+/// version and has nothing to do. A version with no step stays as it is.
+fn upgrade(conn: &Connection, schema: &Schema) -> Result<i64> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let mut version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    while let Some((_, sql)) = schema.steps.iter().find(|(from, _)| *from == version) {
+        tx.execute_batch(sql)
+            .with_context(|| format!("the schema step from v{version}"))?;
+        version += 1;
+        tx.pragma_update(None, "user_version", version)?;
+    }
+    tx.commit()?;
+    Ok(version)
 }
 
 /// Make the database at `path`: whole (WAL mode, `schema`, its version) in a file of this process and thread, then

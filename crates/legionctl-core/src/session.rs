@@ -313,8 +313,8 @@ fn uses(mut bound: Vec<String>, ws: &crate::workspace::Workspace, workdir: &Path
         legionctl_machine::human_bytes(size(&ws.path))
     ));
     bound.push(
-        "change: another dossier with --dossier <name> (a new name makes one); a topic branch with \
-         `legionctl workspace branch <topic>`; see all with `legionctl workspace list`"
+        "change: another dossier with --dossier <name> (a new name makes one); a separate topic workspace \
+         with `legionctl workspace open --topic <topic>`; see all with `legionctl workspace list`"
             .into(),
     );
     bound
@@ -1098,7 +1098,7 @@ impl Dossiers {
         let id = new_id()?;
         let place = place_of(start.dir);
         let bound = self.bind(&id, agent, start.dossier, start.steal, Some(&place))?;
-        let ws = self.open_workspace(&id, start.dir, None, &config.workspace.root)?;
+        let ws = self.open_workspace(&id, start.dir, None, None, &config.workspace.root)?;
         self.db().execute(
             "INSERT INTO sessions (id, agent, dossier, workdir, started, account, scoped, inside) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             // a container tells whether its session is live, as a scope does
@@ -1163,7 +1163,7 @@ impl Dossiers {
             self.settle_logins()?;
             logins_out(account)?;
         }
-        let ws = self.open_workspace(id, &record.workdir, None, &config.workspace.root)?;
+        let ws = self.open_workspace(id, &record.workdir, None, None, &config.workspace.root)?;
         self.launch(
             id.to_string(),
             (&ws, bound, token),

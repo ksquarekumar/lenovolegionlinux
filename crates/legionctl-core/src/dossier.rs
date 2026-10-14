@@ -18,9 +18,15 @@ use serde::{Deserialize, Serialize};
 use crate::config::DossierConfig;
 use crate::db::{Db, Schema};
 
-/// The workspace database at v9 (the steps of v1-v9 merged into one; todo-68).
+/// The workspace database at v10: the steps of v1-v9 merged into one (todo-68), then the topic workspaces.
 const SCHEMA: &Schema = &Schema {
-    version: 9,
+    version: 10,
+    steps: &[(
+        9,
+        "ALTER TABLE workspaces ADD COLUMN topic TEXT NOT NULL DEFAULT '';
+         DROP INDEX open_workspace;
+         CREATE UNIQUE INDEX open_workspace ON workspaces (dossier, repo, topic) WHERE closed IS NULL;",
+    )],
     sql: "-- one open binding per dossier and per session; released rows stay as history; place: where the session worked
      -- (repository root, else its folder), for binding the next session there
      CREATE TABLE bindings (
@@ -40,7 +46,8 @@ const SCHEMA: &Schema = &Schema {
         kind    TEXT NOT NULL,
         path    TEXT NOT NULL
      );
-     -- workspaces, the operating directories of dossiers (one open per dossier and repository)
+     -- workspaces, the operating directories of dossiers (one open per dossier, repository and topic; '' is the
+     -- dossier's own workspace)
      CREATE TABLE workspaces (
         dossier TEXT NOT NULL,
         repo    TEXT NOT NULL,
@@ -48,9 +55,10 @@ const SCHEMA: &Schema = &Schema {
         branch  TEXT NOT NULL,
         base    TEXT NOT NULL,
         opened  INTEGER NOT NULL,
-        closed  INTEGER
+        closed  INTEGER,
+        topic   TEXT NOT NULL DEFAULT ''
      );
-     CREATE UNIQUE INDEX open_workspace ON workspaces (dossier, repo) WHERE closed IS NULL;
+     CREATE UNIQUE INDEX open_workspace ON workspaces (dossier, repo, topic) WHERE closed IS NULL;
      -- sessions that legionctl started (note 14): the account profile (A1); scoped: in its own systemd scope, which
      -- then tells whether it is still live; inside: host (a bwrap sandbox), container or vm (W5)
      CREATE TABLE sessions (
@@ -1026,6 +1034,89 @@ mod tests {
             ws.check("port").is_empty(),
             "a new dossier has every ledger section"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The user's v9 file (one open workspace per dossier and repository) becomes v10 in place: its rows stay as the
+    /// dossiers' own workspaces, a topic workspace can open beside one, and the table and index equal a new file's.
+    #[test]
+    fn a_v9_workspace_database_takes_topic_workspaces_and_keeps_its_rows() {
+        let dir = std::env::temp_dir().join(format!("legionctl-ws-v9-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (old, new) = (dir.join("old.db"), dir.join("new.db"));
+        let v9 = rusqlite::Connection::open(&old).unwrap();
+        v9.execute_batch(
+            "CREATE TABLE workspaces (
+                dossier TEXT NOT NULL,
+                repo    TEXT NOT NULL,
+                path    TEXT NOT NULL,
+                branch  TEXT NOT NULL,
+                base    TEXT NOT NULL,
+                opened  INTEGER NOT NULL,
+                closed  INTEGER
+             );
+             CREATE UNIQUE INDEX open_workspace ON workspaces (dossier, repo) WHERE closed IS NULL;
+             INSERT INTO workspaces VALUES ('port', '/r', '/w/r/port', 'legionctl/port', 'main', 1, NULL);
+             PRAGMA user_version = 9;",
+        )
+        .unwrap();
+        drop(v9);
+        let db = Db::open(&old, SCHEMA).unwrap();
+        assert_eq!(db.schema_version().unwrap(), 10);
+        let conn = db.conn();
+        assert_eq!(
+            conn.query_row(
+                "SELECT topic FROM workspaces WHERE path = '/w/r/port'",
+                [],
+                |r| { r.get::<_, String>(0) }
+            )
+            .unwrap(),
+            ""
+        );
+        let open = |path: &str, topic: &str| {
+            conn.execute(
+                "INSERT INTO workspaces (dossier, repo, path, branch, base, opened, topic)
+                 VALUES ('port', '/r', ?1, '', 'main', 2, ?2)",
+                [path, topic],
+            )
+        };
+        open("/w/r/port--a", "a").unwrap();
+        assert!(
+            open("/w/r/port-again", "").is_err(),
+            "one own workspace per repository"
+        );
+        assert!(
+            open("/w/r/port--a2", "a").is_err(),
+            "one workspace per topic"
+        );
+        let shape = |conn: &rusqlite::Connection| {
+            let mut columns: Vec<String> = conn
+                .prepare("SELECT name, type, \"notnull\", dflt_value FROM pragma_table_info('workspaces')")
+                .unwrap()
+                .query_map([], |r| {
+                    Ok(format!(
+                        "{} {} {} {:?}",
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, Option<String>>(3)?
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            columns.push(
+                conn.query_row(
+                    "SELECT sql FROM sqlite_master WHERE name = 'open_workspace'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap(),
+            );
+            columns
+        };
+        assert_eq!(shape(conn), shape(Db::open(&new, SCHEMA).unwrap().conn()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

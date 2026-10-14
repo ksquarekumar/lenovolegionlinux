@@ -1138,7 +1138,7 @@ fn workspace_opens_checkpoints_reports_drift_merges_and_closes_in_a_real_reposit
     let status: Value =
         serde_json::from_str(&ok(&repo, &["workspace", "status", "--json"])).unwrap();
     assert_eq!(
-        (status[0]["ahead"].as_u64(), status[0]["behind"].as_u64()),
+        (status["ahead"].as_u64(), status["behind"].as_u64()),
         (Some(2), Some(0)),
         "{status}"
     );
@@ -1175,19 +1175,21 @@ fn workspace_opens_checkpoints_reports_drift_merges_and_closes_in_a_real_reposit
     );
 }
 
-/// Topic branches of one dossier: created on first use, switched to later with their work, and back to the dossier's
-/// branch; uncommitted work stops a switch; merge takes the active branch.
+/// Topic workspaces of one dossier, open at once for agents that work in parallel: each has its own worktree and
+/// branch, edits stay apart, checkpoint and status act on the workspace that contains the working directory (or on
+/// `--topic`), merge of one moves main while the other stays, close refuses uncommitted work, and a reopened topic
+/// continues on its branch.
 #[test]
-fn workspace_topic_branches_keep_their_work_and_the_active_one_merges() {
+fn topic_workspaces_of_one_dossier_work_in_parallel_and_merge_one_by_one() {
     let (op, home) = operator("topics");
     let repo = repository(&home);
     let env = [
         ("HOME", home.to_str().unwrap()),
         ("LEGIONCTL_SESSION", "s1"),
     ];
-    let run = |args: &[&str]| op.run(&repo, &env, args, "");
-    let ok = |args: &[&str]| {
-        let o = run(args);
+    let run = |cwd: &Path, args: &[&str]| op.run(cwd, &env, args, "");
+    let ok = |cwd: &Path, args: &[&str]| {
+        let o = run(cwd, args);
         assert!(
             o.status.success(),
             "{args:?}: {}",
@@ -1195,38 +1197,98 @@ fn workspace_topic_branches_keep_their_work_and_the_active_one_merges() {
         );
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     };
-    ok(&["dossier", "use", "port"]);
-    ok(&["workspace", "open"]);
-    let ws = home.join("worktrees/repo/port");
-
+    let status = |cwd: &Path, args: &[&str]| -> Value {
+        serde_json::from_str(&ok(
+            cwd,
+            &[&["workspace", "status", "--json"], args].concat(),
+        ))
+        .unwrap()
+    };
+    let subject = |branch: &str| git(&home, &repo, &["log", "-1", "--format=%s", branch]);
+    ok(&repo, &["dossier", "use", "port"]);
+    let a = home.join("worktrees/repo/port--a");
+    let b = home.join("worktrees/repo/port--b");
+    let opened: Value =
+        serde_json::from_str(&ok(&repo, &["workspace", "open", "--topic", "a", "--json"])).unwrap();
     assert_eq!(
-        ok(&["workspace", "branch", "--topic", "polish"]),
-        "on legionctl/port--polish"
+        (opened["path"].as_str(), opened["branch"].as_str()),
+        (a.to_str(), Some("legionctl/port--a"))
     );
-    write(&ws.join("polish.txt"), "x");
-    let refused = run(&["workspace", "branch"]);
+    ok(&repo, &["workspace", "open", "--topic", "b"]);
     assert!(
-        String::from_utf8_lossy(&refused.stderr).contains("uncommitted changes; checkpoint first"),
+        b.join(".agentworkspace/plan.md").is_file(),
+        "each topic has the dossier linked"
+    );
+    let list = ok(&repo, &["workspace", "list"]);
+    assert!(
+        list.contains("legionctl/port--a") && list.contains("legionctl/port--b"),
+        "{list}"
+    );
+
+    // edits stay apart; checkpoint from inside each (b from a subfolder) commits to its own branch
+    write(&a.join("a.txt"), "a");
+    write(&b.join("sub/b.txt"), "b");
+    assert!(!b.join("a.txt").exists() && !a.join("sub").exists());
+    assert!(ok(&a, &["workspace", "checkpoint", "work a"]).ends_with("work a"));
+    assert!(ok(&b.join("sub"), &["workspace", "checkpoint", "work b"]).ends_with("work b"));
+    assert_eq!(
+        (subject("legionctl/port--a"), subject("legionctl/port--b")),
+        ("work a".into(), "work b".into())
+    );
+
+    // status from inside each, and by topic from the main checkout
+    write(&b.join("loose.txt"), "not committed");
+    let (sa, sb) = (status(&a, &[]), status(&b, &[]));
+    assert_eq!(
+        (sa["branch"].as_str(), sa["untracked"].as_u64()),
+        (Some("legionctl/port--a"), Some(0)),
+        "{sa}"
+    );
+    assert_eq!(
+        (sb["branch"].as_str(), sb["untracked"].as_u64()),
+        (Some("legionctl/port--b"), Some(1)),
+        "{sb}"
+    );
+    assert_eq!(
+        status(&repo, &["--topic", "b"])["untracked"].as_u64(),
+        Some(1)
+    );
+
+    // merge of a moves main; b stays on its own work
+    ok(&a, &["workspace", "merge"]);
+    assert_eq!(subject("main"), "work a");
+    assert!(repo.join("a.txt").exists() && !repo.join("sub").exists());
+    assert_eq!(subject("legionctl/port--b"), "work b");
+    assert!(
+        status(&b, &[])["behind"].as_u64() > Some(0),
+        "b is behind main by a's work"
+    );
+
+    // close of b with uncommitted work is refused; --force closes it and keeps the branch
+    let refused = run(&repo, &["workspace", "close", "--topic", "b"]);
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("uncommitted changes"),
         "{}",
         String::from_utf8_lossy(&refused.stderr)
     );
-    ok(&["workspace", "checkpoint", "polish the feature"]);
-
-    assert_eq!(ok(&["workspace", "branch"]), "on legionctl/port");
+    assert!(b.join("loose.txt").exists());
+    ok(&repo, &["workspace", "close", "--topic", "b", "--force"]);
+    assert!(!b.exists());
     assert!(
-        !ws.join("polish.txt").exists(),
-        "the topic's work stays on the topic branch"
+        ok(&repo, &["workspace", "list"]).contains("legionctl/port--a"),
+        "closing b leaves a open"
     );
-    assert_eq!(
-        ok(&["workspace", "branch", "--topic", "polish"]),
-        "on legionctl/port--polish"
-    );
-    assert!(ws.join("polish.txt").exists());
 
-    ok(&["workspace", "merge"]);
+    // reopen: the same branch with its committed work, without the discarded file
+    ok(&repo, &["workspace", "open", "--topic", "b"]);
+    assert!(b.join("sub/b.txt").exists() && !b.join("loose.txt").exists());
+    assert_eq!(subject("legionctl/port--b"), "work b");
+    ok(&b, &["workspace", "merge"]);
+    assert_eq!(subject("main"), "work b");
     assert_eq!(
-        git(&home, &repo, &["log", "-1", "--format=%s"]),
-        "polish the feature"
+        git(&home, &repo, &["rev-list", "--count", "HEAD"]),
+        "4",
+        "linear: start, ignore line, work a, work b (b's own ignore line is the same patch)"
     );
 }
 
@@ -2654,7 +2716,7 @@ fn a_plain_folder_workspace_keeps_the_source_until_merge() {
     };
     let status: Value = serde_json::from_str(&ok(&["workspace", "status", "--json"])).unwrap();
     assert_eq!(
-        status[0]["files"],
+        status["files"],
         json!(["M edit", "D gone", "A new", "R sub/"])
     );
     assert!(ok(&["workspace", "checkpoint", "first pass"]).contains("4 changes"));

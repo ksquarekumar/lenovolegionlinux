@@ -7,13 +7,11 @@ use crate::wire::{
     Action, Battery, BenchResult, Binding, Capability, ConfigFile, ConfigLayer, DesktopGpu,
     DossierInfo, EditMode, Event, EventRow, GpuMode, Inside, Knob, Lock, Output, PackageState,
     Reminder, RuleLayer, Sample, Scenario, SessionRecord, SkillInfo, VfioDevice, Workspace,
-    WorkspaceStatus,
 };
 use crate::{ClientPath, SessionId, StdinText};
 
 pub type ConfigFiles = Vec<ConfigFile>;
 pub type Workspaces = Vec<Workspace>;
-pub type WorkspaceStates = Vec<WorkspaceStatus>;
 pub type Reminders = Vec<Reminder>;
 pub type SkillList = Vec<SkillInfo>;
 pub type Locks = Vec<Lock>;
@@ -85,16 +83,24 @@ pub struct WorkspaceOpenIn {
     /// Ref the dossier's branch starts from and merges into; default: the main checkout's current branch.
     #[serde(default)]
     pub base: Option<String>,
+    /// A separate workspace of the dossier for this topic, on legionctl/<dossier>--<topic> (created the first time,
+    /// reused after): one per agent that works in parallel.
+    #[serde(default)]
+    pub topic: Option<String>,
     #[serde(default)]
     pub session: SessionId,
 }
 
-/// Which of this session's workspaces: the one in `repo`, or the only one.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+/// Which of this session's workspaces: the topic's, else the one that contains `repo`, else the dossier's own
+/// workspace in the repository of `repo`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceIn {
-    /// A folder in the repository; needed only when the dossier has workspaces in several repositories.
+    /// A folder in a workspace or in the repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+    /// The topic workspace (`workspace open --topic`), from anywhere in the repository.
     #[serde(default)]
-    pub repo: Option<ClientPath>,
+    pub topic: Option<String>,
     #[serde(default)]
     pub session: SessionId,
 }
@@ -103,33 +109,27 @@ pub struct WorkspaceIn {
 pub struct CheckpointIn {
     /// Commit message: what this change set does (from the plan entry).
     pub message: String,
-    /// A folder in the repository; needed only when the dossier has workspaces in several repositories.
+    /// A folder in a workspace or in the repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+    /// The topic workspace (`workspace open --topic`), from anywhere in the repository.
     #[serde(default)]
-    pub repo: Option<ClientPath>,
+    pub topic: Option<String>,
     #[serde(default)]
     pub session: SessionId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct BranchIn {
-    /// The branch becomes legionctl/<dossier>--<topic> (created the first time); without it, legionctl/<dossier>.
-    #[serde(default)]
-    pub topic: Option<String>,
-    /// A folder in the repository; needed only when the dossier has workspaces in several repositories.
-    #[serde(default)]
-    pub repo: Option<ClientPath>,
-    #[serde(default)]
-    pub session: SessionId,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct CloseIn {
     /// Discard uncommitted changes.
     #[serde(default)]
     pub force: bool,
-    /// A folder in the repository; needed only when the dossier has workspaces in several repositories.
+    /// A folder in a workspace or in the repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+    /// The topic workspace (`workspace open --topic`), from anywhere in the repository.
     #[serde(default)]
-    pub repo: Option<ClientPath>,
+    pub topic: Option<String>,
     #[serde(default)]
     pub session: SessionId,
 }

@@ -1765,6 +1765,14 @@
           "description": "Ref the dossier's branch starts from and merges into; default: the main checkout's current branch.",
           "default": null
         },
+        "topic": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A separate workspace of the dossier for this topic, on legionctl/<dossier>--<topic> (created the first time,\nreused after): one per agent that works in parallel.",
+          "default": null
+        },
         "session": {
           "type": "string",
           "format": "session",
@@ -1817,12 +1825,17 @@
       "type": "object",
       "properties": {
         "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in a workspace or in the repository.",
+          "default": "."
+        },
+        "topic": {
           "type": [
             "string",
             "null"
           ],
-          "format": "path",
-          "description": "A folder in the repository; needed only when the dossier has workspaces in several repositories.",
+          "description": "The topic workspace (`workspace open --topic`), from anywhere in the repository.",
           "default": null
         },
         "session": {
@@ -1832,98 +1845,95 @@
           "default": ""
         }
       },
-      "description": "Which of this session's workspaces: the one in `repo`, or the only one.",
+      "description": "Which of this session's workspaces: the topic's, else the one that contains `repo`, else the dossier's own\nworkspace in the repository of `repo`.",
       "title": "WorkspaceIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
-      "type": "array",
-      "items": {
-        "description": "Git state of a workspace and what drifted from the record.",
-        "type": "object",
-        "properties": {
-          "dossier": {
-            "type": "string"
-          },
-          "repo": {
-            "description": "The repository's main checkout; for a plain folder, the folder.",
-            "type": "string"
-          },
-          "path": {
-            "description": "The operating directory: work here, not in the main checkout.",
-            "type": "string"
-          },
-          "branch": {
-            "description": "The active branch: `legionctl/<dossier>` or `legionctl/<dossier>--<topic>`.",
-            "type": "string"
-          },
-          "base": {
-            "description": "The ref the branch started from and merges into.",
-            "type": "string"
-          },
-          "ahead": {
-            "description": "Commits on the branch that the base does not have, and the other way round.",
-            "type": "integer",
-            "format": "uint32",
-            "minimum": 0
-          },
-          "behind": {
-            "type": "integer",
-            "format": "uint32",
-            "minimum": 0
-          },
-          "staged": {
-            "type": "integer",
-            "format": "uint32",
-            "minimum": 0
-          },
-          "unstaged": {
-            "type": "integer",
-            "format": "uint32",
-            "minimum": 0
-          },
-          "untracked": {
-            "type": "integer",
-            "format": "uint32",
-            "minimum": 0
-          },
-          "conflicted": {
-            "type": "integer",
-            "format": "uint32",
-            "minimum": 0
-          },
-          "drift": {
-            "description": "What differs from the record: a branch switched outside legionctl, a missing worktree.",
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "files": {
-            "description": "A plain folder's changes, one per line (A, M, D, R and the path); empty for a repository.",
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
+      "type": "object",
+      "properties": {
+        "dossier": {
+          "type": "string"
         },
-        "required": [
-          "dossier",
-          "repo",
-          "path",
-          "branch",
-          "base",
-          "ahead",
-          "behind",
-          "staged",
-          "unstaged",
-          "untracked",
-          "conflicted",
-          "drift",
-          "files"
-        ]
+        "repo": {
+          "type": "string",
+          "description": "The repository's main checkout; for a plain folder, the folder."
+        },
+        "path": {
+          "type": "string",
+          "description": "The operating directory: work here, not in the main checkout."
+        },
+        "branch": {
+          "type": "string",
+          "description": "The active branch: `legionctl/<dossier>` or `legionctl/<dossier>--<topic>`."
+        },
+        "base": {
+          "type": "string",
+          "description": "The ref the branch started from and merges into."
+        },
+        "ahead": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Commits on the branch that the base does not have, and the other way round."
+        },
+        "behind": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "staged": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "unstaged": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "untracked": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "conflicted": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "drift": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "What differs from the record: a branch switched outside legionctl, a missing worktree."
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "A plain folder's changes, one per line (A, M, D, R and the path); empty for a repository."
+        }
       },
-      "title": "Array_of_WorkspaceStatus",
+      "required": [
+        "dossier",
+        "repo",
+        "path",
+        "branch",
+        "base",
+        "ahead",
+        "behind",
+        "staged",
+        "unstaged",
+        "untracked",
+        "conflicted",
+        "drift",
+        "files"
+      ],
+      "description": "Git state of a workspace and what drifted from the record.",
+      "title": "WorkspaceStatus",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
@@ -1984,12 +1994,17 @@
           "description": "Commit message: what this change set does (from the plan entry)."
         },
         "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in a workspace or in the repository.",
+          "default": "."
+        },
+        "topic": {
           "type": [
             "string",
             "null"
           ],
-          "format": "path",
-          "description": "A folder in the repository; needed only when the dossier has workspaces in several repositories.",
+          "description": "The topic workspace (`workspace open --topic`), from anywhere in the repository.",
           "default": null
         },
         "session": {
@@ -2023,57 +2038,6 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
-  "workspace.branch": {
-    "class": "session",
-    "internal": false,
-    "input": {
-      "type": "object",
-      "properties": {
-        "topic": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The branch becomes legionctl/<dossier>--<topic> (created the first time); without it, legionctl/<dossier>.",
-          "default": null
-        },
-        "repo": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "path",
-          "description": "A folder in the repository; needed only when the dossier has workspaces in several repositories.",
-          "default": null
-        },
-        "session": {
-          "type": "string",
-          "format": "session",
-          "description": "Agent session id; the client fills it.",
-          "default": ""
-        }
-      },
-      "title": "BranchIn",
-      "$schema": "https://json-schema.org/draft/2020-12/schema"
-    },
-    "output": {
-      "type": "object",
-      "properties": {
-        "lines": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "required": [
-        "lines"
-      ],
-      "description": "Lines of output (dossier rows, messages).",
-      "title": "Lines",
-      "$schema": "https://json-schema.org/draft/2020-12/schema"
-    }
-  },
   "workspace.merge": {
     "class": "workspace",
     "internal": false,
@@ -2081,12 +2045,17 @@
       "type": "object",
       "properties": {
         "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in a workspace or in the repository.",
+          "default": "."
+        },
+        "topic": {
           "type": [
             "string",
             "null"
           ],
-          "format": "path",
-          "description": "A folder in the repository; needed only when the dossier has workspaces in several repositories.",
+          "description": "The topic workspace (`workspace open --topic`), from anywhere in the repository.",
           "default": null
         },
         "session": {
@@ -2096,7 +2065,7 @@
           "default": ""
         }
       },
-      "description": "Which of this session's workspaces: the one in `repo`, or the only one.",
+      "description": "Which of this session's workspaces: the topic's, else the one that contains `repo`, else the dossier's own\nworkspace in the repository of `repo`.",
       "title": "WorkspaceIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
@@ -2130,12 +2099,17 @@
           "default": false
         },
         "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in a workspace or in the repository.",
+          "default": "."
+        },
+        "topic": {
           "type": [
             "string",
             "null"
           ],
-          "format": "path",
-          "description": "A folder in the repository; needed only when the dossier has workspaces in several repositories.",
+          "description": "The topic workspace (`workspace open --topic`), from anywhere in the repository.",
           "default": null
         },
         "session": {
