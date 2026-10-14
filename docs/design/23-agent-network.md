@@ -1065,3 +1065,25 @@ The user approved this design and chose the recommendation for each question:
 6. Snapshot retention: heads, bases, merge-bases, open threads' trees and the newest 20 others.
 7. Forgotten steps: deterministic watch rules in the operator; model observers only for judgment.
 8. Build order: P1-P4 (graphs, planning, tests), then P5-P6 (threads, observers), then P7-P8 (UI, with todo-78).
+
+## Decisions on Part B+ (user, 2026-10-15)
+
+1. Messages: the thread outbox AND Claude Code's cross-session `SendMessage`. legionctl uses `SendMessage` directly
+   for Claude peers (fast, Claude only, not durable), and the outbox for every member (durable). The `post-tool` hook
+   records each `SendMessage` in the thread log, so the log stays complete.
+2. Config place: layered. The archetype file is the lowest layer; `agents.configs.<name>` is above it; the
+   repository layer and the team flow may only narrow.
+3. A config field that a run path cannot apply: the start is refused and names the field.
+4. Team mode: when the main agent is Claude Code, `vanilla` runs as a Claude Code agent team by default (visible in
+   Claude's agent panel); other harnesses run members as operator sessions. The operator sets
+   `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` for the sessions it starts. Limits that follow (research, dossier
+   MEMORY/12): one team per session, no nesting, a fixed lead, in-process teammates not restored after `/resume`
+   (the operator starts them again from the thread's members), spawning needs an interactive session.
+5. Dossier writes: no exception. An observer writes only its own dossier; for a missing record in the main agent's
+   dossier it sends a nudge.
+6. Codex members run as Codex subagents of the main Codex session (`~/.codex/agents`), with the inherited sandbox,
+   approval and MCP. With decision 3, a Codex member config that sets its own sandbox, approval or MCP is refused.
+
+With these, the process job in B+ changes: the observer still runs the steps it can do in its overlay (lint,
+targeted tests) and makes no checkpoint and no dossier write for the main agent; it sends a `notice` with the
+result and a nudge for the record or the checkpoint.
