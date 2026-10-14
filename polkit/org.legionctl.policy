@@ -65,7 +65,7 @@
   </action>
 
   <action id="org.legionctl.boot">
-    <description>Add, confirm, rebuild or remove legionctl's boot entry (systemd-boot and signed kernel images), choose its kernel, or change a kernel's command line</description>
+    <description>Add, confirm, rebuild or remove legionctl's boot entry (systemd-boot and signed kernel images), choose its kernel, change a kernel's command line, or install a kernel that legionctl built</description>
     <message>Authentication is required to change how the computer starts</message>
     <defaults>
       <allow_any>auth_admin</allow_any>

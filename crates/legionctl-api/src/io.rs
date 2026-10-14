@@ -935,6 +935,53 @@ pub struct BenchCompare {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct KernelBenchIn {
+    /// The suite: cpu, gpu or mixed (as `bench run`).
+    pub scenario: Scenario,
+    /// Duration of each run of the series (1-600).
+    #[serde(default = "thirty")]
+    pub seconds: u32,
+    /// Start a series: each installed kernel once (`kernel try`) with the suite after login, then the default
+    /// kernel again. Restarts the machine once per kernel, and once more at the end.
+    #[serde(default)]
+    pub all: bool,
+    /// Stop the series of this suite; the default kernel starts at the next start.
+    #[serde(default)]
+    pub cancel: bool,
+    /// Show the series; change nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// The newest run of one suite on each kernel, side by side; and what a series did or will do.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct KernelBench {
+    /// One run per kernel, the newest, in the order of the kernels' names.
+    pub runs: Vec<BenchRun>,
+    pub lines: Vec<String>,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct KernelBuildIn {
+    /// The installed `linux-cachyos` kernel to build from (`linux-cachyos-bore-lto`): its PKGBUILD at its installed
+    /// version.
+    pub base: String,
+    /// Kernel options to merge into its configuration (`CONFIG_<option>=<value>` lines, `merge_config.sh`).
+    pub config_fragment: Option<ClientPath>,
+    /// The new package is `linux-cachyos-<name>` (a-z, 0-9 and '-'); not an installed kernel.
+    #[serde(default = "legionctl_name")]
+    pub name: String,
+    /// Show the plan; change nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+fn legionctl_name() -> String {
+    "legionctl".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TuneIn {
     /// Firmware limit to step: `ppt_pl1_spl`, `ppt_pl2_sppt`, `ppt_cpu_cl`, `cpu_temp` or `gpu_nv_ac_offset`.
     pub attribute: String,
@@ -951,6 +998,9 @@ pub struct TuneIn {
     /// Run also when the machine is not idle (the scores then mix in other work).
     #[serde(default)]
     pub force: bool,
+    /// Put the recommendation into a layer for the running kernel only (`tuned-<package>`, `kernel` condition).
+    #[serde(default)]
+    pub per_kernel: bool,
 }
 
 fn sixty() -> u32 {

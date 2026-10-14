@@ -3597,6 +3597,608 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         assert_eq!(image("linux-cachyos-bore-lto"), bore);
     }
 
+    /// The machine's restarts so far (the stand-in systemctl logs each `reboot`).
+    fn restarts(m: &Machine) -> usize {
+        std::fs::read_to_string(m.dir.join("systemctl.log"))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    }
+
+    /// The newest job of `kind` (`jobs list`).
+    fn last_job(op: &Operator, kind: &str) -> Value {
+        let jobs: Value = serde_json::from_str(&op.ok(&["jobs", "list", "--json"])).unwrap();
+        jobs["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|j| j["kind"] == kind)
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+
+    const OSRELEASE: &str = "/proc/sys/kernel/osrelease";
+    const SERIES: [&str; 6] = ["kernel", "bench", "cpu", "--all", "--seconds", "1"];
+
+    /// The boot machine with `boot install` done, a systemctl that logs each restart, and a stand-in stress-ng that
+    /// scores by the running release (40000 on bore-lto, 36000 else), so each run shows the kernel it really ran on.
+    async fn series_machine(
+        tag: &'static str,
+    ) -> (Machine, zbus::Connection, (Kill, Kill), Operator) {
+        let m = Machine::new(tag);
+        boot_machine(&m);
+        let bin = m.dir.join("bin");
+        Machine::script(
+            &bin,
+            "systemctl",
+            &format!(
+                "[ \"$1\" = reboot ] && echo reboot >> {}; exit 0",
+                m.dir.join("systemctl.log").display()
+            ),
+        );
+        Machine::script(
+            &bin,
+            "stress-ng",
+            &format!(
+                "/usr/bin/sleep 1.2; read -r r < {}; case $r in *bore-lto) s=40000.00;; *) s=36000.00;; esac; \
+                 echo \"stress-ng: metrc: [1] cpu              114043      3.00     91.33      0.08     $s        1247.63\" >&2",
+                m.dir.join("root").join(&OSRELEASE[1..]).display()
+            ),
+        );
+        let (stand_ins, _asked, processes) = start(&m).await;
+        let op = on_bus(&m, tag);
+        op.ok(&["boot", "install"]);
+        (m, stand_ins, processes, op)
+    }
+
+    /// A start into `release`: the operator starts again at login (`graphical-session.target`; here its socket's
+    /// first call).
+    fn login(m: &Machine, tag: &'static str, op: Operator, release: &str) -> Operator {
+        drop(op);
+        m.set(OSRELEASE, release);
+        let op = on_bus(m, tag);
+        op.ok(&["jobs", "list"]);
+        op
+    }
+
+    fn bench_runs(op: &Operator) -> Vec<Value> {
+        let page: Value = serde_json::from_str(&op.ok(&["bench", "list", "--json"])).unwrap();
+        page["items"].as_array().unwrap().clone()
+    }
+
+    /// A bench series across the kernels (todo-84 part 3), with the real daemon and operator on the recorded machine
+    /// after `boot install`: each kernel starts once through `kernel try`; the operator (it starts at login) checks
+    /// that the kernel it asked for runs, benches it, records the kernel with the run, and starts the next one, and at
+    /// the end the default kernel once more. The view and `bench compare` show the change between the kernels.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bench_series_starts_each_kernel_once_and_goes_on_after_each_start() {
+        let (m, _stand_ins, _processes, op) = series_machine("series").await;
+        let dry = op.ok(&[&SERIES[..], &["--dry-run"]].concat());
+        assert_eq!(
+            dry.lines().collect::<Vec<_>>(),
+            [
+                "start linux-cachyos once (kernel try: a restart), then bench cpu 1 s after login",
+                "start linux-cachyos-bore-lto once (kernel try: a restart), then bench cpu 1 s after login",
+                "start linux-cachyos-bore-lto once more (the default kernel); the series ends",
+            ],
+            "{dry}"
+        );
+        assert_eq!(
+            (oneshot(&m), restarts(&m)),
+            (None, 0),
+            "a dry run changes nothing"
+        );
+
+        op.ok(&SERIES);
+        assert_eq!(oneshot(&m).as_deref(), Some("legionctl-linux-cachyos.efi"));
+        assert_eq!(restarts(&m), 1);
+        let again = op.cli(&SERIES);
+        assert!(
+            String::from_utf8_lossy(&again.stderr).contains("runs already"),
+            "{again:?}"
+        );
+
+        let op = login(&m, "series", op, "7.2.9-2-cachyos");
+        wait_for("the start of the next kernel", || restarts(&m) == 2);
+        assert_eq!(
+            oneshot(&m).as_deref(),
+            Some("legionctl-linux-cachyos-bore-lto.efi")
+        );
+        let first = bench_runs(&op);
+        assert_eq!(
+            (
+                first.len(),
+                &first[0]["kernel"],
+                &first[0]["release"],
+                &first[0]["scores"]["cpu bogo ops/s"]
+            ),
+            (
+                1,
+                &Value::from("linux-cachyos"),
+                &Value::from("7.2.9-2-cachyos"),
+                &Value::from(36000.0)
+            ),
+            "{first:?}"
+        );
+
+        let op = login(&m, "series", op, "7.2.9-2-cachyos-bore-lto");
+        wait_for("the start of the default kernel", || restarts(&m) == 3);
+        assert_eq!(
+            oneshot(&m).as_deref(),
+            Some("legionctl-linux-cachyos-bore-lto.efi")
+        );
+        assert_eq!(last_job(&op, "kernel.bench")["state"], "running");
+
+        let op = login(&m, "series", op, "7.2.9-2-cachyos-bore-lto");
+        wait_for("the end of the series", || {
+            last_job(&op, "kernel.bench")["state"] == "done"
+        });
+        assert_eq!(restarts(&m), 3, "no restart after the last start");
+        let all = bench_runs(&op);
+        assert_eq!(all.len(), 2, "the last start has no bench: {all:?}");
+        assert_eq!(all[1]["kernel"], "linux-cachyos-bore-lto");
+
+        let view = op.ok(&["kernel", "bench", "cpu"]);
+        assert!(
+            view.lines().any(|l| l.starts_with("cpu bogo ops/s")
+                && l.contains("36000")
+                && l.ends_with("40000 +11.1%")),
+            "{view}"
+        );
+        let (a, b) = (all[0]["id"].to_string(), all[1]["id"].to_string());
+        let compare = op.ok(&["bench", "compare", &a, &b]);
+        assert!(
+            compare.contains("on linux-cachyos (7.2.9-2-cachyos)")
+                && compare.contains("on linux-cachyos-bore-lto (7.2.9-2-cachyos-bore-lto)")
+                && compare
+                    .lines()
+                    .any(|l| l.starts_with("cpu bogo ops/s") && l.ends_with("+11.1%")),
+            "{compare}"
+        );
+    }
+
+    /// A series stops when the kernel that started is not the one it asked for (no bench, no other start), and a
+    /// cancelled series does nothing at the next start; the view shows the newest run of each kernel.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bench_series_stops_at_a_wrong_start_and_when_cancelled() {
+        let (m, _stand_ins, _processes, op) = series_machine("stops").await;
+        let older: Value =
+            serde_json::from_str(&op.ok(&["bench", "run", "cpu", "--seconds", "1", "--json"]))
+                .unwrap();
+
+        // the start of linux-cachyos fails: the default kernel starts, and the series stops there
+        op.ok(&SERIES);
+        assert_eq!(restarts(&m), 1);
+        let op = login(&m, "stops", op, "7.2.9-2-cachyos-bore-lto");
+        wait_for("the series to stop", || {
+            last_job(&op, "kernel.bench")["state"] == "failed"
+        });
+        let job = last_job(&op, "kernel.bench");
+        assert!(
+            job["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("linux-cachyos did not start (linux-cachyos-bore-lto runs)"),
+            "{job}"
+        );
+        assert_eq!(
+            (restarts(&m), bench_runs(&op).len()),
+            (1, 1),
+            "no bench, no start"
+        );
+
+        op.ok(&SERIES);
+        assert_eq!(restarts(&m), 2);
+        let cancel = op.ok(&["kernel", "bench", "cpu", "--cancel"]);
+        assert!(
+            cancel.contains("stopped before its bench on linux-cachyos"),
+            "{cancel}"
+        );
+        let op = login(&m, "stops", op, "7.2.9-2-cachyos");
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        assert_eq!((restarts(&m), bench_runs(&op).len()), (2, 1));
+        assert_eq!(
+            last_job(&op, "kernel.bench")["error"],
+            "cancelled by the user"
+        );
+
+        m.set(OSRELEASE, "7.2.9-2-cachyos-bore-lto");
+        let newer: Value =
+            serde_json::from_str(&op.ok(&["bench", "run", "cpu", "--seconds", "1", "--json"]))
+                .unwrap();
+        let view = op.ok(&["kernel", "bench", "cpu"]);
+        assert!(
+            view.contains(&format!(
+                "run {} cpu 1 s on linux-cachyos-bore-lto (",
+                newer["id"]
+            )) && !view.contains(&format!("run {} ", older["id"])),
+            "{view}"
+        );
+    }
+
+    /// A tune result for one kernel (todo-84 part 3): `tune --per-kernel` writes the generated layer
+    /// `tuned-<package>` with the `kernel` condition of the running kernel, not the plain `tuned` layer; it is off
+    /// until `rules enable` (and, as each power layer, until a layer gives the battery value), then it sets the limit
+    /// on its kernel only.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_tuned_layer_for_one_kernel_applies_only_on_that_kernel() {
+        let m = Machine::new("tunekernel");
+        Machine::script(
+            &m.dir.join("bin"),
+            "stress-ng",
+            &format!(
+                "/usr/bin/sleep 1.2; read -r pl1 < {}; \
+                 case $pl1 in 60) s=30000.00;; 80) s=37400.00;; *) s=38000.00;; esac; \
+                 echo \"stress-ng: metrc: [1] cpu              114043      3.00     91.33      0.08     $s        1247.63\" >&2",
+                m.dir.join("root").join(&PL1[1..]).display()
+            ),
+        );
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "tunekernel");
+        let out = op.cli(&[
+            "tune",
+            "--per-kernel",
+            "--seconds",
+            "1",
+            "--cooldown-s",
+            "0",
+            "ppt_pl1_spl",
+            "cpu",
+            "90",
+            "60",
+            "80",
+        ]);
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            text.contains("recommended ppt_pl1_spl = 80"),
+            "{text}{out:?}"
+        );
+        assert_eq!(
+            m.file("/var/lib/legionctl/configsets/50-tuned.jsonc"),
+            "<missing>",
+            "not the layer for every kernel"
+        );
+        let layer = m.file("/var/lib/legionctl/configsets/50-tuned-linux-cachyos-bore-lto.jsonc");
+        let json: Value = serde_json::from_str(layer.split_once('\n').unwrap().1).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"when": {"power": "ac", "kernel": "linux-cachyos-bore-lto"},
+                               "set": {"firmware.ppt_pl1_spl": 80}}),
+            "{layer}"
+        );
+        assert_eq!(m.file(PL1), "90", "off until enabled");
+
+        // a power layer is used only with a value for the other power source too
+        op.ok(&[
+            "rules",
+            "edit",
+            "40-battery-pl1",
+            "firmware.ppt_pl1_spl=45",
+            "--when",
+            "power=battery",
+            "--system",
+        ]);
+        op.ok(&["rules", "enable", "tuned-linux-cachyos-bore-lto"]);
+        wait_for("the layer on its kernel", || m.file(PL1) == "80");
+        // a restart into the other kernel: the firmware has its own value again
+        let restart = |release: &str| {
+            m.set("/proc/sys/kernel/osrelease", release);
+            m.set(PL1, "90");
+            op.ok(&["power", "apply"]);
+            m.file(PL1)
+        };
+        assert_eq!(restart("7.2.9-2-cachyos"), "90", "not on linux-cachyos");
+        let rules = op.ok(&["rules", "list"]);
+        assert!(
+            rules.lines().any(
+                |l| l.starts_with("generated/50-tuned-linux-cachyos-bore-lto")
+                    && l.ends_with("on, waits for its conditions")
+            ),
+            "{rules}"
+        );
+        assert_eq!(restart("7.2.9-2-cachyos-bore-lto"), "80");
+    }
+
+    /// A stand-in of the `linux-cachyos` PKGBUILD repository at `dir`: the folder `linux-cachyos-bore` in three
+    /// versions, 7.2.9-1, 7.2.9-2 (the installed one) and 7.2.10-1. Each PKGBUILD names its package as the real one
+    /// does and writes its version and name into the source tree in `prepare()`.
+    fn cachyos_repo(dir: &Path) {
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t", "-C"])
+                .arg(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{out:?}");
+        };
+        let folder = dir.join("linux-cachyos-bore");
+        std::fs::create_dir_all(&folder).unwrap();
+        git(&["init", "--quiet"]);
+        for (ver, rel) in [("7.2.9", "1"), ("7.2.9", "2"), ("7.2.10", "1")] {
+            std::fs::write(
+                folder.join(".SRCINFO"),
+                format!("pkgbase = linux-cachyos-bore\n\tpkgver = {ver}\n\tpkgrel = {rel}\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                folder.join("PKGBUILD"),
+                format!(
+                    ": \"${{_use_llvm_lto:=none}}\"\n_cpusched=bore\n\
+                     if [ \"$_use_llvm_lto\" = thin ]; then _pkgsuffix=cachyos-${{_cpusched}}-lto; else _pkgsuffix=cachyos-${{_cpusched}}; fi\n\
+                     pkgbase=\"linux-$_pkgsuffix\"\npkgver={ver}\npkgrel={rel}\n_srcname=linux-{ver}\nBUILD_FLAGS=(LLVM=1)\n\
+                     prepare() {{\n    cd \"$_srcname\"\n    echo \"-$pkgrel\" > localversion.10-pkgrel\n    \
+                     echo \"${{pkgbase#linux}}\" > localversion.20-pkgname\n    echo CONFIG_SCHED_BORE=y > .config\n}}\n"
+                ),
+            )
+            .unwrap();
+            git(&["add", "."]);
+            git(&["commit", "--quiet", "-m", &format!("{ver}-{rel}")]);
+        }
+    }
+
+    /// The boot machine with `boot install` done and the stand-ins of a kernel build: git clones a local copy of the
+    /// repository (`cachyos_repo`), docker runs the PKGBUILD's `prepare()` (with stand-in `merge_config.sh` and make)
+    /// and writes the packages (the first run hangs while the file `hang` exists), pacman logs. The logs are in the
+    /// machine's folder.
+    async fn build_machine(
+        tag: &'static str,
+    ) -> (
+        Machine,
+        zbus::Connection,
+        daemon_process::Asked,
+        (Kill, Kill),
+        Operator,
+    ) {
+        let m = Machine::new(tag);
+        boot_machine(&m);
+        let bin = m.dir.join("bin");
+        let repo = m.dir.join("cachyos");
+        cachyos_repo(&repo);
+        Machine::script(
+            &bin,
+            "git",
+            &format!(
+                "if [ \"$1\" = clone ]; then echo \"$3\" >> {d}/git.log; exec /usr/bin/git clone --quiet {r} \"$4\"; fi; \
+                 exec /usr/bin/git \"$@\"",
+                d = m.dir.display(),
+                r = repo.display()
+            ),
+        );
+        let tools = m.dir.join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        Machine::script(
+            &tools,
+            "make",
+            &format!("echo \"make $*\" >> {}/kconfig.log", m.dir.display()),
+        );
+        Machine::script(
+            &tools,
+            "merge_config.sh",
+            &format!(
+                "echo \"merge $*\" >> {d}/kconfig.log; cat \"$3\" >> {d}/kconfig.log",
+                d = m.dir.display()
+            ),
+        );
+        Machine::script(
+            &bin,
+            "docker",
+            &format!(
+                "echo \"$*\" >> {d}/docker.log\n\
+                 [ \"$1\" = run ] || exit 0\n\
+                 if [ -e {d}/hang ]; then /usr/bin/rm {d}/hang; : > {d}/started; exec /usr/bin/sleep 30; fi\n\
+                 src=; env=; prev=; for a; do [ \"$prev\" = -v ] && src=${{a%:/build}}; [ \"$prev\" = -e ] && env=$a; prev=$a; done\n\
+                 cd \"$src\" && exec /usr/bin/env PATH={t}:/usr/bin \"$env\" /usr/bin/bash -c 'set -e; source ./PKGBUILD; \
+                 startdir=$PWD; srcdir=$PWD/src; mkdir -p \"$srcdir/$_srcname/scripts/kconfig\"; \
+                 cp {t}/merge_config.sh \"$srcdir/$_srcname/scripts/kconfig/\"; cd \"$srcdir\"; prepare; cd \"$startdir\"; \
+                 touch \"$pkgbase-$pkgver-$pkgrel-x86_64.pkg.tar.zst\" \"$pkgbase-headers-$pkgver-$pkgrel-x86_64.pkg.tar.zst\"'",
+                d = m.dir.display(),
+                t = tools.display()
+            ),
+        );
+        Machine::script(
+            &bin,
+            "pacman",
+            &format!("echo \"$*\" >> {}/pacman.log", m.dir.display()),
+        );
+        std::fs::write(
+            m.dir.join("rt.config"),
+            "CONFIG_PREEMPT_RT=y\n# CONFIG_DEBUG_INFO is not set\n",
+        )
+        .unwrap();
+        let (stand_ins, asked, processes) = start(&m).await;
+        let op = on_bus(&m, tag);
+        op.ok(&["boot", "install"]);
+        (m, stand_ins, asked, processes, op)
+    }
+
+    fn log(m: &Machine, name: &str) -> String {
+        std::fs::read_to_string(m.dir.join(name)).unwrap_or_default()
+    }
+
+    /// `kernel build linux-cachyos-bore-lto --config-fragment <fragment> --name <name>`
+    fn build_args(name: &str, fragment: &Path) -> Vec<String> {
+        [
+            "kernel",
+            "build",
+            "linux-cachyos-bore-lto",
+            "--config-fragment",
+            fragment.to_str().unwrap(),
+            "--name",
+            name,
+        ]
+        .map(String::from)
+        .to_vec()
+    }
+
+    fn strs(args: &[String]) -> Vec<&str> {
+        args.iter().map(String::as_str).collect()
+    }
+
+    /// `kernel build` refuses an installed name, a bad fragment, a bad name and an unknown base before anything runs,
+    /// and its plan names the pin, the package, the merge, the LTO, the install and the signed image.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_kernel_build_is_refused_or_planned_before_anything_runs() {
+        let (m, _stand_ins, _asked, _processes, op) = build_machine("kplan").await;
+        let fragment = m.dir.join("rt.config");
+        let bad = m.dir.join("bad.config");
+        std::fs::write(&bad, "PREEMPT_RT=y\n").unwrap();
+        for (cmd, why) in [
+            (
+                build_args("bore-lto", &fragment),
+                "linux-cachyos-bore-lto is an installed kernel already",
+            ),
+            (
+                build_args("rt", &bad),
+                "'PREEMPT_RT=y' is not a kernel option",
+            ),
+            (build_args("RT", &fragment), "the name must be 1-32 of a-z"),
+            (
+                ["kernel", "build", "linux-zen", "--name", "rt"]
+                    .map(String::from)
+                    .to_vec(),
+                "no installed kernel linux-zen",
+            ),
+        ] {
+            let refused = op.cli(&strs(&cmd));
+            assert!(
+                String::from_utf8_lossy(&refused.stderr).contains(why),
+                "{why}: {refused:?}"
+            );
+        }
+        let plan = op.ok(&[&strs(&build_args("rt", &fragment))[..], &["--dry-run"]].concat());
+        for expected in [
+            "linux-cachyos-bore/.SRCINFO is 7.2.9-2 (the installed linux-cachyos-bore-lto)",
+            "the package linux-cachyos-rt (release 7.2.9-2-cachyos-rt); prepare() merges the fragment",
+            "_use_llvm_lto=thin",
+            "pacman -U (polkit org.legionctl.boot)",
+            "the signed image legionctl-linux-cachyos-rt.efi",
+        ] {
+            assert!(plan.contains(expected), "{expected} missing:\n{plan}");
+        }
+        assert_eq!(
+            (
+                log(&m, "docker.log"),
+                log(&m, "git.log"),
+                log(&m, "pacman.log")
+            ),
+            Default::default(),
+            "refusals and the dry run run nothing"
+        );
+        assert_eq!(last_job(&op, "kernel.build"), Value::Null);
+    }
+
+    /// A kernel build (todo-84 part 4) with the real operator and daemon: cut off by an operator restart in makepkg,
+    /// it goes on as its job with the same clone; the PKGBUILD of 7.2.9-2 (not the newer 7.2.10-1), the package named
+    /// `linux-cachyos-<name>`, the fragment merged by `merge_config.sh` after the PKGBUILD's own `prepare()` and
+    /// completed by `olddefconfig`, the base's LTO, then `pacman -U` of the kernel and its headers through the daemon
+    /// (polkit). After pacman's hook, the new kernel has its signed image, and its name is refused as installed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_kernel_is_built_from_its_pinned_pkgbuild_and_installed_through_the_daemon() {
+        let (m, _stand_ins, asked, _processes, op) = build_machine("kbuild").await;
+        let args = build_args("rt", &m.dir.join("rt.config"));
+        std::fs::write(m.dir.join("hang"), "").unwrap();
+        let client = std::process::Command::new(env!("CARGO_BIN_EXE_legionctl"))
+            .args(&args)
+            .env_clear()
+            .env("XDG_RUNTIME_DIR", &op.runtime)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let _client = daemon_process::Kill(client);
+        wait_for("makepkg", || m.dir.join("started").exists());
+        assert_eq!(last_job(&op, "kernel.build")["state"], "running");
+        drop(op);
+        let op = on_bus(&m, "kbuild");
+        op.ok(&["jobs", "list"]);
+        wait_for("the end of the job", || {
+            last_job(&op, "kernel.build")["state"] == "done"
+        });
+        assert_eq!(last_job(&op, "kernel.build")["attempts"], 2);
+        assert_eq!(
+            log(&m, "git.log"),
+            "https://github.com/CachyOS/linux-cachyos\n",
+            "one clone"
+        );
+
+        let dir = m.dir.join(
+            "home/.cache/legionctl/kernel-build/linux-cachyos-rt/linux-cachyos/linux-cachyos-bore",
+        );
+        assert_eq!(
+            log(&m, "pacman.log"),
+            format!(
+                "-U --noconfirm {d}/linux-cachyos-rt-7.2.9-2-x86_64.pkg.tar.zst {d}/linux-cachyos-rt-headers-7.2.9-2-x86_64.pkg.tar.zst\n",
+                d = dir.display()
+            ),
+            "the pinned version, the new name"
+        );
+        assert!(
+            asked
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, action, _, _)| action == "org.legionctl.boot")
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("src/linux-7.2.9/localversion.20-pkgname")).unwrap(),
+            "-cachyos-rt\n",
+            "the release is 7.2.9-2-cachyos-rt"
+        );
+        assert_eq!(
+            log(&m, "kconfig.log"),
+            format!(
+                "merge -m .config {}/legionctl.config\nCONFIG_PREEMPT_RT=y\n# CONFIG_DEBUG_INFO is not set\n\
+                 make LLVM=1 olddefconfig\nmake -s kernelrelease\n",
+                dir.display()
+            ),
+            "the fragment merged after the PKGBUILD's own configuration, then completed"
+        );
+        let runs: Vec<String> = log(&m, "docker.log")
+            .lines()
+            .filter(|l| l.starts_with("run "))
+            .map(String::from)
+            .collect();
+        assert!(
+            runs.len() == 2
+                && runs[1].contains("-e _use_llvm_lto=thin")
+                && runs[1].ends_with("makepkg -s -C --noconfirm"),
+            "{runs:?}"
+        );
+
+        // pacman's hooks: mkinitcpio makes the initramfs, legionctl the signed image
+        for (file, text) in [
+            ("/usr/lib/modules/7.2.9-2-cachyos-rt/vmlinuz", ""),
+            (
+                "/usr/lib/modules/7.2.9-2-cachyos-rt/pkgbase",
+                "linux-cachyos-rt",
+            ),
+            ("/boot/vmlinuz-linux-cachyos-rt", ""),
+            ("/boot/initramfs-linux-cachyos-rt.img", ""),
+        ] {
+            m.set(file, text);
+        }
+        op.ok(&["boot", "rebuild"]);
+        let image = std::fs::read_to_string(
+            m.dir
+                .join("root/boot/efi/EFI/Linux/legionctl-linux-cachyos-rt.efi"),
+        )
+        .unwrap();
+        assert!(
+            image.contains("vmlinuz-linux-cachyos-rt")
+                && image.contains("--cmdline quiet rw root=UUID=a9e6 --")
+                && image.contains("--secureboot-private-key"),
+            "{image}"
+        );
+        let again = op.cli(&strs(&args));
+        assert!(
+            String::from_utf8_lossy(&again.stderr)
+                .contains("linux-cachyos-rt is an installed kernel already"),
+            "{again:?}"
+        );
+    }
+
     /// The greeter in place of GDM (todo-83), through the operator and the daemon: refused, with nothing changed, while
     /// cage is not installed; then greetd's configuration is legionctl's (the old file kept byte for byte), GDM is
     /// disabled before greetd is enabled (the display-manager alias is one link); a second install cannot overwrite the

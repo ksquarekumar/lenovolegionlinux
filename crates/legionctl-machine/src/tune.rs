@@ -45,6 +45,8 @@ pub struct TuneSpec {
     pub cooldown_s: u32,
     /// The workload commands, resolved by the caller; they run as the caller.
     pub workloads: Vec<Vec<String>>,
+    /// The recommendation goes into a layer for the running kernel only (`50-tuned-<package>`).
+    pub per_kernel: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -262,6 +264,13 @@ pub fn run(
     sample: &dyn Fn() -> Sample,
 ) -> Result<TuneReport> {
     check(root, spec)?;
+    let kernel = if spec.per_kernel {
+        Some(crate::kernel::running_package(root).context(
+            "the running kernel has no package (/usr/lib/modules/<release>/pkgbase): no layer for it",
+        )?)
+    } else {
+        None
+    };
     let path = attribute_file(&spec.attribute, "current_value");
     let original = root.read(&path).context("reading the current value")?;
     let ledger = crate::ledger::Ledger::open(root)?;
@@ -317,16 +326,18 @@ pub fn run(
     std::fs::write(&target, serde_json::to_string_pretty(&report)?)
         .with_context(|| format!("writing {}", target.display()))?;
     if let Some(value) = recommended {
-        tuned(root, &spec.attribute, value)?;
+        tuned(root, &spec.attribute, value, kernel.as_deref())?;
     }
     Ok(report)
 }
 
 /// Put a recommended value into the generated layer `tuned` (`/var/lib/legionctl/configsets/50-tuned.jsonc`), for AC
-/// (the sweep runs on AC only), beside the values of earlier sweeps. The layer is off until `legionctl rules enable
-/// tuned`.
-fn tuned(root: &SysRoot, attribute: &str, value: u32) -> Result<()> {
-    let file = root.path(format!("{}/50-tuned.jsonc", crate::configset::GENERATED));
+/// (the sweep runs on AC only), beside the values of earlier sweeps; with `kernel`, into that kernel's own layer
+/// `tuned-<kernel>` (`50-tuned-<kernel>.jsonc`, `"when": {"kernel": ...}` too). The layer is off until `legionctl
+/// rules enable`.
+fn tuned(root: &SysRoot, attribute: &str, value: u32, kernel: Option<&str>) -> Result<()> {
+    let name = kernel.map_or_else(|| "tuned".to_string(), |k| format!("tuned-{k}"));
+    let file = root.path(format!("{}/50-{name}.jsonc", crate::configset::GENERATED));
     let mut set = std::fs::read(&file)
         .ok()
         .and_then(|bytes| {
@@ -338,12 +349,17 @@ fn tuned(root: &SysRoot, attribute: &str, value: u32) -> Result<()> {
         .and_then(|layer| layer.get("set")?.as_object().cloned())
         .unwrap_or_default();
     set.insert(format!("firmware.{attribute}"), value.into());
-    let layer = serde_json::json!({ "when": { "power": "ac" }, "set": set });
+    let mut when = serde_json::json!({ "power": "ac" });
+    if let Some(kernel) = kernel {
+        when["kernel"] = kernel.into();
+    }
+    let layer = serde_json::json!({ "when": when, "set": set });
     std::fs::create_dir_all(file.parent().context("no parent")?)?;
     std::fs::write(
         &file,
         format!(
-            "// Made by legionctl tune: the recommended firmware limits on AC. Off until `legionctl rules enable tuned`.\n{}\n",
+            "// Made by legionctl tune: the recommended firmware limits on AC{}. Off until `legionctl rules enable {name}`.\n{}\n",
+            kernel.map(|k| format!(" with {k}")).unwrap_or_default(),
             serde_json::to_string_pretty(&layer)?
         ),
     )

@@ -1,6 +1,7 @@
 //! Repeatable workloads with telemetry (note 16, `legionctl bench`): stress-ng on every CPU, gpu-burn on the NVIDIA
 //! GPU, or both. A run keeps its scores, a summary of the samples taken during it, and the knob values it ran with,
-//! so that `bench compare` shows what changed between two runs (two power limits, two `sched_ext` schedulers).
+//! so that `bench compare` shows what changed between two runs (two power limits, two `sched_ext` schedulers, two
+//! kernels: each run records the kernel it ran on).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -105,6 +106,10 @@ pub struct BenchResult {
     pub summary: Summary,
     /// Every knob's value when the run started.
     pub knobs: BTreeMap<String, Option<String>>,
+    /// The package of the kernel it ran on (`linux-cachyos`); `None` for a run before kernels were recorded.
+    pub kernel: Option<String>,
+    /// The release of that kernel (`7.2.9-2-cachyos`).
+    pub release: Option<String>,
 }
 
 /// Scores and problems from the workloads' output.

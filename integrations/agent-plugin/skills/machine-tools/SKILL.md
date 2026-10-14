@@ -67,12 +67,14 @@ it. Test changes against a recording (`record`, `replay`) or in the e2e tests, n
 | `display fix <id>\|all [--persistent] [--dry-run]` | Your own settings only: antialiasing, an app's flags file, a monitor's rate, the session environment. No daemon, no polkit (class `workspace`). | Now; a mode until next login without `--persistent` |
 | `kernel default <name>`, `kernel cmdline set <name> "<line>"`, `kernel cmdline undo <name>` | The default kernel; one kernel's command line (its image only is made again and its signature checked). Needs `boot install` first. | Next start |
 | `kernel try <name>` | Restarts into the kernel once. The default stays. | Restarts now |
+| `kernel bench <suite> --all [--seconds <s>] [--dry-run]`, `kernel bench <suite> --cancel` | A series (a job): each kernel starts once, the suite runs after login, then the default kernel starts again. It stops at a kernel that does not start. Without `--all`: the newest run on each kernel, side by side (a read). | Restarts now, once per kernel |
+| `kernel build <base> [--config-fragment <file>] [--name <suffix>] [--dry-run]` | Builds `linux-cachyos-<suffix>` from the installed base's PKGBUILD in a container (a job, about an hour), then `pacman -U` through the daemon. | Next start (`kernel try`) |
 | `boot install\|confirm\|rebuild\|remove [--dry-run]` | legionctl's boot entry (systemd-boot and signed images). After `install`, the next start tries it once; `confirm` makes it first. | Next start |
 | `greeter install\|remove [--dry-run]` | legionctl's greeter in place of GDM, or back. | Next start |
 | `windows reboot [--dry-run]` | Restarts into Windows once. | Restarts now |
 | `windows vm start\|stop`, `windows vm autostart off\|login\|boot` | The installed Windows in a VM (its own disk by VFIO). | Now |
 | `cleanup [--unload-modules] [--dry-run]` | Turns off conflicting units of earlier Legion tooling. | Now |
-| `tune <attribute> <scenario> <values>... [--seconds <s>] [--cooldown-s <s>]` | Steps a firmware power limit with a bench at each step; the original value comes back. Needs AC and an idle machine. | During the sweep |
+| `tune <attribute> <scenario> <values>... [--seconds <s>] [--cooldown-s <s>] [--per-kernel]` | Steps a firmware power limit with a bench at each step; the original value comes back. Needs AC and an idle machine. The result is a layer (`tuned`, or `tuned-<package>` with `--per-kernel`), off until `rules enable`. | During the sweep |
 | `undo <event>` | Turns back the writes of a machine change (each file is then held: `knobs release` gives it back), or a `display.change`. | Now |
 
 Workspace-class tools (no polkit, but an agent's call asks the user):

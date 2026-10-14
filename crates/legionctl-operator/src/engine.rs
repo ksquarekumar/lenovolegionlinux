@@ -298,7 +298,7 @@ fn page<T: IntoWire<W>, W>((rows, next): (Vec<T>, Option<i64>)) -> Page<W> {
     }
 }
 
-fn bench_run_of(e: legionctl_core::db::EventRow) -> Result<BenchRun> {
+pub(crate) fn bench_run_of(e: legionctl_core::db::EventRow) -> Result<BenchRun> {
     Ok(BenchRun {
         id: e.id,
         at: e.ts,
@@ -975,7 +975,10 @@ impl Operator {
     }
 
     /// A machine change through `legionctl-system`; polkit asks the human.
-    fn system<T>(&self, call: impl AsyncFnOnce(&System1Proxy<'_>) -> zbus::Result<T>) -> Result<T> {
+    pub(crate) fn system<T>(
+        &self,
+        call: impl AsyncFnOnce(&System1Proxy<'_>) -> zbus::Result<T>,
+    ) -> Result<T> {
         self.runtime.block_on(async {
             let conn = zbus::Connection::system()
                 .await
@@ -1250,7 +1253,7 @@ fn gate_message(resolved: &Resolved) -> Result<String> {
 }
 
 /// The config for work in `project` (its repository layer applies), or without a repository.
-fn config(project: Option<&ClientPath>) -> Result<Resolved> {
+pub(crate) fn config(project: Option<&ClientPath>) -> Result<Resolved> {
     resolve(&Dirs::from_env(), path(project)?)
 }
 
@@ -1273,7 +1276,8 @@ impl Operator {
 
 impl Operator {
     /// Resume the jobs in `state`: `running` ones a restart cut off (at most 3 attempts), `offloaded` ones when
-    /// memory eased. Each goes on in the background: a build runs again; a headless run goes on in its session (same
+    /// memory eased. Each goes on in the background: a build runs again (a kernel build from its last step); a kernel
+    /// bench series takes its next step on the kernel that started; a headless run goes on in its session (same
     /// dossier and workspace, and its ACP session when the agent can load it) with the task and a note that it was cut
     /// off.
     pub fn resume_jobs(self: &std::sync::Arc<Self>, state: &str) -> Result<()> {
@@ -1302,6 +1306,13 @@ impl Operator {
                     "images.build" => {
                         let repo = PathBuf::from(job.input["repo"].as_str().unwrap_or_default());
                         end_job(&db, job.id, &build_images(&repo))
+                    }
+                    crate::kernels::SERIES => operator.series_step(&db, &job),
+                    crate::kernels::BUILD => {
+                        let out = serde_json::from_value(job.input.clone())
+                            .map_err(anyhow::Error::from)
+                            .and_then(|build| operator.run_build(job.id, &build));
+                        end_job(&db, job.id, &out)
                     }
                     "workspace.pack" => {
                         let repo = PathBuf::from(job.input["repo"].as_str().unwrap_or_default());
@@ -2583,6 +2594,18 @@ impl Engine for Operator {
         )
     }
 
+    fn kernel_bench(
+        &self,
+        ctx: &Ctx,
+        input: legionctl_api::KernelBenchIn,
+    ) -> Result<legionctl_api::KernelBench> {
+        self.bench_kernels(ctx, &input)
+    }
+
+    fn kernel_build(&self, _: &Ctx, input: legionctl_api::KernelBuildIn) -> Result<Changes> {
+        self.build_kernel(&input)
+    }
+
     fn greeter_status(&self, _: &Ctx, _: Empty) -> Result<legionctl_api::GreeterState> {
         Ok(legionctl_machine::greeter::state(&SysRoot::from_env()).into_wire())
     }
@@ -2873,6 +2896,10 @@ impl Engine for Operator {
             problems: scores.problems,
             summary: bench::summarize(&samples),
             knobs,
+            kernel: legionctl_machine::kernel::running_package(&SysRoot::from_env()),
+            release: Some(legionctl_machine::kernel::running_kernel(
+                &SysRoot::from_env(),
+            )),
         };
         let db = Db::open_default()?;
         let id = db.record(&ctx.actor, "bench.result", &serde_json::to_value(&result)?)?;
@@ -2905,6 +2932,7 @@ impl Engine for Operator {
             seconds: input.seconds,
             cooldown_s: input.cooldown_s,
             workloads,
+            per_kernel: input.per_kernel,
         })?;
         let report = self.system(async move |p| p.tune(&spec).await)?;
         Ok(serde_json::from_str::<legionctl_machine::tune::TuneReport>(&report)?.into_wire())

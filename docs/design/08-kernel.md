@@ -108,7 +108,7 @@ and each kernel's image with the kernel line, adds the entry not first and sets 
 is refused unless this start came through it (mutation-checked); rebuild drops a removed kernel's image; remove leaves
 the old chain as it was. Live: the first install and the test start are the user's.
 
-## Kernels (built 2026-10-14, todo-84 parts 1 and 2; decided by the user)
+## Kernels (built 2026-10-14 and 2026-10-15, todo-84 parts 1 to 4; decided by the user)
 
 Two kernels are installed: `linux-cachyos` (EEVDF scheduler, thin LTO) and `linux-cachyos-bore-lto` (BORE, thin LTO).
 rEFInd starts `linux-cachyos-bore-lto`. legionctl starts a kernel only through the boot takeover's systemd-boot
@@ -121,6 +121,8 @@ entries. There is no rEFInd path and no kexec.
 | `legionctl kernel try <name>` | The next start only: the EFI variable `LoaderEntryOneShot` (systemd-boot's one-time entry) and `BootNext` to legionctl's firmware entry, then the restart. The default stays. |
 | `legionctl kernel cmdline set <name> "<line>"` | The command line of `<name>` only (see below). |
 | `legionctl kernel cmdline undo <name>` | The line of `<name>` before its last change. A second undo goes forward again. |
+| `legionctl kernel bench <suite> [--all [--seconds <s>] [--dry-run]] [--cancel]` | The newest run of a bench suite on each kernel, side by side; `--all` starts a series, `--cancel` stops it (see below). |
+| `legionctl kernel build <base> [--config-fragment <file>] [--name <suffix>] [--dry-run]` | A kernel package `linux-cachyos-<suffix>` built from the installed `<base>`, then installed (see below). |
 
 `default`, `try` and `cmdline` refuse, with nothing changed, when the boot takeover is not installed ("install the
 boot takeover first (legionctl boot install)"), and when `<name>` is not a kernel in `/boot` or has no legionctl
@@ -165,6 +167,70 @@ A configset layer can apply to one kernel: `{ "when": { "kernel": "linux-cachyos
 running kernel (01-core.md, Configsets). A layer for a kernel that is not installed is not used, and `doctor` names
 it.
 
+### Bench and tune per kernel (part 3)
+
+Each bench run records the kernel that it ran on: the package and the release (`bench list`, `bench compare` show
+it in the title of each run). A run made before this change has no kernel.
+
+`kernel bench <suite>` shows the newest run of the suite (`cpu`, `gpu` or `mixed`) on each kernel, one column per
+kernel, with the change of each against the first kernel. While a series runs, it also shows how far it is.
+
+`kernel bench <suite> --all` starts a series:
+
+1. The operator makes the plan first. It refuses, with nothing changed, when the boot takeover is not installed,
+   when a kernel in `/boot` has no legionctl image, and when a series runs already. `--dry-run` shows the plan.
+2. The series is a job (`kernel.bench` in the jobs table). Each installed kernel, in the order of the names, starts
+   once through `kernel try`. That is a restart, and polkit asks each time.
+3. The operator starts at login (`graphical-session.target`) and resumes the job. It compares the running kernel
+   with the kernel that it asked for. When they are not the same, the start failed: the job stops with the reason
+   ("linux-cachyos did not start (linux-cachyos-bore-lto runs)"), and the next start is the default kernel.
+4. When they are the same, the operator waits for an idle machine (at most 10 minutes), runs the suite
+   (`--seconds`, default 30), and starts the next kernel.
+5. After the last kernel, the default kernel starts once more, and the job ends with the list of runs.
+
+A step resets the job's count of restarts, so the limit of 3 cut-offs applies to one step only, not to the series.
+`kernel bench <suite> --cancel` ends the job. The next start is the default kernel (a one-time start does not
+change the default), and the operator does nothing at that login.
+
+`tune <attribute> <scenario> <values>... --per-kernel` puts the recommendation into a generated layer for the running
+kernel only: `/var/lib/legionctl/configsets/50-tuned-<package>.jsonc` with `"when": {"power": "ac", "kernel":
+"<package>"}`, name `tuned-<package>` (06-tuning.md). It is off until `legionctl rules enable tuned-<package>`. As
+each power layer, it is used only when a layer also gives the value for battery.
+
+### Kernel builds (part 4)
+
+`kernel build <base> [--config-fragment <file>] [--name <suffix>]` builds a CachyOS kernel package from an installed
+one. The default name is `legionctl`. The plan refuses, with nothing changed:
+
+- a name that is not 1-32 of `a-z`, `0-9` and `-`, and a name whose package (`linux-cachyos-<suffix>`) is an
+  installed kernel;
+- a base that is not an installed `linux-cachyos` kernel;
+- a fragment line that is not a kernel option (`CONFIG_<option>=<value>`, or a comment such as
+  `# CONFIG_<option> is not set`).
+
+The build is a job (`kernel.build`). Each step is a `kernel.build.progress` event (`legionctl events`). The work
+folder is `~/.cache/legionctl/kernel-build/linux-cachyos-<suffix>/`.
+
+1. Clone the PKGBUILD repository `https://github.com/CachyOS/linux-cachyos` (once). The base's folder is its name
+   without `-lto` (`linux-cachyos-bore` for `linux-cachyos-bore-lto`).
+2. Pin: check out the newest commit whose `<folder>/.SRCINFO` has the installed version (`pkgver-pkgrel`, from the
+   release: `7.2.9-2`). The repository has no tags for each version.
+3. Name: the PKGBUILD gets `_pkgsuffix=cachyos-<suffix>` before its line `pkgbase="linux-$_pkgsuffix"`. The
+   package is `linux-cachyos-<suffix>`, and the release is `<version>-cachyos-<suffix>`. A PKGBUILD without that
+   line stops the build.
+4. Merge: with a fragment, the PKGBUILD's own `prepare()` runs first, then `scripts/kconfig/merge_config.sh -m
+   .config legionctl.config` and `make olddefconfig` complete the configuration.
+5. Build: `makepkg -s -C` in a container (image `legionctl-kernel-build` from `archlinux:base-devel`, a user with
+   your uid), with the base's LTO mode (`_use_llvm_lto`: thin, full or none, from the base's `build/.config`). The
+   log is `build.log` in the work folder.
+6. Install: the daemon (D-Bus `Kernel("install", <package>, <folder>)`, polkit `org.legionctl.boot`) refuses an
+   installed name again, then runs `pacman -U` with the kernel and its headers. pacman's hooks make the initramfs
+   (mkinitcpio), legionctl's signed image `legionctl-linux-cachyos-<suffix>.efi` with the running command line
+   (`95-legionctl-uki.hook`), and the DKMS modules.
+
+A restart of the operator cuts off the build. The operator resumes the job: it uses the clone, pins and names again,
+and skips makepkg when the package is there. The new kernel is then in `kernel list`, and `kernel try` starts it.
+
 ### Tests (e2e, `crates/legionctl/tests/machine.rs`)
 
 On the recorded machine (its `pkgbase` files and the scheduler and LTO lines of each `build/.config` are recorded),
@@ -179,9 +245,28 @@ with the real daemon, a stand-in ESP, a stand-in `efibootmgr` with its own state
   with the old image and line left; `boot rebuild` keeps the line; undo puts the old line back.
 - `a_kernel_layer_applies_only_on_its_kernel`: a `kernel` layer applies only while its kernel runs; a layer for a
   kernel that is not installed is a `doctor` finding.
+- `a_bench_series_starts_each_kernel_once_and_goes_on_after_each_start`: the plan (one start for each kernel, then
+  the default); the operator, started again after each start, benches the kernel that it asked for (the stand-in
+  workload scores by the running release), records the kernel, starts the next one and ends after the default; the
+  view and `bench compare` show the change between the kernels.
+- `a_bench_series_stops_at_a_wrong_start_and_when_cancelled`: a start of the wrong kernel stops the series with no
+  bench and no other start; a cancelled series does nothing at the next start; the view shows the newest run of
+  each kernel.
+- `a_tuned_layer_for_one_kernel_applies_only_on_that_kernel`: `tune --per-kernel` writes `tuned-<package>` with the
+  `kernel` condition; enabled, it sets the limit on its kernel only.
+- `a_kernel_build_is_refused_or_planned_before_anything_runs`: an installed name, a bad fragment, a bad name and an
+  unknown base are refused, and the dry run shows the plan; nothing runs.
+- `a_kernel_is_built_from_its_pinned_pkgbuild_and_installed_through_the_daemon`: a build cut off by an operator
+  restart goes on as the job with the same clone; the PKGBUILD of 7.2.9-2 (not the newer 7.2.10-1), the name, the
+  fragment merged and completed, the base's LTO, `pacman -U` of the kernel and its headers through the daemon
+  (polkit); after pacman's hook, the new kernel's signed image, and its name refused as installed. Stand-ins: git (a
+  local repository), docker (it runs the PKGBUILD's `prepare()` and writes the packages), `merge_config.sh`, make
+  and pacman.
 
-Live: the boot takeover is not installed on this machine yet. The first `boot install`, `kernel try` and
-`kernel default` are the user's.
+Live: the boot takeover is not installed on this machine yet. The first `boot install`, `kernel try`,
+`kernel default`, `kernel bench --all` and `kernel build` are the user's. No real kernel was built: the network
+clone, the pin on the real repository, the container build (about an hour) and the real pacman hooks are not
+verified.
 
 ## legionctl-wmi: our Legion WMI module (todo-79 part 1, decided by the user 2026-10-14)
 

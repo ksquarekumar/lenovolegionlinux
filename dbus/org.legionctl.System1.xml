@@ -108,7 +108,8 @@
     </method>
     <!--
      The kernels of the boot takeover (todo-84), for the kernel `name`: `default`, `try` (then the restart),
-     `cmdline` (`line` as its command line) or `undo` (its line before the last change).
+     `cmdline` (`line` as its command line), `undo` (its line before the last change) or `install` (the packages
+     that `kernel build` made in the folder `line`).
      -->
     <method name="Kernel">
       <arg name="action" type="s" direction="in"/>

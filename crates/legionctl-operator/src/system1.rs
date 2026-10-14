@@ -34,7 +34,8 @@ pub trait System1 {
     fn set_usb_charging(&self, on: bool) -> zbus::Result<Vec<String>>;
     /// The boot takeover: install, confirm, rebuild or remove.
     fn boot(&self, action: &str) -> zbus::Result<Vec<String>>;
-    /// The kernels of the boot takeover: default, try, cmdline (with `line`) or undo, for `name`.
+    /// The kernels of the boot takeover: default, try, cmdline (with `line`) or undo, for `name`; or install (the
+    /// packages of `name` in the folder `line`).
     fn kernel(&self, action: &str, name: &str, line: &str) -> zbus::Result<Vec<String>>;
     /// The greeter in place of GDM: install or remove.
     fn greeter(&self, action: &str) -> zbus::Result<Vec<String>>;

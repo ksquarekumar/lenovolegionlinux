@@ -5,10 +5,11 @@ use std::collections::BTreeMap;
 use crate::{
     BatteryState, BenchCompare, BenchRun, BootState, CapabilityList, Changes, Conditions,
     ConfigFile, ConfigView, DossierFindings, DossierInfo, Empty, EventRow, Explanation, Findings,
-    GpuState, GreeterState, Guard, HookReply, HookTable, Knob, KnobDetail, Launch, LayerList,
-    Lines, LoadState, Lock, Manifest, PackageState, PlanView, Recording, Reminder, RuleDetail,
-    RuleState, Rules, RunEnv, Sample, SessionState, SetupReport, SkillInfo, Snapshot, ToolCallRow,
-    TuneReport, Validation, VfioDevices, WindowsState, WindowsVmBegun, Workspace, WorkspaceStatus,
+    GpuState, GreeterState, Guard, HookReply, HookTable, KernelBench, Knob, KnobDetail, Launch,
+    LayerList, Lines, LoadState, Lock, Manifest, PackageState, PlanView, Recording, Reminder,
+    RuleDetail, RuleState, Rules, RunEnv, Sample, SessionState, SetupReport, SkillInfo, Snapshot,
+    ToolCallRow, TuneReport, Validation, VfioDevices, WindowsState, WindowsVmBegun, Workspace,
+    WorkspaceStatus,
 };
 
 pub trait Render {
@@ -1129,12 +1130,16 @@ fn bench_title(run: &BenchRun) -> String {
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_default();
     format!(
-        "run {} {scenario} {} s{}",
+        "run {} {scenario} {} s{}{}",
         run.id,
         r.seconds,
         r.label
             .as_ref()
             .map(|l| format!(" '{l}'"))
+            .unwrap_or_default(),
+        r.kernel
+            .as_ref()
+            .map(|k| format!(" on {k} ({})", r.release.as_deref().unwrap_or("-")))
             .unwrap_or_default()
     )
 }
@@ -1230,6 +1235,51 @@ impl Render for BenchCompare {
         } else {
             format!("knobs that differ:\n  {}", knobs.join("\n  "))
         });
+        out.join("\n")
+    }
+}
+
+impl Render for KernelBench {
+    /// One column per kernel; the change of each against the first kernel.
+    fn text(&self) -> String {
+        let mut out = Vec::new();
+        if let Some(first) = self.runs.first() {
+            let kernel = |r: &BenchRun| r.result.kernel.clone().unwrap_or_default();
+            out.extend(self.runs.iter().map(bench_title));
+            out.push(String::new());
+            let header: Vec<String> = self
+                .runs
+                .iter()
+                .map(|r| format!("{:>24}", kernel(r)))
+                .collect();
+            out.push(format!("{:<20} {}", "", header.join("")));
+            let rows: Vec<Vec<(String, Option<f64>)>> = self.runs.iter().map(bench_rows).collect();
+            for (name, base) in bench_rows(first) {
+                let cells: Vec<String> = rows
+                    .iter()
+                    .enumerate()
+                    .map(|(i, row)| {
+                        let v = row.iter().find(|(n, _)| *n == name).and_then(|(_, v)| *v);
+                        let change = base
+                            .zip(v)
+                            .filter(|(x, _)| i > 0 && *x != 0.0)
+                            .map(|(x, y)| format!(" {:+.1}%", (y - x) / x * 100.0))
+                            .unwrap_or_default();
+                        format!("{:>24}", format!("{}{change}", some(v, "")))
+                    })
+                    .collect();
+                out.push(format!("{name:<20} {}", cells.join("")));
+            }
+        } else if self.lines.is_empty() {
+            out.push(
+                "no run of this suite on any kernel yet (legionctl kernel bench <suite> --all)"
+                    .into(),
+            );
+        }
+        if !self.lines.is_empty() && !out.is_empty() {
+            out.push(String::new());
+        }
+        out.extend(self.lines.iter().cloned());
         out.join("\n")
     }
 }

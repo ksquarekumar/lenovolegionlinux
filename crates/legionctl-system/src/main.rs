@@ -798,7 +798,8 @@ impl System1 {
     }
 
     /// The kernels of the boot takeover (todo-84), for the kernel `name`: `default`, `try` (then the restart),
-    /// `cmdline` (`line` as its command line) or `undo` (its line before the last change).
+    /// `cmdline` (`line` as its command line), `undo` (its line before the last change) or `install` (the packages
+    /// that `kernel build` made in the folder `line`).
     async fn kernel(
         &self,
         action: String,
@@ -818,8 +819,9 @@ impl System1 {
                     "try" => boot::try_plan(&state, &name)?,
                     "cmdline" => boot::cmdline_plan(&root, &state, &name, &line)?,
                     "undo" => boot::undo_plan(&root, &state, &name)?,
+                    "install" => boot::package_plan(&root, &name, std::path::Path::new(&line))?,
                     other => anyhow::bail!(
-                        "kernel action must be default, try, cmdline or undo, not {other}"
+                        "kernel action must be default, try, cmdline, undo or install, not {other}"
                     ),
                 };
                 // the restart only after each step before it worked

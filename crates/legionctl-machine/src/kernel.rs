@@ -172,27 +172,46 @@ pub fn modules(root: &SysRoot, release: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// The scheduler and build of the kernel `release`, from its configuration (`build/.config`, from the headers
-/// package): `bore` or `eevdf`, and `lto`. Empty without the headers.
-#[must_use]
-pub fn flavour(root: &SysRoot, release: &str) -> Vec<String> {
-    let Some(config) = root.read(
+/// The configuration of the kernel `release` (`build/.config`, from the headers package).
+fn config(root: &SysRoot, release: &str) -> Option<String> {
+    root.read(
         Path::new("/usr/lib/modules")
             .join(release)
             .join("build/.config"),
-    ) else {
+    )
+}
+
+/// The Clang LTO mode of the kernel `release`: `thin`, `full` or `none` (also without the headers); the
+/// `_use_llvm_lto` value of the kernel PKGBUILDs.
+#[must_use]
+pub fn lto(root: &SysRoot, release: &str) -> &'static str {
+    let config = config(root, release).unwrap_or_default();
+    let on = |option: &str| config.lines().any(|l| l == format!("{option}=y"));
+    if on("CONFIG_LTO_CLANG_THIN") {
+        "thin"
+    } else if on("CONFIG_LTO_CLANG_FULL") {
+        "full"
+    } else {
+        "none"
+    }
+}
+
+/// The scheduler and build of the kernel `release`, from its configuration: `bore` or `eevdf`, and `lto`. Empty
+/// without the headers.
+#[must_use]
+pub fn flavour(root: &SysRoot, release: &str) -> Vec<String> {
+    let Some(config) = config(root, release) else {
         return Vec::new();
     };
-    let on = |option: &str| config.lines().any(|l| l == format!("{option}=y"));
     let mut out = vec![
-        if on("CONFIG_SCHED_BORE") {
+        if config.lines().any(|l| l == "CONFIG_SCHED_BORE=y") {
             "bore"
         } else {
             "eevdf"
         }
         .to_string(),
     ];
-    if on("CONFIG_LTO_CLANG_THIN") || on("CONFIG_LTO_CLANG_FULL") {
+    if lto(root, release) != "none" {
         out.push("lto".into());
     }
     out

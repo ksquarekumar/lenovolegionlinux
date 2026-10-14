@@ -7405,6 +7405,299 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "kernel.bench": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "scenario": {
+          "type": "string",
+          "enum": [
+            "cpu",
+            "gpu",
+            "mixed"
+          ],
+          "description": "The suite: cpu, gpu or mixed (as `bench run`)."
+        },
+        "seconds": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Duration of each run of the series (1-600).",
+          "default": 30
+        },
+        "all": {
+          "type": "boolean",
+          "description": "Start a series: each installed kernel once (`kernel try`) with the suite after login, then the default\nkernel again. Restarts the machine once per kernel, and once more at the end.",
+          "default": false
+        },
+        "cancel": {
+          "type": "boolean",
+          "description": "Stop the series of this suite; the default kernel starts at the next start.",
+          "default": false
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Show the series; change nothing.",
+          "default": false
+        }
+      },
+      "required": [
+        "scenario"
+      ],
+      "title": "KernelBenchIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "runs": {
+          "type": "array",
+          "items": {
+            "description": "What a run stores in the event log (`bench.result`).",
+            "type": "object",
+            "properties": {
+              "id": {
+                "description": "The event id of the run; `bench compare` takes two.",
+                "type": "integer",
+                "format": "int64"
+              },
+              "at": {
+                "description": "Seconds since the epoch.",
+                "type": "integer",
+                "format": "int64"
+              },
+              "scenario": {
+                "description": "The workload of a bench or tune step.",
+                "type": "string",
+                "enum": [
+                  "cpu",
+                  "gpu",
+                  "mixed"
+                ]
+              },
+              "label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "seconds": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              },
+              "scores": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "number",
+                  "format": "double"
+                }
+              },
+              "problems": {
+                "description": "Failed stressors, GPU computation errors, a workload that exited with an error.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "summary": {
+                "description": "The samples of a run, summed up.",
+                "type": "object",
+                "properties": {
+                  "samples": {
+                    "type": "integer",
+                    "format": "uint",
+                    "minimum": 0
+                  },
+                  "package_w_mean": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "format": "double"
+                  },
+                  "package_w_max": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "format": "double"
+                  },
+                  "cpu_temp_max": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "format": "double"
+                  },
+                  "cpu_mhz_mean": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "format": "double"
+                  },
+                  "gpu_w_mean": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "format": "double"
+                  },
+                  "gpu_temp_max": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "format": "double"
+                  },
+                  "fan_rpm_max": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  "runq_p99_us_max": {
+                    "description": "The worst run-queue latency p99 of any sample and CPU class (µs, the eBPF sensor).",
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  "throttle": {
+                    "description": "Throttle reasons active in any sample.",
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "samples",
+                  "throttle"
+                ]
+              },
+              "knobs": {
+                "description": "Every knob's value when the run started.",
+                "type": "object",
+                "additionalProperties": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "kernel": {
+                "description": "The package of the kernel it ran on (`linux-cachyos`); none for a run before kernels were recorded.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "release": {
+                "description": "The release of that kernel (`7.2.9-2-cachyos`).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "at",
+              "scenario",
+              "seconds",
+              "scores",
+              "problems",
+              "summary",
+              "knobs"
+            ]
+          },
+          "description": "One run per kernel, the newest, in the order of the kernels' names."
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "runs",
+        "lines",
+        "dry_run"
+      ],
+      "description": "The newest run of one suite on each kernel, side by side; and what a series did or will do.",
+      "title": "KernelBench",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "kernel.build": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "base": {
+          "type": "string",
+          "description": "The installed `linux-cachyos` kernel to build from (`linux-cachyos-bore-lto`): its PKGBUILD at its installed\nversion."
+        },
+        "config_fragment": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "path",
+          "description": "Kernel options to merge into its configuration (`CONFIG_<option>=<value>` lines, `merge_config.sh`)."
+        },
+        "name": {
+          "type": "string",
+          "description": "The new package is `linux-cachyos-<name>` (a-z, 0-9 and '-'); not an installed kernel.",
+          "default": "legionctl"
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Show the plan; change nothing.",
+          "default": false
+        }
+      },
+      "required": [
+        "base"
+      ],
+      "title": "KernelBuildIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "greeter.status": {
     "class": "read",
     "internal": false,
@@ -8422,6 +8715,20 @@
             ]
           },
           "description": "Every knob's value when the run started."
+        },
+        "kernel": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The package of the kernel it ran on (`linux-cachyos`); none for a run before kernels were recorded."
+        },
+        "release": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The release of that kernel (`7.2.9-2-cachyos`)."
         }
       },
       "required": [
@@ -8607,6 +8914,20 @@
                     "null"
                   ]
                 }
+              },
+              "kernel": {
+                "description": "The package of the kernel it ran on (`linux-cachyos`); none for a run before kernels were recorded.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "release": {
+                "description": "The release of that kernel (`7.2.9-2-cachyos`).",
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -8682,6 +9003,11 @@
         "force": {
           "type": "boolean",
           "description": "Run also when the machine is not idle (the scores then mix in other work).",
+          "default": false
+        },
+        "per_kernel": {
+          "type": "boolean",
+          "description": "Put the recommendation into a layer for the running kernel only (`tuned-<package>`, `kernel` condition).",
           "default": false
         }
       },
@@ -9033,6 +9359,20 @@
                 ]
               },
               "description": "Every knob's value when the run started."
+            },
+            "kernel": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The package of the kernel it ran on (`linux-cachyos`); none for a run before kernels were recorded."
+            },
+            "release": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The release of that kernel (`7.2.9-2-cachyos`)."
             }
           },
           "required": [
@@ -9184,6 +9524,20 @@
                 ]
               },
               "description": "Every knob's value when the run started."
+            },
+            "kernel": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The package of the kernel it ran on (`linux-cachyos`); none for a run before kernels were recorded."
+            },
+            "release": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The release of that kernel (`7.2.9-2-cachyos`)."
             }
           },
           "required": [

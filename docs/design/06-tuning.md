@@ -35,7 +35,10 @@ second as root, and stops the step at once when the machine leaves AC or the CPU
 comes back, the policy applies again for the current power source (an Fn+Q choice stays), and a `Changed("Tune")`
 signal goes to the event log. The report goes to `/var/lib/legionctl/tune/<time>-<attribute>.json`.
 The recommended value goes into the generated layer `50-tuned.jsonc` (`{"when": {"power": "ac"}}`, beside the values
-of earlier sweeps), off until `legionctl rules enable tuned` (todo-74, note 01). The configset checks keep it out
+of earlier sweeps), off until `legionctl rules enable tuned` (todo-74, note 01). With `--per-kernel` (todo-84 part 3)
+the value goes into the layer of the running kernel only: `50-tuned-<package>.jsonc`
+(`{"when": {"power": "ac", "kernel": "<package>"}}`), off until `legionctl rules enable tuned-<package>`. Thus each
+kernel can have its own limits (08-kernel.md, "Bench and tune per kernel"). The configset checks keep it out
 while no layer gives the same limits for battery (the ac/battery rule); `doctor` names it. Not verified live: a sweep on the real machine
 (needs the package installed, the polkit dialog and an idle machine) and the `setpriv` path (the e2e daemon runs as
 the caller, so the workload runs directly).

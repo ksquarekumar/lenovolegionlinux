@@ -606,6 +606,14 @@ operations! {
     kernel_cmdline_set / KernelCmdlineSet = "kernel.cmdline.set", Machine, KernelLineIn => Changes;
     /// Go back to the command line of a kernel before its last change. A human approves it in the polkit dialog.
     kernel_cmdline_undo / KernelCmdlineUndo = "kernel.cmdline.undo", Machine, KernelIn => Changes;
+    /// The newest run of a bench suite on each kernel, side by side. `--all` starts a series: each installed kernel
+    /// once (`kernel try`, a restart), the suite after login, then the default kernel again; it stops at a kernel that
+    /// does not start. `--cancel` stops it. A human approves each restart in the polkit dialog.
+    kernel_bench / KernelBenchOp = "kernel.bench", Machine, KernelBenchIn => KernelBench;
+    /// Build a `linux-cachyos` kernel package from an installed one (its PKGBUILD at the installed version, makepkg in a
+    /// container), with a configuration fragment, as `linux-cachyos-<name>`, then install it (pacman -U through the
+    /// daemon: its signed image and DKMS modules follow). A job; a human approves the install in the polkit dialog.
+    kernel_build / KernelBuild = "kernel.build", Machine, KernelBuildIn => Changes;
     /// The login screen: legionctl's greeter (greetd) or GDM, and what the greeter needs that is not installed.
     greeter_status / GreeterStatus = "greeter.status", Read, Empty => GreeterState;
     /// Put legionctl's greeter in place of GDM at the next start (GDM stays installed and disabled; the old greetd

@@ -441,6 +441,48 @@ pub fn undo_plan(root: &SysRoot, state: &BootState, name: &str) -> Result<Vec<St
     cmdline_plan(root, state, name, &before)
 }
 
+/// Plan `kernel build`'s last step: install the built packages of the kernel `name` (the kernel and its headers,
+/// `<name>-<version>-<arch>.pkg.tar.zst` in `dir`) with `pacman -U`. pacman's hooks then make its initramfs, its
+/// signed image (`boot rebuild`) and its DKMS modules.
+///
+/// # Errors
+/// `name` is an installed kernel already, or `dir` has no package of it.
+pub fn package_plan(root: &SysRoot, name: &str, dir: &Path) -> Result<Vec<Step>> {
+    anyhow::ensure!(
+        !crate::kernel::installed_packages(root)
+            .iter()
+            .any(|p| p == name),
+        "{name} is an installed kernel already: give the build another --name"
+    );
+    let mut files: Vec<String> = std::fs::read_dir(dir)
+        .with_context(|| format!("reading {}", dir.display()))?
+        .flatten()
+        .filter_map(|e| {
+            let file = e.file_name().into_string().ok()?;
+            let rest = file.strip_prefix(name)?.strip_prefix('-')?;
+            // the kernel (`<name>-7.2.9-2-...`) and its headers, not the debug package
+            ((rest.starts_with(|c: char| c.is_ascii_digit()) || rest.starts_with("headers-"))
+                && file.ends_with(".pkg.tar.zst"))
+            .then(|| text(&dir.join(file)))
+        })
+        .collect();
+    files.sort();
+    anyhow::ensure!(
+        files
+            .iter()
+            .any(|f| !f.contains(&format!("{name}-headers-"))),
+        "no package of {name} in {}",
+        dir.display()
+    );
+    Ok(vec![Step::Run(
+        ["pacman", "-U", "--noconfirm"]
+            .map(String::from)
+            .into_iter()
+            .chain(files)
+            .collect(),
+    )])
+}
+
 /// Plan `boot install`: our shim copy with systemd-boot as its signed second stage, the UKIs, `loader.conf` (the
 /// running kernel first, no wait), and a new firmware entry that is not first in the order.
 ///

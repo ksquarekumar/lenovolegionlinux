@@ -611,6 +611,10 @@ wire! {
         summary: BenchSummary,
         /// Every knob's value when the run started.
         knobs: BTreeMap<String, Option<String>>,
+        /// The package of the kernel it ran on (`linux-cachyos`); none for a run before kernels were recorded.
+        kernel: Option<String>,
+        /// The release of that kernel (`7.2.9-2-cachyos`).
+        release: Option<String>,
     }
 
     struct Output from machine::gpu::Output {

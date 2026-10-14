@@ -163,6 +163,18 @@ impl Db {
         Ok(())
     }
 
+    /// A running job made a step: its input as it is now, and its count of restarts again from 1 (a series that
+    /// restarts the machine at each step is not cut off). False when the job does not run (any more).
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn job_step(&self, id: i64, input: &serde_json::Value) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE jobs SET input = ?2, attempts = 1, updated = ?3 WHERE id = ?1 AND state = 'running'",
+            params![id, input.to_string(), now()],
+        )? == 1)
+    }
+
     /// The job stopped to free memory (`offloaded`); the session policy runs it again when memory eases.
     ///
     /// # Errors
