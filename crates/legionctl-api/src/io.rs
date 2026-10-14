@@ -574,6 +574,10 @@ pub struct SessionRunIn {
     /// workspace pack`, with the workspace and the dossier mounted).
     #[serde(default = "on_host", rename = "in")]
     pub inside: Inside,
+    /// A tag for the run's live output events (`session.output`), so a client can follow them; `legionctl session
+    /// run` sets one.
+    #[serde(default)]
+    pub tag: Option<String>,
 }
 
 /// What a headless run gave back.

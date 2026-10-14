@@ -96,8 +96,8 @@ keyring and off the disk.
 Built (2026-10-14, DESIGN/02, todo-67): jobs. `session run` and `images build` record a job in operator.db (kind,
 input, state running/done/failed, attempts, result or error); the caller still waits for the answer. When the
 operator starts, a job left `running` (a restart cut it off) is resumed in the background, at most 3 attempts: a build
-runs again; a headless run goes on in its own session (same dossier and workspace, a new ACP session, since
-adk-acp has no `session/load`) with the task and a note that it was cut off. `legionctl jobs list` and `jobs show
+runs again; a headless run goes on in its own session (same dossier and workspace, and its ACP session with
+`session/load` when the agent can load sessions; else a new one) with the task and a note that it was cut off. `legionctl jobs list` and `jobs show
 <id>`.
 
 ## Worktrees and sandboxes

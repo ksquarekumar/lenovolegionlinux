@@ -92,41 +92,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "adk-acp"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37da29dc91489be478fa4c65c0b4ed150e9b17ea6c36a73d674c2729cbc73fa3"
-dependencies = [
- "adk-core",
- "agent-client-protocol",
- "async-trait",
- "base64 0.22.1",
- "futures",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "adk-core"
-version = "2.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "892f30b3b10c28340a748c3142d0b1c7ad02b4500356c5ca80b8f6481a618ea4"
-dependencies = [
- "async-trait",
- "chrono",
- "futures",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4589,7 +4554,6 @@ dependencies = [
 name = "legionctl-operator"
 version = "0.2.0"
 dependencies = [
- "adk-acp",
  "agent-client-protocol",
  "anyhow",
  "axum",

@@ -1,19 +1,28 @@
-//! Headless runs (note 14, S3): the agent's ACP adapter runs in the session's sandbox with the git gate, through
-//! adk-rust's ACP client. The session's MCP servers (legionctl's own and the proxied ones) go to the adapter at
-//! `session/new`. Permission asks are allowed, because the sandbox and the gates are the boundary; each is logged.
+//! Headless runs (note 14, S3): the agent's ACP adapter runs in the session's sandbox with the git gate. The
+//! session's MCP servers (legionctl's own and the proxied ones) go to the adapter at `session/new`. Permission asks
+//! are allowed, because the sandbox and the gates are the boundary; each is logged. The answer's chunks and tool calls
+//! are events (`session.output`) while the run goes on, and the ACP session id goes in the job's input, so a run that
+//! a restart cut off goes on with `session/load` when the agent can load sessions.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
-use adk_acp::{AcpAgentConfig, AcpSession, PermissionDecision, PermissionPolicy};
-use agent_client_protocol::schema::v1::McpServer;
+use agent_client_protocol::schema::ProtocolVersion;
+use agent_client_protocol::schema::v1::{
+    CloseSessionRequest, ContentBlock, ContentChunk, InitializeRequest, LoadSessionRequest,
+    McpServer, McpServerStdio, NewSessionRequest, PermissionOptionKind, PromptRequest,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate, TextContent,
+};
+use agent_client_protocol::{AcpAgent, Client};
 use anyhow::{Context, Result};
 use legionctl_api::RunOutput;
 use legionctl_core::db::Db;
 use legionctl_core::dossier::Dossiers;
 use legionctl_core::session::{self, Inside, Launch};
 
-/// Run `prompt` in the prepared session and return the agent's answer; then the session ends where it runs and
+/// Run `prompt` in the prepared session as the job `job`, whose `input` has the `tag` of the output events and,
+/// after a first start, the ACP session to load; return the agent's answer. Then the session ends where it runs and
 /// releases its dossier (in `dossiers`).
 ///
 /// # Errors
@@ -21,11 +30,12 @@ use legionctl_core::session::{self, Inside, Launch};
 pub async fn run(
     launch: Launch,
     prompt: &str,
+    (job, input): (i64, &serde_json::Value),
     stop: tokio::sync::oneshot::Receiver<()>,
     dossiers: &Dossiers,
 ) -> Result<RunOutput> {
     let (id, inside) = (launch.id.clone(), launch.inside);
-    let out = drive(launch, prompt, stop).await;
+    let out = drive(launch, prompt, (job, input.clone()), stop).await;
     // the adapter can outlive its closed stdio, and a container or VM outlives its killed client
     if session::active(&id, inside)
         && let Err(e) = session::control(&id, inside, session::Control::Stop)
@@ -39,12 +49,184 @@ pub async fn run(
     out
 }
 
+/// What a run saw so far: the answer (from its prompt on; a loaded session replays its history first) and the
+/// permissions it allowed.
+struct Live {
+    db: Db,
+    session: String,
+    tag: serde_json::Value,
+    prompting: bool,
+    text: String,
+    permissions: Vec<String>,
+}
+
+impl Live {
+    fn record(&self, kind: &str, mut payload: serde_json::Value) {
+        payload["session"] = self.session.clone().into();
+        if let Err(e) = self.db.record("acp", kind, &payload) {
+            eprintln!(
+                "operator: session {}: cannot log a {kind} event: {e:#}",
+                self.session
+            );
+        }
+    }
+
+    /// Allow `request` once, and log it.
+    fn allow(&mut self, request: &RequestPermissionRequest) -> RequestPermissionResponse {
+        let call = &request.tool_call;
+        let title = call
+            .fields
+            .title
+            .clone()
+            .unwrap_or_else(|| call.tool_call_id.to_string());
+        let kind = call.fields.kind.unwrap_or_default();
+        self.record(
+            "session.permission",
+            serde_json::json!({ "tool": title, "decision": "allow_once" }),
+        );
+        self.permissions
+            .push(format!("{title} ({kind:?}): allowed"));
+        let offered = |kind| request.options.iter().find(|o| o.kind == kind);
+        let allow = offered(PermissionOptionKind::AllowOnce)
+            .or_else(|| offered(PermissionOptionKind::AllowAlways));
+        RequestPermissionResponse::new(allow.map_or(RequestPermissionOutcome::Cancelled, |o| {
+            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(o.option_id.clone()))
+        }))
+    }
+
+    /// The answer's chunks and the tool calls, as they come.
+    fn update(&mut self, update: SessionUpdate) {
+        if !self.prompting {
+            return;
+        }
+        let tag = self.tag.clone();
+        match update {
+            SessionUpdate::AgentMessageChunk(ContentChunk {
+                content: ContentBlock::Text(chunk),
+                ..
+            }) => {
+                self.record(
+                    "session.output",
+                    serde_json::json!({ "tag": tag, "text": chunk.text }),
+                );
+                self.text.push_str(&chunk.text);
+            }
+            SessionUpdate::ToolCall(call) => self.record(
+                "session.output",
+                serde_json::json!({ "tag": tag, "tool": call.title }),
+            ),
+            _ => {}
+        }
+    }
+}
+
+fn lock(live: &Mutex<Live>) -> MutexGuard<'_, Live> {
+    live.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 async fn drive(
     launch: Launch,
     prompt: &str,
+    (job, mut input): (i64, serde_json::Value),
     stop: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<RunOutput> {
     let started = Instant::now();
+    let (id, workdir) = (launch.id.clone(), launch.workdir.clone());
+    let servers: Vec<McpServer> = launch.mcp["mcpServers"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(name, server)| {
+            let mut stdio = server.clone();
+            stdio["name"] = name.clone().into();
+            stdio["env"] = serde_json::json!([]);
+            serde_json::from_value::<McpServer>(stdio).with_context(|| format!("MCP server {name}"))
+        })
+        .collect::<Result<_>>()?;
+    let agent = adapter(launch)?;
+    let live = Arc::new(Mutex::new(Live {
+        db: Db::open_default()?,
+        session: id.clone(),
+        tag: input["tag"].clone(),
+        prompting: false,
+        text: String::new(),
+        permissions: Vec::new(),
+    }));
+    let (asks, updates) = (live.clone(), live.clone());
+    let client = Client
+        .builder()
+        .on_receive_request(
+            async move |request: RequestPermissionRequest, responder, _| {
+                responder.respond(lock(&asks).allow(&request))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_notification(
+            async move |notification: SessionNotification, _| {
+                lock(&updates).update(notification.update);
+                Ok(())
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(agent, async |cx| {
+            let init = cx
+                .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                .block_task()
+                .await?;
+            let loading = input["acp"]
+                .as_str()
+                .filter(|_| init.agent_capabilities.load_session)
+                .map(|id| SessionId::new(id.to_string()));
+            let acp = if let Some(acp) = loading {
+                cx.send_request(
+                    LoadSessionRequest::new(acp.clone(), &workdir).mcp_servers(servers),
+                )
+                .block_task()
+                .await?;
+                acp
+            } else {
+                let acp = cx
+                    .send_request(NewSessionRequest::new(&workdir).mcp_servers(servers))
+                    .block_task()
+                    .await?
+                    .session_id;
+                input["acp"] = acp.to_string().into();
+                if let Err(e) = lock(&live).db.job_input(job, &input) {
+                    eprintln!("operator: session {id}: cannot keep its ACP session id: {e:#}");
+                }
+                acp
+            };
+            lock(&live).prompting = true;
+            cx.send_request(PromptRequest::new(
+                acp.clone(),
+                vec![ContentBlock::Text(TextContent::new(prompt))],
+            ))
+            .block_task()
+            .await?;
+            if init.agent_capabilities.session_capabilities.close.is_some() {
+                cx.send_request(CloseSessionRequest::new(acp))
+                    .block_task()
+                    .await?;
+            }
+            Ok(())
+        });
+    // a stop (offload) drops the connection, which ends the adapter
+    tokio::select! {
+        done = client => done?,
+        _ = stop => anyhow::bail!("offloaded: memory is under pressure"),
+    }
+    let live = lock(&live);
+    Ok(RunOutput {
+        id,
+        text: live.text.clone(),
+        ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        permissions: live.permissions.clone(),
+    })
+}
+
+/// The adapter's process: the session's scope and sandbox, the git gate and the agent's ACP command.
+fn adapter(launch: Launch) -> Result<AcpAgent> {
     // legionctl is the git gate on the host and a VM's runner; a container's image has its own gate
     let mut sandbox = launch.sandbox;
     let mut gate = Vec::new();
@@ -67,60 +249,7 @@ async fn drive(
         }
     }
     let argv = [launch.scope, sandbox, gate, launch.agent].concat();
-    // the JSON form of a stdio server: the argv as it is, no shell quoting
-    let command =
-        serde_json::json!({ "name": "agent", "command": argv[0], "args": argv[1..], "env": [] });
-    let mut config = AcpAgentConfig::new(command.to_string()).working_dir(&launch.workdir);
-    config.mcp_servers = launch.mcp["mcpServers"]
-        .as_object()
-        .into_iter()
-        .flatten()
-        .map(|(name, server)| {
-            let mut stdio = server.clone();
-            stdio["name"] = name.clone().into();
-            stdio["env"] = serde_json::json!([]);
-            serde_json::from_value::<McpServer>(stdio).with_context(|| format!("MCP server {name}"))
-        })
-        .collect::<Result<_>>()?;
-
-    let asked = Arc::new(Mutex::new(Vec::new()));
-    let log = asked.clone();
-    let id = launch.id.clone();
-    let policy = PermissionPolicy::Custom(Box::new(move |request| {
-        let line = format!("{} ({:?}): allowed", request.title, request.kind);
-        let payload =
-            serde_json::json!({ "session": id, "tool": request.title, "decision": "allow_once" });
-        if let Err(e) =
-            Db::open_default().and_then(|db| db.record("acp", "session.permission", &payload))
-        {
-            eprintln!("operator: cannot log a permission of session {id}: {e:#}");
-        }
-        log.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(line);
-        PermissionDecision::AllowOnce
-    }));
-    let mut session = AcpSession::start(config, Arc::new(policy)).await?;
-    // a stop (offload) drops the session, which ends the agent
-    let answer = tokio::select! {
-        answer = session.prompt(prompt) => answer?,
-        _ = stop => anyhow::bail!("offloaded: memory is under pressure"),
-    };
-    // session/close is optional in ACP; without it, dropping the session ends the adapter
-    if let Err(e) = session.close().await {
-        eprintln!(
-            "operator: session {}: the agent did not close: {e}",
-            launch.id
-        );
-    }
-    let permissions = asked
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-    Ok(RunOutput {
-        id: launch.id,
-        text: answer.text,
-        ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-        permissions,
-    })
+    Ok(AcpAgent::new(McpServer::Stdio(
+        McpServerStdio::new("agent", &argv[0]).args(argv[1..].to_vec()),
+    )))
 }

@@ -147,6 +147,18 @@ impl Db {
         Ok(())
     }
 
+    /// The job's input, as it is now (a headless run adds its ACP session id, to load it after a restart).
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn job_input(&self, id: i64, input: &serde_json::Value) -> Result<()> {
+        self.conn.execute(
+            "UPDATE jobs SET input = ?2, updated = ?3 WHERE id = ?1",
+            params![id, input.to_string(), now()],
+        )?;
+        Ok(())
+    }
+
     /// The job stopped to free memory (`offloaded`); the session policy runs it again when memory eases.
     ///
     /// # Errors

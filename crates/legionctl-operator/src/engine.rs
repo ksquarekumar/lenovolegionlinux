@@ -935,7 +935,8 @@ impl Operator {
 impl Operator {
     /// Resume the jobs in `state`: `running` ones a restart cut off (at most 3 attempts), `offloaded` ones when
     /// memory eased. Each goes on in the background: a build runs again; a headless run goes on in its session (same
-    /// dossier and workspace, a new ACP session) with the task and a note that it was cut off.
+    /// dossier and workspace, and its ACP session when the agent can load it) with the task and a note that it was cut
+    /// off.
     pub fn resume_jobs(self: &std::sync::Arc<Self>, state: &str) -> Result<()> {
         let db = Db::open_default()?;
         for job in db.jobs_in(state)? {
@@ -1000,8 +1001,13 @@ impl Operator {
             "A restart of legionctl cut off your work on this task; your workspace and your dossier hold what you did. \
              Go on with the task:\n\n{prompt}"
         );
-        self.runtime
-            .block_on(crate::acp::run(launch, &note, stoppable(job), &store))
+        self.runtime.block_on(crate::acp::run(
+            launch,
+            &note,
+            (job, input),
+            stoppable(job),
+            &store,
+        ))
     }
 }
 
@@ -2273,13 +2279,13 @@ impl Engine for Operator {
         let launch = store.start_session(&start, &resolved.config)?;
         let db = Db::open_default()?;
         db.issue_token(&launch.id, &token)?;
-        let job = db.job_begin(
-            "session.run",
-            &serde_json::json!({"session": launch.id, "prompt": input.prompt}),
-        )?;
+        let job_input =
+            serde_json::json!({"session": launch.id, "prompt": input.prompt, "tag": input.tag});
+        let job = db.job_begin("session.run", &job_input)?;
         let out = self.runtime.block_on(crate::acp::run(
             launch,
             &input.prompt,
+            (job, &job_input),
             stoppable(job),
             &store,
         ));

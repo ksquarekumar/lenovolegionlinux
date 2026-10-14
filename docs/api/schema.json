@@ -8004,6 +8004,14 @@
           ],
           "description": "Where the session runs: host (a bwrap sandbox) or container (the repository's agent image from `legionctl\nworkspace pack`, with the workspace and the dossier mounted).",
           "default": "host"
+        },
+        "tag": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A tag for the run's live output events (`session.output`), so a client can follow them; `legionctl session\nrun` sets one.",
+          "default": null
         }
       },
       "required": [

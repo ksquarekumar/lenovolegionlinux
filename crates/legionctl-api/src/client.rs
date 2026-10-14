@@ -57,35 +57,22 @@ impl Client {
         Ok(body)
     }
 
-    /// Follow the operator's event log from `offset` (an event id, or `now`): `each` gets every event as it comes.
+    /// Follow the operator's event log from `offset` (an event id, or `now`, which is fixed when this returns).
     ///
     /// # Errors
-    /// As [`Client::call_value`], or the stream breaks.
-    pub async fn follow(&self, offset: &str, mut each: impl FnMut(Value)) -> Result<()> {
+    /// As [`Client::call_value`].
+    pub async fn follow(&self, offset: &str) -> Result<Events> {
         let request = hyper::Request::get(format!("/v1/events?offset={offset}"))
             .body(Full::new(Bytes::new()))?;
         let response = self.send(request).await?;
         let status = response.status();
-        let mut body = response.into_body();
+        let body = response.into_body();
         if !status.is_success() {
             let body: Value =
                 serde_json::from_slice(&body.collect().await?.to_bytes()).unwrap_or(Value::Null);
             return Err(refusal(status, &body, "events").into());
         }
-        // server-sent events: blocks end with an empty line; the event is the `data:` line
-        let mut text = String::new();
-        while let Some(frame) = body.frame().await {
-            if let Some(data) = frame?.data_ref() {
-                text.push_str(&String::from_utf8_lossy(data));
-            }
-            while let Some(end) = text.find("\n\n") {
-                let block: String = text.drain(..end + 2).collect();
-                for data in block.lines().filter_map(|l| l.strip_prefix("data:")) {
-                    each(serde_json::from_str(data.trim())?);
-                }
-            }
-        }
-        Ok(())
+        Ok(Events(body))
     }
 
     /// Send `request` to the operator with this client's surface, build and token.
@@ -167,4 +154,33 @@ fn refusal(status: hyper::StatusCode, body: &Value, op: &str) -> ApiError {
         message: format!("{op} failed with HTTP {status}"),
         op: op.to_string(),
     })
+}
+
+/// The operator's event stream, from [`Client::follow`].
+pub struct Events(hyper::body::Incoming);
+
+impl Events {
+    /// `each` gets every event as it comes, until the stream ends.
+    ///
+    /// # Errors
+    /// The stream breaks, or an event is not JSON.
+    pub async fn each(mut self, mut each: impl FnMut(Value)) -> Result<()> {
+        // server-sent events: blocks end with an empty line; the event is the `data:` line
+        let mut bytes = Vec::new();
+        while let Some(frame) = self.0.frame().await {
+            if let Some(data) = frame?.data_ref() {
+                bytes.extend_from_slice(data);
+            }
+            while let Some(end) = bytes.windows(2).position(|w| w == b"\n\n") {
+                let block: Vec<u8> = bytes.drain(..end + 2).collect();
+                for data in String::from_utf8_lossy(&block)
+                    .lines()
+                    .filter_map(|l| l.strip_prefix("data:"))
+                {
+                    each(serde_json::from_str(data.trim())?);
+                }
+            }
+        }
+        Ok(())
+    }
 }

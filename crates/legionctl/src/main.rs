@@ -188,12 +188,55 @@ fn gate_git() -> Result<()> {
 /// `legionctl trace`: print new events as they arrive (the backlog is skipped), from the operator's event stream.
 fn trace() -> Result<()> {
     let client = Client::new("cli")?;
-    tokio::runtime::Runtime::new()?.block_on(client.follow("now", |event| {
-        match serde_json::from_value::<legionctl_api::EventRow>(event) {
-            Ok(row) => println!("{}", legionctl_api::Render::text(&vec![row])),
-            Err(e) => eprintln!("legionctl: an event that does not parse: {e}"),
+    tokio::runtime::Runtime::new()?.block_on(async {
+        client
+            .follow("now")
+            .await?
+            .each(
+                |event| match serde_json::from_value::<legionctl_api::EventRow>(event) {
+                    Ok(row) => println!("{}", legionctl_api::Render::text(&vec![row])),
+                    Err(e) => eprintln!("legionctl: an event that does not parse: {e}"),
+                },
+            )
+            .await
+    })
+}
+
+/// `legionctl session run`: the run's answer is shown as it comes (its `session.output` events, under a tag of this
+/// call) when the event stream is open to this caller; returns the result and the text already shown.
+async fn run_streamed(
+    client: &Client,
+    mut input: serde_json::Value,
+) -> Result<(serde_json::Value, String)> {
+    let tag = legionctl_api::random_token()?;
+    input["tag"] = tag.clone().into();
+    let mut shown = String::new();
+    // the stream starts before the run, so it misses none of its events
+    let Ok(events) = client.follow("now").await else {
+        return Ok((client.call_value("session.run", &input).await?, shown));
+    };
+    let output = {
+        let follow = events.each(|event| {
+            let payload = &event["payload"];
+            if event["kind"] == "session.output"
+                && payload["tag"] == tag.as_str()
+                && let Some(text) = payload["text"].as_str()
+            {
+                print!("{text}");
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+                shown.push_str(text);
+            }
+        });
+        tokio::pin!(follow);
+        tokio::select! {
+            output = client.call_value("session.run", &input) => output?,
+            ended = &mut follow => {
+                ended?;
+                anyhow::bail!("the operator's event stream ended before the run");
+            }
         }
-    }))
+    };
+    Ok((output, shown))
 }
 
 /// `legionctl session start`: run the prepared session in this terminal, with this binary as the git gate on the
@@ -311,10 +354,22 @@ fn main() -> Result<()> {
         }
         _ => {}
     }
-    let (op, input) = cli::operation(&matches)?.context("not an operation")?;
-    let output = tokio::runtime::Runtime::new()?
-        .block_on(Client::new("cli")?.call_value(op.name, &input))?;
-    if matches.get_flag("json") {
+    operation(&matches)
+}
+
+/// An operation of the registry: called, then shown as JSON or text.
+fn operation(matches: &ArgMatches) -> Result<()> {
+    let (op, input) = cli::operation(matches)?.context("not an operation")?;
+    let json = matches.get_flag("json");
+    let client = Client::new("cli")?;
+    let (output, shown) = tokio::runtime::Runtime::new()?.block_on(async {
+        if op.name == "session.run" && !json {
+            run_streamed(&client, input).await
+        } else {
+            Ok((client.call_value(op.name, &input).await?, String::new()))
+        }
+    })?;
+    if json {
         println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(());
     }
@@ -322,8 +377,10 @@ fn main() -> Result<()> {
         return start_session(serde_json::from_value(output)?);
     }
     let (text, success) = legionctl_api::render(op.name, output)?;
-    if !text.is_empty() {
-        println!("{text}");
+    // a streamed answer was shown; the rest of it (the stream lags behind the run's end) and the result follow
+    let rest = text.strip_prefix(shown.as_str()).unwrap_or(&text);
+    if !rest.is_empty() {
+        println!("{rest}");
     }
     if !success {
         std::process::exit(1);

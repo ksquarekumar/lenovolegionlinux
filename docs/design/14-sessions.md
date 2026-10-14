@@ -89,12 +89,28 @@ outcome `cached`. The e2e test sees ok, cached, then ok again after a file in th
 Built (2026-10-13, S3): headless runs. `legionctl session run <agent> <prompt>` prepares the session as `session
 start` does (dossier binding, workspace, sandbox with the hiding and the git gate, generated MCP config), then the
 operator drives the agent's ACP adapter (`session.acp`: Zed's `claude-code-acp` and `codex-acp` by default) with
-adk-rust's ACP client (`adk-acp` 2.2.0, protocol v1). The adapter gets the session's MCP servers at `session/new`.
+its own ACP client on the `agent-client-protocol` crate (protocol v1). The adapter gets the session's MCP servers at
+`session/new`.
 Permission asks are allowed, because the sandbox and the gates are the boundary; each is logged as
 `session.permission` and returned. `session.scope` (default true) runs it in the systemd user scope. The e2e test
 drives a stand-in ACP agent (`tests/fixtures/fake-acp-agent.py`): it gets the MCP servers, its permission is
-answered, its commit lands in the workspace and the gate refuses its push. Not yet: streaming the answer while it
-runs, the real adapters live (they need the user's logins).
+answered, its commit lands in the workspace and the gate refuses its push. Not yet: the real adapters live (they
+need the user's logins).
+
+Built (2026-10-14, todo-76): the answer while it runs, and `session/load`. The operator's ACP client (it replaced
+`adk-acp`, which gave only the whole answer at the end) records each chunk of the answer as a `session.output` event
+`{session, tag, text}` and each tool call as `{session, tag, tool}` while the run goes on. `legionctl session run`
+gives the run a random `tag` (a `session.run` input), opens the event stream (`offset=now`) before it calls
+`session.run`, and writes the text of the events with its tag as they come; when the run ends, it writes the rest of
+the answer that the stream did not bring yet (the stream reads the log every 250 ms), then the permissions and
+`session <id> in <ms> ms`. Why a tag: the client learns the session id only when the run ends, and two runs can go at
+the same time. With `--json`, and for a caller that cannot open the stream (a session's sandbox), the result comes
+only at the end. The ACP session id goes into the job's input (`acp`) when `session/new` returns. A run that a
+restart or an offload cut off loads that session with `session/load` when the agent's `initialize` says
+`loadSession`, else it starts a new one; either way the prompt is the task with the note that it was cut off. The
+history that a loaded session sends again is not part of the answer. The stand-in agent sends its answer line by
+line, holds on WAIT until the test lets it go, and keeps its sessions in a file in the workspace; the e2e tests see
+the first line before the run ends and a cut-off run that goes on in its loaded ACP session.
 
 Built (2026-10-13, S4): `session pause|unpause <id>` freeze and thaw the session's scope (cgroup freezer;
 `systemctl --user freeze|thaw`), `session stop <id>` stops it, `session resume <id>` prepares an ended session
@@ -102,7 +118,7 @@ again (same id, dossier binding and workspace; the sandbox anew) with the agent'
 `claude --resume {id} ...`; Codex has none by id). The e2e test resumes a session and sees the same id and folder,
 and a refusal for an agent without a resume command; pause and thaw were checked live (active, frozen, running,
 inactive), as CI has no user systemd. Not yet: the idle and memory-pressure policies that pause and offload on
-their own, and ACP `session/load` for headless runs.
+their own.
 
 Fixed (2026-10-13): the sandbox bound the whole `$XDG_RUNTIME_DIR`, and `--ro-bind / /` does not stop a connect to a
 socket. The agent could reach the session bus and systemd's user manager (`systemd-run --user` runs outside the

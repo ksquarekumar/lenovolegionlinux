@@ -1873,18 +1873,54 @@ fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
         "headless",
         "the commit is in the workspace"
     );
-    let events = op.run(&repo, &env, &["events", "--json"], "");
-    assert!(String::from_utf8_lossy(&events.stdout).contains("session.permission"));
-    let again = op.run(
-        &repo,
-        &env,
-        &["session", "run", "fake", "go on", "--dossier", "port"],
-        "",
+    let events: Value =
+        serde_json::from_str(&op.ok(&["events", "--limit", "1000", "--json"])).unwrap();
+    assert!(
+        events["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["kind"] == "session.output"
+                && e["payload"]["tool"] == "git push"
+                && e["payload"]["session"] == run["id"]),
+        "the tool call is an output event: {events}"
+    );
+    // the CLI shows the answer while the run goes on: the stand-in holds after its first line until it is released
+    let mut again = Command::new(env!("CARGO_BIN_EXE_legionctl"))
+        .args(["session", "run", "fake", "WAIT go on", "--dossier", "port"])
+        .current_dir(&repo)
+        .env_clear()
+        .env("XDG_RUNTIME_DIR", &op.runtime)
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .env("HOME", &home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (lines, seen) = std::sync::mpsc::channel();
+    let out = BufReader::new(again.stdout.take().unwrap());
+    std::thread::spawn(move || {
+        out.lines()
+            .map_while(Result::ok)
+            .try_for_each(|l| lines.send(l))
+    });
+    let first = seen.recv_timeout(std::time::Duration::from_secs(20));
+    write(&workspace.join("release"), "");
+    assert_eq!(
+        first.as_deref(),
+        Ok("prompt: WAIT go on"),
+        "the first line of the answer comes before the run ends"
+    );
+    let done = again.wait_with_output().unwrap();
+    let rest = seen.iter().collect::<Vec<_>>().join("\n");
+    assert!(
+        done.status.success(),
+        "a run that ended releases its dossier: {}",
+        String::from_utf8_lossy(&done.stderr)
     );
     assert!(
-        again.status.success(),
-        "a run that ended releases its dossier: {}",
-        String::from_utf8_lossy(&again.stderr)
+        !rest.contains("prompt:") && rest.contains("PUSH_REFUSED") && rest.ends_with(" ms"),
+        "each line once, then the result: {rest}"
     );
 }
 
@@ -2191,7 +2227,7 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
 }
 
 /// Jobs (DESIGN/02): a headless run is a job; when the operator stops in the middle of it, the next operator goes on
-/// with it in the same session (a new ACP session, told that it was cut off) and records how it ended.
+/// with it in the same session (its ACP session loaded, told that it was cut off) and records how it ended.
 #[test]
 fn a_headless_run_cut_off_by_a_restart_goes_on_in_its_session() {
     let (op, home) = operator("jobs");
@@ -2232,7 +2268,8 @@ fn a_headless_run_cut_off_by_a_restart_goes_on_in_its_session() {
             .unwrap_or(Value::Null)
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while job(&op)["state"] != "running" {
+    // running, in an ACP session the agent made
+    while !job(&op)["input"]["acp"].is_string() {
         assert!(std::time::Instant::now() < deadline, "no running job");
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
@@ -2281,6 +2318,12 @@ fn a_headless_run_cut_off_by_a_restart_goes_on_in_its_session() {
     assert_eq!(
         shown["result"]["id"], shown["input"]["session"],
         "the same session went on"
+    );
+    // in its ACP session: loaded, and its replayed history is not part of the answer
+    let acp = shown["input"]["acp"].as_str().unwrap();
+    assert!(
+        text.contains(&format!("acp: loaded {acp}")) && !text.contains("REPLAYED"),
+        "{text}"
     );
 }
 
