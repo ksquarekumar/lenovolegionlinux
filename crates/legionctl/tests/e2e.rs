@@ -749,7 +749,17 @@ fn a_session_that_works_without_writing_its_dossier_is_nudged_until_it_writes() 
         "block stops each reply until a dossier write"
     );
 
-    ok(&["dossier", "append", "port/plan.md"], "- state recorded\n");
+    // a ledger line starts with '-': the CLI takes it as the value of --content, not as an option
+    ok(
+        &[
+            "dossier",
+            "append",
+            "port/plan.md",
+            "--content",
+            "- state recorded",
+        ],
+        "",
+    );
     assert_eq!(hook("stop"), "", "the write answered the nudge");
     let page: Value =
         serde_json::from_str(&ok(&["dossier", "nudges", "--of", "s1", "--json"], "")).unwrap();

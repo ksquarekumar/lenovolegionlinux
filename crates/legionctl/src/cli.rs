@@ -170,7 +170,9 @@ fn argument_named(field: &Field, arg: Arg) -> Arg {
         Kind::Choice(values) => {
             arg = arg.value_parser(clap::builder::PossibleValuesParser::new(values.clone()));
         }
-        Kind::Session | Kind::Stdin | Kind::List { .. } => return arg,
+        Kind::Session | Kind::List { .. } => return arg,
+        // free text may start with '-': `--content "- a ledger line"`
+        Kind::Stdin => return arg.allow_hyphen_values(true),
         Kind::Text | Kind::Path => {}
     }
     match &field.default {
