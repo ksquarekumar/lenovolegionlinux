@@ -28,9 +28,11 @@ enum Kind {
     Text,
     Path,
     Integer,
-    /// A list of strings, or of integers: the trailing arguments.
+    /// A list of strings, or of integers: the last positional arguments; a command line (`x-argv`) takes the rest
+    /// of the line, words with hyphens too.
     List {
         integers: bool,
+        argv: bool,
     },
     Choice(Vec<String>),
 }
@@ -104,6 +106,7 @@ fn fields(input: &Value) -> Vec<Field<'_>> {
                     Some("integer") => Kind::Integer,
                     Some("array") => Kind::List {
                         integers: schema["items"]["type"] == "integer",
+                        argv: prop["x-argv"] == true,
                     },
                     _ => Kind::Text,
                 }
@@ -146,28 +149,28 @@ fn argument(field: &Field) -> Arg {
     argument_named(field, arg)
 }
 
-/// A field as `--name` (or a trailing list, or a field the client fills).
+/// A field as `--name` (or the last positional list, or a field the client fills).
 fn argument_named(field: &Field, arg: Arg) -> Arg {
+    if let Kind::List { integers, argv } = field.kind {
+        // options may follow a plain list; a command line keeps its own options (`gates check push --force`)
+        let mut list = arg.num_args(0..).action(ArgAction::Append);
+        if argv {
+            list = list.trailing_var_arg(true).allow_hyphen_values(true);
+        }
+        return if integers {
+            list.value_parser(clap::value_parser!(i64))
+        } else {
+            list
+        };
+    }
     let mut arg = arg.long(field.key.replace('_', "-"));
     match &field.kind {
         Kind::Flag => return arg.action(ArgAction::SetTrue),
         Kind::Integer => arg = arg.value_parser(clap::value_parser!(i64)),
-        Kind::List { integers } => {
-            let list = Arg::new(field.key.to_string())
-                .num_args(0..)
-                .trailing_var_arg(true)
-                .allow_hyphen_values(true)
-                .action(ArgAction::Append);
-            return if *integers {
-                list.value_parser(clap::value_parser!(i64))
-            } else {
-                list
-            };
-        }
         Kind::Choice(values) => {
             arg = arg.value_parser(clap::builder::PossibleValuesParser::new(values.clone()));
         }
-        Kind::Session | Kind::Stdin => return arg,
+        Kind::Session | Kind::Stdin | Kind::List { .. } => return arg,
         Kind::Text | Kind::Path => {}
     }
     match &field.default {
@@ -280,14 +283,16 @@ pub fn operation(matches: &ArgMatches) -> Result<Option<(&'static OpInfo, Value)
         let value = match field.kind {
             Kind::Flag => Some(Value::Bool(at.get_flag(field.key))),
             Kind::Integer => at.get_one::<i64>(field.key).map(|n| Value::from(*n)),
-            Kind::List { integers: true } => Some(Value::from(
+            Kind::List { integers: true, .. } => Some(Value::from(
                 at.get_many::<i64>(field.key)
                     .into_iter()
                     .flatten()
                     .copied()
                     .collect::<Vec<_>>(),
             )),
-            Kind::List { integers: false } => Some(Value::from(
+            Kind::List {
+                integers: false, ..
+            } => Some(Value::from(
                 at.get_many::<String>(field.key)
                     .into_iter()
                     .flatten()
