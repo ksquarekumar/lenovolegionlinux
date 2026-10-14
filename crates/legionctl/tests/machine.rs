@@ -1221,6 +1221,183 @@ mod daemon_events {
         );
     }
 
+    /// Every file the power policy writes, set to a value no policy wants: then each plan shows every write it makes.
+    fn scramble(m: &Machine) {
+        let mut files = vec![
+            PROFILE_PATH.to_string(),
+            "/sys/devices/system/cpu/intel_pstate/no_turbo".into(),
+            "/sys/devices/system/cpu/intel_pstate/max_perf_pct".into(),
+            "/sys/module/processor/parameters/ignore_ppc".into(),
+            "/proc/sys/vm/swappiness".into(),
+            "/proc/sys/net/core/default_qdisc".into(),
+            "/proc/sys/net/ipv4/tcp_congestion_control".into(),
+        ];
+        for i in 0..32 {
+            files.push(format!(
+                "/sys/devices/system/cpu/cpufreq/policy{i}/scaling_governor"
+            ));
+            files.push(format!(
+                "/sys/devices/system/cpu/cpufreq/policy{i}/energy_performance_preference"
+            ));
+            files.push(format!(
+                "/sys/devices/system/cpu/cpu{i}/power/energy_perf_bias"
+            ));
+        }
+        for file in files {
+            if m.file(&file) != "<missing>" {
+                m.set(&file, "scrambled");
+            }
+        }
+    }
+
+    /// A step as the migration compares it: everything, except the wording of notes and warnings (their place stays).
+    /// Consecutive steps that differ only in the CPU are one line with their count (`policy*/... ×32`).
+    fn shown(step: &Step) -> String {
+        match step {
+            Step::Info(_) => "Info\n".into(),
+            Step::Warn(_) => "Warn\n".into(),
+            other => {
+                let line = format!("{other:?}");
+                let mut out = String::new();
+                let mut digits_after_prefix = false;
+                for (i, c) in line.char_indices() {
+                    if c.is_ascii_digit() && digits_after_prefix {
+                        continue;
+                    }
+                    digits_after_prefix = false;
+                    out.push(c);
+                    let head = &line[..=i];
+                    if (head.ends_with("/policy") || head.ends_with("/cpu"))
+                        && line[i + 1..].starts_with(|d: char| d.is_ascii_digit())
+                    {
+                        out.push('*');
+                        digits_after_prefix = true;
+                    }
+                }
+                let line = out;
+                format!("{line}\n")
+            }
+        }
+    }
+
+    fn grouped(text: &str) -> String {
+        let mut out: Vec<(String, usize)> = Vec::new();
+        for line in text.lines() {
+            match out.last_mut() {
+                Some((last, n)) if last == line && !line.starts_with("## ") => *n += 1,
+                _ => out.push((line.to_string(), 1)),
+            }
+        }
+        out.into_iter()
+            .map(|(line, n)| {
+                if n > 1 {
+                    format!("{line} ×{n}\n")
+                } else {
+                    format!("{line}\n")
+                }
+            })
+            .collect()
+    }
+
+    /// The plans (every step) and the knobs' wanted values of the recorded machine, as found and with every policy
+    /// file scrambled, on AC and on battery, with no Fn+Q choice and with each kind of choice, for each event and for
+    /// `power apply` of either source.
+    fn migration_plans() -> String {
+        use std::fmt::Write;
+        let mut out = String::new();
+        for (start, scrambled) in [("recorded", false), ("scrambled", true)] {
+            for online in ["1", "0"] {
+                let m = Machine::new("migration");
+                m.set("/sys/class/power_supply/ADP0/online", online);
+                if scrambled {
+                    scramble(&m);
+                }
+                m.record(Key::Written, "max-power");
+                for choice in [
+                    None,
+                    Some("performance"),
+                    Some("balanced"),
+                    Some("custom"),
+                    Some("low-power"),
+                    Some("no-such-mode"),
+                ] {
+                    m.ledger().set(Key::Override, choice).unwrap();
+                    let name = format!(
+                        "{start}, ADP0 online {online}, Fn+Q {}",
+                        choice.unwrap_or("none")
+                    );
+                    with_planner(&m, |p| {
+                        for event in [Event::Start, Event::PowerSource, Event::Resume, Event::Tick]
+                        {
+                            writeln!(out, "## {name}: {event:?}").unwrap();
+                            for step in react(p, event).unwrap() {
+                                out.push_str(&shown(&step));
+                            }
+                        }
+                        for source in [policy::Source::Ac, policy::Source::Battery] {
+                            writeln!(out, "## {name}: apply {}", source.name()).unwrap();
+                            let all = policy::Options {
+                                force: true,
+                                ..policy::Options::default()
+                            };
+                            for step in p.apply(Some(source), all).unwrap().1 {
+                                out.push_str(&shown(&step));
+                            }
+                        }
+                        writeln!(out, "## {name}: knobs").unwrap();
+                        for knob in legionctl_machine::knobs::catalog(p) {
+                            writeln!(out, "{} = {:?}", knob.id, knob.desired).unwrap();
+                        }
+                    });
+                    // Fn+Q to the choice (or back to our own mode)
+                    let before = m.file(PROFILE_PATH);
+                    m.set(PROFILE_PATH, choice.unwrap_or("max-power"));
+                    with_planner(&m, |p| {
+                        writeln!(out, "## {name}: PlatformProfile").unwrap();
+                        for step in react(p, Event::PlatformProfile).unwrap() {
+                            out.push_str(&shown(&step));
+                        }
+                    });
+                    m.set(PROFILE_PATH, &before);
+                }
+            }
+        }
+        grouped(&out)
+    }
+
+    /// The migration to configsets (todo-74): the shipped layers plan exactly the writes the profile's policy planned,
+    /// step for step, in each state above. The fixture was written by the planner before configsets.
+    #[test]
+    fn configsets_plan_exactly_the_writes_the_profile_planned() {
+        let golden = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/plans-82wq-before-configsets.txt");
+        let plans = migration_plans();
+        if std::env::var_os("LEGIONCTL_WRITE_PLANS").is_some() {
+            std::fs::write(&golden, &plans).unwrap();
+        }
+        let expected = std::fs::read_to_string(golden).unwrap();
+        for (line, (want, got)) in expected.lines().zip(plans.lines()).enumerate() {
+            assert_eq!(want, got, "first difference at line {}", line + 1);
+        }
+        assert_eq!(expected.lines().count(), plans.lines().count());
+    }
+
+    /// The daemon's planner on `m`, as the daemon builds it.
+    fn with_planner(m: &Machine, f: impl FnOnce(&Planner)) {
+        let (profile, _) =
+            legionctl_machine::profile::load(Some(&m.dir.join("root").join(INSTALLED_PROFILE)))
+                .unwrap();
+        let root = SysRoot::new(m.dir.join("root"));
+        let ledger = m.ledger();
+        f(&Planner {
+            root: &root,
+            profile: &profile,
+            ledger: &ledger,
+            ppd_current: Some("performance".into()),
+            has_command: &|_| true,
+        });
+    }
+
     #[test]
     fn fn_q_choice_survives_resume_and_ends_at_the_next_start() {
         let m = Machine::new("events");

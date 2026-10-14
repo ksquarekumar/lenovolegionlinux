@@ -1,0 +1,2319 @@
+## recorded, ADP0 online 1, Fn+Q none: Start
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q none: PowerSource
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q none: Resume
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q none: Tick
+Record { key: Written, value: Some("max-power") }
+## recorded, ADP0 online 1, Fn+Q none: apply ac
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q none: apply battery
+Warn
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 1, Fn+Q none: knobs
+platform_profile = Some("max-power")
+cpu.governor = Some("performance")
+cpu.epp = Some("performance")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("1")
+cpu.energy_perf_bias = Some("0")
+sched_ext = None
+ppd = Some("performance")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## recorded, ADP0 online 1, Fn+Q none: PlatformProfile
+Info
+## recorded, ADP0 online 1, Fn+Q performance: Start
+Info
+Record { key: Override, value: None }
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q performance: PowerSource
+Info
+Record { key: Override, value: None }
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q performance: Resume
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q performance: Tick
+## recorded, ADP0 online 1, Fn+Q performance: apply ac
+Info
+Record { key: Override, value: None }
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q performance: apply battery
+Warn
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 1, Fn+Q performance: knobs
+platform_profile = Some("performance")
+cpu.governor = Some("performance")
+cpu.epp = Some("performance")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("1")
+cpu.energy_perf_bias = Some("0")
+sched_ext = None
+ppd = Some("performance")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## recorded, ADP0 online 1, Fn+Q performance: PlatformProfile
+Info
+## recorded, ADP0 online 1, Fn+Q balanced: Start
+Info
+Record { key: Override, value: None }
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q balanced: PowerSource
+Info
+Record { key: Override, value: None }
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q balanced: Resume
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q balanced: Tick
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+## recorded, ADP0 online 1, Fn+Q balanced: apply ac
+Info
+Record { key: Override, value: None }
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q balanced: apply battery
+Warn
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 1, Fn+Q balanced: knobs
+platform_profile = Some("balanced")
+cpu.governor = Some("powersave")
+cpu.epp = Some("performance")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("1")
+cpu.energy_perf_bias = Some("0")
+sched_ext = None
+ppd = Some("balanced")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## recorded, ADP0 online 1, Fn+Q balanced: PlatformProfile
+Info
+## recorded, ADP0 online 1, Fn+Q custom: Start
+Info
+Record { key: Override, value: None }
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q custom: PowerSource
+Info
+Record { key: Override, value: None }
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q custom: Resume
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q custom: Tick
+## recorded, ADP0 online 1, Fn+Q custom: apply ac
+Info
+Record { key: Override, value: None }
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q custom: apply battery
+Warn
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 1, Fn+Q custom: knobs
+platform_profile = Some("custom")
+cpu.governor = Some("performance")
+cpu.epp = Some("performance")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("1")
+cpu.energy_perf_bias = Some("0")
+sched_ext = None
+ppd = Some("performance")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## recorded, ADP0 online 1, Fn+Q custom: PlatformProfile
+Info
+## recorded, ADP0 online 1, Fn+Q low-power: Start
+Info
+Record { key: Override, value: None }
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q low-power: PowerSource
+Info
+Record { key: Override, value: None }
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q low-power: Resume
+Run(["powerprofilesctl", "set", "power-saver"])
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q low-power: Tick
+Run(["powerprofilesctl", "set", "power-saver"])
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+## recorded, ADP0 online 1, Fn+Q low-power: apply ac
+Info
+Record { key: Override, value: None }
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q low-power: apply battery
+Warn
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 1, Fn+Q low-power: knobs
+platform_profile = Some("low-power")
+cpu.governor = Some("powersave")
+cpu.epp = Some("performance")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("1")
+cpu.energy_perf_bias = Some("0")
+sched_ext = None
+ppd = Some("power-saver")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## recorded, ADP0 online 1, Fn+Q low-power: PlatformProfile
+Info
+## recorded, ADP0 online 1, Fn+Q no-such-mode: Start
+Info
+Record { key: Override, value: None }
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q no-such-mode: PowerSource
+Info
+Record { key: Override, value: None }
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q no-such-mode: Resume
+Warn
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q no-such-mode: Tick
+Warn
+## recorded, ADP0 online 1, Fn+Q no-such-mode: apply ac
+Info
+Record { key: Override, value: None }
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 1, Fn+Q no-such-mode: apply battery
+Warn
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 1, Fn+Q no-such-mode: knobs
+platform_profile = Some("no-such-mode")
+cpu.governor = Some("performance")
+cpu.epp = Some("performance")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("1")
+cpu.energy_perf_bias = Some("0")
+sched_ext = None
+ppd = Some("performance")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## recorded, ADP0 online 1, Fn+Q no-such-mode: PlatformProfile
+Info
+## recorded, ADP0 online 0, Fn+Q none: Start
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q none: PowerSource
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q none: Resume
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q none: Tick
+## recorded, ADP0 online 0, Fn+Q none: apply ac
+Warn
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 0, Fn+Q none: apply battery
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q none: knobs
+platform_profile = Some("balanced")
+cpu.governor = Some("powersave")
+cpu.epp = Some("balance_power")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("0")
+cpu.energy_perf_bias = Some("8")
+sched_ext = None
+ppd = Some("balanced")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## recorded, ADP0 online 0, Fn+Q none: PlatformProfile
+Info
+## recorded, ADP0 online 0, Fn+Q performance: Start
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q performance: PowerSource
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q performance: Resume
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q performance: Tick
+## recorded, ADP0 online 0, Fn+Q performance: apply ac
+Warn
+Info
+Record { key: Override, value: None }
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 0, Fn+Q performance: apply battery
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q performance: knobs
+platform_profile = Some("performance")
+cpu.governor = Some("performance")
+cpu.epp = Some("balance_power")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("0")
+cpu.energy_perf_bias = Some("8")
+sched_ext = None
+ppd = Some("performance")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## recorded, ADP0 online 0, Fn+Q performance: PlatformProfile
+Info
+## recorded, ADP0 online 0, Fn+Q balanced: Start
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q balanced: PowerSource
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q balanced: Resume
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q balanced: Tick
+## recorded, ADP0 online 0, Fn+Q balanced: apply ac
+Warn
+Info
+Record { key: Override, value: None }
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 0, Fn+Q balanced: apply battery
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q balanced: knobs
+platform_profile = Some("balanced")
+cpu.governor = Some("powersave")
+cpu.epp = Some("balance_power")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("0")
+cpu.energy_perf_bias = Some("8")
+sched_ext = None
+ppd = Some("balanced")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## recorded, ADP0 online 0, Fn+Q balanced: PlatformProfile
+Info
+## recorded, ADP0 online 0, Fn+Q custom: Start
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q custom: PowerSource
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q custom: Resume
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q custom: Tick
+## recorded, ADP0 online 0, Fn+Q custom: apply ac
+Warn
+Info
+Record { key: Override, value: None }
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 0, Fn+Q custom: apply battery
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q custom: knobs
+platform_profile = Some("custom")
+cpu.governor = Some("performance")
+cpu.epp = Some("balance_power")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("0")
+cpu.energy_perf_bias = Some("8")
+sched_ext = None
+ppd = Some("performance")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## recorded, ADP0 online 0, Fn+Q custom: PlatformProfile
+Info
+## recorded, ADP0 online 0, Fn+Q low-power: Start
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q low-power: PowerSource
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q low-power: Resume
+Run(["powerprofilesctl", "set", "power-saver"])
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q low-power: Tick
+## recorded, ADP0 online 0, Fn+Q low-power: apply ac
+Warn
+Info
+Record { key: Override, value: None }
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 0, Fn+Q low-power: apply battery
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q low-power: knobs
+platform_profile = Some("low-power")
+cpu.governor = Some("powersave")
+cpu.epp = Some("balance_power")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("0")
+cpu.energy_perf_bias = Some("8")
+sched_ext = None
+ppd = Some("power-saver")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## recorded, ADP0 online 0, Fn+Q low-power: PlatformProfile
+Info
+## recorded, ADP0 online 0, Fn+Q no-such-mode: Start
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q no-such-mode: PowerSource
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q no-such-mode: Resume
+Warn
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q no-such-mode: Tick
+## recorded, ADP0 online 0, Fn+Q no-such-mode: apply ac
+Warn
+Info
+Record { key: Override, value: None }
+Record { key: Written, value: Some("max-power") }
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## recorded, ADP0 online 0, Fn+Q no-such-mode: apply battery
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## recorded, ADP0 online 0, Fn+Q no-such-mode: knobs
+platform_profile = Some("no-such-mode")
+cpu.governor = Some("powersave")
+cpu.epp = Some("balance_power")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("0")
+cpu.energy_perf_bias = Some("8")
+sched_ext = None
+ppd = Some("balanced")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## recorded, ADP0 online 0, Fn+Q no-such-mode: PlatformProfile
+Info
+## scrambled, ADP0 online 1, Fn+Q none: Start
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q none: PowerSource
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q none: Resume
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q none: Tick
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+## scrambled, ADP0 online 1, Fn+Q none: apply ac
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q none: apply battery
+Warn
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 1, Fn+Q none: knobs
+platform_profile = Some("max-power")
+cpu.governor = Some("performance")
+cpu.epp = Some("performance")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("1")
+cpu.energy_perf_bias = Some("0")
+sched_ext = None
+ppd = Some("performance")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## scrambled, ADP0 online 1, Fn+Q none: PlatformProfile
+Info
+## scrambled, ADP0 online 1, Fn+Q performance: Start
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q performance: PowerSource
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q performance: Resume
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q performance: Tick
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+## scrambled, ADP0 online 1, Fn+Q performance: apply ac
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q performance: apply battery
+Warn
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 1, Fn+Q performance: knobs
+platform_profile = Some("performance")
+cpu.governor = Some("performance")
+cpu.epp = Some("performance")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("1")
+cpu.energy_perf_bias = Some("0")
+sched_ext = None
+ppd = Some("performance")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## scrambled, ADP0 online 1, Fn+Q performance: PlatformProfile
+Info
+## scrambled, ADP0 online 1, Fn+Q balanced: Start
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q balanced: PowerSource
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q balanced: Resume
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q balanced: Tick
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+## scrambled, ADP0 online 1, Fn+Q balanced: apply ac
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q balanced: apply battery
+Warn
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 1, Fn+Q balanced: knobs
+platform_profile = Some("balanced")
+cpu.governor = Some("powersave")
+cpu.epp = Some("performance")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("1")
+cpu.energy_perf_bias = Some("0")
+sched_ext = None
+ppd = Some("balanced")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## scrambled, ADP0 online 1, Fn+Q balanced: PlatformProfile
+Info
+## scrambled, ADP0 online 1, Fn+Q custom: Start
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q custom: PowerSource
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q custom: Resume
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q custom: Tick
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+## scrambled, ADP0 online 1, Fn+Q custom: apply ac
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q custom: apply battery
+Warn
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 1, Fn+Q custom: knobs
+platform_profile = Some("custom")
+cpu.governor = Some("performance")
+cpu.epp = Some("performance")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("1")
+cpu.energy_perf_bias = Some("0")
+sched_ext = None
+ppd = Some("performance")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## scrambled, ADP0 online 1, Fn+Q custom: PlatformProfile
+Info
+## scrambled, ADP0 online 1, Fn+Q low-power: Start
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q low-power: PowerSource
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q low-power: Resume
+Run(["powerprofilesctl", "set", "power-saver"])
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q low-power: Tick
+Run(["powerprofilesctl", "set", "power-saver"])
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+## scrambled, ADP0 online 1, Fn+Q low-power: apply ac
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q low-power: apply battery
+Warn
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 1, Fn+Q low-power: knobs
+platform_profile = Some("low-power")
+cpu.governor = Some("powersave")
+cpu.epp = Some("performance")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("1")
+cpu.energy_perf_bias = Some("0")
+sched_ext = None
+ppd = Some("power-saver")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## scrambled, ADP0 online 1, Fn+Q low-power: PlatformProfile
+Info
+## scrambled, ADP0 online 1, Fn+Q no-such-mode: Start
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q no-such-mode: PowerSource
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q no-such-mode: Resume
+Warn
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q no-such-mode: Tick
+Warn
+## scrambled, ADP0 online 1, Fn+Q no-such-mode: apply ac
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 1, Fn+Q no-such-mode: apply battery
+Warn
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 1, Fn+Q no-such-mode: knobs
+platform_profile = Some("no-such-mode")
+cpu.governor = Some("performance")
+cpu.epp = Some("performance")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("1")
+cpu.energy_perf_bias = Some("0")
+sched_ext = None
+ppd = Some("performance")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## scrambled, ADP0 online 1, Fn+Q no-such-mode: PlatformProfile
+Info
+## scrambled, ADP0 online 0, Fn+Q none: Start
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q none: PowerSource
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q none: Resume
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q none: Tick
+## scrambled, ADP0 online 0, Fn+Q none: apply ac
+Warn
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 0, Fn+Q none: apply battery
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q none: knobs
+platform_profile = Some("balanced")
+cpu.governor = Some("powersave")
+cpu.epp = Some("balance_power")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("0")
+cpu.energy_perf_bias = Some("8")
+sched_ext = None
+ppd = Some("balanced")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## scrambled, ADP0 online 0, Fn+Q none: PlatformProfile
+Info
+## scrambled, ADP0 online 0, Fn+Q performance: Start
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q performance: PowerSource
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q performance: Resume
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q performance: Tick
+## scrambled, ADP0 online 0, Fn+Q performance: apply ac
+Warn
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 0, Fn+Q performance: apply battery
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q performance: knobs
+platform_profile = Some("performance")
+cpu.governor = Some("performance")
+cpu.epp = Some("balance_power")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("0")
+cpu.energy_perf_bias = Some("8")
+sched_ext = None
+ppd = Some("performance")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## scrambled, ADP0 online 0, Fn+Q performance: PlatformProfile
+Info
+## scrambled, ADP0 online 0, Fn+Q balanced: Start
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q balanced: PowerSource
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q balanced: Resume
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q balanced: Tick
+## scrambled, ADP0 online 0, Fn+Q balanced: apply ac
+Warn
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 0, Fn+Q balanced: apply battery
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q balanced: knobs
+platform_profile = Some("balanced")
+cpu.governor = Some("powersave")
+cpu.epp = Some("balance_power")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("0")
+cpu.energy_perf_bias = Some("8")
+sched_ext = None
+ppd = Some("balanced")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## scrambled, ADP0 online 0, Fn+Q balanced: PlatformProfile
+Info
+## scrambled, ADP0 online 0, Fn+Q custom: Start
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q custom: PowerSource
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q custom: Resume
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q custom: Tick
+## scrambled, ADP0 online 0, Fn+Q custom: apply ac
+Warn
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 0, Fn+Q custom: apply battery
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q custom: knobs
+platform_profile = Some("custom")
+cpu.governor = Some("performance")
+cpu.epp = Some("balance_power")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("0")
+cpu.energy_perf_bias = Some("8")
+sched_ext = None
+ppd = Some("performance")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## scrambled, ADP0 online 0, Fn+Q custom: PlatformProfile
+Info
+## scrambled, ADP0 online 0, Fn+Q low-power: Start
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q low-power: PowerSource
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q low-power: Resume
+Run(["powerprofilesctl", "set", "power-saver"])
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q low-power: Tick
+## scrambled, ADP0 online 0, Fn+Q low-power: apply ac
+Warn
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 0, Fn+Q low-power: apply battery
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q low-power: knobs
+platform_profile = Some("low-power")
+cpu.governor = Some("powersave")
+cpu.epp = Some("balance_power")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("0")
+cpu.energy_perf_bias = Some("8")
+sched_ext = None
+ppd = Some("power-saver")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## scrambled, ADP0 online 0, Fn+Q low-power: PlatformProfile
+Info
+## scrambled, ADP0 online 0, Fn+Q no-such-mode: Start
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q no-such-mode: PowerSource
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q no-such-mode: Resume
+Warn
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q no-such-mode: Tick
+## scrambled, ADP0 online 0, Fn+Q no-such-mode: apply ac
+Warn
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
+Record { key: Written, value: Some("max-power") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "1" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "performance" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
+Run(["cpupower", "set", "--perf-bias", "0"])
+Run(["cpupower", "idle-set", "-E"])
+Run(["systemctl", "start", "nvidia-persistenced.service"])
+Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["nvidia-smi", "-i", "0", "-pm", "1"])
+## scrambled, ADP0 online 0, Fn+Q no-such-mode: apply battery
+Info
+Record { key: Override, value: None }
+Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
+Record { key: Written, value: Some("balanced") }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Run(["powerprofilesctl", "set", "balanced"])
+Write { path: "/proc/sys/net/core/default_qdisc", value: "fq" }
+Write { path: "/proc/sys/net/ipv4/tcp_congestion_control", value: "bbr" }
+Write { path: "/proc/sys/vm/swappiness", value: "150" }
+Write { path: "/sys/module/processor/parameters/ignore_ppc", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/no_turbo", value: "0" }
+Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" }
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
+Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference", value: "balance_power" } ×32
+Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "8" } ×32
+Run(["cpupower", "set", "--perf-bias", "8"])
+Run(["cpupower", "idle-set", "-E"])
+## scrambled, ADP0 online 0, Fn+Q no-such-mode: knobs
+platform_profile = Some("no-such-mode")
+cpu.governor = Some("powersave")
+cpu.epp = Some("balance_power")
+cpu.no_turbo = Some("0")
+cpu.max_perf_pct = Some("100")
+cpu.ignore_ppc = Some("0")
+cpu.energy_perf_bias = Some("8")
+sched_ext = None
+ppd = Some("balanced")
+sysctl.net.core.default_qdisc = Some("fq")
+sysctl.net.ipv4.tcp_congestion_control = Some("bbr")
+sysctl.vm.swappiness = Some("150")
+firmware.cpu_temp = None
+firmware.gpu_nv_ac_offset = None
+firmware.gpu_nv_ctgp = None
+firmware.gpu_nv_ppab = None
+firmware.gpu_temp = None
+firmware.ppt_cpu_cl = None
+firmware.ppt_pl1_spl = None
+firmware.ppt_pl1_tau = None
+firmware.ppt_pl2_sppt = None
+firmware.fan_mode = None
+## scrambled, ADP0 online 0, Fn+Q no-such-mode: PlatformProfile
+Info
