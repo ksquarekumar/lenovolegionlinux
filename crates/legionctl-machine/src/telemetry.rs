@@ -1,6 +1,7 @@
 //! One telemetry sample (note 16, `legionctl monitor`): package power from RAPL energy over a short window, CPU
 //! temperature and clock, the NVIDIA GPU (only when it is already awake: a query would wake a suspended GPU), PSI,
-//! and the root-only part from `legionctl-system` (fan RPM, throttle reasons from the MSR).
+//! every hwmon channel (a device that sleeps is not read: the read would wake it), and the root-only part from
+//! `legionctl-system` (fan RPM, throttle reasons from the MSR).
 
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -150,6 +151,78 @@ pub struct GpuSample {
     pub clock_mhz: Option<f64>,
 }
 
+/// One hwmon channel (`temp1_input` of `hwmon4`), in its unit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Channel {
+    /// The hwmon device and its name: `hwmon4 coretemp`.
+    pub device: String,
+    /// The channel's label, else its name (`temp1`).
+    pub name: String,
+    pub value: f64,
+    /// °C, RPM, W, V, A or MHz.
+    pub unit: String,
+}
+
+/// The hwmon channel kinds: file prefix, the divisor to the unit, the unit, and the `OpenMetrics` name.
+const KINDS: [(&str, f64, &str, &str); 6] = [
+    ("temp", 1e3, "°C", "celsius"),
+    ("fan", 1.0, "RPM", "rpm"),
+    ("power", 1e6, "W", "watts"),
+    ("in", 1e3, "V", "volts"),
+    ("curr", 1e3, "A", "amperes"),
+    ("freq", 1e6, "MHz", "mhz"),
+];
+
+/// Every channel of every hwmon device, and the devices not read because they sleep: a read of a sleeping device's
+/// sensor wakes it (the NVIDIA GPU's), its runtime power state alone does not.
+fn hwmon(root: &SysRoot) -> (Vec<Channel>, Vec<String>) {
+    let (mut channels, mut asleep) = (Vec::new(), Vec::new());
+    for dir in root.children("/sys/class/hwmon", "hwmon") {
+        let id = dir
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        let device = format!("{id} {}", root.read(dir.join("name")).unwrap_or_default());
+        if root
+            .read(dir.join("device/power/runtime_status"))
+            .is_some_and(|s| s != "active" && s != "unsupported")
+        {
+            asleep.push(device);
+            continue;
+        }
+        for file in root.children(&dir, "") {
+            let file = file
+                .file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            let Some(stem) = file
+                .strip_suffix("_input")
+                .or_else(|| file.strip_suffix("_average"))
+            else {
+                continue;
+            };
+            let Some((_, divisor, unit, _)) = KINDS.iter().find(|(kind, ..)| {
+                stem.strip_prefix(kind)
+                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            }) else {
+                continue;
+            };
+            if let Some(raw) = root
+                .read(dir.join(&file))
+                .and_then(|v| v.parse::<f64>().ok())
+            {
+                channels.push(Channel {
+                    device: device.clone(),
+                    name: root
+                        .read(dir.join(format!("{stem}_label")))
+                        .unwrap_or_else(|| stem.into()),
+                    value: raw / divisor,
+                    unit: (*unit).into(),
+                });
+            }
+        }
+    }
+    (channels, asleep)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Sample {
     /// Milliseconds since the epoch at the end of the window.
@@ -165,6 +238,10 @@ pub struct Sample {
     pub io_pressure: Option<Pressure>,
     /// Run-queue latency in the window per CPU class (the daemon's eBPF sensor).
     pub runq_latency: Option<BTreeMap<String, Latency>>,
+    /// Every hwmon channel.
+    pub hwmon: Vec<Channel>,
+    /// The hwmon devices not read: their device sleeps.
+    pub hwmon_asleep: Vec<String>,
     #[serde(flatten)]
     pub root: RootSample,
 }
@@ -266,6 +343,7 @@ pub fn sample(root: &SysRoot, window: Duration, root_part: &dyn Fn() -> RootSamp
             .as_deref()
             .and_then(parse_pressure)
     };
+    let (hwmon, hwmon_asleep) = hwmon(root);
     Sample {
         ts_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -280,8 +358,64 @@ pub fn sample(root: &SysRoot, window: Duration, root_part: &dyn Fn() -> RootSamp
         memory_pressure: psi("memory"),
         io_pressure: psi("io"),
         runq_latency,
+        hwmon,
+        hwmon_asleep,
         root: last,
     }
+}
+
+/// A label value in `OpenMetrics` text.
+fn escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// One gauge with its values (labels, value) in `OpenMetrics` text; none without values.
+fn gauge(lines: &mut Vec<String>, name: &str, help: &str, values: Vec<(String, String)>) {
+    if !values.is_empty() {
+        lines.push(format!("# TYPE legionctl_{name} gauge"));
+        lines.push(format!("# HELP legionctl_{name} {help}"));
+        lines.extend(
+            values
+                .into_iter()
+                .map(|(labels, v)| format!("legionctl_{name}{labels} {v}")),
+        );
+    }
+}
+
+/// Each hwmon channel, per unit, and each active throttle reason.
+fn sensor_gauges(lines: &mut Vec<String>, s: &Sample) {
+    for (_, _, unit, name) in KINDS {
+        gauge(
+            lines,
+            &format!("hwmon_{name}"),
+            &format!("Each hwmon channel in {unit}"),
+            s.hwmon
+                .iter()
+                .filter(|c| c.unit == unit)
+                .map(|c| {
+                    (
+                        format!(
+                            "{{device=\"{}\",sensor=\"{}\"}}",
+                            escape(&c.device),
+                            escape(&c.name)
+                        ),
+                        c.value.to_string(),
+                    )
+                })
+                .collect(),
+        );
+    }
+    gauge(
+        lines,
+        "throttle_active",
+        "A throttle reason that is active now (the MSR)",
+        s.root
+            .throttle_now
+            .iter()
+            .flatten()
+            .map(|r| (format!("{{reason=\"{}\"}}", escape(r)), "1".into()))
+            .collect(),
+    );
 }
 
 /// The sample in `OpenMetrics` text (`GET /v1/metrics`), for Prometheus or Grafana.
@@ -289,15 +423,7 @@ pub fn sample(root: &SysRoot, window: Duration, root_part: &dyn Fn() -> RootSamp
 pub fn openmetrics(s: &Sample) -> String {
     let mut lines = Vec::new();
     let mut gauge = |name: &str, help: &str, values: Vec<(String, String)>| {
-        if !values.is_empty() {
-            lines.push(format!("# TYPE legionctl_{name} gauge"));
-            lines.push(format!("# HELP legionctl_{name} {help}"));
-            lines.extend(
-                values
-                    .into_iter()
-                    .map(|(labels, v)| format!("legionctl_{name}{labels} {v}")),
-            );
-        }
+        gauge(&mut lines, name, help, values);
     };
     let one = |v: Option<f64>| {
         v.map(|v| (String::new(), v.to_string()))
@@ -371,6 +497,7 @@ pub fn openmetrics(s: &Sample) -> String {
             .map(|(class, l)| (format!("{{class=\"{class}\"}}"), l.p99_us.to_string()))
             .collect(),
     );
+    sensor_gauges(&mut lines, s);
     lines.push("# EOF".into());
     lines.join("\n") + "\n"
 }

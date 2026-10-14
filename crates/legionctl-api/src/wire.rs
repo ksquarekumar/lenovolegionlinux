@@ -906,8 +906,36 @@ wire! {
         io_pressure: Option<Pressure>,
         /// Run-queue latency in the window per CPU class (the daemon's eBPF sensor).
         runq_latency: Option<BTreeMap<String, Latency>>,
+        /// Every hwmon channel.
+        hwmon: Vec<Channel>,
+        /// The hwmon devices not read: their device sleeps.
+        hwmon_asleep: Vec<String>,
         #[serde(flatten)]
         root: RootSample,
+    }
+
+    /// One hwmon channel (`temp1_input` of `hwmon4`), in its unit.
+    struct Channel from machine::telemetry::Channel {
+        /// The hwmon device and its name: `hwmon4 coretemp`.
+        device: String,
+        /// The channel's label, else its name (`temp1`).
+        name: String,
+        value: f64,
+        /// °C, RPM, W, V, A or MHz.
+        unit: String,
+    }
+
+    /// One row of `legionctl sensors`: a number with its unit, or a state as text.
+    struct Reading from machine::sensors::Reading {
+        /// Where it comes from: `hwmon4 coretemp`, `RAPL`, `nvidia-smi`, `firmware acpi_call`, `eBPF runq`, ...
+        source: String,
+        name: String,
+        value: Option<f64>,
+        /// A state (`suspended`, `thermal, power limit`); a number that cannot be read is `unknown` and why.
+        text: Option<String>,
+        unit: String,
+        /// The values of this reading in the earlier samples of the telemetry ring, oldest first, then this one.
+        history: Vec<f64>,
     }
 
     /// What only root can read; `legionctl-system` answers it over D-Bus (`Sample`).

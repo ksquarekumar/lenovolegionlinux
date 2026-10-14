@@ -476,6 +476,10 @@ operations! {
     skills / Skills = "skills", Read, ProjectIn => SkillList;
     /// Telemetry: package and GPU power, temperatures, clocks, PSI, fan RPM and throttle reasons, one line per sample.
     monitor / Monitor = "monitor", Read, MonitorIn => Samples;
+    /// Every sensor in one table with its unit and source: hwmon, the firmware (fan RPM), the NVIDIA GPU (only while
+    /// it is awake), RAPL, PSI, eBPF (run-queue latency, workload), throttle reasons, the fan controls and the power
+    /// source, each number with its history from the telemetry ring.
+    sensors / Sensors = "sensors", Read, SensorsIn => Readings;
     /// The event log: what agents, people and the machine daemon did, oldest first.
     events / EventsOp = "events", Read, EventsIn => Page<EventRow>;
     /// Every knob legionctl reads or sets: current value, the value the configset layers want now, the firmware range

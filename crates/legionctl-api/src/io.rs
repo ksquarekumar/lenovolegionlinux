@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::wire::{
     Action, Battery, BenchResult, Binding, Capability, ConfigFile, ConfigLayer, DesktopGpu,
     DossierInfo, EditMode, Event, EventRow, GpuMode, Inside, Knob, Lock, Output, PackageState,
-    Reminder, RuleLayer, Sample, Scenario, SessionRecord, SkillInfo, VfioDevice, Workspace,
+    Reading, Reminder, RuleLayer, Sample, Scenario, SessionRecord, SkillInfo, VfioDevice,
+    Workspace,
 };
 use crate::{ClientPath, SessionId, StdinText};
 
@@ -825,6 +826,15 @@ fn thousand() -> u32 {
 }
 
 pub type Samples = Vec<Sample>;
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SensorsIn {
+    /// The CLI shows the view again each second until Ctrl+C; one call returns one view.
+    #[serde(default)]
+    pub watch: bool,
+}
+
+pub type Readings = Vec<Reading>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EventsIn {

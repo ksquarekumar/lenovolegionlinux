@@ -1,4 +1,5 @@
-//! Firmware calls that need root: the Lenovo WMI methods through `acpi_call` (fan RPM here, the fan controls in
+//! Firmware calls that need root: the Lenovo WMI methods through `acpi_call` (fan RPM here, from the `legionctl-wmi`
+//! hwmon once that module is loaded; the fan controls in
 //! [`crate::fan`]), and the package thermal status MSR (read-only).
 
 use std::io::{Read, Seek, SeekFrom};
@@ -66,11 +67,27 @@ pub fn acpi_call(root: &SysRoot, call: &str) -> Result<String> {
     Ok(reply.to_string())
 }
 
-/// Fan RPM from the firmware; `None` without root or `acpi_call`.
+/// The hwmon device of the `legionctl-wmi` module (docs/design/08-kernel.md, sysfs ABI), when it is loaded.
+#[must_use]
+pub fn legionctl_wmi(root: &SysRoot) -> Option<std::path::PathBuf> {
+    root.children("/sys/class/hwmon", "hwmon")
+        .into_iter()
+        .find(|h| root.read(h.join("name")).as_deref() == Some(LEGIONCTL_WMI))
+}
+
+/// The `name` of the `legionctl-wmi` module's hwmon device.
+pub const LEGIONCTL_WMI: &str = "legionctl_wmi";
+
+/// Fan RPM from the firmware: the `legionctl-wmi` module's hwmon when it is loaded, else `acpi_call`; `None` without
+/// root or `acpi_call`.
 #[must_use]
 pub fn fan_rpm(root: &SysRoot) -> Option<[(&'static str, u64); 2]> {
-    let read = |call| parse_acpi_call(&acpi_call(root, call).ok()?);
     let [(n1, c1), (n2, c2)] = FAN_CALL;
+    if let Some(hwmon) = legionctl_wmi(root) {
+        let read = |fan: &str| root.read(hwmon.join(format!("{fan}_input")))?.parse().ok();
+        return Some([(n1, read(n1)?), (n2, read(n2)?)]);
+    }
+    let read = |call| parse_acpi_call(&acpi_call(root, call).ok()?);
     Some([(n1, read(c1)?), (n2, read(c2)?)])
 }
 

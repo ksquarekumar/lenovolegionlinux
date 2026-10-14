@@ -303,6 +303,30 @@
       <arg name="on" type="b"/>
     </signal>
     <!--
+     The power source changed: `ac` or `battery`.
+     -->
+    <signal name="PowerSourceChanged">
+      <arg name="source" type="s"/>
+    </signal>
+    <!--
+     The workloads that run changed (`game`, `build`, `vm`; empty: none), from the eBPF workload sensor.
+     -->
+    <signal name="WorkloadChanged">
+      <arg name="kinds" type="as"/>
+    </signal>
+    <!--
+     The throttle reasons active now changed (the MSR; empty: throttling stopped).
+     -->
+    <signal name="ThrottleChanged">
+      <arg name="reasons" type="as"/>
+    </signal>
+    <!--
+     Fan max mode was turned on or off.
+     -->
+    <signal name="FanModeChanged">
+      <arg name="max" type="b"/>
+    </signal>
+    <!--
      The hash of the interface this daemon was built from; the operator compares it with its own.
      -->
     <property name="Version" type="s" access="read"/>

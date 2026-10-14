@@ -3659,6 +3659,45 @@
               ]
             }
           },
+          "hwmon": {
+            "description": "Every hwmon channel.",
+            "type": "array",
+            "items": {
+              "description": "One hwmon channel (`temp1_input` of `hwmon4`), in its unit.",
+              "type": "object",
+              "properties": {
+                "device": {
+                  "description": "The hwmon device and its name: `hwmon4 coretemp`.",
+                  "type": "string"
+                },
+                "name": {
+                  "description": "The channel's label, else its name (`temp1`).",
+                  "type": "string"
+                },
+                "value": {
+                  "type": "number",
+                  "format": "double"
+                },
+                "unit": {
+                  "description": "°C, RPM, W, V, A or MHz.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "device",
+                "name",
+                "value",
+                "unit"
+              ]
+            }
+          },
+          "hwmon_asleep": {
+            "description": "The hwmon devices not read: their device sleeps.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "fan_rpm": {
             "type": [
               "object",
@@ -3714,10 +3753,77 @@
           }
         },
         "required": [
-          "at_ms"
+          "at_ms",
+          "hwmon",
+          "hwmon_asleep"
         ]
       },
       "title": "Array_of_Sample",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "sensors": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "watch": {
+          "type": "boolean",
+          "description": "The CLI shows the view again each second until Ctrl+C; one call returns one view.",
+          "default": false
+        }
+      },
+      "title": "SensorsIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "description": "One row of `legionctl sensors`: a number with its unit, or a state as text.",
+        "type": "object",
+        "properties": {
+          "source": {
+            "description": "Where it comes from: `hwmon4 coretemp`, `RAPL`, `nvidia-smi`, `firmware acpi_call`, `eBPF runq`, ...",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "text": {
+            "description": "A state (`suspended`, `thermal, power limit`); a number that cannot be read is `unknown` and why.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unit": {
+            "type": "string"
+          },
+          "history": {
+            "description": "The values of this reading in the earlier samples of the telemetry ring, oldest first, then this one.",
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            }
+          }
+        },
+        "required": [
+          "source",
+          "name",
+          "unit",
+          "history"
+        ]
+      },
+      "title": "Array_of_Reading",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },

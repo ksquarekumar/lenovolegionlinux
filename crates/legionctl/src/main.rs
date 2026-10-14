@@ -362,11 +362,29 @@ fn main() -> Result<()> {
     operation(&matches)
 }
 
+/// `sensors --watch`: the view again each second until Ctrl+C (each view one JSON line with `--json`).
+fn watch(client: &Client, name: &str, input: &serde_json::Value, json: bool) -> Result<()> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    loop {
+        let output = runtime.block_on(client.call_value(name, input))?;
+        if json {
+            println!("{}", serde_json::to_string(&output)?);
+        } else {
+            // clear the screen, then the view from the top
+            println!("\x1b[2J\x1b[H{}", legionctl_api::render(name, output)?.0);
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+}
+
 /// An operation of the registry: called, then shown as JSON or text.
 fn operation(matches: &ArgMatches) -> Result<()> {
     let (op, input) = cli::operation(matches)?.context("not an operation")?;
     let json = matches.get_flag("json");
     let client = Client::new("cli")?;
+    if op.name == "sensors" && input["watch"] == true {
+        return watch(&client, op.name, &input, json);
+    }
     let (output, shown) = tokio::runtime::Runtime::new()?.block_on(async {
         if op.name == "session.run" && !json {
             run_streamed(&client, input).await

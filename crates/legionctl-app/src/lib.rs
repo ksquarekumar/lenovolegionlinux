@@ -1,5 +1,5 @@
-//! `legionctl-app` (note 09): the machine at a glance, GPU wiring, health, bench and the resources (note 22), from
-//! `legionctl-operator`.
+//! `legionctl-app` (note 09): the machine at a glance with every sensor (note 16), GPU wiring, health, bench and the
+//! resources (note 22), from `legionctl-operator`.
 //! Every value comes from an operation; every change is an operation that shows its plan first (a dry run), and the
 //! daemon asks polkit when it is applied.
 
@@ -20,8 +20,8 @@ use gpui_kit::{
 use legionctl_api::client::Client;
 use legionctl_api::{
     Acted, BenchIn, BenchRun, Changes, DesktopGpu, Empty, FanState, Findings, GpuPrimaryIn,
-    GpuState, MonitorIn, PageIn, PowerApplyIn, PowerSource, ProfileIn, Render as _, ResourceActIn,
-    ResourceList, Sample, Scenario, Snapshot, StatusIn, op,
+    GpuState, MonitorIn, PageIn, PowerApplyIn, PowerSource, ProfileIn, Reading, Render as _,
+    ResourceActIn, ResourceList, Sample, Scenario, SensorsIn, Snapshot, StatusIn, op,
 };
 
 /// How often the glance values refresh.
@@ -84,6 +84,7 @@ pub struct State {
     pub findings: Option<Vec<String>>,
     pub runs: Option<Vec<BenchRun>>,
     pub resources: Option<ResourceList>,
+    pub sensors: Option<Vec<Reading>>,
     pub pending: Option<Pending>,
     /// The last result or error, in one line.
     pub message: Option<String>,
@@ -170,7 +171,14 @@ impl LegionApp {
     fn load_page(&mut self, cx: &mut Context<Self>) {
         let client = self.client.clone();
         match self.page {
-            Page::Now => {}
+            Page::Now => {
+                let task = self.operator(cx, async move {
+                    client
+                        .call::<op::Sensors>(&SensorsIn { watch: false })
+                        .await
+                });
+                self.finish(cx, task, |app, readings| app.state.sensors = Some(readings));
+            }
             Page::Gpu => {
                 let task =
                     self.operator(
@@ -507,14 +515,45 @@ impl LegionApp {
         )
     }
 
+    /// Every sensor: source, name, and the value with its unit or the state.
+    fn sensors(&self, cx: &App) -> Div {
+        div()
+            .v_flex()
+            .gap_1()
+            .child(div().font_semibold().child("Sensors"))
+            .children(self.state.sensors.iter().flatten().map(|r| {
+                let value = r.value.map_or_else(
+                    || r.text.clone().unwrap_or_default(),
+                    |v| format!("{v:.1} {}", r.unit),
+                );
+                div()
+                    .h_flex()
+                    .gap_2()
+                    .text_sm()
+                    .child(
+                        div()
+                            .w(px(220.))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(r.source.clone()),
+                    )
+                    .child(div().w(px(260.)).child(r.name.clone()))
+                    .child(value)
+            }))
+    }
+
     fn page(&self, cx: &mut Context<Self>) -> Div {
         match self.page {
-            Page::Now => div().v_flex().gap_3().child(self.glance(cx)).child(
-                Button::new("preview-policy")
-                    .label("Check the power policy")
-                    .loading(self.state.busy)
-                    .on_click(cx.listener(|app, _, _, cx| app.preview_policy(cx))),
-            ),
+            Page::Now => div()
+                .v_flex()
+                .gap_3()
+                .child(self.glance(cx))
+                .child(
+                    Button::new("preview-policy")
+                        .label("Check the power policy")
+                        .loading(self.state.busy)
+                        .on_click(cx.listener(|app, _, _, cx| app.preview_policy(cx))),
+                )
+                .child(self.sensors(cx)),
             Page::Gpu => {
                 let mut page = div().v_flex().gap_2();
                 if let Some(gpu) = &self.state.gpu {

@@ -6,6 +6,8 @@
 | `load` | Load level (idle, normal, busy, overloaded) and why. |
 | `doctor` | Health findings: policy drift, conflicting units, packages, modules, GPU wiring, display, layers that fail their checks. Each graphics finding has an id in brackets. |
 | `monitor [--count <n>] [--interval-ms <ms>]` | Telemetry, one line per sample (count 1-3600, interval 100-60000 ms). |
+| `sensors [--watch]` | Every sensor in one table with its unit and source (hwmon, firmware fan RPM, NVIDIA only while awake, RAPL, PSI, eBPF, MSR throttle reasons, fan controls, power source), with history. |
+| `journalctl -o json -t legionctl-system LEGIONCTL_EVENT=<mode\|power-source\|workload\|throttle\|fan-mode>`, `busctl monitor org.legionctl.System1` | For other tools: the daemon's changes as journal entries and D-Bus signals. |
 | `capabilities`, `validate` | Capability coverage from the profile; a check of the profile and the shipped layers (no hardware access). |
 | `knobs list`, `knobs show <knob>` | Each knob: value now, the value the layers want, the firmware range, the policy; one knob's layer chain and history. |
 | `plan`, `rules list`, `rules show <layer>` | The desired state now: conditions, the layers that apply, the writes the daemon would make. |

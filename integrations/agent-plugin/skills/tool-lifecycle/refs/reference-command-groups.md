@@ -5,7 +5,7 @@ W workspace, M machine (polkit). "client" runs in the client only, with no opera
 
 | Group | Class | Runs in | Track with | Skill |
 | --- | --- | --- | --- | --- |
-| `status`, `load`, `doctor`, `capabilities`, `monitor`, `plan` | R | operator | `tui`, `doctor` | machine-tools |
+| `status`, `load`, `sensors`, `doctor`, `capabilities`, `monitor`, `plan` | R | operator | `tui`, `doctor` | machine-tools |
 | `validate` | R | operator | - | verify-and-ship |
 | `gpu`, `vfio`, `knobs`, `fan`, `battery` | R, M | daemon | its `status`/`show` | machine-tools |
 | `power`, `cleanup`, `tune`, `undo` | M | daemon (`undo` of `display.change`: as you) | `events`, `plan` | machine-tools |

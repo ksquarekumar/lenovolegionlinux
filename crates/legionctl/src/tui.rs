@@ -1,12 +1,12 @@
 //! Live dashboard: load pressure, machine state, workspaces and agent configs on one screen; `r` shows the resources
-//! (note 22) and runs their actions, each with its dry run first.
+//! (note 22) and runs their actions, each with its dry run first; `s` shows every sensor (note 16).
 
 use std::time::Duration;
 
 use anyhow::Result;
 use legionctl_api::{
-    ClientPath, ConfigFile, Empty, ProjectIn, Render as _, ResourceActIn, ResourceList, Snapshot,
-    StatusIn, Workspace, op,
+    ClientPath, ConfigFile, Empty, ProjectIn, Reading, Render as _, ResourceActIn, ResourceList,
+    SensorsIn, Snapshot, StatusIn, Workspace, op,
 };
 use legionctl_api::{Level, Pressure};
 use ratatui::Frame;
@@ -172,7 +172,7 @@ fn draw(f: &mut Frame, s: &Snapshot, workspaces: &[Workspace], configs: &[Config
     f.render_widget(configs_table(configs), cfg_area);
 
     f.render_widget(
-        Paragraph::new(" q quit · r resources · state refreshes every second").dim(),
+        Paragraph::new(" q quit · r resources · s sensors · state refreshes every second").dim(),
         footer,
     );
 }
@@ -296,6 +296,64 @@ fn resources(
     }
 }
 
+fn draw_sensors(f: &mut Frame, readings: &[Reading]) {
+    let [table_area, footer] =
+        Layout::vertical([Constraint::Min(8), Constraint::Length(1)]).areas(f.area());
+    let rows = readings.iter().map(|r| {
+        let value = r.value.map_or_else(
+            || r.text.clone().unwrap_or_default(),
+            |v| format!("{v:.1} {}", r.unit),
+        );
+        let low = r.history.iter().copied().reduce(f64::min);
+        let high = r.history.iter().copied().reduce(f64::max);
+        let range = low
+            .zip(high)
+            .filter(|_| r.history.len() > 1)
+            .map_or_else(String::new, |(l, h)| {
+                format!("{l:.1}-{h:.1} ({})", r.history.len())
+            });
+        Row::new(vec![r.source.clone(), r.name.clone(), value, range])
+    });
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(26),
+            Constraint::Percentage(35),
+            Constraint::Percentage(30),
+            Constraint::Min(10),
+        ],
+    )
+    .header(Row::new(vec!["source", "sensor", "value", "history"]).bold())
+    .block(Block::bordered().title(" sensors "));
+    f.render_widget(table, table_area);
+    f.render_widget(
+        Paragraph::new(" s back · q quit · refreshes every second").dim(),
+        footer,
+    );
+}
+
+/// The sensors view until `s` (back, `Ok(false)`) or `q` (`Ok(true)`).
+fn sensors(
+    terminal: &mut ratatui::DefaultTerminal,
+    client: &Client,
+    runtime: &tokio::runtime::Runtime,
+) -> Result<bool> {
+    loop {
+        let readings = runtime.block_on(client.call::<op::Sensors>(&SensorsIn { watch: false }))?;
+        terminal.draw(|f| draw_sensors(f, &readings))?;
+        if event::poll(Duration::from_secs(1))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            match key.code {
+                KeyCode::Char('q') => return Ok(true),
+                KeyCode::Char('s') | KeyCode::Esc => return Ok(false),
+                _ => {}
+            }
+        }
+    }
+}
+
 pub fn run() -> Result<()> {
     let client = Client::new("tui")?;
     let runtime = tokio::runtime::Runtime::new()?;
@@ -324,6 +382,9 @@ pub fn run() -> Result<()> {
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                     KeyCode::Char('r') if resources(&mut terminal, &client, &runtime)? => {
+                        return Ok(());
+                    }
+                    KeyCode::Char('s') if sensors(&mut terminal, &client, &runtime)? => {
                         return Ok(());
                     }
                     _ => {}

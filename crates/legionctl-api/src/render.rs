@@ -6,10 +6,10 @@ use crate::{
     BatteryState, BenchCompare, BenchRun, BootState, CapabilityList, Changes, Conditions,
     ConfigFile, ConfigView, DossierFindings, DossierInfo, Empty, EventRow, Explanation, Findings,
     GpuState, GreeterState, Guard, HookReply, HookTable, KernelBench, Knob, KnobDetail, Launch,
-    LayerList, Lines, LoadState, Lock, Manifest, PackageState, PlanView, Recording, Reminder,
-    RuleDetail, RuleState, Rules, RunEnv, Sample, SessionState, SetupReport, SkillInfo, Snapshot,
-    ToolCallRow, TuneReport, Validation, VfioDevices, WindowsState, WindowsVmBegun, Workspace,
-    WorkspaceStatus,
+    LayerList, Lines, LoadState, Lock, Manifest, PackageState, PlanView, Reading, Recording,
+    Reminder, RuleDetail, RuleState, Rules, RunEnv, Sample, SessionState, SetupReport, SkillInfo,
+    Snapshot, ToolCallRow, TuneReport, Validation, VfioDevices, WindowsState, WindowsVmBegun,
+    Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -865,6 +865,38 @@ impl Render for Vec<SessionState> {
 
 fn some(v: Option<f64>, unit: &str) -> String {
     v.map_or("-".into(), |v| format!("{v:.0}{unit}"))
+}
+
+impl Render for Vec<Reading> {
+    fn text(&self) -> String {
+        let mut out = Vec::new();
+        let mut source = "";
+        for r in self {
+            if r.source != source {
+                source = &r.source;
+                out.push(format!("{source}:"));
+            }
+            let value = r.value.map_or_else(
+                || r.text.clone().unwrap_or_default(),
+                |v| format!("{v:.1} {}", r.unit),
+            );
+            let range = r
+                .history
+                .iter()
+                .copied()
+                .reduce(f64::min)
+                .zip(r.history.iter().copied().reduce(f64::max));
+            match range {
+                Some((low, high)) if r.history.len() > 1 => out.push(format!(
+                    "  {:<34} {value:<14} ({low:.1}-{high:.1} in {} samples)",
+                    r.name,
+                    r.history.len()
+                )),
+                _ => out.push(format!("  {:<34} {value}", r.name)),
+            }
+        }
+        out.join("\n")
+    }
 }
 
 impl Render for Vec<Sample> {

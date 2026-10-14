@@ -1698,6 +1698,7 @@ mod daemon_process {
 mod operator_and_daemon {
     use super::daemon_process::{Kill, daemon, start, wait_for};
     use super::*;
+    use futures_util::StreamExt;
     use serde_json::Value;
 
     /// The operator of machine `m` on its private bus (the daemon's).
@@ -2165,20 +2166,40 @@ mod operator_and_daemon {
         let workload = || m.file("/run/legionctl/workload");
 
         let before = run();
-        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let (stand_ins, _asked, _processes) = start(&m).await;
         wait_for("the build that ran before the daemon", || {
             m.file(SWAPPINESS) == "10" && workload() == "build"
         });
         assert_eq!(m.file("/run/legionctl/workload.error"), "<missing>");
+        // other tools hear each change of the kinds (WorkloadChanged)
+        let system = zbus::Proxy::new(
+            &stand_ins,
+            "org.legionctl.System1",
+            "/org/legionctl/System1",
+            "org.legionctl.System1",
+        )
+        .await
+        .unwrap();
+        let mut kinds = system.receive_signal("WorkloadChanged").await.unwrap();
+        let mut next = async || -> Vec<String> {
+            let signal = tokio::time::timeout(std::time::Duration::from_secs(15), kinds.next())
+                .await
+                .unwrap()
+                .unwrap();
+            signal.body().deserialize::<(Vec<String>,)>().unwrap().0
+        };
         drop(before);
         wait_for("the end of the build", || {
             m.file(SWAPPINESS) == "150" && workload().is_empty()
         });
+        // the start's announcement can come after the subscription
+        while !next().await.is_empty() {}
 
         let _after = run();
         wait_for("a build that starts while the daemon runs", || {
             m.file(SWAPPINESS) == "10" && workload() == "build"
         });
+        assert_eq!(next().await, ["build"]);
     }
 
     const SWAPPINESS: &str = "/proc/sys/vm/swappiness";
@@ -6133,5 +6154,489 @@ mod fan_control {
             "{text}"
         );
         assert_eq!(m.file("/dev/port"), "<missing>");
+    }
+}
+
+/// `legionctl sensors` (todo-94) and the daemon's events for other tools (todo-95), on the recorded machine with the
+/// daemon on its private bus.
+mod sensors_and_events {
+    use super::daemon_process::{Kill, start, wait_for};
+    use super::operator_and_daemon::on_bus;
+    use super::*;
+    use futures_util::StreamExt;
+    use serde_json::Value;
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    /// A sysfs file that records each read: a FIFO whose writer gives `value` to each reader, then notes the read.
+    fn watched(path: &Path, value: &'static str, reads: &Arc<Mutex<Vec<PathBuf>>>) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let (path, reads) = (path.to_path_buf(), reads.clone());
+        std::thread::spawn(move || {
+            loop {
+                // the open waits for a reader
+                std::fs::write(&path, value).unwrap();
+                reads.lock().unwrap().push(path.clone());
+            }
+        });
+    }
+
+    fn row<'a>(rows: &'a Value, source: &str, name: &str) -> &'a Value {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["source"] == source && r["name"] == name)
+            .unwrap_or_else(|| panic!("no row {source} / {name}: {rows:#}"))
+    }
+
+    /// CPU 0's MSR with `bits` in `IA32_PACKAGE_THERM_STATUS` (bit 0: thermal now, bit 1: thermal logged).
+    fn msr(m: &Machine, bits: u8) {
+        let msr = m.dir.join("root/dev/cpu/0/msr");
+        std::fs::create_dir_all(msr.parent().unwrap()).unwrap();
+        let mut bytes = vec![0u8; 0x1B1 + 8];
+        bytes[0x1B1] = bits;
+        std::fs::write(&msr, bytes).unwrap();
+    }
+
+    /// hwmon device `n` of machine `m`: its name and files.
+    fn hwmon(m: &Machine, n: u32, name: &str, files: &[(&str, &str)]) {
+        m.set(&format!("/sys/class/hwmon/hwmon{n}/name"), name);
+        for (file, value) in files {
+            m.set(&format!("/sys/class/hwmon/hwmon{n}/{file}"), value);
+        }
+    }
+
+    /// The sensors of machine `m`: coretemp, the battery and an `NVMe` drive on hwmon; the NVIDIA GPU asleep with a
+    /// hwmon device on it whose reads are recorded, a `nvidia-smi` that logs each query, and the MSR's thermal bits.
+    /// Returns the reads of the sleeping device's files and the `nvidia-smi` log.
+    fn sensor_machine(m: &Machine) -> (Arc<Mutex<Vec<PathBuf>>>, PathBuf) {
+        hwmon(
+            m,
+            0,
+            "coretemp",
+            &[
+                ("temp1_input", "40000"),
+                ("temp1_label", "Package id 0"),
+                ("temp2_input", "51000"),
+                ("temp1_crit", "100000"),
+            ],
+        );
+        hwmon(
+            m,
+            1,
+            "BAT0",
+            &[("power1_input", "12500000"), ("in0_input", "16800")],
+        );
+        hwmon(
+            m,
+            2,
+            "nvme",
+            &[
+                ("temp1_input", "38850"),
+                ("temp1_label", "Composite"),
+                ("curr1_input", "1500"),
+                ("temp1_max", "84850"),
+            ],
+        );
+        // the NVIDIA GPU sleeps; a hwmon device on it (nouveau's) must not be read, and nvidia-smi must not query it
+        // (the AC policy's persistence mode call is not a query)
+        let gpu = "/sys/bus/pci/devices/0000:01:00.0";
+        m.set(&format!("{gpu}/vendor"), "0x10de");
+        m.set(&format!("{gpu}/class"), "0x030000");
+        m.set(&format!("{gpu}/power/runtime_status"), "suspended");
+        hwmon(m, 3, "nouveau", &[]);
+        std::os::unix::fs::symlink(
+            "../../../bus/pci/devices/0000:01:00.0",
+            m.dir.join("root/sys/class/hwmon/hwmon3/device"),
+        )
+        .unwrap();
+        let reads = Arc::default();
+        watched(
+            &m.dir.join("root/sys/class/hwmon/hwmon3/temp1_input"),
+            "45000\n",
+            &reads,
+        );
+        let smi = m.dir.join("nvidia-smi.log");
+        Machine::script(
+            &m.dir.join("bin"),
+            "nvidia-smi",
+            &format!(
+                "case \"$1\" in --query-gpu*) echo \"$@\" >> {};; esac",
+                smi.display()
+            ),
+        );
+        msr(m, 0b11);
+        (reads, smi)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sensors_merge_every_source_with_units_and_ring_history_and_never_wake_a_sleeping_gpu()
+    {
+        let m = Machine::new("sensors");
+        m.verify_fan_calls();
+        let acpi = AcpiCall::start(&m, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        let (reads, smi) = sensor_machine(&m);
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "sensors");
+        let json = |args: &[&str]| -> Value {
+            serde_json::from_str(&op.ok(&[args, &["--json"]].concat())).unwrap()
+        };
+
+        // a monitor sample goes into the ring; the next sensors view has it as history
+        json(&["monitor", "--interval-ms", "100"]);
+        m.set("/sys/class/hwmon/hwmon0/temp1_input", "70000");
+        let rows = json(&["sensors"]);
+        let package = row(&rows, "hwmon0 coretemp", "Package id 0");
+        assert_eq!(
+            (&package["value"], &package["unit"], &package["history"]),
+            (
+                &serde_json::json!(70.0),
+                &serde_json::json!("°C"),
+                &serde_json::json!([40.0, 70.0])
+            ),
+            "{rows:#}"
+        );
+        for (source, name, value, unit) in [
+            ("hwmon0 coretemp", "temp2", 51.0, "°C"),
+            ("hwmon1 BAT0", "power1", 12.5, "W"),
+            ("hwmon1 BAT0", "in0", 16.8, "V"),
+            ("hwmon2 nvme", "Composite", 38.85, "°C"),
+            ("hwmon2 nvme", "curr1", 1.5, "A"),
+            // the firmware's fan RPM through the daemon's acpi_call (the stand-in answers 0)
+            ("firmware acpi_call", "fan1", 0.0, "RPM"),
+            ("firmware acpi_call", "fan2", 0.0, "RPM"),
+        ] {
+            let r = row(&rows, source, name);
+            assert_eq!(
+                (&r["value"], &r["unit"]),
+                (&serde_json::json!(value), &serde_json::json!(unit)),
+                "{r}"
+            );
+        }
+        // limits are not readings
+        let hwmon_rows = |rows: &Value, device: &str| {
+            rows.as_array()
+                .unwrap()
+                .iter()
+                .filter(|r| r["source"] == device)
+                .count()
+        };
+        assert_eq!(hwmon_rows(&rows, "hwmon2 nvme"), 2, "{rows:#}");
+        assert_eq!(hwmon_rows(&rows, "hwmon0 coretemp"), 2, "{rows:#}");
+        // the sleeping GPU: its state only; the MSR through the daemon, the fan controls, the power source
+        for (source, name, text) in [
+            ("PCI runtime PM", "NVIDIA GPU", "suspended"),
+            (
+                "hwmon3 nouveau",
+                "device",
+                "asleep, not read (a read wakes it)",
+            ),
+            ("MSR", "throttle reasons now", "thermal"),
+            ("legionctl-system", "firmware mode", "max-power"),
+            ("legionctl-system", "fan max mode", "off"),
+            ("legionctl-system", "fan table", "1 2 3 4 5 6 7 8 9 10"),
+            ("power_supply", "power source", "ac"),
+            ("eBPF workload", "workload", "none"),
+        ] {
+            assert_eq!(row(&rows, source, name)["text"], text, "{rows:#}");
+        }
+        assert_eq!(hwmon_rows(&rows, "nvidia-smi"), 0, "{rows:#}");
+        assert!(!smi.exists(), "nvidia-smi queried the sleeping GPU");
+        assert_eq!(
+            *reads.lock().unwrap(),
+            Vec::<PathBuf>::new(),
+            "a sleeping device's sensor was read"
+        );
+
+        legionctl_wmi_is_the_fan_source(&m, &op, &acpi);
+
+        // the text groups by source, with the range of the history
+        let text = op.ok(&["sensors"]);
+        assert!(text.contains("hwmon0 coretemp:\n  Package id 0"), "{text}");
+        assert!(text.contains("(40.0-70.0 in 5 samples)"), "{text}");
+
+        // --watch: a view each second, each with one more sample of history
+        assert_eq!(watched_histories(&op), (6, 7));
+
+        // the same channels in OpenMetrics
+        let metrics = metrics(&op);
+        for line in [
+            "legionctl_hwmon_celsius{device=\"hwmon0 coretemp\",sensor=\"Package id 0\"} 70",
+            "legionctl_hwmon_watts{device=\"hwmon1 BAT0\",sensor=\"power1\"} 12.5",
+            "legionctl_hwmon_rpm{device=\"hwmon4 legionctl_wmi\",sensor=\"fan1\"} 2200",
+            "legionctl_throttle_active{reason=\"thermal\"} 1",
+        ] {
+            assert!(metrics.contains(line), "{line}\n{metrics}");
+        }
+        assert_eq!(*reads.lock().unwrap(), Vec::<PathBuf>::new());
+    }
+
+    /// With the `legionctl-wmi` module loaded, its hwmon is the fan source: no firmware rows, and the daemon makes no
+    /// more `acpi_call` RPM calls.
+    fn legionctl_wmi_is_the_fan_source(m: &Machine, op: &Operator, acpi: &AcpiCall) {
+        let json = |args: &[&str]| -> Value {
+            serde_json::from_str(&op.ok(&[args, &["--json"]].concat())).unwrap()
+        };
+        let hwmon_rows = |rows: &Value, device: &str| {
+            rows.as_array()
+                .unwrap()
+                .iter()
+                .filter(|r| r["source"] == device)
+                .count()
+        };
+        // the legionctl-wmi module loaded: its hwmon is the fan source, and the daemon calls acpi_call no more for RPM
+        let rpm_calls = || {
+            acpi.calls()
+                .iter()
+                .filter(|c| c.starts_with("\\_SB_.GZFD.WMAE 0 17"))
+                .count()
+        };
+        let before = rpm_calls();
+        assert!(before > 0, "{:?}", acpi.calls());
+        hwmon(
+            m,
+            4,
+            "legionctl_wmi",
+            &[("fan1_input", "2200"), ("fan2_input", "2400")],
+        );
+        let rows = json(&["sensors"]);
+        assert_eq!(row(&rows, "hwmon4 legionctl_wmi", "fan1")["value"], 2200.0);
+        assert_eq!(row(&rows, "hwmon4 legionctl_wmi", "fan2")["unit"], "RPM");
+        assert_eq!(hwmon_rows(&rows, "firmware acpi_call"), 0, "{rows:#}");
+        assert_eq!(rpm_calls(), before, "{:?}", acpi.calls());
+        let monitor = json(&["monitor", "--interval-ms", "100"]);
+        assert_eq!(
+            monitor[0]["fan_rpm"],
+            serde_json::json!({"fan1": 2200, "fan2": 2400})
+        );
+    }
+
+    /// The history length of coretemp's package temperature in the first two views of `sensors --watch --json`.
+    fn watched_histories(op: &Operator) -> (usize, usize) {
+        let mut watch = Kill(
+            std::process::Command::new(env!("CARGO_BIN_EXE_legionctl"))
+                .args(["sensors", "--watch", "--json"])
+                .env_clear()
+                .env("XDG_RUNTIME_DIR", &op.runtime)
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let mut lines =
+            std::io::BufRead::lines(std::io::BufReader::new(watch.0.stdout.take().unwrap()));
+        let mut history = || {
+            let view: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+            row(&view, "hwmon0 coretemp", "Package id 0")["history"]
+                .as_array()
+                .unwrap()
+                .len()
+        };
+        (history(), history())
+    }
+
+    /// `GET /v1/metrics` of the operator.
+    fn metrics(op: &Operator) -> String {
+        let token = std::fs::read_to_string(op.runtime.join(legionctl_api::USER_TOKEN)).unwrap();
+        let mut stream =
+            std::os::unix::net::UnixStream::connect(op.runtime.join("legionctl/api.sock")).unwrap();
+        std::io::Write::write_all(
+            &mut stream,
+            format!("GET /v1/metrics HTTP/1.1\r\nhost: l\r\nconnection: close\r\nauthorization: Bearer {token}\r\n\r\n")
+                .as_bytes(),
+        )
+        .unwrap();
+        let mut metrics = String::new();
+        std::io::Read::read_to_string(&mut stream, &mut metrics).unwrap();
+        metrics
+    }
+
+    /// The journal's native socket, a stand-in in the machine's tree: each entry as its fields.
+    fn journal(m: &Machine) -> Arc<Mutex<Vec<BTreeMap<String, String>>>> {
+        let path = m.dir.join("root/run/systemd/journal/socket");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let socket = std::os::unix::net::UnixDatagram::bind(&path).unwrap();
+        let entries = Arc::<Mutex<Vec<BTreeMap<String, String>>>>::default();
+        let kept = entries.clone();
+        std::thread::spawn(move || {
+            let mut buf = vec![0u8; 65536];
+            while let Ok(n) = socket.recv(&mut buf) {
+                let entry = String::from_utf8_lossy(&buf[..n])
+                    .lines()
+                    .filter_map(|l| l.split_once('='))
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect();
+                kept.lock().unwrap().push(entry);
+            }
+        });
+        entries
+    }
+
+    /// The signals other tools follow, as (member, arguments), from now on.
+    async fn collect(system: &zbus::Proxy<'static>) -> Arc<Mutex<Vec<(String, Value)>>> {
+        let signals = Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
+        let mut stream = system.receive_all_signals().await.unwrap();
+        let kept = signals.clone();
+        tokio::spawn(async move {
+            while let Some(s) = stream.next().await {
+                let member = s.header().member().unwrap().to_string();
+                let body = match member.as_str() {
+                    "PowerSourceChanged" => {
+                        serde_json::json!(s.body().deserialize::<(String,)>().unwrap().0)
+                    }
+                    "WorkloadChanged" | "ThrottleChanged" => {
+                        serde_json::json!(s.body().deserialize::<(Vec<String>,)>().unwrap().0)
+                    }
+                    "ModeChanged" => {
+                        serde_json::json!(s.body().deserialize::<(String, bool, String)>().unwrap())
+                    }
+                    "FanModeChanged" => {
+                        serde_json::json!(s.body().deserialize::<(bool,)>().unwrap().0)
+                    }
+                    _ => continue,
+                };
+                kept.lock().unwrap().push((member, body));
+            }
+        });
+        signals
+    }
+
+    /// One journal entry per signal, in the same order, with the fields of each event.
+    fn assert_journal(entries: &[BTreeMap<String, String>]) {
+        let event = |e: &BTreeMap<String, String>, keys: &[&str]| -> Vec<String> {
+            keys.iter()
+                .map(|k| e.get(*k).cloned().unwrap_or_else(|| format!("<no {k}>")))
+                .collect()
+        };
+        let all: Vec<Vec<String>> = entries
+            .iter()
+            .map(|e| event(e, &["SYSLOG_IDENTIFIER", "LEGIONCTL_EVENT", "MESSAGE"]))
+            .collect();
+        assert_eq!(
+            all,
+            [
+                ["legionctl-system", "workload", "workload build"],
+                [
+                    "legionctl-system",
+                    "mode",
+                    "mode balanced (default on battery)"
+                ],
+                ["legionctl-system", "power-source", "power source battery"],
+                ["legionctl-system", "mode", "mode performance (Fn+Q choice)"],
+                ["legionctl-system", "throttle", "throttling: thermal"],
+                ["legionctl-system", "throttle", "throttling stopped"],
+                ["legionctl-system", "fan-mode", "fan max mode on"],
+            ],
+            "{entries:#?}"
+        );
+        assert_eq!(event(&entries[0], &["LEGIONCTL_WORKLOAD"]), ["build"]);
+        assert_eq!(event(&entries[2], &["LEGIONCTL_SOURCE"]), ["battery"]);
+        assert_eq!(
+            event(
+                &entries[3],
+                &[
+                    "LEGIONCTL_MODE",
+                    "LEGIONCTL_FN_Q_CHOICE",
+                    "LEGIONCTL_SOURCE"
+                ]
+            ),
+            ["performance", "1", "battery"]
+        );
+        assert_eq!(event(&entries[4], &["LEGIONCTL_REASONS"]), ["thermal"]);
+        assert_eq!(event(&entries[6], &["LEGIONCTL_FAN_MAX"]), ["on"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn each_change_other_tools_follow_is_one_signal_and_one_journal_entry() {
+        let m = Machine::new("events-out");
+        let _acpi = AcpiCall::start(&m, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        let entries = journal(&m);
+        let (stand_ins, _asked, _processes) = start(&m).await;
+        let system = zbus::Proxy::new(
+            &stand_ins,
+            "org.legionctl.System1",
+            "/org/legionctl/System1",
+            "org.legionctl.System1",
+        )
+        .await
+        .unwrap();
+        let signals = collect(&system).await;
+        let resume = async || {
+            stand_ins
+                .emit_signal(
+                    None::<()>,
+                    "/org/freedesktop/login1",
+                    "org.freedesktop.login1.Manager",
+                    "PrepareForSleep",
+                    &(false,),
+                )
+                .await
+                .unwrap();
+        };
+        let wait = |n: usize| {
+            wait_for(&format!("{n} signals"), || {
+                signals.lock().unwrap().len() >= n
+            });
+        };
+
+        // a workload starts (the eBPF sensor writes the kinds; as root in CI it does, here the test does, after the
+        // sensor that cannot load wrote why at start)
+        wait_for("the workload sensor's start", || {
+            m.file("/run/legionctl/workload.error") != "<missing>"
+        });
+        m.set("/run/legionctl/workload", "build");
+        resume().await;
+        wait(1);
+        // the AC adapter is unplugged: the battery policy changes the mode too
+        m.set("/sys/class/power_supply/ADP0/online", "0");
+        resume().await;
+        wait(3);
+        // Fn+Q to performance: the firmware's choice, which the policy keeps
+        m.set(PROFILE_PATH, "performance");
+        m.record(Key::Override, "performance");
+        resume().await;
+        wait(4);
+        // throttling starts and stops (the MSR's thermal status bit)
+        msr(&m, 0b11);
+        resume().await;
+        wait(5);
+        msr(&m, 0b10);
+        resume().await;
+        wait(6);
+        // fan max mode through the daemon's method
+        let _: Vec<String> = system.call("SetFanMax", &(true,)).await.unwrap();
+        wait(7);
+        // one more resume changes nothing that other tools follow: nothing more is announced
+        resume().await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let signals = signals.lock().unwrap().clone();
+        let shown: Vec<(&str, &Value)> = signals.iter().map(|(m, b)| (m.as_str(), b)).collect();
+        assert_eq!(
+            shown,
+            [
+                ("WorkloadChanged", &serde_json::json!(["build"])),
+                (
+                    "ModeChanged",
+                    &serde_json::json!(["balanced", false, "battery"])
+                ),
+                ("PowerSourceChanged", &serde_json::json!("battery")),
+                (
+                    "ModeChanged",
+                    &serde_json::json!(["performance", true, "battery"])
+                ),
+                ("ThrottleChanged", &serde_json::json!(["thermal"])),
+                ("ThrottleChanged", &serde_json::json!([])),
+                ("FanModeChanged", &serde_json::json!(true)),
+            ],
+            "{signals:?}"
+        );
+        assert_journal(&entries.lock().unwrap());
     }
 }

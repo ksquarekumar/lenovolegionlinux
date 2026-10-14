@@ -14,8 +14,10 @@
 //!
 //! It serves `org.legionctl.System1` on the system bus: methods change the machine after polkit authorizes the
 //! caller, and signals tell the session what changed (`Changed`), the firmware mode after a change (`ModeChanged`),
-//! Fn lock (`FnLock`) and which Fn key was pressed (`Key`). Decisions come from `legionctl_machine`; this file only
-//! wires event sources and the bus to it.
+//! Fn lock (`FnLock`) and which Fn key was pressed (`Key`). After each event and each change, the state that other
+//! tools follow (firmware mode, power source, workload, throttling, fan max mode) is compared with the last one
+//! announced; each difference is a signal and a structured journal entry (note 16, "For other tools"). Decisions come
+//! from `legionctl_machine`; this file only wires event sources and the bus to it.
 
 mod exec;
 mod folders;
@@ -33,13 +35,13 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use legionctl_machine::keys::{self, Debounce, EVENT_SIZE, FN_KEYS_DEVICE};
-use legionctl_machine::ledger::{Key, Ledger};
+use legionctl_machine::ledger::{FanKey, Key, Ledger};
 use legionctl_machine::policy::{self, Machine, Options, Source, Step};
 use legionctl_machine::react::{Event, react};
 use legionctl_machine::sysroot::SysRoot;
 use legionctl_machine::{
-    battery, boot, cleanup, configset, fan, gpu, greeter, knobs, profile, sets, telemetry, tune,
-    vfio, windows, winvm,
+    battery, boot, cleanup, configset, fan, firmware, gpu, greeter, knobs, profile, sets,
+    telemetry, tune, vfio, windows, winvm,
 };
 use tokio::io::unix::AsyncFd;
 use tokio::io::{Interest, Ready};
@@ -158,19 +160,6 @@ fn carry_out(
     on_machine(root, |m| Ok(policy::execute(root, m.ledger, &plan(m)?)))
 }
 
-/// A fan change: a refused plan is the caller's error; the session hears what changed.
-async fn machine_change(
-    root: &SysRoot,
-    emitter: &SignalEmitter<'_>,
-    cause: &str,
-    plan: impl FnOnce(&Machine) -> Result<Vec<Step>>,
-) -> zbus::fdo::Result<Vec<String>> {
-    let lines =
-        carry_out(root, plan).map_err(|e| zbus::fdo::Error::InvalidArgs(format!("{e:#}")))?;
-    System1::changed(emitter, cause, &lines).await?;
-    Ok(lines)
-}
-
 /// What the session shows about the firmware mode: the mode, whether it is the user's Fn+Q choice, and the power
 /// source whose default it is otherwise.
 #[derive(Debug, Clone, PartialEq)]
@@ -194,13 +183,154 @@ fn mode(root: &SysRoot) -> Option<ModeState> {
     })
 }
 
+/// The state other tools follow, as last announced.
+#[derive(Debug, Clone, PartialEq)]
+struct Observed {
+    mode: Option<ModeState>,
+    workload: BTreeSet<String>,
+    /// Throttle reasons active now; `None` without the msr module.
+    throttle: Option<Vec<String>>,
+    fan_max: bool,
+}
+
+fn observe(root: &SysRoot) -> Observed {
+    Observed {
+        mode: mode(root),
+        workload: configset::workload(root),
+        throttle: firmware::current_throttle_reasons(root)
+            .map(|r| r.into_iter().map(String::from).collect()),
+        fan_max: Ledger::open(root).is_ok_and(|l| l.fan(FanKey::Max).is_some()),
+    }
+}
+
+/// The journal's native socket.
+const JOURNAL: &str = "/run/systemd/journal/socket";
+
+/// One structured journal entry: `MESSAGE`, `LEGIONCTL_EVENT=<event>` and the event's fields as `LEGIONCTL_<KEY>`
+/// (`journalctl -t legionctl-system LEGIONCTL_EVENT=<event>`). The values have no line breaks.
+fn journal(root: &SysRoot, event: &str, message: &str, fields: &[(&str, String)]) {
+    let entry: String = fields.iter().fold(
+        format!(
+            "MESSAGE={message}\nPRIORITY=6\nSYSLOG_IDENTIFIER=legionctl-system\nLEGIONCTL_EVENT={event}\n"
+        ),
+        |entry, (key, value)| entry + "LEGIONCTL_" + key + "=" + value + "\n",
+    );
+    let sent = std::os::unix::net::UnixDatagram::unbound()
+        .and_then(|socket| socket.send_to(entry.as_bytes(), root.path(JOURNAL)));
+    if let Err(e) = sent {
+        eprintln!("{message} (not in the journal: {e})");
+    }
+}
+
+fn sent(what: &str, result: zbus::Result<()>) {
+    if let Err(e) = result {
+        eprintln!("cannot send {what}: {e}");
+    }
+}
+
+/// Compare the state other tools follow with the last one announced; each difference is one signal and one journal
+/// entry.
+async fn announce(root: &SysRoot, emitter: &SignalEmitter<'_>, announced: &Mutex<Observed>) {
+    let now = observe(root);
+    let before = std::mem::replace(
+        &mut *announced.lock().unwrap_or_else(PoisonError::into_inner),
+        now.clone(),
+    );
+    if now.mode != before.mode
+        && let Some(m) = &now.mode
+    {
+        let why = if m.fn_q_choice {
+            "Fn+Q choice".to_string()
+        } else {
+            format!("default on {}", m.source)
+        };
+        journal(
+            root,
+            "mode",
+            &format!("mode {} ({why})", m.mode),
+            &[
+                ("MODE", m.mode.clone()),
+                ("FN_Q_CHOICE", u8::from(m.fn_q_choice).to_string()),
+                ("SOURCE", m.source.into()),
+            ],
+        );
+        sent(
+            "ModeChanged",
+            System1::mode_changed(emitter, &m.mode, m.fn_q_choice, m.source).await,
+        );
+    }
+    let source = |o: &Observed| o.mode.as_ref().map(|m| m.source);
+    if let Some(s) = source(&now).filter(|s| Some(*s) != source(&before)) {
+        journal(
+            root,
+            "power-source",
+            &format!("power source {s}"),
+            &[("SOURCE", s.into())],
+        );
+        sent(
+            "PowerSourceChanged",
+            System1::power_source_changed(emitter, s).await,
+        );
+    }
+    if now.workload != before.workload {
+        let kinds: Vec<String> = now.workload.iter().cloned().collect();
+        let shown = if kinds.is_empty() {
+            "none".into()
+        } else {
+            kinds.join(",")
+        };
+        journal(
+            root,
+            "workload",
+            &format!("workload {shown}"),
+            &[("WORKLOAD", shown.clone())],
+        );
+        sent(
+            "WorkloadChanged",
+            System1::workload_changed(emitter, &kinds).await,
+        );
+    }
+    if now.throttle != before.throttle
+        && let Some(reasons) = &now.throttle
+    {
+        let message = if reasons.is_empty() {
+            "throttling stopped".to_string()
+        } else {
+            format!("throttling: {}", reasons.join(", "))
+        };
+        journal(
+            root,
+            "throttle",
+            &message,
+            &[("REASONS", reasons.join(","))],
+        );
+        sent(
+            "ThrottleChanged",
+            System1::throttle_changed(emitter, reasons).await,
+        );
+    }
+    if now.fan_max != before.fan_max {
+        let on = if now.fan_max { "on" } else { "off" };
+        journal(
+            root,
+            "fan-mode",
+            &format!("fan max mode {on}"),
+            &[("FAN_MAX", on.into())],
+        );
+        sent(
+            "FanModeChanged",
+            System1::fan_mode_changed(emitter, now.fan_max).await,
+        );
+    }
+}
+
 /// One event: log what happened (every event but the tick leaves a line), tell the session if anything changed, and
-/// announce the firmware mode when it differs from the last one announced.
+/// announce what other tools follow when it differs from the last one announced.
 async fn handle(
     root: &SysRoot,
     emitter: &SignalEmitter<'_>,
     event: Event,
-    announced: &mut Option<ModeState>,
+    announced: &Mutex<Observed>,
 ) {
     match carry_out(root, |m| react(m, event)) {
         Ok(lines) if lines.is_empty() => {
@@ -218,20 +348,7 @@ async fn handle(
         }
         Err(e) => eprintln!("{event:?}: error: {e:#}"),
     }
-    let now = mode(root);
-    if now != *announced
-        && let Some(m) = &now
-    {
-        eprintln!(
-            "{event:?}: mode {}{}",
-            m.mode,
-            if m.fn_q_choice { " (Fn+Q choice)" } else { "" }
-        );
-        if let Err(e) = System1::mode_changed(emitter, &m.mode, m.fn_q_choice, m.source).await {
-            eprintln!("{event:?}: cannot send ModeChanged: {e}");
-        }
-    }
-    *announced = now;
+    announce(root, emitter, announced).await;
 }
 
 /// Carry out a boot plan step by step, stopping at the first failure: a later step (a firmware entry) must not follow a
@@ -494,9 +611,36 @@ struct System1 {
     exec_error: Option<String>,
     /// The hash of the interface this build serves (`Version`).
     version: String,
+    /// What other tools heard last (shared with the event loop).
+    announced: Arc<Mutex<Observed>>,
 }
 
 impl System1 {
+    /// Tell the session what changed, then announce what other tools follow.
+    async fn tell(
+        &self,
+        emitter: &SignalEmitter<'_>,
+        cause: &str,
+        lines: &[String],
+    ) -> zbus::Result<()> {
+        Self::changed(emitter, cause, lines).await?;
+        announce(&self.root, emitter, &self.announced).await;
+        Ok(())
+    }
+
+    /// A fan or battery change: a refused plan is the caller's error; the session hears what changed.
+    async fn machine_change(
+        &self,
+        emitter: &SignalEmitter<'_>,
+        cause: &str,
+        plan: impl FnOnce(&Machine) -> Result<Vec<Step>>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        let lines = carry_out(&self.root, plan)
+            .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("{e:#}")))?;
+        self.tell(emitter, cause, &lines).await?;
+        Ok(lines)
+    }
+
     /// A layer changed (`line` says how): apply the layers again and tell the session.
     async fn layers_changed(
         &self,
@@ -510,7 +654,7 @@ impl System1 {
                 carry_out(&self.root, |m| react(m, Event::Reload)).map_err(|e| failed(&e))?,
             );
         }
-        Self::changed(emitter, cause, &lines).await?;
+        self.tell(emitter, cause, &lines).await?;
         Ok(lines)
     }
 }
@@ -612,7 +756,7 @@ impl System1 {
         let lines = carry_out(&self.root, |m| Ok(m.apply(source, Options::default())?.1))
             .map_err(|e| failed(&e))?;
         if !lines.is_empty() {
-            Self::changed(&emitter, "ApplyPower", &lines).await?;
+            self.tell(&emitter, "ApplyPower", &lines).await?;
         }
         Ok(lines)
     }
@@ -630,7 +774,7 @@ impl System1 {
         }
         let lines = carry_out(&self.root, |m| react(m, Event::Reload)).map_err(|e| failed(&e))?;
         if !lines.is_empty() {
-            Self::changed(&emitter, "Reload", &lines).await?;
+            self.tell(&emitter, "Reload", &lines).await?;
         }
         Ok(lines)
     }
@@ -693,7 +837,7 @@ impl System1 {
         authorize(conn, &header, "org.legionctl.knobs.hold").await?;
         let lines = carry_out(&self.root, |m| knobs::hold_plan(m, &values))
             .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("{e:#}")))?;
-        Self::changed(&emitter, "Hold", &lines).await?;
+        self.tell(&emitter, "Hold", &lines).await?;
         Ok(lines)
     }
 
@@ -727,7 +871,7 @@ impl System1 {
         lines.extend(
             carry_out(&self.root, |m| Ok(m.apply(None, again)?.1)).map_err(|e| failed(&e))?,
         );
-        Self::changed(&emitter, "Release", &lines).await?;
+        self.tell(&emitter, "Release", &lines).await?;
         Ok(lines)
     }
 
@@ -758,7 +902,7 @@ impl System1 {
                 return Err(zbus::fdo::Error::Failed(format!("{e:#}")));
             }
         }
-        Self::changed(&emitter, "Passthrough", &lines).await?;
+        self.tell(&emitter, "Passthrough", &lines).await?;
         Ok(lines)
     }
 
@@ -794,7 +938,7 @@ impl System1 {
                 undone.join("; ")
             )));
         }
-        Self::changed(&emitter, "WindowsVmBegin", &lines).await?;
+        self.tell(&emitter, "WindowsVmBegin", &lines).await?;
         Ok((lines, record.devices, msdm))
     }
 
@@ -820,7 +964,7 @@ impl System1 {
         let line = winvm::set_autostart_rule(&self.root, on.then_some(user.as_str()))
             .map_err(|e| failed(&e))?;
         let lines = vec![line];
-        Self::changed(&emitter, "SetWindowsAutostart", &lines).await?;
+        self.tell(&emitter, "SetWindowsAutostart", &lines).await?;
         Ok(lines)
     }
 
@@ -840,7 +984,7 @@ impl System1 {
             serde_json::from_str(&kept).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
         let lines = winvm::end(&self.root, &record);
         ledger.set(Key::WindowsVm, None).map_err(|e| failed(&e))?;
-        Self::changed(&emitter, "WindowsVmEnd", &lines).await?;
+        self.tell(&emitter, "WindowsVmEnd", &lines).await?;
         Ok(lines)
     }
 
@@ -855,7 +999,7 @@ impl System1 {
         authorize(conn, &header, "org.legionctl.vfio").await?;
         let uid = caller_uid(conn, &header).await?;
         let lines = gpu_release(&self.root, uid).map_err(|e| failed(&e))?;
-        Self::changed(&emitter, "GpuRelease", &lines).await?;
+        self.tell(&emitter, "GpuRelease", &lines).await?;
         Ok(lines)
     }
 
@@ -868,7 +1012,7 @@ impl System1 {
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.vfio").await?;
         let lines = gpu_return(&self.root).map_err(|e| failed(&e))?;
-        Self::changed(&emitter, "GpuReturn", &lines).await?;
+        self.tell(&emitter, "GpuReturn", &lines).await?;
         Ok(lines)
     }
 
@@ -905,7 +1049,7 @@ impl System1 {
         .await
         .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
         .map_err(|e| failed(&e))?;
-        Self::changed(&emitter, "Boot", &lines).await?;
+        self.tell(&emitter, "Boot", &lines).await?;
         Ok(lines)
     }
 
@@ -944,7 +1088,7 @@ impl System1 {
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
             .map_err(|e| failed(&e))?;
         // the signal goes out before the restart takes the bus down
-        Self::changed(&emitter, "Kernel", &lines).await?;
+        self.tell(&emitter, "Kernel", &lines).await?;
         let Some(restart) = restart else {
             return Ok(lines);
         };
@@ -973,7 +1117,7 @@ impl System1 {
         .await
         .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
         .map_err(|e| failed(&e))?;
-        Self::changed(&emitter, "Greeter", &lines).await?;
+        self.tell(&emitter, "Greeter", &lines).await?;
         Ok(lines)
     }
 
@@ -993,7 +1137,7 @@ impl System1 {
             .await
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
             .map_err(|e| failed(&e))?;
-        Self::changed(&emitter, "GreeterAct", &lines).await?;
+        self.tell(&emitter, "GreeterAct", &lines).await?;
         Ok(lines)
     }
 
@@ -1012,7 +1156,7 @@ impl System1 {
             .await
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
             .map_err(|e| failed(&e))?;
-        Self::changed(&emitter, "WindowsDisk", &lines).await?;
+        self.tell(&emitter, "WindowsDisk", &lines).await?;
         Ok(lines)
     }
 
@@ -1052,7 +1196,8 @@ impl System1 {
         .await
         .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
         .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("{e:#}")))?;
-        Self::changed(&emitter, if switch { "SwitchSet" } else { "Sets" }, &lines).await?;
+        self.tell(&emitter, if switch { "SwitchSet" } else { "Sets" }, &lines)
+            .await?;
         Ok(lines)
     }
 
@@ -1067,7 +1212,7 @@ impl System1 {
         authorize(conn, &header, "org.legionctl.vfio").await?;
         let lines = vfio::unbind(&self.root, &devices)
             .map_err(|e| zbus::fdo::Error::Failed(format!("{e:#}")))?;
-        Self::changed(&emitter, "PassthroughEnd", &lines).await?;
+        self.tell(&emitter, "PassthroughEnd", &lines).await?;
         Ok(lines)
     }
 
@@ -1087,7 +1232,7 @@ impl System1 {
         let lines = carry_out(&self.root, |m| gpu::set_desktop(m, choice, release_nvidia))
             .map_err(|e| failed(&e))?;
         if !lines.is_empty() {
-            Self::changed(&emitter, "SetPrimaryGpu", &lines).await?;
+            self.tell(&emitter, "SetPrimaryGpu", &lines).await?;
         }
         Ok(lines)
     }
@@ -1108,7 +1253,7 @@ impl System1 {
         };
         let lines = carry_out(&self.root, |m| cleanup::plan(m, opts)).map_err(|e| failed(&e))?;
         if !lines.is_empty() {
-            Self::changed(&emitter, "Cleanup", &lines).await?;
+            self.tell(&emitter, "Cleanup", &lines).await?;
         }
         Ok(lines)
     }
@@ -1167,7 +1312,7 @@ impl System1 {
                 .unwrap_or_default()
         )];
         lines.extend(reapplied.map_err(|e| failed(&e))?);
-        Self::changed(&emitter, "Tune", &lines).await?;
+        self.tell(&emitter, "Tune", &lines).await?;
         serde_json::to_string(&report).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
@@ -1199,7 +1344,7 @@ impl System1 {
                 .collect::<String>()
         ));
         // the signal goes out before the reboot takes the bus down
-        Self::changed(&emitter, "RebootWindows", &lines).await?;
+        self.tell(&emitter, "RebootWindows", &lines).await?;
         lines.extend(policy::execute(&self.root, &ledger, reboot));
         Ok(lines)
     }
@@ -1226,7 +1371,7 @@ impl System1 {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.fan").await?;
-        machine_change(&self.root, &emitter, "SetFanCurve", |m| {
+        self.machine_change(&emitter, "SetFanCurve", |m| {
             let plan = fan::set_curve(m, &levels)?;
             fan::require_verified(m)?;
             Ok(plan)
@@ -1242,7 +1387,7 @@ impl System1 {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.fan").await?;
-        machine_change(&self.root, &emitter, "ResetFanCurve", |m| {
+        self.machine_change(&emitter, "ResetFanCurve", |m| {
             let plan = fan::reset_curve(m)?;
             fan::require_verified(m)?;
             Ok(plan)
@@ -1259,7 +1404,7 @@ impl System1 {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.battery").await?;
-        machine_change(&self.root, &emitter, "SetBatteryMode", |m| {
+        self.machine_change(&emitter, "SetBatteryMode", |m| {
             battery::mode_plan(m.root, &mode)
         })
         .await
@@ -1274,7 +1419,7 @@ impl System1 {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.battery").await?;
-        machine_change(&self.root, &emitter, "SetUsbCharging", |m| {
+        self.machine_change(&emitter, "SetUsbCharging", |m| {
             battery::usb_charging_plan(m.root, on)
         })
         .await
@@ -1289,7 +1434,8 @@ impl System1 {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.fan").await?;
-        machine_change(&self.root, &emitter, "SetFanMax", |m| fan::max(m, on)).await
+        self.machine_change(&emitter, "SetFanMax", |m| fan::max(m, on))
+            .await
     }
 
     /// Full fan speed on or off, for dust cleaning (custom mode only).
@@ -1301,7 +1447,7 @@ impl System1 {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.fan").await?;
-        machine_change(&self.root, &emitter, "SetFanFullSpeed", |m| {
+        self.machine_change(&emitter, "SetFanFullSpeed", |m| {
             let plan = fan::clean(m, on)?;
             fan::require_verified(m)?;
             Ok(plan)
@@ -1318,7 +1464,8 @@ impl System1 {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.fan.lock").await?;
-        machine_change(&self.root, &emitter, "SetFanLock", |m| fan::lock(m, on)).await
+        self.machine_change(&emitter, "SetFanLock", |m| fan::lock(m, on))
+            .await
     }
 
     /// The readings only root can make (fan RPM, throttle reasons from the MSR), as JSON (`telemetry::RootSample`).
@@ -1397,6 +1544,22 @@ impl System1 {
     /// Fn lock (Fn+Esc) was turned on or off.
     #[zbus(signal)]
     async fn fn_lock(emitter: &SignalEmitter<'_>, on: bool) -> zbus::Result<()>;
+
+    /// The power source changed: `ac` or `battery`.
+    #[zbus(signal)]
+    async fn power_source_changed(emitter: &SignalEmitter<'_>, source: &str) -> zbus::Result<()>;
+
+    /// The workloads that run changed (`game`, `build`, `vm`; empty: none), from the eBPF workload sensor.
+    #[zbus(signal)]
+    async fn workload_changed(emitter: &SignalEmitter<'_>, kinds: &[String]) -> zbus::Result<()>;
+
+    /// The throttle reasons active now changed (the MSR; empty: throttling stopped).
+    #[zbus(signal)]
+    async fn throttle_changed(emitter: &SignalEmitter<'_>, reasons: &[String]) -> zbus::Result<()>;
+
+    /// Fan max mode was turned on or off.
+    #[zbus(signal)]
+    async fn fan_mode_changed(emitter: &SignalEmitter<'_>, max: bool) -> zbus::Result<()>;
 }
 
 /// Read the Fn-key device on a thread (blocking reads) and send one message per debounced Fn+R press. The device is
@@ -1569,6 +1732,8 @@ async fn main() -> Result<()> {
     let (runq, execs) = sensors(&root);
     let watchers = Arc::new(Mutex::new(BTreeMap::new()));
     let monitor = udev_monitor()?;
+    // announce later changes only; the session asks for the current state when it starts
+    let announced = Arc::new(Mutex::new(observe(&root)));
     let bus = serve(System1 {
         root: root.clone(),
         tuning: tuning.clone(),
@@ -1576,6 +1741,7 @@ async fn main() -> Result<()> {
         watchers: watchers.clone(),
         exec_error: execs.as_ref().err().cloned(),
         version: legionctl_machine::interface_version(),
+        announced: announced.clone(),
     })
     .await?;
     let emitter = SignalEmitter::new(&bus, OBJECT_PATH)?;
@@ -1600,10 +1766,8 @@ async fn main() -> Result<()> {
     let fn_lock = fn_lock_watch(&root)
         .inspect_err(|e| eprintln!("FnLock: not watched: {e:#}"))
         .ok();
-    // announce later changes only; the session asks for the current state when it starts
-    let mut announced = mode(&root);
     start_set(&root);
-    handle(&root, &emitter, Event::Start, &mut announced).await;
+    handle(&root, &emitter, Event::Start, &announced).await;
     notify(sd_notify::NotifyState::Ready);
     // running again: safe mode is over
     let _ = std::fs::remove_file(root.path(SAFE_MODE));
@@ -1618,12 +1782,12 @@ async fn main() -> Result<()> {
                 let events: Vec<Event> = guard.get_inner().iter().filter_map(|e| udev_event(&e)).collect();
                 guard.clear_ready();
                 for event in events.into_iter().filter(|_| !tuning.load(Ordering::SeqCst)) {
-                    handle(&root, &emitter, event, &mut announced).await;
+                    handle(&root, &emitter, event, &announced).await;
                 }
             }
             Some(signal) = sleep.next() => {
                 if !signal.args()?.start && !tuning.load(Ordering::SeqCst) {
-                    handle(&root, &emitter, Event::Resume, &mut announced).await;
+                    handle(&root, &emitter, Event::Resume, &announced).await;
                 }
             }
             Some(()) = presses.recv() => {
@@ -1647,18 +1811,18 @@ async fn main() -> Result<()> {
                 }
             }
             _ = tick.tick() => if !tuning.load(Ordering::SeqCst) {
-                handle(&root, &emitter, Event::Tick, &mut announced).await;
+                handle(&root, &emitter, Event::Tick, &announced).await;
             },
             changed = folders.changed() => {
                 changed?;
                 if !tuning.load(Ordering::SeqCst) {
-                    handle(&root, &emitter, Event::Reload, &mut announced).await;
+                    handle(&root, &emitter, Event::Reload, &announced).await;
                 }
             }
             changed = workloads.changed(&root) => {
                 changed?;
                 if !tuning.load(Ordering::SeqCst) {
-                    handle(&root, &emitter, Event::Workload, &mut announced).await;
+                    handle(&root, &emitter, Event::Workload, &announced).await;
                 }
             }
             _ = term.recv() => {

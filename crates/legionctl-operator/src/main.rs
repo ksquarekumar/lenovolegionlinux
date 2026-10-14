@@ -94,6 +94,7 @@ async fn main() -> Result<()> {
     let listener = server::activated_listener()?;
     let operator = Arc::new(engine::Operator {
         runtime: tokio::runtime::Handle::current(),
+        ring: std::sync::Mutex::default(),
     });
     // retention (`events.keep_days`): the log and gateway usage lose their old rows at each start, before the first
     // call reads them

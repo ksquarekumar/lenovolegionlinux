@@ -9,10 +9,10 @@ use legionctl_api::{
     Account, BenchCompare, BenchCompareIn, BenchIn, BenchRun, Code, DossierAddIn, DossierAppendIn,
     DossierCheckIn, DossierEditIn, DossierFindings, DossierList, DossierReadIn, DossierSearchIn,
     DossierUseIn, DossierWriteIn, DryRunIn, Events, EventsIn, GateIn, Guard, GuardIn, HookReply,
-    HookRunIn, InspectIn, IntoWire, KnobDetail, Knobs, Launch, Lines, Locks, MonitorIn, RecordIn,
-    Recording, ReplayIn, Samples, SessionExec, SessionId, SessionIdIn, SessionIn, SessionResumeIn,
-    SessionStartIn, SessionState, Sessions, ToolCall, ToolCallRow, ToolCallsIn, TuneIn, TuneReport,
-    WindowsState, coded,
+    HookRunIn, InspectIn, IntoWire, KnobDetail, Knobs, Launch, Lines, Locks, MonitorIn, Readings,
+    RecordIn, Recording, ReplayIn, Samples, SensorsIn, SessionExec, SessionId, SessionIdIn,
+    SessionIn, SessionResumeIn, SessionStartIn, SessionState, Sessions, ToolCall, ToolCallRow,
+    ToolCallsIn, TuneIn, TuneReport, WindowsState, coded,
 };
 use legionctl_api::{
     AccountAddIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath, CloseIn,
@@ -68,7 +68,12 @@ use legionctl_machine::{bench, cleanup, fan, gpu, knobs, load, windows};
 pub struct Operator {
     /// Runs the D-Bus calls of machine changes; engine methods run on blocking threads.
     pub runtime: tokio::runtime::Handle,
+    /// The telemetry ring: the last [`RING`] samples of `monitor`, `sensors` and `/v1/metrics`, oldest first.
+    pub ring: std::sync::Mutex<std::collections::VecDeque<telemetry::Sample>>,
 }
+
+/// Samples the telemetry ring keeps (10 minutes of `sensors --watch`).
+const RING: usize = 600;
 
 fn has_command(name: &str) -> bool {
     which(name).is_some()
@@ -1289,7 +1294,16 @@ impl Operator {
                 })
                 .unwrap_or_default()
         };
-        telemetry::sample(&SysRoot::from_env(), window, &root_part)
+        let sample = telemetry::sample(&SysRoot::from_env(), window, &root_part);
+        let mut ring = self
+            .ring
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if ring.len() == RING {
+            ring.pop_front();
+        }
+        ring.push_back(sample.clone());
+        sample
     }
 }
 
@@ -2132,6 +2146,30 @@ impl Engine for Operator {
         Ok((0..input.count)
             .map(|_| self.sample(window).into_wire())
             .collect())
+    }
+
+    fn sensors(&self, _: &Ctx, _: SensorsIn) -> Result<Readings> {
+        let earlier: Vec<telemetry::Sample> = self
+            .ring
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect();
+        let now = self.sample(std::time::Duration::from_millis(250));
+        let fan = self
+            .system(async |p| p.fan_status().await)
+            .ok()
+            .and_then(|json| serde_json::from_str::<fan::FanState>(&json).ok());
+        let (profile, _) = profile::load(None)?;
+        Ok(legionctl_machine::sensors::view(
+            &SysRoot::from_env(),
+            &now,
+            &earlier,
+            fan.as_ref(),
+            &profile.paths.ac_adapter,
+        )
+        .into_wire())
     }
 
     fn events(&self, _: &Ctx, input: EventsIn) -> Result<Page<EventRow>> {

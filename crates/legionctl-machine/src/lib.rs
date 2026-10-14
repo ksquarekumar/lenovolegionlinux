@@ -22,6 +22,7 @@ pub mod mounts;
 pub mod policy;
 pub mod profile;
 pub mod react;
+pub mod sensors;
 pub mod sets;
 pub mod snapshot;
 pub mod sysroot;
