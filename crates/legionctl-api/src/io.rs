@@ -1603,3 +1603,134 @@ pub struct SetIn {
     /// The set's name.
     pub name: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GraphRefreshIn {
+    /// The ref to make the graph of; HEAD when not given.
+    #[serde(default = "head", rename = "ref")]
+    pub rev: String,
+    /// Return at once; the graph is made in the background (a job). The git hook uses it.
+    #[serde(default)]
+    pub background: bool,
+    /// A folder in the repository (its main checkout or a worktree).
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GraphQueryIn {
+    /// Symbol search text.
+    pub text: String,
+    /// The ref to search; HEAD when not given.
+    #[serde(default = "head", rename = "ref")]
+    pub rev: String,
+    /// Make the graph of the ref when it has none.
+    #[serde(default)]
+    pub build: bool,
+    /// A folder in the repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GraphImpactIn {
+    /// The symbol's stable key (`code graph query` shows it), such as `rust:crates/legionctl-core:graph::Node`.
+    pub key: String,
+    /// The ref; HEAD when not given.
+    #[serde(default = "head", rename = "ref")]
+    pub rev: String,
+    /// Reverse dependency depth, 0 to 6.
+    #[serde(default = "three")]
+    pub depth: u8,
+    /// Make the graph of the ref when it has none.
+    #[serde(default)]
+    pub build: bool,
+    /// A folder in the repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GraphChangesIn {
+    /// Two or more refs: the changes from each to the next. One ref: from its first parent. None: HEAD's last
+    /// commit. For a rebase or a conflict, give the merge-base first.
+    #[serde(default)]
+    pub refs: Vec<String>,
+    /// Make the graphs of the refs that have none.
+    #[serde(default)]
+    pub build: bool,
+    /// A folder in the repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AnnotateIn {
+    /// The symbol's stable key.
+    pub key: String,
+    /// The annotation's value (JSON).
+    pub value: String,
+    /// note, review, test, loc, evidence, block, or a kind of your own.
+    #[serde(default = "note")]
+    pub kind: String,
+    /// The ref where the symbol is as you annotate it; HEAD when not given.
+    #[serde(default = "head", rename = "ref")]
+    pub rev: String,
+    /// A folder in the repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AnnotationsIn {
+    /// The refs to check each annotation at; HEAD when none.
+    #[serde(default)]
+    pub refs: Vec<String>,
+    /// Only the annotations of this stable key.
+    #[serde(default)]
+    pub key: Option<String>,
+    /// A folder in the repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GraphPruneIn {
+    /// Show what would be removed; remove nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// A folder in the repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum HookAction {
+    /// Add the refresh line to the repository's git hooks.
+    Install,
+    /// Remove the refresh line; the other lines of each hook stay.
+    Remove,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GraphHookIn {
+    pub action: HookAction,
+    /// A folder in the repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+fn head() -> String {
+    "HEAD".into()
+}
+
+fn three() -> u8 {
+    3
+}
+
+fn note() -> String {
+    "note".into()
+}

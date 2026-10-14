@@ -226,7 +226,7 @@ pub fn stop_run(job: i64) -> bool {
 }
 
 /// Record how a job ended.
-fn end_job<T: serde::Serialize>(db: &Db, job: i64, out: &Result<T>) -> Result<()> {
+pub(crate) fn end_job<T: serde::Serialize>(db: &Db, job: i64, out: &Result<T>) -> Result<()> {
     let outcome = match out {
         Ok(value) => Ok(serde_json::to_value(value)?),
         Err(e) => Err(format!("{e:#}")),
@@ -1030,7 +1030,7 @@ impl Operator {
     }
 }
 
-fn dossiers() -> Result<Dossiers> {
+pub(crate) fn dossiers() -> Result<Dossiers> {
     Dossiers::open(&config(None)?.config.dossier)
 }
 
@@ -1352,6 +1352,9 @@ impl Operator {
                         let out = config(Some(&ClientPath(repo)))
                             .and_then(|r| pack_job(&job.input, &r.config.session));
                         end_job(&db, job.id, &out)
+                    }
+                    crate::code::REFRESH => {
+                        end_job(&db, job.id, &crate::code::run_refresh(&job.input))
                     }
                     other => db.job_end(job.id, &Err(format!("no way to resume a {other} job"))),
                 };
@@ -1809,9 +1812,9 @@ impl Engine for Operator {
             input.repo.get()?,
             input.topic.as_deref(),
         )?;
-        Ok(Lines {
-            lines: vec![store.checkpoint(&ws, &input.message)?],
-        })
+        let line = store.checkpoint(&ws, &input.message)?;
+        crate::code::trigger(&ws.path);
+        Ok(Lines { lines: vec![line] })
     }
 
     fn workspace_merge(&self, _: &Ctx, input: WorkspaceIn) -> Result<Lines> {
@@ -1821,9 +1824,9 @@ impl Engine for Operator {
             input.repo.get()?,
             input.topic.as_deref(),
         )?;
-        Ok(Lines {
-            lines: store.merge(&ws)?,
-        })
+        let lines = store.merge(&ws)?;
+        crate::code::trigger(&ws.repo);
+        Ok(Lines { lines })
     }
 
     fn workspace_close(&self, _: &Ctx, input: CloseIn) -> Result<Lines> {
@@ -1967,6 +1970,11 @@ impl Engine for Operator {
                     });
                 }
             }
+        }
+        if Event::from(input.event) == Event::SessionStart
+            && let Ok(dir) = input.project.get()
+        {
+            crate::code::trigger(dir);
         }
         if Event::from(input.event) == Event::SessionStart
             && let Some(s) = session
@@ -3400,6 +3408,58 @@ impl Engine for Operator {
         input: legionctl_api::ResourceActIn,
     ) -> Result<legionctl_api::Acted> {
         crate::resources::route(self, ctx, &input)
+    }
+
+    fn code_graph_refresh(&self, _: &Ctx, input: legionctl_api::GraphRefreshIn) -> Result<Lines> {
+        crate::code::refresh(&input)
+    }
+
+    fn code_graph_refs(&self, _: &Ctx, input: RepoIn) -> Result<legionctl_api::GraphRefs> {
+        crate::code::refs(&input)
+    }
+
+    fn code_graph_query(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::GraphQueryIn,
+    ) -> Result<legionctl_api::CodeNodes> {
+        crate::code::query(&input)
+    }
+
+    fn code_graph_impact(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::GraphImpactIn,
+    ) -> Result<legionctl_api::CodeNodes> {
+        crate::code::impact(&input)
+    }
+
+    fn code_graph_changes(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::GraphChangesIn,
+    ) -> Result<Vec<legionctl_api::ChangeSet>> {
+        crate::code::changes(&input)
+    }
+
+    fn code_graph_annotate(&self, ctx: &Ctx, input: legionctl_api::AnnotateIn) -> Result<Lines> {
+        crate::code::annotate(ctx, &input)
+    }
+
+    fn code_graph_annotations(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::AnnotationsIn,
+    ) -> Result<Vec<legionctl_api::Annotation>> {
+        crate::code::annotations(&input)
+    }
+
+    fn code_graph_prune(&self, _: &Ctx, input: legionctl_api::GraphPruneIn) -> Result<Lines> {
+        crate::code::prune(&input)
+    }
+
+    fn code_graph_hook(&self, _: &Ctx, input: legionctl_api::GraphHookIn) -> Result<Lines> {
+        crate::code::hook(&input)
     }
 
     fn knobs_show(&self, _: &Ctx, input: InspectIn) -> Result<KnobDetail> {

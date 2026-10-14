@@ -141,7 +141,6 @@ file, a deletion and a replaced folder.
 ```
 ~/.agentworkspace/
   workspace.db                 SQLite (WAL): bindings, locks, artifact index, work graph (graph tables, 13), events
-  codegraphs/<repo-id>.db      one ctx graph per unique repo (ctx graph index --db ...), updated at each checkpoint
   <dossier>/
     dossier.jsonc              this dossier only: title, entities, objectives
     plan.md                    PLAN: the ledger
@@ -152,8 +151,10 @@ file, a deletion and a replaced folder.
     <class>/.../NN-<scope>.md  any other class the dossier declares
 ```
 
-- `<repo-id>` comes from the repo's first commit hash, so clones and worktrees of one repo share one graph. Graphs
-  never live inside a repo: ctx's default (`.graf/index.db` in an ancestor) is not used.
+- Code graphs are not in `~/.agentworkspace`: they are one ctx graph per git tree in the main checkout's
+  `.graf/refs/<tree>.db`, shared by all worktrees, and each checkout's `.graf/index.db` links to the graph of its
+  HEAD (decision 1 of note 23; built 2026-10-15). `workspace checkpoint` and `workspace merge` start a refresh job
+  when the repository keeps graphs.
 - The pattern (classes, plan sections, gate) is the `dossier.*` config (14); a dossier's own `dossier.jsonc` holds
   its data. The canonical classes cannot be removed or renamed.
 
@@ -205,7 +206,7 @@ legionctl indexes the front matter and the ledger rows into the work graph (grap
 
 - Nodes: objectives, plan rows, artifacts, change sets, commits, packages, entrypoints, runtimes.
 - Edges: `supports`, `supersedes`, `implements` (plan row → change set → commits), `touches` (change set →
-  code-graph symbols and paths, resolved against `codegraphs/<repo-id>.db` by `ATTACH`), `verified-by`
+  code-graph symbols and paths, by stable key in the graph of the tree, note 23), `verified-by`
   (acceptance row → EVIDENCE), `depends-on`, `runs-with` (work item → entrypoint, runtime, environment).
 
 Built (2026-10-13, W4, first part): the graph is built from the dossier's files on each call (no tables: a dossier
@@ -221,7 +222,7 @@ Built (2026-10-13, W4 part 2): status history. Each write through legionctl (`do
 artifact's front-matter `status`) and stores each change in `workspace.db` (`status_changes`: time, session, node,
 from, to; null when the node did not exist). `dossier graph --node <id>` returns the node's history, oldest first. A
 change made outside legionctl (an editor, a script) is not seen: agents write through the dossier tools. Code-graph
-symbols wait until CI has ctx: the code graph is ctx's index, and a test needs it.
+symbols (`touches`) are not linked yet; the code graphs and the change graph are built (note 23, "Built: P1 and P2").
 
 `legionctl dossier check` then reports what the practice asks for as concrete findings: missing plan sections, a
 claim or a `Done` row without EVIDENCE, an acceptance row with no `verified-by`, a dangling link, a DESIGN that

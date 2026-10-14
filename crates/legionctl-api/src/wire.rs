@@ -1030,4 +1030,113 @@ wire! {
         /// What needs attention before booting Windows or mounting its volumes.
         hazards: Vec<String>,
     }
+
+    /// A ref of the repository and whether it has a graph.
+    struct GraphRef from core::codegraph::GraphRef {
+        name: String,
+        commit: String,
+        tree: String,
+        /// Its snapshot exists ("has .graf").
+        graph: bool,
+    }
+
+    /// One graph snapshot (`.graf/refs/<tree>.db`).
+    struct GraphSnapshot from core::codegraph::GraphSnapshot {
+        tree: String,
+        size_bytes: u64 = bytes,
+        modified_at: i64 = modified,
+        /// The heads, bases and merge-bases on this tree: prune keeps it whatever its age.
+        refs: Vec<String>,
+    }
+
+    /// The repository's refs and graph snapshots.
+    struct GraphRefs from core::codegraph::GraphRefs {
+        /// HEAD and the branches.
+        refs: Vec<GraphRef>,
+        /// Newest first.
+        snapshots: Vec<GraphSnapshot>,
+    }
+
+    /// One symbol of a graph.
+    struct CodeNode from core::codegraph::CodeNode {
+        /// The stable key: the same at each ref (`rust:<crate dir>:<module path>::<name>`, `file:<path>`).
+        key: String,
+        /// ctx's node id at this tree (it holds byte offsets).
+        id: String,
+        kind: String,
+        file: String,
+        line: Option<i64>,
+    }
+
+    /// Symbols of the graph of one tree.
+    struct CodeNodes from core::codegraph::CodeNodes {
+        tree: String,
+        nodes: Vec<CodeNode>,
+    }
+
+    /// One entity that changed between two refs.
+    struct EntityChange from core::codegraph::EntityChange {
+        key: String,
+        kind: String,
+        file: String,
+        /// added, removed, modified (other content) or moved (same content, other file). A rename is removed plus
+        /// added.
+        change: String,
+        /// `+a -r` lines for a file; the span in lines for a symbol.
+        lines: String,
+        /// The commits of the range that touched its lines (its file, for a removed entity).
+        commits: Vec<String>,
+    }
+
+    /// One commit of a change set and what made it.
+    struct CommitRow from core::codegraph::CommitRow {
+        commit: String,
+        committed_at: i64 = time,
+        author: String,
+        subject: String,
+        /// The plan rows that the message names (`todo-NN`).
+        plan_rows: Vec<String>,
+        /// The `workspace.checkpoint` event that made it, and its session.
+        checkpoint: Option<i64>,
+        session: Option<String>,
+        /// `ctx blame commit`: the agent session that made it, or ctx's error.
+        provenance: Value,
+    }
+
+    /// The changes from one ref to the next, at entity and event level.
+    struct ChangeSet from core::codegraph::ChangeSet {
+        /// BLAKE2b-128 of `<from tree>..<to tree>`.
+        id: String,
+        from: String,
+        from_tree: String,
+        to: String,
+        to_tree: String,
+        entities: Vec<EntityChange>,
+        /// Newest first.
+        commits: Vec<CommitRow>,
+    }
+
+    /// The state of an annotation at one ref.
+    struct AnnotationAt from core::codegraph::AnnotationAt {
+        #[serde(rename = "ref")]
+        rev: String,
+        tree: String,
+        /// valid (the key with the same content), stale (other content), absent (no such key), no graph.
+        state: String,
+    }
+
+    /// An annotation on a stable key, and its state at each ref asked for.
+    struct Annotation from core::codegraph::Annotation {
+        id: i64,
+        key: String,
+        kind: String,
+        value: Value,
+        /// The tree and the symbol's content hash when it was written.
+        tree: String,
+        content_hash: String,
+        session: String,
+        agent: String,
+        created_at: i64 = created,
+        at: Vec<AnnotationAt>,
+    }
 }

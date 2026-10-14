@@ -1858,3 +1858,112 @@ impl Render for crate::Acted {
         })
     }
 }
+
+impl Render for crate::GraphRefs {
+    fn text(&self) -> String {
+        let mut out: Vec<String> = self
+            .refs
+            .iter()
+            .map(|r| {
+                let short = r.tree.get(..12).unwrap_or(&r.tree);
+                let graph = if r.graph { "graph" } else { "no graph" };
+                format!("{:<32} tree {short}  {graph}", r.name)
+            })
+            .collect();
+        out.push(format!("{} snapshots:", self.snapshots.len()));
+        out.extend(self.snapshots.iter().map(|s| {
+            format!(
+                "  {}  {} KiB  {}",
+                s.tree,
+                s.size_bytes / 1024,
+                s.refs.join(", ")
+            )
+        }));
+        out.join("\n")
+    }
+}
+
+impl Render for crate::CodeNodes {
+    fn text(&self) -> String {
+        if self.nodes.is_empty() {
+            return format!("no symbols (tree {})", self.tree);
+        }
+        self.nodes
+            .iter()
+            .map(|n| {
+                format!(
+                    "{:<10} {}  {}:{}",
+                    n.kind,
+                    n.key,
+                    n.file,
+                    n.line.unwrap_or(0)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+impl Render for Vec<crate::ChangeSet> {
+    fn text(&self) -> String {
+        let mut out = Vec::new();
+        for set in self {
+            out.push(format!(
+                "{} -> {} (change set {})",
+                set.from, set.to, set.id
+            ));
+            out.extend(set.entities.iter().map(|e| {
+                format!(
+                    "  {:<8} {:<10} {}  {}  {}  [{}]",
+                    e.change,
+                    e.kind,
+                    e.key,
+                    e.file,
+                    e.lines,
+                    e.commits.join(" ")
+                )
+            }));
+            out.extend(set.commits.iter().map(|c| {
+                let checkpoint = c
+                    .checkpoint
+                    .map(|id| format!(" checkpoint event {id}"))
+                    .unwrap_or_default();
+                let session = c
+                    .session
+                    .as_ref()
+                    .map(|s| format!(" session {s}"))
+                    .unwrap_or_default();
+                format!(
+                    "  commit {} {}{checkpoint}{session} {}",
+                    c.commit, c.author, c.subject
+                )
+            }));
+        }
+        out.join("\n")
+    }
+}
+
+impl Render for Vec<crate::Annotation> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no annotations".into();
+        }
+        self.iter()
+            .map(|a| {
+                let at: Vec<String> =
+                    a.at.iter()
+                        .map(|s| format!("{}: {}", s.rev, s.state))
+                        .collect();
+                format!(
+                    "{:>4} {} {} {}  ({})",
+                    a.id,
+                    a.key,
+                    a.kind,
+                    a.value,
+                    at.join(", ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}

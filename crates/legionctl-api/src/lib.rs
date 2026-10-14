@@ -741,4 +741,25 @@ operations! {
     /// Run an action of a resource: the operator runs the action's operation as a call of its own (its class, its
     /// approval, its event). This operation only finds the route.
     resources_act / ResourcesAct = "resources.act", Read, ResourceActIn => Acted;
+    /// Make the code graph of a ref (`ctx graph index` of its tree into `.graf/refs/<tree>.db`, shared by all
+    /// worktrees), point the checkout's `.graf/index.db` (what ctx's MCP server reads) at the graph of its HEAD,
+    /// then prune.
+    code_graph_refresh / CodeGraphRefresh = "code.graph.refresh", Session, GraphRefreshIn => Lines;
+    /// HEAD and each branch with its tree and whether it has a code graph, and each graph snapshot.
+    code_graph_refs / CodeGraphRefs = "code.graph.refs", Read, RepoIn => GraphRefs;
+    /// Find symbols in the code graph of a ref; each has its stable key.
+    code_graph_query / CodeGraphQuery = "code.graph.query", Read, GraphQueryIn => CodeNodes;
+    /// What depends on a symbol (by its stable key) in the code graph of a ref.
+    code_graph_impact / CodeGraphImpact = "code.graph.impact", Read, GraphImpactIn => CodeNodes;
+    /// The changes between refs by stable key: added, removed, modified and moved symbols and files, each with the
+    /// commits that touched it, and each commit with its checkpoint, session, plan rows and ctx provenance.
+    code_graph_changes / CodeGraphChanges = "code.graph.changes", Read, GraphChangesIn => Vec<ChangeSet>;
+    /// Annotate a symbol by its stable key, as it is at a ref (its content hash is kept).
+    code_graph_annotate / CodeGraphAnnotate = "code.graph.annotate", Session, AnnotateIn => Lines;
+    /// The annotations, each valid, stale, absent or without a graph at each ref.
+    code_graph_annotations / CodeGraphAnnotations = "code.graph.annotations", Read, AnnotationsIn => Vec<Annotation>;
+    /// Remove the code graphs that no branch head, workspace base or merge-base needs, except the newest 20.
+    code_graph_prune / CodeGraphPrune = "code.graph.prune", Session, GraphPruneIn => Lines;
+    /// Add (or remove) the git hook lines that refresh the code graph after commit, checkout, merge and rewrite.
+    code_graph_hook / CodeGraphHook = "code.graph.hook", Workspace, GraphHookIn => Lines;
 }

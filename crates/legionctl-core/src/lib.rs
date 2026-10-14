@@ -3,6 +3,7 @@
 
 pub mod agents;
 pub mod cache;
+pub mod codegraph;
 pub mod config;
 pub mod db;
 pub mod dossier;

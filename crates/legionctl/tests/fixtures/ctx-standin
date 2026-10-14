@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""A stand-in for ctx 2.2.8 in the code graph tests (CI has no ctx). It writes the index.db schema of ctx 2.2.8 and
+the node shape that ctx gives for free Rust functions in a one-crate repository: ids with byte offsets
+(rust:<file>:<name>@<start byte>), binding_key rust:.:<module path>::<name>, binding aliases (a private function has
+only symbol:<name> and symbol:<file>::<name>), start_byte and end_byte, one module node per file (binding_key
+rust:module:.:<module path>), a closure `let <name> = |..| ..;` in a function body (no binding_key; aliases
+symbol:<closure@C> and symbol:<file>::<fn>.<block@B>.<closure@C>), and calls edges. It answers graph index, graph search, graph impact
+and blame commit. The ignored test with the real ctx checks that both give the same change rows."""
+
+import hashlib
+import json
+import os
+import re
+import sqlite3
+import sys
+
+SCHEMA = """
+CREATE TABLE metadata (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    generation INTEGER NOT NULL, kind TEXT NOT NULL,
+    root TEXT, coverage TEXT NOT NULL, graph_metadata TEXT NOT NULL
+, search_version INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE "files" (
+    fkey INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,
+    hash TEXT NOT NULL, module TEXT NOT NULL, diagnostics TEXT NOT NULL,
+    facts_hash TEXT
+);
+CREATE TABLE "nodes" (
+    nkey INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL, kind TEXT NOT NULL, file TEXT NOT NULL,
+    line INTEGER, end_line INTEGER, qualified_name TEXT, binding_key TEXT,
+    metadata TEXT NOT NULL CHECK(json_valid(metadata)),
+    owner_key INTEGER REFERENCES "files"(fkey) ON DELETE CASCADE,
+    search TEXT NOT NULL,
+    payload TEXT GENERATED ALWAYS AS (
+        json_object('id',id,'label',label,'kind',kind,'file',file,
+                    'line',line,'end_line',end_line,
+                    'qualified_name',qualified_name,'binding_key',binding_key,
+                    'metadata',json(metadata))
+    ) VIRTUAL
+);
+CREATE TABLE "node_aliases" (
+    node_key INTEGER NOT NULL REFERENCES "nodes"(nkey) ON DELETE CASCADE,
+    binding_key TEXT NOT NULL, PRIMARY KEY(node_key, binding_key)
+) WITHOUT ROWID;
+CREATE TABLE "refs" (
+    rkey INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE,
+    source TEXT NOT NULL,
+    source_key INTEGER NOT NULL REFERENCES "nodes"(nkey) ON DELETE CASCADE,
+    owner_key INTEGER NOT NULL REFERENCES "files"(fkey) ON DELETE CASCADE,
+    label TEXT NOT NULL, relation TEXT NOT NULL, file TEXT NOT NULL,
+    line INTEGER NOT NULL, candidate_keys TEXT NOT NULL CHECK(json_valid(candidate_keys)),
+    reason TEXT NOT NULL,
+    resolved_target_key INTEGER, resolution_reason TEXT NOT NULL
+);
+CREATE TABLE "edges" (
+    id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL,
+    source_key INTEGER NOT NULL REFERENCES "nodes"(nkey) ON DELETE CASCADE,
+    target_key INTEGER NOT NULL REFERENCES "nodes"(nkey) ON DELETE CASCADE,
+    relation TEXT NOT NULL, directed INTEGER NOT NULL CHECK(directed IN (0, 1)),
+    file TEXT, line INTEGER, confidence TEXT NOT NULL,
+    metadata TEXT NOT NULL CHECK(json_valid(metadata)),
+    owner_key INTEGER REFERENCES "files"(fkey) ON DELETE CASCADE,
+    ref_key INTEGER UNIQUE REFERENCES "refs"(rkey) ON DELETE CASCADE
+);
+CREATE TABLE storage_counts (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    files INTEGER NOT NULL, nodes INTEGER NOT NULL, edges INTEGER NOT NULL,
+    unresolved_references INTEGER NOT NULL
+);
+CREATE VIRTUAL TABLE node_search USING fts5(text, content='', contentless_delete=1);
+CREATE TRIGGER nodes_insert AFTER INSERT ON nodes BEGIN
+    INSERT INTO node_search(rowid,text) VALUES(new.nkey,new.search);
+END;
+"""
+
+CLOSURE = re.compile(rb"let [A-Za-z_][A-Za-z0-9_]* = (\|[^|]*\|[^;]*);")
+FN = re.compile(rb"(?m)^[ \t]*((pub(?:\([^)]*\))? )?fn ([A-Za-z_][A-Za-z0-9_]*))")
+
+
+def module_path(rel):
+    parts = rel[len("src/"):-len(".rs")].split("/")
+    if parts[-1] in ("lib", "main", "mod"):
+        parts = parts[:-1]
+    return "::".join(parts)
+
+
+def body_end(text, start):
+    depth = 0
+    for i in range(text.index(b"{", start), len(text)):
+        depth += {ord("{"): 1, ord("}"): -1}.get(text[i], 0)
+        if depth == 0:
+            return i + 1
+    return len(text)
+
+
+def line_of(text, offset):
+    return text.count(b"\n", 0, offset) + 1
+
+
+def index(root, db):
+    conn = sqlite3.connect(db)
+    conn.executescript(SCHEMA)
+    files = sorted(
+        os.path.relpath(os.path.join(d, f), root)
+        for d, _, names in os.walk(root)
+        for f in names
+        if f.endswith(".rs")
+    )
+    nodes, edges, fns = [], [], []
+    for fkey, rel in enumerate(files, 1):
+        text = open(os.path.join(root, rel), "rb").read()
+        module = module_path(rel)
+        conn.execute(
+            "INSERT INTO files VALUES (?, ?, ?, ?, '[]', NULL)",
+            (fkey, rel, hashlib.sha256(text).hexdigest(), module),
+        )
+        mod_id = f"rust:{rel}:module"
+        nodes.append((fkey, mod_id, module, "module", rel, 1, line_of(text, max(len(text) - 1, 0)), module,
+                      f"rust:module:.:{module}",
+                      {"binding_aliases": [f"file:{rel}", f"rust:package:.:fx:{module}"],
+                       "start_byte": 0, "end_byte": len(text), "language": "rust"}))
+        for m in FN.finditer(text):
+            start, public, name = m.start(1), m.group(2) is not None, m.group(3).decode()
+            end = body_end(text, m.end())
+            key = f"rust:.:{module}::{name}" if module else f"rust:.:{name}"
+            node_id = f"rust:{rel}:{name}@{start}"
+            # a call inside a closure is the closure's
+            fns.append((node_id, name, CLOSURE.sub(b"", text[text.index(b"{", m.end()):end]), rel))
+            aliases = [f"symbol:{name}", f"symbol:{rel}::{name}"]
+            if public:
+                aliases = [key, f"rust:package:.:fx:{key[len('rust:.:'):]}"] + aliases
+            nodes.append((fkey, node_id, name, "function", rel, line_of(text, start), line_of(text, end - 1), name,
+                          key,
+                          {"binding_aliases": aliases, "start_byte": start, "end_byte": end, "language": "rust",
+                           "public": public}))
+            edges.append((f"contains:{node_id}", mod_id, node_id, "contains", rel))
+            block = text.index(b"{", m.end())
+            for c in CLOSURE.finditer(text, block, end):
+                path = f"{name}.<block@{block}>.<closure@{c.start(1)}>"
+                closure_id = f"rust:{rel}:{path}@{c.start(1)}"
+                fns.append((closure_id, None, c.group(1), rel))
+                nodes.append((fkey, closure_id, f"<closure@{c.start(1)}>", "function", rel, line_of(text, c.start(1)),
+                              line_of(text, c.end(1) - 1), path, None,
+                              {"binding_aliases": [f"symbol:<closure@{c.start(1)}>", f"symbol:{rel}::{path}",
+                                                   f"symbol:{path}"],
+                               "start_byte": c.start(1), "end_byte": c.end(1), "language": "rust"}))
+    for source, _, body, rel in fns:
+        for target, name, _, _ in fns:
+            if name and target != source and re.search(rb"\b" + name.encode() + rb"\(", body):
+                edges.append((f"reference:calls:{source}:{target}", source, target, "calls", rel))
+    keys = {}
+    for nkey, (fkey, node_id, label, kind, rel, line, end_line, qname, bkey, meta) in enumerate(nodes, 1):
+        keys[node_id] = nkey
+        conn.execute(
+            "INSERT INTO nodes (nkey, id, label, kind, file, line, end_line, qualified_name, binding_key, metadata,"
+            " owner_key, search) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (nkey, node_id, label, kind, rel, line, end_line, qname, bkey, json.dumps(meta), fkey,
+             f"{label} {qname}"),
+        )
+        for alias in meta["binding_aliases"]:
+            conn.execute("INSERT INTO node_aliases VALUES (?, ?)", (nkey, alias))
+    for edge_id, source, target, relation, rel in edges:
+        conn.execute(
+            "INSERT INTO edges (id, source, target, source_key, target_key, relation, directed, file, line,"
+            " confidence, metadata) VALUES (?, ?, ?, ?, ?, ?, 1, ?, NULL, 'statically_resolved', '{}')",
+            (edge_id, source, target, keys[source], keys[target], relation, rel),
+        )
+    conn.execute(
+        "INSERT INTO metadata VALUES (1, 1, 'native', ?, ?, ?, 5)",
+        (root, json.dumps({"supported_files": len(files)}), json.dumps({"graf_index_options": {"code_only": True}})),
+    )
+    conn.execute("INSERT INTO storage_counts VALUES (1, ?, ?, ?, 0)", (len(files), len(nodes), len(edges)))
+    conn.commit()
+    print(json.dumps({"schema_version": 1, "generation": 1, "parsed_files": len(files), "nodes": len(nodes),
+                      "edges": len(edges), "diagnostics": []}))
+
+
+def payloads(conn, where, args):
+    return [json.loads(r[0]) for r in conn.execute(f"SELECT payload FROM nodes WHERE {where}", args)]
+
+
+def option(args, name, default=None):
+    return args[args.index(name) + 1] if name in args else default
+
+
+def main(args):
+    if args[:1] == ["--version"]:
+        print("ctx 2.2.8 (stand-in)")
+    elif args[:2] == ["graph", "index"]:
+        index(args[2], option(args, "--db"))
+    elif args[:2] == ["graph", "search"]:
+        conn = sqlite3.connect(option(args, "--db"))
+        print(json.dumps({"schema_version": 1, "nodes": payloads(conn, "label LIKE ?", (f"%{args[2]}%",)),
+                          "edges": []}))
+    elif args[:2] == ["graph", "impact"]:
+        conn = sqlite3.connect(option(args, "--db"))
+        seen, frontier = {args[2]}, {args[2]}
+        for _ in range(int(option(args, "--depth", "3"))):
+            frontier = {s for (s,) in conn.execute(
+                f"SELECT source FROM edges WHERE relation != 'contains' AND target IN ({','.join('?' * len(frontier))})",
+                tuple(frontier))} - seen
+            seen |= frontier
+        nodes = payloads(conn, f"id IN ({','.join('?' * len(seen))})", tuple(seen))
+        print(json.dumps({"graph": {"nodes": nodes, "edges": []}, "seeds": [args[2]]}))
+    elif args[:2] == ["blame", "commit"]:
+        print(json.dumps({"commit": args[2], "sessions": []}))
+    else:
+        sys.exit(f"ctx stand-in: {' '.join(args)} is not modelled")
+
+
+main(sys.argv[1:])

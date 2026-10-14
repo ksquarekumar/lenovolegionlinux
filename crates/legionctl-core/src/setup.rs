@@ -48,7 +48,7 @@ fn home() -> PathBuf {
 }
 
 /// ctx is usually not on the PATH of non-interactive shells (hooks, MCP servers); look in its install dir too.
-fn ctx_bin() -> Option<PathBuf> {
+pub(crate) fn ctx_bin() -> Option<PathBuf> {
     let local = home().join(".local/bin/ctx");
     if local.is_file() {
         return Some(local);

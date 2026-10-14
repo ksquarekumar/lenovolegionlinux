@@ -1,8 +1,8 @@
 # 23 — Agent network, two code graphs and the thread UI
 
-Status: proposed (2026-10-15). Plan rows todo-90 (two code graphs), todo-91 (agent network), todo-92 (thread UI).
-Part B+ (todo-97 presence, todo-98 agent configs and pools) is an addition, proposed 2026-10-15, with its own questions.
-The user reviews this design before any part is built. The user's request (verbatim) and the decisions are in the
+Status: approved (2026-10-15, "Decisions" at the end). Plan rows todo-90 (two code graphs), todo-91 (agent
+network), todo-92 (thread UI). Part B+ (todo-97 presence, todo-98 agent configs and pools) was added and approved on
+2026-10-15 ("Decisions on Part B+"). Built: P1 and P2 (section "Built: P1 and P2", after A11). The user's request (verbatim) and the decisions are in the
 dossier: `MEMORY/11-agent-network-and-code-graphs.md`.
 
 ## In short
@@ -407,6 +407,46 @@ ctx's own MCP tools stay for the working copy. legionctl does not wrap them one 
 | `a_test_that_kills_no_mutant_is_refused_at_checkpoint` | The gate refuses, `--accept-test` passes with a recorded reason, a duplicate test is a note only. |
 
 Mutation checks for these: the diff by node id, a missing content hash, a gate that ignores changed tests.
+
+### Built: P1 and P2 (2026-10-15)
+
+| Part | Where |
+| --- | --- |
+| Snapshots, refs, prune, git hook, change graph, annotations | `crates/legionctl-core/src/codegraph.rs` |
+| Jobs and triggers (checkpoint, merge, session start) | `crates/legionctl-operator/src/code.rs`, one line each in `engine.rs` |
+| Table `annotations` | `workspace.db` v11 (`crates/legionctl-core/src/dossier.rs`) |
+| Operations | `code.graph.refresh`, `refs`, `query`, `impact`, `changes`, `annotate`, `annotations`, `prune`, `hook` (CLI `code graph <name>`, MCP `code_graph_<name>`) |
+| Skill text (A8) | workspace-practice ("Code graphs of the refs", "Rebase and conflicts"), verify-and-ship ("Before a merge or after a rebase"), tool-lifecycle (group `code`) |
+
+What is different from the sections above, and why:
+
+| Item | Built | Why |
+| --- | --- | --- |
+| Stable key (A3) | ctx's `binding_key` column first; else the first binding alias that is not a package alias and not a bare `symbol:<name>`; else the node id. Then each `@<byte offset>` is removed. | ctx 2.2.8 gives a private function only the aliases `symbol:<name>` and `symbol:<file>::<name>`; `symbol:<name>` is not unique in a repository. `binding_key` has the module path for private items too. Closures and blocks have offsets in their aliases (`<closure@85>`). Measured on this repository, HEAD~3 to HEAD: 173 keys added, 0 removed; the only keys that two nodes share are closures in one function (they get `#2`, `#3` in file order). |
+| Modules and files | A module has its `binding_key` (`rust:module:<crate dir>:<path>`). Each changed file is a row `file:<path>` from `git diff --numstat`. | A file and its module are two entities: a module can move to another file (`util.rs` to `util/mod.rs` is `moved`). |
+| `code graph changes` | Refs are positional: `changes a b c` gives a to b and b to c; one ref: from its first parent; none: HEAD's last commit. | The rebase guidance compares more than two refs. |
+| Commits of an entity | Added or modified symbol: `git log -L` of its lines at the end of the range. Removed or moved symbol: `git log -S<its text> --no-renames`. File, and a node of the whole file: the log of the file. | A move changes no lines, and `-L` does not see lines that are gone. |
+| Checkpoint event of a commit | The newest `workspace.checkpoint` event with the commit's message. | The event log keeps the input of a call, not its output. |
+| When triggers act | Only in a repository that keeps graphs: its `.graf/refs` exists (the first `code graph refresh` or `code graph hook install` makes it). | legionctl does not write `.graf` into a repository that did not ask for it, and the tests of other features see no ctx jobs. |
+| Ignore `.graf/` | `/.graf/` in `<common dir>/info/exclude` when git does not ignore it yet. | One file for all worktrees, and no commit on the branch. |
+| ctx's MCP server | Each checkout's `.graf/index.db` is a link to the graph of its HEAD (set by each refresh of HEAD). `ctx mcp serve` opens the nearest `.graf/index.db`, so its config does not change. A graph file is read-only (0444), so a `ctx graph index` through the link cannot change it. | The old `index.db` of the main checkout (2026-10-12) is replaced by the link at the first refresh there. |
+| Concurrency | `ctx graph index` into `<tree>.db.tmp.<pid>.<ns>`, then a hard link to `<tree>.db`: the first builder wins; the second removes its file. | `rename` would replace the file of the first builder. |
+
+Not built yet: `--to work` (the working copy), the change-set cache `.graf/changes/`, `--impact` on `changes`,
+annotations on event keys (`commit:`, `event:`, `job:`), the ctx version of each graph (the `metadata` table of ctx
+2.2.8 has none), and the trees of open threads in prune (threads come in P5). The session-start trigger has no test
+of its own (the checkpoint and git-hook triggers have).
+
+Tests (`crates/legionctl/tests/code.rs`): ctx is a stand-in (`tests/fixtures/ctx-standin`, Python and SQLite) that
+writes the `index.db` schema of ctx 2.2.8 and its node shape for free functions, private functions, closures and
+call edges. `the_real_ctx_gives_the_change_rows_of_the_stand_in` (ignored, run by hand) runs the same change
+scenario with the installed ctx and expects the same rows.
+
+| Test | It catches |
+| --- | --- |
+| `a_graph_is_made_once_per_tree_shared_by_worktrees_and_pruned_to_heads_bases_and_the_newest` | No graph before the repository keeps graphs; a checkpoint and a plain `git commit` (the hook) make the graph of their tree in the main checkout's `.graf`; each checkout's link follows its HEAD (also after a checkout); two refreshes of one tree leave one file and no temporary files; a ref without a graph is reported and refused, and `--build` makes it; prune keeps a merge-base that is older than the removed graphs, and the newest 20 others. |
+| `changes_between_refs_are_the_changed_entities_by_stable_key_with_their_commits` | Exactly the changed entities with their commits; a function whose offsets moved and an unchanged closure are not changes; a function in a moved file of the same module is `moved`; checkpoint event, session and plan row of each commit; consecutive change sets; impact by stable key at a ref. |
+| `an_annotation_is_valid_while_its_symbol_is_the_same_stale_after_a_change_and_absent_after_removal` | `valid` with other offsets, `stale` after a body change, `absent` after removal, `no graph` at a ref without one. |
 
 ## Part B: agent network (todo-91)
 

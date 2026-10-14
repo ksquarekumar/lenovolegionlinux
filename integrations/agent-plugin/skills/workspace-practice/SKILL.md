@@ -29,9 +29,9 @@ user-invocable: true
     clean. It is class workspace, so it asks the user. Ask the user before you call it; if a lead agent merges, do not
     merge.
 14. Merge topics one at a time. Each later merge rebases onto the new base, so the history stays linear.
-15. Before you resolve a conflict, read each side's changes against the merge base by entity with the per-ref change
-    graph (`legionctl code graph changes`, comes with todo-90 P2). Until then, use `git log` and `git diff` of the merge
-    base.
+15. Before you resolve a conflict, read each side's changes against the merge base by entity:
+    `legionctl code graph changes <merge-base> <ours> <theirs>`. A ref without a graph gets one with
+    `legionctl code graph refresh <ref>`.
 16. Resolve the conflict in the workspace path, run `git rebase --continue`, record the resolution in the dossier, and
     merge again.
 17. `workspace close [--force]` removes the worktree; the branch and the dossier stay. It refuses uncommitted changes;

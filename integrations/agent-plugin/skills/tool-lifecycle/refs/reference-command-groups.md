@@ -18,6 +18,7 @@ W workspace, M machine (polkit). "client" runs in the client only, with no opera
 | `resources` | R (the routed operation has its own class) | operator, then the routed operation | `events` | machine-tools |
 | `run` | client, as you | - | - | machine-tools |
 | `dossier`, `hooks`, `hook` (client) | R, S, W | operator | `dossier check`, `dossier nudges`, `hooks list` | dossier-practice |
+| `code graph` (`refresh`, `refs`, `query`, `impact`, `changes`, `annotate`, `annotations`, `prune`, `hook`) | R, S, W (`hook`) | operator, ctx | `code graph refs`, `code graph changes` | workspace-practice |
 | `workspace` | R, S, W | operator, git; `pack`: docker or QEMU, a job | `workspace status`, `workspace list` | workspace-practice |
 | `session`, `jobs`, `tools`, `agents`, `gateway` | R, W | systemd scope, bwrap, docker or QEMU; `session run` is a job | `session list`, `jobs`, `trace` | sessions-and-agents |
 | `mcp-proxy` | client | - | `tools calls` | sessions-and-agents |

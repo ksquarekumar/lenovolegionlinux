@@ -11780,5 +11780,742 @@
       "title": "Acted",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
+  },
+  "code.graph.refresh": {
+    "class": "session",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string",
+          "description": "The ref to make the graph of; HEAD when not given.",
+          "default": "HEAD"
+        },
+        "background": {
+          "type": "boolean",
+          "description": "Return at once; the graph is made in the background (a job). The git hook uses it.",
+          "default": false
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in the repository (its main checkout or a worktree).",
+          "default": "."
+        }
+      },
+      "title": "GraphRefreshIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "code.graph.refs": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "The repository.",
+          "default": "."
+        }
+      },
+      "title": "RepoIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "refs": {
+          "type": "array",
+          "items": {
+            "description": "A ref of the repository and whether it has a graph.",
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "commit": {
+                "type": "string"
+              },
+              "tree": {
+                "type": "string"
+              },
+              "graph": {
+                "description": "Its snapshot exists (\"has .graf\").",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "name",
+              "commit",
+              "tree",
+              "graph"
+            ]
+          },
+          "description": "HEAD and the branches."
+        },
+        "snapshots": {
+          "type": "array",
+          "items": {
+            "description": "One graph snapshot (`.graf/refs/<tree>.db`).",
+            "type": "object",
+            "properties": {
+              "tree": {
+                "type": "string"
+              },
+              "size_bytes": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "modified_at": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "refs": {
+                "description": "The heads, bases and merge-bases on this tree: prune keeps it whatever its age.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "tree",
+              "size_bytes",
+              "modified_at",
+              "refs"
+            ]
+          },
+          "description": "Newest first."
+        }
+      },
+      "required": [
+        "refs",
+        "snapshots"
+      ],
+      "description": "The repository's refs and graph snapshots.",
+      "title": "GraphRefs",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "code.graph.query": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Symbol search text."
+        },
+        "ref": {
+          "type": "string",
+          "description": "The ref to search; HEAD when not given.",
+          "default": "HEAD"
+        },
+        "build": {
+          "type": "boolean",
+          "description": "Make the graph of the ref when it has none.",
+          "default": false
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in the repository.",
+          "default": "."
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "GraphQueryIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "tree": {
+          "type": "string"
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "description": "One symbol of a graph.",
+            "type": "object",
+            "properties": {
+              "key": {
+                "description": "The stable key: the same at each ref (`rust:<crate dir>:<module path>::<name>`, `file:<path>`).",
+                "type": "string"
+              },
+              "id": {
+                "description": "ctx's node id at this tree (it holds byte offsets).",
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64"
+              }
+            },
+            "required": [
+              "key",
+              "id",
+              "kind",
+              "file"
+            ]
+          }
+        }
+      },
+      "required": [
+        "tree",
+        "nodes"
+      ],
+      "description": "Symbols of the graph of one tree.",
+      "title": "CodeNodes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "code.graph.impact": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "The symbol's stable key (`code graph query` shows it), such as `rust:crates/legionctl-core:graph::Node`."
+        },
+        "ref": {
+          "type": "string",
+          "description": "The ref; HEAD when not given.",
+          "default": "HEAD"
+        },
+        "depth": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255,
+          "description": "Reverse dependency depth, 0 to 6.",
+          "default": 3
+        },
+        "build": {
+          "type": "boolean",
+          "description": "Make the graph of the ref when it has none.",
+          "default": false
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in the repository.",
+          "default": "."
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "title": "GraphImpactIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "tree": {
+          "type": "string"
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "description": "One symbol of a graph.",
+            "type": "object",
+            "properties": {
+              "key": {
+                "description": "The stable key: the same at each ref (`rust:<crate dir>:<module path>::<name>`, `file:<path>`).",
+                "type": "string"
+              },
+              "id": {
+                "description": "ctx's node id at this tree (it holds byte offsets).",
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64"
+              }
+            },
+            "required": [
+              "key",
+              "id",
+              "kind",
+              "file"
+            ]
+          }
+        }
+      },
+      "required": [
+        "tree",
+        "nodes"
+      ],
+      "description": "Symbols of the graph of one tree.",
+      "title": "CodeNodes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "code.graph.changes": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Two or more refs: the changes from each to the next. One ref: from its first parent. None: HEAD's last\ncommit. For a rebase or a conflict, give the merge-base first.",
+          "default": []
+        },
+        "build": {
+          "type": "boolean",
+          "description": "Make the graphs of the refs that have none.",
+          "default": false
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in the repository.",
+          "default": "."
+        }
+      },
+      "title": "GraphChangesIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "description": "The changes from one ref to the next, at entity and event level.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "BLAKE2b-128 of `<from tree>..<to tree>`.",
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "from_tree": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "to_tree": {
+            "type": "string"
+          },
+          "entities": {
+            "type": "array",
+            "items": {
+              "description": "One entity that changed between two refs.",
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "file": {
+                  "type": "string"
+                },
+                "change": {
+                  "description": "added, removed, modified (other content) or moved (same content, other file). A rename is removed plus\nadded.",
+                  "type": "string"
+                },
+                "lines": {
+                  "description": "`+a -r` lines for a file; the span in lines for a symbol.",
+                  "type": "string"
+                },
+                "commits": {
+                  "description": "The commits of the range that touched its lines (its file, for a removed entity).",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "key",
+                "kind",
+                "file",
+                "change",
+                "lines",
+                "commits"
+              ]
+            }
+          },
+          "commits": {
+            "description": "Newest first.",
+            "type": "array",
+            "items": {
+              "description": "One commit of a change set and what made it.",
+              "type": "object",
+              "properties": {
+                "commit": {
+                  "type": "string"
+                },
+                "committed_at": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "author": {
+                  "type": "string"
+                },
+                "subject": {
+                  "type": "string"
+                },
+                "plan_rows": {
+                  "description": "The plan rows that the message names (`todo-NN`).",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "checkpoint": {
+                  "description": "The `workspace.checkpoint` event that made it, and its session.",
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64"
+                },
+                "session": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "provenance": {
+                  "description": "`ctx blame commit`: the agent session that made it, or ctx's error."
+                }
+              },
+              "required": [
+                "commit",
+                "committed_at",
+                "author",
+                "subject",
+                "plan_rows",
+                "provenance"
+              ]
+            }
+          }
+        },
+        "required": [
+          "id",
+          "from",
+          "from_tree",
+          "to",
+          "to_tree",
+          "entities",
+          "commits"
+        ]
+      },
+      "title": "Array_of_ChangeSet",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "code.graph.annotate": {
+    "class": "session",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "The symbol's stable key."
+        },
+        "value": {
+          "type": "string",
+          "description": "The annotation's value (JSON)."
+        },
+        "kind": {
+          "type": "string",
+          "description": "note, review, test, loc, evidence, block, or a kind of your own.",
+          "default": "note"
+        },
+        "ref": {
+          "type": "string",
+          "description": "The ref where the symbol is as you annotate it; HEAD when not given.",
+          "default": "HEAD"
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in the repository.",
+          "default": "."
+        },
+        "session": {
+          "type": "string",
+          "format": "session",
+          "description": "Agent session id; the client fills it.",
+          "default": ""
+        }
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "title": "AnnotateIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "code.graph.annotations": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The refs to check each annotation at; HEAD when none.",
+          "default": []
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Only the annotations of this stable key.",
+          "default": null
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in the repository.",
+          "default": "."
+        }
+      },
+      "title": "AnnotationsIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "description": "An annotation on a stable key, and its state at each ref asked for.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "value": true,
+          "tree": {
+            "description": "The tree and the symbol's content hash when it was written.",
+            "type": "string"
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "at": {
+            "type": "array",
+            "items": {
+              "description": "The state of an annotation at one ref.",
+              "type": "object",
+              "properties": {
+                "ref": {
+                  "type": "string"
+                },
+                "tree": {
+                  "type": "string"
+                },
+                "state": {
+                  "description": "valid (the key with the same content), stale (other content), absent (no such key), no graph.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "ref",
+                "tree",
+                "state"
+              ]
+            }
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "kind",
+          "value",
+          "tree",
+          "content_hash",
+          "session",
+          "agent",
+          "created_at",
+          "at"
+        ]
+      },
+      "title": "Array_of_Annotation",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "code.graph.prune": {
+    "class": "session",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "dry_run": {
+          "type": "boolean",
+          "description": "Show what would be removed; remove nothing.",
+          "default": false
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in the repository.",
+          "default": "."
+        }
+      },
+      "title": "GraphPruneIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "code.graph.hook": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "install",
+              "description": "Add the refresh line to the repository's git hooks."
+            },
+            {
+              "type": "string",
+              "const": "remove",
+              "description": "Remove the refresh line; the other lines of each hook stay."
+            }
+          ]
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in the repository.",
+          "default": "."
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "title": "GraphHookIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
   }
 }

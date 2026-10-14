@@ -18,16 +18,42 @@ use serde::{Deserialize, Serialize};
 use crate::config::DossierConfig;
 use crate::db::{Db, Schema};
 
-/// The workspace database at v10: the steps of v1-v9 merged into one (todo-68), then the topic workspaces.
+/// The annotations table: one text for the new file and for the v10 step.
+macro_rules! annotations {
+    () => {
+        "
+     -- annotations on stable code keys (design 23, A6): the tree and the symbol's content hash when written
+     CREATE TABLE annotations (
+        id           INTEGER PRIMARY KEY,
+        repo         TEXT NOT NULL,
+        key          TEXT NOT NULL,
+        kind         TEXT NOT NULL,
+        value        TEXT NOT NULL,
+        tree         TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        session      TEXT NOT NULL,
+        agent        TEXT NOT NULL,
+        created      INTEGER NOT NULL
+     );
+     CREATE INDEX annotations_key ON annotations (repo, key);"
+    };
+}
+
+/// The workspace database at v11: the steps of v1-v9 merged into one (todo-68), then the topic workspaces, then
+/// the code graph annotations.
 const SCHEMA: &Schema = &Schema {
-    version: 10,
-    steps: &[(
-        9,
-        "ALTER TABLE workspaces ADD COLUMN topic TEXT NOT NULL DEFAULT '';
-         DROP INDEX open_workspace;
-         CREATE UNIQUE INDEX open_workspace ON workspaces (dossier, repo, topic) WHERE closed IS NULL;",
-    )],
-    sql: "-- one open binding per dossier and per session; released rows stay as history; place: where the session worked
+    version: 11,
+    steps: &[
+        (
+            9,
+            "ALTER TABLE workspaces ADD COLUMN topic TEXT NOT NULL DEFAULT '';
+             DROP INDEX open_workspace;
+             CREATE UNIQUE INDEX open_workspace ON workspaces (dossier, repo, topic) WHERE closed IS NULL;",
+        ),
+        (10, annotations!()),
+    ],
+    sql: concat!(
+        "-- one open binding per dossier and per session; released rows stay as history; place: where the session worked
      -- (repository root, else its folder), for binding the next session there
      CREATE TABLE bindings (
         session  TEXT NOT NULL,
@@ -88,6 +114,8 @@ const SCHEMA: &Schema = &Schema {
         turns   INTEGER NOT NULL DEFAULT 0,
         level   TEXT
      );",
+        annotations!()
+    ),
 };
 
 /// Where a session works, for binding the next session there: the repository that contains `dir`, else `dir`.
@@ -1037,7 +1065,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The user's v9 file (one open workspace per dossier and repository) becomes v10 in place: its rows stay as the
+    /// The user's v9 file (one open workspace per dossier and repository) becomes v11 in place: its rows stay as the
     /// dossiers' own workspaces, a topic workspace can open beside one, and the table and index equal a new file's.
     #[test]
     fn a_v9_workspace_database_takes_topic_workspaces_and_keeps_its_rows() {
@@ -1063,7 +1091,7 @@ mod tests {
         .unwrap();
         drop(v9);
         let db = Db::open(&old, SCHEMA).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 10);
+        assert_eq!(db.schema_version().unwrap(), 11);
         let conn = db.conn();
         assert_eq!(
             conn.query_row(
