@@ -2109,9 +2109,10 @@ mod operator_and_daemon {
             "/etc/legionctl/configsets/60-build.jsonc",
             r#"{ "when": { "workload": "build" }, "set": { "sysctl.vm.swappiness": "10" } }"#,
         );
-        // a program named like a build tool: the sensor goes by the name
+        // a program named like a build tool: the sensor goes by the name (comm is the link's name). A link, not a
+        // copy: a parallel test's fork can hold a copy's write fd, and exec then fails with ETXTBSY
         let ninja = m.dir.join("bin/ninja");
-        std::fs::copy("/bin/sleep", &ninja).unwrap();
+        std::os::unix::fs::symlink("/bin/sleep", &ninja).unwrap();
         let run = || {
             Kill(
                 std::process::Command::new(&ninja)
