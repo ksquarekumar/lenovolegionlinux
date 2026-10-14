@@ -17,6 +17,7 @@ use legionctl_app::{LegionApp, Page, Pending};
 
 const FIXTURE: &str = "../../tests/fixtures/sysroot-82wq-2026-10-12";
 const PROFILE: &str = "../../profiles/lenovo-82wq-legion-pro-7-16irx8h.json";
+const LAYERS: &str = "../../configsets/lenovo-82wq-legion-pro-7-16irx8h";
 
 fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
@@ -68,6 +69,10 @@ fn unplugged_machine() -> Operator {
         installed,
     )
     .unwrap();
+    copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join(LAYERS),
+        &root.join("usr/share/legionctl/configsets/lenovo-82wq-legion-pro-7-16irx8h"),
+    );
     std::fs::write(root.join("sys/class/power_supply/ADP0/online"), "0\n").unwrap();
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();

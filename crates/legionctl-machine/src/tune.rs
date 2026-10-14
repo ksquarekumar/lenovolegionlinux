@@ -316,7 +316,38 @@ pub fn run(
     std::fs::create_dir_all(target.parent().context("no parent")?)?;
     std::fs::write(&target, serde_json::to_string_pretty(&report)?)
         .with_context(|| format!("writing {}", target.display()))?;
+    if let Some(value) = recommended {
+        tuned(root, &spec.attribute, value)?;
+    }
     Ok(report)
+}
+
+/// Put a recommended value into the generated layer `tuned` (`/var/lib/legionctl/configsets/50-tuned.jsonc`), for AC
+/// (the sweep runs on AC only), beside the values of earlier sweeps. The layer is off until `legionctl rules enable
+/// tuned`.
+fn tuned(root: &SysRoot, attribute: &str, value: u32) -> Result<()> {
+    let file = root.path(format!("{}/50-tuned.jsonc", crate::configset::GENERATED));
+    let mut set = std::fs::read(&file)
+        .ok()
+        .and_then(|bytes| {
+            serde_json::from_reader::<_, serde_json::Value>(json_comments::StripComments::new(
+                bytes.as_slice(),
+            ))
+            .ok()
+        })
+        .and_then(|layer| layer.get("set")?.as_object().cloned())
+        .unwrap_or_default();
+    set.insert(format!("firmware.{attribute}"), value.into());
+    let layer = serde_json::json!({ "when": { "power": "ac" }, "set": set });
+    std::fs::create_dir_all(file.parent().context("no parent")?)?;
+    std::fs::write(
+        &file,
+        format!(
+            "// Made by legionctl tune: the recommended firmware limits on AC. Off until `legionctl rules enable tuned`.\n{}\n",
+            serde_json::to_string_pretty(&layer)?
+        ),
+    )
+    .with_context(|| format!("writing {}", file.display()))
 }
 
 /// One step: the workloads in threads, a sample each second until they end (or a danger stops the step).

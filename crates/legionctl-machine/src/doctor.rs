@@ -76,32 +76,32 @@ pub fn doctor(machine: &Machine) -> Vec<String> {
     if let Some(reason) = root.read("/run/legionctl/safe-mode") {
         w.push(format!("safe mode: {reason}"));
     }
+    if let Some(reason) = root.read(crate::configset::WORKLOAD_ERROR) {
+        w.push(format!(
+            "the eBPF workload sensor does not run: {reason}; layers with a workload condition never apply"
+        ));
+    }
     if !dmi_mismatches(root, profile).is_empty() {
         w.push("DMI does not match this repo profile".into());
     }
 
-    let ac = machine.ac_online();
-    let policy = if ac { &profile.ac } else { &profile.battery };
     let override_mode = machine.ledger.get(Key::Override);
+    let wanted = machine.desired(machine.source(), override_mode.as_deref());
+    w.extend(crate::configset::findings(machine.layers));
     let current = root.read(&profile.paths.platform_profile);
-    let wanted = override_mode
+    let expected_mode = override_mode
         .clone()
-        .or_else(|| machine.platform_choice(policy));
-    if let Some(wanted) = &wanted
-        && current.as_deref() != Some(wanted.as_str())
+        .or_else(|| machine.platform_choice(&wanted));
+    if let Some(expected_mode) = &expected_mode
+        && current.as_deref() != Some(expected_mode.as_str())
     {
         w.push(format!(
             "platform_profile is {}, expected {}",
             current.as_deref().map_or("None".into(), quoted),
-            quoted(wanted)
+            quoted(expected_mode)
         ));
     }
-    if let (Some(path), Some(fan)) = (
-        &profile.paths.fan_mode,
-        ac.then_some(()).and(profile.ac.firmware.fan_mode.as_ref()),
-    ) && !fan.is_null()
-    {
-        let fan = crate::profile::text(fan);
+    if let (Some(path), Some(fan)) = (&profile.paths.fan_mode, wanted.text("firmware.fan_mode")) {
         let now = root.read(path);
         if now.as_deref() != Some(fan.as_str()) {
             w.push(format!(
@@ -112,19 +112,16 @@ pub fn doctor(machine: &Machine) -> Vec<String> {
         }
     }
 
-    // following Fn+Q: the governor comes from firmware_follow, EPP from power-profiles-daemon
+    // following Fn+Q: the governor comes from the Fn+Q layer, EPP from power-profiles-daemon
     let (governor, epp) = match &override_mode {
         Some(mode) => (
-            profile
-                .firmware_follow
-                .get(mode)
-                .and_then(|f| f.governor.clone()),
+            machine
+                .follows(mode)
+                .then(|| wanted.text("cpu.governor"))
+                .flatten(),
             None,
         ),
-        None => (
-            policy.cpu.governor.clone(),
-            policy.cpu.energy_performance_preference.clone(),
-        ),
+        None => (wanted.text("cpu.governor"), wanted.text("cpu.epp")),
     };
     for (file, label, expected) in [
         ("scaling_governor", "governor", governor),
@@ -145,9 +142,7 @@ pub fn doctor(machine: &Machine) -> Vec<String> {
         }
     }
 
-    let mut sysctl = profile.sysctl.clone();
-    sysctl.extend(policy.sysctl.clone());
-    for (key, value) in sysctl {
+    for (key, value) in wanted.under("sysctl.") {
         if let Some(now) = root.read(format!("/proc/sys/{}", key.replace('.', "/")))
             && now != value
         {
@@ -174,7 +169,11 @@ pub fn doctor(machine: &Machine) -> Vec<String> {
             "NTFS volume {volume} is marked dirty; run chkdsk in Windows (or ntfsfix -d, see docs/design/11-disks.md)"
         ));
     }
-    w.extend(gpu_warnings(root, profile, ac));
+    w.extend(gpu_warnings(
+        root,
+        profile,
+        wanted.text("nvidia.services").as_deref() == Some("start"),
+    ));
     w.extend(desktop_warnings());
     w
 }
@@ -243,8 +242,8 @@ fn conflict_warnings(root: &SysRoot, profile: &Profile) -> Vec<String> {
     w
 }
 
-/// Desktop GPU wiring and NVIDIA power on AC.
-fn gpu_warnings(root: &SysRoot, profile: &Profile, ac: bool) -> Vec<String> {
+/// Desktop GPU wiring, and NVIDIA power where the layers start its services (on AC).
+fn gpu_warnings(root: &SysRoot, profile: &Profile, services: bool) -> Vec<String> {
     let mut w = Vec::new();
     let outputs = gpu::outputs(root);
     let external_on_nvidia = outputs
@@ -260,7 +259,7 @@ fn gpu_warnings(root: &SysRoot, profile: &Profile, ac: bool) -> Vec<String> {
         );
     }
 
-    if ac {
+    if services {
         for unit in ["nvidia-powerd.service", "nvidia-persistenced.service"] {
             let state = system::unit_state("is-active", unit);
             if !["active", "unknown"].contains(&state.as_str()) {
@@ -270,7 +269,7 @@ fn gpu_warnings(root: &SysRoot, profile: &Profile, ac: bool) -> Vec<String> {
         // nvidia-powerd Dynamic Boost moves the limit between the base and base+25 W
         if let (Some(limit), Some(expected)) = (
             system::nvidia_power_limit(),
-            profile.ac.nvidia.expected_dynamic_power_w,
+            profile.nvidia.expected_dynamic_power_w,
         ) && !limit
             .parse::<f64>()
             .is_ok_and(|l| (0.0..=25.0).contains(&(l - expected)))

@@ -374,7 +374,8 @@ operations! {
     doctor / Doctor = "doctor", Read, ProfileIn => Findings;
     /// Known and planned capability coverage from the profile.
     capabilities / Capabilities = "capabilities", Read, ProfileIn => CapabilityList;
-    /// Check the profile's structure and ac/battery consistency (no hardware access).
+    /// Check the profile's structure and its shipped configset layers: knobs, values and the ac/battery rule (no
+    /// hardware access).
     validate / Validate = "validate", Read, ProfileIn => Validation;
     /// GPU wiring: which GPU drives each display and which GPU draws the desktop.
     gpu_status / GpuStatus = "gpu.status", Read, Empty => GpuState;
@@ -474,11 +475,30 @@ operations! {
     monitor / Monitor = "monitor", Read, MonitorIn => Samples;
     /// The event log: what agents, people and the machine daemon did, oldest first.
     events / EventsOp = "events", Read, EventsIn => Page<EventRow>;
-    /// Every knob legionctl reads or sets: current value, the profile's value for the current power source, the
-    /// firmware range and choices, and the policy (enforce, follow, observe).
+    /// Every knob legionctl reads or sets: current value, the value the configset layers want now, the firmware range
+    /// and choices, and the policy (enforce, follow, observe).
     knobs_list / KnobsList = "knobs.list", Read, ProfileIn => Knobs;
-    /// One knob and its history from the event log.
+    /// One knob: the layers that set it now (the last one wins, unless you hold it) and its history from the event log.
     knobs_show / KnobsShow = "knobs.show", Read, InspectIn => KnobDetail;
+    /// The desired state now: the conditions (power, Fn+Q, workload), each knob a layer sets with the chain of layers
+    /// that set it, and the writes the daemon would make.
+    plan / Plan = "plan", Read, Empty => PlanView;
+    /// The configset layers in merge order (shipped, generated, system, yours): on or off and why, their conditions,
+    /// and which apply now.
+    rules_list / RulesList = "rules.list", Read, Empty => Rules;
+    /// One layer and its file.
+    rules_show / RulesShow = "rules.show", Read, RuleIn => RuleDetail;
+    /// Turn a layer on (`rules enable tuned` uses the values from `legionctl tune`). A human approves it in the polkit
+    /// dialog.
+    rules_enable / RulesEnable = "rules.enable", Machine, RuleIn => Changes;
+    /// Turn a layer off; a shipped layer can be turned off, not changed. A human approves it in the polkit dialog.
+    rules_disable / RulesDisable = "rules.disable", Machine, RuleIn => Changes;
+    /// Set or remove knobs in your own layer (or a system layer: polkit asks), then apply the layers. A layer that fails
+    /// its checks is refused.
+    rules_edit / RulesEdit = "rules.edit", Machine, RuleEditIn => Changes;
+    /// Back to the shipped state: remove your layers and holds (for one knob, or all); with `--system`, the system
+    /// layers and the layers' on/off states. Holds and system changes go through polkit.
+    rules_reset / RulesReset = "rules.reset", Machine, RuleResetIn => Changes;
     /// Hold a knob at a value against the policy (D1): it is written now, and the policy leaves it alone until
     /// `knobs release`. A human approves it in the polkit dialog.
     knobs_hold / KnobsHold = "knobs.hold", Machine, KnobHoldIn => Changes;
@@ -596,8 +616,8 @@ operations! {
     internal_windows_vm_begin / InternalWindowsVmBegin = "internal.windows_vm_begin", Machine, WindowsVmBeginIn => WindowsVmBegun;
     /// The Windows VM's runner, after QEMU ended: the host given back.
     internal_windows_vm_end / InternalWindowsVmEnd = "internal.windows_vm_end", Machine, Empty => Lines;
-    /// Record this machine into a directory: the files legionctl reads, the profile, the Fn+Q ledger and recent
-    /// events. A bug report, a test fixture, or a before/after record of a BIOS or kernel update.
+    /// Record this machine into a directory: the files legionctl reads, the profile, the configset layers, the Fn+Q
+    /// ledger and recent events. A bug report, a test fixture, or a before/after record of a BIOS or kernel update.
     record / Record = "record", Workspace, RecordIn => Recording;
     /// What the daemon would write and what doctor finds on a recorded machine, with its events.
     replay / Replay = "replay", Read, ReplayIn => Recording;

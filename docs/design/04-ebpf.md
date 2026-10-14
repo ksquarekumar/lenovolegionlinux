@@ -42,13 +42,32 @@ upgrade) and the package's removal (`pre_remove`) remove the pins, so nothing st
 as root in CI, a killed daemon's successor keeps the same pinned histogram (its inode) and measures, and a SIGTERM
 removes the pins.
 
-Not built yet: the other uses below (workload detection, power attribution, throttle correlation, HID-BPF).
+## Built (2026-10-14, todo-74): workload detection
+
+`crates/legionctl-system/bpf/workload.bpf.c` hooks `tp_btf/sched_process_exec` (the process id and the new name,
+`comm`) and `tp_btf/sched_process_exit` (the end of a process: only its main thread), in order in one ring buffer.
+It reads no kernel structure. The daemon (`src/workload.rs`) classifies the name: game (`reaper`, the process that
+Steam starts each game under, `gamescope`, `wine`, `wine64`, `wineserver`, the wine preloaders), build (`cc1`,
+`cc1plus`, `rustc`, `cargo`, `clang`, `gcc`, `g++`, the linkers, `make`, `ninja`), vm (`qemu-system-*`,
+VirtualBox). It keeps each classified process until its end comes through the same ring, so the order of the events
+removes any race. At its start, after the programs are attached, it looks once in `/proc` for the programs that
+started before. A kind is active while one of its processes lives, and for 5 s after the last one (a build starts
+short compilers one after another). Each second the daemon compares the active kinds; a change writes them to
+`/run/legionctl/workload` and runs `Event::Workload`: the configsets' `workload` condition (note 01). A sensor that
+cannot load writes its reason to `/run/legionctl/workload.error` instead, and `doctor` shows it. The pins are as
+for the other sensors (`workload-<build>`). The Steam client alone is not a game. Shortcut: the name only, not the
+cgroup (a Proton game runs as its `.exe` name under the wine preloader, which is found). Tests: without root the
+error path (e2e); as root (CI's eBPF step, and a Debian 13 VM with kernel 7.2 by hand): a build tool that ran before
+the daemon and one that starts later make a `workload build` layer apply, and the end of the process stops it.
+
+Not built yet: the other uses below (power attribution, throttle correlation, HID-BPF), and the workload as an input
+of the predictor (sched_ext mode, EPP, uclamp).
 
 ## Worth doing
 
 | Use | Hook | Output |
 | --- | --- | --- |
-| Workload detection | `sched_process_exec` / `sched_process_exit` tracepoints | `Workload` events (game, build, VM, idle) from a classifier over comm/cgroup |
+| Workload detection (built) | `sched_process_exec` / `sched_process_exit` tracepoints | `Workload` events (game, build, vm) from a classifier over the name; the cgroup later |
 | Jank metric | `sched_wakeup` → `sched_switch` run-queue latency histogram, per CPU class (P/E core) | p50/p99 latency in the app; compare scx modes with numbers instead of feel |
 | Power attribution | `sched_switch` + `power:cpu_frequency` | estimated per-process CPU energy share ("what is keeping the fans up") |
 | Throttle correlation | `power:cpu_frequency` drops aligned with MSR throttle-status reads | which throttle reason fired during which workload |

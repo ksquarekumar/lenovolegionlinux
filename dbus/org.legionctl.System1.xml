@@ -10,6 +10,31 @@
       <arg type="as" direction="out"/>
     </method>
     <!--
+     Apply the configset layers again (after the user changed own layers): the same apply as after resume. The
+     layers are the configured policy, so polkit is not asked.
+     -->
+    <method name="Reload">
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
+     Write the system layer `name` (`/etc/legionctl/configsets/<name>.jsonc`) with `content` (JSONC), or remove it
+     (empty `content`), then apply the layers again. A layer that fails its checks is refused.
+     -->
+    <method name="SetLayer">
+      <arg name="name" type="s" direction="in"/>
+      <arg name="content" type="s" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
+     Turn a layer on or off (`on`, `off`), or give it its default again (`default`: a generated layer is off, the
+     others on); `name` is its id (`shipped/20-ac`), its file name, or its name without the order (`tuned`).
+     -->
+    <method name="SetLayerState">
+      <arg name="name" type="s" direction="in"/>
+      <arg name="state" type="s" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
      Hold knobs at values against the policy (path -> value; a `*` path holds every CPU of a per-CPU knob): writes
      them now; the policy leaves them alone until `Release`.
      -->

@@ -15,6 +15,10 @@ pub enum Event {
     PlatformProfile,
     /// The machine woke from suspend.
     Resume,
+    /// A configset layer changed (inotify on the folders, D-Bus `Reload`, `rules`).
+    Reload,
+    /// A workload (game, build, vm) started or ended (the exec sensor).
+    Workload,
     /// Periodic check for knobs that cannot notify (power-profiles-daemon rewrites governor and EPP).
     Tick,
 }
@@ -36,7 +40,8 @@ pub fn react(machine: &Machine, event: Event) -> Result<Vec<Step>> {
 fn policy(machine: &Machine, event: Event) -> Result<Vec<Step>> {
     Ok(match event {
         Event::Start | Event::PowerSource => machine.apply(None, Options::default())?.1,
-        Event::Resume => {
+        // the same apply as after a power change, but the Fn+Q choice stays
+        Event::Resume | Event::Reload | Event::Workload => {
             machine
                 .apply(
                     None,

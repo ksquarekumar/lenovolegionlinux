@@ -1,0 +1,9 @@
+// Fn+Q chose the firmware mode balanced: power-profiles-daemon and the governor follow it. The firmware mode and EPP
+// stay as the firmware and power-profiles-daemon set them.
+{
+  "when": { "fnq": "balanced" },
+  "set": {
+    "ppd": "balanced",
+    "cpu.governor": "powersave"
+  }
+}

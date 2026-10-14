@@ -13,6 +13,8 @@ const FIXTURE: &str = "../../tests/fixtures/sysroot-82wq-2026-10-12";
 const PROFILE: &str = "../../profiles/lenovo-82wq-legion-pro-7-16irx8h.json";
 const INSTALLED_PROFILE: &str =
     "usr/share/legionctl/profiles/lenovo-82wq-legion-pro-7-16irx8h.json";
+const LAYERS: &str = "../../configsets/lenovo-82wq-legion-pro-7-16irx8h";
+const INSTALLED_LAYERS: &str = "usr/share/legionctl/configsets/lenovo-82wq-legion-pro-7-16irx8h";
 
 struct Machine {
     tag: &'static str,
@@ -63,6 +65,10 @@ impl Machine {
             installed,
         )
         .unwrap();
+        copy_tree(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join(LAYERS),
+            &dir.join("root").join(INSTALLED_LAYERS),
+        );
         let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         for name in ["cpupower", "systemctl", "nvidia-smi"] {
@@ -1053,27 +1059,18 @@ mod daemon_events {
     /// The daemon's reaction: every step as a line; file and ledger steps really run against the recorded tree,
     /// commands (powerprofilesctl, systemctl, nvidia-smi) only as planned lines, so no test touches this machine.
     fn react_and_write(m: &Machine, event: Event) -> Vec<String> {
-        // the installed copy, as the daemon reads it (a test may mark its fan calls verified)
-        let (profile, _) =
-            legionctl_machine::profile::load(Some(&m.dir.join("root").join(INSTALLED_PROFILE)))
-                .unwrap();
-        let root = SysRoot::new(m.dir.join("root"));
-        let ledger = m.ledger();
-        let planner = Planner {
-            root: &root,
-            profile: &profile,
-            ledger: &ledger,
-            ppd_current: Some("performance".into()),
-            has_command: &|_| true,
-        };
-        let steps = react(&planner, event).unwrap();
-        let files: Vec<Step> = steps
-            .iter()
-            .filter(|s| !matches!(s, Step::Run(_) | Step::Try(_)))
-            .cloned()
-            .collect();
-        policy::execute(&root, &ledger, &files);
-        steps.iter().filter_map(policy::describe).collect()
+        let mut lines = Vec::new();
+        with_planner(m, |planner| {
+            let steps = react(planner, event).unwrap();
+            let files: Vec<Step> = steps
+                .iter()
+                .filter(|s| !matches!(s, Step::Run(_) | Step::Try(_)))
+                .cloned()
+                .collect();
+            policy::execute(planner.root, planner.ledger, &files);
+            lines = steps.iter().filter_map(policy::describe).collect();
+        });
+        lines
     }
 
     #[test]
@@ -1143,25 +1140,16 @@ mod daemon_events {
     }
 
     fn plan(m: &Machine, event: Event) -> Vec<String> {
-        let (profile, _) = legionctl_machine::profile::load(Some(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join(PROFILE),
-        ))
-        .unwrap();
-        let root = SysRoot::new(m.dir.join("root"));
-        let ledger = m.ledger();
-        let planner = Planner {
-            root: &root,
-            profile: &profile,
-            ledger: &ledger,
-            ppd_current: Some("performance".into()),
-            has_command: &|_| true,
-        };
-        react(&planner, event)
-            .unwrap()
-            .iter()
-            .filter(|s| !matches!(s, Step::Run(_) | Step::Try(_)))
-            .filter_map(policy::describe)
-            .collect()
+        let mut lines = Vec::new();
+        with_planner(m, |planner| {
+            lines = react(planner, event)
+                .unwrap()
+                .iter()
+                .filter(|s| !matches!(s, Step::Run(_) | Step::Try(_)))
+                .filter_map(policy::describe)
+                .collect();
+        });
+        lines
     }
 
     /// The EC resets the fan table outside custom mode, and custom mode runs the fans at ~6,000 rpm until a table is
@@ -1371,30 +1359,37 @@ mod daemon_events {
     fn configsets_plan_exactly_the_writes_the_profile_planned() {
         let golden = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/plans-82wq-before-configsets.txt");
+        // the knobs that were profile flags before (enable_all_idle_states, nvidia.start_*) are new in the catalog
         let plans = migration_plans();
-        if std::env::var_os("LEGIONCTL_WRITE_PLANS").is_some() {
-            std::fs::write(&golden, &plans).unwrap();
-        }
+        let plans: Vec<&str> = plans
+            .lines()
+            .filter(|l| {
+                !l.starts_with("cpu.idle_states = ") && !l.starts_with("nvidia.services = ")
+            })
+            .collect();
         let expected = std::fs::read_to_string(golden).unwrap();
-        for (line, (want, got)) in expected.lines().zip(plans.lines()).enumerate() {
-            assert_eq!(want, got, "first difference at line {}", line + 1);
+        for (line, (want, got)) in expected.lines().zip(&plans).enumerate() {
+            assert_eq!(want, *got, "first difference at line {}", line + 1);
         }
-        assert_eq!(expected.lines().count(), plans.lines().count());
+        assert_eq!(expected.lines().count(), plans.len());
     }
 
-    /// The daemon's planner on `m`, as the daemon builds it.
+    /// The daemon's planner on `m`, as the daemon builds it: the installed profile (a test may mark its fan calls
+    /// verified) and the configset layers.
     fn with_planner(m: &Machine, f: impl FnOnce(&Planner)) {
         let (profile, _) =
             legionctl_machine::profile::load(Some(&m.dir.join("root").join(INSTALLED_PROFILE)))
                 .unwrap();
         let root = SysRoot::new(m.dir.join("root"));
         let ledger = m.ledger();
+        let layers = legionctl_machine::configset::load(&root, &profile, &ledger);
         f(&Planner {
             root: &root,
             profile: &profile,
             ledger: &ledger,
             ppd_current: Some("performance".into()),
             has_command: &|_| true,
+            layers: &layers,
         });
     }
 
@@ -1840,6 +1835,18 @@ mod operator_and_daemon {
             .unwrap()
             .count();
         assert_eq!(results, 1, "one results file");
+        // the recommendation is a generated layer for AC, off until the user enables it
+        let tuned = m.file("/var/lib/legionctl/configsets/50-tuned.jsonc");
+        assert!(
+            tuned.contains("\"power\": \"ac\"") && tuned.contains("\"firmware.ppt_pl1_spl\": 80"),
+            "{tuned}"
+        );
+        let list = op.ok(&["rules", "list"]);
+        assert!(
+            list.lines().any(|l| l.starts_with("generated/50-tuned")
+                && l.ends_with("off: generated: off until `legionctl rules enable 50-tuned`")),
+            "{list}"
+        );
 
         let outside = tune(&["200"]);
         assert!(
@@ -1919,6 +1926,12 @@ mod operator_and_daemon {
         assert!(
             doctor.contains(
                 "- the eBPF run-queue sensor does not run: loading the runq object: map error"
+            ),
+            "{doctor}"
+        );
+        assert!(
+            doctor.contains(
+                "- the eBPF workload sensor does not run: loading the workload object: map error"
             ),
             "{doctor}"
         );
@@ -2082,6 +2095,210 @@ mod operator_and_daemon {
             "{activity}"
         );
         assert!(!activity.to_string().contains("outside"), "{activity}");
+    }
+
+    /// The workload sensor as root (CI runs it with sudo): a build tool that runs before the daemon starts (found in
+    /// /proc) and one that starts later (the exec tracepoint) make the `workload build` layer apply; when the tool
+    /// ends (the exit tracepoint) the layer stops applying after the linger time. The verifier of the running kernel
+    /// takes both programs.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs root: CI runs it with sudo"]
+    async fn as_root_the_workload_sensor_applies_a_layer_while_a_build_runs() {
+        let m = Machine::new("workload");
+        m.set(
+            "/etc/legionctl/configsets/60-build.jsonc",
+            r#"{ "when": { "workload": "build" }, "set": { "sysctl.vm.swappiness": "10" } }"#,
+        );
+        // a program named like a build tool: the sensor goes by the name
+        let ninja = m.dir.join("bin/ninja");
+        std::fs::copy("/bin/sleep", &ninja).unwrap();
+        let run = || {
+            Kill(
+                std::process::Command::new(&ninja)
+                    .arg("60")
+                    .spawn()
+                    .unwrap(),
+            )
+        };
+        let workload = || m.file("/run/legionctl/workload");
+
+        let before = run();
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        wait_for("the build that ran before the daemon", || {
+            m.file(SWAPPINESS) == "10" && workload() == "build"
+        });
+        assert_eq!(m.file("/run/legionctl/workload.error"), "<missing>");
+        drop(before);
+        wait_for("the end of the build", || {
+            m.file(SWAPPINESS) == "150" && workload().is_empty()
+        });
+
+        let _after = run();
+        wait_for("a build that starts while the daemon runs", || {
+            m.file(SWAPPINESS) == "10" && workload() == "build"
+        });
+    }
+
+    const SWAPPINESS: &str = "/proc/sys/vm/swappiness";
+
+    /// You are the user in front (logind seat0) with your home on machine `m`; the operator runs as you, on the bus of
+    /// the daemon. Returns the operator and your layer folder.
+    fn seat_user(m: &Machine, tag: &'static str) -> (Operator, PathBuf) {
+        let uid = std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/proc/self").unwrap());
+        m.set(
+            "/run/systemd/seats/seat0",
+            &format!("IS_SEAT0=1\nACTIVE=2\nACTIVE_UID={uid}"),
+        );
+        m.set(
+            "/etc/passwd",
+            &format!("root:x:0:0::/root:/bin/sh\nu:x:{uid}:{uid}::/home/u:/bin/sh"),
+        );
+        let home = m.dir.join("root/home/u");
+        std::fs::create_dir_all(&home).unwrap();
+        let op = Operator::start(
+            tag,
+            &[
+                ("PATH", m.dir.join("bin").into()),
+                ("HOME", home.clone().into()),
+                ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+                (
+                    "DBUS_SYSTEM_BUS_ADDRESS",
+                    format!("unix:path={}", m.dir.join("bus").display()).into(),
+                ),
+            ],
+        );
+        (op, home.join(".config/legionctl/configsets"))
+    }
+
+    /// Configsets end to end (todo-74), through the CLI, the operator and the daemon on the recorded machine: your own
+    /// layer is your file and applies at once, without polkit; the "because" chain shows who set a knob; a layer that
+    /// fails a check, or is a link, is not used and doctor says why; a power layer is used only with a value for the
+    /// other power source too.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn your_own_layer_applies_at_once_and_a_layer_that_fails_a_check_is_not_used() {
+        const PL1: &str = "/sys/class/firmware-attributes/lenovo-wmi-other-0/attributes/ppt_pl1_spl/current_value";
+        let m = Machine::new("ownrules");
+        let (_stand_ins, asked, _processes) = start(&m).await;
+        let (op, own) = seat_user(&m, "ownrules");
+        assert_eq!(m.file(SWAPPINESS), "150");
+
+        let out = op.ok(&["rules", "edit", "50-mine", "sysctl.vm.swappiness=60"]);
+        assert_eq!(m.file(SWAPPINESS), "60", "{out}");
+        assert!(own.join("50-mine.jsonc").exists());
+        let show = op.ok(&["knobs", "show", "sysctl.vm.swappiness"]);
+        assert!(
+            show.contains(
+                "because:\n  shipped/10-base (always): 150\n  user/50-mine (always): 60  <- wins\n  hold: none"
+            ),
+            "{show}"
+        );
+
+        std::fs::write(
+            own.join("60-bad.jsonc"),
+            r#"{ "when": { "weather": "rain" }, "set": { "sysctl.vm.swappiness": "1" } }"#,
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(m.dir.join("root/etc/passwd"), own.join("70-link.jsonc"))
+            .unwrap();
+        op.ok(&["rules", "edit", "50-mine", "sysctl.vm.swappiness=61"]);
+        assert_eq!(m.file(SWAPPINESS), "61");
+        let doctor = String::from_utf8(op.cli(&["doctor"]).stdout).unwrap();
+        assert!(
+            doctor.contains(
+                "60-bad.jsonc is not used: unknown condition weather (power, fnq, workload)"
+            ),
+            "{doctor}"
+        );
+        assert!(
+            doctor.contains("70-link.jsonc is not used: cannot open it (a link is not read)"),
+            "{doctor}"
+        );
+
+        let ac_only = op.ok(&[
+            "rules",
+            "edit",
+            "55-ac",
+            "--when",
+            "power=ac",
+            "firmware.ppt_pl1_spl=95",
+        ]);
+        assert!(
+            ac_only.contains("is not used: firmware.ppt_pl1_spl is set for ac only"),
+            "{ac_only}"
+        );
+        assert_eq!(
+            m.file(PL1),
+            "90",
+            "a layer for one power source only is not used"
+        );
+        op.ok(&[
+            "rules",
+            "edit",
+            "55-battery",
+            "--when",
+            "power=battery",
+            "firmware.ppt_pl1_spl=45",
+        ]);
+        assert_eq!(m.file(PL1), "95", "on AC, with a value for battery too");
+        assert_eq!(
+            asked.lock().unwrap().len(),
+            0,
+            "your own layers need no polkit"
+        );
+    }
+
+    /// A system layer that an admin writes applies through inotify, and its lock beats your layer; a disabled shipped
+    /// layer stays off; reset removes your layers, and with `--system` the system layers and the on/off states: the
+    /// shipped state. Each system change asks polkit.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_system_layer_locks_a_knob_and_reset_gives_the_shipped_state_back() {
+        let m = Machine::new("sysrules");
+        let (_stand_ins, asked, _processes) = start(&m).await;
+        let (op, own) = seat_user(&m, "sysrules");
+        op.ok(&["rules", "edit", "50-mine", "sysctl.vm.swappiness=60"]);
+        assert_eq!(m.file(SWAPPINESS), "60");
+
+        m.set(
+            "/etc/legionctl/configsets/40-site.jsonc",
+            r#"{ "set": { "sysctl.vm.swappiness": "100" }, "locked": ["sysctl.vm.swappiness"] }"#,
+        );
+        wait_for("the system layer", || m.file(SWAPPINESS) == "100");
+        let doctor = String::from_utf8(op.cli(&["doctor"]).stdout).unwrap();
+        assert!(
+            doctor.contains(
+                "50-mine.jsonc is not used: sysctl.vm.swappiness is locked by system/40-site"
+            ),
+            "{doctor}"
+        );
+
+        op.ok(&["rules", "disable", "10-base"]);
+        let list = op.ok(&["rules", "list"]);
+        assert!(
+            list.lines().any(|l| l.starts_with("shipped/10-base")
+                && l.ends_with("off: disabled (legionctl rules enable turns it on)")),
+            "{list}"
+        );
+
+        op.ok(&["rules", "reset"]);
+        assert!(!own.join("50-mine.jsonc").exists());
+        assert_eq!(m.file(SWAPPINESS), "100");
+        op.ok(&["rules", "reset", "--system"]);
+        assert_eq!(m.file(SWAPPINESS), "150");
+        assert_eq!(
+            m.file("/etc/legionctl/configsets/40-site.jsonc"),
+            "<missing>"
+        );
+        let list = op.ok(&["rules", "list"]);
+        assert!(
+            list.lines()
+                .any(|l| l.starts_with("shipped/10-base") && l.ends_with("applies now")),
+            "{list}"
+        );
+        let actions: Vec<String> = asked.lock().unwrap().iter().map(|a| a.1.clone()).collect();
+        assert_eq!(
+            actions, ["org.legionctl.rules"; 3],
+            "disable, the system layer, the state"
+        );
     }
 
     /// The arguments of `org.freedesktop.Notifications.Notify`: app, replaces id, icon, summary, body, actions, hints,

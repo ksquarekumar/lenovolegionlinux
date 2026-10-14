@@ -69,7 +69,7 @@ static: ## build the static legionctl (musl) that `workspace pack` puts into age
 	  cargo build --release --locked -p legionctl --bin legionctl
 
 .PHONY: validate
-validate: ## check every profile's structure and ac/battery consistency through the operator (no hardware access)
+validate: ## check every profile and its shipped configset layers (knobs, values, the ac/battery rule) through the operator (no hardware access)
 	cargo build -q --workspace --bins --locked
 	cargo test -q --locked -p legionctl --test machine repo_profiles_are_valid
 
@@ -117,6 +117,7 @@ install: ## install into DESTDIR; the PKGBUILD calls this (on this machine: `mak
 	install -Dm755 target/static/release/legionctl "$(DESTDIR)$(LIBDIR)/legionctl-static"
 	install -Dm644 packaging/libalpm/95-legionctl-uki.hook "$(DESTDIR)$(PREFIX)/share/libalpm/hooks/95-legionctl-uki.hook"
 	install -Dm644 $(PROFILE) "$(DESTDIR)$(DATADIR)/profiles/$(notdir $(PROFILE))"
+	install -Dm644 -t "$(DESTDIR)$(DATADIR)/configsets/$(basename $(notdir $(PROFILE)))" configsets/$(basename $(notdir $(PROFILE)))/*.jsonc
 	install -d "$(DESTDIR)$(DATADIR)" && cp -r integrations/agent-plugin "$(DESTDIR)$(DATADIR)/"
 	install -Dm644 systemd/legionctl-system.service "$(DESTDIR)$(UNITDIR)/legionctl-system.service"
 	install -Dm644 systemd/legionctl-safe.service "$(DESTDIR)$(UNITDIR)/legionctl-safe.service"

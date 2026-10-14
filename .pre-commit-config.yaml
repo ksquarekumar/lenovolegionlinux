@@ -43,7 +43,7 @@ repos:
         language: system
         entry: make validate
         pass_filenames: false
-        files: ^profiles/.*\.json$
+        files: ^(profiles/.*\.json|configsets/.*\.jsonc)$
 
   - repo: https://github.com/Mateusz-Grzelinski/actionlint-py
     rev: v1.7.12.25

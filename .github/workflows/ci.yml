@@ -73,6 +73,7 @@ jobs:
             | jq -r 'select(.target.name == "machine" and .executable != null) | .executable')
           sudo -E "$bin" --ignored --exact operator_and_daemon::as_root_the_runq_sensor_measures_wakeups_and_outlives_a_failed_daemon \
             operator_and_daemon::as_root_the_exec_sensor_records_what_a_session_starts \
+            operator_and_daemon::as_root_the_workload_sensor_applies_a_layer_while_a_build_runs \
             operator_and_daemon::as_root_the_windows_vm_starts_with_its_disk_and_gives_the_host_back
       # sessions in a VM (W5) and the legionctl-wmi module in a VM: KVM for the runner user, QEMU, virtiofsd, xorriso
       # for the cloud-init seed, the Debian cloud image the tests download once (its SHA512SUMS beside it) and the

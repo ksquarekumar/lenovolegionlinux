@@ -3851,13 +3851,38 @@
               "string",
               "null"
             ]
+          },
+          "chain": {
+            "description": "Every layer that sets it now, in merge order; the last one wins, unless it is held.",
+            "type": "array",
+            "items": {
+              "description": "One layer that sets a knob now (the \"because\" chain); the last one wins.",
+              "type": "object",
+              "properties": {
+                "layer": {
+                  "description": "`<folder>/<name>` (`shipped/20-ac`).",
+                  "type": "string"
+                },
+                "when": {
+                  "description": "Its conditions (`power ac`, `always`).",
+                  "type": "string"
+                },
+                "value": true
+              },
+              "required": [
+                "layer",
+                "when",
+                "value"
+              ]
+            }
           }
         },
         "required": [
           "id",
           "path",
           "choices",
-          "policy"
+          "policy",
+          "chain"
         ]
       },
       "title": "Array_of_Knob",
@@ -3963,13 +3988,38 @@
                 "string",
                 "null"
               ]
+            },
+            "chain": {
+              "type": "array",
+              "items": {
+                "description": "One layer that sets a knob now (the \"because\" chain); the last one wins.",
+                "type": "object",
+                "properties": {
+                  "layer": {
+                    "description": "`<folder>/<name>` (`shipped/20-ac`).",
+                    "type": "string"
+                  },
+                  "when": {
+                    "description": "Its conditions (`power ac`, `always`).",
+                    "type": "string"
+                  },
+                  "value": true
+                },
+                "required": [
+                  "layer",
+                  "when",
+                  "value"
+                ]
+              },
+              "description": "Every layer that sets it now, in merge order; the last one wins, unless it is held."
             }
           },
           "required": [
             "id",
             "path",
             "choices",
-            "policy"
+            "policy",
+            "chain"
           ]
         },
         "history": {
@@ -4026,6 +4076,614 @@
         "history"
       ],
       "title": "KnobDetail",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "plan": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "conditions": {
+          "type": "object",
+          "properties": {
+            "power": {
+              "type": "string",
+              "description": "ac or battery."
+            },
+            "fnq": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The firmware mode chosen with Fn+Q that the policy follows; null when none."
+            },
+            "workload": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "The workloads that run (game, build, vm)."
+            }
+          },
+          "required": [
+            "power",
+            "workload"
+          ],
+          "description": "What the layers' conditions are tested against now."
+        },
+        "knobs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "description": "`platform_profile`, `cpu.governor`, `sysctl.vm.swappiness`, `firmware.ppt_pl1_spl`, ...",
+                "type": "string"
+              },
+              "path": {
+                "description": "The file; `*` for a per-CPU knob (the value sums the CPUs up).",
+                "type": "string"
+              },
+              "value": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "desired": {
+                "description": "What the profile wants now; `None` for a knob legionctl does not set.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "min": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "max": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "choices": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "policy": {
+                "description": "What legionctl does with a knob: set it, follow the firmware, or only read it.",
+                "type": "string",
+                "enum": [
+                  "enforce",
+                  "follow",
+                  "observe"
+                ]
+              },
+              "held": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "chain": {
+                "description": "Every layer that sets it now, in merge order; the last one wins, unless it is held.",
+                "type": "array",
+                "items": {
+                  "description": "One layer that sets a knob now (the \"because\" chain); the last one wins.",
+                  "type": "object",
+                  "properties": {
+                    "layer": {
+                      "description": "`<folder>/<name>` (`shipped/20-ac`).",
+                      "type": "string"
+                    },
+                    "when": {
+                      "description": "Its conditions (`power ac`, `always`).",
+                      "type": "string"
+                    },
+                    "value": true
+                  },
+                  "required": [
+                    "layer",
+                    "when",
+                    "value"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "choices",
+              "policy",
+              "chain"
+            ]
+          }
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The writes the daemon would make now (it keeps an Fn+Q choice)."
+        }
+      },
+      "required": [
+        "conditions",
+        "knobs",
+        "changes"
+      ],
+      "description": "The desired state now: each knob a layer sets, with the chain of layers that set it, and what the daemon would write.",
+      "title": "PlanView",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "rules.list": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "conditions": {
+          "type": "object",
+          "properties": {
+            "power": {
+              "type": "string",
+              "description": "ac or battery."
+            },
+            "fnq": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The firmware mode chosen with Fn+Q that the policy follows; null when none."
+            },
+            "workload": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "The workloads that run (game, build, vm)."
+            }
+          },
+          "required": [
+            "power",
+            "workload"
+          ],
+          "description": "What the layers' conditions are tested against now."
+        },
+        "layers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "layer": {
+                "description": "A configset layer: `<order>-<name>.jsonc`, `{ \"when\": {...}, \"set\": {...} }`.",
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "description": "`<order>-<name>`.",
+                    "type": "string"
+                  },
+                  "folder": {
+                    "description": "Where a configset layer is, lowest first.",
+                    "oneOf": [
+                      {
+                        "description": "The profile's layers (`/usr/share/legionctl/configsets/<profile id>/`): disable them, do not change them.",
+                        "type": "string",
+                        "const": "shipped"
+                      },
+                      {
+                        "description": "Made by legionctl (`tuned`, from `legionctl tune`): off until `legionctl rules enable`.",
+                        "type": "string",
+                        "const": "generated"
+                      },
+                      {
+                        "description": "The system defaults (`/etc/legionctl/configsets/`); can lock knobs against user layers.",
+                        "type": "string",
+                        "const": "system"
+                      },
+                      {
+                        "description": "Yours (`~/.config/legionctl/configsets/`), when you are the user in front.",
+                        "type": "string",
+                        "const": "user"
+                      }
+                    ]
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "when": {
+                    "description": "`power` (ac, battery), `fnq` (the Fn+Q mode), `workload` (game, build, vm); empty: always.",
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "set": {
+                    "description": "Knob id -> value.",
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "locked": {
+                    "description": "Knobs that user layers cannot set (system layers only).",
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "off": {
+                    "description": "Why it is not used; null: it is used while its conditions hold.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "failed": {
+                    "description": "It is not used because it fails a check (a doctor finding).",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "name",
+                  "folder",
+                  "file",
+                  "when",
+                  "set",
+                  "locked",
+                  "failed"
+                ]
+              },
+              "id": {
+                "description": "`<folder>/<name>`, as `rules enable` and `rules disable` take it.",
+                "type": "string"
+              },
+              "active": {
+                "description": "Used now: on, and its conditions hold.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "layer",
+              "id",
+              "active"
+            ]
+          },
+          "description": "Every layer in merge order (lowest first)."
+        }
+      },
+      "required": [
+        "conditions",
+        "layers"
+      ],
+      "title": "Rules",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "rules.show": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "layer": {
+          "type": "string",
+          "description": "The layer: its id (`shipped/20-ac`), its name (`20-ac`) or its name without the order (`tuned`)."
+        }
+      },
+      "required": [
+        "layer"
+      ],
+      "title": "RuleIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "layer": {
+          "type": "object",
+          "properties": {
+            "layer": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "`<order>-<name>`."
+                },
+                "folder": {
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "const": "shipped",
+                      "description": "The profile's layers (`/usr/share/legionctl/configsets/<profile id>/`): disable them, do not change them."
+                    },
+                    {
+                      "type": "string",
+                      "const": "generated",
+                      "description": "Made by legionctl (`tuned`, from `legionctl tune`): off until `legionctl rules enable`."
+                    },
+                    {
+                      "type": "string",
+                      "const": "system",
+                      "description": "The system defaults (`/etc/legionctl/configsets/`); can lock knobs against user layers."
+                    },
+                    {
+                      "type": "string",
+                      "const": "user",
+                      "description": "Yours (`~/.config/legionctl/configsets/`), when you are the user in front."
+                    }
+                  ],
+                  "description": "Where a configset layer is, lowest first."
+                },
+                "file": {
+                  "type": "string"
+                },
+                "when": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "`power` (ac, battery), `fnq` (the Fn+Q mode), `workload` (game, build, vm); empty: always."
+                },
+                "set": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "description": "Knob id -> value."
+                },
+                "locked": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Knobs that user layers cannot set (system layers only)."
+                },
+                "off": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Why it is not used; null: it is used while its conditions hold."
+                },
+                "failed": {
+                  "type": "boolean",
+                  "description": "It is not used because it fails a check (a doctor finding)."
+                }
+              },
+              "required": [
+                "name",
+                "folder",
+                "file",
+                "when",
+                "set",
+                "locked",
+                "failed"
+              ],
+              "description": "A configset layer: `<order>-<name>.jsonc`, `{ \"when\": {...}, \"set\": {...} }`."
+            },
+            "id": {
+              "type": "string",
+              "description": "`<folder>/<name>`, as `rules enable` and `rules disable` take it."
+            },
+            "active": {
+              "type": "boolean",
+              "description": "Used now: on, and its conditions hold."
+            }
+          },
+          "required": [
+            "layer",
+            "id",
+            "active"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "description": "The file as it is."
+        }
+      },
+      "required": [
+        "layer",
+        "text"
+      ],
+      "title": "RuleDetail",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "rules.enable": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "layer": {
+          "type": "string",
+          "description": "The layer: its id (`shipped/20-ac`), its name (`20-ac`) or its name without the order (`tuned`)."
+        }
+      },
+      "required": [
+        "layer"
+      ],
+      "title": "RuleIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "rules.disable": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "layer": {
+          "type": "string",
+          "description": "The layer: its id (`shipped/20-ac`), its name (`20-ac`) or its name without the order (`tuned`)."
+        }
+      },
+      "required": [
+        "layer"
+      ],
+      "title": "RuleIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "rules.edit": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "layer": {
+          "type": "string",
+          "description": "Your layer `<two digits>-<name>` (a later number wins); the name of a shipped layer makes your layer of the\nsame name, with its conditions, after it."
+        },
+        "set": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "`knob=value` (knob ids as `legionctl knobs list`); `knob=` removes the knob from the layer.",
+          "default": []
+        },
+        "when": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The conditions, `power=ac,workload=game` (power, fnq, workload); `always` for none. Default: as they are.",
+          "default": null
+        },
+        "system": {
+          "type": "boolean",
+          "description": "A system layer (`/etc/legionctl/configsets/`, polkit asks) instead of yours.",
+          "default": false
+        }
+      },
+      "required": [
+        "layer"
+      ],
+      "title": "RuleEditIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "rules.reset": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "knob": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Only this knob (an id or its path); default: every knob.",
+          "default": null
+        },
+        "system": {
+          "type": "boolean",
+          "description": "The system layers and the layers' on/off states (polkit asks) instead of your layers and holds.",
+          "default": false
+        }
+      },
+      "title": "RuleResetIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
@@ -7024,13 +7682,38 @@
                   "string",
                   "null"
                 ]
+              },
+              "chain": {
+                "description": "Every layer that sets it now, in merge order; the last one wins, unless it is held.",
+                "type": "array",
+                "items": {
+                  "description": "One layer that sets a knob now (the \"because\" chain); the last one wins.",
+                  "type": "object",
+                  "properties": {
+                    "layer": {
+                      "description": "`<folder>/<name>` (`shipped/20-ac`).",
+                      "type": "string"
+                    },
+                    "when": {
+                      "description": "Its conditions (`power ac`, `always`).",
+                      "type": "string"
+                    },
+                    "value": true
+                  },
+                  "required": [
+                    "layer",
+                    "when",
+                    "value"
+                  ]
+                }
               }
             },
             "required": [
               "id",
               "path",
               "choices",
-              "policy"
+              "policy",
+              "chain"
             ]
           }
         },
@@ -7182,13 +7865,38 @@
                   "string",
                   "null"
                 ]
+              },
+              "chain": {
+                "description": "Every layer that sets it now, in merge order; the last one wins, unless it is held.",
+                "type": "array",
+                "items": {
+                  "description": "One layer that sets a knob now (the \"because\" chain); the last one wins.",
+                  "type": "object",
+                  "properties": {
+                    "layer": {
+                      "description": "`<folder>/<name>` (`shipped/20-ac`).",
+                      "type": "string"
+                    },
+                    "when": {
+                      "description": "Its conditions (`power ac`, `always`).",
+                      "type": "string"
+                    },
+                    "value": true
+                  },
+                  "required": [
+                    "layer",
+                    "when",
+                    "value"
+                  ]
+                }
               }
             },
             "required": [
               "id",
               "path",
               "choices",
-              "policy"
+              "policy",
+              "chain"
             ]
           }
         },

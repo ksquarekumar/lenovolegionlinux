@@ -1,4 +1,5 @@
-//! The machine profile: identity, paths and the policy for each power source. Read as JSONC (comments allowed).
+//! The machine profile: identity, DMI match, paths, capabilities and conflicts. Read as JSONC (comments allowed). The
+//! policy is in the profile's configset layers (`configsets/<profile id>/`, note 01).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -15,14 +16,6 @@ pub struct Profile {
     pub id: String,
     pub dmi_match: BTreeMap<String, String>,
     pub paths: Paths,
-    /// Applies in every mode; a mode's own `sysctl` overrides per key.
-    #[serde(default)]
-    pub sysctl: BTreeMap<String, String>,
-    /// CPU policy that follows a firmware mode the user chose with Fn+Q.
-    #[serde(default)]
-    pub firmware_follow: BTreeMap<String, Follow>,
-    pub ac: ModePolicy,
-    pub battery: ModePolicy,
     pub conflicts: Conflicts,
     #[serde(default)]
     pub kernel_modules: KernelModules,
@@ -30,6 +23,8 @@ pub struct Profile {
     pub capabilities: Vec<Capability>,
     /// Fan control (`legionctl fan`); without it legionctl does not touch the fans.
     pub fan: Option<FanControl>,
+    #[serde(default)]
+    pub nvidia: Nvidia,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,54 +78,7 @@ pub struct Paths {
 }
 
 #[derive(Debug, Default, Deserialize)]
-pub struct Follow {
-    pub power_profile: Option<String>,
-    pub governor: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct ModePolicy {
-    #[serde(default)]
-    pub cpu: Cpu,
-    #[serde(default)]
-    pub firmware: Firmware,
-    /// Written in file order; the firmware may care which limit changes first.
-    #[serde(default)]
-    pub firmware_attributes: serde_json::Map<String, Value>,
-    #[serde(default)]
-    pub nvidia: Nvidia,
-    pub power_profile: Option<String>,
-    #[serde(default)]
-    pub sysctl: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct Cpu {
-    pub ignore_ppc: Option<String>,
-    pub no_turbo: Option<String>,
-    pub max_perf_pct: Option<String>,
-    pub governor: Option<String>,
-    pub energy_performance_preference: Option<String>,
-    pub energy_perf_bias: Option<String>,
-    #[serde(default)]
-    pub enable_all_idle_states: bool,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct Firmware {
-    #[serde(default)]
-    pub platform_profile_preference: Vec<String>,
-    pub fan_mode: Option<Value>,
-}
-
-#[derive(Debug, Default, Deserialize)]
 pub struct Nvidia {
-    #[serde(default)]
-    pub start_persistenced: bool,
-    #[serde(default)]
-    pub start_powerd: bool,
-    #[serde(default)]
-    pub set_persistence_mode: bool,
     /// NVIDIA board power limit expected on AC; nvidia-powerd may add up to 25 W (Dynamic Boost).
     pub expected_dynamic_power_w: Option<f64>,
 }
@@ -171,94 +119,38 @@ pub fn load(path: Option<&Path>) -> Result<(Profile, PathBuf)> {
     Ok((profile, path))
 }
 
-const PPD_PROFILES: [&str; 3] = ["performance", "balanced", "power-saver"];
+/// The shipped configset layers of a profile file: `configsets/<id>/` beside its `profiles/` folder, in the repository
+/// and installed (`/usr/share/legionctl`).
+#[must_use]
+pub fn layers_dir(path: &Path, id: &str) -> PathBuf {
+    path.parent()
+        .and_then(Path::parent)
+        .unwrap_or(Path::new("/"))
+        .join("configsets")
+        .join(id)
+}
 
-/// Structure and ac/battery consistency checks that typed parsing cannot express. No hardware access.
+/// The profile's structure, its fan curve, and its shipped configset layers (each layer's knobs and values, and the
+/// ac/battery rule). No hardware access.
 ///
 /// # Errors
 /// The file is not readable JSONC. Profile faults are findings, not errors.
 pub fn validate(path: &Path) -> Result<Vec<String>> {
     let raw = read_jsonc(path)?;
-    let mut errors = Vec::new();
-    match serde_json::from_value::<Profile>(raw.clone()) {
-        Err(e) => errors.push(e.to_string()),
-        Ok(Profile { fan: Some(fan), .. }) => {
-            if let Err(e) = crate::fan::validate(&fan.default_curve) {
+    Ok(match serde_json::from_value::<Profile>(raw) {
+        Err(e) => vec![e.to_string()],
+        Ok(profile) => {
+            let mut errors = Vec::new();
+            if let Some(fan) = &profile.fan
+                && let Err(e) = crate::fan::validate(&fan.default_curve)
+            {
                 errors.push(format!("fan.default_curve: {e}"));
             }
-        }
-        Ok(_) => {}
-    }
-    let mode = |m: &str| raw.get(m).and_then(Value::as_object);
-    let keys = |m: &str, block: &str| -> Vec<String> {
-        mode(m)
-            .and_then(|o| o.get(block))
-            .and_then(Value::as_object)
-            .map(|o| o.keys().cloned().collect())
-            .unwrap_or_default()
-    };
-    for m in ["ac", "battery"] {
-        if let Some(wanted) = mode(m)
-            .and_then(|o| o.get("power_profile"))
-            .and_then(Value::as_str)
-            && !PPD_PROFILES.contains(&wanted)
-        {
-            errors.push(format!(
-                "{m}.power_profile '{wanted}' is not one of {}",
-                PPD_PROFILES.join(", ")
+            errors.extend(crate::configset::validate(
+                &profile,
+                &layers_dir(path, &profile.id),
             ));
+            errors
         }
-    }
-    // every policy knob must be set for both power sources, or a mode switch leaves the other's value behind
-    for block in ["cpu", "firmware", "firmware_attributes"] {
-        let (ac, bat) = (keys("ac", block), keys("battery", block));
-        let mut drift: Vec<&String> = ac
-            .iter()
-            .filter(|k| !bat.contains(k))
-            .chain(bat.iter().filter(|k| !ac.contains(k)))
-            .collect();
-        drift.sort();
-        if !drift.is_empty() {
-            let names: Vec<&str> = drift.iter().map(|s| s.as_str()).collect();
-            errors.push(format!(
-                "{block} keys differ between ac and battery: {}",
-                names.join(", ")
-            ));
-        }
-    }
-    let has_ppd = |m: &str| mode(m).is_some_and(|o| o.contains_key("power_profile"));
-    if has_ppd("ac") != has_ppd("battery") {
-        errors.push("power_profile must be set for both ac and battery or neither".into());
-    }
-    let follow = raw.get("firmware_follow").and_then(Value::as_object);
-    for (firmware_mode, entry) in follow.into_iter().flatten() {
-        if let Some(p) = entry.get("power_profile").and_then(Value::as_str)
-            && !PPD_PROFILES.contains(&p)
-        {
-            errors.push(format!(
-                "firmware_follow.{firmware_mode}.power_profile '{p}' is not a PPD profile"
-            ));
-        }
-        if let Some(g) = entry.get("governor").and_then(Value::as_str)
-            && !["performance", "powersave"].contains(&g)
-        {
-            errors.push(format!(
-                "firmware_follow.{firmware_mode}.governor '{g}' is not performance/powersave"
-            ));
-        }
-    }
-    for m in ["ac", "battery"] {
-        let prefs = mode(m)
-            .and_then(|o| o.get("firmware"))
-            .and_then(|f| f.get("platform_profile_preference"))
-            .and_then(Value::as_array);
-        for choice in prefs.into_iter().flatten().filter_map(Value::as_str) {
-            if follow.is_some_and(|f| !f.contains_key(choice)) {
-                errors.push(format!(
-                    "{m} platform_profile '{choice}' has no firmware_follow entry"
-                ));
-            }
-        }
-    }
-    Ok(errors)
+    })
 }

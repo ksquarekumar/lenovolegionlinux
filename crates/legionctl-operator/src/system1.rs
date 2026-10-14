@@ -59,6 +59,12 @@ pub trait System1 {
     fn set_fan_full_speed(&self, on: bool) -> zbus::Result<Vec<String>>;
     /// The EC fan lock; the daemon refuses it unless the profile marks it verified.
     fn set_fan_lock(&self, on: bool) -> zbus::Result<Vec<String>>;
+    /// Apply the configset layers again (after a change of your own layers).
+    fn reload(&self) -> zbus::Result<Vec<String>>;
+    /// Write a system layer (`/etc/legionctl/configsets/<name>.jsonc`); empty content removes it.
+    fn set_layer(&self, name: &str, content: &str) -> zbus::Result<Vec<String>>;
+    /// Turn a layer on, off, or back to its default.
+    fn set_layer_state(&self, name: &str, state: &str) -> zbus::Result<Vec<String>>;
     /// Send this connection the program starts of its user's agent sessions (`SessionExec`).
     fn watch_sessions(&self) -> zbus::Result<()>;
 

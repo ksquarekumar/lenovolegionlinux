@@ -34,6 +34,7 @@ use legionctl_api::{
 use legionctl_core::cache::Cache;
 use legionctl_core::config::{Dirs, Resolved, resolve};
 
+use crate::rules;
 use crate::system1::System1Proxy;
 use legionctl_api::{
     AgentName, AgentSetIn, AgentUsageIn, CoreClass, DossierGraphIn, DossierNudgesIn, Edit,
@@ -43,6 +44,9 @@ use legionctl_api::{
 use legionctl_api::{
     CacheGetIn, CachePutIn, CacheValue, Manifest, PackageFetchIn, Packages, RunOutput, SessionRunIn,
 };
+use legionctl_api::{
+    Conditions, PlanView, RuleDetail, RuleEditIn, RuleIn, RuleResetIn, RuleState, Rules,
+};
 use legionctl_api::{ImagesScanIn, RepoIn, Scan, ServiceState, VirtActIn, VirtStatus};
 use legionctl_core::db::{Db, EventFilter};
 use legionctl_core::dossier::{Dossiers, place_of};
@@ -51,6 +55,7 @@ use legionctl_core::reminders::Event;
 use legionctl_core::session::Start;
 use legionctl_core::workspace::Place;
 use legionctl_core::{agents, hooks, reminders, setup, skills};
+use legionctl_machine::configset::{self, Folder, Layer};
 use legionctl_machine::ledger::Ledger;
 use legionctl_machine::policy::{self, Machine, Options, Source};
 use legionctl_machine::profile::{self, Profile};
@@ -196,6 +201,36 @@ fn knob_path(profile: Option<&ClientPath>, knob: &str) -> Result<String> {
             )
         })?
         .path)
+}
+
+/// The conditions the layers are tested against now.
+fn conditions(m: &Machine) -> Conditions {
+    let c = m.conditions(
+        m.source(),
+        m.ledger
+            .get(legionctl_machine::ledger::Key::Override)
+            .as_deref(),
+    );
+    Conditions {
+        power: c.power.name().into(),
+        fnq: c.fnq,
+        workload: c.workload.into_iter().collect(),
+    }
+}
+
+/// A layer with its id and whether it applies now.
+fn rule_state(m: &Machine, layer: &Layer) -> RuleState {
+    let c = m.conditions(
+        m.source(),
+        m.ledger
+            .get(legionctl_machine::ledger::Key::Override)
+            .as_deref(),
+    );
+    RuleState {
+        id: layer.id(),
+        active: layer.off.is_none() && layer.applies(&c),
+        layer: layer.clone().into_wire(),
+    }
 }
 
 /// The event id a page cursor stands for (0 without one), and the page length.
@@ -653,11 +688,12 @@ const MACHINE_OPS: [&str; 5] = [
     "record",
 ];
 
-/// The machine, its profile and the Fn+Q ledger, as the planners need them.
+/// The machine, its profile, the Fn+Q ledger and the configset layers, as the planners need them.
 struct Plan {
     root: SysRoot,
     profile: Profile,
     ledger: Ledger,
+    layers: Vec<Layer>,
 }
 
 impl Plan {
@@ -668,10 +704,14 @@ impl Plan {
     /// The machine under `root`; without `profile`, the profile installed there.
     fn at(root: SysRoot, profile: Option<&Path>) -> Result<Plan> {
         let installed = root.path(profile::DEFAULT_PATH);
+        let ledger = Ledger::open(&root)?;
+        let profile = profile::load(Some(profile.unwrap_or(&installed)))?.0;
+        let layers = configset::load(&root, &profile, &ledger);
         Ok(Plan {
-            ledger: Ledger::open(&root)?,
-            profile: profile::load(Some(profile.unwrap_or(&installed)))?.0,
             root,
+            profile,
+            ledger,
+            layers,
         })
     }
 
@@ -695,6 +735,7 @@ impl Plan {
             ledger: &self.ledger,
             ppd_current: has_command("powerprofilesctl").then(ppd_current).flatten(),
             has_command: &has_command,
+            layers: &self.layers,
         }
     }
 }
@@ -2503,7 +2544,11 @@ impl Engine for Operator {
         let mut recording = plan.decisions(dir, events)?;
         let tree = dir.join("root");
         recording.paths = root.record_into(&tree)?;
-        for file in [profile::DEFAULT_PATH, legionctl_machine::ledger::DB] {
+        let layers = plan.layers.iter().map(|l| l.file.as_str());
+        for file in [profile::DEFAULT_PATH, legionctl_machine::ledger::DB]
+            .into_iter()
+            .chain(layers)
+        {
             if let Ok(bytes) = std::fs::read(root.path(file)) {
                 let to = SysRoot::new(&tree).path(file);
                 std::fs::create_dir_all(to.parent().context("no parent")?)?;
@@ -2756,6 +2801,175 @@ impl Engine for Operator {
         }
         Ok(Changes {
             lines: self.system(async move |p| p.hold(values).await)?,
+            dry_run: false,
+        })
+    }
+
+    fn plan(&self, _: &Ctx, _: Empty) -> Result<PlanView> {
+        let plan = Plan::load(None)?;
+        let m = plan.machine();
+        let knobs = knobs::catalog(&m)
+            .into_iter()
+            .filter(|k| k.desired.is_some())
+            .collect::<Vec<_>>()
+            .into_wire();
+        // what the daemon writes at the next change of a layer or the workload: the Fn+Q choice stays
+        let keep = Options {
+            keep_override: true,
+            ..Options::default()
+        };
+        Ok(PlanView {
+            conditions: conditions(&m),
+            knobs,
+            changes: dry_run(&m.apply(None, keep)?.1).lines,
+        })
+    }
+
+    fn rules_list(&self, _: &Ctx, _: Empty) -> Result<Rules> {
+        let plan = Plan::load(None)?;
+        let m = plan.machine();
+        Ok(Rules {
+            conditions: conditions(&m),
+            layers: plan.layers.iter().map(|l| rule_state(&m, l)).collect(),
+        })
+    }
+
+    fn rules_show(&self, _: &Ctx, input: RuleIn) -> Result<RuleDetail> {
+        let plan = Plan::load(None)?;
+        let m = plan.machine();
+        let layer =
+            configset::find(&plan.layers, &input.layer).map_err(|e| coded(Code::NotFound, e))?;
+        Ok(RuleDetail {
+            text: std::fs::read_to_string(plan.root.path(&layer.file))
+                .with_context(|| format!("reading {}", layer.file))?,
+            layer: rule_state(&m, layer),
+        })
+    }
+
+    fn rules_enable(&self, _: &Ctx, input: RuleIn) -> Result<Changes> {
+        Ok(Changes {
+            lines: self.system(async move |p| p.set_layer_state(&input.layer, "on").await)?,
+            dry_run: false,
+        })
+    }
+
+    fn rules_disable(&self, _: &Ctx, input: RuleIn) -> Result<Changes> {
+        Ok(Changes {
+            lines: self.system(async move |p| p.set_layer_state(&input.layer, "off").await)?,
+            dry_run: false,
+        })
+    }
+
+    fn rules_edit(&self, _: &Ctx, input: RuleEditIn) -> Result<Changes> {
+        let plan = Plan::load(None)?;
+        let folder = if input.system {
+            Folder::System
+        } else {
+            Folder::User
+        };
+        let layer = rules::edited(
+            &plan.machine(),
+            folder,
+            &home(),
+            &input.layer,
+            &input.set,
+            input.when.as_deref(),
+        )
+        .map_err(|e| coded(Code::InvalidInput, format!("{e:#}")))?;
+        let mut lines = if input.system {
+            let content = if layer.set.is_empty() {
+                String::new()
+            } else {
+                configset::content(&layer)
+            };
+            self.system(async |p| p.set_layer(&layer.name, &content).await)?
+        } else {
+            let mut lines = vec![rules::write_own(&layer)?];
+            lines.extend(self.system(async |p| p.reload().await)?);
+            lines
+        };
+        // the rules between layers (a lock, the other power source) can still keep it out
+        let now = Plan::load(None)?;
+        if let Some(why) = now
+            .layers
+            .iter()
+            .find(|l| l.folder == folder && l.name == layer.name && l.failed)
+            .and_then(|l| l.off.as_ref())
+        {
+            lines.push(format!("warning: {} is not used: {why}", layer.file));
+        }
+        Ok(Changes {
+            lines,
+            dry_run: false,
+        })
+    }
+
+    fn rules_reset(&self, _: &Ctx, input: RuleResetIn) -> Result<Changes> {
+        let plan = Plan::load(None)?;
+        let m = plan.machine();
+        let knob = match &input.knob {
+            Some(k) => Some(knobs::find(&m, k).ok_or_else(|| {
+                coded(
+                    Code::NotFound,
+                    format!("no knob {k} on this machine (see legionctl knobs list)"),
+                )
+            })?),
+            None => None,
+        };
+        // the layers to change: a knob's layers lose it, the rest are removed (a layer that sets nothing goes)
+        let reset = |layer: &Layer| -> Option<Layer> {
+            let mut layer = layer.clone();
+            match &knob {
+                Some(k) => {
+                    layer.set.remove(&k.id)?;
+                }
+                None => layer.set.clear(),
+            }
+            Some(layer)
+        };
+        let mut lines = Vec::new();
+        if input.system {
+            for layer in plan
+                .layers
+                .iter()
+                .filter(|l| l.folder == Folder::System)
+                .filter_map(reset)
+            {
+                let content = if layer.set.is_empty() {
+                    String::new()
+                } else {
+                    configset::content(&layer)
+                };
+                lines.extend(self.system(async |p| p.set_layer(&layer.name, &content).await)?);
+            }
+            if knob.is_none() {
+                for layer in plan
+                    .layers
+                    .iter()
+                    .filter(|l| m.ledger.layer_enabled(&l.id()).is_some())
+                {
+                    let id = layer.id();
+                    lines.extend(self.system(async |p| p.set_layer_state(&id, "default").await)?);
+                }
+            }
+        } else {
+            for layer in rules::own_layers(&plan.root, &plan.profile, &home())
+                .iter()
+                .filter_map(reset)
+            {
+                lines.push(rules::write_own(&layer)?);
+            }
+            let held = m.ledger.holds().into_keys().filter(|path| {
+                knob.as_ref()
+                    .is_none_or(|k| *path == k.path || policy::held_by(&k.path, path))
+            });
+            for path in held {
+                lines.extend(self.system(async |p| p.release(&path).await)?);
+            }
+            lines.extend(self.system(async |p| p.reload().await)?);
+        }
+        Ok(Changes {
+            lines,
             dry_run: false,
         })
     }

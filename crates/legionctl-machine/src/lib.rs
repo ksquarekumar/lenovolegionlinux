@@ -5,6 +5,7 @@ pub mod battery;
 pub mod bench;
 pub mod boot;
 pub mod cleanup;
+pub mod configset;
 pub mod doctor;
 pub mod fan;
 pub mod firmware;

@@ -3,12 +3,12 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    BatteryState, BenchCompare, BenchRun, BootState, CapabilityList, Changes, ConfigFile,
-    ConfigView, DossierFindings, DossierInfo, Empty, EventRow, Explanation, Findings, GpuState,
-    GreeterState, Guard, HookReply, HookTable, Knob, KnobDetail, Launch, LayerList, Lines,
-    LoadState, Lock, Manifest, PackageState, Recording, Reminder, RunEnv, Sample, SessionState,
-    SetupReport, SkillInfo, Snapshot, ToolCallRow, TuneReport, Validation, VfioDevices,
-    WindowsState, WindowsVmBegun, Workspace, WorkspaceStatus,
+    BatteryState, BenchCompare, BenchRun, BootState, CapabilityList, Changes, Conditions,
+    ConfigFile, ConfigView, DossierFindings, DossierInfo, Empty, EventRow, Explanation, Findings,
+    GpuState, GreeterState, Guard, HookReply, HookTable, Knob, KnobDetail, Launch, LayerList,
+    Lines, LoadState, Lock, Manifest, PackageState, PlanView, Recording, Reminder, RuleDetail,
+    RuleState, Rules, RunEnv, Sample, SessionState, SetupReport, SkillInfo, Snapshot, ToolCallRow,
+    TuneReport, Validation, VfioDevices, WindowsState, WindowsVmBegun, Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -902,6 +902,32 @@ impl Render for Vec<Knob> {
     }
 }
 
+/// Why a knob has its wanted value: each layer that sets it, the winner, and the hold on top.
+fn because(k: &Knob) -> String {
+    let mut lines = vec!["because:".to_string()];
+    let last = k.chain.len().saturating_sub(1);
+    for (i, link) in k.chain.iter().enumerate() {
+        let value = match &link.value {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        let wins = if i == last && k.held.is_none() {
+            "  <- wins"
+        } else {
+            ""
+        };
+        lines.push(format!("  {} ({}): {value}{wins}", link.layer, link.when));
+    }
+    if k.chain.is_empty() {
+        lines.push("  no layer sets it".into());
+    }
+    lines.push(match &k.held {
+        Some(v) => format!("  your hold: {v}  <- wins"),
+        None => "  hold: none".into(),
+    });
+    lines.join("\n")
+}
+
 impl Render for KnobDetail {
     fn text(&self) -> String {
         let history = if self.history.items.is_empty() {
@@ -909,7 +935,87 @@ impl Render for KnobDetail {
         } else {
             self.history.text()
         };
-        format!("{}\n{}\n\n{history}", knob_line(&self.knob), self.knob.path)
+        format!(
+            "{}\n{}\n{}\n\n{history}",
+            knob_line(&self.knob),
+            self.knob.path,
+            because(&self.knob)
+        )
+    }
+}
+
+impl Render for Conditions {
+    fn text(&self) -> String {
+        format!(
+            "power {}, Fn+Q {}, workload {}",
+            self.power,
+            self.fnq.as_deref().unwrap_or("none"),
+            if self.workload.is_empty() {
+                "none".into()
+            } else {
+                self.workload.join(" ")
+            }
+        )
+    }
+}
+
+fn rule_line(r: &RuleState) -> String {
+    let when = if r.layer.when.is_empty() {
+        "always".into()
+    } else {
+        r.layer
+            .when
+            .iter()
+            .map(|(k, v)| format!("{k} {v}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let state = match (&r.layer.off, r.active) {
+        (Some(why), _) => format!("off: {why}"),
+        (None, true) => "applies now".into(),
+        (None, false) => "on, waits for its conditions".into(),
+    };
+    format!(
+        "{:<28} {:<28} {} knobs  {state}",
+        r.id,
+        when,
+        r.layer.set.len()
+    )
+}
+
+impl Render for Rules {
+    fn text(&self) -> String {
+        let mut out = vec![self.conditions.text()];
+        out.extend(self.layers.iter().map(rule_line));
+        out.join("\n")
+    }
+}
+
+impl Render for RuleDetail {
+    fn text(&self) -> String {
+        format!(
+            "{}\n{}\n\n{}",
+            rule_line(&self.layer),
+            self.layer.layer.file,
+            self.text.trim_end()
+        )
+    }
+}
+
+impl Render for PlanView {
+    fn text(&self) -> String {
+        let mut out = vec![self.conditions.text(), String::new()];
+        for knob in &self.knobs {
+            out.push(knob_line(knob));
+            out.push(because(knob));
+        }
+        out.push(String::new());
+        if self.changes.is_empty() {
+            out.push("no writes: the machine is in the desired state".into());
+        } else {
+            out.extend(self.changes.iter().cloned());
+        }
+        out.join("\n")
     }
 }
 

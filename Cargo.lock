@@ -4583,6 +4583,7 @@ dependencies = [
  "anyhow",
  "aya",
  "futures-util",
+ "inotify",
  "legionctl-machine",
  "sd-notify",
  "serde_json",

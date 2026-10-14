@@ -10,10 +10,10 @@ enum Event {
     FirmwareMode { value: String },      // platform_profile changed (uevent / sysfs notify)
     Sleep { entering: bool },            // logind PrepareForSleep
     Key(FnKey),                          // Fn+Q / Fn+R / ... from evdev, debounced at the source
-    Workload(WorkloadChange),            // eBPF exec classification (optional)
+    Workload(WorkloadChange),            // eBPF exec/exit classification (built: Event::Workload)
     Display(DisplayState),               // from legionctl-operator: outputs, active GPU, refresh
     Thermal(ThermalSample),              // periodic sensor snapshot
-    ConfigReloaded,                      // SIGHUP / D-Bus Reload / inotify on /etc/legion
+    ConfigReloaded,                      // D-Bus Reload / inotify on the configset folders (built: Event::Reload)
     Drift { knob: KnobId, observed: String },
     Tick,                                // slow safety-net drift check (default 120 s)
 }
@@ -24,110 +24,106 @@ the policy task (a 300 ms settle window before reconciling, so a burst of uevent
 
 ## Configsets
 
-Desired state is a merge of TOML layers selected by the current *conditions*. Later layers win per knob.
+Built 2026-10-14 (todo-74). The desired state is a merge of JSONC layers. The conditions of the machine now select
+the layers. A later layer wins per knob. The user's holds (D1) stay on top of the merge.
 
-```
-/usr/share/legionctl/configsets/   shipped defaults (from profiles/)
-/etc/legionctl/configsets/         machine admin overrides
-/var/lib/legionctl/configsets/     generated (e.g. tuning results), never hand-edited
-```
+### Layers and folders
 
-Example:
+A layer is a file `<two digits>-<name>.jsonc`: `{ "when": {...}, "set": { "<knob id>": value } }`. The knob ids are
+the ids of `legionctl knobs list` (`cpu.epp`, `firmware.ppt_pl1_spl`, `sysctl.vm.swappiness`, `ppd`,
+`platform_profile` as a preference list, and the actions `cpu.idle_states` and `nvidia.services`). The folders, lowest
+first:
 
-```toml
-[layer.base]
-sysctl."net.ipv4.tcp_congestion_control" = "bbr"
-sysctl."net.core.default_qdisc" = "fq"
-sysctl."vm.swappiness" = "150"
-scx = { scheduler = "scx_lavd", mode = "auto" }
+| Folder | Who writes it | Notes |
+| --- | --- | --- |
+| `/usr/share/legionctl/configsets/<profile id>/` | the package (`configsets/<profile id>/` in the repository) | `rules disable` turns a layer off; nobody changes it |
+| `/var/lib/legionctl/configsets/` | legionctl (`50-tuned` from `legionctl tune`) | off until `legionctl rules enable tuned` |
+| `/etc/legionctl/configsets/` | the admin, or the daemon for `rules edit --system` (polkit `org.legionctl.rules`) | can list knobs in `"locked"` |
+| `~/.config/legionctl/configsets/` | the user, or `rules edit` | only the user of the active local session (logind seat0) |
 
-[layer.ac]
-when = { power = "ac" }
-firmware.platform_profile = "max-power"
-firmware.ppt_pl1_spl = 90
-firmware.ppt_pl2_sppt = 135
-firmware.ppt_cpu_cl = 75
-cpu = { governor = "performance", epp = "performance" }
-ppd = "performance"
-display.internal_refresh = "max"
+In a folder, the order number sorts. The daemon reads the user's folder as that user's files: the folder and each
+file must belong to that user, a link is never followed (`O_NOFOLLOW` on the folder and on each file), and a file
+above 64 KiB is not read. A user layer cannot set a knob that a used `/etc` layer locks.
 
-[layer.battery]
-when = { power = "battery" }
-firmware.platform_profile = "balanced"
-cpu = { governor = "powersave", epp = "balance_power" }
-ppd = "balanced"
-display.internal_refresh = 60
+The shipped layers are the policy that was in the profile before (`10-base`, `20-ac`, `20-battery`,
+`30-fnq-<mode>` for each Fn+Q mode). The profile keeps identity, DMI match, paths, capabilities, conflicts, the fan
+block and the NVIDIA power limit that `doctor` expects. There is no converter and no second source.
 
-[layer.fnq-balanced]
-when = { firmware_override = "balanced" }      # user pressed Fn+Q
-cpu.governor = "powersave"
-ppd = "balanced"
+### Conditions
 
-[layer.gaming]
-when = { workload = "game" }                   # eBPF exec classification
-scx.mode = "gaming"
-```
+- `power`: `ac` or `battery`.
+- `fnq`: the firmware mode that the user chose with Fn+Q. The ledger keeps it as the override until the power
+  source changes, the next start, or `power apply`. While the policy follows a choice, the firmware mode and EPP
+  stay as the firmware and power-profiles-daemon set them, as before. A mode without an `fnq` layer leaves the CPU
+  policy alone.
+- `workload`: `game`, `build` or `vm`, from the eBPF workload sensor (note 04). The daemon writes the active kinds
+  to `/run/legionctl/workload`, so the daemon and each planner of the operator (`plan`, `knobs`, dry runs) see the
+  same conditions. When the sensor cannot load, the daemon writes the reason to `/run/legionctl/workload.error`,
+  and `doctor` shows it.
 
-`legionctl plan` prints the merged desired state and the diff against observed state (like `terraform plan`).
-`legionctl validate` checks schema, value bounds (from firmware `min_value`/`max_value` when online), and that
-every knob set in one power layer is set in the other (the rule `legionctl validate` enforces today).
+An unknown condition is a check fault, so a layer cannot wait for a sensor that does not exist.
 
-### Configsets: design for review (proposed 2026-10-14, todo-74; replaces the text above when approved)
+### Checks
 
-What exists now (mapped 2026-10-14): one profile JSON (`profiles/<model>.json`, `legionctl-machine/src/profile.rs`)
-with `sysctl`, `ac` and `battery` (`ModePolicy`: cpu, firmware mode preference, `firmware_attributes`, nvidia, PPD),
-and `firmware_follow` (what a Fn+Q mode gets: PPD and governor). `Machine::apply`/`follow` (policy.rs) plan writes
-from it; `react` runs them on start, power change, resume, Fn+Q and a 30 s tick (AC). The ledger
-(`/var/lib/legionctl/system.db`) keeps our last firmware write and the Fn+Q override per boot, and the user's holds
-(D1) across boots. The daemon reads no layer files. The proposal keeps the planner, the triggers, the ledger and the
-holds, and changes only where the desired state comes from.
+The daemon checks each layer when it reads the layers (each event), and `legionctl validate` checks the shipped
+layers without the machine. A layer that fails is not used; `doctor` shows the file and the reason. The checks:
 
-1. **Format: JSONC, not TOML.** The profile and the user config are JSONC with one reader (`read_jsonc`) and
-   `config explain`; a second format adds a parser and a second set of rules. (The TOML above is the 2026-10-12
-   sketch.)
-2. **Layers.** A layer is a file `<order>-<name>.jsonc`: `{ "when": {...}, "set": { "<knob id>": value } }`, knob
-   ids as in `legionctl knobs list` (`cpu.epp`, `firmware.ppt_pl1_spl`, `sysctl.vm.swappiness`, `ppd`,
-   `platform_profile` as a preference list). Folders, lowest first: `/usr/share/legionctl/configsets/<profile id>/`
-   (shipped), `/etc/legionctl/configsets/` (the admin's and the user's own, written by the daemon through polkit),
-   `/var/lib/legionctl/configsets/` (generated: `tuned.jsonc` from tune, off until enabled). In a folder the order
-   number sorts; a later layer wins per knob.
-3. **Conditions (`when`).** First: `power` (ac, battery) and `fnq` (the Fn+Q mode the user chose, which is the
-   override that `follow` records now). Later, each with its sensor: `workload` (game, build, vm: the eBPF exec
-   sensor), `display` (external connected), `adapter_w` (low-wattage adapter). An unknown condition is a validation
-   error, so a layer cannot wait for a sensor that does not exist.
-4. **Shipped layers from the profile.** The profile keeps identity, paths, DMI match, capabilities and conflicts.
-   Its policy moves, once, into shipped layers: `10-base` (sysctl, shared CPU values), `20-ac`, `20-battery`,
-   `30-fnq-<mode>` (from `firmware_follow`). The repository converts it once and deletes the policy part of the
-   profile (no runtime converter, no second source).
-5. **Holds stay holds.** A hold (D1, `knobs hold`, `undo`) pins one file and is the top of every chain ("Your
-   hold"). A layer of your own is the way to change policy for a condition; a hold is the way to fix one value now.
-6. **Because chain.** The merge keeps, per knob, every layer that set it (file, condition, value). `knobs show`
-   prints it ("10-base: 150, 20-ac: 100 <- wins, hold: none"), `plan` prints it with the diff, and the app shows the
-   chips (09-ux).
-7. **Sane defaults to go back to (todo-78).** `legionctl rules list|show|enable|disable|edit|reset <layer>`: a
-   shipped layer can be disabled but not changed (an edit makes an own layer that follows it); `reset` removes your
-   own layers and holds for a knob or all, which leaves the shipped state. `tuned.jsonc` is never on without
-   `rules enable tuned`.
-8. **Validation** (`validate`, and at every load; a layer that fails is not used and the reason is a doctor
-   finding): knob ids from the catalog, values within choices or the firmware's min/max, and every knob that a
-   `power` layer sets is set under both power sources or in a layer without `power` (the ac/battery rule of today).
-9. **Reload.** inotify on the three folders and D-Bus `Reload()`; a change runs the same `apply` as a power change.
-   D-Bus also gets `Layers()` (each with its state and why it is on or off), `Plan()` (merged state, chain, diff)
-   and `SetLayer(name, content)`/`RemoveLayer(name)` for `/etc` (polkit `org.legionctl.rules`).
-10. **Migration.** The shipped profile is in the package, so a user cannot have changed it; holds stay in
-   system.db. So nothing moves on the machine; the first daemon with configsets plans the same writes as today
-   (e2e: the recorded machine gets the same plan before and after, for AC, battery, Fn+Q and resume).
+- the name, the conditions and their values;
+- knob ids of the catalog; values within the knob's choices, or the firmware's min and max (when the machine
+  publishes them);
+- `locked` only in `/etc`; a user layer that sets a locked knob fails;
+- each knob that a `power` layer sets is also set for the other power source, or in a layer without `power`. If
+  not, a change of the power source leaves the value of the other source behind. The rules between layers repeat
+  until no more layer drops out.
 
-Review answers (user, 2026-10-14): format JSONC (default, not changed); own layers in two places:
-`/etc/legionctl/configsets/` (system defaults) and `~/.config/legionctl/configsets/` (the user's); conditions:
-`power`, `fnq` and `workload` in the first part (with the eBPF workload sensor); CLI `legionctl rules`.
-Consequences: the order is shipped, generated (`tuned`, when enabled), `/etc`, the user's, then holds. The root
-daemon reads the user layers of the active local session's user only (logind seat0), as that user's files, never
-following a link out of the folder; values stay within the catalog's choices and the firmware's min/max, and a knob
-that an `/etc` layer lists in `"locked"` cannot be set by a user layer (the same rule as `config.locked`).
-`workload` comes from a general exec/exit sensor (the session exec sensor watches only session scopes): a classifier
-over the program and its cgroup (game: Steam, Proton, Wine, gamescope; build: compilers and build tools; vm: QEMU,
-VirtualBox) that is active while one such process lives.
+### Because chain and plan
+
+The merge keeps each layer that set a knob: the layer, its conditions and its value. `legionctl knobs show <knob>`
+shows the chain (`shipped/10-base (always): 150`, `user/50-mine (always): 60  <- wins`, then the hold).
+`legionctl plan` shows the conditions, each knob a layer sets with its chain, and the writes the daemon would make
+now. `legionctl rules list|show` show the layers, their state and which apply now.
+
+### Reload
+
+inotify watches the shipped folder, the generated folder, `/etc` (the daemon makes the last two when they are not
+there), the user's folder (looked up again every 30 s and after each change, because the user and the folder can
+change) and `/run/systemd/seats` (another user in front). A change runs `Event::Reload`. `Event::Workload` comes from
+the sensor. Both run the same apply as after resume: the full policy, and the Fn+Q choice stays (a layer edit or a
+build is no reason to drop the user's choice; the approved text said "the same apply as a power change", which
+clears the choice).
+
+### D-Bus and CLI
+
+- `Reload()`: no polkit (it applies the configured policy). `rules edit` and `rules reset` call it after they change
+  the user's own files.
+- `SetLayer(name, content)`: writes `/etc/legionctl/configsets/<name>.jsonc` (empty content removes it); polkit
+  `org.legionctl.rules`. A layer that fails its own checks is refused.
+- `SetLayerState(name, state)`: `on`, `off`, or `default` (generated off, the others on); kept in `system.db`
+  (`layers`, across boots); polkit `org.legionctl.rules`.
+- `legionctl rules list|show|enable|disable|edit|reset` and `legionctl plan`. `rules edit <layer> knob=value ...
+  [--when power=ac] [--system]`: a shipped layer's name makes your layer of the same name with the same conditions,
+  after it. `knob=` removes a knob; a layer that sets nothing goes. `rules reset [--knob K]` removes your layers (or
+  the knob from them) and your holds; with `--system`, the `/etc` layers (or the knob from them) and the on/off
+  states. After an edit, `rules edit` shows when a rule between layers keeps the layer out.
+
+`Layers()` and `Plan()` on D-Bus (point 9 of the design) are not built: each planner reads the same files (the
+workload too), so the operator gives the same answer without a second path.
+
+### Migration
+
+The shipped profile is in the package, and holds stay in `system.db`, so nothing moves on the machine. The proof:
+`tests/fixtures/plans-82wq-before-configsets.txt` holds each step that the planner of the profile made (written by
+that planner, commit before configsets) on the recorded machine: as recorded and with each policy file scrambled,
+on AC and on battery, with no Fn+Q choice and with five kinds of choice, for start, power change, resume, tick and
+Fn+Q, for `power apply` of each source, and each knob's wanted value. `configsets_plan_exactly_the_writes_the_profile_planned`
+plans the same states with the layers and compares each step (only the wording of notes and warnings is free).
+The `daemon_events` tests pass with unchanged expectations.
+
+### Open
+
+- `tuned` sets firmware limits for AC only (the sweep runs on AC). The power rule keeps it out until a layer gives
+  the same knobs for battery (`rules edit 55-tuned-battery --when power=battery firmware.ppt_pl1_spl=...`).
+- The sensor classifies by the program's name only, not by its cgroup (`shortcut:` in `workload.rs`).
 
 ## Knob policies
 

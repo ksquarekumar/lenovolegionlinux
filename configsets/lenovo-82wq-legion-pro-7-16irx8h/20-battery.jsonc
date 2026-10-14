@@ -1,0 +1,14 @@
+// On battery: the balanced firmware mode and the power-saving CPU policy.
+{
+  "when": { "power": "battery" },
+  "set": {
+    // the first mode in this list that the firmware offers
+    "platform_profile": ["balanced", "low-power", "quiet"],
+    "cpu.ignore_ppc": "0",
+    "cpu.governor": "powersave",
+    "cpu.epp": "balance_power",
+    "cpu.energy_perf_bias": "8",
+    "ppd": "balanced",
+    "nvidia.services": "unchanged"
+  }
+}

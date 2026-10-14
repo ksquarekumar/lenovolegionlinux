@@ -1,21 +1,29 @@
 //! The knob catalog (note 16, `legionctl knobs`): every value legionctl reads or writes on this machine, with its
-//! current value, the value the profile wants for the current power source, the firmware's range, and the policy:
+//! current value, the value the configsets want now and which layers set it, the firmware's range, and the policy:
 //! `enforce` (legionctl restores it), `follow` (a firmware or user change is accepted, Fn+Q) or `observe` (only read).
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
+use crate::configset::{Link, Merged};
 use crate::ledger::Key;
 use crate::policy::Machine;
 use crate::policy::Step;
-use crate::profile::{Follow, ModePolicy, text};
+use crate::profile::{Profile, text};
+use crate::sysroot::SysRoot;
 
 const FIRMWARE_ATTRIBUTES: &str = "/sys/class/firmware-attributes/lenovo-wmi-other-0/attributes";
 /// The `sched_ext` scheduler that runs now (`scx_lavd`, ...); missing when the kernel scheduler runs.
 const SCHED_EXT: &str = "/sys/kernel/sched_ext/root/ops";
 const CPUFREQ: &str = "/sys/devices/system/cpu/cpufreq";
+const PPD_PROFILES: [&str; 3] = ["performance", "balanced", "power-saver"];
+/// The knobs that are actions, not files: their only values.
+const IDLE_STATES: [&str; 1] = ["enabled"];
+const NVIDIA_SERVICES: [&str; 2] = ["start", "unchanged"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -32,7 +40,7 @@ pub struct Knob {
     /// The file; `*` for a per-CPU knob (the value sums the CPUs up).
     pub path: String,
     pub value: Option<String>,
-    /// What the profile wants now; `None` for a knob legionctl does not set.
+    /// What the configsets want now; `None` for a knob legionctl does not set.
     pub desired: Option<String>,
     pub min: Option<String>,
     pub max: Option<String>,
@@ -40,6 +48,8 @@ pub struct Knob {
     pub policy: KnobPolicy,
     /// The value the user holds it at (`knobs hold`, `undo`); the policy leaves it alone until released.
     pub held: Option<String>,
+    /// Every layer that sets it now, in merge order; the last one wins (unless it is held).
+    pub chain: Vec<Link>,
 }
 
 impl Knob {
@@ -59,14 +69,21 @@ impl Knob {
             choices: Vec::new(),
             policy,
             held: None,
+            chain: Vec::new(),
         }
     }
 
-    fn wants(mut self, desired: Option<String>) -> Knob {
-        if desired.is_some() {
-            self.desired = desired;
+    fn wants(mut self, wanted: &Merged) -> Knob {
+        if let Some(desired) = wanted.text(&self.id) {
+            self.desired = Some(desired);
             self.policy = KnobPolicy::Enforce;
+            self.chain = wanted.chain.get(&self.id).cloned().unwrap_or_default();
         }
+        self
+    }
+
+    fn choices(mut self, choices: &[&str]) -> Knob {
+        self.choices = choices.iter().map(|c| (*c).to_string()).collect();
         self
     }
 }
@@ -95,16 +112,17 @@ fn per_cpu(m: &Machine, file: &str) -> (String, Option<String>) {
     (path, value)
 }
 
-fn policy_for<'a>(m: &'a Machine) -> &'a ModePolicy {
-    if m.ac_online() {
-        &m.profile.ac
-    } else {
-        &m.profile.battery
-    }
+/// The values the machine offers in a whitespace-separated list file; empty when it does not publish one.
+fn offered(root: &SysRoot, path: impl AsRef<Path>) -> Vec<String> {
+    root.read(path)
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(String::from)
+        .collect()
 }
 
 /// The firmware's tunables (`lenovo-wmi-other`), with their range.
-fn firmware_attributes(m: &Machine, policy: &ModePolicy) -> Vec<Knob> {
+fn firmware_attributes(m: &Machine, wanted: &Merged) -> Vec<Knob> {
     let mut knobs = Vec::new();
     for attribute in m.root.children(FIRMWARE_ATTRIBUTES, "") {
         let Some(name) = attribute
@@ -120,7 +138,7 @@ fn firmware_attributes(m: &Machine, policy: &ModePolicy) -> Vec<Knob> {
             read("current_value"),
             KnobPolicy::Observe,
         )
-        .wants(policy.firmware_attributes.get(&name).map(text));
+        .wants(wanted);
         knob.min = read("min_value");
         knob.max = read("max_value");
         knob.choices = read("possible_values")
@@ -131,46 +149,45 @@ fn firmware_attributes(m: &Machine, policy: &ModePolicy) -> Vec<Knob> {
     knobs
 }
 
-/// The CPU's power knobs; following Fn+Q, the governor comes from `firmware_follow`.
-fn cpu(m: &Machine, policy: &ModePolicy, follow: Option<&Follow>) -> Vec<Knob> {
+/// The CPU's power knobs.
+fn cpu(m: &Machine, wanted: &Merged) -> Vec<Knob> {
     let mut knobs = Vec::new();
-    let governor = follow
-        .and_then(|f| f.governor.clone())
-        .or_else(|| policy.cpu.governor.clone());
-    for (id, file, desired) in [
-        ("cpu.governor", "scaling_governor", governor),
+    for (id, file, choices) in [
+        (
+            "cpu.governor",
+            "scaling_governor",
+            "scaling_available_governors",
+        ),
         (
             "cpu.epp",
             "energy_performance_preference",
-            policy.cpu.energy_performance_preference.clone(),
+            "energy_performance_available_preferences",
         ),
     ] {
         let (path, value) = per_cpu(m, file);
-        knobs.push(Knob::new(id, path, value, KnobPolicy::Observe).wants(desired));
+        let mut knob = Knob::new(id, path, value, KnobPolicy::Observe).wants(wanted);
+        knob.choices = offered(m.root, format!("{CPUFREQ}/policy0/{choices}"));
+        knobs.push(knob);
     }
-    for (id, path, desired) in [
+    for (id, path) in [
         (
             "cpu.no_turbo",
             "/sys/devices/system/cpu/intel_pstate/no_turbo",
-            policy.cpu.no_turbo.clone(),
         ),
         (
             "cpu.max_perf_pct",
             "/sys/devices/system/cpu/intel_pstate/max_perf_pct",
-            policy.cpu.max_perf_pct.clone(),
         ),
         (
             "cpu.ignore_ppc",
             "/sys/module/processor/parameters/ignore_ppc",
-            policy.cpu.ignore_ppc.clone(),
         ),
         (
             "cpu.energy_perf_bias",
             "/sys/devices/system/cpu/cpu0/power/energy_perf_bias",
-            policy.cpu.energy_perf_bias.clone(),
         ),
     ] {
-        knobs.push(Knob::new(id, path, m.root.read(path), KnobPolicy::Observe).wants(desired));
+        knobs.push(Knob::new(id, path, m.root.read(path), KnobPolicy::Observe).wants(wanted));
     }
     knobs
 }
@@ -178,9 +195,9 @@ fn cpu(m: &Machine, policy: &ModePolicy, follow: Option<&Follow>) -> Vec<Knob> {
 /// Every knob, read now.
 #[must_use]
 pub fn catalog(m: &Machine) -> Vec<Knob> {
-    let policy = policy_for(m);
     let paths = &m.profile.paths;
     let fn_q = m.ledger.get(Key::Override);
+    let wanted = m.desired(m.source(), fn_q.as_deref());
     let mut knobs = Vec::new();
 
     let mut profile = Knob::new(
@@ -189,29 +206,22 @@ pub fn catalog(m: &Machine) -> Vec<Knob> {
         m.root.read(&paths.platform_profile),
         KnobPolicy::Follow,
     );
-    profile.choices = m
-        .root
-        .read(&paths.platform_profile_choices)
-        .unwrap_or_default()
-        .split_whitespace()
-        .map(String::from)
-        .collect();
-    profile.desired = fn_q.clone().or_else(|| m.platform_choice(policy));
+    profile.choices = offered(m.root, &paths.platform_profile_choices);
+    profile.desired = fn_q.clone().or_else(|| m.platform_choice(&wanted));
+    profile.chain = wanted
+        .chain
+        .get("platform_profile")
+        .cloned()
+        .unwrap_or_default();
     knobs.push(profile);
 
-    let follow = fn_q
-        .as_deref()
-        .and_then(|mode| m.profile.firmware_follow.get(mode));
-    knobs.extend(cpu(m, policy, follow));
+    knobs.extend(cpu(m, &wanted));
     knobs.push(Knob::new(
         "sched_ext",
         SCHED_EXT,
         m.root.read(SCHED_EXT),
         KnobPolicy::Observe,
     ));
-    let ppd = follow
-        .and_then(|f| f.power_profile.clone())
-        .or_else(|| policy.power_profile.clone());
     knobs.push(
         Knob::new(
             "ppd",
@@ -219,12 +229,11 @@ pub fn catalog(m: &Machine) -> Vec<Knob> {
             m.ppd_current.clone(),
             KnobPolicy::Observe,
         )
-        .wants(ppd),
+        .choices(&PPD_PROFILES)
+        .wants(&wanted),
     );
 
-    let mut sysctl = m.profile.sysctl.clone();
-    sysctl.extend(policy.sysctl.clone());
-    for (key, desired) in sysctl {
+    for (key, _) in wanted.under("sysctl.") {
         let path = format!("/proc/sys/{}", key.replace('.', "/"));
         knobs.push(
             Knob::new(
@@ -233,11 +242,11 @@ pub fn catalog(m: &Machine) -> Vec<Knob> {
                 m.root.read(&path),
                 KnobPolicy::Observe,
             )
-            .wants(Some(desired)),
+            .wants(&wanted),
         );
     }
 
-    knobs.extend(firmware_attributes(m, policy));
+    knobs.extend(firmware_attributes(m, &wanted));
     if let Some(fan) = &paths.fan_mode {
         knobs.push(
             Knob::new(
@@ -246,16 +255,30 @@ pub fn catalog(m: &Machine) -> Vec<Knob> {
                 m.root.read(fan),
                 KnobPolicy::Observe,
             )
-            .wants(
-                policy
-                    .firmware
-                    .fan_mode
-                    .as_ref()
-                    .filter(|v| !v.is_null())
-                    .map(text),
-            ),
+            .wants(&wanted),
         );
     }
+    // actions, not files: nothing to read back
+    knobs.push(
+        Knob::new(
+            "cpu.idle_states",
+            "cpupower idle-set -E",
+            None,
+            KnobPolicy::Observe,
+        )
+        .choices(&IDLE_STATES)
+        .wants(&wanted),
+    );
+    knobs.push(
+        Knob::new(
+            "nvidia.services",
+            "nvidia-persistenced, nvidia-powerd, nvidia-smi -pm 1",
+            None,
+            KnobPolicy::Observe,
+        )
+        .choices(&NVIDIA_SERVICES)
+        .wants(&wanted),
+    );
     let holds = m.ledger.holds();
     for knob in &mut knobs {
         // a hold on the knob's path, or on one CPU's file of a per-CPU knob
@@ -265,6 +288,128 @@ pub fn catalog(m: &Machine) -> Vec<Knob> {
             .map(|(_, value)| value.clone());
     }
     knobs
+}
+
+fn one_of(id: &str, scalar: &str, choices: &[&str]) -> Result<(), String> {
+    if choices.contains(&scalar) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{id}: {scalar} is not one of {}",
+            choices.join(", ")
+        ))
+    }
+}
+
+fn within(id: &str, scalar: &str, low: i64, high: i64) -> Result<(), String> {
+    match scalar.parse::<i64>() {
+        Ok(n) if (low..=high).contains(&n) => Ok(()),
+        _ => Err(format!("{id}: {scalar} is not a number in {low}..{high}")),
+    }
+}
+
+/// A firmware attribute (`firmware.<name>`): it exists, and the value is within its range or choices.
+fn check_firmware(root: Option<&SysRoot>, id: &str, scalar: &str) -> Result<(), String> {
+    let Some(name) = id
+        .strip_prefix("firmware.")
+        .filter(|n| !n.is_empty() && !n.contains('/'))
+    else {
+        return Err(format!("unknown knob {id} (see legionctl knobs list)"));
+    };
+    let Some(r) = root else {
+        return Ok(());
+    };
+    let base = format!("{FIRMWARE_ATTRIBUTES}/{name}");
+    if !r.exists(format!("{base}/current_value")) {
+        return Err(format!("{id}: the firmware has no attribute {name}"));
+    }
+    let bound = |f: &str| {
+        r.read(format!("{base}/{f}"))
+            .and_then(|v| v.parse::<i64>().ok())
+    };
+    match (bound("min_value"), bound("max_value")) {
+        // min=max=0: the firmware gives no range
+        (Some(low), Some(high)) if high != 0 => within(id, scalar, low, high),
+        _ => match r.read(format!("{base}/possible_values")) {
+            Some(values) => one_of(id, scalar, &values.split(';').collect::<Vec<_>>()),
+            None => Ok(()),
+        },
+    }
+}
+
+/// Whether a layer may set knob `id` to `value` on this machine: a knob of the catalog, a value of the right kind and
+/// within the knob's choices or the firmware's range. Without `root` (`validate`), only what needs no machine.
+///
+/// # Errors
+/// What is wrong, as a sentence for `doctor` and `validate`.
+pub fn check(
+    root: Option<&SysRoot>,
+    profile: &Profile,
+    id: &str,
+    value: &Value,
+) -> Result<(), String> {
+    let scalar = match value {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Array(list)
+            if id == "platform_profile"
+                && !list.is_empty()
+                && list
+                    .iter()
+                    .all(|v| v.as_str().is_some_and(|s| !s.is_empty())) =>
+        {
+            let offered = root
+                .map(|r| offered(r, &profile.paths.platform_profile_choices))
+                .unwrap_or_default();
+            let any = list
+                .iter()
+                .any(|v| offered.iter().any(|c| Some(c.as_str()) == v.as_str()));
+            return if offered.is_empty() || any {
+                Ok(())
+            } else {
+                Err(format!(
+                    "platform_profile: none of {} is offered here ({})",
+                    text(value),
+                    offered.join(", ")
+                ))
+            };
+        }
+        _ => return Err(format!("{id}: {value} is not a text or a number")),
+    };
+    let published = |file: String| -> Result<(), String> {
+        let o = root.map(|r| offered(r, file)).unwrap_or_default();
+        if o.is_empty() || o.contains(&scalar) {
+            Ok(())
+        } else {
+            Err(format!("{id}: {scalar} is not one of {}", o.join(", ")))
+        }
+    };
+    match id {
+        // one mode as text is a list of one
+        "platform_profile" => check(root, profile, id, &Value::Array(vec![value.clone()])),
+        "cpu.governor" => published(format!("{CPUFREQ}/policy0/scaling_available_governors")),
+        "cpu.epp" => published(format!(
+            "{CPUFREQ}/policy0/energy_performance_available_preferences"
+        )),
+        "cpu.no_turbo" | "cpu.ignore_ppc" => one_of(id, &scalar, &["0", "1"]),
+        "cpu.max_perf_pct" => within(id, &scalar, 1, 100),
+        "cpu.energy_perf_bias" => within(id, &scalar, 0, 15),
+        "cpu.idle_states" => one_of(id, &scalar, &IDLE_STATES),
+        "nvidia.services" => one_of(id, &scalar, &NVIDIA_SERVICES),
+        "ppd" => one_of(id, &scalar, &PPD_PROFILES),
+        "firmware.fan_mode" if profile.paths.fan_mode.is_some() => Ok(()),
+        _ => match id.strip_prefix("sysctl.") {
+            Some(key) => {
+                let path = format!("/proc/sys/{}", key.replace('.', "/"));
+                if !key.is_empty() && !key.contains('/') && root.is_none_or(|r| r.exists(&path)) {
+                    Ok(())
+                } else {
+                    Err(format!("{id}: there is no {path}"))
+                }
+            }
+            None => check_firmware(root, id, &scalar),
+        },
+    }
 }
 
 /// Hold each path (a knob's path, or one of the files of a per-CPU knob) at its value against the policy (D1): the

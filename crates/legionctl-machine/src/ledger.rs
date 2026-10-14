@@ -88,6 +88,11 @@ impl Ledger {
                      CREATE TABLE IF NOT EXISTS fan (
                         key   TEXT PRIMARY KEY,
                         value TEXT NOT NULL
+                     );
+                     -- configset layers turned on or off (`legionctl rules enable|disable`, todo-74), by id
+                     CREATE TABLE IF NOT EXISTS layers (
+                        id      TEXT PRIMARY KEY,
+                        enabled INTEGER NOT NULL
                      );",
                 )
                 .is_ok()
@@ -137,6 +142,36 @@ impl Ledger {
             ),
             None => conn.execute("DELETE FROM holds WHERE path = ?1", [path]),
         }?;
+        Ok(())
+    }
+
+    /// Whether the configset layer `id` (`shipped/20-ac`) was turned on or off; `None`: its default.
+    #[must_use]
+    pub fn layer_enabled(&self, id: &str) -> Option<bool> {
+        self.conn
+            .as_ref()?
+            .query_row("SELECT enabled FROM layers WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    /// Turn the configset layer `id` on or off; `None` gives it its default again.
+    ///
+    /// # Errors
+    /// `system.db` is not open for writing, or the write fails.
+    pub fn set_layer(&self, id: &str, enabled: Option<bool>) -> Result<()> {
+        let conn = self.conn.as_ref().context("system.db is not available")?;
+        match enabled {
+            Some(on) => conn.execute(
+                "INSERT INTO layers (id, enabled) VALUES (?1, ?2) ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled",
+                params![id, on],
+            ),
+            None => conn.execute("DELETE FROM layers WHERE id = ?1", [id]),
+        }
+        .with_context(|| format!("writing the state of layer {id} to {DB}"))?;
         Ok(())
     }
 

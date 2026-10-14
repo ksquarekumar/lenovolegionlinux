@@ -28,7 +28,18 @@ macro_rules! same {
     )*};
 }
 same!(
-    String, bool, i64, u64, u32, u16, u8, usize, f64, PathBuf, Value
+    String,
+    bool,
+    i64,
+    u64,
+    u32,
+    u16,
+    u8,
+    usize,
+    f64,
+    PathBuf,
+    Value,
+    serde_json::Map<String, Value>
 );
 
 impl<T: IntoWire<W>, W> IntoWire<Vec<W>> for Vec<T> {
@@ -180,6 +191,17 @@ wire_enum! {
         Enforce,
         Follow,
         Observe,
+    }
+    /// Where a configset layer is, lowest first.
+    enum LayerFolder from machine::configset::Folder as "lowercase" {
+        /// The profile's layers (`/usr/share/legionctl/configsets/<profile id>/`): disable them, do not change them.
+        Shipped,
+        /// Made by legionctl (`tuned`, from `legionctl tune`): off until `legionctl rules enable`.
+        Generated,
+        /// The system defaults (`/etc/legionctl/configsets/`); can lock knobs against user layers.
+        System,
+        /// Yours (`~/.config/legionctl/configsets/`), when you are the user in front.
+        User,
     }
     /// How busy the machine is.
     enum Level from machine::load::Level as "lowercase" {
@@ -674,6 +696,33 @@ wire! {
         users: Vec<String>,
     }
 
+    /// One layer that sets a knob now (the "because" chain); the last one wins.
+    struct Link from machine::configset::Link {
+        /// `<folder>/<name>` (`shipped/20-ac`).
+        layer: String,
+        /// Its conditions (`power ac`, `always`).
+        when: String,
+        value: Value,
+    }
+
+    /// A configset layer: `<order>-<name>.jsonc`, `{ "when": {...}, "set": {...} }`.
+    struct RuleLayer from machine::configset::Layer {
+        /// `<order>-<name>`.
+        name: String,
+        folder: LayerFolder,
+        file: String,
+        /// `power` (ac, battery), `fnq` (the Fn+Q mode), `workload` (game, build, vm); empty: always.
+        when: BTreeMap<String, String>,
+        /// Knob id -> value.
+        set: serde_json::Map<String, Value>,
+        /// Knobs that user layers cannot set (system layers only).
+        locked: Vec<String>,
+        /// Why it is not used; null: it is used while its conditions hold.
+        off: Option<String>,
+        /// It is not used because it fails a check (a doctor finding).
+        failed: bool,
+    }
+
     struct Knob from machine::knobs::Knob {
         /// `platform_profile`, `cpu.governor`, `sysctl.vm.swappiness`, `firmware.ppt_pl1_spl`, ...
         id: String,
@@ -687,6 +736,8 @@ wire! {
         choices: Vec<String>,
         policy: KnobPolicy,
         held: Option<String>,
+        /// Every layer that sets it now, in merge order; the last one wins, unless it is held.
+        chain: Vec<Link>,
     }
 
     struct Pressure from machine::load::Pressure {

@@ -7,6 +7,8 @@
 //! | Fn+Q | udev `platform-profile` change |
 //! | resume | logind `PrepareForSleep(false)` |
 //! | tick | every 30 s, on AC (knobs that cannot notify) |
+//! | reload | a configset layer changed (inotify), or the user in front did |
+//! | workload | a game, build or VM started, or the last one ended (the eBPF workload sensor) |
 //!
 //! While a tune runs (`Tune`), events wait: the sweep owns the firmware limits, and the policy applies again after.
 //!
@@ -16,8 +18,10 @@
 //! wires event sources and the bus to it.
 
 mod exec;
+mod folders;
 mod pins;
 mod runq;
+mod workload;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read;
@@ -34,8 +38,8 @@ use legionctl_machine::policy::{self, Machine, Options, Source, Step};
 use legionctl_machine::react::{Event, react};
 use legionctl_machine::sysroot::SysRoot;
 use legionctl_machine::{
-    battery, boot, cleanup, fan, gpu, greeter, knobs, profile, telemetry, tune, vfio, windows,
-    winvm,
+    battery, boot, cleanup, configset, fan, gpu, greeter, knobs, profile, telemetry, tune, vfio,
+    windows, winvm,
 };
 use tokio::io::unix::AsyncFd;
 use tokio::io::{Interest, Ready};
@@ -130,16 +134,19 @@ fn ppd_current() -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// The machine with the current profile (read each time, so an installed change applies without a restart).
+/// The machine with the current profile and configset layers (read each time, so an installed change applies without a
+/// restart).
 fn on_machine<T>(root: &SysRoot, f: impl FnOnce(&Machine) -> Result<T>) -> Result<T> {
     let (profile, _) = profile::load(None)?;
     let ledger = Ledger::open(root)?;
+    let layers = configset::load(root, &profile, &ledger);
     f(&Machine {
         root,
         profile: &profile,
         ledger: &ledger,
         ppd_current: has_command("powerprofilesctl").then(ppd_current).flatten(),
         has_command: &has_command,
+        layers: &layers,
     })
 }
 
@@ -377,6 +384,60 @@ struct System1 {
     version: String,
 }
 
+impl System1 {
+    /// A layer changed (`line` says how): apply the layers again and tell the session.
+    async fn layers_changed(
+        &self,
+        emitter: &SignalEmitter<'_>,
+        cause: &str,
+        line: String,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        let mut lines = vec![line];
+        if !self.tuning.load(Ordering::SeqCst) {
+            lines.extend(
+                carry_out(&self.root, |m| react(m, Event::Reload)).map_err(|e| failed(&e))?,
+            );
+        }
+        Self::changed(emitter, cause, &lines).await?;
+        Ok(lines)
+    }
+}
+
+/// Write the system layer `name` with `content`, or remove it when `content` is empty; a layer that fails its own
+/// checks is refused. Returns what was done.
+fn write_layer(root: &SysRoot, name: &str, content: &str) -> Result<String> {
+    anyhow::ensure!(
+        configset::good_name(name),
+        "{name}: a layer name is <two digits>-<a-z, 0-9 and ->"
+    );
+    let file = format!("{}/{name}.jsonc", configset::SYSTEM);
+    if content.is_empty() {
+        return match std::fs::remove_file(root.path(&file)) {
+            Ok(()) => Ok(format!("removed {file}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Ok(format!("{file} is not there"))
+            }
+            Err(e) => Err(e).with_context(|| format!("removing {file}")),
+        };
+    }
+    let (profile, _) = profile::load(None)?;
+    let layer = configset::parse(
+        Some(root),
+        &profile,
+        configset::Folder::System,
+        name,
+        &file,
+        Ok(content.to_string()),
+    );
+    if let Some(why) = layer.off {
+        anyhow::bail!("{file}: {why}");
+    }
+    let path = root.path(&file);
+    std::fs::create_dir_all(path.parent().context("no parent")?)?;
+    std::fs::write(&path, content).with_context(|| format!("writing {file}"))?;
+    Ok(format!("wrote {file}"))
+}
+
 /// The readings only root makes, with the eBPF sensor's histogram (or its error).
 fn root_part(root: &SysRoot, runq: &Result<runq::Runq, String>) -> telemetry::RootSample {
     let mut part = telemetry::root_sample(root);
@@ -442,6 +503,70 @@ impl System1 {
             Self::changed(&emitter, "ApplyPower", &lines).await?;
         }
         Ok(lines)
+    }
+
+    /// Apply the configset layers again (after the user changed own layers): the same apply as after resume. The
+    /// layers are the configured policy, so polkit is not asked.
+    async fn reload(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        if self.tuning.load(Ordering::SeqCst) {
+            return Err(zbus::fdo::Error::Failed(
+                "a tune runs; the policy applies again after it".into(),
+            ));
+        }
+        let lines = carry_out(&self.root, |m| react(m, Event::Reload)).map_err(|e| failed(&e))?;
+        if !lines.is_empty() {
+            Self::changed(&emitter, "Reload", &lines).await?;
+        }
+        Ok(lines)
+    }
+
+    /// Write the system layer `name` (`/etc/legionctl/configsets/<name>.jsonc`) with `content` (JSONC), or remove it
+    /// (empty `content`), then apply the layers again. A layer that fails its checks is refused.
+    async fn set_layer(
+        &self,
+        name: String,
+        content: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.rules").await?;
+        let line = write_layer(&self.root, &name, &content)
+            .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("{e:#}")))?;
+        self.layers_changed(&emitter, "SetLayer", line).await
+    }
+
+    /// Turn a layer on or off (`on`, `off`), or give it its default again (`default`: a generated layer is off, the
+    /// others on); `name` is its id (`shipped/20-ac`), its file name, or its name without the order (`tuned`).
+    async fn set_layer_state(
+        &self,
+        name: String,
+        state: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.rules").await?;
+        let enabled = match state.as_str() {
+            "on" => Some(true),
+            "off" => Some(false),
+            "default" => None,
+            other => {
+                return Err(zbus::fdo::Error::InvalidArgs(format!(
+                    "state must be on, off or default, not {other}"
+                )));
+            }
+        };
+        let line = on_machine(&self.root, |m| {
+            let layer = configset::find(m.layers, &name).map_err(anyhow::Error::msg)?;
+            m.ledger.set_layer(&layer.id(), enabled)?;
+            Ok(format!("layer {}: {state}", layer.id()))
+        })
+        .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("{e:#}")))?;
+        self.layers_changed(&emitter, "SetLayerState", line).await
     }
 
     /// Hold knobs at values against the policy (path -> value; a `*` path holds every CPU of a per-CPU knob): writes
@@ -1200,6 +1325,26 @@ fn sensors(root: &SysRoot) -> (Arc<Result<runq::Runq, String>>, Execs) {
     (runq, execs)
 }
 
+/// The udev events of the power supply and the platform profile.
+fn udev_monitor() -> Result<AsyncFd<udev::MonitorSocket>> {
+    let monitor = udev::MonitorBuilder::new()?
+        .match_subsystem("power_supply")?
+        .match_subsystem("platform-profile")?
+        .listen()
+        .context("listening for udev events")?;
+    Ok(AsyncFd::new(monitor)?)
+}
+
+/// Own the name on the system bus and serve `system` there.
+async fn serve(system: System1) -> Result<zbus::Connection> {
+    zbus::connection::Builder::system()?
+        .name(BUS_NAME)?
+        .serve_at(OBJECT_PATH, system)?
+        .build()
+        .await
+        .with_context(|| format!("owning {BUS_NAME} on the system bus"))
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let root = SysRoot::from_env();
@@ -1209,28 +1354,16 @@ async fn main() -> Result<()> {
     let tuning = Arc::new(AtomicBool::new(false));
     let (runq, execs) = sensors(&root);
     let watchers = Arc::new(Mutex::new(BTreeMap::new()));
-    let monitor = udev::MonitorBuilder::new()?
-        .match_subsystem("power_supply")?
-        .match_subsystem("platform-profile")?
-        .listen()
-        .context("listening for udev events")?;
-    let monitor = AsyncFd::new(monitor)?;
-    let bus = zbus::connection::Builder::system()?
-        .name(BUS_NAME)?
-        .serve_at(
-            OBJECT_PATH,
-            System1 {
-                root: root.clone(),
-                tuning: tuning.clone(),
-                runq,
-                watchers: watchers.clone(),
-                exec_error: execs.as_ref().err().cloned(),
-                version: legionctl_machine::interface_version(),
-            },
-        )?
-        .build()
-        .await
-        .with_context(|| format!("owning {BUS_NAME} on the system bus"))?;
+    let monitor = udev_monitor()?;
+    let bus = serve(System1 {
+        root: root.clone(),
+        tuning: tuning.clone(),
+        runq,
+        watchers: watchers.clone(),
+        exec_error: execs.as_ref().err().cloned(),
+        version: legionctl_machine::interface_version(),
+    })
+    .await?;
     let emitter = SignalEmitter::new(&bus, OBJECT_PATH)?;
     // the exec sensor runs beside the loop below; if it stops after it started, the daemon stops with an error and
     // systemd starts it again (DESIGN/02)
@@ -1246,6 +1379,8 @@ async fn main() -> Result<()> {
     let mut tick = tokio::time::interval(TICK);
     tick.tick().await;
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut folders = folders::Folders::watch(&root)?;
+    let mut workloads = workload::Sensor::start(&root)?;
 
     // a missing sensor is reported, and the daemon runs without it (note 01)
     let fn_lock = fn_lock_watch(&root)
@@ -1299,6 +1434,18 @@ async fn main() -> Result<()> {
             _ = tick.tick() => if !tuning.load(Ordering::SeqCst) {
                 handle(&root, &emitter, Event::Tick, &mut announced).await;
             },
+            changed = folders.changed() => {
+                changed?;
+                if !tuning.load(Ordering::SeqCst) {
+                    handle(&root, &emitter, Event::Reload, &mut announced).await;
+                }
+            }
+            changed = workloads.changed(&root) => {
+                changed?;
+                if !tuning.load(Ordering::SeqCst) {
+                    handle(&root, &emitter, Event::Workload, &mut announced).await;
+                }
+            }
             _ = term.recv() => {
                 notify(sd_notify::NotifyState::Stopping);
                 // a stop ends the sensors; a failure keeps them for the next start (D7)

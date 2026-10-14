@@ -1,0 +1,13 @@
+// The values for every power source and Fn+Q mode. A later layer changes a value for its conditions.
+{
+  "when": {},
+  "set": {
+    "sysctl.net.core.default_qdisc": "fq",
+    "sysctl.net.ipv4.tcp_congestion_control": "bbr",
+    "sysctl.vm.swappiness": "150",
+    "cpu.no_turbo": "0",
+    "cpu.max_perf_pct": "100",
+    // enable every C-state again in case something disabled them: deep idle gives turbo more headroom
+    "cpu.idle_states": "enabled"
+  }
+}

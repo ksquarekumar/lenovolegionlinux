@@ -13,9 +13,12 @@ use std::process::Command;
 
 use anyhow::{Result, bail};
 
+use serde_json::Value;
+
+use crate::configset::{self, Conditions, Layer, Merged};
 use crate::fan;
 use crate::ledger::{FanKey, Key, Ledger};
-use crate::profile::{self, ModePolicy, Profile};
+use crate::profile::{self, Profile};
 use crate::sysroot::SysRoot;
 
 const CPUFREQ: &str = "/sys/devices/system/cpu/cpufreq";
@@ -94,14 +97,16 @@ pub struct Options {
     pub keep_override: bool,
 }
 
-/// What the planner needs besides the sysroot: the ledger, power-profiles-daemon's current profile and which commands
-/// exist.
+/// What the planner needs besides the sysroot: the ledger, power-profiles-daemon's current profile, which commands
+/// exist, and the configset layers.
 pub struct Machine<'a> {
     pub root: &'a SysRoot,
     pub profile: &'a Profile,
     pub ledger: &'a Ledger,
     pub ppd_current: Option<String>,
     pub has_command: &'a dyn Fn(&str) -> bool,
+    /// Every configset layer ([`configset::load`]); the used ones make the desired state.
+    pub layers: &'a [Layer],
 }
 
 /// A value in single quotes, as the policy messages show it.
@@ -150,36 +155,65 @@ impl Machine<'_> {
         }
     }
 
-    fn follow_policy(&self, steps: &mut Vec<Step>, firmware_mode: &str) {
-        let Some(follow) = self.profile.firmware_follow.get(firmware_mode) else {
+    /// The conditions the layers are tested against, for `source` while the policy follows the Fn+Q choice `fnq`.
+    #[must_use]
+    pub fn conditions(&self, source: Source, fnq: Option<&str>) -> Conditions {
+        Conditions {
+            power: source,
+            fnq: fnq.map(String::from),
+            workload: configset::workload(self.root),
+        }
+    }
+
+    /// The desired state for `source` while the policy follows the Fn+Q choice `fnq` (configsets, note 01).
+    #[must_use]
+    pub fn desired(&self, source: Source, fnq: Option<&str>) -> Merged {
+        configset::merge(self.layers, &self.conditions(source, fnq))
+    }
+
+    /// Whether a used layer has a policy for the Fn+Q mode `mode`.
+    #[must_use]
+    pub fn follows(&self, mode: &str) -> bool {
+        self.layers
+            .iter()
+            .any(|l| l.off.is_none() && l.when.get("fnq").map(String::as_str) == Some(mode))
+    }
+
+    fn follow_policy(&self, steps: &mut Vec<Step>, firmware_mode: &str, wanted: &Merged) {
+        if !self.follows(firmware_mode) {
             steps.push(Step::Warn(format!(
-                "no firmware_follow entry for {}; leaving CPU policy alone",
+                "no configset layer for the Fn+Q mode {}; leaving CPU policy alone",
                 quoted(firmware_mode)
             )));
             return;
-        };
-        self.power_profile(steps, follow.power_profile.as_deref());
-        self.cpufreq(steps, "scaling_governor", follow.governor.as_deref());
+        }
+        self.power_profile(steps, wanted.text("ppd").as_deref());
+        self.cpufreq(
+            steps,
+            "scaling_governor",
+            wanted.text("cpu.governor").as_deref(),
+        );
     }
 
-    /// The first firmware mode in `policy`'s preference that this machine offers.
+    /// The first firmware mode of the wanted `platform_profile` (a preference list) that this machine offers.
     #[must_use]
-    pub fn platform_choice(&self, policy: &ModePolicy) -> Option<String> {
+    pub fn platform_choice(&self, wanted: &Merged) -> Option<String> {
         let choices = self
             .root
             .read(&self.profile.paths.platform_profile_choices)
             .unwrap_or_default();
         let available: Vec<&str> = choices.split_whitespace().collect();
-        policy
-            .firmware
-            .platform_profile_preference
-            .iter()
+        let preference: Vec<String> = match wanted.values.get("platform_profile")? {
+            Value::Array(list) => list.iter().map(profile::text).collect(),
+            one => vec![profile::text(one)],
+        };
+        preference
+            .into_iter()
             .find(|c| available.contains(&c.as_str()))
-            .cloned()
     }
 
-    fn firmware_policy(&self, steps: &mut Vec<Step>, policy: &ModePolicy) {
-        match self.platform_choice(policy) {
+    fn firmware_policy(&self, steps: &mut Vec<Step>, wanted: &Merged) {
+        match self.platform_choice(wanted) {
             Some(chosen) => {
                 self.write(steps, &self.profile.paths.platform_profile, &chosen);
                 steps.push(Step::Record {
@@ -191,17 +225,20 @@ impl Machine<'_> {
                 "no matching platform_profile choice found".into(),
             )),
         }
-        if let Some(fan_mode) = policy.firmware.fan_mode.as_ref().filter(|v| !v.is_null()) {
+        if let Some(fan_mode) = wanted.text("firmware.fan_mode") {
             match &self.profile.paths.fan_mode {
-                Some(path) => self.write(steps, path, &profile::text(fan_mode)),
+                Some(path) => self.write(steps, path, &fan_mode),
                 None => steps.push(Step::Warn("no VPC2004 fan_mode path found".into())),
             }
         }
     }
 
-    fn firmware_attributes(&self, steps: &mut Vec<Step>, policy: &ModePolicy) {
-        for (name, value) in &policy.firmware_attributes {
-            let base = Path::new(FIRMWARE_ATTRIBUTES).join(name);
+    fn firmware_attributes(&self, steps: &mut Vec<Step>, wanted: &Merged) {
+        for (name, value) in wanted.under("firmware.") {
+            if name == "fan_mode" {
+                continue;
+            }
+            let base = Path::new(FIRMWARE_ATTRIBUTES).join(&name);
             if self.root.read(base.join("current_value")).is_none() {
                 steps.push(Step::Warn(format!("firmware attribute {name} not found")));
                 continue;
@@ -213,7 +250,6 @@ impl Machine<'_> {
                     .unwrap_or(0)
             };
             let (low, high) = (bound("min_value"), bound("max_value"));
-            let value = profile::text(value);
             // some attributes publish min=max=0, meaning the firmware does not report a range
             if high != 0 && !value.parse().is_ok_and(|v: i64| (low..=high).contains(&v)) {
                 steps.push(Step::Warn(format!(
@@ -225,10 +261,8 @@ impl Machine<'_> {
         }
     }
 
-    fn sysctl(&self, steps: &mut Vec<Step>, policy: &ModePolicy) {
-        let mut all = self.profile.sysctl.clone();
-        all.extend(policy.sysctl.clone());
-        for (key, value) in all {
+    fn sysctl(&self, steps: &mut Vec<Step>, wanted: &Merged) {
+        for (key, value) in wanted.under("sysctl.") {
             self.write(
                 steps,
                 Path::new("/proc/sys").join(key.replace('.', "/")),
@@ -237,64 +271,61 @@ impl Machine<'_> {
         }
     }
 
-    /// The CPU knobs of `policy`. While legionctl follows an Fn+Q choice (`following`), the governor and EPP stay
-    /// as `firmware_follow` and power-profiles-daemon set them.
-    fn cpu_policy(&self, steps: &mut Vec<Step>, policy: &ModePolicy, following: bool) {
-        let cpu = &policy.cpu;
-        for (path, value) in [
+    /// The CPU knobs. While legionctl follows an Fn+Q choice (`following`), the governor and EPP stay as the Fn+Q
+    /// layer and power-profiles-daemon set them.
+    fn cpu_policy(&self, steps: &mut Vec<Step>, wanted: &Merged, following: bool) {
+        for (id, path) in [
             (
+                "cpu.ignore_ppc",
                 "/sys/module/processor/parameters/ignore_ppc",
-                &cpu.ignore_ppc,
             ),
             (
+                "cpu.no_turbo",
                 "/sys/devices/system/cpu/intel_pstate/no_turbo",
-                &cpu.no_turbo,
             ),
             (
+                "cpu.max_perf_pct",
                 "/sys/devices/system/cpu/intel_pstate/max_perf_pct",
-                &cpu.max_perf_pct,
             ),
         ] {
-            if let Some(value) = value {
-                self.write(steps, path, value);
+            if let Some(value) = wanted.text(id) {
+                self.write(steps, path, &value);
             }
         }
         if !following {
-            self.cpufreq(steps, "scaling_governor", cpu.governor.as_deref());
+            self.cpufreq(
+                steps,
+                "scaling_governor",
+                wanted.text("cpu.governor").as_deref(),
+            );
             self.cpufreq(
                 steps,
                 "energy_performance_preference",
-                cpu.energy_performance_preference.as_deref(),
+                wanted.text("cpu.epp").as_deref(),
             );
         }
-        if let Some(bias) = &cpu.energy_perf_bias {
+        if let Some(bias) = wanted.text("cpu.energy_perf_bias") {
             for dir in self.root.children("/sys/devices/system/cpu", "cpu") {
                 if self.root.exists(dir.join("power/energy_perf_bias")) {
-                    self.write(steps, dir.join("power/energy_perf_bias"), bias);
+                    self.write(steps, dir.join("power/energy_perf_bias"), &bias);
                 }
             }
             if (self.has_command)("cpupower") {
-                self.run(steps, &["cpupower", "set", "--perf-bias", bias]);
+                self.run(steps, &["cpupower", "set", "--perf-bias", &bias]);
             }
         }
-        // re-enable every C-state in case something disabled them; deep idle frees turbo headroom
-        if cpu.enable_all_idle_states {
+        if wanted.text("cpu.idle_states").as_deref() == Some("enabled") {
             self.run(steps, &["cpupower", "idle-set", "-E"]);
         }
     }
 
-    fn nvidia(&self, steps: &mut Vec<Step>, policy: &ModePolicy) {
-        let nv = &policy.nvidia;
-        if nv.start_persistenced {
+    fn nvidia(&self, steps: &mut Vec<Step>, wanted: &Merged) {
+        if wanted.text("nvidia.services").as_deref() == Some("start") {
             self.run(
                 steps,
                 &["systemctl", "start", "nvidia-persistenced.service"],
             );
-        }
-        if nv.start_powerd {
             self.run(steps, &["systemctl", "start", "nvidia-powerd.service"]);
-        }
-        if nv.set_persistence_mode {
             self.run(steps, &["nvidia-smi", "-i", "0", "-pm", "1"]);
         }
     }
@@ -302,6 +333,16 @@ impl Machine<'_> {
     #[must_use]
     pub fn ac_online(&self) -> bool {
         self.root.read(&self.profile.paths.ac_adapter).as_deref() == Some("1")
+    }
+
+    /// The power source now.
+    #[must_use]
+    pub fn source(&self) -> Source {
+        if self.ac_online() {
+            Source::Ac
+        } else {
+            Source::Battery
+        }
     }
 
     /// # Errors
@@ -363,13 +404,9 @@ impl Machine<'_> {
             )),
             _ => {}
         }
-        let policy = match source {
-            Source::Ac => &self.profile.ac,
-            Source::Battery => &self.profile.battery,
-        };
         let mut override_mode = self.ledger.get(Key::Override);
         if !opts.reassert && !opts.keep_override {
-            // a power-source change, boot or manual apply starts from the profile defaults again
+            // a power-source change, boot or manual apply starts from the layers without a choice again
             if let Some(mode) = override_mode.take() {
                 steps.push(Step::Info(format!(
                     "clearing firmware override {}",
@@ -381,34 +418,33 @@ impl Machine<'_> {
                 });
             }
         }
+        let wanted = self.desired(source, override_mode.as_deref());
         if let Some(mode) = &override_mode {
-            self.follow_policy(&mut steps, mode);
+            self.follow_policy(&mut steps, mode, &wanted);
         } else {
-            self.firmware_policy(&mut steps, policy);
+            self.firmware_policy(&mut steps, &wanted);
             // intel_pstate refuses EPP writes while the governor is performance, which makes PPD fail; governor first
             self.cpufreq(
                 &mut steps,
                 "scaling_governor",
-                policy.cpu.governor.as_deref(),
+                wanted.text("cpu.governor").as_deref(),
             );
-            self.power_profile(&mut steps, policy.power_profile.as_deref());
+            self.power_profile(&mut steps, wanted.text("ppd").as_deref());
             if opts.reassert {
                 // power-profiles-daemon rewrites EPP on profile changes; reassert wins it back (the governor was
                 // written before power-profiles-daemon)
                 self.cpufreq(
                     &mut steps,
                     "energy_performance_preference",
-                    policy.cpu.energy_performance_preference.as_deref(),
+                    wanted.text("cpu.epp").as_deref(),
                 );
             }
         }
-        self.firmware_attributes(&mut steps, policy);
+        self.firmware_attributes(&mut steps, &wanted);
         if !opts.reassert {
-            self.sysctl(&mut steps, policy);
-            self.cpu_policy(&mut steps, policy, override_mode.is_some());
-            if source == Source::Ac {
-                self.nvidia(&mut steps, policy);
-            }
+            self.sysctl(&mut steps, &wanted);
+            self.cpu_policy(&mut steps, &wanted, override_mode.is_some());
+            self.nvidia(&mut steps, &wanted);
         }
         Ok((source, self.without_held(steps)))
     }
@@ -441,7 +477,8 @@ impl Machine<'_> {
                 value: Some(current.clone()),
             },
         ];
-        self.follow_policy(&mut steps, &current);
+        let wanted = self.desired(self.source(), Some(&current));
+        self.follow_policy(&mut steps, &current, &wanted);
         Ok(steps)
     }
 }

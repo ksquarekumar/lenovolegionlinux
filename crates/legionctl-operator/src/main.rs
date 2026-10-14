@@ -9,6 +9,7 @@ mod engine;
 mod gateway;
 mod policy;
 mod recorder;
+mod rules;
 mod semantic;
 mod server;
 mod session;

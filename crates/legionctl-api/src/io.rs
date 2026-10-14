@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::wire::{
     Action, Battery, BenchResult, Binding, Capability, ConfigFile, ConfigLayer, DesktopGpu,
     DossierInfo, EditMode, Event, EventRow, GpuMode, Inside, Knob, Lock, Output, PackageState,
-    Reminder, Sample, Scenario, SessionRecord, SkillInfo, VfioDevice, Workspace, WorkspaceStatus,
+    Reminder, RuleLayer, Sample, Scenario, SessionRecord, SkillInfo, VfioDevice, Workspace,
+    WorkspaceStatus,
 };
 use crate::{ClientPath, SessionId, StdinText};
 
@@ -286,6 +287,81 @@ pub struct Findings {
 pub struct CapabilityList {
     pub profile_id: String,
     pub capabilities: Vec<Capability>,
+}
+
+/// What the layers' conditions are tested against now.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Conditions {
+    /// ac or battery.
+    pub power: String,
+    /// The firmware mode chosen with Fn+Q that the policy follows; null when none.
+    pub fnq: Option<String>,
+    /// The workloads that run (game, build, vm).
+    pub workload: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Rules {
+    pub conditions: Conditions,
+    /// Every layer in merge order (lowest first).
+    pub layers: Vec<RuleState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RuleState {
+    pub layer: RuleLayer,
+    /// `<folder>/<name>`, as `rules enable` and `rules disable` take it.
+    pub id: String,
+    /// Used now: on, and its conditions hold.
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RuleDetail {
+    pub layer: RuleState,
+    /// The file as it is.
+    pub text: String,
+}
+
+/// The desired state now: each knob a layer sets, with the chain of layers that set it, and what the daemon would write.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PlanView {
+    pub conditions: Conditions,
+    pub knobs: Vec<Knob>,
+    /// The writes the daemon would make now (it keeps an Fn+Q choice).
+    pub changes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RuleIn {
+    /// The layer: its id (`shipped/20-ac`), its name (`20-ac`) or its name without the order (`tuned`).
+    pub layer: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RuleEditIn {
+    /// Your layer `<two digits>-<name>` (a later number wins); the name of a shipped layer makes your layer of the
+    /// same name, with its conditions, after it.
+    pub layer: String,
+    /// `knob=value` (knob ids as `legionctl knobs list`); `knob=` removes the knob from the layer.
+    #[serde(default)]
+    pub set: Vec<String>,
+    /// The conditions, `power=ac,workload=game` (power, fnq, workload); `always` for none. Default: as they are.
+    #[serde(default)]
+    pub when: Option<String>,
+    /// A system layer (`/etc/legionctl/configsets/`, polkit asks) instead of yours.
+    #[serde(default)]
+    pub system: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RuleResetIn {
+    /// Only this knob (an id or its path); default: every knob.
+    #[serde(default)]
+    pub knob: Option<String>,
+    /// The system layers and the layers' on/off states (polkit asks) instead of your layers and holds.
+    #[serde(default)]
+    pub system: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

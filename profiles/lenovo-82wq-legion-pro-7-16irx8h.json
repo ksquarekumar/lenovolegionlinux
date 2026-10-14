@@ -111,83 +111,8 @@
       "notes": "johnfan documents conservation/rapid charge; Bolekjar has charge-mode WMI event handling. This remains separate from AC performance enforcement."
     }
   ],
-  "sysctl": {
-    "net.core.default_qdisc": "fq",
-    "net.ipv4.tcp_congestion_control": "bbr",
-    "vm.swappiness": "150"
-  },
-  "firmware_follow": {
-    "max-power": {
-      "power_profile": "performance",
-      "governor": "performance"
-    },
-    "performance": {
-      "power_profile": "performance",
-      "governor": "performance"
-    },
-    "custom": {
-      "power_profile": "performance",
-      "governor": "performance"
-    },
-    "balanced": {
-      "power_profile": "balanced",
-      "governor": "powersave"
-    },
-    "low-power": {
-      "power_profile": "power-saver",
-      "governor": "powersave"
-    },
-    "quiet": {
-      "power_profile": "power-saver",
-      "governor": "powersave"
-    }
-  },
-  "ac": {
-    "rapl": {},
-    "cpu": {
-      "ignore_ppc": "1",
-      "no_turbo": "0",
-      "max_perf_pct": "100",
-      "governor": "performance",
-      "energy_performance_preference": "performance",
-      "energy_perf_bias": "0",
-      "enable_all_idle_states": true
-    },
-    "firmware": {
-      "platform_profile_preference": [
-        "max-power",
-        "performance"
-      ],
-      "fan_mode": null
-    },
-    "nvidia": {
-      "start_persistenced": true,
-      "start_powerd": true,
-      "set_persistence_mode": true,
-      "expected_dynamic_power_w": 150
-    },
-    "power_profile": "performance"
-  },
-  "battery": {
-    "rapl": {},
-    "cpu": {
-      "ignore_ppc": "0",
-      "no_turbo": "0",
-      "max_perf_pct": "100",
-      "governor": "powersave",
-      "energy_performance_preference": "balance_power",
-      "energy_perf_bias": "8",
-      "enable_all_idle_states": true
-    },
-    "firmware": {
-      "platform_profile_preference": [
-        "balanced",
-        "low-power",
-        "quiet"
-      ],
-      "fan_mode": null
-    },
-    "power_profile": "balanced"
+  "nvidia": {
+    "expected_dynamic_power_w": 150
   },
   "conflicts": {
     "systemd_units": [

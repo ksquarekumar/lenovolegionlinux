@@ -1,0 +1,15 @@
+// On AC: the fastest firmware mode and the CPU at full performance.
+{
+  "when": { "power": "ac" },
+  "set": {
+    // the first mode in this list that the firmware offers
+    "platform_profile": ["max-power", "performance"],
+    "cpu.ignore_ppc": "1",
+    "cpu.governor": "performance",
+    "cpu.epp": "performance",
+    "cpu.energy_perf_bias": "0",
+    "ppd": "performance",
+    // nvidia-persistenced, nvidia-powerd (Dynamic Boost) and the persistence mode
+    "nvidia.services": "start"
+  }
+}

@@ -19,8 +19,8 @@
   validated), throttle reasons from MSR, run-queue latency p99 (eBPF).
 - **Guards**: AC only, idle check (load and the workload classifier), reconciler paused for the tuned knobs,
   restore on any exit, abort on temperatures above the firmware limits.
-- **Output**: results to `/var/lib/legionctl/tune/<timestamp>.jsonl`; a recommended layer to
-  `/var/lib/legionctl/configsets/tuned.toml` that is inactive until the user enables it.
+- **Output**: results to `/var/lib/legionctl/tune/<time>-<attribute>.json`; the recommended value into the generated
+  layer `/var/lib/legionctl/configsets/50-tuned.jsonc` (for AC), which is off until `legionctl rules enable tuned`.
 - **Recommendation**: per scenario the knee (smallest limit within 2 % of the best score), constrained by no
   thermal throttle reasons in the steady-state half and GPU throughput within 2 % of its best for cross-load.
 
@@ -34,8 +34,9 @@ second as root, and stops the step at once when the machine leaves AC or the CPU
 `cpu_temp` (it kills the workload's process group). Events wait while a tune runs; at the end the original value
 comes back, the policy applies again for the current power source (an Fn+Q choice stays), and a `Changed("Tune")`
 signal goes to the event log. The report goes to `/var/lib/legionctl/tune/<time>-<attribute>.json`.
-The recommended layer (`configsets/tuned.toml`) is not built: the configset layers for the machine policy do not
-exist yet, so the user puts the recommended value into the profile. Not verified live: a sweep on the real machine
+The recommended value goes into the generated layer `50-tuned.jsonc` (`{"when": {"power": "ac"}}`, beside the values
+of earlier sweeps), off until `legionctl rules enable tuned` (todo-74, note 01). The configset checks keep it out
+while no layer gives the same limits for battery (the ac/battery rule); `doctor` names it. Not verified live: a sweep on the real machine
 (needs the package installed, the polkit dialog and an idle machine) and the `setpriv` path (the e2e daemon runs as
 the caller, so the workload runs directly).
 
