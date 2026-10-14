@@ -25,7 +25,8 @@ the design is explored and are meant to change; decisions and open questions are
 | [19-gateway.md](19-gateway.md) | Gateway in the operator: model addressing (`account/model` or the pool), quotas, budgets, exact and semantic cache, durable ACP, session environment images |
 | [20-images.md](20-images.md) | Distributables: Dockerfiles and images mapped to services and cache JSON, VM format, packing a repo's images into a VM |
 | [21-greeter.md](21-greeter.md) | greetd and legionctl's login screen in place of GDM: login protocol, actions before login, polkit rule, install and remove, the way back |
-| [23-agent-network.md](23-agent-network.md) | Two code graphs (ctx snapshots per tree hash, change graph, `planning/` in the repo, tokei LOC, test review gate), the agent network (main and observers, outbox, hooks), the thread UI (triple pane, `/` commands, views); proposed |
+| [22-resources.md](22-resources.md) | Resources after the start: one list and one action that routes to the existing operations, saved configset sets, hidden boot entries for a kernel and a set |
+| [23-agent-network.md](23-agent-network.md) | Two code graphs (ctx snapshots per tree hash, change graph, `planning/` in the repo, tokei LOC, test review gate), the agent network (main and observers, outbox, hooks), the thread UI (triple pane, `/` commands, views); approved 2026-10-15 |
 | [issues.md](issues.md) | Issues found on this machine and cleanups to do |
 
 Evidence for every machine-specific claim was collected on 2026-10-12 (CachyOS, kernel 7.2.9, GNOME 51,
