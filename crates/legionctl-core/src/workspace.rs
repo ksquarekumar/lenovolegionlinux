@@ -23,7 +23,7 @@ use crate::dossier::Dossiers;
 const IGNORE_LINE: &str = "/.agentworkspace";
 pub(crate) const LINK: &str = ".agentworkspace";
 
-fn git(dir: &Path, args: &[&str]) -> Result<String> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -497,10 +497,10 @@ impl Dossiers {
         Ok(status)
     }
 
-    /// Stage everything in the workspace and commit it.
+    /// Stage everything in the workspace and commit it, when the test gate lets the new and changed tests through.
     ///
     /// # Errors
-    /// The workspace is not open, there are conflicts, or git refuses.
+    /// The workspace is not open, there are conflicts, the test gate refuses (nothing is committed), or git refuses.
     pub fn checkpoint(&self, ws: &Workspace, message: &str) -> Result<String> {
         ensure!(!message.trim().is_empty(), "a checkpoint needs a message");
         if ws.is_folder() {
@@ -510,6 +510,7 @@ impl Dossiers {
         if git(&ws.path, &["diff", "--cached", "--quiet"]).is_ok() {
             return Ok("nothing to checkpoint".into());
         }
+        self.test_gate(&ws.path)?;
         git(&ws.path, &["commit", "--quiet", "-m", message])?;
         git(&ws.path, &["log", "-1", "--format=%h %s"])
     }

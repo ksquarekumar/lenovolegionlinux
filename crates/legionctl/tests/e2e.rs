@@ -1343,6 +1343,489 @@ fn topic_workspaces_of_one_dossier_work_in_parallel_and_merge_one_by_one() {
 
 /// The MCP proxy between a session's agent and a server (here legionctl's own MCP server): the agent sees only the
 /// allowed tools, a call to another tool is refused, and the operator logs both calls with the session id.
+/// A program in the operator's `PATH` (the stand-in folder of `path_with_keyring`), written after the operator started.
+fn stand_in(home: &Path, name: &str, script: &str) {
+    let path = home.join("keyring-bin").join(name);
+    write(&path, script);
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+}
+
+/// A `mutants.out` as cargo-mutants 27.1 writes it (shape recorded from a real run on a fixture crate, see
+/// `cargo_mutants_on_a_fixture_crate_records_the_tests_that_kill_its_mutants`): `outcomes.json` with the baseline
+/// first, then one outcome per mutant (`file`, `line`, `name`, the tests that fail in its log; none: missed).
+fn mutants_out(dir: &Path, mutants: &[(&str, u32, &str, &[&str])]) {
+    let phases = json!([
+        {"phase": "Build", "duration": 0.1, "process_status": "Success", "argv": ["cargo", "test", "--no-run"]},
+        {"phase": "Test", "duration": 0.05, "process_status": "Success", "argv": ["cargo", "test"]}
+    ]);
+    let mut outcomes = vec![
+        json!({"scenario": "Baseline", "summary": "Success", "log_path": "log/baseline.log",
+        "diff_path": null, "phase_results": phases}),
+    ];
+    for (i, (file, line, name, killed)) in mutants.iter().enumerate() {
+        let log = format!("log/m{i}.log");
+        let tests = killed
+            .iter()
+            .fold(String::new(), |all, t| all + "test " + t + " ... FAILED\n");
+        write(
+            &dir.join(&log),
+            &format!("\nrunning 3 tests\ntest other ... ok\n{tests}\n*** result\n"),
+        );
+        outcomes.push(json!({
+            "scenario": {"Mutant": {"name": format!("{file}:{line}:5: {name}"), "package": "fx", "file": file,
+                "span": {"start": {"line": line, "column": 5}, "end": {"line": line, "column": 9}},
+                "replacement": "0", "genre": "FnValue"}},
+            "summary": if killed.is_empty() { "MissedMutant" } else { "CaughtMutant" },
+            "log_path": log, "diff_path": format!("diff/m{i}.diff"), "phase_results": phases,
+        }));
+    }
+    let caught = mutants.iter().filter(|m| !m.3.is_empty()).count();
+    write(
+        &dir.join("outcomes.json"),
+        &json!({"outcomes": outcomes, "total_mutants": mutants.len(), "caught": caught,
+            "missed": mutants.len() - caught, "timeout": 0, "unviable": 0, "success": 0,
+            "cargo_mutants_version": "27.1.0"})
+        .to_string(),
+    );
+}
+
+/// A stand-in `cargo-mutants` in the operator's `PATH`: it logs its arguments to `home/mutants-argv` and writes
+/// `mutants` (see [`mutants_out`]) into the `mutants.out` of its `-o` folder.
+fn mutants_stand_in(home: &Path, mutants: &[(&str, u32, &str, &[&str])]) {
+    let fixture = home.join("mutants-fixture");
+    mutants_out(&fixture, mutants);
+    stand_in(
+        home,
+        "cargo-mutants",
+        &format!(
+            "#!/bin/sh\necho \"$@\" > {argv}\nwhile [ $# -gt 0 ]; do [ \"$1\" = -o ] && out=$2; shift; done\nmkdir -p \"$out\" && cp -r {fixture} \"$out/mutants.out\"\nexit 2\n",
+            argv = home.join("mutants-argv").display(),
+            fixture = fixture.display()
+        ),
+    );
+}
+
+/// An agent's session (s1) on dossier `gate` with a workspace of a new repository, and `double` in its `src/lib.rs`.
+struct GateAgent {
+    op: Operator,
+    home: PathBuf,
+    ws: PathBuf,
+}
+
+impl GateAgent {
+    fn start(tag: &str) -> GateAgent {
+        let (op, home) = operator(tag);
+        let repo = repository(&home);
+        let agent = GateAgent {
+            ws: home.join("worktrees/repo/gate"),
+            op,
+            home,
+        };
+        agent.ok_in(&repo, &["dossier", "use", "gate"]);
+        agent.ok_in(&repo, &["workspace", "open"]);
+        write(
+            &agent.ws.join("src/lib.rs"),
+            "pub fn double(x: i32) -> i32 {\n    x * 2\n}\n",
+        );
+        agent
+    }
+
+    fn run(&self, args: &[&str]) -> std::process::Output {
+        let env = [
+            ("HOME", self.home.to_str().unwrap()),
+            ("LEGIONCTL_SESSION", "s1"),
+        ];
+        self.op.run(&self.ws, &env, args, "")
+    }
+
+    fn ok_in(&self, cwd: &Path, args: &[&str]) -> String {
+        let env = [
+            ("HOME", self.home.to_str().unwrap()),
+            ("LEGIONCTL_SESSION", "s1"),
+        ];
+        let o = self.op.run(cwd, &env, args, "");
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    }
+
+    fn ok(&self, args: &[&str]) -> String {
+        self.ok_in(&self.ws, args)
+    }
+
+    /// The error of a refused checkpoint.
+    fn refused(&self, args: &[&str]) -> String {
+        let o = self.run(args);
+        assert!(!o.status.success(), "{args:?} must be refused");
+        String::from_utf8_lossy(&o.stderr).to_string()
+    }
+
+    fn last_commit(&self) -> String {
+        git(&self.home, &self.ws, &["log", "-1", "--format=%s"])
+    }
+}
+
+const GATE_TESTS: &str =
+    "use fx::double;\n\n#[test]\nfn doubles_three() {\n    assert_eq!(double(3), 6);\n}\n";
+
+/// The test gate of `workspace checkpoint` (design 23, A7): a new test without an assertion and a test that kills no
+/// mutant are refused with their reasons and nothing is committed; an agent's recorded mutation is evidence;
+/// `--accept-test` needs `--reason`, lets one test through, and the reason is kept with the test and is an event.
+#[test]
+fn the_checkpoint_gate_refuses_tests_without_evidence_and_takes_recorded_kills_and_accepts() {
+    let agent = GateAgent::start("testgate");
+    write(
+        &agent.ws.join("tests/t.rs"),
+        &format!("{GATE_TESTS}\n#[test]\nfn only_calls() {{\n    let _ = double(1);\n}}\n"),
+    );
+
+    // no evidence: both tests refused with their reasons, nothing committed
+    let start = agent.last_commit();
+    let why = agent.refused(&["workspace", "checkpoint", "double"]);
+    assert!(
+        why.contains("only_calls (tests/t.rs): no assertion"),
+        "{why}"
+    );
+    assert!(
+        why.contains("doubles_three (tests/t.rs): kills no mutant"),
+        "{why}"
+    );
+    assert!(why.contains("nothing committed"), "{why}");
+    assert_eq!(
+        agent.last_commit(),
+        start,
+        "a refused checkpoint commits nothing"
+    );
+
+    // an agent's recorded mutation is evidence for the test that caught it
+    agent.ok(&[
+        "code",
+        "tests",
+        "mutant",
+        "record",
+        "src/lib.rs",
+        "2",
+        "x * 2 -> x + 2",
+        "doubles_three",
+    ]);
+    let why = agent.refused(&["workspace", "checkpoint", "double"]);
+    assert!(
+        !why.contains("doubles_three"),
+        "the recorded kill counts: {why}"
+    );
+    assert!(why.contains("only_calls"), "{why}");
+    assert_eq!(agent.last_commit(), start);
+
+    // --accept-test lets one through; the reason is kept with the test and is an event
+    let reason = "smoke test of the public path; its value is that it links";
+    let why = agent.refused(&[
+        "workspace",
+        "checkpoint",
+        "double",
+        "--accept-test",
+        "only_calls",
+    ]);
+    assert!(why.contains("--reason"), "an accept needs a reason: {why}");
+    agent.ok(&[
+        "workspace",
+        "checkpoint",
+        "double",
+        "--accept-test",
+        "only_calls",
+        "--reason",
+        reason,
+    ]);
+    assert_eq!(agent.last_commit(), "double");
+    let events: Value = serde_json::from_str(&agent.ok(&["events", "--json"])).unwrap();
+    let accept = events["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "code.tests.accept")
+        .expect("the accept is an event");
+    assert_eq!(
+        (
+            accept["payload"]["test"].as_str(),
+            accept["payload"]["reason"].as_str()
+        ),
+        (Some("only_calls"), Some(reason))
+    );
+    let shown: Value =
+        serde_json::from_str(&agent.ok(&["code", "tests", "show", "only_calls", "--json"]))
+            .unwrap();
+    assert_eq!(shown["accepts"][0]["reason"], reason);
+}
+
+/// cargo-mutants (a stand-in that writes its real output) runs as a job on the branch's source files only and its
+/// kills count; a test that kills nothing is refused; the review shows a test whose kills another test has as a
+/// duplicate (a note, not a refusal); `--staged` reviews what `git commit` takes (the pre-commit hook).
+#[test]
+fn cargo_mutants_kills_count_for_the_gate_and_the_review_shows_duplicates() {
+    let agent = GateAgent::start("mutantrun");
+    write(&agent.ws.join("tests/t.rs"), GATE_TESTS);
+    agent.ok(&[
+        "code",
+        "tests",
+        "mutant",
+        "record",
+        "src/lib.rs",
+        "2",
+        "x * 2 -> x - 2",
+        "doubles_three",
+    ]);
+    agent.ok(&["workspace", "checkpoint", "double"]);
+    write(
+        &agent.ws.join("tests/t.rs"),
+        &format!(
+            "{GATE_TESTS}\n#[test]\nfn doubles_two() {{\n    assert_eq!(double(2), 4);\n}}\n\n#[test]\nfn zero_stays() {{\n    assert_eq!(double(0), 0);\n}}\n"
+        ),
+    );
+    let home = &agent.home;
+    mutants_stand_in(
+        home,
+        &[
+            (
+                "src/lib.rs",
+                2,
+                "replace double -> i32 with 1",
+                &["doubles_three", "doubles_two"],
+            ),
+            ("src/lib.rs", 2, "replace * with +", &["doubles_three"]),
+            ("src/lib.rs", 2, "replace double -> i32 with 0", &[]),
+        ],
+    );
+    let ran = agent.ok(&["code", "tests", "mutant", "run"]);
+    assert!(ran.contains("2 caught, 1 missed"), "{ran}");
+    assert!(
+        ran.contains("missed: src/lib.rs:2:5: replace double -> i32 with 0"),
+        "{ran}"
+    );
+    let argv = std::fs::read_to_string(home.join("mutants-argv")).unwrap();
+    assert!(
+        argv.contains("--file src/lib.rs")
+            && !argv.contains("tests/t.rs")
+            && !argv.contains("README"),
+        "only the branch's source files: {argv}"
+    );
+    let jobs: Value = serde_json::from_str(&agent.ok(&["jobs", "list", "--json"])).unwrap();
+    assert!(
+        jobs["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|j| j["kind"] == "code.tests.mutant.run" && j["state"] == "done"),
+        "{jobs}"
+    );
+
+    assert!(
+        !agent.run(&["code", "tests", "review"]).status.success(),
+        "a refused test fails the review"
+    );
+    let review: Value =
+        serde_json::from_str(&agent.ok(&["code", "tests", "review", "--json"])).unwrap();
+    let tests = review["tests"].as_array().unwrap();
+    assert_eq!(tests.len(), 2, "only the new tests: {review}");
+    let test = |name: &str| tests.iter().find(|t| t["name"] == name).unwrap();
+    let two = test("doubles_two");
+    assert_eq!(
+        (two["kills"].as_u64(), two["duplicate_of"].as_str()),
+        (Some(1), Some("doubles_three")),
+        "{two}"
+    );
+    assert!(two["refused"].as_array().unwrap().is_empty(), "{two}");
+    let zero = test("zero_stays");
+    assert_eq!(
+        (zero["kills"].as_u64(), zero["assertions"].as_u64()),
+        (Some(0), Some(1)),
+        "{zero}"
+    );
+    assert!(
+        zero["refused"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("kills no mutant"),
+        "{zero}"
+    );
+
+    let why = agent.refused(&["workspace", "checkpoint", "more"]);
+    assert!(
+        why.contains("zero_stays") && !why.contains("doubles_two"),
+        "{why}"
+    );
+    assert_eq!(agent.last_commit(), "double", "nothing committed");
+    // what a plain `git commit` takes: the pre-commit hook's review of the index
+    let staged = agent.run(&["code", "tests", "review", "--staged"]);
+    assert!(!staged.status.success());
+    assert!(String::from_utf8_lossy(&staged.stdout).contains("REFUSED  zero_stays (tests/t.rs)"));
+}
+
+/// `code tests run` runs the suite as a job and records each test with the source of its test binary, its result and
+/// the ref; the filter reaches libtest; `code tests list` and `show` give them back.
+#[test]
+fn a_test_run_records_each_test_with_its_file_result_and_ref() {
+    let (op, home) = operator("testruns");
+    let repo = repository(&home);
+    stand_in(
+        &home,
+        "cargo",
+        &format!(
+            "#!/bin/sh\necho \"$@\" > {argv}\necho '     Running tests/e2e.rs (target/release/deps/e2e-1)' >&2\necho 'test a_flow_works ... ok'\necho 'test b_flow_breaks ... FAILED'\necho '     Running unittests src/lib.rs (target/release/deps/x-2)' >&2\necho 'test db::tests::c_needs_root ... ignored'\necho 'test result: FAILED. 1 passed; 1 failed; 1 ignored'\nexit 101\n",
+            argv = home.join("cargo-argv").display()
+        ),
+    );
+    let out = op.run(
+        &repo,
+        &[("HOME", home.to_str().unwrap())],
+        &["code", "tests", "run", "--filter", "flow"],
+        "",
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("1 failed, 1 ignored, 1 ok"));
+    assert!(
+        std::fs::read_to_string(home.join("cargo-argv"))
+            .unwrap()
+            .trim()
+            .ends_with("-j8 -- flow")
+    );
+    let head = git(&home, &repo, &["rev-parse", "HEAD"]);
+    let list: Value = serde_json::from_str(&op.ok(&[
+        "code",
+        "tests",
+        "list",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--json",
+    ]))
+    .unwrap();
+    let rows: Vec<(&str, &str, &str, &str)> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| {
+            (
+                t["name"].as_str().unwrap(),
+                t["file"].as_str().unwrap(),
+                t["result"].as_str().unwrap(),
+                t["git_ref"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (
+                "db::tests::c_needs_root",
+                "src/lib.rs",
+                "ignored",
+                head.as_str()
+            ),
+            ("a_flow_works", "tests/e2e.rs", "ok", head.as_str()),
+            ("b_flow_breaks", "tests/e2e.rs", "failed", head.as_str()),
+        ]
+    );
+    let shown: Value = serde_json::from_str(&op.ok(&[
+        "code",
+        "tests",
+        "show",
+        "c_needs_root",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--json",
+    ]))
+    .unwrap();
+    assert_eq!(
+        shown["runs"][0]["result"], "ignored",
+        "the function name finds libtest's name: {shown}"
+    );
+    let jobs: Value = serde_json::from_str(&op.ok(&["jobs", "list", "--json"])).unwrap();
+    assert_eq!(jobs["items"][0]["kind"], "code.tests.run");
+    assert_eq!(
+        jobs["items"][0]["input"]["results"]["failed"], 1,
+        "the job shows its progress: {jobs}"
+    );
+}
+
+/// The real cargo-mutants (not in CI; run it here with `cargo install cargo-mutants --locked`) on a fixture crate in a
+/// workspace: its output parses, each mutant names the tests that killed it, and the review refuses the test that
+/// kills nothing.
+#[test]
+#[ignore = "needs cargo-mutants; CI does not install it"]
+fn cargo_mutants_on_a_fixture_crate_records_the_tests_that_kill_its_mutants() {
+    let (op, home) = operator("realmutants");
+    drop(op);
+    let toolchain: Vec<(&str, OsString)> = ["RUSTUP_HOME", "CARGO_HOME"]
+        .iter()
+        .map(|k| {
+            let real = std::env::var_os("HOME").map(PathBuf::from).unwrap();
+            (
+                *k,
+                std::env::var_os(k).unwrap_or_else(|| {
+                    real.join(if *k == "RUSTUP_HOME" {
+                        ".rustup"
+                    } else {
+                        ".cargo"
+                    })
+                    .into()
+                }),
+            )
+        })
+        .collect();
+    let op = operator_with("realmutants", &home, &toolchain);
+    let repo = repository(&home);
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", "s1"),
+    ];
+    let ok = |cwd: &Path, args: &[&str]| {
+        let o = op.run(cwd, &env, args, "");
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr),
+        )
+    };
+    write(
+        &repo.join("Cargo.toml"),
+        "[package]\nname = \"fx\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+    );
+    write(&repo.join(".gitignore"), "/target\nCargo.lock\n");
+    git(&home, &repo, &["add", "."]);
+    git(&home, &repo, &["commit", "--quiet", "-m", "crate"]);
+    assert!(ok(&repo, &["dossier", "use", "real"]).0);
+    assert!(ok(&repo, &["workspace", "open"]).0);
+    let ws = home.join("worktrees/repo/real");
+    write(
+        &ws.join("src/lib.rs"),
+        "pub fn double(x: i32) -> i32 {\n    x * 2\n}\n",
+    );
+    write(
+        &ws.join("tests/t.rs"),
+        "#[test]\nfn doubles() {\n    assert_eq!(fx::double(3), 6);\n}\n\n#[test]\nfn calls() {\n    assert!(fx::double(1) != 7);\n}\n",
+    );
+    let (ran, out) = ok(&ws, &["code", "tests", "mutant", "run"]);
+    assert!(ran && out.contains("caught"), "{out}");
+    let (_, review) = ok(&ws, &["code", "tests", "review", "--json"]);
+    let review: Value = serde_json::from_str(&review).unwrap();
+    let kills = |name: &str| {
+        review["tests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap()["kills"]
+            .as_u64()
+            .unwrap()
+    };
+    assert!(kills("doubles") >= 1, "{review}");
+    assert_eq!(kills("calls"), 0, "{review}");
+}
+
 #[test]
 fn the_mcp_proxy_offers_only_allowed_tools_and_logs_every_call() {
     use rmcp::ServiceExt;

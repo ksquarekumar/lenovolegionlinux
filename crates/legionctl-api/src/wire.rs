@@ -567,6 +567,81 @@ wire! {
         base: String,
     }
 
+    /// One mutation and the tests that failed with it.
+    struct Mutant from core::codetests::Mutant {
+        file: String,
+        line: u32,
+        description: String,
+        /// None: the mutant survived.
+        killed_by: Vec<String>,
+        /// `tool` (cargo-mutants) or `agent` (a hand-made mutation).
+        source: String,
+        /// HEAD when it was recorded.
+        git_ref: String,
+        recorded_at: i64 = at,
+    }
+
+    /// One result of a test in a run.
+    struct TestRun from core::codetests::TestRun {
+        /// The source of the test binary.
+        file: String,
+        /// ok, failed or ignored.
+        result: String,
+        git_ref: String,
+        job: Option<i64>,
+        ran_at: i64 = at,
+    }
+
+    /// A test that the gate let through without evidence.
+    struct TestAccept from core::codetests::Accept {
+        reason: String,
+        session: String,
+        accepted_at: i64 = at,
+    }
+
+    /// A test with its last run and its kills.
+    struct TestRow from core::codetests::TestRow {
+        name: String,
+        file: String,
+        result: String,
+        git_ref: String,
+        ran_at: i64 = at,
+        /// The recorded mutants it killed.
+        kills: u32,
+    }
+
+    /// Everything recorded for one test.
+    struct TestDetail from core::codetests::TestDetail {
+        name: String,
+        /// Newest first.
+        runs: Vec<TestRun>,
+        mutants: Vec<Mutant>,
+        accepts: Vec<TestAccept>,
+    }
+
+    /// The review of one new or changed test.
+    struct ReviewedTest from core::codetests::ReviewedTest {
+        name: String,
+        file: String,
+        assertions: u32,
+        kills: u32,
+        /// In a `tests/` folder: it reaches the code through the crate's boundary.
+        boundary: bool,
+        /// A test that kills each mutant this one kills.
+        duplicate_of: Option<String>,
+        /// Hard signals: the checkpoint gate refuses the test for these.
+        refused: Vec<String>,
+        /// Soft signals.
+        notes: Vec<String>,
+        /// The reason of `--accept-test`, when the test was let through.
+        accepted: Option<String>,
+    }
+
+    /// The new and changed tests of a change set.
+    struct TestReview from core::codetests::TestReview {
+        tests: Vec<ReviewedTest>,
+    }
+
     /// Git state of a workspace and what drifted from the record.
     struct WorkspaceStatus from core::workspace::WorkspaceStatus {
         #[serde(flatten)]

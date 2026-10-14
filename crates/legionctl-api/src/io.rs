@@ -116,8 +116,59 @@ pub struct CheckpointIn {
     /// The topic workspace (`workspace open --topic`), from anywhere in the repository.
     #[serde(default)]
     pub topic: Option<String>,
+    /// A new or changed test that the test gate lets through without a kill or an assertion (with `--reason`).
+    #[serde(default)]
+    pub accept_test: Option<String>,
+    /// Why the accepted test has value; it is recorded with the test and as an event.
+    #[serde(default)]
+    pub reason: Option<String>,
     #[serde(default)]
     pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TestsRunIn {
+    /// Only the tests whose name contains this (libtest's filter).
+    #[serde(default)]
+    pub filter: Option<String>,
+    /// A folder in the repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TestShowIn {
+    /// The test function's name (or libtest's, with its module path).
+    pub name: String,
+    /// A folder in the repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TestReviewIn {
+    /// Review the index (what `git commit` takes), not the working tree.
+    #[serde(default)]
+    pub staged: bool,
+    /// A folder in the repository or workspace.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MutantRecordIn {
+    /// The file you changed, relative to the repository.
+    pub file: String,
+    /// The line of the change.
+    pub line: u32,
+    /// What the mutation does ("skip the root= check").
+    pub description: String,
+    /// The tests that failed with the mutation; none when it survived.
+    #[serde(default)]
+    pub killed_by: Vec<String>,
+    /// A folder in the repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

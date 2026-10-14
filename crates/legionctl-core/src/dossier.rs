@@ -39,10 +39,10 @@ macro_rules! annotations {
     };
 }
 
-/// The workspace database at v11: the steps of v1-v9 merged into one (todo-68), then the topic workspaces, then
-/// the code graph annotations.
+/// The workspace database at v12: the steps of v1-v9 merged into one (todo-68), then the topic workspaces, then
+/// the code graph annotations, then the test records (design 23, A7).
 const SCHEMA: &Schema = &Schema {
-    version: 11,
+    version: 12,
     steps: &[
         (
             9,
@@ -51,6 +51,7 @@ const SCHEMA: &Schema = &Schema {
              CREATE UNIQUE INDEX open_workspace ON workspaces (dossier, repo, topic) WHERE closed IS NULL;",
         ),
         (10, annotations!()),
+        (11, crate::codetests::tables!()),
     ],
     sql: concat!(
         "-- one open binding per dossier and per session; released rows stay as history; place: where the session worked
@@ -114,7 +115,8 @@ const SCHEMA: &Schema = &Schema {
         turns   INTEGER NOT NULL DEFAULT 0,
         level   TEXT
      );",
-        annotations!()
+        annotations!(),
+        crate::codetests::tables!()
     ),
 };
 
@@ -1065,8 +1067,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The user's v9 file (one open workspace per dossier and repository) becomes v11 in place: its rows stay as the
-    /// dossiers' own workspaces, a topic workspace can open beside one, and the table and index equal a new file's.
+    /// The user's v9 file (one open workspace per dossier and repository) becomes the current version in place: its
+    /// rows stay as the dossiers' own workspaces, a topic workspace can open beside one, and the table and index equal
+    /// a new file's.
     #[test]
     fn a_v9_workspace_database_takes_topic_workspaces_and_keeps_its_rows() {
         let dir = std::env::temp_dir().join(format!("legionctl-ws-v9-{}", std::process::id()));
@@ -1091,7 +1094,7 @@ mod tests {
         .unwrap();
         drop(v9);
         let db = Db::open(&old, SCHEMA).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 11);
+        assert_eq!(db.schema_version().unwrap(), SCHEMA.version);
         let conn = db.conn();
         assert_eq!(
             conn.query_row(

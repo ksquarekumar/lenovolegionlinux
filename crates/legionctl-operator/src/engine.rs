@@ -31,6 +31,9 @@ use legionctl_api::{
     CachePurgeIn, CacheStat, CachedCall, EventRow, JobIdIn, Page, PageIn, Principal,
     SessionActivityIn,
 };
+use legionctl_api::{
+    MutantRecordIn, TestDetail, TestReview, TestReviewIn, TestRow, TestShowIn, TestsRunIn,
+};
 use legionctl_core::cache::Cache;
 use legionctl_core::config::{Dirs, Resolved, resolve};
 
@@ -1805,16 +1808,89 @@ impl Engine for Operator {
         Ok(dossiers()?.workspaces(None)?.into_wire())
     }
 
-    fn workspace_checkpoint(&self, _: &Ctx, input: CheckpointIn) -> Result<Lines> {
+    fn workspace_checkpoint(&self, ctx: &Ctx, input: CheckpointIn) -> Result<Lines> {
+        let store = dossiers()?;
+        let session = session(&input.session)?;
+        let ws = store.workspace_of(session, input.repo.get()?, input.topic.as_deref())?;
+        if let Some(test) = &input.accept_test {
+            let reason = input.reason.as_deref().unwrap_or_default();
+            store.accept_test(&ws.path, test, reason, session)?;
+            Db::open_default()?.record(
+                &ctx.actor,
+                "code.tests.accept",
+                &serde_json::json!({"test": test, "reason": reason, "workspace": ws.path, "session": session}),
+            )?;
+        }
+        let line = store.checkpoint(&ws, &input.message)?;
+        crate::code::trigger(&ws.path);
+        Ok(Lines { lines: vec![line] })
+    }
+
+    fn code_tests_run(&self, _: &Ctx, input: TestsRunIn) -> Result<Lines> {
+        let repo = input.repo.get()?;
+        let db = Db::open_default()?;
+        let job = db.job_begin(
+            "code.tests.run",
+            &serde_json::json!({"repo": repo, "filter": input.filter}),
+        )?;
+        let out = dossiers()?.run_tests(repo, input.filter.as_deref(), job, |counts| {
+            let _ = db.job_step(
+                job,
+                &serde_json::json!({"repo": repo, "filter": input.filter, "results": counts}),
+            );
+        });
+        let out = out.map(|lines| Lines { lines });
+        end_job(&db, job, &out)?;
+        out
+    }
+
+    fn code_tests_list(&self, _: &Ctx, input: RepoIn) -> Result<Vec<TestRow>> {
+        Ok(dossiers()?.tests_list(input.repo.get()?)?.into_wire())
+    }
+
+    fn code_tests_show(&self, _: &Ctx, input: TestShowIn) -> Result<TestDetail> {
+        Ok(dossiers()?
+            .test_show(input.repo.get()?, &input.name)?
+            .into_wire())
+    }
+
+    fn code_tests_review(&self, _: &Ctx, input: TestReviewIn) -> Result<TestReview> {
+        Ok(dossiers()?
+            .review_tests(input.repo.get()?, input.staged)?
+            .into_wire())
+    }
+
+    fn code_tests_mutant_record(&self, _: &Ctx, input: MutantRecordIn) -> Result<Lines> {
+        Ok(Lines {
+            lines: vec![dossiers()?.record_mutant(
+                input.repo.get()?,
+                &input.file,
+                input.line,
+                &input.description,
+                input.killed_by,
+            )?],
+        })
+    }
+
+    fn code_tests_mutant_run(&self, _: &Ctx, input: WorkspaceIn) -> Result<Lines> {
         let store = dossiers()?;
         let ws = store.workspace_of(
             session(&input.session)?,
             input.repo.get()?,
             input.topic.as_deref(),
         )?;
-        let line = store.checkpoint(&ws, &input.message)?;
-        crate::code::trigger(&ws.path);
-        Ok(Lines { lines: vec![line] })
+        let db = Db::open_default()?;
+        let job_input = serde_json::json!({"workspace": ws.path, "base": ws.base});
+        let job = db.job_begin("code.tests.mutant.run", &job_input)?;
+        let out = store
+            .run_mutants(&ws.path, &ws.base, |done, total| {
+                let mut step = job_input.clone();
+                step["progress"] = serde_json::json!({"done": done, "total": total});
+                let _ = db.job_step(job, &step);
+            })
+            .map(|lines| Lines { lines });
+        end_job(&db, job, &out)?;
+        out
     }
 
     fn workspace_merge(&self, _: &Ctx, input: WorkspaceIn) -> Result<Lines> {

@@ -23,7 +23,8 @@ user-invocable: true
 9. The `#[ignore]` tests (root eBPF and VM tests) run only in their own CI steps (`.github/workflows/ci.yml`). Do not
    run the root tests on this machine; say in the commit message that CI runs them.
 10. Mutation-check each new test: break the behavior it guards with one small change, run only that test, see it fail,
-    put the code back, see it pass. Do this for each behavior the test claims.
+    put the code back, see it pass. Do this for each behavior the test claims. Record each one with `code tests mutant
+    record`: the checkpoint's test gate needs a kill for each new or changed test (`refs/reference-test-gate.md`).
 11. When an operation, its class or a wire type changes, write `docs/api/schema.json` again: `LEGIONCTL_WRITE_SCHEMA=1
     cargo test -p legionctl --test e2e the_wire_format`.
 12. When a method or property of `legionctl-system` changes, write `dbus/org.legionctl.System1.xml` again:
@@ -48,3 +49,4 @@ user-invocable: true
 
 - `refs/reference-make-targets.md` - read to know what each make target runs.
 - `refs/scenario-new-cli-operation.md` - read when you add a CLI operation.
+- `refs/reference-test-gate.md` - read before a checkpoint that adds or changes a test, or when the gate refuses one.

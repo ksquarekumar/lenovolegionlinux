@@ -2056,6 +2056,22 @@
           "description": "The topic workspace (`workspace open --topic`), from anywhere in the repository.",
           "default": null
         },
+        "accept_test": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A new or changed test that the test gate lets through without a kill or an assertion (with `--reason`).",
+          "default": null
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why the accepted test has value; it is recorded with the test and as an event.",
+          "default": null
+        },
         "session": {
           "type": "string",
           "format": "session",
@@ -2067,6 +2083,466 @@
         "message"
       ],
       "title": "CheckpointIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "code.tests.run": {
+    "class": "session",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Only the tests whose name contains this (libtest's filter).",
+          "default": null
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in the repository.",
+          "default": "."
+        }
+      },
+      "title": "TestsRunIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "code.tests.list": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "The repository.",
+          "default": "."
+        }
+      },
+      "title": "RepoIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "description": "A test with its last run and its kills.",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string"
+          },
+          "git_ref": {
+            "type": "string"
+          },
+          "ran_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "kills": {
+            "description": "The recorded mutants it killed.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "name",
+          "file",
+          "result",
+          "git_ref",
+          "ran_at",
+          "kills"
+        ]
+      },
+      "title": "Array_of_TestRow",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "code.tests.show": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The test function's name (or libtest's, with its module path)."
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in the repository.",
+          "default": "."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "TestShowIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "runs": {
+          "type": "array",
+          "items": {
+            "description": "One result of a test in a run.",
+            "type": "object",
+            "properties": {
+              "file": {
+                "description": "The source of the test binary.",
+                "type": "string"
+              },
+              "result": {
+                "description": "ok, failed or ignored.",
+                "type": "string"
+              },
+              "git_ref": {
+                "type": "string"
+              },
+              "job": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64"
+              },
+              "ran_at": {
+                "type": "integer",
+                "format": "int64"
+              }
+            },
+            "required": [
+              "file",
+              "result",
+              "git_ref",
+              "ran_at"
+            ]
+          },
+          "description": "Newest first."
+        },
+        "mutants": {
+          "type": "array",
+          "items": {
+            "description": "One mutation and the tests that failed with it.",
+            "type": "object",
+            "properties": {
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              },
+              "description": {
+                "type": "string"
+              },
+              "killed_by": {
+                "description": "None: the mutant survived.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "source": {
+                "description": "`tool` (cargo-mutants) or `agent` (a hand-made mutation).",
+                "type": "string"
+              },
+              "git_ref": {
+                "description": "HEAD when it was recorded.",
+                "type": "string"
+              },
+              "recorded_at": {
+                "type": "integer",
+                "format": "int64"
+              }
+            },
+            "required": [
+              "file",
+              "line",
+              "description",
+              "killed_by",
+              "source",
+              "git_ref",
+              "recorded_at"
+            ]
+          }
+        },
+        "accepts": {
+          "type": "array",
+          "items": {
+            "description": "A test that the gate let through without evidence.",
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string"
+              },
+              "session": {
+                "type": "string"
+              },
+              "accepted_at": {
+                "type": "integer",
+                "format": "int64"
+              }
+            },
+            "required": [
+              "reason",
+              "session",
+              "accepted_at"
+            ]
+          }
+        }
+      },
+      "required": [
+        "name",
+        "runs",
+        "mutants",
+        "accepts"
+      ],
+      "description": "Everything recorded for one test.",
+      "title": "TestDetail",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "code.tests.review": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "staged": {
+          "type": "boolean",
+          "description": "Review the index (what `git commit` takes), not the working tree.",
+          "default": false
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in the repository or workspace.",
+          "default": "."
+        }
+      },
+      "title": "TestReviewIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "tests": {
+          "type": "array",
+          "items": {
+            "description": "The review of one new or changed test.",
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "file": {
+                "type": "string"
+              },
+              "assertions": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              },
+              "kills": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              },
+              "boundary": {
+                "description": "In a `tests/` folder: it reaches the code through the crate's boundary.",
+                "type": "boolean"
+              },
+              "duplicate_of": {
+                "description": "A test that kills each mutant this one kills.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "refused": {
+                "description": "Hard signals: the checkpoint gate refuses the test for these.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "notes": {
+                "description": "Soft signals.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "accepted": {
+                "description": "The reason of `--accept-test`, when the test was let through.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "file",
+              "assertions",
+              "kills",
+              "boundary",
+              "refused",
+              "notes"
+            ]
+          }
+        }
+      },
+      "required": [
+        "tests"
+      ],
+      "description": "The new and changed tests of a change set.",
+      "title": "TestReview",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "code.tests.mutant.record": {
+    "class": "session",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "The file you changed, relative to the repository."
+        },
+        "line": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The line of the change."
+        },
+        "description": {
+          "type": "string",
+          "description": "What the mutation does (\"skip the root= check\")."
+        },
+        "killed_by": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The tests that failed with the mutation; none when it survived.",
+          "default": []
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in the repository.",
+          "default": "."
+        }
+      },
+      "required": [
+        "file",
+        "line",
+        "description"
+      ],
+      "title": "MutantRecordIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "code.tests.mutant.run": {
+    "class": "session",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in a workspace or in the repository.",
+          "default": "."
+        },
+        "topic": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The topic workspace (`workspace open --topic`), from anywhere in the repository.",
+          "default": null
+        },
+        "session": {
+          "type": "string",
+          "format": "session",
+          "description": "Agent session id; the client fills it.",
+          "default": ""
+        }
+      },
+      "description": "Which of this session's workspaces: the topic's, else the one that contains `repo`, else the dossier's own\nworkspace in the repository of `repo`.",
+      "title": "WorkspaceIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {

@@ -20,8 +20,8 @@ user-invocable: true
 8. CAUTION: The MCP server's working directory is the main checkout. Give `topic` (or `repo` as the workspace path) to
    each workspace MCP tool, or the tool acts on the dossier's own workspace.
 9. A folder outside git gets a folder workspace (an overlay layer, no branch). `--topic` is refused there.
-10. Commit with `workspace checkpoint "<message>"`, not raw `git commit`. It stages everything and commits. Skill
-    verify-and-ship says what the message holds.
+10. Commit with `workspace checkpoint "<message>"`, not raw `git commit`. It stages everything and commits; its test gate
+    refuses a new or changed test with no assertion or no kill. Skill verify-and-ship says what the message holds.
 11. Write each checkpoint's SHA, scope and tests into its `plan.md` row in the same turn.
 12. `workspace status` shows ahead and behind the base, changes, conflicts and drift. If it shows drift, say what
     happened and propose the fix (switch the branch back, or open the workspace again).

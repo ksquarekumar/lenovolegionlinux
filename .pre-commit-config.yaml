@@ -38,6 +38,12 @@ repos:
         entry: make js-lint
         pass_filenames: false
         files: ^(gnome-extension/|biome\.json|jsconfig\.json|package\.json)
+      - id: legionctl-test-gate
+        name: legionctl test gate (new and changed tests need an assertion and a kill)
+        language: system
+        entry: scripts/test-gate.sh
+        pass_filenames: false
+        files: \.rs$
       - id: legionctl-validate
         name: legionctl validate profiles
         language: system

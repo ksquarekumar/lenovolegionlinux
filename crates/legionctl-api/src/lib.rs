@@ -435,8 +435,25 @@ operations! {
     workspace_status / WorkspaceStatusOp = "workspace.status", Read, WorkspaceIn => WorkspaceStatus;
     /// Every open workspace (topic workspaces too), of every dossier.
     workspace_list / WorkspaceList = "workspace.list", Read, Empty => Workspaces;
-    /// Stage everything in the workspace and commit it with the message.
+    /// Stage everything in the workspace and commit it with the message. The test gate refuses a new or changed test
+    /// with no assertion or no recorded kill (`code tests review`); `--accept-test <test> --reason <why>` lets one
+    /// through and records why.
     workspace_checkpoint / WorkspaceCheckpoint = "workspace.checkpoint", Session, CheckpointIn => Lines;
+    /// Run the test suite (`cargo test --release --workspace --no-fail-fast -j8`) as a job and record each test's result,
+    /// file and the ref.
+    code_tests_run / CodeTestsRun = "code.tests.run", Session, TestsRunIn => Lines;
+    /// The tests of the repository with their last run and their kills.
+    code_tests_list / CodeTestsList = "code.tests.list", Read, RepoIn => Vec<TestRow>;
+    /// One test: its runs, the mutants it killed, and its accepts.
+    code_tests_show / CodeTestsShow = "code.tests.show", Read, TestShowIn => TestDetail;
+    /// The new and changed tests against HEAD (`--staged`: the index): assertions, kills, duplicates, and the reasons
+    /// the checkpoint gate refuses one. Fails when the gate refuses a test (the pre-commit hook uses it).
+    code_tests_review / CodeTestsReview = "code.tests.review", Read, TestReviewIn => TestReview;
+    /// Record a mutation you made by hand and the tests that failed with it (none: it survived).
+    code_tests_mutant_record / CodeTestsMutantRecord = "code.tests.mutant.record", Session, MutantRecordIn => Lines;
+    /// Run cargo-mutants as a job on the Rust source files the workspace's branch changed, and record each mutant with
+    /// the tests that killed it.
+    code_tests_mutant_run / CodeTestsMutantRun = "code.tests.mutant.run", Session, WorkspaceIn => Lines;
     /// Rebase the branch onto the base, then fast-forward the base in the main checkout (which must be clean).
     workspace_merge / WorkspaceMerge = "workspace.merge", Workspace, WorkspaceIn => Lines;
     /// Remove the worktree; the branch and the dossier stay. Refuses uncommitted changes unless `--force`.

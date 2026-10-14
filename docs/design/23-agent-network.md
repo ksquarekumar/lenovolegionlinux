@@ -347,6 +347,24 @@ Hook points:
 | `workspace checkpoint` | Gate: each new or changed test needs a mutant record with a kill at this change set. A hard signal refuses the checkpoint with the test names and the reasons. `--accept-test <test> --reason <text>` passes one; the reason is an annotation and an event. |
 | `pre-commit` (`.pre-commit-config.yaml`) | `legionctl tests review --staged` with the same rules, for commits made outside legionctl. |
 
+#### Built: P4 without the planning links (2026-10-15)
+
+What exists (`crates/legionctl-core/src/codetests.rs`, operations `code.tests.*`, `workspace.db` v12):
+
+| Part | Built | Different from the design, and why |
+| --- | --- | --- |
+| Runs | `code tests run [--filter]`: a job (`code.tests.run`, the counts so far are its progress). Each test is a row in `test_runs`: repository, ref, file (the source of the test binary, from cargo's `Running` line), test, result, job, time. | No time per test: stable libtest does not print it. The command is fixed (`cargo test --release --workspace --no-fail-fast -j8`), not a `tests.command` setting. |
+| Mutants | Table `mutants` (repository, ref, file, line, description, killed = the tests that failed, source `tool` or `agent`). `code tests mutant record <file> <line> <description> [<test>...]` and `code tests mutant run` (cargo-mutants on the `.rs` files outside `tests/` that the branch changed since its base; a job with `done`/`total` progress; the tests that failed come from each mutant's log). | Records count for the repository (git common folder), not for one tree: a test name with a kill is evidence until the test changes again. |
+| Review | `code tests review [--staged]`: the `#[test]` functions that the diff against HEAD touches. Hard: no assertion, no kill. Soft: duplicate (another test kills each of its mutants), outside `tests/`. | The spans and the boundary come from the text, not from the code graph: a snapshot exists only for a committed tree and needs ctx, and the gate reviews the index or the working tree (CI has no ctx). Braces in strings can cut a span; "boundary" is "in a `tests/` folder", not the callees. No "constant only" signal (the test-reviewer observer, P6). |
+| Gate | `workspace checkpoint` stages, reviews the index and refuses with each test and reason; nothing is committed. `--accept-test <test> --reason <why>` keeps the reason in `test_accepts` and writes the event `code.tests.accept`. | One test per accept; an accept stays, so the pre-commit hook and later checkpoints see it. The annotation of the reason waits for A6 (P2). |
+| Pre-commit | Hook `legionctl-test-gate` (`scripts/test-gate.sh`): `code tests review --staged` when something is staged. | When the `legionctl` on `PATH` has no `code tests review` (a package older than the repository), the hook refuses the commit: install the new package (`make package install-package`). The user's decision, 2026-10-15. |
+| Not built | Links from tests to stories and work items (needs P3), the `pre-tool` note on test files and the observer (P5/P6). | |
+
+Tests: `the_checkpoint_gate_refuses_tests_without_evidence_and_takes_kills_and_accepts`,
+`a_test_run_records_each_test_with_its_file_result_and_ref` (stand-ins for cargo-mutants and cargo that write their
+real output), and `cargo_mutants_on_a_fixture_crate_records_the_tests_that_kill_its_mutants` (`#[ignore]`: the real
+cargo-mutants 27.1, run locally).
+
 ### A8. Rebase and conflicts
 
 The workspace-practice skill gets a section "Rebase and conflicts":

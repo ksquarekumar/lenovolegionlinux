@@ -8,8 +8,8 @@ use crate::{
     GpuState, GreeterState, Guard, HookReply, HookTable, KernelBench, Knob, KnobDetail, Launch,
     LayerList, Lines, LoadState, Lock, Manifest, PackageState, PlanView, Reading, Recording,
     Reminder, RuleDetail, RuleState, Rules, RunEnv, Sample, SessionState, SetupReport, SkillInfo,
-    Snapshot, ToolCallRow, TuneReport, Validation, VfioDevices, WindowsState, WindowsVmBegun,
-    Workspace, WorkspaceStatus,
+    Snapshot, TestDetail, TestReview, TestRow, ToolCallRow, TuneReport, Validation, VfioDevices,
+    WindowsState, WindowsVmBegun, Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -1965,5 +1965,77 @@ impl Render for Vec<crate::Annotation> {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+}
+
+impl Render for Vec<TestRow> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no test runs recorded; run legionctl code tests run".into();
+        }
+        self.iter()
+            .map(|t| format!("{:<7} {} ({})  kills {}", t.result, t.name, t.file, t.kills))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+impl Render for TestDetail {
+    fn text(&self) -> String {
+        let mut out = vec![format!(
+            "{}: {} runs, {} mutants killed",
+            self.name,
+            self.runs.len(),
+            self.mutants.len()
+        )];
+        out.extend(self.runs.iter().take(5).map(|r| {
+            format!(
+                "  run {} at {} ({}, {})",
+                r.result, r.ran_at, r.file, r.git_ref
+            )
+        }));
+        out.extend(self.mutants.iter().map(|m| {
+            format!(
+                "  killed {}:{} {} [{}]",
+                m.file, m.line, m.description, m.source
+            )
+        }));
+        out.extend(
+            self.accepts
+                .iter()
+                .map(|a| format!("  accepted at {}: {}", a.accepted_at, a.reason)),
+        );
+        out.join("\n")
+    }
+}
+
+impl Render for TestReview {
+    fn text(&self) -> String {
+        if self.tests.is_empty() {
+            return "no new or changed test".into();
+        }
+        let mut out = Vec::new();
+        for t in &self.tests {
+            let state = match (&t.accepted, t.refused.is_empty()) {
+                (Some(_), _) => "ACCEPTED",
+                (None, true) => "ok",
+                (None, false) => "REFUSED",
+            };
+            out.push(format!(
+                "{state:<8} {} ({})  assertions {}, kills {}",
+                t.name, t.file, t.assertions, t.kills
+            ));
+            out.extend(t.refused.iter().map(|r| format!("  refused: {r}")));
+            out.extend(t.notes.iter().map(|n| format!("  note: {n}")));
+            out.extend(t.accepted.iter().map(|a| format!("  accepted: {a}")));
+        }
+        out.join("\n")
+    }
+
+    /// False when the checkpoint gate refuses a test.
+    fn success(&self) -> bool {
+        self.tests
+            .iter()
+            .all(|t| t.accepted.is_some() || t.refused.is_empty())
     }
 }
