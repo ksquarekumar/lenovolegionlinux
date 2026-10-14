@@ -73,6 +73,48 @@
       <arg type="as" direction="out"/>
     </method>
     <!--
+     The fan controls as JSON (`fan::FanState`): the firmware's fan table, the user's curve, fan max mode.
+     Read-only, so polkit is not asked.
+     -->
+    <method name="FanStatus">
+      <arg type="s" direction="out"/>
+    </method>
+    <!--
+     Write the fan table (10 levels 1-10; custom mode only), read it back, and keep it as the user's curve: it is
+     written again after resume and at each entry to custom mode.
+     -->
+    <method name="SetFanCurve">
+      <arg name="levels" type="ay" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
+     Forget the user's fan curve; the profile's default curve applies (now, in custom mode).
+     -->
+    <method name="ResetFanCurve">
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
+     Fan max mode on or off; set again after resume and at start while on.
+     -->
+    <method name="SetFanMax">
+      <arg name="on" type="b" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
+     Full fan speed on or off, for dust cleaning (custom mode only).
+     -->
+    <method name="SetFanFullSpeed">
+      <arg name="on" type="b" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
+     Lock or release the EC fan controller (a raw EC write); refused unless the profile marks it verified.
+     -->
+    <method name="SetFanLock">
+      <arg name="on" type="b" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
      The readings only root can make (fan RPM, throttle reasons from the MSR), as JSON (`telemetry::RootSample`).
      Read-only, so polkit is not asked.
      -->

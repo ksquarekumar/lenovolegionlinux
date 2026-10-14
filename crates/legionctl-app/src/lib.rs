@@ -16,8 +16,9 @@ use gpui_kit::{
 };
 use legionctl_api::client::Client;
 use legionctl_api::{
-    BenchIn, BenchRun, Changes, DesktopGpu, Empty, Findings, GpuPrimaryIn, GpuState, MonitorIn,
-    PageIn, PowerApplyIn, PowerSource, ProfileIn, Sample, Scenario, Snapshot, StatusIn, op,
+    BenchIn, BenchRun, Changes, DesktopGpu, Empty, FanState, Findings, GpuPrimaryIn, GpuState,
+    MonitorIn, PageIn, PowerApplyIn, PowerSource, ProfileIn, Sample, Scenario, Snapshot, StatusIn,
+    op,
 };
 
 /// How often the glance values refresh.
@@ -64,6 +65,8 @@ pub enum Pending {
 pub struct State {
     pub status: Option<Snapshot>,
     pub sample: Option<Sample>,
+    /// `None` also when the daemon cannot say (it is not running).
+    pub fan: Option<FanState>,
     pub gpu: Option<GpuState>,
     pub findings: Option<Vec<String>>,
     pub runs: Option<Vec<BenchRun>>,
@@ -126,16 +129,18 @@ impl LegionApp {
                 })
                 .await?
                 .pop();
-            anyhow::Ok((status, sample))
+            let fan = client.call::<op::FanStatus>(&Empty {}).await.ok();
+            anyhow::Ok((status, sample, fan))
         });
         cx.spawn(
             async move |this: WeakEntity<LegionApp>, cx: &mut AsyncApp| {
                 let result = task.await;
                 let _ = this.update(cx, |app, cx| {
                     match result {
-                        Ok((status, sample)) => {
+                        Ok((status, sample, fan)) => {
                             app.state.status = Some(status);
                             app.state.sample = sample;
+                            app.state.fan = fan;
                             app.state.offline = None;
                         }
                         Err(e) => app.state.offline = Some(format!("{e:#}")),
@@ -388,7 +393,17 @@ impl LegionApp {
                 number(sample.and_then(|s| s.gpu.as_ref()?.power_w), "W"),
                 cx,
             ))
-            .child(tile("Fans", format!("{fans} rpm"), cx))
+            .child(tile(
+                "Fans",
+                match &self.state.fan {
+                    Some(f) if f.max => format!("{fans} rpm, max mode"),
+                    Some(f) if f.mode.as_deref() == Some("custom") => {
+                        format!("{fans} rpm, custom curve")
+                    }
+                    _ => format!("{fans} rpm"),
+                },
+                cx,
+            ))
     }
 
     fn pending(&self, cx: &mut Context<Self>) -> Option<Div> {

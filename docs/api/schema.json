@@ -4030,6 +4030,334 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "fan.status": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The firmware mode now; the fan curve applies in `custom` only."
+        },
+        "curve": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0,
+            "maximum": 255
+          },
+          "description": "The firmware's fan table now (levels 1-10 at points 1-10); null when it cannot be read."
+        },
+        "curve_error": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why the table cannot be read."
+        },
+        "chosen": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0,
+            "maximum": 255
+          },
+          "description": "Your curve: written again after resume and at each entry to custom mode; null when you have none."
+        },
+        "default_curve": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0,
+            "maximum": 255
+          },
+          "description": "The profile's curve, used when you have none."
+        },
+        "max": {
+          "type": "boolean",
+          "description": "Fan max mode as `legionctl-system` set it (the firmware does not report it)."
+        },
+        "fan1_rpm": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "description": "RPM of fan 1 at each level 1-10."
+        },
+        "fan2_rpm": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "description": "RPM of fan 2 at each level 1-10."
+        },
+        "ec_fan_lock_verified": {
+          "type": "boolean",
+          "description": "The profile allows the EC fan lock."
+        }
+      },
+      "required": [
+        "default_curve",
+        "max",
+        "fan1_rpm",
+        "fan2_rpm",
+        "ec_fan_lock_verified"
+      ],
+      "description": "The fan controls (`legionctl-system` reads the firmware's table).",
+      "title": "FanState",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "fan.curve.set": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "levels": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0,
+            "maximum": 255
+          },
+          "description": "Ten levels 1-10 (not RPM or percent), one for each point of the fan table from the lowest temperature to the\nhighest; each equal to or higher than the one before; at least 3 at point 9 and 5 at point 10."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Check the levels and show the firmware call; change nothing.",
+          "default": false
+        }
+      },
+      "required": [
+        "levels"
+      ],
+      "title": "FanCurveIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "fan.curve.reset": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "dry_run": {
+          "type": "boolean",
+          "description": "Show what would happen; change nothing.",
+          "default": false
+        }
+      },
+      "title": "DryRunIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "fan.max": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "on",
+            "off"
+          ]
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Show what would happen; change nothing.",
+          "default": false
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "SwitchIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "fan.clean": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "on",
+            "off"
+          ]
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Show what would happen; change nothing.",
+          "default": false
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "SwitchIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "fan.lock": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "on",
+            "off"
+          ]
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Show what would happen; change nothing.",
+          "default": false
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "SwitchIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "undo": {
     "class": "machine",
     "internal": false,

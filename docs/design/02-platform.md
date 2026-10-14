@@ -90,7 +90,48 @@ same change (check on each kernel update).
 | Fan max mode ("extreme cooling") | GameZone `WMAA` id 0x0D, one-byte arg `b01` on / `b00` off | Not a ceiling: `b01` runs both fans at 6,000–6,100 rpm at once, also at idle (measured 2026-10-12). Under stress-ng (32 threads) + gpu-burn in max-power the normal curve stops at level 10 (5,100 rpm); with fan max mode the GPU holds ~165–170 W instead of ~150 W at its 87 °C limit; CPU package stays at 96–98 °C either way. Use: an explicit "max cooling" action, not a curve setting. No readback on this model: legionctl-system owns the state. Does not survive suspend (measured 2026-10-12: 6,000 rpm before S3, back on the normal curve 5 s after resume), so legionctl-system re-asserts it after every resume. |
 | Full speed (dust cleaning) | Other Method `SetFeatureValue` (18), feature 0x04020000 | Custom mode only. |
 | FAN_METHOD ids 1–4 | — | Not implemented by this firmware; never called. |
-| EC fan lock (EC 0xC4AB over port I/O) | raw EC write | Not done: no validation for this EC, can stop fan control. |
+| EC fan lock (EC 0xC4AB over port I/O) | raw EC write: 0x08 locks, 0x00 releases; through `/dev/port`, index 0x4E / data 0x4F (LLL `ecram_portio_write`) | Not validated for this EC; an incorrect write can stop fan control. Built, but refused unless the profile sets `fan.ec_fan_lock_verified` (false in the shipped profile). |
+
+### What is built (todo-77, 2026-10-14)
+
+`legionctl fan status | curve set <10 levels> | curve reset | max on|off | clean on|off | lock on|off`, each with
+`--dry-run` for the changes. The CLI and the operator only
+plan and check; `legionctl-system` calls the firmware through `/proc/acpi/call` (one call at a time: the file keeps
+one reply for all callers), after polkit `org.legionctl.fan` (`org.legionctl.fan.lock` for the EC lock, no kept
+authorization). D-Bus: `FanStatus`, `SetFanCurve`, `ResetFanCurve`, `SetFanMax`, `SetFanFullSpeed`, `SetFanLock`.
+
+| Call | `acpi_call` string |
+| --- | --- |
+| Fan_Get_Table | `\_SB_.GZFD.WMAB 0 5` (no input, as the kernel's WMI calls it); reply: u32 FSFL, then FSS0–FSS9 as u32 (LLL `WMIFanTableRead`) |
+| Fan_Set_Table | `\_SB_.GZFD.WMAB 0 6 b<0x40 bytes in hex>`, level i at byte 0x06 + 2·i |
+| Fan max mode | `\_SB_.GZFD.WMAA 0 13 b01` / `b00` |
+| Full speed | `\_SB_.GZFD.WMAE 0 18 b0000020401000000` / `...00000000` (feature id, then the value, u32 little endian) |
+
+- **Checks before any write**: 10 levels, each 1–10, not below the point's minimum, not lower than the point
+  before; the operator checks before polkit asks, and the daemon checks again. A curve write or full speed outside
+  custom mode is refused with the mode and how to enter custom mode.
+- **Read back**: each curve write reads the table before and after; a different table is a warning in the result.
+- **Kept state**: the user's curve and fan max mode are in `system.db` (table `fan`), across restarts and reboots.
+- **Again after events**: at start and after resume, fan max mode when on; at start, after resume and at each
+  `platform_profile` change, the user's curve (else the default) when the mode after the event is custom.
+- **Default curve**: the profile's `fan.default_curve`, `1 2 3 4 5 6 7 8 9 10` (each point at its own level, 1,700 to
+  5,100 rpm). It is not the table read at custom-mode entry: the EC resets the table in the other modes, and custom
+  mode runs the fans at ~6,000 rpm until a table is written, so that read is not a sane default. `fan curve reset`
+  forgets the user's curve and writes the default (in custom mode; otherwise at the next custom-mode entry).
+- **Tests** (fixture sysroot, private bus): a FIFO at `/proc/acpi/call` stands in for `acpi_call`, records each call
+  and answers `Fan_Get_Table` with its table (`crates/legionctl/tests/machine.rs`, `fan_control` and
+  `entering_custom_mode_writes_the_users_fan_curve_or_the_default`).
+
+**Live use waits for todo-17**: the WMAB and WMAE 18 strings above are from the LLL source, not yet called on this
+machine (WMAA 0x0D was write-tested on 2026-10-12). Until the profile sets `fan.curve_verified` (false in the
+shipped profile), legionctl makes none of these calls: `curve set`, `curve reset` and `clean` are refused with the
+reason (their dry runs show the calls), `fan status` does not read the table, and custom mode gets no automatic
+write (e2e: the shipped profile makes no call; mutation-checked). To verify, with the user, in custom mode: read the
+table once by hand as root (`echo '\_SB_.GZFD.WMAB 0 5' > /proc/acpi/call; cat /proc/acpi/call`: FSFL, then 10
+levels 1–10); then, with `curve_verified` set in the repository's profile and a new package, `legionctl fan curve set
+--dry-run <levels>`, `legionctl fan curve set <levels>` and watch `legionctl monitor` (RPM moves to the ladder of the
+new levels); `legionctl fan clean on` then `off`. Do not set `fan.ec_fan_lock_verified` until the EC lock is proven
+on this EC.
 ## GPU mode, primary GPU and per-app pinning
 
 - **Detect** (no root): which DRM card drives each connected output (`/sys/class/drm/card*-*/status` plus the card's

@@ -27,7 +27,9 @@ macro_rules! same {
         }
     )*};
 }
-same!(String, bool, i64, u64, u32, u16, usize, f64, PathBuf, Value);
+same!(
+    String, bool, i64, u64, u32, u16, u8, usize, f64, PathBuf, Value
+);
 
 impl<T: IntoWire<W>, W> IntoWire<Vec<W>> for Vec<T> {
     fn into_wire(self) -> Vec<W> {
@@ -811,6 +813,28 @@ wire! {
         aborted: Option<String>,
         /// The results file (machine path).
         file: String,
+    }
+
+    /// The fan controls (`legionctl-system` reads the firmware's table).
+    struct FanState from machine::fan::FanState {
+        /// The firmware mode now; the fan curve applies in `custom` only.
+        mode: Option<String>,
+        /// The firmware's fan table now (levels 1-10 at points 1-10); null when it cannot be read.
+        curve: Option<Vec<u8>>,
+        /// Why the table cannot be read.
+        curve_error: Option<String>,
+        /// Your curve: written again after resume and at each entry to custom mode; null when you have none.
+        chosen: Option<Vec<u8>>,
+        /// The profile's curve, used when you have none.
+        default_curve: Vec<u8>,
+        /// Fan max mode as `legionctl-system` set it (the firmware does not report it).
+        max: bool,
+        /// RPM of fan 1 at each level 1-10.
+        fan1_rpm: Vec<u32>,
+        /// RPM of fan 2 at each level 1-10.
+        fan2_rpm: Vec<u32>,
+        /// The profile allows the EC fan lock.
+        ec_fan_lock_verified: bool,
     }
 
     struct Job from core::db::Job {

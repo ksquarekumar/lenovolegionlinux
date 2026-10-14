@@ -28,6 +28,14 @@ pub trait System1 {
     fn passthrough_end(&self, devices: &[String]) -> zbus::Result<Vec<String>>;
     /// The devices that can go to a VM, as JSON (`vfio::Candidate`).
     fn passthroughs(&self) -> zbus::Result<String>;
+    /// The fan controls as JSON (`fan::FanState`).
+    fn fan_status(&self) -> zbus::Result<String>;
+    fn set_fan_curve(&self, levels: &[u8]) -> zbus::Result<Vec<String>>;
+    fn reset_fan_curve(&self) -> zbus::Result<Vec<String>>;
+    fn set_fan_max(&self, on: bool) -> zbus::Result<Vec<String>>;
+    fn set_fan_full_speed(&self, on: bool) -> zbus::Result<Vec<String>>;
+    /// The EC fan lock; the daemon refuses it unless the profile marks it verified.
+    fn set_fan_lock(&self, on: bool) -> zbus::Result<Vec<String>>;
     /// Send this connection the program starts of its user's agent sessions (`SessionExec`).
     fn watch_sessions(&self) -> zbus::Result<()>;
 

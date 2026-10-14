@@ -135,6 +135,15 @@ const PROFILE_PATH: &str = "/sys/class/platform-profile/platform-profile-0/profi
 use legionctl_machine::ledger::{Key, Ledger};
 
 impl Machine {
+    /// Mark the fan table calls verified in the installed profile (todo-17 does it on the real machine).
+    fn verify_fan_calls(&self) {
+        let path = self.dir.join("root").join(INSTALLED_PROFILE);
+        let profile = std::fs::read_to_string(&path).unwrap();
+        let marked = profile.replace("\"curve_verified\": false", "\"curve_verified\": true");
+        assert_ne!(profile, marked, "the profile has a fan block");
+        std::fs::write(path, marked).unwrap();
+    }
+
     fn ledger(&self) -> Ledger {
         Ledger::open(&legionctl_machine::sysroot::SysRoot::new(
             self.dir.join("root"),
@@ -149,6 +158,67 @@ impl Machine {
 
     fn record(&self, key: Key, value: &str) {
         self.ledger().set(key, Some(value)).unwrap();
+    }
+}
+
+/// A stand-in for the `acpi_call` module at the machine's `/proc/acpi/call` (a FIFO): a call is written, then the
+/// reply read. It records each call and answers as this firmware does: `Fan_Get_Table` returns its table (u32 FSFL,
+/// FSS0-FSS9 as u32, FSSA), `Fan_Set_Table` keeps the bytes at 0x06 + 2·i, other calls return 0x0.
+#[derive(Clone)]
+struct AcpiCall {
+    calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    table: std::sync::Arc<std::sync::Mutex<[u8; 10]>>,
+}
+
+impl AcpiCall {
+    fn start(m: &Machine, table: [u8; 10]) -> AcpiCall {
+        let path = m.dir.join("root/proc/acpi/call");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let acpi = AcpiCall {
+            calls: std::sync::Arc::default(),
+            table: std::sync::Arc::new(std::sync::Mutex::new(table)),
+        };
+        let firmware = acpi.clone();
+        std::thread::spawn(move || {
+            loop {
+                let call = std::fs::read_to_string(&path).unwrap().trim().to_string();
+                let reply = if call == "\\_SB_.GZFD.WMAB 0 5" {
+                    let mut bytes = [0u8; 48];
+                    for (i, level) in firmware.table.lock().unwrap().iter().enumerate() {
+                        bytes[4 + 4 * i] = *level;
+                    }
+                    let bytes: Vec<String> = bytes.iter().map(|b| format!("0x{b:02x}")).collect();
+                    format!("{{{}}}", bytes.join(", "))
+                } else if let Some(hex) = call.strip_prefix("\\_SB_.GZFD.WMAB 0 6 b") {
+                    let mut table = firmware.table.lock().unwrap();
+                    for (i, level) in table.iter_mut().enumerate() {
+                        let at = 2 * (0x06 + 2 * i);
+                        *level = u8::from_str_radix(&hex[at..at + 2], 16).unwrap();
+                    }
+                    "0x0".into()
+                } else {
+                    "0x0".into()
+                };
+                firmware.calls.lock().unwrap().push(call);
+                std::fs::write(&path, reply).unwrap();
+            }
+        });
+        acpi
+    }
+
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    fn table(&self) -> [u8; 10] {
+        *self.table.lock().unwrap()
     }
 }
 
@@ -936,10 +1006,10 @@ mod daemon_events {
     /// The daemon's reaction: every step as a line; file and ledger steps really run against the recorded tree,
     /// commands (powerprofilesctl, systemctl, nvidia-smi) only as planned lines, so no test touches this machine.
     fn react_and_write(m: &Machine, event: Event) -> Vec<String> {
-        let (profile, _) = legionctl_machine::profile::load(Some(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join(PROFILE),
-        ))
-        .unwrap();
+        // the installed copy, as the daemon reads it (a test may mark its fan calls verified)
+        let (profile, _) =
+            legionctl_machine::profile::load(Some(&m.dir.join("root").join(INSTALLED_PROFILE)))
+                .unwrap();
         let root = SysRoot::new(m.dir.join("root"));
         let ledger = m.ledger();
         let planner = Planner {
@@ -1045,6 +1115,39 @@ mod daemon_events {
             .filter(|s| !matches!(s, Step::Run(_) | Step::Try(_)))
             .filter_map(policy::describe)
             .collect()
+    }
+
+    /// The EC resets the fan table outside custom mode, and custom mode runs the fans at ~6,000 rpm until a table is
+    /// written: each entry to custom mode writes the profile's default curve, or the user's curve when there is one.
+    #[test]
+    fn entering_custom_mode_writes_the_users_fan_curve_or_the_default() {
+        let m = Machine::new("customentry");
+        let acpi = AcpiCall::start(&m, [9; 10]);
+        // the shipped profile: the table calls are not verified (todo-17), so custom mode gets no automatic write
+        m.set(PROFILE_PATH, "custom");
+        react_and_write(&m, Event::PlatformProfile);
+        assert_eq!(acpi.calls(), Vec::<String>::new());
+        m.verify_fan_calls();
+        // Fn+Q to performance: not custom, the table is not touched
+        m.set(PROFILE_PATH, "performance");
+        react_and_write(&m, Event::PlatformProfile);
+        assert_eq!(acpi.calls(), Vec::<String>::new());
+
+        m.set(PROFILE_PATH, "custom");
+        let lines = react_and_write(&m, Event::PlatformProfile);
+        assert_eq!(acpi.table(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "{lines:?}");
+
+        m.ledger()
+            .set_fan(
+                legionctl_machine::ledger::FanKey::Curve,
+                Some("2 2 2 3 3 4 6 8 9 10"),
+            )
+            .unwrap();
+        m.set(PROFILE_PATH, "performance");
+        react_and_write(&m, Event::PlatformProfile);
+        m.set(PROFILE_PATH, "custom");
+        react_and_write(&m, Event::PlatformProfile);
+        assert_eq!(acpi.table(), [2, 2, 2, 3, 3, 4, 6, 8, 9, 10]);
     }
 
     #[test]
@@ -1338,7 +1441,7 @@ mod operator_and_daemon {
     use serde_json::Value;
 
     /// The operator of machine `m` on its private bus (the daemon's).
-    fn on_bus(m: &Machine, tag: &'static str) -> Operator {
+    pub(super) fn on_bus(m: &Machine, tag: &'static str) -> Operator {
         let bus = format!("unix:path={}", m.dir.join("bus").display());
         Operator::start(
             tag,
@@ -2610,5 +2713,266 @@ mod operator_and_daemon {
             ["efibootmgr --bootnext 0004"],
             "no reboot without BootNext"
         );
+    }
+}
+
+/// Fan control through the CLI, the operator and the daemon, against the `acpi_call` stand-in: what reaches the
+/// firmware, byte for byte, and what never does.
+mod fan_control {
+    use super::daemon_process::{daemon, start, wait_for};
+    use super::operator_and_daemon::on_bus;
+    use super::*;
+    use serde_json::Value;
+
+    const GET_TABLE: &str = "\\_SB_.GZFD.WMAB 0 5";
+
+    /// stdout and stderr of a CLI call, and whether it succeeded.
+    fn run(op: &Operator, args: &[&str]) -> (bool, String) {
+        let out = op.cli(args);
+        (
+            out.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        )
+    }
+
+    async fn resume(stand_ins: &zbus::Connection) {
+        stand_ins
+            .emit_signal(
+                None::<()>,
+                "/org/freedesktop/login1",
+                "org.freedesktop.login1.Manager",
+                "PrepareForSleep",
+                &(false,),
+            )
+            .await
+            .unwrap();
+    }
+
+    /// Custom mode as the daemon knows it after the user entered it (the Fn+Q choice in the ledger).
+    fn enter_custom(m: &Machine) {
+        m.set(PROFILE_PATH, "custom");
+        m.record(Key::Override, "custom");
+    }
+
+    const CURVE: [&str; 10] = ["1", "1", "2", "2", "3", "4", "5", "6", "8", "10"];
+
+    fn set(op: &Operator, levels: &[&str]) -> (bool, String) {
+        run(op, &[&["fan", "curve", "set"][..], levels].concat())
+    }
+
+    /// Outside custom mode and for invalid levels a curve is refused with the reason, and nothing reaches the
+    /// firmware; ends in custom mode.
+    async fn refused_curves(
+        m: &Machine,
+        op: &Operator,
+        stand_ins: &zbus::Connection,
+        acpi: &AcpiCall,
+    ) {
+        let set = |levels: &[&str]| set(op, levels);
+        // max-power: refused with the reason and the way into custom mode
+        let (ok, text) = set(&CURVE);
+        assert!(!ok, "{text}");
+        assert!(
+            text.contains(
+                "the fan curve works in custom mode only, and the mode is now 'max-power'"
+            ) && text
+                .contains("write custom to /sys/class/platform-profile/platform-profile-0/profile"),
+            "{text}"
+        );
+
+        enter_custom(m);
+        // the shipped profile does not mark the table calls verified (todo-17): no call, the reason
+        let (ok, text) = set(&CURVE);
+        assert!(
+            !ok && text.contains("not verified on this firmware") && text.contains("todo-17"),
+            "{text}"
+        );
+        m.verify_fan_calls();
+        for (levels, why) in [
+            (
+                ["1", "1", "1", "1", "1", "1", "1", "1", "2", "5"],
+                "point 9 is 2: the firmware minimum at this point is 3",
+            ),
+            (
+                ["1", "1", "1", "1", "1", "1", "1", "1", "3", "11"],
+                "point 10 is 11: a level is 1 to 10",
+            ),
+            (
+                ["1", "1", "1", "3", "2", "3", "3", "3", "3", "5"],
+                "point 5 is 2, lower than point 4 (3)",
+            ),
+        ] {
+            let (ok, text) = set(&levels);
+            assert!(!ok && text.contains(why), "{levels:?}: {text}");
+        }
+        let (ok, text) = set(&CURVE[..9]);
+        assert!(!ok && text.contains("a fan curve has 10 levels"), "{text}");
+        // the daemon checks too: a direct D-Bus call with a level 0 is refused
+        let refused = stand_ins
+            .call_method(
+                Some("org.legionctl.System1"),
+                "/org/legionctl/System1",
+                Some("org.legionctl.System1"),
+                "SetFanCurve",
+                &(vec![0u8; 10],),
+            )
+            .await
+            .unwrap_err();
+        assert!(refused.to_string().contains("point 1 is 0"), "{refused}");
+        assert_eq!(
+            acpi.calls(),
+            Vec::<String>::new(),
+            "nothing reached the firmware"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_fan_curve_is_checked_written_byte_for_byte_read_back_and_written_again_after_resume()
+    {
+        let m = Machine::new("fancurve");
+        let acpi = AcpiCall::start(&m, [4; 10]);
+        let (stand_ins, asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "fancurve");
+        refused_curves(&m, &op, &stand_ins, &acpi).await;
+
+        // the write: Fan_Set_Table with a 0x40-byte buffer, FSS0-FSS9 at 0x06 + 2·i; then the table is read back
+        let (ok, text) = set(&op, &CURVE);
+        assert!(ok, "{text}");
+        assert!(
+            text.contains("fan curve is now 1 1 2 2 3 4 5 6 8 10 (was 4 4 4 4 4 4 4 4 4 4)"),
+            "{text}"
+        );
+        let buffer = format!(
+            "{}0100010002000200030004000500060008000a00{}",
+            "0".repeat(12),
+            "0".repeat(76)
+        );
+        assert_eq!(
+            acpi.calls(),
+            [
+                GET_TABLE.to_string(),
+                format!("\\_SB_.GZFD.WMAB 0 6 b{buffer}"),
+                GET_TABLE.into()
+            ]
+        );
+        assert!(
+            asked
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, action, _, _)| action == "org.legionctl.fan")
+        );
+        let status: Value = serde_json::from_str(&op.ok(&["fan", "status", "--json"])).unwrap();
+        assert_eq!(
+            status["curve"],
+            serde_json::json!([1, 1, 2, 2, 3, 4, 5, 6, 8, 10])
+        );
+        assert_eq!(status["chosen"], status["curve"]);
+        assert_eq!(status["mode"], "custom");
+        let text = op.ok(&["fan", "status"]);
+        assert!(text.contains("   9:  8  3500 / 3600 rpm"), "{text}");
+
+        // the dry run (its flag before the levels) checks and shows the call, and calls nothing
+        let calls = acpi.calls().len();
+        let (ok, text) = set(&op, &[&["--dry-run"][..], &CURVE].concat());
+        assert!(
+            ok && text.contains(&format!(
+                "call \\_SB_.GZFD.WMAB 0 6 b{buffer}, then read it back"
+            )),
+            "{text}"
+        );
+        assert_eq!(acpi.calls().len(), calls);
+
+        // suspend: the EC lost the table; after resume the daemon writes the user's curve again
+        *acpi.table.lock().unwrap() = [5; 10];
+        resume(&stand_ins).await;
+        wait_for("the curve after resume", || {
+            acpi.table() == [1, 1, 2, 2, 3, 4, 5, 6, 8, 10]
+        });
+
+        // reset: the profile's default curve, and no user curve
+        let (ok, text) = run(&op, &["fan", "curve", "reset"]);
+        assert!(ok, "{text}");
+        assert_eq!(acpi.table(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        let status: Value = serde_json::from_str(&op.ok(&["fan", "status", "--json"])).unwrap();
+        assert_eq!(status["chosen"], Value::Null);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fan_max_mode_is_set_again_after_resume_and_restart_and_the_ec_lock_is_refused() {
+        const ON: &str = "\\_SB_.GZFD.WMAA 0 13 b01";
+        let m = Machine::new("fanmax");
+        m.verify_fan_calls();
+        let acpi = AcpiCall::start(&m, [4; 10]);
+        let (stand_ins, _asked, (_bus, first)) = start(&m).await;
+        let op = on_bus(&m, "fanmax");
+        let max_calls = || acpi.calls().iter().filter(|c| *c == ON).count();
+
+        let (ok, text) = run(&op, &["fan", "max", "on"]);
+        assert!(ok, "{text}");
+        assert_eq!(acpi.calls(), [ON]);
+        let status: Value = serde_json::from_str(&op.ok(&["fan", "status", "--json"])).unwrap();
+        assert_eq!(status["max"], true);
+
+        // the firmware forgets it in suspend
+        resume(&stand_ins).await;
+        wait_for("fan max mode after resume", || max_calls() == 2);
+        // and the daemon sets it at start (system.db keeps it)
+        drop(first);
+        let _second = daemon(&m, &stand_ins).await;
+        wait_for("fan max mode at start", || max_calls() == 3);
+
+        let (ok, text) = run(&op, &["fan", "max", "off"]);
+        assert!(ok, "{text}");
+        assert_eq!(acpi.calls().last().unwrap(), "\\_SB_.GZFD.WMAA 0 13 b00");
+        // off stays off after resume: wait for the resume repair, then no fan max call
+        let calls = acpi.calls().len();
+        m.set(
+            "/sys/devices/system/cpu/cpufreq/policy3/scaling_governor",
+            "powersave",
+        );
+        resume(&stand_ins).await;
+        wait_for("the resume repair", || {
+            m.file("/sys/devices/system/cpu/cpufreq/policy3/scaling_governor") == "performance"
+        });
+        assert_eq!(acpi.calls().len(), calls);
+
+        // full speed: custom mode only; Other Method 18, feature 0x04020000, value 1 or 0
+        let (ok, text) = run(&op, &["fan", "clean", "on"]);
+        assert!(
+            !ok && text.contains("full speed works in custom mode only"),
+            "{text}"
+        );
+        enter_custom(&m);
+        assert!(run(&op, &["fan", "clean", "on"]).0);
+        assert!(run(&op, &["fan", "clean", "off"]).0);
+        assert_eq!(
+            acpi.calls()[calls..],
+            [
+                "\\_SB_.GZFD.WMAE 0 18 b0000020401000000",
+                "\\_SB_.GZFD.WMAE 0 18 b0000020400000000"
+            ]
+        );
+
+        // the EC fan lock: refused while the profile does not mark it verified; nothing opens /dev/port
+        let (ok, text) = run(&op, &["fan", "lock", "on"]);
+        assert!(
+            !ok && text.contains("the EC fan lock is not verified for this EC"),
+            "{text}"
+        );
+        let (ok, text) = run(&op, &["fan", "lock", "on", "--dry-run"]);
+        assert!(ok, "{text}");
+        assert!(
+            text.contains(
+                "would write EC RAM 0xC4AB: 0x08, through port I/O: 0x4e=0x2e 0x4f=0x11 0x4e=0x2f 0x4f=0xc4 \
+                 0x4e=0x2e 0x4f=0x10 0x4e=0x2f 0x4f=0xab 0x4e=0x2e 0x4f=0x12 0x4e=0x2f 0x4f=0x08"
+            ) && text.contains("warning: the EC fan lock is not verified"),
+            "{text}"
+        );
+        assert_eq!(m.file("/dev/port"), "<missing>");
     }
 }

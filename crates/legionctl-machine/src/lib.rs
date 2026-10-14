@@ -4,6 +4,7 @@
 pub mod bench;
 pub mod cleanup;
 pub mod doctor;
+pub mod fan;
 pub mod firmware;
 pub mod gpu;
 pub mod hive;

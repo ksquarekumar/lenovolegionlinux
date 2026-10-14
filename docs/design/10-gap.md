@@ -9,9 +9,9 @@ LenovoLegionLinux's `model_kwcn` entry and the in-tree drivers. Every new firmwa
 | Power modes Quiet / Balance / Performance / Extreme (max-power) | done: `platform_profile`, Fn+Q follow, PPD sync, OSD | `lenovo_wmi_gamezone` | — |
 | Custom mode with CPU/GPU power limits | blocked: custom mode accepts `ppt_*` (enforcement measured) but runs the fans at ~6,000 rpm until a fan table is written; policy uses the firmware modes' built-in limits; no RAPL writes | `lenovo-wmi-other` firmware attributes (`ppt_*`, `gpu_*`); verify writability in `custom` | high |
 | Fan speed readout | done (validated) | Other Method 17, feature 0x04030001/2 via `acpi_call` | — |
-| Custom fan curve | missing | FAN_METHOD `WMAB` 5/6, levels 1–10, speed-only, custom mode only (02-platform, Fan control) | medium |
-| Fan full speed (dust cleaning) | missing | Other Method `SetFeatureValue` 0x04020000, custom mode only | low |
-| Fan max mode (extreme cooling) | missing | GameZone `WMAA(0, 0x0D)`; measured here: fans at 6,000–6,100 rpm at any load (normal maximum 5,100), GPU +10 % power at its temperature limit | medium |
+| Custom fan curve | built (`legionctl fan curve`), fixture-tested; live use waits for todo-17 | FAN_METHOD `WMAB` 5/6, levels 1–10, speed-only, custom mode only (02-platform, Fan control) | medium |
+| Fan full speed (dust cleaning) | built (`legionctl fan clean`), fixture-tested; live use waits for todo-17 | Other Method `SetFeatureValue` 0x04020000, custom mode only | low |
+| Fan max mode (extreme cooling) | built (`legionctl fan max`), set again after resume and at start | GameZone `WMAA(0, 0x0D)`; measured here: fans at 6,000–6,100 rpm at any load (normal maximum 5,100), GPU +10 % power at its temperature limit | medium |
 | Hybrid mode / GPU working mode (dGPU only, Hybrid, Hybrid Auto, iGPU only) | detection designed (02-platform) | GameZone GSync 40/41/42 and iGPU mode 63/64/65; restart required | high |
 | Deactivate dGPU (kill dGPU processes, nudge runtime PM) | missing | NVML process list, `power/runtime_status`; only in hybrid with no display on NVIDIA | medium |
 | GPU overclock | missing | NVML clock offsets; limited on Wayland | low |
@@ -67,7 +67,9 @@ Studied against upstream source (HEAD 6cf67c3, `kernel_module/legion-laptop.c` `
 is older). On this model every LLL feature goes through WMI or ACPI methods that `acpi_call` reaches, or through
 in-tree drivers, so the out-of-tree `legion_laptop` module is not needed. Loading it would also take GameZone from
 `lenovo_wmi_gamezone` (`model_kwcn` does not set `leave_gamezone_wmi_unbound`) and break the firmware attributes.
-Not done: LLL's raw EC writes (`lockfancontroller`) and GPU/CPU overclock methods (not declared by this DSDT).
+Not done: GPU/CPU overclock methods (not declared by this DSDT). LLL's raw EC write `lockfancontroller` is built as
+`legionctl fan lock` but refused until the profile sets `fan.ec_fan_lock_verified` (02-platform, Fan control); no
+other raw EC write exists.
 Firmware WMI objects on `\_SB_.GZFD`: WMAA GameZone, WMAB FAN_METHOD, WMAC CPU_METHOD, WMAD GPU_METHOD,
 WMAE Other Method, WMAF lights, WQA3 fan table data, WQA5 capdata01, WQA7 discrete data.
 Read-only probe on this machine (2026-10-12, `acpi_call`, IsSupport and Get ids only; ids from LLL source):

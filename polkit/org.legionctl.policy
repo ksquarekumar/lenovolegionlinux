@@ -62,6 +62,25 @@
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
   </action>
+  <action id="org.legionctl.fan">
+    <description>Change the fan curve, fan max mode or full fan speed</description>
+    <message>Authentication is required to change the fan control</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+  <!-- a raw EC write that can stop fan control: no kept authorization -->
+  <action id="org.legionctl.fan.lock">
+    <description>Lock or release the EC fan controller</description>
+    <message>Authentication is required to write the EC fan lock</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
   <action id="org.legionctl.windows.reboot">
     <description>Restart into Windows once</description>
     <message>Authentication is required to restart the computer into Windows</message>

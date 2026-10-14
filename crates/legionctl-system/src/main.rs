@@ -33,7 +33,7 @@ use legionctl_machine::ledger::{Key, Ledger};
 use legionctl_machine::policy::{self, Machine, Options, Source, Step};
 use legionctl_machine::react::{Event, react};
 use legionctl_machine::sysroot::SysRoot;
-use legionctl_machine::{cleanup, gpu, knobs, profile, telemetry, tune, vfio, windows};
+use legionctl_machine::{cleanup, fan, gpu, knobs, profile, telemetry, tune, vfio, windows};
 use tokio::io::unix::AsyncFd;
 use tokio::io::{Interest, Ready};
 use zbus::object_server::SignalEmitter;
@@ -127,21 +127,38 @@ fn ppd_current() -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// Plan with the current profile (read each time, so an installed change applies without a restart) and execute.
-fn carry_out(
-    root: &SysRoot,
-    plan: impl FnOnce(&Machine) -> Result<Vec<Step>>,
-) -> Result<Vec<String>> {
+/// The machine with the current profile (read each time, so an installed change applies without a restart).
+fn on_machine<T>(root: &SysRoot, f: impl FnOnce(&Machine) -> Result<T>) -> Result<T> {
     let (profile, _) = profile::load(None)?;
     let ledger = Ledger::open(root)?;
-    let machine = Machine {
+    f(&Machine {
         root,
         profile: &profile,
         ledger: &ledger,
         ppd_current: has_command("powerprofilesctl").then(ppd_current).flatten(),
         has_command: &has_command,
-    };
-    Ok(policy::execute(root, &ledger, &plan(&machine)?))
+    })
+}
+
+/// Plan with the current profile and execute.
+fn carry_out(
+    root: &SysRoot,
+    plan: impl FnOnce(&Machine) -> Result<Vec<Step>>,
+) -> Result<Vec<String>> {
+    on_machine(root, |m| Ok(policy::execute(root, m.ledger, &plan(m)?)))
+}
+
+/// A fan change: a refused plan is the caller's error; the session hears what changed.
+async fn fan_change(
+    root: &SysRoot,
+    emitter: &SignalEmitter<'_>,
+    cause: &str,
+    plan: impl FnOnce(&Machine) -> Result<Vec<Step>>,
+) -> zbus::fdo::Result<Vec<String>> {
+    let lines =
+        carry_out(root, plan).map_err(|e| zbus::fdo::Error::InvalidArgs(format!("{e:#}")))?;
+    System1::changed(emitter, cause, &lines).await?;
+    Ok(lines)
 }
 
 /// What the session shows about the firmware mode: the mode, whether it is the user's Fn+Q choice, and the power
@@ -565,6 +582,93 @@ impl System1 {
         Self::changed(&emitter, "RebootWindows", &lines).await?;
         lines.extend(policy::execute(&self.root, &ledger, reboot));
         Ok(lines)
+    }
+
+    /// The fan controls as JSON (`fan::FanState`): the firmware's fan table, the user's curve, fan max mode.
+    /// Read-only, so polkit is not asked.
+    async fn fan_status(&self) -> zbus::fdo::Result<String> {
+        let root = self.root.clone();
+        // off the bus thread: the firmware call waits while a sample's calls run
+        let state = tokio::task::spawn_blocking(move || on_machine(&root, |m| Ok(fan::state(m))))
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
+            .map_err(|e| failed(&e))?;
+        serde_json::to_string(&state).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    }
+
+    /// Write the fan table (10 levels 1-10; custom mode only), read it back, and keep it as the user's curve: it is
+    /// written again after resume and at each entry to custom mode.
+    async fn set_fan_curve(
+        &self,
+        levels: Vec<u8>,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.fan").await?;
+        fan_change(&self.root, &emitter, "SetFanCurve", |m| {
+            let plan = fan::set_curve(m, &levels)?;
+            fan::require_verified(m)?;
+            Ok(plan)
+        })
+        .await
+    }
+
+    /// Forget the user's fan curve; the profile's default curve applies (now, in custom mode).
+    async fn reset_fan_curve(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.fan").await?;
+        fan_change(&self.root, &emitter, "ResetFanCurve", |m| {
+            let plan = fan::reset_curve(m)?;
+            fan::require_verified(m)?;
+            Ok(plan)
+        })
+        .await
+    }
+
+    /// Fan max mode on or off; set again after resume and at start while on.
+    async fn set_fan_max(
+        &self,
+        on: bool,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.fan").await?;
+        fan_change(&self.root, &emitter, "SetFanMax", |m| fan::max(m, on)).await
+    }
+
+    /// Full fan speed on or off, for dust cleaning (custom mode only).
+    async fn set_fan_full_speed(
+        &self,
+        on: bool,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.fan").await?;
+        fan_change(&self.root, &emitter, "SetFanFullSpeed", |m| {
+            let plan = fan::clean(m, on)?;
+            fan::require_verified(m)?;
+            Ok(plan)
+        })
+        .await
+    }
+
+    /// Lock or release the EC fan controller (a raw EC write); refused unless the profile marks it verified.
+    async fn set_fan_lock(
+        &self,
+        on: bool,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.fan.lock").await?;
+        fan_change(&self.root, &emitter, "SetFanLock", |m| fan::lock(m, on)).await
     }
 
     /// The readings only root can make (fan RPM, throttle reasons from the MSR), as JSON (`telemetry::RootSample`).

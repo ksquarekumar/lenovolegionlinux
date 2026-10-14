@@ -28,6 +28,21 @@ pub struct Profile {
     pub kernel_modules: KernelModules,
     #[serde(default)]
     pub capabilities: Vec<Capability>,
+    /// Fan control (`legionctl fan`); without it legionctl does not touch the fans.
+    pub fan: Option<FanControl>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FanControl {
+    /// The curve when the user has none: written at each entry to custom mode and by `fan curve reset`.
+    pub default_curve: Vec<u8>,
+    /// The fan table calls (`WMAB` 5/6) and full speed (`WMAE` 18) are verified on this firmware (todo-17); until
+    /// then legionctl makes none of them, also not the automatic write at custom-mode entry.
+    #[serde(default)]
+    pub curve_verified: bool,
+    /// The EC fan lock (a raw EC write) is verified for this EC; until then it is refused.
+    #[serde(default)]
+    pub ec_fan_lock_verified: bool,
 }
 
 /// Units, packages and modules from earlier Legion tooling that fight this policy.
@@ -165,8 +180,14 @@ const PPD_PROFILES: [&str; 3] = ["performance", "balanced", "power-saver"];
 pub fn validate(path: &Path) -> Result<Vec<String>> {
     let raw = read_jsonc(path)?;
     let mut errors = Vec::new();
-    if let Err(e) = serde_json::from_value::<Profile>(raw.clone()) {
-        errors.push(e.to_string());
+    match serde_json::from_value::<Profile>(raw.clone()) {
+        Err(e) => errors.push(e.to_string()),
+        Ok(Profile { fan: Some(fan), .. }) => {
+            if let Err(e) = crate::fan::validate(&fan.default_curve) {
+                errors.push(format!("fan.default_curve: {e}"));
+            }
+        }
+        Ok(_) => {}
     }
     let mode = |m: &str| raw.get(m).and_then(Value::as_object);
     let keys = |m: &str, block: &str| -> Vec<String> {

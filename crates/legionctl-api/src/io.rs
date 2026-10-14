@@ -1156,6 +1156,31 @@ pub struct DryRunIn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FanCurveIn {
+    /// Ten levels 1-10 (not RPM or percent), one for each point of the fan table from the lowest temperature to the
+    /// highest; each equal to or higher than the one before; at least 3 at point 9 and 5 at point 10.
+    pub levels: Vec<u8>,
+    /// Check the levels and show the firmware call; change nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Switch {
+    On,
+    Off,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SwitchIn {
+    pub state: Switch,
+    /// Show what would happen; change nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct KnobDetail {
     pub knob: Knob,
     /// Events that name the knob's file (writes, warnings), oldest first.

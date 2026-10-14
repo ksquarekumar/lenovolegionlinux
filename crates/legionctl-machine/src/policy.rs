@@ -13,7 +13,8 @@ use std::process::Command;
 
 use anyhow::{Result, bail};
 
-use crate::ledger::{Key, Ledger};
+use crate::fan;
+use crate::ledger::{FanKey, Key, Ledger};
 use crate::profile::{self, ModePolicy, Profile};
 use crate::sysroot::SysRoot;
 
@@ -48,6 +49,20 @@ pub enum Step {
     Hold {
         path: String,
         value: Option<String>,
+    },
+    /// A firmware method through `acpi_call`.
+    Acpi(String),
+    /// Write the fan table and read it back.
+    FanCurve([u8; fan::POINTS]),
+    /// A user's fan choice; `None` removes it.
+    Fan {
+        key: FanKey,
+        value: Option<String>,
+    },
+    /// One EC RAM byte through port I/O (the EC fan lock only).
+    Ec {
+        addr: u16,
+        value: u8,
     },
     Info(String),
     Warn(String),
@@ -491,12 +506,26 @@ pub fn describe(step: &Step) -> Option<String> {
         Step::Remove { path } => Some(format!("would remove {path}")),
         Step::Info(text) => Some(text.clone()),
         Step::Warn(text) => Some(format!("warning: {text}")),
-        Step::Record { .. } => None,
+        Step::Record { .. } | Step::Fan { .. } => None,
         Step::Hold {
             path,
             value: Some(v),
         } => Some(format!("would hold {path} at {}", quoted(v))),
         Step::Hold { path, value: None } => Some(format!("would release {path}")),
+        Step::Acpi(call) => Some(format!("would call {call}")),
+        Step::FanCurve(levels) => Some(format!(
+            "would set the fan curve to {}: call {}, then read it back",
+            fan::text(levels),
+            fan::set_table_call(levels)
+        )),
+        Step::Ec { addr, value } => Some(format!(
+            "would write EC RAM 0x{addr:04X}: {value:#04x}, through port I/O: {}",
+            fan::ec_port_writes(*addr, *value)
+                .iter()
+                .map(|(port, byte)| format!("{port:#x}={byte:#04x}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        )),
     }
 }
 
@@ -585,6 +614,20 @@ pub fn execute(root: &SysRoot, ledger: &Ledger, steps: &[Step]) -> Vec<String> {
                 }),
                 Err(e) => out.push(format!("warning: {e:#}")),
             },
+            Step::Acpi(call) => out.push(match crate::firmware::acpi_call(root, call) {
+                Ok(reply) => format!("called {call}: {reply}"),
+                Err(e) => format!("warning: firmware call failed: {e:#}"),
+            }),
+            Step::FanCurve(levels) => out.extend(fan::write_curve(root, levels)),
+            Step::Fan { key, value } => {
+                if let Err(e) = ledger.set_fan(*key, value.as_deref()) {
+                    out.push(format!("warning: {e:#}"));
+                }
+            }
+            Step::Ec { addr, value } => out.push(match fan::ec_write(root, *addr, *value) {
+                Ok(()) => format!("wrote EC RAM 0x{addr:04X}: {value:#04x}"),
+                Err(e) => format!("warning: EC RAM 0x{addr:04X} was not written: {e:#}"),
+            }),
             Step::Info(text) => out.push(text.clone()),
             Step::Warn(text) => out.push(format!("warning: {text}")),
         }

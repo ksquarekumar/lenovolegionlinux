@@ -287,6 +287,63 @@ impl Render for Changes {
     }
 }
 
+impl Render for crate::FanState {
+    fn text(&self) -> String {
+        let levels = |l: &[u8]| {
+            l.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let mode = self.mode.as_deref().unwrap_or("unknown");
+        let mut out = vec![
+            if mode == "custom" {
+                "mode custom: the fan curve applies".to_string()
+            } else {
+                format!("mode {mode}: the fan curve applies in custom mode only")
+            },
+            format!("fan max mode: {}", if self.max { "on" } else { "off" }),
+        ];
+        match (&self.curve, &self.curve_error) {
+            (Some(curve), _) => {
+                out.push("fan table now (point: level, fan 1 / fan 2 rpm):".into());
+                for (i, level) in curve.iter().enumerate() {
+                    let rpm = |fan: &[u32]| {
+                        fan.get(usize::from(*level).wrapping_sub(1))
+                            .map_or("?".into(), ToString::to_string)
+                    };
+                    out.push(format!(
+                        "  {:>2}: {level:>2}  {} / {} rpm",
+                        i + 1,
+                        rpm(&self.fan1_rpm),
+                        rpm(&self.fan2_rpm)
+                    ));
+                }
+            }
+            (None, error) => out.push(format!(
+                "fan table now: unknown ({})",
+                error.as_deref().unwrap_or("not read")
+            )),
+        }
+        out.push(match &self.chosen {
+            Some(c) => format!("your curve: {}", levels(c)),
+            None => format!(
+                "your curve: none; the default {} applies",
+                levels(&self.default_curve)
+            ),
+        });
+        out.push(format!(
+            "EC fan lock: {}",
+            if self.ec_fan_lock_verified {
+                "verified in the profile"
+            } else {
+                "not verified, refused"
+            }
+        ));
+        out.join("\n")
+    }
+}
+
 impl Render for Vec<ConfigFile> {
     fn text(&self) -> String {
         self.iter()

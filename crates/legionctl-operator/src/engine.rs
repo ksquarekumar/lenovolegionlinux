@@ -27,7 +27,8 @@ use legionctl_api::{
     SessionActivityIn,
 };
 use legionctl_api::{
-    KnobHoldIn, KnobIn, PackIn, PackKind, UndoIn, VfioBindIn, VfioDevices, VfioIn,
+    FanCurveIn, FanState, KnobHoldIn, KnobIn, PackIn, PackKind, Switch, SwitchIn, UndoIn,
+    VfioBindIn, VfioDevices, VfioIn,
 };
 use legionctl_core::cache::Cache;
 use legionctl_core::config::{Dirs, Resolved, resolve};
@@ -55,7 +56,7 @@ use legionctl_machine::profile::{self, Profile};
 use legionctl_machine::snapshot::Detail;
 use legionctl_machine::sysroot::SysRoot;
 use legionctl_machine::telemetry::{self, RootSample};
-use legionctl_machine::{bench, cleanup, gpu, knobs, load, windows};
+use legionctl_machine::{bench, cleanup, fan, gpu, knobs, load, windows};
 
 pub struct Operator {
     /// Runs the D-Bus calls of machine changes; engine methods run on blocking threads.
@@ -2175,6 +2176,73 @@ impl Engine for Operator {
         let path = knob_path(input.profile.as_ref(), &input.knob)?;
         Ok(Changes {
             lines: self.system(async move |p| p.release(&path).await)?,
+            dry_run: false,
+        })
+    }
+
+    fn fan_status(&self, _: &Ctx, _: Empty) -> Result<FanState> {
+        let state = self.system(async |p| p.fan_status().await)?;
+        Ok(serde_json::from_str::<fan::FanState>(&state)?.into_wire())
+    }
+
+    fn fan_curve_set(&self, _: &Ctx, input: FanCurveIn) -> Result<Changes> {
+        let levels = input.levels;
+        if input.dry_run {
+            return Ok(dry_run(&fan::set_curve(
+                &Plan::load(None)?.machine(),
+                &levels,
+            )?));
+        }
+        // checked here too, so a wrong curve does not ask for a password first
+        fan::validate(&levels).map_err(|e| coded(Code::InvalidInput, format!("{e:#}")))?;
+        Ok(Changes {
+            lines: self.system(async move |p| p.set_fan_curve(&levels).await)?,
+            dry_run: false,
+        })
+    }
+
+    fn fan_curve_reset(&self, _: &Ctx, input: DryRunIn) -> Result<Changes> {
+        if input.dry_run {
+            return Ok(dry_run(&fan::reset_curve(&Plan::load(None)?.machine())?));
+        }
+        Ok(Changes {
+            lines: self.system(async |p| p.reset_fan_curve().await)?,
+            dry_run: false,
+        })
+    }
+
+    fn fan_max(&self, _: &Ctx, input: SwitchIn) -> Result<Changes> {
+        let on = input.state == Switch::On;
+        if input.dry_run {
+            return Ok(dry_run(&fan::max(&Plan::load(None)?.machine(), on)?));
+        }
+        Ok(Changes {
+            lines: self.system(async move |p| p.set_fan_max(on).await)?,
+            dry_run: false,
+        })
+    }
+
+    fn fan_clean(&self, _: &Ctx, input: SwitchIn) -> Result<Changes> {
+        let on = input.state == Switch::On;
+        if input.dry_run {
+            return Ok(dry_run(&fan::clean(&Plan::load(None)?.machine(), on)?));
+        }
+        Ok(Changes {
+            lines: self.system(async move |p| p.set_fan_full_speed(on).await)?,
+            dry_run: false,
+        })
+    }
+
+    fn fan_lock(&self, _: &Ctx, input: SwitchIn) -> Result<Changes> {
+        let on = input.state == Switch::On;
+        if input.dry_run {
+            let plan = Plan::load(None)?;
+            let mut steps = fan::lock_steps(on);
+            steps.extend(fan::lock_refusal(&plan.machine()).map(policy::Step::Warn));
+            return Ok(dry_run(&steps));
+        }
+        Ok(Changes {
+            lines: self.system(async move |p| p.set_fan_lock(on).await)?,
             dry_run: false,
         })
     }

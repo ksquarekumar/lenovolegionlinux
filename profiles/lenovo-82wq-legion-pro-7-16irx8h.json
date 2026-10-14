@@ -73,10 +73,10 @@
     {
       "id": "fan_control",
       "name": "Fan max/full-speed and fan curve control",
-      "status": "deferred",
+      "status": "built; WMI call strings not yet verified live (todo-17)",
       "current_owner": "firmware automatic fan controller",
-      "planned_owner": "explicit commands only after telemetry is trusted",
-      "notes": "VPC2004 fan_mode is ineffective here. Fan writes should not be added until read-only telemetry proves the DKMS path is correct."
+      "planned_owner": "legionctl fan (legionctl-system through acpi_call)",
+      "notes": "VPC2004 fan_mode is ineffective here. Fan curve (custom mode only), fan max mode and full speed go through WMI; the EC fan lock stays refused until fan.ec_fan_lock_verified is true."
     },
     {
       "id": "hybrid_graphics_gsync",
@@ -216,6 +216,11 @@
     "fan_telemetry_ignore": [
       "thinkpad_acpi"
     ]
+  },
+  "fan": {
+    "default_curve": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    "curve_verified": false,
+    "ec_fan_lock_verified": false
   },
   "kernel_modules": {
     "required": [

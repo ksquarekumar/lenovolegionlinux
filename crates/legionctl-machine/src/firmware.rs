@@ -1,7 +1,10 @@
-//! Firmware reads that need root: fan RPM through the Lenovo "Other Method" WMI interface via `acpi_call`, and the
-//! package thermal status MSR. Both are read-only.
+//! Firmware calls that need root: the Lenovo WMI methods through `acpi_call` (fan RPM here, the fan controls in
+//! [`crate::fan`]), and the package thermal status MSR (read-only).
 
 use std::io::{Read, Seek, SeekFrom};
+use std::sync::{Mutex, PoisonError};
+
+use anyhow::{Context, Result, bail};
 
 use crate::sysroot::SysRoot;
 
@@ -11,6 +14,25 @@ const FAN_CALL: [(&str, &str); 2] = [
     ("fan1", "\\_SB_.GZFD.WMAE 0 17 b01000304"),
     ("fan2", "\\_SB_.GZFD.WMAE 0 17 b02000304"),
 ];
+/// `/proc/acpi/call` keeps one reply for all callers, so a call and its reply must not mix with another call.
+static ONE_CALL: Mutex<()> = Mutex::new(());
+
+/// The bytes of an `acpi_call` buffer reply `{0x.., ...}`; `None` for any other reply.
+#[must_use]
+pub fn parse_acpi_buffer(text: &str) -> Option<Vec<u8>> {
+    let inner = text
+        .trim()
+        .trim_end_matches('\0')
+        .trim()
+        .strip_prefix('{')?
+        .strip_suffix('}')?;
+    Some(
+        inner
+            .split(',')
+            .filter_map(|b| u8::from_str_radix(b.trim().trim_start_matches("0x"), 16).ok())
+            .collect(),
+    )
+}
 
 /// An `acpi_call` reply: `0x...` or a byte buffer `{0x.., ...}` (first 4 bytes, little endian); `None` for errors.
 #[must_use]
@@ -19,30 +41,37 @@ pub fn parse_acpi_call(text: &str) -> Option<u64> {
     if let Some(hex) = text.strip_prefix("0x") {
         return u64::from_str_radix(hex, 16).ok();
     }
-    let inner = text.strip_prefix('{')?.strip_suffix('}')?;
-    let bytes: Vec<u8> = inner
-        .split(',')
-        .filter_map(|b| u8::from_str_radix(b.trim().trim_start_matches("0x"), 16).ok())
-        .take(4)
-        .collect();
     Some(
-        bytes
+        parse_acpi_buffer(text)?
             .iter()
+            .take(4)
             .rev()
             .fold(0, |acc, b| acc << 8 | u64::from(*b)),
     )
 }
 
-fn acpi_call(root: &SysRoot, call: &str) -> Option<u64> {
-    std::fs::write(root.path(ACPI_CALL), call).ok()?;
-    parse_acpi_call(&std::fs::read_to_string(root.path(ACPI_CALL)).ok()?)
+/// Call an ACPI method through `acpi_call` and return its reply.
+///
+/// # Errors
+/// `acpi_call` is not there or not writable (no root), or the method failed (`Error: ...`).
+pub fn acpi_call(root: &SysRoot, call: &str) -> Result<String> {
+    let _one = ONE_CALL.lock().unwrap_or_else(PoisonError::into_inner);
+    std::fs::write(root.path(ACPI_CALL), call).with_context(|| format!("calling {call}"))?;
+    let reply = std::fs::read_to_string(root.path(ACPI_CALL))
+        .with_context(|| format!("reading the reply to {call}"))?;
+    let reply = reply.trim().trim_end_matches('\0').trim();
+    if reply.starts_with("Error") || reply == "not called" {
+        bail!("{call}: {reply}");
+    }
+    Ok(reply.to_string())
 }
 
 /// Fan RPM from the firmware; `None` without root or `acpi_call`.
 #[must_use]
 pub fn fan_rpm(root: &SysRoot) -> Option<[(&'static str, u64); 2]> {
+    let read = |call| parse_acpi_call(&acpi_call(root, call).ok()?);
     let [(n1, c1), (n2, c2)] = FAN_CALL;
-    Some([(n1, acpi_call(root, c1)?), (n2, acpi_call(root, c2)?)])
+    Some([(n1, read(c1)?), (n2, read(c2)?)])
 }
 
 const PACKAGE_THERM_STATUS: u64 = 0x1B1;

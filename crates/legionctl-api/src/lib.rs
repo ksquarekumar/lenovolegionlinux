@@ -477,6 +477,23 @@ operations! {
     knobs_hold / KnobsHold = "knobs.hold", Machine, KnobHoldIn => Changes;
     /// Release a held knob: the policy for the current power source takes it again.
     knobs_release / KnobsRelease = "knobs.release", Machine, KnobIn => Changes;
+    /// The fan controls: the firmware's fan table with the RPM of each level, your curve, the default curve, fan max
+    /// mode and the firmware mode (the curve applies in custom mode only).
+    fan_status / FanStatus = "fan.status", Read, Empty => FanState;
+    /// Set the fan curve: 10 levels, written in custom mode only, read back, and written again after resume and at
+    /// each entry to custom mode. A human approves it in the polkit dialog.
+    fan_curve_set / FanCurveSet = "fan.curve.set", Machine, FanCurveIn => Changes;
+    /// Forget your fan curve: the profile's default curve applies (now, in custom mode). A human approves it in the
+    /// polkit dialog.
+    fan_curve_reset / FanCurveReset = "fan.curve.reset", Machine, DryRunIn => Changes;
+    /// Fan max mode (both fans at about 6,000 rpm, above the curve's 5,100); set again after resume and at start
+    /// while on. A human approves it in the polkit dialog.
+    fan_max / FanMax = "fan.max", Machine, SwitchIn => Changes;
+    /// Full fan speed for dust cleaning (custom mode only). A human approves it in the polkit dialog.
+    fan_clean / FanClean = "fan.clean", Machine, SwitchIn => Changes;
+    /// Lock or release the EC fan controller (a raw EC write). Refused until the profile marks it verified for this
+    /// EC: an incorrect write can stop fan control. `--dry-run` shows the writes.
+    fan_lock / FanLock = "fan.lock", Machine, SwitchIn => Changes;
     /// Turn back the writes of a machine change in the event log: each file goes back to what it was before and is
     /// held there (`knobs release` gives it back to the policy).
     undo / Undo = "undo", Machine, UndoIn => Changes;
