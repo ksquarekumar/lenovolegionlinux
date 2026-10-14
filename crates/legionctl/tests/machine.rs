@@ -330,6 +330,8 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
             "- conflicting unit legiond.service: active=active, enabled=disabled",
             "- conflicting package is installed: lenovolegionlinux-git",
             "- required module acpi_call is missing for kernel 7.2.9-2-cachyos-bore-lto",
+            // recorded before the legionctl-wmi package: the upstream WMI drivers are loaded
+            "- required module legionctl_wmi is not loaded",
             "- /etc/modules-load.d/acpi.conf autoloads acpi_call, which does not exist for 7.2.9-2-cachyos-bore-lto (fails every boot)",
             "- DKMS module acpi_call/1.2.2 is not built for kernel 7.2.9-2-cachyos-bore-lto",
             "- NTFS volume nvme0n1p3 is marked dirty; run chkdsk in Windows (or ntfsfix -d, see docs/design/11-disks.md)",

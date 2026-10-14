@@ -225,9 +225,7 @@
   "kernel_modules": {
     "required": [
       "ideapad_laptop",
-      "lenovo_wmi_gamezone",
-      "lenovo_wmi_other",
-      "lenovo_wmi_events",
+      "legionctl_wmi",
       "acpi_call",
       "msr",
       "intel_rapl_msr",

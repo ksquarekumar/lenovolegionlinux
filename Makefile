@@ -8,6 +8,11 @@ BINDIR ?= $(PREFIX)/bin
 PROFILE ?= profiles/lenovo-82wq-legion-pro-7-16irx8h.json
 EXTENSION = legionctl-osd@legionctl
 PRE_COMMIT ?= pre-commit
+KMOD = kernel/legionctl-wmi
+KMOD_VERSION = $(shell sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' $(KMOD)/dkms.conf)
+KMOD_SOURCES = legionctl-wmi.c firmware_attributes_class.h Kbuild Makefile
+KDIR ?= /usr/lib/modules/$(shell uname -r)/build
+CHECKPATCH ?= $(KDIR)/scripts/checkpatch.pl
 
 .PHONY: help
 help: ## list targets
@@ -76,6 +81,15 @@ test: static ## end-to-end and behavior tests (no hardware access); the CLI test
 .PHONY: ci
 ci: lint rust-lint js-lint validate test ## what CI runs
 
+.PHONY: kmod
+kmod: kmod-checkpatch ## build the legionctl-wmi kernel module against KDIR (this kernel's headers) as a check; it loads nothing
+	$(MAKE) -C $(KMOD) KDIR=$(KDIR)
+	$(MAKE) -C $(KMOD) KDIR=$(KDIR) clean
+
+.PHONY: kmod-checkpatch
+kmod-checkpatch: ## the kernel coding style of legionctl-wmi (checkpatch --strict, from KDIR or CHECKPATCH)
+	cd $(KMOD) && perl $(abspath $(CHECKPATCH)) --no-tree --strict --quiet -f $(KMOD_SOURCES)
+
 .PHONY: package
 package: ## build the Arch package (makepkg writes the version into the PKGBUILD; it is restored)
 	cd packaging/arch && makepkg -sf --noconfirm
@@ -112,3 +126,5 @@ install: ## install into DESTDIR; the PKGBUILD calls this (on this machine: `mak
 	install -d "$(DESTDIR)$(PREFIX)/share/gnome-shell/extensions/$(EXTENSION)"
 	install -m644 gnome-extension/$(EXTENSION)/* "$(DESTDIR)$(PREFIX)/share/gnome-shell/extensions/$(EXTENSION)/"
 	install -Dm644 tuning/scx_loader.toml "$(DESTDIR)$(SYSCONFDIR)/scx_loader.toml"
+	install -Dm644 -t "$(DESTDIR)$(PREFIX)/src/legionctl-wmi-$(KMOD_VERSION)" $(addprefix $(KMOD)/,$(KMOD_SOURCES) dkms.conf)
+	install -Dm644 $(KMOD)/legionctl-wmi.conf "$(DESTDIR)$(PREFIX)/lib/modprobe.d/legionctl-wmi.conf"

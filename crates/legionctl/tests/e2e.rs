@@ -2116,12 +2116,8 @@ fn sessions_in_a_container_work_on_the_mounted_workspace_behind_the_git_gate() {
     let _ = rmi();
 }
 
-/// A repository for sessions in a VM (`container_repository` with its gateway, the operator started again to serve
-/// it) and a config whose VM base is the Debian cloud image, downloaded once into /var/tmp/legionctl-test-cache.
-fn vm_repository(
-    tag: &'static str,
-    again: &'static str,
-) -> (Operator, PathBuf, PathBuf, provider::Kill) {
+/// The Debian 13 cloud image of the VM tests and its SHA512SUMS, downloaded once into /var/tmp/legionctl-test-cache.
+fn debian_cloud_image() -> PathBuf {
     let cache = Path::new("/var/tmp/legionctl-test-cache");
     let url = "https://cloud.debian.org/images/cloud/trixie/latest";
     let file = "debian-13-genericcloud-amd64.qcow2";
@@ -2137,6 +2133,16 @@ fn vm_repository(
             assert!(got.success(), "downloading {url}/{name}");
         }
     }
+    cache.join(file)
+}
+
+/// A repository for sessions in a VM (`container_repository` with its gateway, the operator started again to serve
+/// it) and a config whose VM base is the Debian cloud image.
+fn vm_repository(
+    tag: &'static str,
+    again: &'static str,
+) -> (Operator, PathBuf, PathBuf, provider::Kill) {
+    let image = debian_cloud_image();
     let (op, home) = operator(tag);
     let (provider, ports) = gateway_ports(&home);
     let repo = container_repository(&home, ports);
@@ -2149,7 +2155,7 @@ fn vm_repository(
     write(
         &home.join(".config/legionctl/vm.jsonc"),
         &json!({"session": {"vm": {
-            "base": format!("file://{}", cache.join(file).display()),
+            "base": format!("file://{}", image.display()),
             "disk_gib": 8, "memory_mib": 2048, "cpus": 2, "virtiofsd": virtiofsd,
         }}})
         .to_string(),
@@ -3857,4 +3863,285 @@ fn a_vm_disk_packed_with_the_gpu_has_the_nvidia_module() {
         disk.with_extension("gpu").exists(),
         "the disk is marked for --gpu"
     );
+}
+
+/// Run QEMU on `disk` with the read-only `iso` until the guest powers off (it may restart before); the serial console
+/// goes to `log`. `test` adds a raw results disk and an ACPI table.
+fn boot_until_poweroff(
+    disk: &Path,
+    iso: &Path,
+    test: Option<(&Path, &Path)>,
+    log: &Path,
+    minutes: u64,
+) {
+    let mut qemu = Command::new("qemu-system-x86_64");
+    qemu.args([
+        "-machine",
+        "q35,accel=kvm,smm=off",
+        "-cpu",
+        "host",
+        "-m",
+        "2048",
+    ])
+    .args([
+        "-smp",
+        "2",
+        "-nodefaults",
+        "-display",
+        "none",
+        "-monitor",
+        "none",
+    ])
+    .arg("-serial")
+    .arg(format!("file:{}", log.display()))
+    .arg("-drive")
+    .arg(format!("file={},if=none,id=root", disk.display()))
+    // the firmware boots this disk, whatever the order of the PCI devices
+    .args(["-device", "virtio-blk-pci,drive=root,bootindex=0"])
+    .arg("-drive")
+    .arg(format!(
+        "file={},if=virtio,format=raw,readonly=on",
+        iso.display()
+    ))
+    .args([
+        "-netdev",
+        "user,id=net",
+        "-device",
+        "virtio-net-pci,netdev=net",
+    ])
+    .stdin(Stdio::null());
+    if let Some((results, table)) = test {
+        qemu.arg("-acpitable")
+            .arg(format!("file={}", table.display()))
+            .arg("-drive")
+            .arg(format!(
+                "file={},if=none,id=results,format=raw",
+                results.display()
+            ))
+            .args(["-device", "virtio-blk-pci,drive=results,serial=lwmiresults"]);
+    }
+    let mut child = qemu.spawn().expect("qemu-system-x86_64");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_mins(minutes);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let console = std::fs::read_to_string(log).unwrap_or_default();
+            panic!(
+                "the VM ran over {minutes} min; console:\n{}",
+                &console[console.len().saturating_sub(4000)..]
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    };
+    assert!(status.success(), "qemu-system-x86_64: {status}");
+}
+
+/// An ISO 9660 image of `dir` with the volume label `label`.
+fn iso(dir: &Path, label: &str, out: &Path) {
+    let made = Command::new("xorriso")
+        .args(["-as", "mkisofs", "-quiet", "-V", label, "-J", "-r", "-o"])
+        .arg(out)
+        .arg(dir)
+        .status()
+        .unwrap();
+    assert!(made.success(), "xorriso");
+}
+
+/// The disk of the legionctl-wmi test, made once over the cloud image and kept in the test cache: Debian's generic
+/// kernel from trixie-backports (the cloud kernel has no WMI, and the module needs the WMI API of 7.x) with its
+/// headers, DKMS, python3 and the unit that runs the test from the disk labelled LWMITEST, then powers off.
+fn legionctl_wmi_base(image: &Path) -> PathBuf {
+    // a new name when the preparation changes
+    let base = image.with_file_name("legionctl-wmi-base-v1.qcow2");
+    if base.exists() {
+        return base;
+    }
+    let dir = Path::new("/var/tmp").join(format!("lc-kmod-base-{}", std::process::id()));
+    let seed = dir.join("seed");
+    std::fs::create_dir_all(&seed).unwrap();
+    write(
+        &seed.join("lwmi-test.service"),
+        "[Unit]\nDescription=legionctl-wmi test\nAfter=local-fs.target systemd-udevd.service\n\n[Service]\n\
+         Type=oneshot\nExecStart=/bin/sh -c 'mount -o ro LABEL=LWMITEST /mnt && bash /mnt/run.sh; \
+         systemctl poweroff'\n\n[Install]\nWantedBy=multi-user.target\n",
+    );
+    write(
+        &seed.join("meta-data"),
+        "instance-id: lwmi-base\nlocal-hostname: lwmi\n",
+    );
+    write(
+        &seed.join("user-data"),
+        "#cloud-config\nruncmd:\n  - [sh, -ec, 'export DEBIAN_FRONTEND=noninteractive; \
+         echo \"deb http://deb.debian.org/debian trixie-backports main\" > /etc/apt/sources.list.d/backports.list; \
+         apt-get update; apt-get install -y -t trixie-backports linux-image-amd64 linux-headers-amd64; \
+         apt-get install -y dkms python3; \
+         apt-get purge -y \"linux-image-*-cloud-amd64\" linux-image-cloud-amd64; update-grub; \
+         mount -o ro LABEL=cidata /mnt; install -m 644 /mnt/lwmi-test.service /etc/systemd/system/; umount /mnt; \
+         systemctl enable lwmi-test.service; touch /etc/cloud/cloud-init.disabled; \
+         echo lwmi-base-ok > /dev/ttyS0']\npower_state: {mode: poweroff, timeout: 30, condition: true}\n",
+    );
+    let seed_iso = dir.join("seed.iso");
+    iso(&seed, "cidata", &seed_iso);
+    let part = base.with_extension("part.qcow2");
+    let made = Command::new("qemu-img")
+        .args(["create", "-q", "-f", "qcow2", "-F", "qcow2", "-b"])
+        .arg(image)
+        .arg(&part)
+        .arg("8G")
+        .status()
+        .unwrap();
+    assert!(made.success(), "qemu-img create");
+    let log = dir.join("base.log");
+    boot_until_poweroff(&part, &seed_iso, None, &log, 25);
+    let console = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        console.contains("lwmi-base-ok"),
+        "the base disk was not prepared; console:\n{}",
+        &console[console.len().saturating_sub(4000)..]
+    );
+    std::fs::rename(&part, &base).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    base
+}
+
+/// The checks of fixtures/legionctl-wmi/run.sh, in their order: each must report ok.
+const LEGIONCTL_WMI_CHECKS: [&str; 46] = [
+    "dkms-build",
+    "only-legionctl-wmi",
+    "profile-choices",
+    "profile-start",
+    "profile-set",
+    "profile-call",
+    "fw-attributes",
+    "fw-bounds",
+    "fw-display",
+    "fw-not-custom",
+    "fw-not-custom-warning",
+    "fw-above-max",
+    "fw-below-min",
+    "fw-set",
+    "fw-call",
+    "fw-value-of-mode",
+    "fan-rpm",
+    "table-not-custom",
+    "table-not-custom-warning",
+    "table-set",
+    "table-read",
+    "table-bytes",
+    "table-below-minimum",
+    "table-above-10",
+    "table-overflow",
+    "table-decreasing",
+    "table-not-a-number",
+    "table-unchanged",
+    "table-again-on-custom",
+    "fnq-notify",
+    "fnq-profile",
+    "fnq-table-again",
+    "full-speed-off",
+    "full-speed-on",
+    "full-speed-call",
+    "full-speed-manual",
+    "full-speed-ends",
+    "full-speed-not-custom",
+    "fan-max-on",
+    "fan-max-call",
+    "resume-fan-max",
+    "resume-table",
+    "led-micmute",
+    "led-mute",
+    "unload",
+    "kernel-clean",
+];
+
+/// todo-79: the legionctl-wmi kernel module (kernel/legionctl-wmi), built by DKMS in a VM against Debian's 7.x
+/// kernel and bound to a stand-in of the 82WQ firmware (fixtures/legionctl-wmi/ssdt.asl, a QEMU -acpitable) after a
+/// restart with the package's blacklist in place. The guest (run.sh) uses it through sysfs only: `platform_profile`
+/// and its Fn+Q notice, the firmware attributes within and outside their bounds and modes, the fan table byte for
+/// byte as the firmware gets it, its refusals and its return after a mode change, Fn+Q and resume, full speed, fan
+/// max mode, the mute LEDs and a clean unload.
+#[test]
+#[ignore = "boots VMs (KVM, QEMU, a cloud image) and builds a kernel module: CI runs it in the VM step"]
+fn the_legionctl_wmi_module_gives_the_legion_wmi_through_sysfs() {
+    let base = legionctl_wmi_base(&debian_cloud_image());
+    let dir = Path::new("/var/tmp").join(format!("lc-kmod-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let test = dir.join("test");
+    let module = test.join("legionctl-wmi");
+    std::fs::create_dir_all(&module).unwrap();
+    let kmod = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../kernel/legionctl-wmi");
+    for name in [
+        "legionctl-wmi.c",
+        "firmware_attributes_class.h",
+        "Kbuild",
+        "Makefile",
+        "dkms.conf",
+    ] {
+        std::fs::copy(kmod.join(name), module.join(name)).unwrap();
+    }
+    std::fs::copy(
+        kmod.join("legionctl-wmi.conf"),
+        test.join("legionctl-wmi.conf"),
+    )
+    .unwrap();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legionctl-wmi");
+    std::fs::copy(fixtures.join("run.sh"), test.join("run.sh")).unwrap();
+    std::fs::create_dir(test.join("aml-call")).unwrap();
+    for name in ["aml_call.c", "Kbuild"] {
+        std::fs::copy(
+            fixtures.join("aml-call").join(name),
+            test.join("aml-call").join(name),
+        )
+        .unwrap();
+    }
+    // the stand-in firmware, as QEMU gives it to the guest
+    let compiled = Command::new("iasl")
+        .arg("-p")
+        .arg(dir.join("ssdt"))
+        .arg(fixtures.join("ssdt.asl"))
+        .output()
+        .expect("iasl (acpica-tools)");
+    assert!(
+        compiled.status.success(),
+        "iasl: {}",
+        String::from_utf8_lossy(&compiled.stdout)
+    );
+    let test_iso = dir.join("test.iso");
+    iso(&test, "LWMITEST", &test_iso);
+    let disk = dir.join("disk.qcow2");
+    let made = Command::new("qemu-img")
+        .args(["create", "-q", "-f", "qcow2", "-F", "qcow2", "-b"])
+        .arg(&base)
+        .arg(&disk)
+        .status()
+        .unwrap();
+    assert!(made.success(), "qemu-img create");
+    let results = dir.join("results.img");
+    std::fs::write(&results, vec![0u8; 1 << 20]).unwrap();
+    let log = dir.join("console.log");
+    boot_until_poweroff(
+        &disk,
+        &test_iso,
+        Some((&results, &dir.join("ssdt.aml"))),
+        &log,
+        10,
+    );
+
+    let report = String::from_utf8_lossy(&std::fs::read(&results).unwrap())
+        .trim_end_matches('\0')
+        .to_string();
+    let passed: Vec<&str> = report
+        .lines()
+        .filter_map(|l| l.strip_prefix("ok "))
+        .collect();
+    let console = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        passed == LEGIONCTL_WMI_CHECKS && report.contains("\ndone"),
+        "results:\n{report}\nconsole:\n{}",
+        &console[console.len().saturating_sub(3000)..]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

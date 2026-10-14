@@ -8,7 +8,8 @@ after every kernel update, and repairs what it can (load, rebuild through DKMS, 
 | Module | Source | State | Needed for | Status |
 | --- | --- | --- | --- | --- |
 | `ideapad_laptop` | in-tree | loaded | Fn keys (`Ideapad extra buttons`), `fn_lock`, `conservation_mode`, `camera_power` | required |
-| `lenovo_wmi_gamezone`, `lenovo_wmi_other`, `lenovo_wmi_capdata`, `lenovo_wmi_events` | in-tree | loaded | `platform_profile`, firmware power limits (`ppt_*`), Fn+Q events | required |
+| `lenovo_wmi_gamezone`, `lenovo_wmi_other`, `lenovo_wmi_capdata`, `lenovo_wmi_events`, `lenovo_wmi_hotkey_utilities` | in-tree | loaded | `platform_profile`, firmware power limits (`ppt_*`), Fn+Q events, mute LEDs | **replaced** by `legionctl_wmi` (below); the package blacklists them |
+| `legionctl_wmi` | DKMS, this repository (`kernel/legionctl-wmi`) | loaded after the first live load (the user's) | the same ABI as the five drivers above, and the fan table, fan max mode and full speed | required |
 | `acpi_call` | DKMS 1.2.2 (both kernels built) | loaded, autoloaded | firmware fan RPM through `\_SB_.GZFD.WMAE` | required (fan) |
 | `msr` | built-in | n/a | throttle reasons (`IA32_*THERM_STATUS`), turbostat | required |
 | `intel_rapl_msr`, `processor_thermal_rapl` | in-tree | loaded | RAPL energy counters (watts) | required |
@@ -106,3 +107,111 @@ a stand-in efibootmgr with its own state, stand-in ukify/sbsign): the dry run ch
 and each kernel's image with the kernel line, adds the entry not first and sets BootNext (mutation-checked); confirm
 is refused unless this start came through it (mutation-checked); rebuild drops a removed kernel's image; remove leaves
 the old chain as it was. Live: the first install and the test start are the user's.
+
+## legionctl-wmi: our Legion WMI module (todo-79 part 1, decided by the user 2026-10-14)
+
+`kernel/legionctl-wmi/` is a DKMS kernel module (GPL-2.0, kernel coding style, `checkpatch --strict` clean). It owns
+the whole Legion WMI of this laptop (82WQ, BIOS KWCN54WW). It replaces `lenovo_wmi_gamezone`, `lenovo_wmi_other`,
+`lenovo_wmi_capdata`, `lenovo_wmi_events` and `lenovo_wmi_hotkey_utilities`. After the daemon switch (a later part),
+it also replaces the fan calls through `acpi_call`, and the daemon then uses sysfs only. Until that switch, the daemon
+continues to use `acpi_call` for the fans.
+
+### Why our own module
+
+- The upstream drivers give no fan table, no fan max mode and no full speed. Today these go through `acpi_call`,
+  which lets root call any ACPI method. The module makes only the calls below, checks each value in the kernel and
+  sets again what the firmware forgets (after resume, and on each entry to custom mode).
+- One owner: after the switch, the module is the only writer of the GameZone, Other Mode and fan methods. It makes
+  one call at a time.
+- The ABI that the daemon reads today does not change: the same `platform_profile` and the same `lenovo-wmi-other-0`
+  firmware attributes. Thus the blacklist is safe.
+
+### What it binds (the code cites the source of each id)
+
+| GUID | Object | Use | Source |
+| --- | --- | --- | --- |
+| `887B54E3-DDDC-4B2C-8B88-68A26A8835D0` | WMAA | GameZone: thermal mode 43/44/45, fan max mode 0x0D | upstream wmi-gamezone.c; 0x0D measured |
+| `DC2A8805-3A8C-41BA-A6F7-092E0089CD3B` | WMAE | Other Mode: GetFeatureValue 17, SetFeatureValue 18 | upstream wmi-other.c |
+| `7A8F5407-CB67-4D6E-B547-39B3BE018154` | WQA5 | Capability Data 01: supported, default, step, min, max | upstream wmi-capdata.c |
+| `92549549-4BDE-4F06-AC04-CE8BF898DBAA` | WMAB | Fan_Get_Table 5, Fan_Set_Table 6 | LLL `model_kwcn` |
+| `D320289E-8FEA-41E0-86F9-911D83151B5F` | event 0xE7 | thermal mode change (Fn+Q) | upstream wmi-events.c |
+| `CE6C0974-0407-4F50-88BA-4FC3B6559AD8` | WMSK | micmute and mute LEDs | upstream wmi-hotkey-utilities.c |
+
+The GameZone device is the hub. It binds after the Other Mode, Capability Data 01 and fan method devices (probe
+deferral), and device links unbind it before them. When it binds, the module reads the thermal mode, the capability
+data and the current values. It writes nothing.
+
+The Fn keys stay with `ideapad_laptop` (`VPC2004`). No upstream driver makes an input device from the Legion GUIDs:
+the events driver gives the thermal mode change only, and `lenovo_wmi_hotkey_utilities` gives the mute LEDs only.
+The module does the same. The GameZone key event `10AFC6D9-...` stays unbound because its data is not known (open
+item).
+
+### sysfs ABI
+
+| Path | Read | Write |
+| --- | --- | --- |
+| `/sys/class/platform-profile/platform-profile-<n>/profile` (`name`: `lenovo-wmi-gamezone`; the profile's `paths.platform_profile`) and `/sys/firmware/acpi/platform_profile` | `low-power` (quiet), `balanced`, `performance`, `max-power` (0xE0), `custom` (0xFF) | the same; only the class device takes `custom` (the kernel's rule for the legacy file); a change notice (poll) for each Fn+Q |
+| `/sys/class/firmware-attributes/lenovo-wmi-other-0/attributes/<name>/` | `current_value` (of the current mode), `min_value`, `max_value`, `default_value`, `scalar_increment`, `display_name`, `type` | `current_value`: within min-max (else `EINVAL`), custom mode only (else `EBUSY`) |
+| hwmon `legionctl_wmi`: `fan1_input`, `fan2_input` | RPM (Other Mode 0x04030001/2) | - |
+| hwmon `pwm1_auto_point1_pwm` .. `pwm1_auto_point10_pwm` | the firmware's table (Fan_Get_Table) | one level 1-10 per point; custom mode only (`EBUSY`); a point below its minimum {1,1,1,1,1,1,1,1,3,5}, above 10, not a number, or a table that decreases gives `EINVAL`; the module reads the table back after each write (`EIO` on a difference) |
+| hwmon `pwm1_enable` | `2` (the table), `0` (full speed) | `0` or `2` (else `EINVAL`); custom mode only (`EBUSY`) |
+| hwmon `fan_max_mode` | the state that the module set (the firmware has no read) | `0` or `1`, in all modes |
+| `/sys/class/leds/platform::micmute`, `platform::mute` | brightness | 0 or 1 |
+
+`<name>` is one of `cpu_temp`, `gpu_nv_ac_offset`, `gpu_nv_ctgp`, `gpu_nv_ppab`, `gpu_temp`, `ppt_cpu_cl`,
+`ppt_pl1_spl`, `ppt_pl1_tau`, `ppt_pl2_sppt`. The module shows a name only when Capability Data 01 marks it
+supported. Each `EBUSY` writes a kernel warning that names the mode, for example `the fan table works in custom mode
+only; the mode is balanced (0x2)`.
+
+Fan table points: the pwm values are levels 1-10, not 0-255 (one table for both fans, 02-platform.md). A write
+changes one point, and the table must stay valid after each write. To set a new table, write in two passes: first
+from point 10 down to point 1 with the higher of the old and the new level, then from point 1 up to point 10 with the
+new level. Each table between the two is then valid.
+
+What the module sets again: after resume, fan max mode (when it is on). After resume, on each entry to custom mode
+through `platform_profile` and on each Fn+Q into custom mode: the last table written through sysfs and full speed
+(when it is on). When the mode leaves custom, full speed is off (the firmware stops it).
+
+### Build, package and test
+
+- `make kmod` runs checkpatch and builds the module against `KDIR` (default: the headers of the running kernel). It
+  loads nothing. `make kmod-checkpatch` runs checkpatch only (CI, with checkpatch of v7.2).
+- The module uses the WMI buffer API (`wmidev_invoke_method`, `notify_new`) of Linux 7.0 and later. DKMS does not
+  build it for older kernels (`BUILD_EXCLUSIVE_KERNEL_MIN`).
+- The package installs the source to `/usr/src/legionctl-wmi-<version>/` (DKMS builds it for each installed kernel)
+  and `/usr/lib/modprobe.d/legionctl-wmi.conf`, the blacklist of the five upstream drivers. The blacklist is in the
+  same package as the module: do not install it alone. The profile requires `legionctl_wmi` in place of the upstream
+  drivers (`legionctl doctor`).
+- Secure Boot is on: DKMS must sign the module with the enrolled key, as for `acpi_call` and `nvidia`.
+- Test (`crates/legionctl/tests/e2e.rs`, `the_legionctl_wmi_module_gives_the_legion_wmi_through_sysfs`, also in the
+  CI VM step): a Debian VM with the generic 7.x kernel builds the module with DKMS. A stand-in of the firmware
+  (`tests/fixtures/legionctl-wmi/ssdt.asl`: the same GUIDs, object ids and buffer layouts) is an ACPI table that
+  QEMU gives (`-acpitable`). The guest installs the module and the blacklist, then restarts: udev loads the drivers
+  as on the real machine. The stand-in prints each call that it gets as an AML Debug line, and a test helper
+  (`aml-call`) calls its Fn+Q method as the EC does. The guest script (`run.sh`) makes 46 checks through sysfs: the
+  blacklist, the profile and its Fn+Q notice, the attribute bounds and modes, the fan table byte for byte as the
+  firmware gets it, the refusals, the table again after a mode change, after Fn+Q and after resume (`pm_test`), full
+  speed, fan max mode, the LEDs, and a clean unload.
+
+### First live load (the user's, todo-17 gate)
+
+The daemon continues to use `acpi_call` for the fans until the switch part. The first load on this machine is the
+user's:
+
+1. Build and install the package (`make package install-package`). Do not restart yet. Make sure that DKMS built
+   and signed the module for each kernel: `dkms status legionctl-wmi`, `modinfo -F signer legionctl_wmi`.
+2. Try it without a restart:
+   `sudo modprobe -r lenovo_wmi_other lenovo_wmi_gamezone lenovo_wmi_events lenovo_wmi_capdata lenovo_wmi_hotkey_utilities`,
+   then `sudo modprobe legionctl_wmi`. Read `sudo dmesg | tail`.
+3. Read only first: `cat /sys/firmware/acpi/platform_profile`,
+   `grep . /sys/class/firmware-attributes/lenovo-wmi-other-0/attributes/*/*`, and the hwmon `legionctl_wmi`
+   (`fan1_input`, `fan2_input`, `pwm1_auto_point*_pwm`). Compare with the values in 02-platform.md.
+4. Set custom mode (`echo custom | sudo tee /sys/class/platform-profile/platform-profile-0/profile`). With
+   `legionctl monitor` open, write `pwm1_auto_point1_pwm` .. `pwm1_auto_point10_pwm` (the levels of the profile's
+   default curve), read them back, and make sure that the RPM follows the ladder. Write `pwm1_enable` 0, then 2.
+   Write `fan_max_mode` 1, then 0. Push Fn+Q and make sure that `platform_profile` follows.
+5. To go back: `sudo modprobe -r legionctl_wmi`, then
+   `sudo modprobe lenovo_wmi_gamezone lenovo_wmi_other lenovo_wmi_events lenovo_wmi_hotkey_utilities` (a blacklist
+   stops only automatic loads). To remove the module permanently, remove the package: the blacklist goes with it.
+6. After a restart, the module binds automatically. Run `lsmod | grep -E 'legionctl_wmi|lenovo_wmi'`: only
+   `legionctl_wmi` must show.

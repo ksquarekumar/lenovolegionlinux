@@ -53,6 +53,19 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Lint, format check, profile validation, tests
         run: make ci
+      # the kernel style of legionctl-wmi with checkpatch of v7.2; the module builds in the VM step (DKMS, Debian's
+      # 7.x kernel): the runner's kernel is older than the WMI API the module uses
+      - name: Kernel module style
+        run: |
+          base=https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/scripts
+          mkdir -p ~/checkpatch
+          for f in checkpatch.pl spelling.txt const_structs.checkpatch; do curl -fsSL -o ~/checkpatch/$f "$base/$f?h=v7.2"; done
+          (cd ~/checkpatch && sha256sum -c) <<'SUMS'
+          f8f32e6b559004fcac021e2f6149b6b7ea486924a8bc48297c0f317eddf5e220  checkpatch.pl
+          4095d4a8810f115bae1b7c0d8a1946beb3435f6e22d9a48ac009bb024bad1e68  spelling.txt
+          ea064f6916a74763468037494aeb270aae34b7c97617e84d424ca5b8733539b2  const_structs.checkpatch
+          SUMS
+          make kmod-checkpatch CHECKPATCH="$HOME/checkpatch/checkpatch.pl"
       # the eBPF sensors need root to load: run their tests with sudo (the binary is built as the runner user)
       - name: eBPF sensors as root
         run: |
@@ -61,13 +74,14 @@ jobs:
           sudo -E "$bin" --ignored --exact operator_and_daemon::as_root_the_runq_sensor_measures_wakeups_and_outlives_a_failed_daemon \
             operator_and_daemon::as_root_the_exec_sensor_records_what_a_session_starts \
             operator_and_daemon::as_root_the_windows_vm_starts_with_its_disk_and_gives_the_host_back
-      # sessions in a VM (W5): KVM for the runner user, QEMU, virtiofsd, xorriso for the cloud-init seed, and the
-      # Debian cloud image the test downloads once (its SHA512SUMS beside it)
-      - name: Cache the cloud image of the VM test
+      # sessions in a VM (W5) and the legionctl-wmi module in a VM: KVM for the runner user, QEMU, virtiofsd, xorriso
+      # for the cloud-init seed, the Debian cloud image the tests download once (its SHA512SUMS beside it) and the
+      # disk the module test makes once over it (Debian's generic 7.x kernel, its headers, DKMS); iasl compiles the stand-in firmware
+      - name: Cache the disks of the VM tests
         uses: actions/cache@v4
         with:
           path: /var/tmp/legionctl-test-cache
-          key: debian-13-genericcloud-v1
+          key: debian-13-genericcloud-v2-legionctl-wmi-base-v1
       # read-only shares need virtiofsd --readonly (1.11 and newer); Ubuntu 24.04 has 1.10: built once, then cached
       - name: Cache virtiofsd
         id: virtiofsd
@@ -77,7 +91,7 @@ jobs:
           key: virtiofsd-1.14.0-${{ runner.os }}
       - name: VM sessions
         run: |
-          sudo apt-get install -y qemu-system-x86 qemu-utils xorriso libcap-ng-dev libseccomp-dev
+          sudo apt-get install -y qemu-system-x86 qemu-utils xorriso acpica-tools libcap-ng-dev libseccomp-dev
           if [ ! -x ~/virtiofsd-bin/virtiofsd ]; then
             cargo install --locked --root ~/virtiofsd-root virtiofsd@1.14.0
             mkdir -p ~/virtiofsd-bin && cp ~/virtiofsd-root/bin/virtiofsd ~/virtiofsd-bin/
@@ -86,4 +100,5 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
           cargo test --locked -p legionctl --test e2e -- --ignored --exact \
-            sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate
+            sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate \
+            the_legionctl_wmi_module_gives_the_legion_wmi_through_sysfs
