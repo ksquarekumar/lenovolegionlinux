@@ -80,8 +80,8 @@ impl Proxy {
             bytes: u64::try_from(bytes).unwrap_or(u64::MAX),
             outcome,
         };
-        // shortcut: a call is not refused when the log fails (the operator is down); the failure goes to stderr,
-        // which the agent shows in its MCP log
+        // a call is not refused when the log fails (the operator is down; decided by the user 2026-10-14, Q5): the
+        // failure goes to stderr, which the agent shows in its MCP log
         if let Err(e) = self.client.call::<op::ToolsRecord>(&call).await {
             eprintln!(
                 "legionctl mcp-proxy: cannot log {}.{tool}: {e:#}",
