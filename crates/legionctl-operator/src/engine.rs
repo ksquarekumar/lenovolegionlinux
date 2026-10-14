@@ -708,6 +708,28 @@ fn dry_run(steps: &[policy::Step]) -> Changes {
 
 impl Operator {
     /// A machine change through `legionctl-system`; polkit asks the human.
+    /// The active monitors from Mutter, and the fonts' antialiasing.
+    fn monitors(&self) -> Result<(Vec<crate::display::Shown>, String)> {
+        let state = self.runtime.block_on(async {
+            let session = zbus::Connection::session().await?;
+            crate::display::DisplayConfigProxy::new(&session)
+                .await?
+                .get_current_state()
+                .await
+        })?;
+        let out = Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", "font-antialiasing"])
+            .output()?;
+        let antialiasing = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .trim_matches('\'')
+            .to_string();
+        Ok((
+            crate::display::shown(&SysRoot::from_env(), &state),
+            antialiasing,
+        ))
+    }
+
     /// A boot action: its plan for a dry run, else the daemon carries it out.
     fn boot_action(
         &self,
@@ -1137,10 +1159,12 @@ impl Engine for Operator {
                     .into(),
             );
         }
-        findings.extend(legionctl_machine::graphics::findings(
-            &SysRoot::from_env(),
-            &home(),
-        ));
+        findings.extend(legionctl_machine::graphics::findings(&SysRoot::from_env()));
+        // without a desktop session (Mutter on the session bus) there are no monitors to check
+        if let Ok((monitors, antialiasing)) = self.monitors() {
+            let apps = legionctl_machine::graphics::xwayland_apps(&SysRoot::from_env(), &home());
+            findings.extend(crate::display::findings(&monitors, &antialiasing, apps));
+        }
         findings.extend(agent_findings()?);
         Ok(Findings { findings })
     }
@@ -2178,6 +2202,44 @@ impl Engine for Operator {
             lines: self.system(async move |p| p.set_usb_charging(on).await)?,
             dry_run: false,
         })
+    }
+
+    fn display_status(&self, _: &Ctx, _: Empty) -> Result<Lines> {
+        let (monitors, antialiasing) = self
+            .monitors()
+            .context("no desktop session (Mutter) to ask")?;
+        let on = |(offered, used): (bool, bool)| match (offered, used) {
+            (false, _) => "not offered",
+            (true, true) => "on",
+            (true, false) => "off",
+        };
+        let mut lines: Vec<String> = monitors
+            .iter()
+            .map(|m| {
+                format!(
+                    "{} {}: {}x{} at {:.0} Hz (up to {:.0}), scale {}, {}, VRR {}, HDR {}",
+                    m.connector,
+                    m.name,
+                    m.width,
+                    m.height,
+                    m.refresh,
+                    m.max_refresh,
+                    m.scale,
+                    m.ppi
+                        .map_or("density unknown".into(), |p| format!("{p:.0} PPI")),
+                    on(m.vrr),
+                    on(m.hdr)
+                )
+            })
+            .collect();
+        lines.push(format!("fonts: {antialiasing} antialiasing"));
+        let apps = legionctl_machine::graphics::xwayland_apps(&SysRoot::from_env(), &home());
+        lines.extend(
+            crate::display::findings(&monitors, &antialiasing, apps)
+                .into_iter()
+                .map(|f| format!("- {f}")),
+        );
+        Ok(Lines { lines })
     }
 
     fn boot_status(&self, _: &Ctx, _: Empty) -> Result<legionctl_api::BootState> {

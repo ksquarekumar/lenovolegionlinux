@@ -946,8 +946,7 @@ impl HiveFile {
 
 /// The graphics stack (todo-81) on the recorded machine (the NVIDIA and Intel cards): `doctor` names each gap with
 /// its fix (NVIDIA libraries that do not match the loaded module, a missing Vulkan driver, `OpenCL` for the iGPU only
-/// through rusticl, switcheroo-control not running, an Electron app without a Wayland flag) and drops it once the
-/// stack is complete.
+/// through rusticl, switcheroo-control not running) and drops it once the stack is complete.
 #[test]
 fn doctor_names_each_gap_of_the_graphics_stack_with_its_fix() {
     let m = Machine::new("graphics");
@@ -956,7 +955,6 @@ fn doctor_names_each_gap_of_the_graphics_stack_with_its_fix() {
     std::fs::remove_file(root.join("usr/lib/libnvidia-glcore.so.580.178.04")).unwrap();
     std::fs::remove_file(root.join("usr/share/vulkan/icd.d/intel_icd.json")).unwrap();
     m.set("/usr/lib/libnvidia-glcore.so.570.86.16", "");
-    m.set("/usr/bin/code", "");
     let doctor = || String::from_utf8_lossy(&m.legion(&["doctor"]).stdout).to_string();
     let found = doctor();
     for expected in [
@@ -964,7 +962,6 @@ fn doctor_names_each_gap_of_the_graphics_stack_with_its_fix() {
         "/usr/share/vulkan/icd.d/intel_icd.json is missing: install the Intel Vulkan driver (vulkan-intel)",
         "OpenCL reaches the Intel GPU only through Mesa's rusticl",
         "switcheroo-control does not run",
-        "/usr/bin/code draws through XWayland (blurry at fractional scales): add --ozone-platform-hint=auto",
     ] {
         assert!(found.contains(expected), "{expected} missing:\n{found}");
     }
@@ -2935,6 +2932,135 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             );
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
+    }
+
+    type Props = std::collections::HashMap<String, zbus::zvariant::OwnedValue>;
+    type Spec = (String, String, String, String);
+    type MutterMode = (String, i32, i32, f64, f64, Vec<f64>, Props);
+    type MutterState = (
+        u32,
+        Vec<(Spec, Vec<MutterMode>, Props)>,
+        Vec<(i32, i32, f64, u32, bool, Vec<Spec>, Props)>,
+        Props,
+    );
+
+    /// The MSI ultrawide as Mutter reports it (DP-3, 3440x1440, modes at 144 and 100 Hz) at `scale` and `hz`.
+    fn mutter_state(scale: f64, hz: f64) -> MutterState {
+        use zbus::zvariant::{OwnedValue, Value};
+        let v = |x: Value<'_>| OwnedValue::try_from(x).unwrap();
+        let spec: Spec = ("DP-3".into(), "MSI".into(), "MAG341".into(), "0".into());
+        let mode = |rate: f64| -> MutterMode {
+            let props = Props::from([
+                (
+                    "is-current".to_string(),
+                    v(Value::from((rate - hz).abs() < 0.5)),
+                ),
+                ("refresh-rate-mode".to_string(), v(Value::from("fixed"))),
+            ]);
+            (
+                format!("3440x1440@{rate}"),
+                3440,
+                1440,
+                rate,
+                1.0,
+                vec![1.0, 1.25],
+                props,
+            )
+        };
+        let monitor_props = Props::from([
+            ("display-name".to_string(), v(Value::from("Microstep 34\""))),
+            ("is-builtin".to_string(), v(Value::from(false))),
+        ]);
+        (
+            1,
+            vec![(spec.clone(), vec![mode(144.0), mode(100.0)], monitor_props)],
+            vec![(0, 0, scale, 0, true, vec![spec], Props::new())],
+            Props::new(),
+        )
+    }
+
+    /// Monitors and fonts (todo-81 part 2) through a stand-in Mutter on the session bus: `display status` and `doctor`
+    /// name an external monitor below its highest refresh rate and grayscale antialiasing where subpixel is sharper
+    /// (integer scale, normal density from the EDID); an Electron app through `XWayland` only at a fractional scale
+    /// (at integer scales Chromium on Wayland draws grayscale text, which was worse here: user report 2026-10-14).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn monitors_and_fonts_are_checked_against_the_scale_and_density_in_use() {
+        let m = Machine::new("display");
+        let (_stand_ins, _asked, (_bus, _daemon)) = start(&m).await;
+        // the EDID's physical size: 80 x 34 cm
+        let mut edid = vec![0u8; 128];
+        (edid[21], edid[22]) = (80, 34);
+        let edid_path = m.dir.join("root/sys/class/drm/card0-DP-3/edid");
+        std::fs::create_dir_all(edid_path.parent().unwrap()).unwrap();
+        std::fs::write(edid_path, edid).unwrap();
+        m.set("/usr/bin/code", "");
+        Machine::script(&m.dir.join("bin"), "gsettings", "echo \"'grayscale'\"");
+        let address = format!("unix:path={}", m.dir.join("bus").display());
+        let state = std::sync::Arc::new(std::sync::Mutex::new((1.0f64, 100.0f64)));
+        let mutter = zbus::connection::Builder::address(address.as_str())
+            .unwrap()
+            .name("org.gnome.Mutter.DisplayConfig")
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let (now, replies) = (state.clone(), mutter.clone());
+        tokio::spawn(async move {
+            let mut calls = zbus::MessageStream::from(&replies);
+            while let Some(Ok(call)) = futures_util::StreamExt::next(&mut calls).await {
+                if call
+                    .header()
+                    .member()
+                    .is_some_and(|m| m.as_str() == "GetCurrentState")
+                {
+                    let (scale, hz) = *now.lock().unwrap();
+                    let body = mutter_state(scale, hz);
+                    let reply = zbus::message::Message::method_return(&call.header())
+                        .unwrap()
+                        .build(&body)
+                        .unwrap();
+                    replies.send(&reply).await.unwrap();
+                }
+            }
+        });
+        let op = Operator::start(
+            "display",
+            &[
+                ("PATH", m.dir.join("bin").into()),
+                ("HOME", m.dir.join("home").into()),
+                ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+                ("DBUS_SYSTEM_BUS_ADDRESS", address.clone().into()),
+                ("DBUS_SESSION_BUS_ADDRESS", address.into()),
+            ],
+        );
+        let shown = op.ok(&["display", "status"]);
+        for expected in [
+            "DP-3 Microstep 34\": 3440x1440 at 100 Hz (up to 144), scale 1, 109 PPI",
+            "fonts: grayscale antialiasing",
+            "runs at 100 Hz, and 144 Hz is available at 3440x1440",
+            "every monitor has an integer scale at normal density, where subpixel is sharper",
+        ] {
+            assert!(shown.contains(expected), "{expected} missing:\n{shown}");
+        }
+        assert!(
+            !shown.contains("XWayland"),
+            "no XWayland finding at an integer scale:\n{shown}"
+        );
+        // findings make doctor exit 1
+        let doctor = String::from_utf8_lossy(&op.cli(&["doctor"]).stdout).to_string();
+        assert!(doctor.contains("144 Hz is available"), "{doctor}");
+
+        *state.lock().unwrap() = (1.25, 144.0);
+        let fractional = op.ok(&["display", "status"]);
+        assert!(
+            fractional
+                .contains("/usr/bin/code draws through XWayland, blurry at this fractional scale"),
+            "{fractional}"
+        );
+        assert!(
+            !fractional.contains("subpixel is sharper") && !fractional.contains("Hz is available"),
+            "{fractional}"
+        );
     }
 
     /// The Windows VM's full start, as root (only root may raise the memory lock this far): QEMU runs on the

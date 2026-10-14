@@ -382,6 +382,9 @@ operations! {
     /// gets it by hot-plug (and an eject request to take it back; never forced). Apps on a GPU that leaves lose it. A
     /// human approves it in the polkit dialog.
     gpu_give / GpuGive = "gpu.give", Machine, GpuGiveIn => Lines;
+    /// The monitors as GNOME uses them: resolution, refresh rate and the highest available, scale, pixel density,
+    /// VRR and HDR; the fonts' antialiasing; and what makes the picture worse than it can be.
+    display_status / DisplayStatus = "display.status", Read, Empty => Lines;
     /// The discrete GPUs and `NVMe` controllers that can go to a VM (VFIO): IOMMU group, driver, and what on the host
     /// uses them now.
     vfio_status / VfioStatus = "vfio.status", Read, Empty => VfioDevices;

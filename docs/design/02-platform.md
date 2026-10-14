@@ -176,7 +176,12 @@ both GPUs switcheroo-control not running (GNOME's "Launch using Discrete Graphic
 through rusticl (`RUSTICL_ENABLE=iris`, or intel-compute-runtime), and Electron/Chromium apps whose flags file has no
 Wayland flag (they draw through XWayland, blurry at fractional scales). e2e on the recorded machine: each gap found,
 each gone once fixed (the version compare mutation-checked). Found here on 2026-10-14: switcheroo-control inactive,
-Intel OpenCL only through rusticl. Next part: monitors, scaling and fonts from Mutter (the session bus): antialiasing
-against each monitor's scale and pixel density (`rgba` at integer scales and normal density; `grayscale` helped
-nothing at scale 1.0 on the 34" 3440x1440, user report 2026-10-14), refresh rate, VRR and HDR, as checks and fixes with
-the old values to go back to.
+Intel OpenCL only through rusticl. Part 2 (built 2026-10-14): `legionctl display status` reads the monitors from Mutter's `DisplayConfig`
+(the session bus): each active monitor's resolution, refresh rate and the highest at that resolution, scale, pixel
+density (from the EDID's physical size), VRR and HDR (offered, on); `doctor` and `display status` name an external
+monitor below its highest rate (the panel is left out: Fn+R lowers it on purpose), grayscale antialiasing where
+subpixel is sharper (integer scales below 160 PPI), and Electron/Chromium apps through XWayland only at a fractional
+scale. Lesson (user report 2026-10-14, on the MSI 34" at scale 1.0, 111 PPI): grayscale antialiasing and the Wayland
+flags for VS Code and Thorium both made text worse; at integer scales XWayland is not blurry, and Chromium on Wayland
+draws grayscale text. Both were reverted. e2e with a stand-in Mutter: both scales, the findings that belong to each
+(the scale gate mutation-checked). Next: fixes as operations with the old values kept.

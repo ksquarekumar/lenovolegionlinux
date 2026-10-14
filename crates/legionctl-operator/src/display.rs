@@ -166,6 +166,131 @@ pub async fn toggle_refresh(mutter: &DisplayConfigProxy<'_>) -> Result<String> {
     ))
 }
 
+/// One active monitor as `display status` shows it.
+pub struct Shown {
+    pub connector: String,
+    pub name: String,
+    pub builtin: bool,
+    pub width: i32,
+    pub height: i32,
+    pub refresh: f64,
+    /// The highest rate at the current resolution and refresh kind.
+    pub max_refresh: f64,
+    pub scale: f64,
+    /// Pixels per inch, from the EDID's physical size.
+    pub ppi: Option<f64>,
+    /// A variable-rate mode exists at this resolution, and whether it is in use.
+    pub vrr: (bool, bool),
+    /// HDR (a color mode beyond the default) is offered, and whether it is in use.
+    pub hdr: (bool, bool),
+}
+
+/// The physical size (cm) from the EDID of `connector` (bytes 21 and 22), when the monitor reports one.
+fn edid_size(root: &legionctl_machine::sysroot::SysRoot, connector: &str) -> Option<(f64, f64)> {
+    let card = root
+        .children("/sys/class/drm", "card")
+        .into_iter()
+        .find(|c| c.to_string_lossy().ends_with(&format!("-{connector}")))?;
+    let edid = std::fs::read(root.path(card.join("edid"))).ok()?;
+    let (w, h) = (*edid.get(21)?, *edid.get(22)?);
+    (w > 0 && h > 0).then(|| (f64::from(w), f64::from(h)))
+}
+
+/// The active monitors of Mutter's `state`.
+#[must_use]
+pub fn shown(root: &legionctl_machine::sysroot::SysRoot, state: &State) -> Vec<Shown> {
+    let (_, monitors, logical, _) = state;
+    let mut out = Vec::new();
+    for l in logical {
+        for spec in &l.5 {
+            let Some(monitor) = monitors.iter().find(|m| m.0.0 == spec.0) else {
+                continue;
+            };
+            let Some(current) = current_mode(&monitor.1) else {
+                continue;
+            };
+            let same_size: Vec<&Mode> = monitor
+                .1
+                .iter()
+                .filter(|m| (m.1, m.2) == (current.1, current.2))
+                .collect();
+            let max_refresh = same_size
+                .iter()
+                .filter(|m| refresh_kind(m) == refresh_kind(current))
+                .map(|m| m.3)
+                .fold(current.3, f64::max);
+            let prop = |key: &str| monitor.2.get(key).and_then(|v| v.try_clone().ok());
+            let name = prop("display-name")
+                .and_then(|v| String::try_from(v).ok())
+                .unwrap_or_default();
+            let builtin = prop("is-builtin")
+                .and_then(|v| bool::try_from(v).ok())
+                .unwrap_or(false);
+            let color = |key: &str| prop(key).and_then(|v| u32::try_from(v).ok());
+            let colors = prop("supported-color-modes")
+                .and_then(|v| Vec::<u32>::try_from(v).ok())
+                .unwrap_or_default();
+            let ppi = edid_size(root, &spec.0).map(|(w, h)| {
+                let pixels = f64::from(current.1).hypot(f64::from(current.2));
+                pixels / (w.hypot(h) / 2.54)
+            });
+            out.push(Shown {
+                connector: spec.0.clone(),
+                name,
+                builtin,
+                width: current.1,
+                height: current.2,
+                refresh: current.3,
+                max_refresh,
+                scale: l.2,
+                ppi,
+                vrr: (
+                    same_size.iter().any(|m| refresh_kind(m) == "variable"),
+                    refresh_kind(current) == "variable",
+                ),
+                hdr: (
+                    colors.iter().any(|c| *c != 0),
+                    color("color-mode").is_some_and(|c| c != 0),
+                ),
+            });
+        }
+    }
+    out
+}
+
+/// What makes the picture worse than it can be: an external monitor below its highest rate, apps through `XWayland`
+/// at a fractional scale (`xwayland_apps`: the apps without a Wayland flag), and grayscale
+/// antialiasing where subpixel is sharper (integer scales at normal density; grayscale helps only at fractional or
+/// high-density scales: user report 2026-10-14).
+#[must_use]
+pub fn findings(monitors: &[Shown], antialiasing: &str, xwayland_apps: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = monitors
+        .iter()
+        .filter(|m| !m.builtin && m.max_refresh - m.refresh > 0.5)
+        .map(|m| {
+            format!(
+                "{} ({}) runs at {:.0} Hz, and {:.0} Hz is available at {}x{} (Settings, Displays, Refresh Rate)",
+                m.name, m.connector, m.refresh, m.max_refresh, m.width, m.height
+            )
+        })
+        .collect();
+    let sharp_subpixel = monitors
+        .iter()
+        .all(|m| m.scale.fract() == 0.0 && m.ppi.is_none_or(|p| p < 160.0));
+    // XWayland is blurry only at a fractional scale; at integer scales Chromium on Wayland is the worse one
+    if monitors.iter().any(|m| m.scale.fract() != 0.0) {
+        out.extend(xwayland_apps);
+    }
+    if antialiasing == "grayscale" && !monitors.is_empty() && sharp_subpixel {
+        out.push(
+            "fonts use grayscale antialiasing, and every monitor has an integer scale at normal density, where \
+             subpixel is sharper (gsettings set org.gnome.desktop.interface font-antialiasing rgba)"
+                .into(),
+        );
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

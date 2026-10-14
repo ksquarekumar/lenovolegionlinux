@@ -1,41 +1,9 @@
 //! The graphics stack (todo-81): what the GPUs, the compositor and the apps need to render well on this machine, as
 //! doctor findings with their fix: the NVIDIA libraries match the loaded kernel module, each GPU's Vulkan and EGL
 //! drivers are there, NVIDIA's DRM driver does modesetting (Wayland), switcheroo-control runs (GNOME's "Launch using
-//! Discrete Graphics Card"), `OpenCL` reaches both GPUs, and Electron/Chromium apps draw natively on Wayland (through
-//! `XWayland` they are blurry at fractional scales).
-
-use std::path::Path;
+//! Discrete Graphics Card"), and `OpenCL` reaches both GPUs.
 
 use crate::sysroot::SysRoot;
-
-/// Apps whose flags file decides Wayland or `XWayland`: the binary, the flags file in `~/.config`, the flag to add.
-const FLAGGED_APPS: [(&str, &str, &str); 5] = [
-    (
-        "/usr/bin/code",
-        "code-flags.conf",
-        "--ozone-platform-hint=auto",
-    ),
-    (
-        "/usr/bin/chromium",
-        "chromium-flags.conf",
-        "--ozone-platform-hint=auto",
-    ),
-    (
-        "/usr/bin/thorium-browser",
-        "thorium-flags.conf",
-        "--ozone-platform=wayland",
-    ),
-    (
-        "/usr/bin/brave",
-        "brave-flags.conf",
-        "--ozone-platform-hint=auto",
-    ),
-    (
-        "/usr/bin/google-chrome-stable",
-        "chrome-flags.conf",
-        "--ozone-platform-hint=auto",
-    ),
-];
 
 /// The loaded GPU drivers (from the DRM cards).
 fn drivers(root: &SysRoot) -> Vec<String> {
@@ -47,9 +15,9 @@ fn drivers(root: &SysRoot) -> Vec<String> {
         .collect()
 }
 
-/// The graphics findings for user `home`; empty when the stack is complete.
+/// The graphics findings; empty when the stack is complete.
 #[must_use]
-pub fn findings(root: &SysRoot, home: &Path) -> Vec<String> {
+pub fn findings(root: &SysRoot) -> Vec<String> {
     let drivers = drivers(root);
     let nvidia = drivers.iter().any(|d| d == "nvidia");
     let intel = drivers.iter().any(|d| d == "i915" || d == "xe");
@@ -59,7 +27,6 @@ pub fn findings(root: &SysRoot, home: &Path) -> Vec<String> {
         Vec::new()
     };
     out.extend(driver_findings(root, nvidia, intel));
-    out.extend(app_findings(root, home));
     out
 }
 
@@ -159,8 +126,39 @@ fn driver_findings(root: &SysRoot, nvidia: bool, intel: bool) -> Vec<String> {
     out
 }
 
-/// Electron and Chromium apps that draw through `XWayland`.
-fn app_findings(root: &SysRoot, home: &Path) -> Vec<String> {
+/// Apps whose flags file decides Wayland or `XWayland`: the binary, the flags file in `~/.config`, the flag to add.
+pub const FLAGGED_APPS: [(&str, &str, &str); 5] = [
+    (
+        "/usr/bin/code",
+        "code-flags.conf",
+        "--ozone-platform-hint=auto",
+    ),
+    (
+        "/usr/bin/chromium",
+        "chromium-flags.conf",
+        "--ozone-platform-hint=auto",
+    ),
+    (
+        "/usr/bin/thorium-browser",
+        "thorium-flags.conf",
+        "--ozone-platform=wayland",
+    ),
+    (
+        "/usr/bin/brave",
+        "brave-flags.conf",
+        "--ozone-platform-hint=auto",
+    ),
+    (
+        "/usr/bin/google-chrome-stable",
+        "chrome-flags.conf",
+        "--ozone-platform-hint=auto",
+    ),
+];
+
+/// Electron and Chromium apps of user `home` that draw through `XWayland`: blurry at a fractional scale, but sharper
+/// at integer scales, where Chromium on Wayland draws its text in grayscale (user report 2026-10-14).
+#[must_use]
+pub fn xwayland_apps(root: &SysRoot, home: &std::path::Path) -> Vec<String> {
     FLAGGED_APPS
         .iter()
         .filter(|(binary, _, _)| root.exists(binary))
@@ -170,7 +168,7 @@ fn app_findings(root: &SysRoot, home: &Path) -> Vec<String> {
         })
         .map(|(binary, file, flag)| {
             format!(
-                "{binary} draws through XWayland (blurry at fractional scales): add {flag} on its own line to \
+                "{binary} draws through XWayland, blurry at this fractional scale: add {flag} on its own line to \
                  ~/.config/{file}"
             )
         })
