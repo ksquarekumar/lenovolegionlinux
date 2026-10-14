@@ -5961,6 +5961,224 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "battery.status": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "battery": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "standard, conservation or rapid."
+            },
+            "status": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "capacity_pct": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
+            "cycle_count": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
+            "energy_full_wh": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "energy_full_design_wh": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "health_pct": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "description": "Full vs design capacity, in percent."
+            },
+            "power_w": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "description": "Watts into or out of the battery."
+            },
+            "usb_charging": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "USB ports give power while the laptop is off."
+            }
+          },
+          "description": "The battery now."
+        },
+        "health_trend": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "integer",
+                "format": "int64"
+              },
+              {
+                "type": "number",
+                "format": "double"
+              }
+            ],
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "Daily samples (oldest first): seconds since the epoch and health in percent."
+        }
+      },
+      "required": [
+        "battery",
+        "health_trend"
+      ],
+      "title": "BatteryState",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "battery.mode": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "standard"
+              ]
+            },
+            {
+              "type": "string",
+              "const": "conservation",
+              "description": "It stops near 80 %: a longer battery life on AC."
+            },
+            {
+              "type": "string",
+              "const": "rapid",
+              "description": "Faster charging (not with conservation)."
+            }
+          ]
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Show what would happen; change nothing.",
+          "default": false
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "title": "BatteryModeIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "battery.usb-charging": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "on",
+            "off"
+          ]
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Show what would happen; change nothing.",
+          "default": false
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "SwitchIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "boot.status": {
     "class": "read",
     "internal": false,

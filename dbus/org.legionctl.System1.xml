@@ -142,6 +142,20 @@
       <arg type="as" direction="out"/>
     </method>
     <!--
+     The battery's charge mode: standard, conservation (near 80 %) or rapid.
+     -->
+    <method name="SetBatteryMode">
+      <arg name="mode" type="s" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
+     USB charging while the laptop is off, on or off.
+     -->
+    <method name="SetUsbCharging">
+      <arg name="on" type="b" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
      Fan max mode on or off; set again after resume and at start while on.
      -->
     <method name="SetFanMax">

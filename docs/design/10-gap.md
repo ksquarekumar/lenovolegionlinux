@@ -15,9 +15,10 @@ LenovoLegionLinux's `model_kwcn` entry and the in-tree drivers. Every new firmwa
 | Hybrid mode / GPU working mode (dGPU only, Hybrid, Hybrid Auto, iGPU only) | detection designed (02-platform) | GameZone GSync 40/41/42 and iGPU mode 63/64/65; restart required | high |
 | Deactivate dGPU (kill dGPU processes, nudge runtime PM) | missing | NVML process list, `power/runtime_status`; only in hybrid with no display on NVIDIA | medium |
 | GPU overclock | missing | NVML clock offsets; limited on Wayland | low |
-| Battery conservation (~80 %) | read only | `charge_types` = `Long_Life` (one interface with rapid charge) | high (toggle + OSD) |
-| Rapid charge | missing | in-tree `/sys/class/power_supply/BAT0/charge_types` = `Fast` (values `Fast Standard Long_Life`; the kernel keeps Fast and Long_Life exclusive) | medium |
-| Battery statistics / health | missing | `/sys/class/power_supply/BAT0` (cycle count, full vs design), UPower history | medium |
+| Battery conservation (~80 %) | built 2026-10-14: `legionctl battery mode conservation` (also `standard`) | `charge_types` = `Long_Life` (one interface with rapid charge) | — |
+| Rapid charge | built 2026-10-14: `legionctl battery mode rapid` (refused when the battery does not offer it) | `/sys/class/power_supply/BAT0/charge_types` = `Fast` (the kernel keeps Fast and Long_Life exclusive) | — |
+| Battery statistics / health | built 2026-10-14: `legionctl battery status` (health = full vs design, cycles, charge rate) and a daily `battery.sample` for the trend | `/sys/class/power_supply/BAT0` | — |
+| USB charging while off | built 2026-10-14: `legionctl battery usb-charging on|off` | `ideapad_acpi` `usb_charging` | — |
 | Keyboard RGB (Spectrum per-key / 4-zone), white backlight levels | missing | ITE 8258 HID device; check OpenRGB support before writing a protocol | medium |
 | Logo and rear-port lighting | missing | KBBACKLIGHT `\_SB_.GZFD.WMAF`: light id 0x03 Y-logo (set 1 on / 2 off), 0x05 IO port; read first | low |
 | Win-key lock, touchpad lock | missing | GameZone `WMAA` 21/22/23 (Win key), 24/25/26 (touchpad); call the IsSupport id first | low |

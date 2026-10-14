@@ -2824,6 +2824,69 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         );
     }
 
+    /// The battery (todo-82): `battery status` shows the charge mode in use (the bracketed charge type), the health
+    /// (full vs design capacity), the cycles and USB charging while off; `battery mode` writes the charge type the
+    /// battery offers and refuses one it does not; `usb-charging` writes ideapad's setting; the operator records a
+    /// health sample when it starts (the daily trend).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_battery_mode_health_and_usb_charging_follow_what_the_battery_offers() {
+        let m = Machine::new("battery");
+        let bat = "/sys/class/power_supply/BAT0";
+        for (file, value) in [
+            ("charge_types", "Fast Standard [Long_Life]"),
+            ("energy_full", "95620000"),
+            ("energy_full_design", "99900000"),
+            ("cycle_count", "46"),
+            ("capacity", "79"),
+            ("status", "Not charging"),
+        ] {
+            m.set(&format!("{bat}/{file}"), value);
+        }
+        let usb = "/sys/bus/platform/drivers/ideapad_acpi/VPC2004:00/usb_charging";
+        m.set(usb, "0");
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "battery");
+
+        let status = op.ok(&["battery", "status"]);
+        for expected in [
+            "mode: conservation",
+            "health: 95.7% (95.6 of 99.9 Wh), 46 cycles",
+            "USB charging while off: off",
+        ] {
+            assert!(status.contains(expected), "{expected} missing:\n{status}");
+        }
+        op.ok(&["battery", "mode", "rapid"]);
+        assert_eq!(m.file(&format!("{bat}/charge_types")), "Fast");
+        op.ok(&["battery", "usb-charging", "on"]);
+        assert_eq!(m.file(usb), "1");
+
+        m.set(&format!("{bat}/charge_types"), "Standard [Long_Life]");
+        let refused = op.cli(&["battery", "mode", "rapid"]);
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("this battery does not offer Fast"),
+            "{}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+        assert_eq!(
+            m.file(&format!("{bat}/charge_types")),
+            "Standard [Long_Life]",
+            "nothing written"
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let events = op.ok(&["events", "--json", "--limit", "1000"]);
+            if events.contains("\"health_pct\": 95.7") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no battery sample: {events}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    }
+
     /// The Windows VM's full start, as root (only root may raise the memory lock this far): QEMU runs on the
     /// configured CPUs with the Windows disk through VFIO, the Bolt receiver, the firmware's MSDM table, a TPM and a
     /// free `PCIe` port for a GPU; when it ends, the host is given back.

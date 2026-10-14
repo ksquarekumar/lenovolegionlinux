@@ -1,6 +1,7 @@
 //! Machine control for this Lenovo Legion. Every path goes through a [`sysroot::SysRoot`], so the same code runs on
 //! the machine and against recorded trees (tests, replays).
 
+pub mod battery;
 pub mod bench;
 pub mod boot;
 pub mod cleanup;

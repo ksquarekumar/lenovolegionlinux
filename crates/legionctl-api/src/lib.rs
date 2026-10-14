@@ -545,6 +545,13 @@ operations! {
     /// Create a container from a local image with a core class, a memory limit and the NVIDIA GPUs: the plan, then
     /// the container (not started), unless dry run.
     virt_create / VirtCreate = "virt.create", Workspace, VirtCreateIn => Lines;
+    /// The battery: charge mode, health (full vs design capacity), cycles, charge rate, USB charging while off, and the
+    /// health trend from the daily samples.
+    battery_status / BatteryStatus = "battery.status", Read, Empty => BatteryState;
+    /// The battery's charge mode: standard, conservation (stops near 80 %) or rapid.
+    battery_mode / BatteryModeOp = "battery.mode", Machine, BatteryModeIn => Changes;
+    /// USB ports give power while the laptop is off, or not.
+    battery_usb_charging / BatteryUsbCharging = "battery.usb-charging", Machine, SwitchIn => Changes;
     /// How the computer starts: the firmware's entries and order, this start's entry, the next one, legionctl's entry
     /// and its kernel images.
     boot_status / BootStatus = "boot.status", Read, Empty => BootState;

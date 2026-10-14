@@ -4,9 +4,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::wire::{
-    Action, BenchResult, Binding, Capability, ConfigFile, ConfigLayer, DesktopGpu, DossierInfo,
-    EditMode, Event, EventRow, GpuMode, Inside, Knob, Lock, Output, PackageState, Reminder, Sample,
-    Scenario, SessionRecord, SkillInfo, VfioDevice, Workspace, WorkspaceStatus,
+    Action, Battery, BenchResult, Binding, Capability, ConfigFile, ConfigLayer, DesktopGpu,
+    DossierInfo, EditMode, Event, EventRow, GpuMode, Inside, Knob, Lock, Output, PackageState,
+    Reminder, Sample, Scenario, SessionRecord, SkillInfo, VfioDevice, Workspace, WorkspaceStatus,
 };
 use crate::{ClientPath, SessionId, StdinText};
 
@@ -318,6 +318,31 @@ pub struct VfioBindIn {
     /// The memory it may lock, in MiB (the VM's memory and some more).
     #[serde(default)]
     pub memlock_mib: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum BatteryMode {
+    Standard,
+    /// It stops near 80 %: a longer battery life on AC.
+    Conservation,
+    /// Faster charging (not with conservation).
+    Rapid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BatteryState {
+    pub battery: Battery,
+    /// Daily samples (oldest first): seconds since the epoch and health in percent.
+    pub health_trend: Vec<(i64, f64)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BatteryModeIn {
+    pub mode: BatteryMode,
+    /// Show what would happen; change nothing.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

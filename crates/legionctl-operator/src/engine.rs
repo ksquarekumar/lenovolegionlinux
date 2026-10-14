@@ -2127,6 +2127,55 @@ impl Engine for Operator {
         Ok(Lines { lines })
     }
 
+    fn battery_status(&self, _: &Ctx, _: Empty) -> Result<legionctl_api::BatteryState> {
+        let battery = legionctl_machine::battery::state(&SysRoot::from_env());
+        let filter = legionctl_core::db::EventFilter {
+            kinds: &["battery.sample"],
+            ..Default::default()
+        };
+        let (rows, _) = Db::open_default()?.events_page(&filter, 0, 1000)?;
+        let health_trend = rows
+            .iter()
+            .filter_map(|e| Some((e.ts, e.payload["health_pct"].as_f64()?)))
+            .collect();
+        Ok(legionctl_api::BatteryState {
+            battery: battery.into_wire(),
+            health_trend,
+        })
+    }
+
+    fn battery_mode(&self, _: &Ctx, input: legionctl_api::BatteryModeIn) -> Result<Changes> {
+        let mode = match input.mode {
+            legionctl_api::BatteryMode::Standard => "standard",
+            legionctl_api::BatteryMode::Conservation => "conservation",
+            legionctl_api::BatteryMode::Rapid => "rapid",
+        };
+        if input.dry_run {
+            return Ok(dry_run(&legionctl_machine::battery::mode_plan(
+                &SysRoot::from_env(),
+                mode,
+            )?));
+        }
+        Ok(Changes {
+            lines: self.system(async move |p| p.set_battery_mode(mode).await)?,
+            dry_run: false,
+        })
+    }
+
+    fn battery_usb_charging(&self, _: &Ctx, input: SwitchIn) -> Result<Changes> {
+        let on = input.state == Switch::On;
+        if input.dry_run {
+            return Ok(dry_run(&legionctl_machine::battery::usb_charging_plan(
+                &SysRoot::from_env(),
+                on,
+            )?));
+        }
+        Ok(Changes {
+            lines: self.system(async move |p| p.set_usb_charging(on).await)?,
+            dry_run: false,
+        })
+    }
+
     fn boot_status(&self, _: &Ctx, _: Empty) -> Result<legionctl_api::BootState> {
         Ok(legionctl_machine::boot::state(&SysRoot::from_env())?.into_wire())
     }

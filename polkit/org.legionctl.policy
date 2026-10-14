@@ -44,6 +44,16 @@
     </defaults>
   </action>
 
+  <action id="org.legionctl.battery">
+    <description>Change the battery's charge mode or USB charging while off</description>
+    <message>Authentication is required to change how the battery charges</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
   <action id="org.legionctl.boot">
     <description>Add, confirm, rebuild or remove legionctl's boot entry (systemd-boot and signed kernel images)</description>
     <message>Authentication is required to change how the computer starts</message>

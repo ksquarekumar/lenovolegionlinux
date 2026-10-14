@@ -3,12 +3,12 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    BenchCompare, BenchRun, BootState, CapabilityList, Changes, ConfigFile, ConfigView,
-    DossierFindings, DossierInfo, Empty, EventRow, Explanation, Findings, GpuState, Guard,
-    HookReply, HookTable, Knob, KnobDetail, Launch, LayerList, Lines, LoadState, Lock, Manifest,
-    PackageState, Recording, Reminder, RunEnv, Sample, SessionState, SetupReport, SkillInfo,
-    Snapshot, ToolCallRow, TuneReport, Validation, VfioDevices, WindowsState, WindowsVmBegun,
-    Workspace, WorkspaceStatus,
+    BatteryState, BenchCompare, BenchRun, BootState, CapabilityList, Changes, ConfigFile,
+    ConfigView, DossierFindings, DossierInfo, Empty, EventRow, Explanation, Findings, GpuState,
+    Guard, HookReply, HookTable, Knob, KnobDetail, Launch, LayerList, Lines, LoadState, Lock,
+    Manifest, PackageState, Recording, Reminder, RunEnv, Sample, SessionState, SetupReport,
+    SkillInfo, Snapshot, ToolCallRow, TuneReport, Validation, VfioDevices, WindowsState,
+    WindowsVmBegun, Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -234,6 +234,45 @@ impl Render for GpuState {
                 if o.connected { "connected" } else { "-" }
             )
         }));
+        out.join("\n")
+    }
+}
+
+impl Render for BatteryState {
+    fn text(&self) -> String {
+        let b = &self.battery;
+        let or = |v: Option<String>| v.unwrap_or_else(|| "unknown".into());
+        let mut out = vec![
+            format!(
+                "mode: {}  {} at {}%",
+                or(b.mode.clone()),
+                or(b.status.clone()),
+                or(b.capacity_pct.map(|c| c.to_string()))
+            ),
+            format!(
+                "health: {}% ({} of {} Wh), {} cycles",
+                or(b.health_pct.map(|h| format!("{h:.1}"))),
+                or(b.energy_full_wh.map(|e| format!("{e:.1}"))),
+                or(b.energy_full_design_wh.map(|e| format!("{e:.1}"))),
+                or(b.cycle_count.map(|c| c.to_string()))
+            ),
+            format!(
+                "USB charging while off: {}",
+                b.usb_charging
+                    .map_or("unknown", |on| if on { "on" } else { "off" })
+            ),
+        ];
+        if let (Some(first), Some(last)) = (self.health_trend.first(), self.health_trend.last())
+            && self.health_trend.len() > 1
+        {
+            let days = (last.0 - first.0) / 86_400;
+            out.push(format!(
+                "health trend: {:.1}% -> {:.1}% in {days} days ({} samples)",
+                first.1,
+                last.1,
+                self.health_trend.len()
+            ));
+        }
         out.join("\n")
     }
 }

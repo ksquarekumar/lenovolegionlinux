@@ -34,7 +34,7 @@ use legionctl_machine::policy::{self, Machine, Options, Source, Step};
 use legionctl_machine::react::{Event, react};
 use legionctl_machine::sysroot::SysRoot;
 use legionctl_machine::{
-    boot, cleanup, fan, gpu, knobs, profile, telemetry, tune, vfio, windows, winvm,
+    battery, boot, cleanup, fan, gpu, knobs, profile, telemetry, tune, vfio, windows, winvm,
 };
 use tokio::io::unix::AsyncFd;
 use tokio::io::{Interest, Ready};
@@ -151,7 +151,7 @@ fn carry_out(
 }
 
 /// A fan change: a refused plan is the caller's error; the session hears what changed.
-async fn fan_change(
+async fn machine_change(
     root: &SysRoot,
     emitter: &SignalEmitter<'_>,
     cause: &str,
@@ -806,7 +806,7 @@ impl System1 {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.fan").await?;
-        fan_change(&self.root, &emitter, "SetFanCurve", |m| {
+        machine_change(&self.root, &emitter, "SetFanCurve", |m| {
             let plan = fan::set_curve(m, &levels)?;
             fan::require_verified(m)?;
             Ok(plan)
@@ -822,10 +822,40 @@ impl System1 {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.fan").await?;
-        fan_change(&self.root, &emitter, "ResetFanCurve", |m| {
+        machine_change(&self.root, &emitter, "ResetFanCurve", |m| {
             let plan = fan::reset_curve(m)?;
             fan::require_verified(m)?;
             Ok(plan)
+        })
+        .await
+    }
+
+    /// The battery's charge mode: standard, conservation (near 80 %) or rapid.
+    async fn set_battery_mode(
+        &self,
+        mode: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.battery").await?;
+        machine_change(&self.root, &emitter, "SetBatteryMode", |m| {
+            battery::mode_plan(m.root, &mode)
+        })
+        .await
+    }
+
+    /// USB charging while the laptop is off, on or off.
+    async fn set_usb_charging(
+        &self,
+        on: bool,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.battery").await?;
+        machine_change(&self.root, &emitter, "SetUsbCharging", |m| {
+            battery::usb_charging_plan(m.root, on)
         })
         .await
     }
@@ -839,7 +869,7 @@ impl System1 {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.fan").await?;
-        fan_change(&self.root, &emitter, "SetFanMax", |m| fan::max(m, on)).await
+        machine_change(&self.root, &emitter, "SetFanMax", |m| fan::max(m, on)).await
     }
 
     /// Full fan speed on or off, for dust cleaning (custom mode only).
@@ -851,7 +881,7 @@ impl System1 {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.fan").await?;
-        fan_change(&self.root, &emitter, "SetFanFullSpeed", |m| {
+        machine_change(&self.root, &emitter, "SetFanFullSpeed", |m| {
             let plan = fan::clean(m, on)?;
             fan::require_verified(m)?;
             Ok(plan)
@@ -868,7 +898,7 @@ impl System1 {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.fan.lock").await?;
-        fan_change(&self.root, &emitter, "SetFanLock", |m| fan::lock(m, on)).await
+        machine_change(&self.root, &emitter, "SetFanLock", |m| fan::lock(m, on)).await
     }
 
     /// The readings only root can make (fan RPM, throttle reasons from the MSR), as JSON (`telemetry::RootSample`).

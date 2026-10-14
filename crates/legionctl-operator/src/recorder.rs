@@ -37,6 +37,16 @@ pub async fn run(ready: crate::Ready) -> Result<()> {
     let mut keys = machine.receive_key().await?;
     eprintln!("operator: recording machine events");
     ready.set();
+    // the battery's health once a day (the trend in `battery status`); beside the loop, which ends with the bus
+    tokio::spawn(async {
+        let mut hourly = tokio::time::interval(std::time::Duration::from_hours(1));
+        loop {
+            hourly.tick().await;
+            if let Ok(Some(sample)) = tokio::task::spawn_blocking(battery_sample).await {
+                tokio::task::spawn_blocking(move || record("battery.sample", &sample));
+            }
+        }
+    });
     loop {
         let (kind, payload) = tokio::select! {
             Some(s) = changed.next() => {
@@ -63,6 +73,33 @@ pub async fn run(ready: crate::Ready) -> Result<()> {
         };
         tokio::task::spawn_blocking(move || record(&kind, &payload)).await?;
     }
+}
+
+/// A battery sample when the last one is a day old or there is none.
+fn battery_sample() -> Option<Value> {
+    let filter = legionctl_core::db::EventFilter {
+        kinds: &["battery.sample"],
+        ..Default::default()
+    };
+    let db = Db::open_default().ok()?;
+    // one a day: the page holds every sample of years
+    let newest = db
+        .events_page(&filter, 0, 1000)
+        .ok()?
+        .0
+        .last()
+        .map(|e| e.ts);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    if newest.is_some_and(|ts| now.saturating_sub(u64::try_from(ts).unwrap_or(0)) < 86_400) {
+        return None;
+    }
+    let b = legionctl_machine::battery::state(&legionctl_machine::sysroot::SysRoot::from_env());
+    Some(
+        json!({"health_pct": b.health_pct?, "cycle_count": b.cycle_count, "energy_full_wh": b.energy_full_wh}),
+    )
 }
 
 /// `ApplyPower` -> `apply-power`: the daemon's cause as an event kind.

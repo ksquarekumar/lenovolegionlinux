@@ -603,6 +603,23 @@ wire! {
 
     }
 
+    /// The battery now.
+    struct Battery from machine::battery::Battery {
+        /// standard, conservation or rapid.
+        mode: Option<String>,
+        status: Option<String>,
+        capacity_pct: Option<u32>,
+        cycle_count: Option<u32>,
+        energy_full_wh: Option<f64>,
+        energy_full_design_wh: Option<f64>,
+        /// Full vs design capacity, in percent.
+        health_pct: Option<f64>,
+        /// Watts into or out of the battery.
+        power_w: Option<f64>,
+        /// USB ports give power while the laptop is off.
+        usb_charging: Option<bool>,
+    }
+
     /// A firmware boot entry.
     struct BootEntry from machine::boot::Entry {
         /// `0003`

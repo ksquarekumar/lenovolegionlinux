@@ -28,6 +28,10 @@ pub trait System1 {
     fn gpu_release(&self) -> zbus::Result<Vec<String>>;
     /// Give the NVIDIA GPU back to Linux.
     fn gpu_return(&self) -> zbus::Result<Vec<String>>;
+    /// The battery's charge mode (standard, conservation, rapid).
+    fn set_battery_mode(&self, mode: &str) -> zbus::Result<Vec<String>>;
+    /// USB charging while the laptop is off.
+    fn set_usb_charging(&self, on: bool) -> zbus::Result<Vec<String>>;
     /// The boot takeover: install, confirm, rebuild or remove.
     fn boot(&self, action: &str) -> zbus::Result<Vec<String>>;
     /// Give devices back from vfio-pci to their own drivers.
