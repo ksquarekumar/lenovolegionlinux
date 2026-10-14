@@ -4,11 +4,9 @@ argument-hint: power auto|ac|battery | gpu nvidia|intel|auto | cleanup
 ---
 Request this change with the legionctl MCP tool that matches it: $ARGUMENTS
 
-- power: `power_apply` with `source`
-- gpu: `gpu_primary` with `choice`
-- cleanup: `cleanup` (with `unload_modules` only when the user asks)
-
-Pass `dry_run: true` first when the user wants to see the plan.
-
-Tell the user first that a polkit approval dialog will appear on this machine and that nothing changes unless they
-approve it. Afterwards report legionctl's output; for the desktop GPU, remind them it applies at the next login.
+1. Follow skill `legionctl:machine-tools`. Tell the user that a polkit dialog will appear and nothing changes without
+   their approval.
+2. power: `power_apply` with `source`. gpu: `gpu_primary` with `choice`. cleanup: `cleanup` (`unload_modules` only when
+   the user asks).
+3. If the user wants to see the plan, pass `dry_run: true` first.
+4. Report legionctl's output. For the desktop GPU, say that it applies at the next login.

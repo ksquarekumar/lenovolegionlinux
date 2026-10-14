@@ -1,64 +1,28 @@
 ---
 name: glanceable-style
-description: Structure every user-facing output (answers, reports, status, docs, UI and CLI text) so a person gets the point at a glance and can open more detail on demand (progressive disclosure), and so agents and tools can search, link and track it with few tokens. Use with the ste100-style skill for the wording.
+description: Structure user-facing output (answers, reports, status, docs, UI and CLI text) so a person gets the point at a glance and opens more detail on demand, and an agent finds and links it with few tokens. Use for every output that a person or a tool reads; use skill ste100-style for the words.
 user-invocable: false
 ---
 
-# Glanceable, progressive, agent-readable output
+# Glanceable output
 
-One output serves two readers. A person scans it in seconds and goes deeper only if needed. An agent or tool
-searches it, links to parts of it, and tracks it over time, and pays for every token it reads.
+1. One output serves two readers: a person who scans it in seconds, and an agent that pays for each token it reads.
+2. The first line is the answer, the state or the decision, in one sentence. Never start with background or method.
+3. Then give 3 to 7 key facts that the reader needs to act. Use a table to compare and a list for separate facts.
+4. Then give the detail (reasons, evidence, steps) under headings that name the content.
+5. Link or collapse raw material (logs, full output, long lists). Do not paste it when a reference is sufficient.
+6. A reader can stop after each level and still act correctly.
+7. Use the same order and names for the same kind of output, so readers learn where to look.
+8. Give numbers with units and a comparison: "85 W, up from 70 W".
+9. Show state in form, not only in words: a status column, a "Needs action" heading, a severity word first.
+10. Write identifiers, paths, commit SHAs, errors and commands exactly as the system writes them, so a search finds
+    them.
+11. When a tool reads the output, give JSON with stable keys or a table with fixed columns. Do not mix prose into data.
+12. Point to a file, line range or URL; do not copy its content. One idea lives in one place.
+13. For state that changes, give the time or version and what changed since the last report.
+14. Do not repeat the question, earlier answers or unchanged context. Remove filler ("Here is", "As requested").
+15. Put the action for the reader last: one command, one question, or "nothing to do".
 
-## For people: answer first, then layers
+## Refs
 
-1. **Level 0, the glance (first line):** the answer, the state or the decision, in one sentence. "Build passes; 2
-   warnings remain." Never start with background, method or a restatement of the question.
-2. **Level 1, the key facts:** 3 to 7 items the reader needs to act. Use a table to compare things and a short
-   list for independent facts. Bold the decision or the one thing that needs action.
-3. **Level 2, the detail:** reasons, evidence, steps. Use headings that name the content ("Why the test fails"),
-   not generic ones ("Details").
-4. **Level 3, raw material:** logs, full output, long lists. Link or collapse it (`<details>`, a file path, a URL).
-   Do not paste it inline when a reference is enough.
-
-Rules:
-- Keep the same order and names for the same kind of output, so readers learn where to look.
-- Give numbers with units and the comparison that makes them meaningful ("85 W, up from 70 W").
-- Show state in form, not only in words: a status column, a "Needs action" heading, a severity word at the start.
-- Put what the reader must do last and make it explicit: one command, one question, or "nothing to do".
-
-## For agents and tools: searchable, linkable, trackable
-
-1. **Stable identifiers:** use `file:line`, commit SHAs, issue and PR numbers, unit names, IDs and URLs exactly as the
-   system writes them. These are what agents search for and link to.
-2. **Exact strings:** quote error messages, commands and settings verbatim so a search finds them.
-3. **Machine-readable when a tool consumes it:** emit JSON with stable keys, or a table with fixed columns. Do not
-   mix prose into data.
-4. **References over copies:** point to a file, line range or URL instead of repeating its content.
-5. **Track changes:** for status that changes over time, give the time or version and what changed since the last
-   report ("since 0bbadd5: …").
-
-## Token budget
-
-- Do not repeat the question, earlier answers or unchanged context.
-- One idea in one place; link to it from others.
-- Remove filler: "As requested", "Here is", "It is worth noting".
-- A short answer is complete only when the reader can act on it. Cut words, not the information they need.
-
-## Dual-audience pattern
-
-When both readers matter, put the human summary first and the agent material at the end or in a referenced
-artifact:
-
-```
-Build passes; 2 warnings remain.          <- glance
-| Check | Result |                       <- key facts
-...
-Details: build.log lines 120-140          <- reference, not a paste
-```
-
-## Check before you send
-
-- The first line answers or states, by itself.
-- A reader can stop after any level and still act correctly.
-- Every identifier, path and error is exact and searchable.
-- Nothing is repeated; long material is linked or collapsed.
+- `refs/example-dual-audience.md` - read for the shape of an output that serves a person and an agent.

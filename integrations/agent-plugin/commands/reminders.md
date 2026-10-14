@@ -1,17 +1,14 @@
 ---
 description: Manage the reminders legionctl's hooks inject into every session or prompt (guided)
-argument-hint: [on|off|add|remove] [id] [text]
+argument-hint: [on|off|add|rm] [id] [text]
 ---
 Help the user manage legionctl reminders. Request: $ARGUMENTS
 
-1. Call `reminders_list` and show a compact table: on/off, id, when (session start or every prompt), built-in or
-   custom, text.
-2. If the request already says what to do (for example `off ste100`, or `add tests-first "Write a test first"`),
-   do it with `reminders_on`, `reminders_off`, `reminders_add` or
-   `reminders_rm` and show the updated row.
-3. Otherwise guide the user:
-   - Offer the built-ins that are off, each with one line on what it does.
-   - Offer to add a custom reminder. Ask for: a short id (a-z, 0-9, '-'), the text (one line, 300 characters max),
-     and when it fires. Recommend "session start" unless it must apply on every turn, because every-prompt
-     reminders cost tokens on each turn.
-4. Confirm the change and say it applies from the next prompt or session start.
+1. Call `reminders_list`. Show a compact table: on/off, id, when (session start or each prompt), built-in or custom,
+   text.
+2. If the request says what to do (`off ste100`, `add tests-first "Write a test first"`), call `reminders_on`,
+   `reminders_off`, `reminders_add` or `reminders_rm`, and show the new row.
+3. Else offer the built-ins that are off, with one line each, and offer a custom reminder.
+4. For a custom reminder, ask for an id (a-z, 0-9, '-'), the text (one line, 300 characters max) and when it fires.
+   Recommend session start: a prompt reminder costs tokens on each turn.
+5. Say that the change applies from the next prompt or session start.
