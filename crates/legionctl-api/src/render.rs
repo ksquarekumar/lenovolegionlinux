@@ -7,7 +7,7 @@ use crate::{
     DossierInfo, Empty, EventRow, Explanation, Findings, GpuState, Guard, HookReply, HookTable,
     Knob, KnobDetail, Launch, LayerList, Lines, LoadState, Lock, Manifest, PackageState, Recording,
     Reminder, RunEnv, Sample, SessionState, SetupReport, SkillInfo, Snapshot, ToolCallRow,
-    TuneReport, Validation, WindowsState, Workspace, WorkspaceStatus,
+    TuneReport, Validation, VfioDevices, WindowsState, Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -233,6 +233,30 @@ impl Render for GpuState {
                 if o.connected { "connected" } else { "-" }
             )
         }));
+        out.join("\n")
+    }
+}
+
+impl Render for VfioDevices {
+    fn text(&self) -> String {
+        if self.items.is_empty() {
+            return "no discrete GPU or NVMe controller with an IOMMU group (is the IOMMU on?)"
+                .into();
+        }
+        let mut out = Vec::new();
+        for d in &self.items {
+            out.push(format!(
+                "{} {} {} group {} ({}) driver {}: {}",
+                d.kind,
+                d.device,
+                d.ids,
+                d.group,
+                d.members.join(" "),
+                d.driver.as_deref().unwrap_or("none"),
+                if d.users.is_empty() { "free" } else { "in use" }
+            ));
+            out.extend(d.users.iter().map(|u| format!("  - {u}")));
+        }
         out.join("\n")
     }
 }

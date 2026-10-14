@@ -26,7 +26,9 @@ use legionctl_api::{
     CachePurgeIn, CacheStat, CachedCall, EventRow, JobIdIn, Page, PageIn, Principal,
     SessionActivityIn,
 };
-use legionctl_api::{KnobHoldIn, KnobIn, PackIn, PackKind, UndoIn};
+use legionctl_api::{
+    KnobHoldIn, KnobIn, PackIn, PackKind, UndoIn, VfioBindIn, VfioDevices, VfioIn,
+};
 use legionctl_core::cache::Cache;
 use legionctl_core::config::{Dirs, Resolved, resolve};
 
@@ -1074,6 +1076,30 @@ impl Engine for Operator {
             mode: gpu::mode(&outputs).into_wire(),
             desktop_gpu: gpu::desktop_preference(&root).into_wire(),
             outputs: outputs.into_wire(),
+        })
+    }
+
+    fn vfio_status(&self, _: &Ctx, _: Empty) -> Result<VfioDevices> {
+        let json = self.system(async move |p| p.passthroughs().await)?;
+        let items: Vec<legionctl_machine::vfio::Candidate> = serde_json::from_str(&json)?;
+        Ok(VfioDevices {
+            items: items.into_wire(),
+        })
+    }
+
+    fn vfio_bind(&self, _: &Ctx, input: VfioBindIn) -> Result<Changes> {
+        let memlock = input.memlock_mib.unwrap_or(0) << 20;
+        let pid = input.pid.unwrap_or(0);
+        Ok(Changes {
+            lines: self.system(async move |p| p.passthrough(&input.devices, pid, memlock).await)?,
+            dry_run: false,
+        })
+    }
+
+    fn vfio_unbind(&self, _: &Ctx, input: VfioIn) -> Result<Changes> {
+        Ok(Changes {
+            lines: self.system(async move |p| p.passthrough_end(&input.devices).await)?,
+            dry_run: false,
         })
     }
 

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::wire::{
     Action, BenchResult, Binding, Capability, ConfigFile, ConfigLayer, DesktopGpu, DossierInfo,
     EditMode, Event, EventRow, GpuMode, Inside, Knob, Lock, Output, PackageState, Reminder, Sample,
-    Scenario, SessionRecord, SkillInfo, Workspace, WorkspaceStatus,
+    Scenario, SessionRecord, SkillInfo, VfioDevice, Workspace, WorkspaceStatus,
 };
 use crate::{ClientPath, SessionId, StdinText};
 
@@ -297,6 +297,29 @@ pub struct GpuState {
     /// GPU GNOME draws the desktop on; Mutter reads it at login.
     pub desktop_gpu: DesktopGpu,
     pub outputs: Vec<Output>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct VfioDevices {
+    pub items: Vec<VfioDevice>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct VfioBindIn {
+    /// PCI addresses of one whole IOMMU group (`vfio status`).
+    pub devices: Vec<String>,
+    /// The VM runner that may lock the VM's memory; none when you bind by hand.
+    #[serde(default)]
+    pub pid: Option<u32>,
+    /// The memory it may lock, in MiB (the VM's memory and some more).
+    #[serde(default)]
+    pub memlock_mib: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct VfioIn {
+    /// PCI addresses to give back to their own drivers.
+    pub devices: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -604,6 +627,7 @@ pub struct SessionResumeIn {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GateIn {
     /// The git arguments, as the command got them.
+    #[schemars(extend("x-argv" = true))]
     pub args: Vec<String>,
     /// Where the command runs; its repository's config layer and aliases apply.
     #[serde(default = "here")]

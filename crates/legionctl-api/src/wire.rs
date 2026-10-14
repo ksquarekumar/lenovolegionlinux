@@ -601,6 +601,23 @@ wire! {
 
     }
 
+    /// A device that can go to a VM (VFIO): a discrete GPU or an `NVMe` controller.
+    struct VfioDevice from machine::vfio::Candidate {
+        /// PCI address (`0000:01:00.0`).
+        device: String,
+        /// gpu or nvme.
+        kind: String,
+        /// PCI vendor and device ids (`10de:27e0`).
+        ids: String,
+        /// Its IOMMU group; a VM gets the whole group.
+        group: String,
+        members: Vec<String>,
+        /// Its driver now (`vfio-pci` while a VM has it).
+        driver: Option<String>,
+        /// What on the host uses the group now; it can go to a VM only when this is empty.
+        users: Vec<String>,
+    }
+
     struct Knob from machine::knobs::Knob {
         /// `platform_profile`, `cpu.governor`, `sysctl.vm.swappiness`, `firmware.ppt_pl1_spl`, ...
         id: String,

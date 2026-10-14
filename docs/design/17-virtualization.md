@@ -111,3 +111,20 @@ Warnings go to the event log, `legionctl doctor`, the app and the OSD. Each has 
 - `legionctl-operator` owns the user-level parts: Docker and libvirt instances, templates, consumer inventory.
 - Docker socket access is root-equivalent (this user is in the `docker` group). Docker operations that mount host
   paths or add devices are machine changes and need approval (12-operator approvals).
+
+## VFIO (built 2026-10-14, decided by the user the same day)
+
+A VM gets a whole IOMMU group or nothing: `legionctl vfio status` lists each discrete GPU and NVMe controller with
+its group, members, driver and what on the host uses it now (the daemon's read-only `Passthroughs()`: processes that
+hold a DRM, NVIDIA or NVMe node, mounted, swap or held partitions; an audio function is not checked, sound cards are
+made to go away while in use). `vfio bind <devices>` (D-Bus `Passthrough`, polkit `org.legionctl.vfio`) refuses a part
+of a group and anything in use, with the reasons; else it writes `driver_override`, unbinds the device from its
+driver by the driver's own folder (never through the device's `driver` link), probes it, waits for the kernel's
+`driver` link to be `vfio-pci`, and gives `/dev/vfio/<group>` to the caller. With `--pid`, a process of the caller
+(the VM runner, before QEMU starts) may lock `--memlock-mib` (QEMU locks all of a VM's memory for VFIO); a pid of
+another user is refused and the group goes back. `vfio unbind` clears the override and probes again, so the device's
+own driver takes it. Facts here (2026-10-14): IOMMU on; the RTX 4080 and its audio function are group 17; the Windows
+SK hynix NVMe is group 18 alone; Linux is on the other NVMe. Test (e2e, real daemon on a private bus): the recorded
+machine with a PCI tree and a stand-in kernel (a probe moves the `driver` link as `driver_override` says and makes the
+group's node): status and its users, a part of a group, a process on the GPU, a mounted partition and another user's
+pid are refused (the last two mutation-checked), a bind and the memory lock of a real process, and the way back.

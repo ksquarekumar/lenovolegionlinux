@@ -25,6 +25,23 @@
       <arg type="as" direction="out"/>
     </method>
     <!--
+     Give `devices` (one whole IOMMU group that the host does not use) to the caller's VM: bind them to vfio-pci,
+     give the caller `/dev/vfio/<group>`, and let its process `pid` (the VM runner; 0: none) lock `memlock` bytes.
+     -->
+    <method name="Passthrough">
+      <arg name="devices" type="as" direction="in"/>
+      <arg name="pid" type="u" direction="in"/>
+      <arg name="memlock" type="t" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
+     Give `devices` back from vfio-pci to their own drivers, after the VM ended.
+     -->
+    <method name="PassthroughEnd">
+      <arg name="devices" type="as" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
      Choose the GPU GNOME draws the desktop on: `nvidia`, `intel` or `auto`; takes effect at the next login.
      -->
     <method name="SetPrimaryGpu">
@@ -60,6 +77,12 @@
      Read-only, so polkit is not asked.
      -->
     <method name="Sample">
+      <arg type="s" direction="out"/>
+    </method>
+    <!--
+     The devices that can go to a VM (`vfio::Candidate` list as JSON): read-only, so polkit is not asked.
+     -->
+    <method name="Passthroughs">
       <arg type="s" direction="out"/>
     </method>
     <!--

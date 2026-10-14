@@ -33,7 +33,7 @@ use legionctl_machine::ledger::{Key, Ledger};
 use legionctl_machine::policy::{self, Machine, Options, Source, Step};
 use legionctl_machine::react::{Event, react};
 use legionctl_machine::sysroot::SysRoot;
-use legionctl_machine::{cleanup, gpu, knobs, profile, telemetry, tune, windows};
+use legionctl_machine::{cleanup, gpu, knobs, profile, telemetry, tune, vfio, windows};
 use tokio::io::unix::AsyncFd;
 use tokio::io::{Interest, Ready};
 use zbus::object_server::SignalEmitter;
@@ -207,6 +207,20 @@ async fn handle(
     *announced = now;
 }
 
+/// The uid of the caller of a method.
+async fn caller_uid(
+    conn: &zbus::Connection,
+    header: &zbus::message::Header<'_>,
+) -> zbus::fdo::Result<u32> {
+    let sender = header
+        .sender()
+        .ok_or_else(|| zbus::fdo::Error::AccessDenied("caller has no bus name".into()))?;
+    zbus::fdo::DBusProxy::new(conn)
+        .await?
+        .get_connection_unix_user(sender.clone().into())
+        .await
+}
+
 /// Ask polkit whether the caller of this method may perform `action`; polkit may show an authentication dialog.
 async fn authorize(
     conn: &zbus::Connection,
@@ -274,13 +288,7 @@ async fn caller(
     conn: &zbus::Connection,
     header: &zbus::message::Header<'_>,
 ) -> zbus::fdo::Result<Option<(u32, u32)>> {
-    let sender = header
-        .sender()
-        .ok_or_else(|| zbus::fdo::Error::AccessDenied("caller has no bus name".into()))?;
-    let uid = zbus::fdo::DBusProxy::new(conn)
-        .await?
-        .get_connection_unix_user(sender.clone().into())
-        .await?;
+    let uid = caller_uid(conn, header).await?;
     // /proc/self belongs to this process's effective user
     if std::fs::metadata("/proc/self").is_ok_and(|m| m.uid() == uid) {
         return Ok(None);
@@ -378,6 +386,52 @@ impl System1 {
             carry_out(&self.root, |m| Ok(m.apply(None, again)?.1)).map_err(|e| failed(&e))?,
         );
         Self::changed(&emitter, "Release", &lines).await?;
+        Ok(lines)
+    }
+
+    /// Give `devices` (one whole IOMMU group that the host does not use) to the caller's VM: bind them to vfio-pci,
+    /// give the caller `/dev/vfio/<group>`, and let its process `pid` (the VM runner; 0: none) lock `memlock` bytes.
+    async fn passthrough(
+        &self,
+        devices: Vec<String>,
+        pid: u32,
+        memlock: u64,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.vfio").await?;
+        let uid = caller_uid(conn, &header).await?;
+        let mut lines = vfio::bind(&self.root, &devices, uid)
+            .map_err(|e| zbus::fdo::Error::Failed(format!("{e:#}")))?;
+        // pid 0: no VM runner to raise (a person binding by hand)
+        match (pid != 0)
+            .then(|| vfio::allow_memlock(&self.root, pid, uid, memlock))
+            .transpose()
+        {
+            Ok(line) => lines.extend(line),
+            Err(e) => {
+                // the devices go back: the VM cannot start without the limit
+                let _ = vfio::unbind(&self.root, &devices);
+                return Err(zbus::fdo::Error::Failed(format!("{e:#}")));
+            }
+        }
+        Self::changed(&emitter, "Passthrough", &lines).await?;
+        Ok(lines)
+    }
+
+    /// Give `devices` back from vfio-pci to their own drivers, after the VM ended.
+    async fn passthrough_end(
+        &self,
+        devices: Vec<String>,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.vfio").await?;
+        let lines = vfio::unbind(&self.root, &devices)
+            .map_err(|e| zbus::fdo::Error::Failed(format!("{e:#}")))?;
+        Self::changed(&emitter, "PassthroughEnd", &lines).await?;
         Ok(lines)
     }
 
@@ -523,6 +577,15 @@ impl System1 {
         serde_json::to_string(&sample).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
+    /// The devices that can go to a VM (`vfio::Candidate` list as JSON): read-only, so polkit is not asked.
+    async fn passthroughs(&self) -> zbus::fdo::Result<String> {
+        let root = self.root.clone();
+        let list = tokio::task::spawn_blocking(move || vfio::candidates(&root))
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        serde_json::to_string(&list).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    }
+
     /// Send the starts of programs in the caller's own agent sessions (`SessionExec`) to the caller's connection, from
     /// now on. Only the caller's sessions, and only to it: arguments can hold secrets.
     async fn watch_sessions(
@@ -538,10 +601,7 @@ impl System1 {
         let sender = header
             .sender()
             .ok_or_else(|| zbus::fdo::Error::AccessDenied("caller has no bus name".into()))?;
-        let uid = zbus::fdo::DBusProxy::new(conn)
-            .await?
-            .get_connection_unix_user(sender.clone().into())
-            .await?;
+        let uid = caller_uid(conn, &header).await?;
         self.watchers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

@@ -822,6 +822,182 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "vfio.status": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "description": "A device that can go to a VM (VFIO): a discrete GPU or an `NVMe` controller.",
+            "type": "object",
+            "properties": {
+              "device": {
+                "description": "PCI address (`0000:01:00.0`).",
+                "type": "string"
+              },
+              "kind": {
+                "description": "gpu or nvme.",
+                "type": "string"
+              },
+              "ids": {
+                "description": "PCI vendor and device ids (`10de:27e0`).",
+                "type": "string"
+              },
+              "group": {
+                "description": "Its IOMMU group; a VM gets the whole group.",
+                "type": "string"
+              },
+              "members": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "driver": {
+                "description": "Its driver now (`vfio-pci` while a VM has it).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "users": {
+                "description": "What on the host uses the group now; it can go to a VM only when this is empty.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "device",
+              "kind",
+              "ids",
+              "group",
+              "members",
+              "users"
+            ]
+          }
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "title": "VfioDevices",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "vfio.bind": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "devices": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "PCI addresses of one whole IOMMU group (`vfio status`)."
+        },
+        "pid": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The VM runner that may lock the VM's memory; none when you bind by hand.",
+          "default": null
+        },
+        "memlock_mib": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The memory it may lock, in MiB (the VM's memory and some more).",
+          "default": null
+        }
+      },
+      "required": [
+        "devices"
+      ],
+      "title": "VfioBindIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "vfio.unbind": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "devices": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "PCI addresses to give back to their own drivers."
+        }
+      },
+      "required": [
+        "devices"
+      ],
+      "title": "VfioIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "internal.gpu.run-env": {
     "class": "read",
     "internal": true,
@@ -8252,7 +8428,8 @@
           "items": {
             "type": "string"
           },
-          "description": "The git arguments, as the command got them."
+          "description": "The git arguments, as the command got them.",
+          "x-argv": true
         },
         "project": {
           "type": "string",

@@ -1960,6 +1960,196 @@ mod operator_and_daemon {
         assert!(refused.to_string().contains("neither a knob"), "{refused}");
     }
 
+    /// The PCI side of the recorded machine for VFIO: the RTX 4080 and its audio function (IOMMU group 17, on nvidia
+    /// and `snd_hda_intel`, drawn on by `gnome-shell`), and the Windows `NVMe` controller (group 18, a partition
+    /// mounted), with a stand-in kernel: a write of a device to `drivers_probe` moves its `driver` link to what
+    /// `driver_override` names (or back to its own driver) and makes `/dev/vfio/<group>`, as the kernel does.
+    fn pci_machine(m: &Machine) -> std::thread::JoinHandle<()> {
+        let root = m.dir.join("root");
+        let link = |from: &str, to: &str| {
+            let at = root.join(from);
+            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+            let _ = std::fs::remove_file(&at);
+            std::os::unix::fs::symlink(to, at).unwrap();
+        };
+        let devices = [
+            ("0000:01:00.0", "17", "nvidia", "0x030000", "0x10de"),
+            ("0000:01:00.1", "17", "snd_hda_intel", "0x040300", "0x10de"),
+            ("0000:06:00.0", "18", "nvme", "0x010802", "0x1c5c"),
+        ];
+        for (device, group, driver, class, vendor) in devices {
+            let dir = format!("/sys/bus/pci/devices/{device}");
+            m.set(&format!("{dir}/class"), class);
+            m.set(&format!("{dir}/vendor"), vendor);
+            m.set(&format!("{dir}/device"), "0x27e0");
+            m.set(&format!("{dir}/driver_override"), "(null)");
+            link(
+                &format!("{}/iommu_group", &dir[1..]),
+                &format!("../../../../kernel/iommu_groups/{group}"),
+            );
+            link(
+                &format!("{}/driver", &dir[1..]),
+                &format!("../../drivers/{driver}"),
+            );
+            m.set(
+                &format!("/sys/kernel/iommu_groups/{group}/devices/{device}"),
+                "",
+            );
+            m.set(&format!("/sys/bus/pci/drivers/{driver}/unbind"), "");
+        }
+        m.set("/sys/bus/pci/drivers/vfio-pci/unbind", "");
+        m.set("/sys/bus/pci/drivers_probe", "");
+        m.set("/sys/bus/pci/devices/0000:01:00.0/drm/card0/dev", "226:0");
+        m.set(
+            "/sys/bus/pci/devices/0000:06:00.0/nvme/nvme0/nvme0n1/size",
+            "1",
+        );
+        m.set("/sys/block/nvme0n1/nvme0n1p3/partition", "3");
+        m.set("/dev/dri/card0", "");
+        m.set("/dev/nvidia0", "");
+        m.set("/proc/4242/comm", "gnome-shell");
+        link("proc/4242/fd/7", "/dev/dri/card0");
+        m.set(
+            "/proc/self/mounts",
+            "/dev/nvme1n1p2 / btrfs rw 0 0\n/dev/nvme0n1p3 /mnt/windows-system ntfs3 ro 0 0",
+        );
+        m.set("/proc/swaps", "Filename Type Size Used Priority");
+        let kernel = root.clone();
+        std::thread::spawn(move || {
+            let own: std::collections::BTreeMap<&str, (&str, &str)> = devices
+                .iter()
+                .map(|(d, g, drv, _, _)| (*d, (*g, *drv)))
+                .collect();
+            while kernel.exists() {
+                let probe = kernel.join("sys/bus/pci/drivers_probe");
+                let device = std::fs::read_to_string(&probe)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                if let Some((group, driver)) = own.get(device.as_str()) {
+                    let dir = kernel.join(format!("sys/bus/pci/devices/{device}"));
+                    let wanted =
+                        std::fs::read_to_string(dir.join("driver_override")).unwrap_or_default();
+                    let to = if wanted.trim() == "vfio-pci" {
+                        "vfio-pci"
+                    } else {
+                        driver
+                    };
+                    let _ = std::fs::remove_file(dir.join("driver"));
+                    std::os::unix::fs::symlink(format!("../../drivers/{to}"), dir.join("driver"))
+                        .unwrap();
+                    if to == "vfio-pci" {
+                        std::fs::create_dir_all(kernel.join("dev/vfio")).unwrap();
+                        std::fs::write(kernel.join(format!("dev/vfio/{group}")), "").unwrap();
+                    }
+                    std::fs::write(&probe, "").unwrap();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        })
+    }
+
+    /// VFIO (decided 2026-10-14): `vfio status` shows each GPU and `NVMe` controller with its group and what uses it; a
+    /// VM gets only a whole group, nothing the host uses (a process on the GPU, a mounted partition), and a memory lock
+    /// only for a process of the caller; then the group is bound to vfio-pci (the kernel's driver link checked),
+    /// `/dev/vfio/<group>` is the caller's, the runner may lock the VM's memory, and `vfio unbind` gives it back.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_whole_unused_iommu_group_goes_to_a_vm_and_back() {
+        let m = Machine::new("vfio");
+        let _kernel = pci_machine(&m);
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "vfio");
+        let status = op.ok(&["vfio", "status"]);
+        for expected in [
+            "gpu 0000:01:00.0 10de:27e0 group 17 (0000:01:00.0 0000:01:00.1) driver nvidia: in use",
+            "- gnome-shell (pid 4242) uses /dev/dri/card0",
+            "nvme 0000:06:00.0 1c5c:27e0 group 18 (0000:06:00.0) driver nvme: in use",
+            "- /dev/nvme0n1p3 is mounted at /mnt/windows-system",
+        ] {
+            assert!(status.contains(expected), "{expected} missing:\n{status}");
+        }
+        let refused = |args: &[&str], why: &str| {
+            let out = op.cli(&[&["vfio", "bind"], args].concat());
+            let text = String::from_utf8_lossy(&out.stderr).to_string();
+            assert!(
+                !out.status.success() && text.contains(why),
+                "{why} missing:\n{text}"
+            );
+        };
+        let gpu = ["0000:01:00.0", "0000:01:00.1"];
+        refused(
+            &["0000:01:00.0"],
+            "IOMMU group 17 is 0000:01:00.0 0000:01:00.1, not 0000:01:00.0",
+        );
+        refused(&gpu, "gnome-shell (pid 4242) uses /dev/dri/card0");
+        refused(
+            &["0000:06:00.0"],
+            "/dev/nvme0n1p3 is mounted at /mnt/windows-system",
+        );
+        assert_eq!(
+            m.file("/sys/bus/pci/devices/0000:01:00.0/driver_override"),
+            "(null)",
+            "a refusal writes nothing"
+        );
+
+        // the desktop left the GPU; a runner of another user may not get the lock, so nothing stays bound
+        std::fs::remove_file(m.dir.join("root/proc/4242/fd/7")).unwrap();
+        m.set("/proc/1/status", "Name:\tsystemd\nUid:\t0\t0\t0\t0");
+        refused(
+            &[&gpu[..], &["--pid", "1", "--memlock-mib", "1"]].concat(),
+            "process 1 is not a process of uid",
+        );
+        let driver = |d: &str| {
+            std::fs::read_link(m.dir.join(format!("root/sys/bus/pci/devices/{d}/driver"))).unwrap()
+        };
+        assert_eq!(
+            driver("0000:01:00.0"),
+            Path::new("../../drivers/nvidia"),
+            "given back after the refusal"
+        );
+
+        let mut runner = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let uid = std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/proc/self").unwrap());
+        m.set(
+            &format!("/proc/{}/status", runner.id()),
+            &format!("Name:\tsleep\nUid:\t{uid}\t{uid}\t{uid}\t{uid}"),
+        );
+        let bound = op.ok(&[
+            &["vfio", "bind"],
+            &gpu[..],
+            &["--pid", &runner.id().to_string(), "--memlock-mib", "1"],
+        ]
+        .concat());
+        for expected in [
+            "0000:01:00.0: nvidia -> vfio-pci",
+            "0000:01:00.1: snd_hda_intel -> vfio-pci",
+            &format!("/dev/vfio/17: uid {uid}"),
+            &format!("process {}: may lock 1 MiB", runner.id()),
+        ] {
+            assert!(bound.contains(expected), "{expected} missing:\n{bound}");
+        }
+        assert_eq!(driver("0000:01:00.0"), Path::new("../../drivers/vfio-pci"));
+        let limits = std::fs::read_to_string(format!("/proc/{}/limits", runner.id())).unwrap();
+        assert!(
+            limits
+                .lines()
+                .any(|l| l.starts_with("Max locked memory") && l.contains("1048576")),
+            "{limits}"
+        );
+        let _ = runner.kill();
+        let _ = runner.wait();
+
+        let back = op.ok(&[&["vfio", "unbind"], &gpu[..]].concat());
+        assert!(back.contains("0000:01:00.0: vfio-pci -> nvidia"), "{back}");
+        assert_eq!(
+            driver("0000:01:00.1"),
+            Path::new("../../drivers/snd_hda_intel")
+        );
+    }
+
     /// The D-Bus contract is reviewed: the running daemon's interface is `dbus/org.legionctl.System1.xml`, word for
     /// word (`LEGIONCTL_WRITE_DBUS=1` writes it after a deliberate change), and its `Version` is that file's hash,
     /// which the operator's doctor compares with its own.

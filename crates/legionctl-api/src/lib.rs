@@ -378,6 +378,14 @@ operations! {
     validate / Validate = "validate", Read, ProfileIn => Validation;
     /// GPU wiring: which GPU drives each display and which GPU draws the desktop.
     gpu_status / GpuStatus = "gpu.status", Read, Empty => GpuState;
+    /// The discrete GPUs and `NVMe` controllers that can go to a VM (VFIO): IOMMU group, driver, and what on the host
+    /// uses them now.
+    vfio_status / VfioStatus = "vfio.status", Read, Empty => VfioDevices;
+    /// Give one whole IOMMU group to a VM: bound to vfio-pci, `/dev/vfio/<group>` yours. Refused while the host uses a
+    /// device of it. A human approves it in the polkit dialog.
+    vfio_bind / VfioBind = "vfio.bind", Machine, VfioBindIn => Changes;
+    /// Give devices back from vfio-pci to their own drivers.
+    vfio_unbind / VfioUnbind = "vfio.unbind", Machine, VfioIn => Changes;
     /// Environment and CPU list that run a program on a chosen GPU and core class (`legionctl run` uses it).
     gpu_run_env / GpuRunEnv = "internal.gpu.run-env", Read, RunEnvIn => RunEnv;
     /// Apply the power policy for ac, battery or the current power source (auto). A human approves it in the

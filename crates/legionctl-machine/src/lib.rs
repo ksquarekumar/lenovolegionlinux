@@ -20,6 +20,7 @@ pub mod sysroot;
 pub mod system;
 pub mod telemetry;
 pub mod tune;
+pub mod vfio;
 pub mod windows;
 
 #[must_use]

@@ -22,6 +22,12 @@ pub trait System1 {
     fn tune(&self, spec: &str) -> zbus::Result<String>;
     /// Root-only readings as JSON (`telemetry::RootSample`).
     fn sample(&self) -> zbus::Result<String>;
+    /// Give one whole IOMMU group to the caller's VM (`pid`: its runner, 0: none; `memlock`: bytes it may lock).
+    fn passthrough(&self, devices: &[String], pid: u32, memlock: u64) -> zbus::Result<Vec<String>>;
+    /// Give devices back from vfio-pci to their own drivers.
+    fn passthrough_end(&self, devices: &[String]) -> zbus::Result<Vec<String>>;
+    /// The devices that can go to a VM, as JSON (`vfio::Candidate`).
+    fn passthroughs(&self) -> zbus::Result<String>;
     /// Send this connection the program starts of its user's agent sessions (`SessionExec`).
     fn watch_sessions(&self) -> zbus::Result<()>;
 
