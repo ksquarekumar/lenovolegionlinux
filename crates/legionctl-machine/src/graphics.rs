@@ -50,12 +50,15 @@ pub enum Fix {
 }
 
 /// The loaded GPU drivers (from the DRM cards).
-fn drivers(root: &SysRoot) -> Vec<String> {
+fn drivers(root: &SysRoot) -> Vec<(String, String)> {
     root.children("/sys/class/drm", "card")
         .iter()
-        .filter(|c| !c.to_string_lossy().contains('-'))
-        .filter_map(|c| root.link(c.join("device/driver")))
-        .filter_map(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .filter_map(|c| {
+            let card = c.file_name()?.to_string_lossy().into_owned();
+            let driver = root.link(c.join("device/driver"))?;
+            let driver = driver.file_name()?.to_string_lossy().into_owned();
+            (!card.contains('-')).then_some((card, driver))
+        })
         .collect()
 }
 
@@ -63,19 +66,23 @@ fn drivers(root: &SysRoot) -> Vec<String> {
 #[must_use]
 pub fn findings(root: &SysRoot, home: &Path) -> Vec<Finding> {
     let drivers = drivers(root);
-    let nvidia = drivers.iter().any(|d| d == "nvidia");
-    let intel = drivers.iter().any(|d| d == "i915" || d == "xe");
-    let mut out = if nvidia {
-        nvidia_findings(root)
-    } else {
+    let nvidia: Vec<&str> = drivers
+        .iter()
+        .filter(|(_, d)| d == "nvidia")
+        .map(|(c, _)| c.as_str())
+        .collect();
+    let intel = drivers.iter().any(|(_, d)| d == "i915" || d == "xe");
+    let mut out = if nvidia.is_empty() {
         Vec::new()
+    } else {
+        nvidia_findings(root, &nvidia)
     };
-    out.extend(driver_findings(root, home, nvidia, intel));
+    out.extend(driver_findings(root, home, !nvidia.is_empty(), intel));
     out
 }
 
-/// The NVIDIA module and its libraries, and modesetting.
-fn nvidia_findings(root: &SysRoot) -> Vec<Finding> {
+/// The NVIDIA module and its libraries, and modesetting of the NVIDIA `cards`.
+fn nvidia_findings(root: &SysRoot, cards: &[&str]) -> Vec<Finding> {
     let mut out = Vec::new();
     // "NVRM version: NVIDIA UNIX x86_64 Kernel Module  580.178.04  ..."
     let module = root.read("/proc/driver/nvidia/version").and_then(|v| {
@@ -105,10 +112,11 @@ fn nvidia_findings(root: &SysRoot) -> Vec<Finding> {
             ),
         ));
     }
-    if root
-        .read("/sys/module/nvidia_drm/parameters/modeset")
-        .as_deref()
-        != Some("Y")
+    // nvidia-drm makes connectors (card0-DP-1, ...) only with modesetting; its modeset parameter is root-only (0400),
+    // and doctor runs as the user
+    if cards
+        .iter()
+        .all(|c| root.children("/sys/class/drm", &format!("{c}-")).is_empty())
     {
         out.push(Finding::system(
             "nvidia-modeset",

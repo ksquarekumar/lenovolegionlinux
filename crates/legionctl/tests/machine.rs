@@ -961,9 +961,18 @@ fn doctor_names_each_gap_of_the_graphics_stack_with_its_fix() {
     std::fs::remove_file(root.join("usr/lib/libnvidia-glcore.so.580.178.04")).unwrap();
     std::fs::remove_file(root.join("usr/share/vulkan/icd.d/intel_icd.json")).unwrap();
     m.set("/usr/lib/libnvidia-glcore.so.570.86.16", "");
+    // the user cannot read nvidia-drm's modeset parameter (0400); without modesetting the NVIDIA card has no connectors
+    std::fs::remove_file(root.join("sys/module/nvidia_drm/parameters/modeset")).unwrap();
+    let connectors = root.join("sys/class/drm/card0-DP-1");
+    let kept = m.dir.join("card0-DP-1");
+    std::fs::rename(&connectors, &kept).unwrap();
+    for other in ["card0-DP-2", "card0-DP-3", "card0-HDMI-A-1", "card0-eDP-2"] {
+        std::fs::remove_dir_all(root.join("sys/class/drm").join(other)).unwrap();
+    }
     let doctor = || String::from_utf8_lossy(&m.legion(&["doctor"]).stdout).to_string();
     let found = doctor();
     for expected in [
+        "[nvidia-modeset] nvidia-drm does not do modesetting",
         "the NVIDIA kernel module is 580.178.04 and its libraries are 570.86.16",
         "/usr/share/vulkan/icd.d/intel_icd.json is missing: install the Intel Vulkan driver (vulkan-intel)",
         "OpenCL reaches the Intel GPU only through Mesa's rusticl",
@@ -976,6 +985,7 @@ fn doctor_names_each_gap_of_the_graphics_stack_with_its_fix() {
     m.set("/usr/lib/libnvidia-glcore.so.580.178.04", "");
     m.set("/usr/share/vulkan/icd.d/intel_icd.json", "");
     m.set("/etc/OpenCL/vendors/intel.icd", "");
+    std::fs::rename(&kept, &connectors).unwrap();
     std::fs::create_dir_all(m.dir.join("home/.config")).unwrap();
     std::fs::write(
         m.dir.join("home/.config/code-flags.conf"),
@@ -985,6 +995,7 @@ fn doctor_names_each_gap_of_the_graphics_stack_with_its_fix() {
     Machine::script(&m.dir.join("bin"), "systemctl", "echo active");
     let fixed = doctor();
     for gone in [
+        "nvidia-modeset",
         "NVIDIA kernel module",
         "intel_icd",
         "rusticl",
