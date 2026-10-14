@@ -284,15 +284,36 @@ fn mcp_server_has_one_tool_per_operation_and_calls_the_operator() {
     let skills: Value =
         serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     let skills = skills.as_array().unwrap();
-    assert_eq!(skills.len(), 3, "{skills:?}");
+    let names: Vec<&str> = skills.iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(
+        names,
+        [
+            "dossier-practice",
+            "glanceable-style",
+            "machine-tools",
+            "sessions-and-agents",
+            "ste100-style",
+            "tool-lifecycle",
+            "verify-and-ship",
+            "workspace-practice"
+        ],
+        "every plugin skill, sorted"
+    );
     for s in skills {
         assert!(
             !s["description"].as_str().unwrap().is_empty(),
             "SKILL.md front matter parsed: {s}"
         );
+        // the style and dossier skills apply to every reply, so a reminder keeps them in force; the tool skills
+        // are loaded when their description matches the task
+        let kept = matches!(
+            s["name"].as_str().unwrap(),
+            "dossier-practice" | "glanceable-style" | "ste100-style"
+        );
         assert_eq!(
-            s["reminder_on"], true,
-            "each plugin skill has a reminder, on by default: {s}"
+            s["reminder_on"],
+            if kept { json!(true) } else { Value::Null },
+            "reminder of {s}"
         );
         assert!(
             s["claude"].is_null(),

@@ -79,7 +79,9 @@ Claude Code plugin (`/plugin marketplace add /data/git/lenovolegionlinux`, then
 - one MCP tool per operation (status, load, doctor, power, GPU, cleanup, workspaces, setup, reminders, hooks, skills,
   config, dossiers);
 - skills `legionctl:ste100-style`, `legionctl:glanceable-style` and `legionctl:dossier-practice`, kept in force by
-  reminders;
+  reminders, and the tool skills `legionctl:tool-lifecycle` (an index of every command group),
+  `legionctl:workspace-practice`, `legionctl:machine-tools`, `legionctl:verify-and-ship` and
+  `legionctl:sessions-and-agents`, loaded when the task matches;
 - hooks (`legionctl hook <event>`): reminders, load and setup notices; one dossier per session, bound again at
   session start where the last session worked; the agent is told first when a session has none (`dossier.nudge`),
   prompts are blocked until it has one (`dossier.gate`), and writes into another session's dossier are denied;
