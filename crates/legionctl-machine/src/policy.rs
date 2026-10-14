@@ -62,6 +62,12 @@ pub enum Step {
         key: FanKey,
         value: Option<String>,
     },
+    /// A systemd-boot variable in efivarfs (`LoaderEntryOneShot`): `bootctl` sets these only after a start through
+    /// systemd-boot, and the first `kernel try` comes from rEFInd.
+    LoaderVar {
+        name: String,
+        value: String,
+    },
     /// One EC RAM byte through port I/O (the EC fan lock only).
     Ec {
         addr: u16,
@@ -162,6 +168,7 @@ impl Machine<'_> {
             power: source,
             fnq: fnq.map(String::from),
             workload: configset::workload(self.root),
+            kernel: crate::kernel::running_package(self.root),
         }
     }
 
@@ -550,6 +557,9 @@ pub fn describe(step: &Step) -> Option<String> {
         } => Some(format!("would hold {path} at {}", quoted(v))),
         Step::Hold { path, value: None } => Some(format!("would release {path}")),
         Step::Acpi(call) => Some(format!("would call {call}")),
+        Step::LoaderVar { name, value } => {
+            Some(format!("would set the EFI variable {name} to {value}"))
+        }
         Step::FanCurve(levels) => Some(format!(
             "would set the fan curve to {}: call {}, then read it back",
             fan::text(levels),
@@ -665,9 +675,28 @@ pub fn execute(root: &SysRoot, ledger: &Ledger, steps: &[Step]) -> Vec<String> {
                 Ok(()) => format!("wrote EC RAM 0x{addr:04X}: {value:#04x}"),
                 Err(e) => format!("warning: EC RAM 0x{addr:04X} was not written: {e:#}"),
             }),
+            Step::LoaderVar { name, value } => out.push(match loader_var(root, name, value) {
+                Ok(()) => format!("set the EFI variable {name} to {value}"),
+                Err(e) => format!("warning: the EFI variable {name} was not set: {e}"),
+            }),
             Step::Info(text) => out.push(text.clone()),
             Step::Warn(text) => out.push(format!("warning: {text}")),
         }
     }
     out
+}
+
+/// Write a systemd-boot variable (vendor GUID of the Boot Loader Interface) to efivarfs: the attributes (non-volatile,
+/// boot and run time) and the value as UTF-16 with its end mark, in one write.
+fn loader_var(root: &SysRoot, name: &str, value: &str) -> std::io::Result<()> {
+    let path = root.path(format!(
+        "/sys/firmware/efi/efivars/{name}-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+    ));
+    if path.exists() {
+        // efivarfs makes each variable file immutable
+        let _ = Command::new("chattr").arg("-i").arg(&path).output();
+    }
+    let mut bytes = vec![7, 0, 0, 0];
+    bytes.extend(value.encode_utf16().chain([0]).flat_map(u16::to_le_bytes));
+    std::fs::write(path, bytes)
 }

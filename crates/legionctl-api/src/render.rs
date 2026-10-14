@@ -349,6 +349,46 @@ impl Render for GreeterState {
     }
 }
 
+impl Render for crate::Kernels {
+    fn text(&self) -> String {
+        let mut out = Vec::new();
+        if !self.takeover {
+            out.push(
+                "boot takeover: not installed (legionctl boot install); kernel default and kernel try need it"
+                    .to_string(),
+            );
+        }
+        for k in &self.kernels {
+            let marks: Vec<&str> = [(k.running, "running"), (k.default, "default")]
+                .into_iter()
+                .filter_map(|(on, mark)| on.then_some(mark))
+                .collect();
+            out.push(format!(
+                "{} {} [{}]{}",
+                k.package,
+                k.release,
+                if k.flavour.is_empty() {
+                    "flavour unknown: no headers".into()
+                } else {
+                    k.flavour.join(" ")
+                },
+                if marks.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", marks.join(", "))
+                }
+            ));
+            out.push(format!("  image: {}", k.image.as_deref().unwrap_or("none")));
+            out.push(format!(
+                "  command line: {}",
+                k.cmdline.as_deref().unwrap_or("none yet")
+            ));
+            out.push(format!("  dkms: {}", k.dkms.join(", ")));
+        }
+        out.join("\n")
+    }
+}
+
 impl Render for WindowsVmBegun {
     fn text(&self) -> String {
         self.lines.join("\n")
@@ -946,14 +986,15 @@ impl Render for KnobDetail {
 impl Render for Conditions {
     fn text(&self) -> String {
         format!(
-            "power {}, Fn+Q {}, workload {}",
+            "power {}, Fn+Q {}, workload {}, kernel {}",
             self.power,
             self.fnq.as_deref().unwrap_or("none"),
             if self.workload.is_empty() {
                 "none".into()
             } else {
                 self.workload.join(" ")
-            }
+            },
+            self.kernel.as_deref().unwrap_or("unknown")
         )
     }
 }

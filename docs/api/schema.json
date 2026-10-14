@@ -4133,6 +4133,13 @@
                 "type": "string"
               },
               "description": "The workloads that run (game, build, vm)."
+            },
+            "kernel": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The package of the running kernel."
             }
           },
           "required": [
@@ -4283,6 +4290,13 @@
                 "type": "string"
               },
               "description": "The workloads that run (game, build, vm)."
+            },
+            "kernel": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The package of the running kernel."
             }
           },
           "required": [
@@ -4628,7 +4642,7 @@
             "string",
             "null"
           ],
-          "description": "The conditions, `power=ac,workload=game` (power, fnq, workload); `always` for none. Default: as they are.",
+          "description": "The conditions, `power=ac,workload=game` (power, fnq, workload, kernel); `always` for none. Default: as they\nare.",
           "default": null
         },
         "system": {
@@ -7101,6 +7115,272 @@
         }
       },
       "title": "DryRunIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "kernel.list": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "takeover": {
+          "type": "boolean",
+          "description": "The boot takeover is installed: `kernel default` and `kernel try` need it."
+        },
+        "kernels": {
+          "type": "array",
+          "items": {
+            "description": "An installed kernel.",
+            "type": "object",
+            "properties": {
+              "package": {
+                "description": "The package (`linux-cachyos-bore-lto`).",
+                "type": "string"
+              },
+              "release": {
+                "description": "`7.2.9-2-cachyos-bore-lto`",
+                "type": "string"
+              },
+              "flavour": {
+                "description": "`bore` or `eevdf`, and `lto`; empty without the kernel headers.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "image": {
+                "description": "legionctl's signed image of it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "cmdline": {
+                "description": "Its command line; null until the boot takeover writes it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "dkms": {
+                "description": "`nvidia/580.178.04: installed`, `legionctl-wmi: not built`.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "running": {
+                "type": "boolean"
+              },
+              "default": {
+                "description": "legionctl's boot entry starts it when no one chooses.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "package",
+              "release",
+              "flavour",
+              "dkms",
+              "running",
+              "default"
+            ]
+          }
+        }
+      },
+      "required": [
+        "takeover",
+        "kernels"
+      ],
+      "description": "The installed kernels.",
+      "title": "Kernels",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "kernel.default": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The kernel's package (`linux-cachyos`), as `kernel list` shows it."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Show what would happen; change nothing.",
+          "default": false
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "KernelIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "kernel.try": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The kernel's package (`linux-cachyos`), as `kernel list` shows it."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Show what would happen; change nothing.",
+          "default": false
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "KernelIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "kernel.cmdline.set": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The kernel's package (`linux-cachyos`), as `kernel list` shows it."
+        },
+        "line": {
+          "type": "string",
+          "description": "The whole command line, in quotes (`\"quiet rw root=UUID=...\"`)."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Show what would happen; change nothing.",
+          "default": false
+        }
+      },
+      "required": [
+        "name",
+        "line"
+      ],
+      "title": "KernelLineIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "kernel.cmdline.undo": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The kernel's package (`linux-cachyos`), as `kernel list` shows it."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Show what would happen; change nothing.",
+          "default": false
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "KernelIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {

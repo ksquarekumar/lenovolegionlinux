@@ -2182,6 +2182,62 @@ mod operator_and_daemon {
         (op, home.join(".config/legionctl/configsets"))
     }
 
+    /// The `kernel` condition (todo-84 part 2): a layer for one kernel applies only while that kernel runs (the package
+    /// of the running release on the recorded machine), and a layer for a kernel that is not installed is a doctor
+    /// finding.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_kernel_layer_applies_only_on_its_kernel() {
+        let m = Machine::new("kernelrule");
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let (op, own) = seat_user(&m, "kernelrule");
+        assert_eq!(
+            m.file("/proc/sys/kernel/osrelease"),
+            "7.2.9-2-cachyos-bore-lto"
+        );
+
+        let set = |value: &str| {
+            op.ok(&[
+                "rules",
+                "edit",
+                "50-plain",
+                "--when",
+                "kernel=linux-cachyos",
+                &format!("sysctl.vm.swappiness={value}"),
+            ])
+        };
+        let out = set("70");
+        assert_eq!(m.file(SWAPPINESS), "150", "not on bore-lto: {out}");
+        let plan = op.ok(&["plan"]);
+        assert!(plan.contains("kernel linux-cachyos-bore-lto"), "{plan}");
+
+        m.set("/proc/sys/kernel/osrelease", "7.2.9-2-cachyos");
+        set("71");
+        wait_for("the layer on its kernel", || m.file(SWAPPINESS) == "71");
+
+        std::fs::write(
+            own.join("60-zen.jsonc"),
+            r#"{ "when": { "kernel": "linux-zen" }, "set": { "sysctl.vm.swappiness": "1" } }"#,
+        )
+        .unwrap();
+        let doctor = String::from_utf8(op.cli(&["doctor"]).stdout).unwrap();
+        assert!(
+            doctor.contains(
+                "60-zen.jsonc is not used: condition kernel: no installed kernel linux-zen"
+            ),
+            "{doctor}"
+        );
+        let refused = op.cli(&[
+            "rules",
+            "edit",
+            "61-zen",
+            "--when",
+            "kernel=linux-zen",
+            "sysctl.vm.swappiness=2",
+        ]);
+        assert!(!refused.status.success());
+        assert_eq!(m.file(SWAPPINESS), "71");
+    }
+
     /// Configsets end to end (todo-74), through the CLI, the operator and the daemon on the recorded machine: your own
     /// layer is your file and applies at once, without polkit; the "because" chain shows who set a knob; a layer that
     /// fails a check, or is a link, is not used and doctor says why; a power layer is used only with a value for the
@@ -2217,7 +2273,7 @@ mod operator_and_daemon {
         let doctor = String::from_utf8(op.cli(&["doctor"]).stdout).unwrap();
         assert!(
             doctor.contains(
-                "60-bad.jsonc is not used: unknown condition weather (power, fnq, workload)"
+                "60-bad.jsonc is not used: unknown condition weather (power, fnq, workload, kernel)"
             ),
             "{doctor}"
         );
@@ -3102,7 +3158,7 @@ while True:
     fn boot_machine(m: &Machine) -> PathBuf {
         let bin = m.dir.join("bin");
         // the daemon's PATH in the test has only stand-ins; the boot plans use these system tools
-        for tool in ["mkdir", "install", "rm"] {
+        for tool in ["mkdir", "install", "rm", "mv"] {
             std::os::unix::fs::symlink(format!("/usr/bin/{tool}"), bin.join(tool)).unwrap();
         }
         m.set(
@@ -3138,6 +3194,7 @@ while True:
             link,
         )
         .unwrap();
+        std::fs::create_dir_all(m.dir.join("root/sys/firmware/efi/efivars")).unwrap();
         let state = m.dir.join("efivars.json");
         std::fs::write(
             &state,
@@ -3175,6 +3232,12 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         };
         Machine::script(&bin, "ukify", &writer("ukify"));
         Machine::script(&bin, "sbsign", &writer("sbsign"));
+        // a signed image is one that ukify got the MOK key for
+        Machine::script(
+            &bin,
+            "sbverify",
+            "for a; do f=$a; done; /usr/bin/grep -q -- '--secureboot-private-key' \"$f\" || { echo 'No signature table present' >&2; exit 1; }",
+        );
         state
     }
 
@@ -3275,6 +3338,263 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             esp.join("EFI/BOOT/bootx64.efi").exists(),
             "the old chain is as it was"
         );
+    }
+
+    /// The recorded kernels' module lists, cut to what the kernel lines name: `zswap` is built in (its `enabled`
+    /// parameter is not in modinfo, as on the machine) and `nvidia-drm` is a DKMS module.
+    fn kernel_modules(m: &Machine) {
+        for release in ["7.2.9-2-cachyos", "7.2.9-2-cachyos-bore-lto"] {
+            let dir = m.dir.join("root/usr/lib/modules").join(release);
+            std::fs::write(
+                dir.join("modules.builtin.modinfo"),
+                "zswap.parmtype=max_pool_percent:uint\0zswap.description=Compressed cache for swap pages\0",
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("modules.dep"),
+                "updates/dkms/nvidia-drm.ko.zst: updates/dkms/nvidia-modeset.ko.zst updates/dkms/nvidia.ko.zst\n",
+            )
+            .unwrap();
+        }
+    }
+
+    /// The EFI variable `LoaderEntryOneShot` as systemd-boot reads it, or `None`.
+    fn oneshot(m: &Machine) -> Option<String> {
+        let bytes = std::fs::read(m.dir.join(
+            "root/sys/firmware/efi/efivars/LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f",
+        ))
+        .ok()?;
+        assert_eq!(bytes[..4], [7, 0, 0, 0], "non-volatile, boot and run time");
+        let text: Vec<u16> = bytes[4..]
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        assert_eq!(text.last(), Some(&0), "UTF-16 with its end mark");
+        Some(String::from_utf16(&text[..text.len() - 1]).unwrap())
+    }
+
+    /// `kernel list`: whether the boot takeover is installed, and package -> release, flavour, running, default,
+    /// DKMS, image, command line.
+    fn kernel_list(op: &Operator) -> (bool, Value) {
+        let all: Value = serde_json::from_str(&op.ok(&["kernel", "list", "--json"])).unwrap();
+        let fields = [
+            "release", "flavour", "running", "default", "dkms", "image", "cmdline",
+        ];
+        let kernels = all["kernels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| {
+                let key = k["package"].as_str().unwrap().to_string();
+                (key, fields.iter().map(|f| k[*f].clone()).collect::<Value>())
+            })
+            .collect::<serde_json::Map<_, _>>();
+        (all["takeover"].as_bool().unwrap(), kernels.into())
+    }
+
+    /// Kernels (todo-84 part 1) on the recorded machine: `kernel list` shows both installed kernels with their
+    /// scheduler, the DKMS state of nvidia and legionctl-wmi, which runs and which is the default; `default` and `try`
+    /// are refused, with nothing changed, until the boot takeover is installed; then `default` changes legionctl's
+    /// `loader.conf` only, and `try` sets the one-time entry and `BootNext` and restarts, while the default stays.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn kernels_are_listed_and_start_through_the_boot_takeover_once_or_by_default() {
+        let m = Machine::new("kernels");
+        let state = boot_machine(&m);
+        let bin = m.dir.join("bin");
+        Machine::script(
+            &bin,
+            "dkms",
+            "printf 'nvidia/580.178.04, 7.2.9-2-cachyos-bore-lto, x86_64: installed\\n\
+             nvidia/580.178.04, 7.2.9-2-cachyos, x86_64: installed\\n\
+             legionctl-wmi/0.1.0, 7.2.9-2-cachyos-bore-lto, x86_64: installed\\n'",
+        );
+        let restarts = m.dir.join("systemctl.log");
+        Machine::script(
+            &bin,
+            "systemctl",
+            &format!(
+                "[ \"$1\" = reboot ] && echo reboot >> {}; exit 0",
+                restarts.display()
+            ),
+        );
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "kernels");
+        let esp = m.dir.join("root/boot/efi");
+        let efivars = || -> Value {
+            serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap()
+        };
+        assert!(!kernel_list(&op).0, "no boot takeover yet");
+        for args in [
+            ["kernel", "default", "linux-cachyos"],
+            ["kernel", "try", "linux-cachyos"],
+        ] {
+            let refused = op.cli(&args);
+            assert!(
+                String::from_utf8_lossy(&refused.stderr)
+                    .contains("install the boot takeover first (legionctl boot install)"),
+                "{args:?}: {refused:?}"
+            );
+        }
+        assert!(!esp.join("loader/loader.conf").exists());
+        assert_eq!(efivars()["next"], Value::Null);
+        assert_eq!(oneshot(&m), None);
+        assert!(!restarts.exists(), "no restart without the takeover");
+
+        op.ok(&["boot", "install"]);
+        let shown = || {
+            let (takeover, kernels) = kernel_list(&op);
+            assert!(takeover);
+            kernels
+        };
+        // the flavour is the configuration's, not the name's: linux-cachyos is LTO too
+        let expected = |plain_default: bool| {
+            serde_json::json!({
+                "linux-cachyos": ["7.2.9-2-cachyos", ["eevdf", "lto"], false, plain_default,
+                    ["nvidia/580.178.04: installed", "legionctl-wmi: not built"],
+                    "legionctl-linux-cachyos.efi", "quiet rw root=UUID=a9e6"],
+                "linux-cachyos-bore-lto": ["7.2.9-2-cachyos-bore-lto", ["bore", "lto"], true, !plain_default,
+                    ["nvidia/580.178.04: installed", "legionctl-wmi/0.1.0: installed"],
+                    "legionctl-linux-cachyos-bore-lto.efi", "quiet rw root=UUID=a9e6"],
+            })
+        };
+        assert_eq!(shown(), expected(false));
+
+        // forget install's own try, to see which change sets BootNext
+        let mut vars = efivars();
+        vars["next"] = Value::Null;
+        std::fs::write(&state, vars.to_string()).unwrap();
+        let loader = || std::fs::read_to_string(esp.join("loader/loader.conf")).unwrap();
+        let dry = op.ok(&["kernel", "default", "linux-cachyos", "--dry-run"]);
+        assert!(dry.contains("default legionctl-linux-cachyos.efi"), "{dry}");
+        assert!(loader().contains("default legionctl-linux-cachyos-bore-lto.efi"));
+        op.ok(&["kernel", "default", "linux-cachyos"]);
+        assert!(loader().contains("default legionctl-linux-cachyos.efi\n"));
+        assert_eq!(
+            efivars()["next"],
+            Value::Null,
+            "default is not a one-time start"
+        );
+        assert_eq!(oneshot(&m), None);
+        assert!(!restarts.exists());
+        assert_eq!(shown(), expected(true));
+
+        let refused = op.cli(&["kernel", "try", "linux-zen"]);
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("no kernel linux-zen in /boot"),
+            "{refused:?}"
+        );
+        op.ok(&["kernel", "try", "linux-cachyos-bore-lto"]);
+        assert_eq!(
+            oneshot(&m).as_deref(),
+            Some("legionctl-linux-cachyos-bore-lto.efi")
+        );
+        assert_eq!(
+            efivars()["next"],
+            "0007",
+            "the next start goes through legionctl's entry, which rEFInd may still lead"
+        );
+        assert_eq!(std::fs::read_to_string(&restarts).unwrap(), "reboot\n");
+        assert!(
+            loader().contains("default legionctl-linux-cachyos.efi\n"),
+            "the default stays"
+        );
+    }
+
+    /// A kernel's own command line (todo-84 part 2): it goes into that kernel's image only, signed and checked; a line
+    /// without root=, with a parameter of a module the kernel does not have, or an image that is not signed is
+    /// refused with the old image and line left; `boot rebuild` keeps each kernel's line (it is the one source), and
+    /// undo puts the line before back.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_kernels_command_line_goes_into_its_image_only_and_undo_puts_the_old_one_back() {
+        const LINE: &str = "quiet mitigations=off nvidia-drm.modeset=1 clocksource=tsc tsc=invariant \
+                            zswap.enabled=0 nowatchdog splash rw root=UUID=a9e6 resume=UUID=c909";
+        let m = Machine::new("cmdline");
+        boot_machine(&m);
+        kernel_modules(&m);
+        m.set(
+            "/proc/cmdline",
+            &format!("{LINE} initrd=\\initramfs-linux-cachyos-bore-lto.img"),
+        );
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "cmdline");
+        let linux = m.dir.join("root/boot/efi/EFI/Linux");
+        let image = |kernel: &str| {
+            std::fs::read_to_string(linux.join(format!("legionctl-{kernel}.efi"))).unwrap()
+        };
+        let saved = || m.file("/etc/legionctl/kernel/linux-cachyos.cmdline");
+
+        op.ok(&["boot", "install"]);
+        assert!(
+            image("linux-cachyos").contains(&format!("--cmdline {LINE} --")),
+            "the running line, with a built-in and a DKMS module's parameter: {}",
+            image("linux-cachyos")
+        );
+        assert_eq!(saved(), LINE);
+        let bore = image("linux-cachyos-bore-lto");
+
+        let mine = LINE.replace("mitigations=off ", "");
+        op.ok(&["kernel", "cmdline", "set", "linux-cachyos", &mine]);
+        assert!(
+            image("linux-cachyos").contains(&format!("--cmdline {mine} --")),
+            "{}",
+            image("linux-cachyos")
+        );
+        assert_eq!(saved(), mine);
+        assert_eq!(
+            image("linux-cachyos-bore-lto"),
+            bore,
+            "the other kernel's image is as it was"
+        );
+
+        let ours = image("linux-cachyos");
+        for (line, why) in [
+            ("quiet rw resume=UUID=c909", "has no root="),
+            (
+                "quiet rw zwsap.enabled=0 root=UUID=a9e6",
+                "zwsap.enabled=0: linux-cachyos (7.2.9-2-cachyos) has no module zwsap",
+            ),
+        ] {
+            let refused = op.cli(&["kernel", "cmdline", "set", "linux-cachyos", line]);
+            assert!(
+                String::from_utf8_lossy(&refused.stderr).contains(why),
+                "{why}: {refused:?}"
+            );
+            assert_eq!(image("linux-cachyos"), ours, "nothing written: {line}");
+            assert_eq!(saved(), mine);
+        }
+
+        // an image that ukify did not sign fails its check, and the old one stays
+        let bin = m.dir.join("bin");
+        let signer = std::fs::read_to_string(bin.join("ukify")).unwrap();
+        Machine::script(
+            &bin,
+            "ukify",
+            "out=; prev=; for a in \"$@\"; do [ \"$prev\" = --output ] && out=$a; prev=$a; done; echo unsigned > \"$out\"",
+        );
+        let refused = op.cli(&["kernel", "cmdline", "set", "linux-cachyos", LINE]);
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("sbverify"),
+            "{refused:?}"
+        );
+        assert_eq!(image("linux-cachyos"), ours);
+        assert_eq!(saved(), mine);
+        std::fs::write(bin.join("ukify"), signer).unwrap();
+
+        op.ok(&["boot", "rebuild"]);
+        assert!(
+            image("linux-cachyos").contains(&format!("--cmdline {mine} --")),
+            "rebuild keeps the kernel's own line: {}",
+            image("linux-cachyos")
+        );
+
+        op.ok(&["kernel", "cmdline", "undo", "linux-cachyos"]);
+        assert!(
+            image("linux-cachyos").contains(&format!("--cmdline {LINE} --")),
+            "{}",
+            image("linux-cachyos")
+        );
+        assert_eq!(saved(), LINE);
+        assert_eq!(image("linux-cachyos-bore-lto"), bore);
     }
 
     /// The greeter in place of GDM (todo-83), through the operator and the daemon: refused, with nothing changed, while

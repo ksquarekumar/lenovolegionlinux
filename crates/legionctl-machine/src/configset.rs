@@ -65,7 +65,7 @@ pub struct Layer {
     /// The file (machine path).
     pub file: String,
     /// The conditions: `power` (ac, battery), `fnq` (the firmware mode chosen with Fn+Q), `workload` (game, build,
-    /// vm). Empty: always.
+    /// vm), `kernel` (the running kernel's package). Empty: always.
     pub when: BTreeMap<String, String>,
     /// Knob id -> value, in file order.
     pub set: Map<String, Value>,
@@ -99,6 +99,7 @@ impl Layer {
             "power" => value == c.power.name(),
             "fnq" => c.fnq.as_deref() == Some(value.as_str()),
             "workload" => c.workload.contains(value),
+            "kernel" => c.kernel.as_deref() == Some(value.as_str()),
             _ => false,
         })
     }
@@ -140,6 +141,8 @@ pub struct Conditions {
     /// The Fn+Q choice that the policy follows now.
     pub fnq: Option<String>,
     pub workload: BTreeSet<String>,
+    /// The package of the running kernel (`linux-cachyos-bore-lto`).
+    pub kernel: Option<String>,
 }
 
 /// One layer that set a knob, for the "because" chain.
@@ -328,8 +331,22 @@ fn check(
             "power" => ["ac", "battery"].contains(&value.as_str()),
             "fnq" => !value.is_empty(),
             "workload" => WORKLOADS.contains(&value.as_str()),
+            "kernel" => {
+                // without a machine (`validate`), the installed kernels are not known
+                let installed = root.map(crate::kernel::installed_packages);
+                if installed.as_ref().is_some_and(|k| !k.contains(value)) {
+                    faults.push(format!(
+                        "condition kernel: no installed kernel {value} (installed: {})",
+                        installed.unwrap_or_default().join(", ")
+                    ));
+                    continue;
+                }
+                !value.is_empty()
+            }
             _ => {
-                faults.push(format!("unknown condition {key} (power, fnq, workload)"));
+                faults.push(format!(
+                    "unknown condition {key} (power, fnq, workload, kernel)"
+                ));
                 continue;
             }
         };

@@ -254,6 +254,7 @@ fn conditions(m: &Machine) -> Conditions {
         power: c.power.name().into(),
         fnq: c.fnq,
         workload: c.workload.into_iter().collect(),
+        kernel: c.kernel,
     }
 }
 
@@ -945,6 +946,30 @@ impl Operator {
         }
         Ok(Changes {
             lines: self.system(async move |p| p.greeter(action).await)?,
+            dry_run: false,
+        })
+    }
+
+    /// A kernel action on `name` (with `line` for `cmdline`): its plan for a dry run, else the daemon carries it out
+    /// (the plan refuses first, before the polkit dialog).
+    fn kernel_action(
+        &self,
+        action: &'static str,
+        name: String,
+        line: String,
+        dry: bool,
+        plan: impl FnOnce(
+            &SysRoot,
+            &legionctl_machine::boot::BootState,
+        ) -> Result<Vec<legionctl_machine::policy::Step>>,
+    ) -> Result<Changes> {
+        let root = SysRoot::from_env();
+        let steps = plan(&root, &legionctl_machine::boot::state(&root)?)?;
+        if dry {
+            return Ok(dry_run(&steps));
+        }
+        Ok(Changes {
+            lines: self.system(async move |p| p.kernel(action, &name, &line).await)?,
             dry_run: false,
         })
     }
@@ -2508,6 +2533,54 @@ impl Engine for Operator {
         self.boot_action("remove", input.dry_run, |root| {
             legionctl_machine::boot::remove_plan(root, &legionctl_machine::boot::state(root)?)
         })
+    }
+
+    fn kernel_list(&self, _: &Ctx, _: Empty) -> Result<legionctl_api::Kernels> {
+        Ok(legionctl_machine::kernel::list(&SysRoot::from_env()).into_wire())
+    }
+
+    fn kernel_default(&self, _: &Ctx, input: legionctl_api::KernelIn) -> Result<Changes> {
+        let name = input.name.clone();
+        self.kernel_action(
+            "default",
+            input.name,
+            String::new(),
+            input.dry_run,
+            |_, state| legionctl_machine::boot::default_plan(state, &name),
+        )
+    }
+
+    fn kernel_try(&self, _: &Ctx, input: legionctl_api::KernelIn) -> Result<Changes> {
+        let name = input.name.clone();
+        self.kernel_action(
+            "try",
+            input.name,
+            String::new(),
+            input.dry_run,
+            |_, state| legionctl_machine::boot::try_plan(state, &name),
+        )
+    }
+
+    fn kernel_cmdline_set(&self, _: &Ctx, input: legionctl_api::KernelLineIn) -> Result<Changes> {
+        let (name, line) = (input.name.clone(), input.line.clone());
+        self.kernel_action(
+            "cmdline",
+            input.name,
+            input.line,
+            input.dry_run,
+            |root, state| legionctl_machine::boot::cmdline_plan(root, state, &name, &line),
+        )
+    }
+
+    fn kernel_cmdline_undo(&self, _: &Ctx, input: legionctl_api::KernelIn) -> Result<Changes> {
+        let name = input.name.clone();
+        self.kernel_action(
+            "undo",
+            input.name,
+            String::new(),
+            input.dry_run,
+            |root, state| legionctl_machine::boot::undo_plan(root, state, &name),
+        )
     }
 
     fn greeter_status(&self, _: &Ctx, _: Empty) -> Result<legionctl_api::GreeterState> {

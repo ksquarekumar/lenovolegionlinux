@@ -592,6 +592,20 @@ operations! {
     boot_rebuild / BootRebuild = "boot.rebuild", Machine, DryRunIn => Changes;
     /// Remove legionctl's boot entry and its files; the old entry stays as it was.
     boot_remove / BootRemove = "boot.remove", Machine, DryRunIn => Changes;
+    /// The installed kernels: package, release, scheduler (bore, eevdf) and lto, legionctl's image, the command line,
+    /// the DKMS state of nvidia and legionctl-wmi, which runs and which is the default.
+    kernel_list / KernelList = "kernel.list", Read, Empty => Kernels;
+    /// Start this kernel from now on (legionctl's boot entry; install the boot takeover first). A human approves it in
+    /// the polkit dialog.
+    kernel_default / KernelDefault = "kernel.default", Machine, KernelIn => Changes;
+    /// Restart into this kernel once; the default stays. A human approves it in the polkit dialog.
+    kernel_try / KernelTry = "kernel.try", Machine, KernelIn => Changes;
+    /// Set the command line of one kernel: refused without root= or with a parameter of a module the kernel does not
+    /// have; that kernel's image only is made again and its signature checked. A human approves it in the polkit
+    /// dialog.
+    kernel_cmdline_set / KernelCmdlineSet = "kernel.cmdline.set", Machine, KernelLineIn => Changes;
+    /// Go back to the command line of a kernel before its last change. A human approves it in the polkit dialog.
+    kernel_cmdline_undo / KernelCmdlineUndo = "kernel.cmdline.undo", Machine, KernelIn => Changes;
     /// The login screen: legionctl's greeter (greetd) or GDM, and what the greeter needs that is not installed.
     greeter_status / GreeterStatus = "greeter.status", Read, Empty => GreeterState;
     /// Put legionctl's greeter in place of GDM at the next start (GDM stays installed and disabled; the old greetd

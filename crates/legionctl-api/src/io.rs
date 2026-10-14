@@ -298,6 +298,8 @@ pub struct Conditions {
     pub fnq: Option<String>,
     /// The workloads that run (game, build, vm).
     pub workload: Vec<String>,
+    /// The package of the running kernel.
+    pub kernel: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -346,7 +348,8 @@ pub struct RuleEditIn {
     /// `knob=value` (knob ids as `legionctl knobs list`); `knob=` removes the knob from the layer.
     #[serde(default)]
     pub set: Vec<String>,
-    /// The conditions, `power=ac,workload=game` (power, fnq, workload); `always` for none. Default: as they are.
+    /// The conditions, `power=ac,workload=game` (power, fnq, workload, kernel); `always` for none. Default: as they
+    /// are.
     #[serde(default)]
     pub when: Option<String>,
     /// A system layer (`/etc/legionctl/configsets/`, polkit asks) instead of yours.
@@ -1322,6 +1325,26 @@ pub struct ToolCallRow {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct DryRunIn {
+    /// Show what would happen; change nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct KernelIn {
+    /// The kernel's package (`linux-cachyos`), as `kernel list` shows it.
+    pub name: String,
+    /// Show what would happen; change nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct KernelLineIn {
+    /// The kernel's package (`linux-cachyos`), as `kernel list` shows it.
+    pub name: String,
+    /// The whole command line, in quotes (`"quiet rw root=UUID=..."`).
+    pub line: String,
     /// Show what would happen; change nothing.
     #[serde(default)]
     pub dry_run: bool,

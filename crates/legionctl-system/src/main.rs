@@ -797,6 +797,47 @@ impl System1 {
         Ok(lines)
     }
 
+    /// The kernels of the boot takeover (todo-84), for the kernel `name`: `default`, `try` (then the restart),
+    /// `cmdline` (`line` as its command line) or `undo` (its line before the last change).
+    async fn kernel(
+        &self,
+        action: String,
+        name: String,
+        line: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.boot").await?;
+        let root = self.root.clone();
+        let (lines, restart) =
+            tokio::task::spawn_blocking(move || -> Result<(Vec<String>, Option<Step>)> {
+                let state = boot::state(&root)?;
+                let mut plan = match action.as_str() {
+                    "default" => boot::default_plan(&state, &name)?,
+                    "try" => boot::try_plan(&state, &name)?,
+                    "cmdline" => boot::cmdline_plan(&root, &state, &name, &line)?,
+                    "undo" => boot::undo_plan(&root, &state, &name)?,
+                    other => anyhow::bail!(
+                        "kernel action must be default, try, cmdline or undo, not {other}"
+                    ),
+                };
+                // the restart only after each step before it worked
+                let restart = if action == "try" { plan.pop() } else { None };
+                Ok((boot_steps(&root, &plan)?, restart))
+            })
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
+            .map_err(|e| failed(&e))?;
+        // the signal goes out before the restart takes the bus down
+        Self::changed(&emitter, "Kernel", &lines).await?;
+        let Some(restart) = restart else {
+            return Ok(lines);
+        };
+        let ledger = Ledger::open(&self.root).map_err(|e| failed(&e))?;
+        Ok([lines, policy::execute(&self.root, &ledger, &[restart])].concat())
+    }
+
     /// The greeter in place of GDM (todo-83): `install` or `remove`.
     async fn greeter(
         &self,

@@ -107,6 +107,16 @@
       <arg type="as" direction="out"/>
     </method>
     <!--
+     The kernels of the boot takeover (todo-84), for the kernel `name`: `default`, `try` (then the restart),
+     `cmdline` (`line` as its command line) or `undo` (its line before the last change).
+     -->
+    <method name="Kernel">
+      <arg name="action" type="s" direction="in"/>
+      <arg name="name" type="s" direction="in"/>
+      <arg name="line" type="s" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
      The greeter in place of GDM (todo-83): `install` or `remove`.
      -->
     <method name="Greeter">

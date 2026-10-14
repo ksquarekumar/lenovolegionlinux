@@ -2,7 +2,8 @@
 //! for each kernel, beside the boot chain that is there (firmware -> shim -> rEFInd), so Linux starts first and fast.
 //! A new firmware entry `legionctl` starts a copy of shim, whose second stage is systemd-boot signed with the key
 //! that MOK trusts (the rEFInd key); it is tried once with `BootNext`, and becomes the first entry only after the user
-//! confirms a start through it. Nothing of the old chain changes.
+//! confirms a start through it. Nothing of the old chain changes. Its kernels (todo-84): the default, a one-time
+//! start, and each kernel's own command line, the one source of that kernel's image.
 
 use std::path::Path;
 
@@ -21,6 +22,14 @@ const SYSTEMD_BOOT: &str = "/usr/lib/systemd/boot/efi/systemd-bootx64.efi";
 /// Our UKIs on the ESP: `EFI/Linux/legionctl-<kernel>.efi`.
 const UKI_PREFIX: &str = "legionctl-";
 const LOADER_MARK: &str = "# legionctl";
+const LOADER: &str = "loader/loader.conf";
+/// Each kernel's command line (`<kernel>.cmdline`), the one source of its image's line; `<kernel>.cmdline.old` is the
+/// line before the last change, for `kernel cmdline undo`.
+pub const LINES: &str = "/etc/legionctl/kernel";
+/// Dotted names that the kernel gives to user space (the initramfs, systemd): they are not module parameters.
+const USER_SPACE: [&str; 7] = [
+    "rd", "systemd", "udev", "luks", "plymouth", "vconsole", "locale",
+];
 
 /// A firmware boot entry.
 #[derive(
@@ -121,15 +130,7 @@ fn kernels(root: &SysRoot) -> Vec<String> {
 pub fn state(root: &SysRoot) -> Result<BootState> {
     let (entries, order, current, next) = parse_efibootmgr(&efibootmgr(&[])?);
     let esp_dir = esp(root).map(|(dir, _)| dir);
-    let ukis = esp_dir
-        .as_ref()
-        .map(|dir| {
-            root.children(Path::new(dir).join("EFI/Linux"), UKI_PREFIX)
-                .iter()
-                .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                .collect()
-        })
-        .unwrap_or_default();
+    let ukis = images(root);
     Ok(BootState {
         ours: entries
             .iter()
@@ -143,6 +144,94 @@ pub fn state(root: &SysRoot) -> Result<BootState> {
         kernels: kernels(root),
         ukis,
     })
+}
+
+/// legionctl's image of the kernel `name` on the ESP (in `EFI/Linux`).
+#[must_use]
+pub fn image(name: &str) -> String {
+    format!("{UKI_PREFIX}{name}.efi")
+}
+
+/// legionctl's images on the ESP.
+#[must_use]
+pub fn images(root: &SysRoot) -> Vec<String> {
+    esp(root)
+        .map(|(dir, _)| {
+            root.children(Path::new(&dir).join("EFI/Linux"), UKI_PREFIX)
+                .iter()
+                .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn loader_conf(name: &str) -> String {
+    format!(
+        "{LOADER_MARK}: the default kernel, no menu (hold a key at start for it)\n\
+         default {}\ntimeout 0\neditor no\n",
+        image(name)
+    )
+}
+
+/// The kernel that legionctl's `loader.conf` starts; `None` when the boot takeover is not installed.
+#[must_use]
+pub fn default_kernel(root: &SysRoot) -> Option<String> {
+    let (esp, _) = esp(root)?;
+    let conf = root
+        .read(Path::new(&esp).join(LOADER))
+        .filter(|c| c.starts_with(LOADER_MARK))?;
+    conf.lines().find_map(|l| {
+        Some(
+            l.strip_prefix("default ")?
+                .trim()
+                .strip_prefix(UKI_PREFIX)?
+                .strip_suffix(".efi")?
+                .to_string(),
+        )
+    })
+}
+
+fn line_file(name: &str) -> String {
+    format!("{LINES}/{name}.cmdline")
+}
+
+fn old_file(name: &str) -> String {
+    format!("{LINES}/{name}.cmdline.old")
+}
+
+/// The command line of the kernel `name`, the source of its image; `None` until the boot takeover writes it.
+#[must_use]
+pub fn saved_line(root: &SysRoot, name: &str) -> Option<String> {
+    root.read(line_file(name))
+}
+
+/// Refuse a command line that cannot start the kernel `name` or that the kernel would ignore in part: no `root=`, or
+/// a `<module>.<parameter>` for a module that this kernel does not have (built in or loadable, DKMS too). The kernel
+/// ignores such a parameter without a word.
+///
+/// # Errors
+/// The line, or the kernel's module tree, fails.
+pub fn check_line(root: &SysRoot, name: &str, line: &str) -> Result<()> {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    anyhow::ensure!(
+        words.iter().any(|w| w.starts_with("root=")),
+        "the command line of {name} has no root=: the kernel would not find the root file system"
+    );
+    let release = crate::kernel::release_of(root, name)
+        .with_context(|| format!("no module tree of {name} in /usr/lib/modules"))?;
+    let modules = crate::kernel::modules(root, &release);
+    for word in words {
+        let key = word.split('=').next().unwrap_or(word);
+        if let Some((module, _)) = key.split_once('.')
+            && !USER_SPACE.contains(&module)
+            && !modules.contains(&module.replace('-', "_"))
+        {
+            bail!(
+                "{word}: {name} ({release}) has no module {module}, built in or loadable; the kernel would ignore it"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// The running system's kernel line, without what the boot manager adds (`initrd=`, `BOOT_IMAGE=`).
@@ -180,44 +269,176 @@ fn text(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-/// The UKI steps of every kernel in `/boot`, each signed by `ukify` with the MOK key.
-fn uki_steps(root: &SysRoot, esp: &str) -> Result<Vec<Step>> {
-    let line = cmdline(root)?;
+fn mkdir(root: &SysRoot, dir: impl AsRef<Path>) -> Step {
+    Step::Run(vec!["mkdir".into(), "-p".into(), text(&root.path(dir))])
+}
+
+/// The image of the kernel `name` with `line`: made beside the old one, signed by `ukify` with the MOK key, its
+/// signature checked, and only then put in place of the old one.
+fn build(root: &SysRoot, esp: &str, name: &str, line: &str) -> Vec<Step> {
     let ucode = ["/boot/intel-ucode.img", "/boot/amd-ucode.img"]
         .into_iter()
         .find(|u| root.exists(u));
+    let target = text(&root.path(Path::new(esp).join("EFI/Linux").join(image(name))));
+    let new = format!("{target}.new");
+    let mut argv: Vec<String> = vec![
+        "ukify".into(),
+        "build".into(),
+        "--linux".into(),
+        text(&root.path(format!("/boot/vmlinuz-{name}"))),
+    ];
+    if let Some(ucode) = ucode {
+        argv.extend(["--initrd".into(), text(&root.path(ucode))]);
+    }
+    argv.extend([
+        "--initrd".into(),
+        text(&root.path(format!("/boot/initramfs-{name}.img"))),
+        "--cmdline".into(),
+        line.into(),
+        "--secureboot-private-key".into(),
+        text(&root.path(KEY)),
+        "--secureboot-certificate".into(),
+        text(&root.path(CERT)),
+        "--output".into(),
+        new.clone(),
+    ]);
+    vec![
+        Step::Run(argv),
+        Step::Run(vec![
+            "sbverify".into(),
+            "--cert".into(),
+            text(&root.path(CERT)),
+            new.clone(),
+        ]),
+        Step::Run(vec!["mv".into(), new, target]),
+    ]
+}
+
+/// The image steps of every kernel in `/boot`, each with its own command line. A kernel without one gets the running
+/// system's line, and the plan writes it down as that kernel's.
+fn uki_steps(root: &SysRoot, esp: &str) -> Result<Vec<Step>> {
     let names = kernels(root);
     anyhow::ensure!(!names.is_empty(), "no kernel with an initramfs in /boot");
-    let linux = Path::new(esp).join("EFI/Linux");
-    let mut steps = vec![Step::Run(vec![
-        "mkdir".into(),
-        "-p".into(),
-        text(&root.path(&linux)),
-    ])];
+    let mut steps = vec![
+        mkdir(root, Path::new(esp).join("EFI/Linux")),
+        mkdir(root, LINES),
+    ];
     for name in names {
-        let mut argv: Vec<String> = vec!["ukify".into(), "build".into()];
-        argv.extend([
-            "--linux".into(),
-            text(&root.path(format!("/boot/vmlinuz-{name}"))),
-        ]);
-        if let Some(ucode) = ucode {
-            argv.extend(["--initrd".into(), text(&root.path(ucode))]);
-        }
-        argv.extend([
-            "--initrd".into(),
-            text(&root.path(format!("/boot/initramfs-{name}.img"))),
-            "--cmdline".into(),
-            line.clone(),
-            "--secureboot-private-key".into(),
-            text(&root.path(KEY)),
-            "--secureboot-certificate".into(),
-            text(&root.path(CERT)),
-            "--output".into(),
-            text(&root.path(linux.join(format!("{UKI_PREFIX}{name}.efi")))),
-        ]);
-        steps.push(Step::Run(argv));
+        let saved = saved_line(root, &name);
+        let line = if let Some(line) = saved {
+            line
+        } else {
+            let line = cmdline(root)?;
+            steps.push(Step::Create {
+                path: line_file(&name),
+                content: format!("{line}\n"),
+            });
+            line
+        };
+        check_line(root, &name, &line)?;
+        steps.extend(build(root, esp, &name, &line));
     }
     Ok(steps)
+}
+
+/// legionctl's firmware entry and the ESP, or why the boot takeover is not there.
+fn takeover(state: &BootState) -> Result<(String, String)> {
+    match (&state.ours, &state.esp) {
+        (Some(id), Some(esp)) => Ok((id.clone(), esp.clone())),
+        _ => bail!(
+            "legionctl's boot entry is not installed: install the boot takeover first (legionctl boot install)"
+        ),
+    }
+}
+
+/// The kernel `name` has a legionctl image to start.
+fn startable(state: &BootState, name: &str) -> Result<()> {
+    anyhow::ensure!(
+        state.kernels.iter().any(|k| k == name),
+        "no kernel {name} in /boot (installed: {})",
+        state.kernels.join(", ")
+    );
+    anyhow::ensure!(
+        state.ukis.contains(&image(name)),
+        "no legionctl image of {name} (legionctl boot rebuild)"
+    );
+    Ok(())
+}
+
+/// Plan `kernel default`: legionctl's `loader.conf` starts `name`.
+///
+/// # Errors
+/// No boot takeover, or no image of `name`.
+pub fn default_plan(state: &BootState, name: &str) -> Result<Vec<Step>> {
+    let (_, esp) = takeover(state)?;
+    startable(state, name)?;
+    Ok(vec![Step::Create {
+        path: text(&Path::new(&esp).join(LOADER)),
+        content: loader_conf(name),
+    }])
+}
+
+/// Plan `kernel try`: the next start only goes through legionctl's entry (`BootNext`) to `name`
+/// (`LoaderEntryOneShot`), then the restart (the last step). The default stays.
+///
+/// # Errors
+/// No boot takeover, or no image of `name`.
+pub fn try_plan(state: &BootState, name: &str) -> Result<Vec<Step>> {
+    let (id, _) = takeover(state)?;
+    startable(state, name)?;
+    Ok(vec![
+        Step::LoaderVar {
+            name: "LoaderEntryOneShot".into(),
+            value: image(name),
+        },
+        Step::Run(vec!["efibootmgr".into(), "--bootnext".into(), id]),
+        Step::Run(vec!["systemctl".into(), "reboot".into()]),
+    ])
+}
+
+/// Plan `kernel cmdline set`: the image of `name` only, with `line` (checked first), then `line` as its command line
+/// and the line before it kept for `kernel cmdline undo`. A failed step leaves the old image and line.
+///
+/// # Errors
+/// No boot takeover, no image of `name`, or the line fails [`check_line`].
+pub fn cmdline_plan(
+    root: &SysRoot,
+    state: &BootState,
+    name: &str,
+    line: &str,
+) -> Result<Vec<Step>> {
+    let (_, esp) = takeover(state)?;
+    startable(state, name)?;
+    let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    check_line(root, name, &line)?;
+    let before = saved_line(root, name).with_context(|| {
+        format!("no command line of {name} in {LINES} yet (legionctl boot rebuild writes it)")
+    })?;
+    let mut steps = build(root, &esp, name, &line);
+    steps.extend([
+        mkdir(root, LINES),
+        Step::Create {
+            path: old_file(name),
+            content: format!("{before}\n"),
+        },
+        Step::Create {
+            path: line_file(name),
+            content: format!("{line}\n"),
+        },
+    ]);
+    Ok(steps)
+}
+
+/// Plan `kernel cmdline undo`: the line before the last change, as [`cmdline_plan`] (so a second undo goes forward
+/// again).
+///
+/// # Errors
+/// No line was changed, or [`cmdline_plan`] fails.
+pub fn undo_plan(root: &SysRoot, state: &BootState, name: &str) -> Result<Vec<Step>> {
+    let before = root
+        .read(old_file(name))
+        .with_context(|| format!("no earlier command line of {name} to go back to"))?;
+    cmdline_plan(root, state, name, &before)
 }
 
 /// Plan `boot install`: our shim copy with systemd-boot as its signed second stage, the UKIs, `loader.conf` (the
@@ -242,7 +463,7 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
     }
     let ours = Path::new(&esp).join(DIR);
     let mut steps = vec![
-        Step::Run(vec!["mkdir".into(), "-p".into(), text(&root.path(&ours))]),
+        mkdir(root, &ours),
         Step::Run(vec![
             "install".into(),
             "-m".into(),
@@ -270,17 +491,11 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
         ]),
     ];
     steps.extend(uki_steps(root, &esp)?);
-    steps.push(Step::Run(vec![
-        "mkdir".into(),
-        "-p".into(),
-        text(&root.path(Path::new(&esp).join("loader"))),
-    ]));
+    steps.push(mkdir(root, Path::new(&esp).join("loader")));
+    // the running kernel is the default at first
     steps.push(Step::Create {
-        path: text(&Path::new(&esp).join("loader/loader.conf")),
-        content: format!(
-            "{LOADER_MARK}: the running kernel first, no menu (hold a key at start for it)\n\
-             default {UKI_PREFIX}{running}.efi\ntimeout 0\neditor no\n"
-        ),
+        path: text(&Path::new(&esp).join(LOADER)),
+        content: loader_conf(&running),
     });
     let partition = device.trim_start_matches("/dev/");
     let number = root
@@ -393,7 +608,7 @@ pub fn remove_plan(root: &SysRoot, state: &BootState) -> Result<Vec<Step>> {
     steps.extend(state.ukis.iter().map(|uki| Step::Remove {
         path: text(&Path::new(&esp).join("EFI/Linux").join(uki)),
     }));
-    let loader = Path::new(&esp).join("loader/loader.conf");
+    let loader = Path::new(&esp).join(LOADER);
     if root
         .read(&loader)
         .is_some_and(|c| c.starts_with(LOADER_MARK))

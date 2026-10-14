@@ -94,7 +94,7 @@ The chain here: the firmware entry "Linpus lite" starts shim (`/boot/efi/EFI/BOO
 `legionctl boot install` adds, beside it and without changing it: `EFI/legionctl/` with a copy of shim and MokManager
 and systemd-boot as shim's second stage (`grubx64.efi`, signed by `sbsign` with `/etc/refind.d/keys/refind_local.key`),
 one UKI per kernel in `/boot` (`EFI/Linux/legionctl-<kernel>.efi` by `ukify`, signed with the same key, the microcode
-and the initramfs, and the running system's kernel line from `/proc/cmdline` without `initrd=`), `loader/loader.conf`
+and the initramfs, and the kernel's own command line: see "Kernels" below), `loader/loader.conf`
 (the running kernel, from rEFInd's `initrd=`, as default; no menu: hold a key at start for it), and a firmware entry
 `legionctl` made with `--create-only` (not first in the order); then BootNext tries it once, so a failed start falls
 back to the old chain. `boot confirm` puts the entry first only when this start came through it; `boot rebuild` (also
@@ -107,6 +107,81 @@ a stand-in efibootmgr with its own state, stand-in ukify/sbsign): the dry run ch
 and each kernel's image with the kernel line, adds the entry not first and sets BootNext (mutation-checked); confirm
 is refused unless this start came through it (mutation-checked); rebuild drops a removed kernel's image; remove leaves
 the old chain as it was. Live: the first install and the test start are the user's.
+
+## Kernels (built 2026-10-14, todo-84 parts 1 and 2; decided by the user)
+
+Two kernels are installed: `linux-cachyos` (EEVDF scheduler, thin LTO) and `linux-cachyos-bore-lto` (BORE, thin LTO).
+rEFInd starts `linux-cachyos-bore-lto`. legionctl starts a kernel only through the boot takeover's systemd-boot
+entries. There is no rEFInd path and no kexec.
+
+| Command | What it does |
+| --- | --- |
+| `legionctl kernel list` | Each installed kernel (`/usr/lib/modules/<release>/` with `vmlinuz`): the package (`pkgbase`), the release, the scheduler (`bore` when `CONFIG_SCHED_BORE=y`, else `eevdf`) and `lto` (`CONFIG_LTO_CLANG_*`), from `build/.config` of the headers (the name is not enough: `linux-cachyos` is LTO too), legionctl's image, the command line, the DKMS state of `nvidia` and `legionctl-wmi` for that release (`dkms status`), and the marks `running` and `default`. |
+| `legionctl kernel default <name>` | legionctl's `loader.conf` starts `<name>` from the next start on. |
+| `legionctl kernel try <name>` | The next start only: the EFI variable `LoaderEntryOneShot` (systemd-boot's one-time entry) and `BootNext` to legionctl's firmware entry, then the restart. The default stays. |
+| `legionctl kernel cmdline set <name> "<line>"` | The command line of `<name>` only (see below). |
+| `legionctl kernel cmdline undo <name>` | The line of `<name>` before its last change. A second undo goes forward again. |
+
+`default`, `try` and `cmdline` refuse, with nothing changed, when the boot takeover is not installed ("install the
+boot takeover first (legionctl boot install)"), and when `<name>` is not a kernel in `/boot` or has no legionctl
+image. Each change goes through the daemon (D-Bus `Kernel(action, name, line)`, polkit `org.legionctl.boot`, no
+kept authorization). The operator makes the plan first, so a refusal comes before the polkit dialog; `--dry-run`
+shows the plan. The daemon carries the plan out step by step and stops at the first failure. For `try`, the restart
+comes only after each step before it worked.
+
+`try` writes the variable to efivarfs itself (attributes non-volatile, boot and run time, the value as UTF-16 with
+its end mark). `bootctl set-oneshot` refuses when this start did not come through systemd-boot (no `LoaderInfo`),
+and the first try after `boot install` comes through rEFInd. An earlier one-time entry that systemd-boot did not use
+is immutable in efivarfs: the daemon removes the immutable flag (`chattr -i`) first.
+
+### The command line of each kernel
+
+Each kernel has its own command line in `/etc/legionctl/kernel/<name>.cmdline`. That file is the one source of the
+line in the kernel's image: `boot install`, `boot rebuild` (and the pacman hook) and `kernel cmdline set` read it.
+When a kernel has no file yet (`boot install`, or a new kernel package), the plan writes the running system's line
+(`/proc/cmdline` without `initrd=` and `BOOT_IMAGE=`) into it. rEFInd's `/boot/refind_linux.conf` stays as it is: it
+is the old chain's line.
+
+`kernel cmdline set` checks the line before it writes anything:
+
+- The line must have `root=`.
+- Each `<module>.<parameter>` must name a module that this kernel has: built in (`modules.builtin`,
+  `modules.builtin.modinfo`) or loadable (`modules.dep`, with the DKMS modules). The kernel ignores a parameter of an
+  unknown module without a word, so `zwsap.enabled=0` is refused. Names that the kernel gives to user space (`rd.`,
+  `systemd.`, `udev.`, `luks.`, `plymouth.`, `vconsole.`, `locale.`) are not modules.
+- The parameter names are not checked: `modules.builtin.modinfo` does not list each parameter. On 7.2.9 it lacks 15
+  of 256 parameters of built-in modules that `/sys/module` shows, `zswap.enabled` of this machine's line among them.
+  Parameters without a dot are not checked either: the kernel gives the ones it does not know to `init`.
+
+Then the daemon makes that kernel's image only: `ukify` writes `legionctl-<name>.efi.new`, `sbverify --cert` with
+the MOK certificate checks its signature, and `mv` puts it in place of the old image. Only after that, the old line
+goes to `<name>.cmdline.old` and the new line to `<name>.cmdline`. A failed step leaves the old image and the old
+line. `boot rebuild` uses the same checks and steps for each kernel.
+
+### The `kernel` condition of the configsets
+
+A configset layer can apply to one kernel: `{ "when": { "kernel": "linux-cachyos" }, "set": { ... } }`, or
+`legionctl rules edit 50-plain --when kernel=linux-cachyos sysctl.vm.swappiness=70`. The value is the package of the
+running kernel (01-core.md, Configsets). A layer for a kernel that is not installed is not used, and `doctor` names
+it.
+
+### Tests (e2e, `crates/legionctl/tests/machine.rs`)
+
+On the recorded machine (its `pkgbase` files and the scheduler and LTO lines of each `build/.config` are recorded),
+with the real daemon, a stand-in ESP, a stand-in `efibootmgr` with its own state, and stand-in `ukify`, `sbsign`,
+`sbverify`, `dkms` and `systemctl`:
+
+- `kernels_are_listed_and_start_through_the_boot_takeover_once_or_by_default`: the list (both kernels, flavour,
+  DKMS, running, default); `default` and `try` refused with nothing changed before `boot install`; `default` changes
+  `loader.conf` only; `try` sets `LoaderEntryOneShot` and `BootNext` and restarts, and the default stays.
+- `a_kernels_command_line_goes_into_its_image_only_and_undo_puts_the_old_one_back`: the line goes into that
+  kernel's image only; a line without `root=`, a parameter of an unknown module and an unsigned image are refused
+  with the old image and line left; `boot rebuild` keeps the line; undo puts the old line back.
+- `a_kernel_layer_applies_only_on_its_kernel`: a `kernel` layer applies only while its kernel runs; a layer for a
+  kernel that is not installed is a `doctor` finding.
+
+Live: the boot takeover is not installed on this machine yet. The first `boot install`, `kernel try` and
+`kernel default` are the user's.
 
 ## legionctl-wmi: our Legion WMI module (todo-79 part 1, decided by the user 2026-10-14)
 

@@ -60,6 +60,10 @@ block and the NVIDIA power limit that `doctor` expects. There is no converter an
   to `/run/legionctl/workload`, so the daemon and each planner of the operator (`plan`, `knobs`, dry runs) see the
   same conditions. When the sensor cannot load, the daemon writes the reason to `/run/legionctl/workload.error`,
   and `doctor` shows it.
+- `kernel`: the package of the running kernel (`linux-cachyos`, `linux-cachyos-bore-lto`), from
+  `/usr/lib/modules/<release>/pkgbase` of the release in `/proc/sys/kernel/osrelease` (todo-84). A layer for a
+  kernel that is not installed is a check fault (a `doctor` finding); `validate` cannot see the installed kernels and
+  checks only that the value is not empty.
 
 An unknown condition is a check fault, so a layer cannot wait for a sensor that does not exist.
 

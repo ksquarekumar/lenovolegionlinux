@@ -679,6 +679,32 @@ wire! {
         missing: Vec<String>,
     }
 
+    /// An installed kernel.
+    struct KernelInfo from machine::kernel::Installed {
+        /// The package (`linux-cachyos-bore-lto`).
+        package: String,
+        /// `7.2.9-2-cachyos-bore-lto`
+        release: String,
+        /// `bore` or `eevdf`, and `lto`; empty without the kernel headers.
+        flavour: Vec<String>,
+        /// legionctl's signed image of it.
+        image: Option<String>,
+        /// Its command line; null until the boot takeover writes it.
+        cmdline: Option<String>,
+        /// `nvidia/580.178.04: installed`, `legionctl-wmi: not built`.
+        dkms: Vec<String>,
+        running: bool,
+        /// legionctl's boot entry starts it when no one chooses.
+        default: bool,
+    }
+
+    /// The installed kernels.
+    struct Kernels from machine::kernel::Kernels {
+        /// The boot takeover is installed: `kernel default` and `kernel try` need it.
+        takeover: bool,
+        kernels: Vec<KernelInfo>,
+    }
+
     /// A device that can go to a VM (VFIO): a discrete GPU or an `NVMe` controller.
     struct VfioDevice from machine::vfio::Candidate {
         /// PCI address (`0000:01:00.0`).
