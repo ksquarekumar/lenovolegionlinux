@@ -116,7 +116,11 @@ fn setup(tag: &str) -> Setup {
             "semantic": {"account": "emb", "model": "embed-x", "threshold": 0.99},
             "pool": {"claude-x": ["limited", "main"], "*": ["main"]},
             // 10 tokens in and 5 out at these prices cost $2: one call uses the day
-            "prices": {"claude-y": {"input": 100_000.0, "output": 200_000.0}},
+            "prices": {
+                "claude-y": {"input": 100_000.0, "output": 200_000.0},
+                "claude-cached": {"input": 1000.0, "output": 0.0, "cache_read": 100.0, "cache_write": 1250.0},
+                "gpt-cached": {"input": 1000.0, "output": 0.0}
+            },
             "budgets": {"main/claude-y": {"day_usd": 2.0}}
         }})
         .to_string(),
@@ -628,4 +632,40 @@ fn a_reworded_prompt_replays_semantically_only_when_asked() {
         before,
         "the keyring key was used without the token"
     );
+}
+
+/// Prompt-cache tokens count in the cost: Anthropic reports them beside `input_tokens` (here in a stream's
+/// `message_start`), at their own prices; `OpenAI` inside `prompt_tokens`, here without a cache price, so at the input
+/// price (a budget counts too much, never too little).
+#[test]
+fn prompt_cache_tokens_count_in_the_cost() {
+    let s = setup("gw-cache");
+    let mut stream = ask("main/claude-cached", "hi");
+    stream["stream"] = json!(true);
+    assert_eq!(post(s.port, "/v1/messages", &CALLER, &stream).0, 200);
+    let token =
+        std::fs::read_to_string(s.home.join(".local/state/legionctl/gateway-token")).unwrap();
+    let chat = post(
+        s.port,
+        "/v1/chat/completions",
+        &[("x-legionctl-token", token.trim())],
+        &ask("oa/gpt-cached", "hi"),
+    );
+    assert_eq!(chat.0, 200, "{}", chat.2);
+    let usage: Value = serde_json::from_str::<Value>(&s.op.ok(&["gateway", "usage", "--json"]))
+        .unwrap()["items"]
+        .clone();
+    let rows: Vec<(i64, f64)> = usage
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| {
+            (
+                u["tokens_in"].as_i64().unwrap(),
+                u["cost_usd"].as_f64().unwrap(),
+            )
+        })
+        .collect();
+    // 10 x $1000/M + 1000 read x $100/M + 100 written x $1250/M; then 10 + 1000 read, both at $1000/M
+    assert_eq!(rows, [(1110, 0.235), (1010, 1.01)]);
 }

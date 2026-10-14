@@ -5,7 +5,8 @@ Base URLs pick the behaviour: http://127.0.0.1:<port>/ok answers (JSON, or an SS
 one) with usage 10 in / 5 out; /limited answers 429. /v1/messages answers as Anthropic, /v1/chat/completions as
 OpenAI. With tools in the request the answer also calls tool `lookup` with {"q": 1}, its arguments split over two
 stream events. /v1/embeddings answers a vector of the input's letter counts (a-z, case ignored), so a reworded
-prompt with the same letters is near. Each call appends `<prefix> <model> <key>` to the log (the x-api-key or authorization header) and
+prompt with the same letters is near. A model named *cached* reports prompt-cache tokens too: Anthropic 1000 read and
+100 written beside the 10 input tokens, OpenAI 1000 read inside 1010 prompt tokens. Each call appends `<prefix> <model> <key>` to the log (the x-api-key or authorization header) and
 `{"path", "body"}` to `<log>.bodies`.
 """
 
@@ -25,6 +26,7 @@ def sse(events, named):
 
 def anthropic(body, text):
     tools = bool(body.get("tools"))
+    cache = {"cache_read_input_tokens": 1000, "cache_creation_input_tokens": 100} if "cached" in body.get("model", "") else {}
     if not body.get("stream"):
         content = [{"type": "text", "text": text}]
         if tools:
@@ -32,11 +34,11 @@ def anthropic(body, text):
         return "application/json", json.dumps({
             "id": "msg_1", "type": "message", "role": "assistant", "model": body.get("model"), "content": content,
             "stop_reason": "tool_use" if tools else "end_turn", "stop_sequence": None,
-            "usage": {"input_tokens": 10, "output_tokens": 5},
+            "usage": {"input_tokens": 10, "output_tokens": 5, **cache},
         }).encode()
     events = [
         {"type": "message_start", "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": [],
-                                              "model": body.get("model"), "usage": {"input_tokens": 10, "output_tokens": 1}}},
+                                              "model": body.get("model"), "usage": {"input_tokens": 10, "output_tokens": 1, **cache}}},
         {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
         {"type": "ping"},
         {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text}},
@@ -74,6 +76,9 @@ def openai(body, text):
     tools = bool(body.get("tools"))
     base = {"id": "chatcmpl-1", "created": 1, "model": body.get("model")}
     usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    if "cached" in body.get("model", ""):
+        usage = {"prompt_tokens": 1010, "completion_tokens": 5, "total_tokens": 1015,
+                 "prompt_tokens_details": {"cached_tokens": 1000}}
     if not body.get("stream"):
         message = {"role": "assistant", "content": text}
         if tools:

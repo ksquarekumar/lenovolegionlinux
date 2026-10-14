@@ -72,10 +72,12 @@ pub async fn embed(
         model: semantic.model.clone(),
         tokens_in,
         status,
-        cost_usd: config
-            .prices
-            .get(&semantic.model)
-            .map_or(0.0, |p| p.cost(tokens_in, 0)),
+        cost_usd: config.prices.get(&semantic.model).map_or(0.0, |p| {
+            p.cost(legionctl_core::config::Tokens {
+                input: tokens_in,
+                ..Default::default()
+            })
+        }),
         ..GatewayUsage::default()
     };
     Ok((vector, row))

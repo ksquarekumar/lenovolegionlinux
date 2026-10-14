@@ -173,20 +173,46 @@ pub struct Budget {
     pub month_usd: Option<f64>,
 }
 
-/// USD per million tokens.
+/// USD per million tokens. Input tokens that the provider reads from or writes to its prompt cache cost
+/// `cache_read` and `cache_write`; without them they cost `input` (a budget then counts too much, never too little).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Price {
     pub input: f64,
     pub output: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write: Option<f64>,
+}
+
+/// The tokens of one call: input not from the prompt cache, input read from it and written to it, and output.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Tokens {
+    pub input: i64,
+    pub cache_read: i64,
+    pub cache_write: i64,
+    pub output: i64,
+}
+
+impl Tokens {
+    /// Every input token, cached or not.
+    #[must_use]
+    pub fn all_input(self) -> i64 {
+        self.input + self.cache_read + self.cache_write
+    }
 }
 
 impl Price {
     #[must_use]
-    pub fn cost(self, tokens_in: i64, tokens_out: i64) -> f64 {
+    pub fn cost(self, t: Tokens) -> f64 {
         // a call has far fewer than 2^32 tokens: u32 holds them, and f64 holds u32 exactly
         let n = |t: i64| f64::from(u32::try_from(t).unwrap_or(u32::MAX));
-        (n(tokens_in) * self.input + n(tokens_out) * self.output) / 1e6
+        (n(t.input) * self.input
+            + n(t.cache_read) * self.cache_read.unwrap_or(self.input)
+            + n(t.cache_write) * self.cache_write.unwrap_or(self.input)
+            + n(t.output) * self.output)
+            / 1e6
     }
 }
 

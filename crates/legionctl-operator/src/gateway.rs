@@ -18,7 +18,7 @@ use blake2::digest::consts::U16;
 use blake2::{Blake2b, Digest};
 use futures_util::StreamExt;
 use legionctl_core::cache::{Cache, Entry};
-use legionctl_core::config::{Dirs, GatewayAccount, GatewayConfig, Price, resolve};
+use legionctl_core::config::{Dirs, GatewayAccount, GatewayConfig, Price, Tokens, resolve};
 use legionctl_core::db::{Db, GatewayUsage};
 use serde_json::{Value, json};
 
@@ -163,9 +163,10 @@ fn refuse(status: StatusCode, message: &str) -> Response {
         .into_response()
 }
 
-/// Tokens in and out from a response: JSON, or every `data:` event of a stream (Anthropic's `message_start` and
-/// `message_delta`, the usage chunk of `OpenAI`).
-fn usage(body: &[u8]) -> (i64, i64) {
+/// The tokens of a response: JSON, or every `data:` event of a stream (Anthropic's `message_start` and
+/// `message_delta`, the usage chunk of `OpenAI`). Anthropic counts cache reads and writes beside `input_tokens`;
+/// `OpenAI` counts its cache reads (`*_tokens_details.cached_tokens`) inside `prompt_tokens`/`input_tokens`.
+fn usage(body: &[u8]) -> Tokens {
     let text = String::from_utf8_lossy(body);
     let objects: Vec<Value> = match serde_json::from_str::<Value>(&text) {
         Ok(v) => vec![v],
@@ -175,23 +176,35 @@ fn usage(body: &[u8]) -> (i64, i64) {
             .filter_map(|d| serde_json::from_str(d.trim()).ok())
             .collect(),
     };
-    let mut tokens = (0, 0);
+    let (mut input, mut cached_inside, mut tokens) = (0, 0, Tokens::default());
     for object in &objects {
         for usage in [
             &object["usage"],
             &object["message"]["usage"],
             &object["response"]["usage"],
         ] {
-            let get = |keys: [&str; 2]| {
+            let get = |keys: &[&str]| {
                 keys.iter()
-                    .filter_map(|k| usage[*k].as_i64())
+                    .filter_map(|k| usage.pointer(k).and_then(Value::as_i64))
                     .max()
                     .unwrap_or(0)
             };
-            tokens.0 = tokens.0.max(get(["input_tokens", "prompt_tokens"]));
-            tokens.1 = tokens.1.max(get(["output_tokens", "completion_tokens"]));
+            input = input.max(get(&["/input_tokens", "/prompt_tokens"]));
+            cached_inside = cached_inside.max(get(&[
+                "/prompt_tokens_details/cached_tokens",
+                "/input_tokens_details/cached_tokens",
+            ]));
+            tokens.cache_read = tokens.cache_read.max(get(&["/cache_read_input_tokens"]));
+            tokens.cache_write = tokens
+                .cache_write
+                .max(get(&["/cache_creation_input_tokens"]));
+            tokens.output = tokens
+                .output
+                .max(get(&["/output_tokens", "/completion_tokens"]));
         }
     }
+    tokens.input = input - cached_inside;
+    tokens.cache_read += cached_inside;
     tokens
 }
 
@@ -349,12 +362,12 @@ fn replay(key: &str, model: &str, label: &'static str) -> Option<Response> {
         .unwrap_or("application/json")
         .to_string();
     let body = kept.value;
-    let (tokens_in, tokens_out) = usage(&body);
+    let tokens = usage(&body);
     record(&GatewayUsage {
         account: "cache".into(),
         model: model.into(),
-        tokens_in,
-        tokens_out,
+        tokens_in: tokens.all_input(),
+        tokens_out: tokens.output,
         cached: true,
         status,
         ..Default::default()
@@ -644,8 +657,9 @@ fn respond(
             }
         }
         drop(tx);
-        (row.tokens_in, row.tokens_out) = usage(&raw);
-        row.cost_usd = price.map_or(0.0, |p| p.cost(row.tokens_in, row.tokens_out));
+        let tokens = usage(&raw);
+        (row.tokens_in, row.tokens_out) = (tokens.all_input(), tokens.output);
+        row.cost_usd = price.map_or(0.0, |p| p.cost(tokens));
         row.ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
         record(&row);
         if exact

@@ -35,9 +35,11 @@ ACP sessions, session environments. Tests: a stand-in provider
 change. Each usage row has `cost_usd` (0 for a replay, a refusal, or a model without a price). `gateway.budgets`:
 `account/model` -> `{ "day_usd", "month_usd" }` over rolling windows of 24 hours and 30 days; the account leaves the
 pool when one is used, and an explicit call gets a 429 with the limit and the amount spent. A budget for a model
-without a price makes the config invalid (the reason names the key), because its cost would always be 0. Shortcut:
-the provider's cache-read and cache-write tokens are not counted; add their prices when a budget needs that
-precision.
+without a price makes the config invalid (the reason names the key), because its cost would always be 0.
+Prompt-cache tokens (2026-10-14) count as input: Anthropic reports reads and writes beside `input_tokens`, `OpenAI`
+reads inside `prompt_tokens`/`input_tokens`; a price's optional `cache_read` and `cache_write` price them, and
+without those they cost `input` (a budget counts too much, never too little; most of an agent's input is cache
+reads, so leaving them out let a budget pass far above its limit).
 
 ## Built (2026-10-13, G2 part 2: API translation)
 

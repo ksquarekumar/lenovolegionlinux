@@ -163,8 +163,9 @@
   // example 4711; then ANTHROPIC_BASE_URL or OPENAI_BASE_URL=http://127.0.0.1:4711, which also works in sessions in a
   // container or VM). Accounts: name -> { "provider": anthropic|openai, "base_url",
   // "keyring": true to use the key stored with `secret-tool store --label=... legionctl-account <name>` }; without
-  // keyring the caller's own credentials go through. Pool: model (or "*") -> accounts in order. Prices: model -> { "input", "output" } in
-  // USD per million tokens (none built in: prices change). Budgets: "account/model" -> { "day_usd", "month_usd" }
+  // keyring the caller's own credentials go through. Pool: model (or "*") -> accounts in order. Prices: model -> { "input", "output",
+  // optional "cache_read", "cache_write" (prompt-cache tokens; else they cost "input") } in USD per million tokens
+  // (none built in: prices change). Budgets: "account/model" -> { "day_usd", "month_usd" }
   // (rolling 24 hours and 30 days); a budget needs a price for its model.
   "gateway": {
     "port": 0,
