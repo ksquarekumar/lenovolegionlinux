@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
 use rusqlite::{OptionalExtension, params};
@@ -142,6 +142,8 @@ pub struct ChecksConfig {
     /// Run folders kept per check and repository in a dossier; a run that an EVIDENCE front matter names
     /// (`runs: [<run>]`) stays.
     pub keep_runs: usize,
+    /// A run that takes longer is killed with its process group and fails.
+    pub timeout_minutes: u64,
     /// Check name -> the check.
     #[serde(flatten)]
     pub defs: BTreeMap<String, Check>,
@@ -194,7 +196,8 @@ pub struct CheckRun {
     pub check: String,
     pub kind: Kind,
     pub command: String,
-    /// The git tree of the working tree when the run started (untracked files too, ignored files not).
+    /// The git tree of the working tree when the run started (untracked files too, ignored files not); empty when the
+    /// files changed while it ran, so the run is evidence for no tree.
     pub tree: String,
     pub exit: i32,
     pub profile: Profile,
@@ -226,9 +229,37 @@ pub fn languages() -> Result<Vec<Language>> {
 /// The checks of the repository that contains `dir`, with its repository layer.
 ///
 /// # Errors
-/// The config does not resolve.
+/// The config does not resolve, a file of the repository layer has a problem (it would drop the gates), a `deploy` or
+/// `install` check has a gate (the user runs them), or `keep_runs` is 0.
 pub fn config_at(dir: &Path) -> Result<ChecksConfig> {
-    Ok(resolve(&Dirs::from_env(), Some(dir))?.config.checks)
+    let resolved = resolve(&Dirs::from_env(), Some(dir))?;
+    if let Some(layer) = crate::config::repo_root(dir).map(|r| r.join(".legionctl")) {
+        let layer = format!("{}/", layer.display());
+        let broken: Vec<&str> = resolved
+            .problems
+            .iter()
+            .filter(|p| p.contains(&layer))
+            .map(String::as_str)
+            .collect();
+        ensure!(
+            broken.is_empty(),
+            "the repository's checks do not resolve, so no gate can pass: {}",
+            broken.join("; ")
+        );
+    }
+    let checks = resolved.config.checks;
+    for (name, check) in &checks.defs {
+        ensure!(
+            check.gate.is_none() || ![Kind::Deploy, Kind::Install].contains(&check.kind),
+            "check {name} is a {} check with a gate: the user runs it, so it cannot be a gate",
+            check.kind.name()
+        );
+    }
+    ensure!(
+        checks.keep_runs >= 1,
+        "checks.keep_runs is 0: it would remove the run that a gate reads"
+    );
+    Ok(checks)
 }
 
 /// The required kinds that the checks of `dir` lack.
@@ -343,22 +374,34 @@ pub fn tree(dir: &Path) -> Result<String> {
     Ok(out?.trim().to_string())
 }
 
-/// Run `cmd` to its end: the exit code (128 + the signal for a killed command) and what it cost.
-fn profiled(mut cmd: Command) -> Result<(i32, Profile)> {
+/// Run `cmd` in a process group of its own to its end, or kill the group at `limit`: the exit code (128 + the signal
+/// for a killed command), what it cost, and whether the limit killed it.
+fn profiled(mut cmd: Command, limit: Duration) -> Result<(i32, Profile, bool)> {
+    use std::os::unix::process::CommandExt;
     let started = Instant::now();
-    let child = cmd.spawn().context("starting sh")?;
+    let child = cmd.process_group(0).spawn().context("starting sh")?;
     let pid = libc::pid_t::try_from(child.id())?;
+    let mut killed = false;
     let (status, usage) = loop {
         let mut status = 0;
         // SAFETY: rusage is plain integers, so all zeros is a valid value; wait4 writes the status and the usage of
-        // the child that this process started and has not reaped (std reaps only in wait, which is not called)
+        // the child that this process started and has not reaped (std reaps only in wait, which is not called); kill
+        // signals the group that this child leads
         let (got, usage) = unsafe {
             let mut usage: libc::rusage = std::mem::zeroed();
-            let got = libc::wait4(pid, &raw mut status, 0, &raw mut usage);
+            let got = libc::wait4(pid, &raw mut status, libc::WNOHANG, &raw mut usage);
+            if got == 0 && !killed && started.elapsed() > limit {
+                libc::kill(-pid, libc::SIGKILL);
+                killed = true;
+            }
             (got, usage)
         };
         if got == pid {
             break (status, usage);
+        }
+        if got == 0 {
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
         }
         let e = std::io::Error::last_os_error();
         ensure!(
@@ -386,6 +429,7 @@ fn profiled(mut cmd: Command) -> Result<(i32, Profile)> {
             read_bytes: bytes(usage.ru_inblock),
             write_bytes: bytes(usage.ru_oublock),
         },
+        killed,
     ))
 }
 
@@ -397,26 +441,56 @@ fn tail(log: &Path) -> String {
     lines[lines.len().saturating_sub(TAIL)..].join("\n")
 }
 
-/// The run ids that an EVIDENCE front matter of the dossier home names (`runs: [<run>, ...]`): they stay.
+/// The run ids that an EVIDENCE front matter of the dossier home names (`runs: [<run>, ...]`), in any subfolder:
+/// they stay.
 fn evidence_runs(home: &Path) -> BTreeSet<String> {
-    std::fs::read_dir(home.join("EVIDENCE"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
-        .flat_map(|text| {
-            text.lines()
-                .filter_map(|l| l.trim().strip_prefix("runs:"))
-                .flat_map(|ids| {
-                    ids.trim_matches(|c: char| c.is_whitespace() || c == '[' || c == ']')
-                        .split(',')
-                        .map(|id| id.trim().trim_matches(['"', '\'']).to_string())
-                        .filter(|id| !id.is_empty())
-                        .collect::<Vec<_>>()
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect()
+    fn walk(dir: &Path, runs: &mut BTreeSet<String>) {
+        for path in std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+        {
+            if path.is_dir() {
+                walk(&path, runs);
+            } else if let Ok(text) = std::fs::read_to_string(&path) {
+                runs.extend(
+                    crate::graph::front_matter(&text)
+                        .remove("runs")
+                        .unwrap_or_default(),
+                );
+            }
+        }
+    }
+    let mut runs = BTreeSet::new();
+    walk(&home.join("EVIDENCE"), &mut runs);
+    runs
+}
+
+/// Remove the run folders of check `name` past `keep`, unless an EVIDENCE names them; the rows stay.
+fn prune_runs(
+    db: &crate::db::Db,
+    home: &Path,
+    (repo, name): (&str, &str),
+    keep: usize,
+) -> Result<()> {
+    let named = evidence_runs(home);
+    let mut stmt = db.conn().prepare(
+        "SELECT id FROM check_runs WHERE repo = ?1 AND name = ?2 ORDER BY ts DESC, rowid DESC LIMIT -1 OFFSET ?3",
+    )?;
+    let old = stmt
+        .query_map(
+            params![repo, name, i64::try_from(keep).unwrap_or(i64::MAX)],
+            |r| r.get::<_, String>(0),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for id in old.into_iter().filter(|id| !named.contains(id)) {
+        match std::fs::remove_dir_all(home.join(".state/runs").join(&id)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<CheckRun> {
@@ -487,7 +561,24 @@ impl Dossiers {
             .stdin(Stdio::null())
             .stdout(log.try_clone()?)
             .stderr(log);
-        let (exit, profile) = profiled(cmd)?;
+        let checks = config_at(dir)?;
+        let limit = checks.timeout_minutes;
+        let (exit, profile, killed) = profiled(cmd, Duration::from_secs(limit.saturating_mul(60)))?;
+        if killed {
+            use std::io::Write;
+            writeln!(
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(folder.join("log.txt"))?,
+                "legionctl: killed after checks.timeout_minutes ({limit} minutes)"
+            )?;
+        }
+        // a fixing tool, a generator or a peer changed the files: the run is evidence for no tree
+        let tree = if crate::checks::tree(dir)? == tree {
+            tree
+        } else {
+            String::new()
+        };
         std::fs::write(
             folder.join("profile.json"),
             serde_json::to_string_pretty(&profile)?,
@@ -538,24 +629,7 @@ impl Dossiers {
                 run.at
             ],
         )?;
-        // the folders past checks.keep_runs go, unless an EVIDENCE names them; the rows stay
-        let keep = config_at(dir)?.keep_runs;
-        let named = evidence_runs(&home);
-        let mut stmt = db.conn().prepare(
-            "SELECT id FROM check_runs WHERE repo = ?1 AND name = ?2 ORDER BY ts DESC, rowid DESC LIMIT -1 OFFSET ?3",
-        )?;
-        let old = stmt
-            .query_map(
-                params![repo, name, i64::try_from(keep).unwrap_or(i64::MAX)],
-                |r| r.get::<_, String>(0),
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        for id in old.into_iter().filter(|id| !named.contains(id)) {
-            match std::fs::remove_dir_all(home.join(".state/runs").join(&id)) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-                _ => {}
-            }
-        }
+        prune_runs(&db, &home, (&repo, name), checks.keep_runs)?;
         Ok(run)
     }
 
@@ -610,6 +684,17 @@ impl Dossiers {
                     )?),
                 };
                 let run = self.run_check(dir, (name, check), &[], id, session)?;
+                if run.tree.is_empty() {
+                    return Err(coded(
+                        Code::Conflict,
+                        format!(
+                            "check {name} ({}) changed the files of the workspace while it ran; log {}: \
+                             check the change, then run the operation again",
+                            check.kind.name(),
+                            run.log().display()
+                        ),
+                    ));
+                }
                 if run.exit != 0 {
                     return Err(coded(
                         Code::Conflict,

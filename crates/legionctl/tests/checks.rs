@@ -499,6 +499,98 @@ fn a_merge_refuses_without_passing_build_and_test_runs_at_the_rebased_head() {
     assert_eq!(lab.count("unit-runs"), 2);
 }
 
+/// The merge gate tests only what the merge ships (R3-2, R3-7): an untracked file that makes the test pass refuses
+/// the merge (fast-forward ships the commits without it, and main would not pass), and a branch that rewrites its
+/// own gate in `.legionctl/` is refused for the user to merge. main stays at its commit each time.
+#[test]
+fn a_merge_gate_refuses_an_untracked_file_and_a_branch_that_sets_its_own_gate() {
+    let lab = Lab::new("ships");
+    let repo = lab.repo(
+        "repo",
+        &[
+            (".gitignore", "/agentWorkspaces\n"),
+            (
+                ".legionctl/checks.jsonc",
+                r#"{ "checks": { "unit": { "kind": "test", "run": "test -e helper.txt", "gate": "merge" } } }"#,
+            ),
+        ],
+    );
+    let ws = lab.workspace(&repo, "ships");
+    write(&ws.join("feature.txt"), "uses helper.txt\n");
+    lab.ok(&ws, &["workspace", "checkpoint", "add feature"]);
+    write(&ws.join("helper.txt"), "never committed\n");
+    let refused = lab.run(&ws, &["workspace", "merge"]);
+    assert!(
+        !refused.status.success() && text(&refused).1.contains("untracked files"),
+        "{refused:?}"
+    );
+    assert_eq!(lab.git(&repo, &["log", "-1", "--format=%s"]), "start");
+
+    std::fs::remove_file(ws.join("helper.txt")).unwrap();
+    write(
+        &ws.join(".legionctl/checks.jsonc"),
+        r#"{ "checks": { "unit": { "kind": "test", "run": "true", "gate": "merge" } } }"#,
+    );
+    lab.ok(&ws, &["workspace", "checkpoint", "drop the gate"]);
+    let refused = lab.run(&ws, &["workspace", "merge"]);
+    assert!(
+        !refused.status.success()
+            && text(&refused)
+                .1
+                .contains("changes .legionctl/, which sets its own gates: the user merges it"),
+        "{refused:?}"
+    );
+    assert_eq!(lab.git(&repo, &["log", "-1", "--format=%s"]), "start");
+}
+
+/// A gate passes only on evidence (R3-3, R3-9): a syntax error in the repository's `checks.jsonc` refuses the
+/// checkpoint instead of dropping every gate, and a gate check that changes the files while it runs (a fixing
+/// formatter) refuses, since its pass is for other content than the commit. Nothing is committed either time.
+#[test]
+fn a_broken_checks_file_and_a_check_that_changes_the_files_refuse_the_checkpoint() {
+    let lab = Lab::new("closed");
+    let repo = lab.repo(
+        "repo",
+        &[
+            (".gitignore", "/agentWorkspaces\n"),
+            (
+                ".legionctl/checks.jsonc",
+                r#"{ "checks": { "lint": { "kind": "lint", "run": "false", "gate": "checkpoint" } } }"#,
+            ),
+        ],
+    );
+    let ws = lab.workspace(&repo, "closed");
+    let commits = || lab.git(&ws, &["rev-list", "--count", "HEAD"]);
+    // a missing comma
+    write(
+        &ws.join(".legionctl/checks.jsonc"),
+        r#"{ "checks": { "lint": { "kind": "lint" "run": "false", "gate": "checkpoint" } } }"#,
+    );
+    let refused = lab.run(&ws, &["workspace", "checkpoint", "broken gate"]);
+    let err = text(&refused).1;
+    assert!(
+        !refused.status.success()
+            && err.contains("the repository's checks do not resolve, so no gate can pass")
+            && err.contains("checks.jsonc"),
+        "{err}"
+    );
+    assert_eq!(commits(), "1");
+
+    write(
+        &ws.join(".legionctl/checks.jsonc"),
+        r#"{ "checks": { "fmt": { "kind": "format", "run": "echo formatted >> code.txt", "gate": "checkpoint" } } }"#,
+    );
+    write(&ws.join("code.txt"), "code\n");
+    let refused = lab.run(&ws, &["workspace", "checkpoint", "formatted"]);
+    let err = text(&refused).1;
+    assert!(
+        !refused.status.success()
+            && err.contains("check fmt (format) changed the files of the workspace while it ran"),
+        "{err}"
+    );
+    assert_eq!(commits(), "1");
+}
+
 /// A repository without a required kind (`checks.required`) is a finding in `doctor` and `dossier check`, and the
 /// agent is told at session start; a check whose command is not found (exit 127) is a "check broken" finding. The
 /// checks are the branch's own: once the workspace's file has the kinds, the nudge and the finding go.

@@ -247,7 +247,9 @@
     "nudge": true,
     // Run folders (<dossier>/.state/runs/<run>/) kept per check; a run that an EVIDENCE front matter names
     // (runs: [<run>]) stays.
-    "keep_runs": 20
+    "keep_runs": 20,
+    // A run that takes longer is killed with its process group and fails.
+    "timeout_minutes": 60
   },
 
   "gates": {

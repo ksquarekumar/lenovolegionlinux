@@ -1329,6 +1329,51 @@ fn a_test_change_wakes_it_and_its_wake_stops_at_the_token_budget(lab: &Lab, main
     );
 }
 
+/// A backlog larger than the wake's token budget (R3-5): main0's messages fill the log past observer0's
+/// `wake_tokens` before a test change wakes it. Each wake gets only the events that fit (half the budget), ends within
+/// its budget, moves the cursor to the last event it got and wakes again for the rest, until the cursor passes the
+/// trigger. Before the fix each wake held the whole backlog, stopped at once over its budget and kept its cursor.
+#[test]
+fn a_backlog_larger_than_the_wake_budget_goes_through_in_wakes_that_fit() {
+    let Pool { lab, main, ws } = pool("backlog", "fake");
+    write(&lab.home.join("scripts/observer0.sh"), "echo done\n");
+    write(
+        &lab.home.join(".config/legionctl/teams/tight.jsonc"),
+        &json!({"name": "tight", "members": {
+            "main0": {"agent": "main-agent"},
+            "observer0": {"agent": "thread-observer", "pace": "on-trigger",
+                          "budget": {"wake_tokens": 4000, "wake_seconds": 60}}}})
+        .to_string(),
+    );
+    lab.ok(
+        &main,
+        &ws,
+        &["thread", "start", "drain the backlog", "--team", "tight"],
+    );
+    let text = "x".repeat(4000);
+    for _ in 0..6 {
+        let fields =
+            json!({"tool_name": "SendMessage", "tool_input": {"to": "reviewer", "message": text}});
+        assert_eq!(lab.hook(&main, &ws, "post-tool", fields), "");
+    }
+    lab.edit(&main, &ws, &ws.join("tests/lexer.rs"));
+    let change = |view: &Value| {
+        view["log"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["kind"] == "thread.test-change")
+            .map(|r| r["id"].as_i64().unwrap())
+    };
+    until("observer0's cursor past the test change", || {
+        let view = lab.show(&main, 1);
+        change(&view).is_some_and(|c| Lab::member(&view, "observer0")["cursor"].as_i64() >= Some(c))
+    });
+    let observer = cost(&lab.show(&main, 1), "observer0");
+    assert_eq!(observer["over"], 0, "{observer}");
+    assert!(observer["runs"].as_i64() >= Some(3), "{observer}");
+}
+
 /// The process job with main0's dossier: a checkpoint while main0 runs wakes observer0, whose backfill is refused,
 /// so it nudges; after main0's stop the next checkpoint's record is backfilled, marked `(by observer0)`, told once,
 /// and `thread compensate` removes exactly that line. The flow: `declare done` waits for observer0's verification;
@@ -1552,8 +1597,8 @@ fn an_operator_restart_restores_the_members_and_a_cut_off_wake_goes_on() {
 
 /// Team mode: a Claude Code session that legionctl starts may lead a team (the env var), and vanilla's members are
 /// its teammates. `TeammateIdle` gives a teammate its new messages once (exit 2); a teammate's hard-block holds a task
-/// (`TaskCompleted`, exit 2) until main0 acks it; after /resume the teammates are lost and run as operator sessions,
-/// woken at once.
+/// (`TaskCompleted`, exit 2) until main0 acks it; the `SessionEnd` of /clear or /resume keeps the pool open, and after
+/// /resume the teammates are lost and run as operator sessions, woken at once.
 #[test]
 fn a_claude_lead_runs_the_team_as_teammates_and_a_lost_one_restarts_as_an_operator_member() {
     let Pool { lab, main, ws } = pool("team", "claude");
@@ -1639,6 +1684,10 @@ fn a_claude_lead_runs_the_team_as_teammates_and_a_lost_one_restarts_as_an_operat
         (0, String::new())
     );
 
+    // Claude Code ends the session with reason resume (R3-4), and /clear the same way: the pool stays open
+    lab.hook(&main, &ws, "session-end", json!({"reason": "clear"}));
+    lab.hook(&main, &ws, "session-end", json!({"reason": "resume"}));
+    assert_eq!(lab.show(&main, 1)["thread"]["state"], "open");
     let resumed = lab.hook(&main, &ws, "session-start", json!({}));
     assert!(
         resumed.contains(

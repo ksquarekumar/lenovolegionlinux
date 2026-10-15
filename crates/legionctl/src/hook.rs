@@ -9,7 +9,7 @@
 //! | pre-tool | `internal.thread.gate`, `internal.dossier.guard` | `permissionDecision: deny` for a tool that a thread hard-block holds, or a write into another dossier |
 //! | post-tool | `internal.agent.tool` | the call is recorded (thread log, watch rules, presence) per peer: a subagent (`agent_id`) is a peer of its own and gets its messages as `additionalContext` |
 //! | stop | `internal.hooks.run` | `{"decision":"block","reason":...}` to the agent when the session is not set up (once per reply), or for a thread block |
-//! | session-end | `dossier.release` | nothing |
+//! | session-end | `dossier.release` | nothing; its `reason` `clear` or `resume` keeps the pool that the session leads |
 //! | teammate-idle | `internal.thread.teammate` | exit 2 with the teammate's new thread messages on stderr: it goes on with them |
 //! | task-completed | `internal.thread.teammate` | exit 2 with the open items of the thread's `task:completed` gate: the task stays open |
 //!
@@ -17,8 +17,8 @@
 
 use anyhow::{Context, Result};
 use legionctl_api::{
-    AgentToolIn, ClientPath, Event, Guard, GuardIn, HookReply, HookRunIn, SessionId, SessionIn,
-    TeammateIn, ThreadGateIn, op,
+    AgentToolIn, ClientPath, DossierReleaseIn, Event, Guard, GuardIn, HookReply, HookRunIn,
+    SessionId, TeammateIn, ThreadGateIn, op,
 };
 use serde_json::{Value, json};
 
@@ -100,7 +100,10 @@ async fn answer(event: &str, input: &Value) -> Result<Option<Answer>> {
         "session-end" => {
             if let Some(session) = session {
                 client
-                    .call::<op::DossierRelease>(&SessionIn { session })
+                    .call::<op::DossierRelease>(&DossierReleaseIn {
+                        session,
+                        reason: input["reason"].as_str().map(String::from),
+                    })
                     .await?;
             }
             None

@@ -8,11 +8,12 @@ use anyhow::{Context, Result};
 use legionctl_api::{
     Account, BenchCompare, BenchCompareIn, BenchIn, BenchRun, Code, DossierAddIn, DossierAppendIn,
     DossierCheckIn, DossierEditIn, DossierFindings, DossierList, DossierMigrateIn, DossierReadIn,
-    DossierRenameIn, DossierSearchIn, DossierUseIn, DossierWriteIn, DryRunIn, Events, EventsIn,
-    GateIn, Guard, GuardIn, HookReply, HookRunIn, InspectIn, IntoWire, KnobDetail, Knobs, Launch,
-    Lines, Locks, MonitorIn, Readings, RecordIn, Recording, ReplayIn, Samples, SensorsIn,
-    SessionExec, SessionId, SessionIdIn, SessionIn, SessionResumeIn, SessionStartIn, SessionState,
-    Sessions, ToolCall, ToolCallRow, ToolCallsIn, TuneIn, TuneReport, WindowsState, coded,
+    DossierReleaseIn, DossierRenameIn, DossierSearchIn, DossierUseIn, DossierWriteIn, DryRunIn,
+    Events, EventsIn, GateIn, Guard, GuardIn, HookReply, HookRunIn, InspectIn, IntoWire,
+    KnobDetail, Knobs, Launch, Lines, Locks, MonitorIn, Readings, RecordIn, Recording, ReplayIn,
+    Samples, SensorsIn, SessionExec, SessionId, SessionIdIn, SessionIn, SessionResumeIn,
+    SessionStartIn, SessionState, Sessions, ToolCall, ToolCallRow, ToolCallsIn, TuneIn, TuneReport,
+    WindowsState, coded,
 };
 use legionctl_api::{
     AccountAddIn, AgentCheck, AgentsCheckIn, CapabilityList, Changes, CheckpointIn, CleanupIn,
@@ -2448,10 +2449,13 @@ impl Engine for Operator {
         })
     }
 
-    fn dossier_release(&self, _: &Ctx, input: SessionIn) -> Result<Lines> {
+    fn dossier_release(&self, _: &Ctx, input: DossierReleaseIn) -> Result<Lines> {
         let store = dossiers()?;
-        // the session-end hook: a pool whose main agent ended stops (flow.stop `main0 ended`)
-        store.main_ended(session(&input.session)?)?;
+        // the session-end hook: a pool whose main agent ended stops (flow.stop `main0 ended`); /clear and /resume
+        // end only this session of the agent
+        if !matches!(input.reason.as_deref(), Some("clear" | "resume")) {
+            store.main_ended(session(&input.session)?)?;
+        }
         let released = store.release(session(&input.session)?)?;
         Ok(Lines {
             lines: vec![

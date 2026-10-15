@@ -11282,9 +11282,16 @@
           "format": "session",
           "description": "Agent session id; the client fills it.",
           "default": ""
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Claude Code's SessionEnd reason (the session-end hook sets it): after `clear` and `resume` the agent goes on in\nanother session, so a pool that the session leads as main0 stays open; any other reason, or none, ends it."
         }
       },
-      "title": "SessionIn",
+      "title": "DossierReleaseIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {

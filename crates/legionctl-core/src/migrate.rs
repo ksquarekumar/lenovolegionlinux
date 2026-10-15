@@ -94,6 +94,7 @@ pub fn plan(config: &DossierConfig) -> Result<Vec<String>> {
         )]);
     }
     let root = crate::config::expand_home(&config.root)?;
+    apart(&root, &legacy)?;
     let old_db = legacy.join("workspace.db");
     let mut lines = Vec::new();
     // a folder: the copy's schema step puts its backup beside it
@@ -165,6 +166,29 @@ pub fn plan(config: &DossierConfig) -> Result<Vec<String>> {
         backup_root().join("agentworkspace-<time>").display()
     ));
     Ok(lines)
+}
+
+/// Refuse a dossier root that is, holds or is inside the old root (also through a link): a move there replaces its own
+/// source.
+fn apart(root: &Path, legacy: &Path) -> Result<()> {
+    // the nearest folder that is there, resolved, with the rest of the path
+    let resolved = |path: &Path| {
+        path.ancestors()
+            .find_map(|a| {
+                let rest = path.strip_prefix(a).ok()?;
+                a.canonicalize().ok().map(|c| c.join(rest))
+            })
+            .unwrap_or_else(|| path.to_path_buf())
+    };
+    let (new, old) = (resolved(root), resolved(legacy));
+    ensure!(
+        !new.starts_with(&old) && !old.starts_with(&new),
+        "the dossier root {} is {} or near it: set dossier.root to a folder apart from the old root, then run \
+         legionctl dossier migrate again",
+        root.display(),
+        legacy.display()
+    );
+    Ok(())
 }
 
 /// The backup of `workspace.db` that an earlier run made, if any.
@@ -306,6 +330,7 @@ pub(crate) const LEGACY: &Schema = &Schema {
 /// A step fails; `~/.agentworkspace` stays, and the next call does the steps again.
 pub fn run(config: &DossierConfig, ops: &Db) -> Result<Value> {
     let legacy = legacy_root()?;
+    apart(&crate::config::expand_home(&config.root)?, &legacy)?;
     let old_db = legacy.join("workspace.db");
     // 2. the backup (the first run's: the file as it was, before its schema steps), then the last schema
     let time = now();
@@ -397,9 +422,10 @@ fn move_folders(store: &Dossiers, legacy: &Path) -> Result<Vec<String>> {
             id
         };
         let to = store.root.join(&name);
-        // a copy of a cut-off run (same id, the source still here) is made again
+        // a cut-off run: a copy gets its name only when it is whole, so only the removal of the source is left
         if read_id(&to).ok().flatten().as_deref() == Some(id.as_str()) {
-            std::fs::remove_dir_all(&to)?;
+            std::fs::remove_dir_all(&from)?;
+            continue;
         }
         ensure!(
             std::fs::symlink_metadata(&to).is_err(),
@@ -411,7 +437,13 @@ fn move_folders(store: &Dossiers, legacy: &Path) -> Result<Vec<String>> {
         store.register(&id, &name, Some(&from.to_string_lossy()))?;
         match std::fs::rename(&from, &to) {
             Err(e) if e.raw_os_error() == Some(rustix::io::Errno::XDEV.raw_os_error()) => {
-                copy_verified(&from, &to)?;
+                // not a dossier name, so a cut-off copy is never taken for one
+                let part = store.root.join(format!(".{name}.partial"));
+                if part.exists() {
+                    std::fs::remove_dir_all(&part)?;
+                }
+                copy_verified(&from, &part)?;
+                std::fs::rename(&part, &to)?;
                 std::fs::remove_dir_all(&from)?;
             }
             other => {

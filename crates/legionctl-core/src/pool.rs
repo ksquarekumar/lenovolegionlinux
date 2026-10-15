@@ -159,9 +159,10 @@ pub struct Wake {
     pub fields: Value,
     pub tokens: Option<u64>,
     pub seconds: Option<u64>,
-    /// The wake request it answers, and the newest log row it covers.
+    /// The wake request it answers, the newest log row it covers, and whether newer rows wait for the next wake.
     due: i64,
     to: i64,
+    more: bool,
     /// The prompt without the instruction text.
     pub prompt: String,
 }
@@ -424,26 +425,50 @@ fn out_of_budget(tx: &Transaction, (thread, member): (i64, &str), budget: &Value
 }
 
 /// The lines of a wake prompt: the log rows after `cursor` up to `to`, the member's open messages, its rules.
+/// The lines of a wake: the events after `cursor` that fit in `share` tokens (the first one cut to fit), the open
+/// messages and the watch rules; and the last event given and the number of events that wait for the next wake.
 fn wake_lines(
     tx: &Transaction,
     (thread, member): (i64, &str),
-    (cursor, to): (i64, i64),
-) -> Result<[Vec<String>; 3]> {
-    let events: Vec<String> = tx
+    (cursor, share): (i64, Option<u64>),
+) -> Result<([Vec<String>; 3], i64, usize)> {
+    let rows: Vec<(i64, String)> = tx
         .prepare(
-            "SELECT id, member, kind, payload FROM thread_log WHERE thread = ?1 AND id > ?2 AND id <= ?3
-             ORDER BY id",
+            "SELECT id, member, kind, payload FROM thread_log WHERE thread = ?1 AND id > ?2 ORDER BY id",
         )?
-        .query_map(params![thread, cursor, to], |r| {
-            Ok(format!(
-                "- #{} {} {} {}",
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?
+        .query_map(params![thread, cursor], |r| {
+            let id = r.get::<_, i64>(0)?;
+            Ok((
+                id,
+                format!(
+                    "- #{id} {} {} {}",
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?
+                ),
             ))
         })?
         .collect::<Result<_, _>>()?;
+    let (mut events, mut used, mut last) = (Vec::new(), 0, cursor);
+    for (id, line) in &rows {
+        let cost = tokens(line);
+        match share {
+            Some(share) if used + cost > share => {
+                if !events.is_empty() {
+                    break;
+                }
+                let cut = usize::try_from(share.saturating_mul(4)).unwrap_or(usize::MAX);
+                events.push(format!(
+                    "{} [cut]",
+                    line.chars().take(cut).collect::<String>()
+                ));
+            }
+            _ => events.push(line.clone()),
+        }
+        used += cost;
+        last = *id;
+    }
+    let left = rows.len() - events.len();
     let inbox: Vec<String> = messages(
         tx,
         &format!(
@@ -476,7 +501,7 @@ fn wake_lines(
             ))
         })?
         .collect::<Result<_, _>>()?;
-    Ok([events, inbox, rules])
+    Ok(([events, inbox, rules], last, left))
 }
 
 impl Dossiers {
@@ -731,17 +756,14 @@ impl Dossiers {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
         let workdir = PathBuf::from(workdir.context("the thread has no working folder")?);
-        let to: i64 = tx.query_row(
-            "SELECT coalesce(max(id), 0) FROM thread_log WHERE thread = ?1",
-            [thread],
-            |r| r.get(0),
-        )?;
-        let [events, inbox, rules] = wake_lines(&tx, (thread, member), (row.cursor, to))?;
-        tx.commit()?;
         let (tokens, seconds) = (
             budget["wake_tokens"].as_u64(),
             budget["wake_seconds"].as_u64(),
         );
+        // the events take at most half of the wake's tokens, so a backlog never fills the budget before the answer
+        let ([events, inbox, rules], to, left) =
+            wake_lines(&tx, (thread, member), (row.cursor, tokens.map(|t| t / 2)))?;
+        tx.commit()?;
         let limit = |v: Option<u64>| v.map_or_else(|| "no limit".to_string(), |v| v.to_string());
         let prompt = [
             format!("You are {member} ({}) of thread {thread}: {title}.", row.archetype),
@@ -756,6 +778,11 @@ impl Dossiers {
             ),
             format!("New events since your last wake ({}):", events.len()),
             events.join("\n"),
+            if left > 0 {
+                format!("{left} newer events do not fit in this wake: your next wake gets them.")
+            } else {
+                String::new()
+            },
             format!("Open messages to you ({}):", inbox.len()),
             inbox.join("\n"),
             format!("Your watch rules ({}):", rules.len()),
@@ -776,6 +803,7 @@ impl Dossiers {
             seconds,
             due,
             to,
+            more: left > 0,
             prompt,
         }))
     }
@@ -793,9 +821,9 @@ impl Dossiers {
     }
 
     /// The end of a wake: its cost, and the cursor after the events it saw. A wake stopped at its budget leaves its
-    /// events after the cursor for the next wake. A failed wake starts again within the flow's restart limit; past
-    /// it, the member fails, its blocks expire and the main agent gets a note. Returns true when the member must
-    /// wake again now.
+    /// events after the cursor for the next wake; a wake whose events did not all fit wakes again now. A failed wake
+    /// starts again within the flow's restart limit; past it, the member fails, its blocks expire and the main agent
+    /// gets a note. Returns true when the member must wake again now.
     ///
     /// # Errors
     /// The database fails.
@@ -856,11 +884,16 @@ impl Dossiers {
                     params![w.thread, w.member, w.to],
                 )?;
             }
-            // a trigger during the wake keeps its own request
-            tx.execute(
-                "UPDATE members SET due = NULL WHERE thread = ?1 AND name = ?2 AND due = ?3",
-                params![w.thread, w.member, w.due],
-            )?;
+            if end.over.is_none() && w.more {
+                // the rows that did not fit: the next wake now, for the same request
+                again = true;
+            } else {
+                // a trigger during the wake keeps its own request
+                tx.execute(
+                    "UPDATE members SET due = NULL WHERE thread = ?1 AND name = ?2 AND due = ?3",
+                    params![w.thread, w.member, w.due],
+                )?;
+            }
         }
         tx.commit()?;
         Ok(again)

@@ -6,7 +6,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 
@@ -24,6 +24,9 @@ const PROFILE_LIST: u32 = 150;
 const LOAD_PROFILE: u32 = 152;
 /// A reply is a few KiB; a larger size is not a reply of `OpenRGB`.
 const MAX_REPLY: u32 = 1 << 20;
+/// The time of one connection, from connect to the last reply: the root daemon loads a profile on its event loop, so
+/// a server (any local user can listen on the port) must not hold it longer.
+const DEADLINE: Duration = Duration::from_secs(2);
 
 /// Where `OpenRGB`'s SDK server answers.
 #[must_use]
@@ -43,6 +46,7 @@ pub fn keyboard_present(root: &SysRoot) -> bool {
 /// A connection to `OpenRGB`'s SDK server.
 pub struct Client {
     stream: TcpStream,
+    deadline: Instant,
     /// The protocol both sides speak.
     pub protocol: u32,
 }
@@ -51,19 +55,20 @@ impl Client {
     /// Connect and agree on the protocol.
     ///
     /// # Errors
-    /// No server answers at `address`, or it does not speak the SDK protocol.
+    /// No server answers at `address`, it does not speak the SDK protocol, or it takes longer than [`DEADLINE`].
     pub fn connect(address: &str) -> Result<Client> {
         let at = address
             .to_socket_addrs()
             .ok()
             .and_then(|mut a| a.next())
             .with_context(|| format!("{address} is not an address"))?;
-        let stream = TcpStream::connect_timeout(&at, Duration::from_secs(1)).with_context(|| {
+        let deadline = Instant::now() + DEADLINE;
+        let stream = TcpStream::connect_timeout(&at, DEADLINE).with_context(|| {
             format!("OpenRGB does not answer at {address}: start it with its SDK server (openrgb --server)")
         })?;
-        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
         let mut client = Client {
             stream,
+            deadline,
             protocol: 0,
         };
         client.send(0, PROTOCOL_VERSION, &OURS.to_le_bytes())?;
@@ -78,21 +83,46 @@ impl Client {
             packet.extend(n.to_le_bytes());
         }
         packet.extend(data);
+        self.stream.set_write_timeout(Some(self.left()?))?;
         self.stream.write_all(&packet).context("writing to OpenRGB")
     }
 
-    /// The data of the next packet `id`; other packets (device list notices) are skipped.
+    /// The time left before the deadline.
+    fn left(&self) -> Result<Duration> {
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        ensure!(
+            !left.is_zero(),
+            "OpenRGB did not answer within {} s",
+            DEADLINE.as_secs()
+        );
+        Ok(left)
+    }
+
+    /// Fill `buf`, each read within the time left (a server that sends a byte at a time cannot hold it longer).
+    fn fill(&mut self, buf: &mut [u8]) -> Result<()> {
+        let mut at = 0;
+        while at < buf.len() {
+            self.stream.set_read_timeout(Some(self.left()?))?;
+            match self.stream.read(&mut buf[at..]) {
+                Ok(0) => bail!("OpenRGB closed the connection"),
+                Ok(n) => at += n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e).context("OpenRGB did not answer"),
+            }
+        }
+        Ok(())
+    }
+
+    /// The data of the next packet `id`; other packets (device list notices) are skipped until the deadline.
     fn reply(&mut self, id: u32) -> Result<Vec<u8>> {
         loop {
             let mut header = [0u8; 16];
-            self.stream
-                .read_exact(&mut header)
-                .context("OpenRGB did not answer")?;
+            self.fill(&mut header)?;
             ensure!(&header[..4] == b"ORGB", "the server is not OpenRGB");
             let size = u32_at(&header, 12)?;
             ensure!(size <= MAX_REPLY, "OpenRGB sent {size} bytes");
             let mut data = vec![0u8; usize::try_from(size)?];
-            self.stream.read_exact(&mut data)?;
+            self.fill(&mut data)?;
             if u32_at(&header, 8)? == id {
                 return Ok(data);
             }
@@ -193,4 +223,53 @@ fn string_at(data: &[u8], at: usize) -> Result<(String, usize)> {
 /// See [`Client::connect`] and [`Client::load`].
 pub fn load(profile: &str) -> Result<()> {
     Client::connect(&address())?.load(profile)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A local server on the port that never answers the request (R3-6): it sends notices one after the other, or one
+    /// byte at a time. A load ends with an error within the deadline either way, so the root daemon's event loop goes
+    /// on; before the fix the client waited for ever.
+    #[test]
+    fn a_server_that_never_replies_cannot_hold_a_load() {
+        for trickle in [false, true] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap().to_string();
+            std::thread::spawn(move || {
+                let (mut s, _) = listener.accept().unwrap();
+                let mut notice = b"ORGB".to_vec();
+                for n in [0u32, 100, 0] {
+                    notice.extend(n.to_le_bytes());
+                }
+                loop {
+                    let sent = if trickle {
+                        notice.iter().try_for_each(|b| {
+                            std::thread::sleep(Duration::from_millis(100));
+                            s.write_all(&[*b])
+                        })
+                    } else {
+                        std::thread::sleep(Duration::from_millis(50));
+                        s.write_all(&notice)
+                    };
+                    if sent.is_err() {
+                        return;
+                    }
+                }
+            });
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let started = Instant::now();
+                let out = Client::connect(&address).and_then(|mut c| c.load("battery-dim"));
+                tx.send((out.map_err(|e| format!("{e:#}")), started.elapsed()))
+                    .unwrap();
+            });
+            let (out, took) = rx
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap_or_else(|_| panic!("trickle {trickle}: the load still waits after 10 s"));
+            assert!(out.is_err(), "trickle {trickle}: {out:?}");
+            assert!(took < Duration::from_secs(4), "trickle {trickle}: {took:?}");
+        }
+    }
 }

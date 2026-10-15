@@ -733,7 +733,7 @@ operations! {
     /// This session's active dossier.
     dossier_active / DossierActive = "dossier.active", Read, SessionIn => Lines;
     /// Give up this session's dossier.
-    dossier_release / DossierRelease = "dossier.release", Session, SessionIn => Lines;
+    dossier_release / DossierRelease = "dossier.release", Session, DossierReleaseIn => Lines;
     /// Which session holds which dossier, and stale bindings.
     dossier_locks / DossierLocks = "dossier.locks", Read, Empty => Locks;
     /// Dossiers, most recently changed first.

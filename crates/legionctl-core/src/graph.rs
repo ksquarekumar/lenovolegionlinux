@@ -88,7 +88,7 @@ pub fn status_changes(
 }
 
 /// `key: value` and `key: [a, b]` lines between the leading `---` lines.
-fn front_matter(text: &str) -> BTreeMap<String, Vec<String>> {
+pub(crate) fn front_matter(text: &str) -> BTreeMap<String, Vec<String>> {
     let mut out = BTreeMap::new();
     let mut lines = text.lines();
     if lines.next().map(str::trim) != Some("---") {

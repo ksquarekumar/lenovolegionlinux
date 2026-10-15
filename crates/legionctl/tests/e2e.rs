@@ -6038,6 +6038,38 @@ fn the_dossiers_move_to_their_homes_once_and_keep_their_ids_links_and_rows() {
     assert_eq!(runs, 5, "four cut calls and the one that is done");
 }
 
+/// A dossier root that resolves to the old root (R3-1: `~/agentWorkspaces` is a link to `~/.agentworkspace`, as a user
+/// layer with the old default does): the dry run and the migration refuse before anything moves, and each dossier
+/// keeps its files. Before the fix the move took the folder for a copy of a cut-off run and removed it.
+#[test]
+fn a_migration_into_the_old_root_through_a_link_refuses_and_keeps_each_dossier() {
+    let home = home("migrate-self");
+    let _ = old_home(&home);
+    let old = home.join(".agentworkspace");
+    std::os::unix::fs::symlink(&old, home.join("agentWorkspaces")).unwrap();
+    let op = start_again(&home, 8);
+    for args in [
+        &["dossier", "migrate", "--dry-run"][..],
+        &["dossier", "migrate"],
+    ] {
+        let out = op.cli(args);
+        assert!(
+            !out.status.success()
+                && String::from_utf8_lossy(&out.stderr).contains("apart from the old root"),
+            "{args:?}: {out:?}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(old.join("alpha/plan.md")).unwrap(),
+        "# alpha\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(old.join("beta/plan.md")).unwrap(),
+        "# beta\n"
+    );
+    assert!(old.join("alpha/MEMORY/01-x.md").is_file() && old.join("workspace.db").is_file());
+}
+
 /// A live session in a home that is not migrated (design 23, E1; the session that runs the migration is one): its
 /// hooks never block it. Session start and prompt pass with one line that says to migrate, stop does not block, and a
 /// write is not denied. After `dossier migrate` its binding is the moved row: the session keeps its dossier, the write

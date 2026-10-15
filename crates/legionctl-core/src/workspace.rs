@@ -489,20 +489,22 @@ impl Dossiers {
         Ok(lines)
     }
 
-    /// Rebase the branch onto the base, then fast-forward the base in the main checkout. Conflicts stop the rebase in
-    /// the workspace, for the agent to resolve.
+    /// Rebase the branch onto the base, then fast-forward the base in the main checkout to the commit that the gate
+    /// tested. Conflicts stop the rebase in the workspace, for the agent to resolve.
     ///
     /// # Errors
-    /// The workspace has uncommitted changes, the rebase stops on conflicts, or the main checkout is not clean or not
-    /// on the base branch.
+    /// The workspace has uncommitted or untracked files (the gate would test files that the merge does not ship), the
+    /// rebase stops on conflicts, the branch changes `.legionctl/` (its own gates: the user merges it), or the main
+    /// checkout is not clean or not on the base branch.
     pub fn merge(&self, ws: &Workspace, session: &str) -> Result<Vec<String>> {
         if ws.is_folder() {
             return crate::folder::merge(&ws.path, &ws.repo);
         }
-        let (staged, unstaged, _, conflicted) = changes(&ws.path)?;
+        let (staged, unstaged, untracked, conflicted) = changes(&ws.path)?;
         ensure!(
-            staged + unstaged + conflicted == 0,
-            "the workspace has uncommitted changes; checkpoint first"
+            staged + unstaged + untracked + conflicted == 0,
+            "the workspace has uncommitted or untracked files, which the merge does not ship but its gate would test; \
+             checkpoint first"
         );
         if git(&ws.path, &["rebase", "--quiet", &ws.base]).is_err() {
             bail!(
@@ -511,6 +513,16 @@ impl Dossiers {
                 ws.path.display()
             );
         }
+        ensure!(
+            git(
+                &ws.path,
+                &["diff", "--quiet", &ws.base, "HEAD", "--", ".legionctl"]
+            )
+            .is_ok(),
+            "the branch {} changes .legionctl/, which sets its own gates: the user merges it",
+            ws.branch
+        );
+        let tested = git(&ws.path, &["rev-parse", "HEAD"])?;
         let mut lines = self
             .gate(&ws.path, crate::checks::Gate::Merge, Some(session))
             .map_err(|e| {
@@ -536,7 +548,8 @@ impl Dossiers {
             "the main checkout {} has uncommitted changes; the fast-forward would touch them",
             ws.repo.display()
         );
-        git(&ws.repo, &["merge", "--quiet", "--ff-only", &ws.branch])?;
+        // the tested commit, not the branch: a checkpoint after the gate is not tested
+        git(&ws.repo, &["merge", "--quiet", "--ff-only", &tested])?;
         lines.extend([
             format!("rebased {} onto {}", ws.branch, ws.base),
             format!(

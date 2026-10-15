@@ -673,6 +673,16 @@ pub struct SessionIn {
     pub session: SessionId,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct DossierReleaseIn {
+    #[serde(default)]
+    pub session: SessionId,
+    /// Claude Code's `SessionEnd` reason (the session-end hook sets it): after `clear` and `resume` the agent goes on
+    /// in another session, so a pool that the session leads as main0 stays open; any other reason, or none, ends it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DossierUseIn {
     /// Dossier name: a-z, 0-9 and '-'. A name that does not exist makes a new dossier from the pattern.
