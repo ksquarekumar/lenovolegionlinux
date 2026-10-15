@@ -2230,9 +2230,13 @@ mod operator_and_daemon {
             probe(true, "inside");
             let out = op.cli(&["session", "activity", "acttest", "--json"]);
             let rows: Value = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
-            if rows["items"].as_array().is_some_and(|r| !r.is_empty())
-                || std::time::Instant::now() > deadline
-            {
+            // file opens are activity rows too (they can come first): wait for the probe's own start
+            let probe_ran = rows["items"].as_array().is_some_and(|r| {
+                r.iter().any(|row| {
+                    row["argv"] == serde_json::json!(["/bin/echo", "legionctl-probe", "inside"])
+                })
+            });
+            if probe_ran || std::time::Instant::now() > deadline {
                 break rows;
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
