@@ -4,4 +4,3 @@ pkg/
 target/
 node_modules/
 /agentWorkspaces
-/.agentworkspace
