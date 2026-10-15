@@ -135,6 +135,11 @@ async fn main() -> Result<()> {
     if let Err(e) = operator.resume_jobs("running") {
         eprintln!("operator: jobs not resumed: {e:#}");
     }
+    // after the cut-off wakes kept their ACP sessions: each member with a wake due wakes
+    if !legionctl_core::migrate::pending() {
+        let runtime = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || thread::init(runtime));
+    }
     let modules = vec![
         module("the machine event recorder", recorder::run),
         module("the session module", |ready| {

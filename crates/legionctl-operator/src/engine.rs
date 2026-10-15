@@ -242,6 +242,29 @@ pub(crate) fn end_job<T: serde::Serialize>(db: &Db, job: i64, out: &Result<T>) -
     db.job_end(job, &outcome)
 }
 
+/// The thread part of a hook call of `session`: a stop's block (and the wakes it starts), the prompt's messages, and
+/// at a resumed session start the teammates that Claude Code lost (they run as operator sessions now).
+fn thread_hooks(
+    store: &Dossiers,
+    session: &str,
+    input: &HookRunIn,
+) -> Result<(Option<String>, Vec<String>)> {
+    Ok(match Event::from(input.event) {
+        Event::Stop => {
+            let block = store.thread_stop(session, false)?;
+            crate::thread::wake_due();
+            (block, Vec::new())
+        }
+        Event::Prompt => (None, store.thread_prompt(session)?.into_iter().collect()),
+        Event::SessionStart if input.source.as_deref() == Some("resume") => {
+            let lost = store.lead_resumed(session)?;
+            crate::thread::wake_due();
+            (None, lost)
+        }
+        Event::SessionStart => (None, Vec::new()),
+    })
+}
+
 /// Before the migration no dossier operation runs, and a session goes on: one line, never a block.
 fn unmigrated(event: Event) -> Option<HookReply> {
     legionctl_core::migrate::pending().then(|| HookReply {
@@ -1377,6 +1400,10 @@ impl Operator {
     pub fn resume_jobs(self: &std::sync::Arc<Self>, state: &str) -> Result<()> {
         let db = Db::open_default()?;
         for job in db.jobs_in(state)? {
+            // a member's wake goes on as its next wake (`thread::init`)
+            if job.kind == crate::thread::WAKE {
+                continue;
+            }
             if state == "running" && job.attempts >= 3 {
                 db.job_end(job.id, &Err("cut off by a restart 3 times".into()))?;
                 continue;
@@ -1856,6 +1883,7 @@ impl Engine for Operator {
             .check(
                 team.as_ref().map(|(n, p)| (*n, p.as_path())),
                 input.harness.into(),
+                false,
             )?
             .into_wire())
     }
@@ -2016,6 +2044,9 @@ impl Engine for Operator {
                 &serde_json::json!({"test": test, "accepted": accepted, "reason": reason, "workspace": ws.path, "session": session}),
             )?;
         }
+        if let Some(held) = store.checkpoint_gate(session)? {
+            anyhow::bail!(held);
+        }
         let line = store.checkpoint(&ws, &input.message)?;
         // the commit's patch id links it to this checkpoint, also after `workspace merge` rebased it; a folder
         // workspace has no commits
@@ -2024,7 +2055,7 @@ impl Engine for Operator {
         } else {
             legionctl_core::codegraph::patch_ids(&ws.path, "HEAD^!")?.pop()
         };
-        if let Some(patch) = patch {
+        if let Some(patch) = &patch {
             Db::open_default()?.record(
                 &ctx.actor,
                 legionctl_core::codegraph::COMMIT_EVENT,
@@ -2032,6 +2063,12 @@ impl Engine for Operator {
             )?;
         }
         crate::code::trigger(&ws.path);
+        store.thread_checkpoint(
+            session,
+            patch.as_ref().map(|p| p.1.as_str()),
+            &input.message,
+        )?;
+        crate::thread::wake_due();
         Ok(Lines { lines: vec![line] })
     }
 
@@ -2263,17 +2300,15 @@ impl Engine for Operator {
             });
         }
         let mut lines = Vec::new();
-        match (session, Event::from(input.event)) {
-            (Some(s), Event::Stop) => {
-                if let Some(block) = store.thread_stop(&s.0, false)? {
-                    return Ok(HookReply {
-                        text: String::new(),
-                        block: Some(block),
-                    });
-                }
+        if let Some(s) = session {
+            let (block, said) = thread_hooks(&store, &s.0, &input)?;
+            if block.is_some() {
+                return Ok(HookReply {
+                    text: String::new(),
+                    block,
+                });
             }
-            (Some(s), Event::Prompt) => lines.extend(store.thread_prompt(&s.0)?),
-            _ => {}
+            lines.extend(said);
         }
         if let (Some(s), Some(d), Some(p)) = (session, active.as_deref(), place.as_ref())
             && let Some(told) =
@@ -2339,7 +2374,10 @@ impl Engine for Operator {
     }
 
     fn dossier_release(&self, _: &Ctx, input: SessionIn) -> Result<Lines> {
-        let released = dossiers()?.release(session(&input.session)?)?;
+        let store = dossiers()?;
+        // the session-end hook: a pool whose main agent ended stops (flow.stop `main0 ended`)
+        store.main_ended(session(&input.session)?)?;
+        let released = store.release(session(&input.session)?)?;
         Ok(Lines {
             lines: vec![
                 released.map_or_else(|| "no active dossier".into(), |d| format!("released {d}")),
@@ -2424,7 +2462,20 @@ impl Engine for Operator {
     }
 
     fn dossier_append(&self, _: &Ctx, input: DossierAppendIn) -> Result<Lines> {
-        let path = dossiers()?.append(session(&input.session)?, &input.path, &input.content.0)?;
+        let store = dossiers()?;
+        let me = session(&input.session)?;
+        if let Some(member) = &input.member {
+            return Ok(Lines {
+                lines: store.backfill(
+                    &Db::open_default()?,
+                    me,
+                    member,
+                    &input.path,
+                    &input.content.0,
+                )?,
+            });
+        }
+        let path = store.append(me, &input.path, &input.content.0)?;
         Ok(Lines {
             lines: vec![path.display().to_string()],
         })
@@ -3935,6 +3986,22 @@ impl Engine for Operator {
         crate::thread::gate(&input)
     }
 
+    fn thread_branch(&self, _: &Ctx, input: legionctl_api::ThreadBranchIn) -> Result<Lines> {
+        crate::thread::branch(&input)
+    }
+
+    fn thread_compensate(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::ThreadCompensateIn,
+    ) -> Result<Lines> {
+        crate::thread::compensate(&input)
+    }
+
+    fn thread_teammate(&self, _: &Ctx, input: legionctl_api::TeammateIn) -> Result<Guard> {
+        crate::thread::teammate(&input)
+    }
+
     fn knobs_show(&self, _: &Ctx, input: InspectIn) -> Result<KnobDetail> {
         let plan = Plan::load(path(input.profile.as_ref())?)?;
         let knob = knobs::find(&plan.machine(), &input.knob).with_context(|| {
@@ -3976,6 +4043,7 @@ impl Engine for Operator {
             account: input.account.as_deref(),
             inside: input.inside.into(),
             gpu: input.gpu,
+            member: None,
         };
         let launch = store.start_session(&start, &resolved.config)?;
         Db::open_default()?.issue_token(&launch.id, &token)?;
@@ -4003,6 +4071,7 @@ impl Engine for Operator {
             account: input.account.as_deref(),
             inside: input.inside.into(),
             gpu: input.gpu,
+            member: None,
         };
         let launch = store.start_session(&start, &resolved.config)?;
         let db = Db::open_default()?;

@@ -24,7 +24,14 @@
     "flow": {
       "$ref": "#/$defs/Flow",
       "default": {
-        "may": {}
+        "may": {},
+        "gates": {},
+        "stop": [],
+        "restart": {
+          "max": 3,
+          "within": "1h"
+        },
+        "rules": []
       }
     }
   },
@@ -265,9 +272,91 @@
             }
           },
           "default": {}
+        },
+        "gates": {
+          "description": "Gate -> its conditions, each `<member>: no open hard-block` or `<member>: result <first words>`. Gates:\n`checkpoint` (`workspace checkpoint` of the main agent), `declare:done` (`thread declare done`),\n`task:completed` (a teammate's task in team mode).",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "default": {}
+        },
+        "stop": {
+          "description": "When the pool ends (its members end, its log stays): `main0 ended` (the main agent's session ended),\n`declare:done` (main0 declared done and the gate passed). With `budget`, a member that used its\n`budget.tokens_per_day` gets no wake until the next day.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "restart": {
+          "description": "How often a member whose wake failed starts again; past it, the member fails and its blocks expire.",
+          "$ref": "#/$defs/Restart",
+          "default": {
+            "max": 3,
+            "within": "1h"
+          }
+        },
+        "rules": {
+          "description": "Watch rules that the operator adds at the start: a member watches another, and a call of `tools` on `path`\nwith no Bash command that contains `expect` before the reply ends (the stop) is a miss that wakes it.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FlowRule"
+          },
+          "default": []
         }
       },
       "additionalProperties": false
+    },
+    "Restart": {
+      "type": "object",
+      "properties": {
+        "max": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 3
+        },
+        "within": {
+          "description": "`<n>s`, `<n>m` or `<n>h`.",
+          "type": "string",
+          "default": "1h"
+        }
+      },
+      "additionalProperties": false
+    },
+    "FlowRule": {
+      "type": "object",
+      "properties": {
+        "member": {
+          "description": "The member that watches and does the step (or nudges).",
+          "type": "string"
+        },
+        "watched": {
+          "type": "string",
+          "default": "main0"
+        },
+        "tools": {
+          "type": "string",
+          "default": "Edit|Write|MultiEdit|NotebookEdit"
+        },
+        "path": {
+          "type": "string",
+          "default": ""
+        },
+        "expect": {
+          "description": "The Bash command that the watched member should run (`make lint`).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "member",
+        "expect"
+      ]
     }
   }
 }

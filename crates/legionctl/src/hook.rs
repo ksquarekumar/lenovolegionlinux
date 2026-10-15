@@ -10,28 +10,38 @@
 //! | post-tool | `internal.agent.tool` | the call is recorded (thread log, watch rules, presence) per peer: a subagent (`agent_id`) is a peer of its own and gets its messages as `additionalContext` |
 //! | stop | `internal.hooks.run` | `{"decision":"block","reason":...}` to the agent when the session is not set up (once per reply), or for a thread block |
 //! | session-end | `dossier.release` | nothing |
+//! | teammate-idle | `internal.thread.teammate` | exit 2 with the teammate's new thread messages on stderr: it goes on with them |
+//! | task-completed | `internal.thread.teammate` | exit 2 with the open items of the thread's `task:completed` gate: the task stays open |
 //!
 //! A hook must never stop the agent because legionctl is down: errors go to stderr and the exit code stays 0.
 
 use anyhow::{Context, Result};
 use legionctl_api::{
     AgentToolIn, ClientPath, Event, Guard, GuardIn, HookReply, HookRunIn, SessionId, SessionIn,
-    ThreadGateIn, op,
+    TeammateIn, ThreadGateIn, op,
 };
 use serde_json::{Value, json};
 
 use legionctl_api::client::Client;
 
-pub const EVENTS: [&str; 6] = [
+pub const EVENTS: [&str; 8] = [
     "session-start",
     "prompt",
     "pre-tool",
     "post-tool",
     "stop",
     "session-end",
+    "teammate-idle",
+    "task-completed",
 ];
 
-async fn answer(event: &str, input: &Value) -> Result<Option<String>> {
+/// What the hook gives back: text on stdout (exit 0), or the feedback of a team mode hook on stderr (exit 2).
+enum Answer {
+    Out(String),
+    KeepWorking(String),
+}
+
+async fn answer(event: &str, input: &Value) -> Result<Option<Answer>> {
     let client = Client::new("hook")?;
     // in a legionctl session the dossier is bound to its id, not to the id of the agent inside the sandbox
     let session = std::env::var("LEGIONCTL_SESSION")
@@ -47,12 +57,16 @@ async fn answer(event: &str, input: &Value) -> Result<Option<String>> {
         prompt: input["prompt"].as_str().map(String::from),
         // Claude Code sets stop_hook_active when a stop hook already made the agent go on in this reply
         again: input["stop_hook_active"] == true,
+        source: input["source"].as_str().map(String::from),
     };
     let tool = &input["tool_input"];
     let path = tool["file_path"]
         .as_str()
         .or(tool["notebook_path"].as_str())
         .map(String::from);
+    if let ("teammate-idle" | "task-completed", Some(session)) = (event, &session) {
+        return team_mode(&client, event, input, session).await;
+    }
     Ok(match event {
         "session-start" => Some(
             client
@@ -72,30 +86,7 @@ async fn answer(event: &str, input: &Value) -> Result<Option<String>> {
             let Some(session) = session else {
                 return Ok(None);
             };
-            let held = client
-                .call::<op::ThreadGate>(&ThreadGateIn {
-                    session: session.clone(),
-                    tool: input["tool_name"].as_str().unwrap_or_default().to_string(),
-                })
-                .await?;
-            let refusal = match (held.refusal, path) {
-                (Some(reason), _) => Some(reason),
-                (None, Some(path)) => {
-                    let Guard { refusal } = client
-                        .call::<op::DossierGuard>(&GuardIn { path, session })
-                        .await?;
-                    refusal
-                }
-                (None, None) => None,
-            };
-            refusal.map(|reason| {
-                json!({"hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason,
-                }})
-                .to_string()
-            })
+            pre_tool(&client, session, input, path).await?
         }
         "post-tool" => match session {
             Some(session) => post_tool(&client, session, project, input, path).await?,
@@ -114,8 +105,65 @@ async fn answer(event: &str, input: &Value) -> Result<Option<String>> {
             }
             None
         }
+        "teammate-idle" | "task-completed" => None,
         other => anyhow::bail!("unknown hook event {other}"),
-    })
+    }
+    .map(Answer::Out))
+}
+
+/// The pre-tool hook: a thread hard-block that holds the tool, else the dossier write guard, as a deny.
+async fn pre_tool(
+    client: &Client,
+    session: SessionId,
+    input: &Value,
+    path: Option<String>,
+) -> Result<Option<String>> {
+    let held = client
+        .call::<op::ThreadGate>(&ThreadGateIn {
+            session: session.clone(),
+            tool: input["tool_name"].as_str().unwrap_or_default().to_string(),
+        })
+        .await?;
+    let refusal = match (held.refusal, path) {
+        (Some(reason), _) => Some(reason),
+        (None, Some(path)) => {
+            let Guard { refusal } = client
+                .call::<op::DossierGuard>(&GuardIn { path, session })
+                .await?;
+            refusal
+        }
+        (None, None) => None,
+    };
+    Ok(refusal.map(|reason| {
+        json!({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }})
+        .to_string()
+    }))
+}
+
+/// A team mode hook of the lead: the text that keeps the teammate working or holds the task.
+async fn team_mode(
+    client: &Client,
+    event: &str,
+    input: &Value,
+    session: &SessionId,
+) -> Result<Option<Answer>> {
+    let Guard { refusal } = client
+        .call::<op::ThreadTeammate>(&TeammateIn {
+            event: if event == "teammate-idle" {
+                "idle"
+            } else {
+                "task"
+            }
+            .into(),
+            teammate: input["teammate_name"].as_str().map(String::from),
+            session: session.clone(),
+        })
+        .await?;
+    Ok(refusal.map(Answer::KeepWorking))
 }
 
 /// Record a tool call; a subagent's call (`agent_id`) is a peer of its own and gets its messages back, as it has no
@@ -160,7 +208,11 @@ pub fn run(event: &str) -> Result<()> {
         .block_on(answer(event, &input))
         .context("legionctl hook")
     {
-        Ok(Some(text)) if !text.is_empty() => println!("{text}"),
+        Ok(Some(Answer::Out(text))) if !text.is_empty() => println!("{text}"),
+        Ok(Some(Answer::KeepWorking(text))) => {
+            eprintln!("{text}");
+            std::process::exit(2);
+        }
         Ok(_) => {}
         Err(e) => eprintln!("{e:#}"),
     }

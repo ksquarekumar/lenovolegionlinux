@@ -628,6 +628,9 @@ pub struct HookRunIn {
     /// hard-block stops it again.
     #[serde(default)]
     pub again: bool,
+    /// Session-start event: how the session started (`startup`, `resume`, `clear`, `compact`).
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -733,6 +736,10 @@ pub struct DossierAppendIn {
     pub path: String,
     /// The text to append; default: stdin.
     pub content: StdinText,
+    /// A thread-observer's backfill into the main agent's dossier: the caller's member name. One line, marked
+    /// `(by <member>)`, only while main0 is idle; else the call is refused and the member sends a nudge.
+    #[serde(default)]
+    pub member: Option<String>,
     #[serde(default)]
     pub session: SessionId,
 }
@@ -1970,6 +1977,40 @@ pub struct ThreadStartIn {
     /// The dossier of the task; default: the caller's dossier.
     #[serde(default)]
     pub dossier: Option<String>,
+    /// A team file (`vanilla`): its members join the thread and its flow applies.
+    #[serde(default)]
+    pub team: Option<String>,
+    /// Where the main agent works: the members' checks see this folder.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThreadBranchIn {
+    pub thread: i64,
+    /// The last log row of the parent that the branch keeps (`thread show`).
+    pub at: i64,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThreadCompensateIn {
+    /// The effect's id (`thread show`, effects).
+    pub effect: i64,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+/// A team mode hook of the lead: `idle` (`TeammateIdle`) or `task` (`TaskCompleted`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TeammateIn {
+    pub event: String,
+    /// The teammate's name.
+    #[serde(default)]
+    pub teammate: Option<String>,
     #[serde(default)]
     pub session: SessionId,
 }
@@ -2016,6 +2057,9 @@ pub struct ThreadSendIn {
     /// For a notice: the watch rule whose step you did for the receiver; the message then tells the counts.
     #[serde(default)]
     pub rule: Option<i64>,
+    /// Team mode: a teammate shares its lead's session, so it names itself (its member name in the lead's thread).
+    #[serde(default)]
+    pub teammate: Option<String>,
     #[serde(default)]
     pub session: SessionId,
 }

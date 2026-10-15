@@ -19,6 +19,7 @@ pub mod images;
 pub mod migrate;
 pub mod packages;
 pub mod planning;
+pub mod pool;
 pub mod qmp;
 pub mod reminders;
 pub mod session;

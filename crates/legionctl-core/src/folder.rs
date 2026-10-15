@@ -118,7 +118,7 @@ fn remove(path: &Path) -> Result<()> {
 }
 
 /// Empty a folder the overlay wrote (its `work/work` folder has mode 000).
-fn clear(dir: &Path) -> Result<()> {
+pub(crate) fn clear(dir: &Path) -> Result<()> {
     if !dir.exists() {
         return Ok(());
     }

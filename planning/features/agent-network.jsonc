@@ -3,7 +3,7 @@
   "$schema": "../feature.schema.json",
   "id": "agent-network",
   "title": "Agent network, presence and pools",
-  "status": "in-progress",
+  "status": "done",
   "plan_rows": ["legionctl#todo-91", "legionctl#todo-97", "legionctl#todo-98", "legionctl#todo-120"],
   "objectives": [
     { "id": "O1", "text": "Observers remind, nudge and block the main agent through a durable outbox." },
@@ -19,13 +19,18 @@
     { "id": "S5", "text": "Each subagent of a session is a peer of its own, with its workspace, tool calls and messages.", "objectives": ["O1"],
       "tests": ["test:crates/legionctl/tests/threads.rs::the_subagents_of_one_session_are_peers_with_their_own_workspace_tool_calls_and_messages"] },
     { "id": "S3", "kind": "control-flow", "text": "vanilla wakes the observer on its events; a wake stops at its budget.", "objectives": ["O2"],
-      "tests": ["test:crates/legionctl/tests/e2e.rs::vanilla_wakes_the_observer_on_its_events_and_the_gates_hold_checkpoint_and_done",
-                "test:crates/legionctl/tests/e2e.rs::the_observer_sleeps_until_a_rule_finds_work_and_a_wake_stops_at_its_budget"] },
+      "tests": ["test:crates/legionctl/tests/threads.rs::a_team_thread_wakes_its_observer_only_on_a_trigger_and_within_its_budget",
+                "test:crates/legionctl/tests/threads.rs::the_observer_backfills_only_while_main_is_idle_and_the_flow_gates_done",
+                "test:crates/legionctl/tests/threads.rs::an_operator_restart_restores_the_members_and_a_cut_off_wake_goes_on",
+                "test:crates/legionctl/tests/threads.rs::a_failed_member_restarts_within_its_limit_then_its_blocks_expire"] },
     { "id": "S4", "kind": "requirement", "text": "Each config field reaches the harness, or the config is refused.", "objectives": ["O2"],
       "tests": ["test:crates/legionctl/tests/agents.rs::vanilla_resolves_its_three_members_through_their_layers_and_a_layer_that_widens_is_refused",
                 "test:crates/legionctl/tests/agents.rs::a_field_that_a_run_path_cannot_apply_refuses_the_member_and_names_the_field",
                 "test:crates/legionctl/tests/agents.rs::setup_apply_writes_each_agent_config_as_a_codex_agent_with_instructions_model_and_effort_only",
-                "test:crates/legionctl/tests/agents.rs::the_archetype_files_carry_only_the_frontmatter_fields_that_plugin_agents_honour"] }
+                "test:crates/legionctl/tests/agents.rs::the_archetype_files_carry_only_the_frontmatter_fields_that_plugin_agents_honour"] },
+    { "id": "S5", "kind": "requirement", "text": "A Claude lead runs the team as teammates; a lost teammate runs as an operator member.", "objectives": ["O1", "O2"],
+      "tests": ["test:crates/legionctl/tests/threads.rs::a_claude_lead_runs_the_team_as_teammates_and_a_lost_one_restarts_as_an_operator_member",
+                "test:crates/legionctl/tests/threads.rs::a_codex_lead_refuses_a_member_config_that_sets_its_own_sandbox"] }
   ],
   "work_items": [
     { "id": "P5", "text": "Threads, members, outbox, hook delivery, watch rules, presence", "status": "done", "stories": ["S1", "S2"], "units": [
@@ -52,9 +57,18 @@
       { "key": "file:crates/legionctl-core/src/setup.rs", "change": "edit" },
       { "key": "op:agents.check", "change": "add" }
     ] },
-    { "id": "P6b", "text": "Members through ACP, pace, wake budgets, the flow of vanilla", "status": "planned", "stories": ["S3"], "depends_on": ["P6a"], "units": [
+    { "id": "P6b", "text": "Members through ACP, pace, wake budgets, the flow of vanilla, backfill, branch, compensation", "status": "done", "stories": ["S3"], "depends_on": ["P6a"], "units": [
+      { "key": "file:crates/legionctl-core/src/pool.rs", "change": "add", "loc": 1000 },
+      { "key": "file:crates/legionctl-operator/src/thread.rs", "change": "edit" },
+      { "key": "file:crates/legionctl-operator/src/acp.rs", "change": "edit" },
       { "key": "file:integrations/agent-plugin/teams/vanilla.jsonc", "change": "edit", "loc": 100 },
-      { "key": "op:thread.branch", "change": "add", "loc": 1000 }
+      { "key": "op:thread.branch", "change": "add" },
+      { "key": "op:thread.compensate", "change": "add" }
+    ] },
+    { "id": "P6c", "text": "Team mode: the teams env var, TeammateIdle and TaskCompleted, lost teammates, Codex subagents", "status": "done", "stories": ["S5"], "depends_on": ["P6b"], "units": [
+      { "key": "file:crates/legionctl/src/hook.rs", "change": "edit" },
+      { "key": "file:crates/legionctl-core/src/session.rs", "change": "edit" },
+      { "key": "op:internal.thread.teammate", "change": "add", "loc": 300 }
     ] }
   ]
 }

@@ -1062,6 +1062,47 @@ Tests (`crates/legionctl/tests/agents.rs`, the CLI and the real operator):
 | `setup_apply_writes_each_agent_config_as_a_codex_agent_with_instructions_model_and_effort_only` | Another key in the TOML; a Claude-only config written; the plugin variable left in the text; a user file replaced or a stale file kept; a refused config that writes some files. |
 | `the_archetype_files_carry_only_the_frontmatter_fields_that_plugin_agents_honour` | A shipped file with a field that plugin agents ignore or a missing ref; such a field or ref let through. |
 
+### Built: P6b and P6c (2026-10-15)
+
+| Part | Where |
+| --- | --- |
+| Pools | `crates/legionctl-core/src/pool.rs` (operator.db v12: columns of `threads`, `members`, `watch_rules`; tables `costs`, `effects`); `crates/legionctl-operator/src/thread.rs` (the wake runner) |
+| Operations | `thread start --team`, `thread.branch`, `thread.compensate`, `dossier append --member` (the backfill), `thread send --teammate`; internal `thread.teammate` (the hooks `teammate-idle`, `task-completed`) |
+| Team file | `vanilla.jsonc`: `flow.gates`, `flow.stop`, `flow.restart`, `flow.rules` (the lint rule of observer0); `team.schema.json` |
+| Session env | `LEGIONCTL_MEMBER=<thread>/<member>` and an overlay of main0's folder for a member; `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` for each other Claude Code session that legionctl starts |
+
+What is different from B5, B6, B+2 to B+4 and E6, and why:
+
+| Item | Built | Why |
+| --- | --- | --- |
+| Run of a member | Chosen at `thread start --team` from the main agent: `claude` gives teammates (team mode, decision 4), `codex` gives Codex subagents (decision 6), any other agent gives operator sessions. A teammate lost at `/resume` (the `SessionStart` hook with source `resume`) runs as an operator session from then on and wakes at once. A member of `thread join` runs itself (`self`), as in P5. | Decisions 4 and 6 name the run for Claude and Codex; the operator session is decision 1's durable path for every other agent and for a lost teammate. The check of the team uses the member's run path (`agents check` resolves teammates and subagents, `thread start` resolves operator members as sessions). |
+| Operator member | No session until its first wake: the wake makes it (`<thread dossier>--<member>`, its own topic workspace) and later wakes resume it through `session.acp` (`session/load`). A wake is one ACP prompt: the archetype text, the events after the cursor, the open messages to it and its rules. The cursor moves when the prompt ends; a wake that a restart cut off keeps its ACP session (job `thread.wake`, then `thread.cut-off` in the log) and runs again from the same cursor at the operator's start. | "Sleep more" (B+0): an asleep member costs no process and no worktree; restart as in B6. |
+| Triggers | A thread-observer with pace `on-trigger` wakes at a checkpoint of main0, a test change of main0 (a path in `tests/`, `test_*`, `*_test.*`, `*.test.*`), `declare done` or `ready`, and a missed reply rule. A reply rule (`flow.rules`, column `reply`) counts the watched calls and misses only at the stop when the expected command did not come. | B+3 triggers; "a rule finds work" for the process job. Test files by name: the runners of E3 are not built. |
+| Budget | `wake_tokens` (the prompt plus the answer, 4 characters a token) and `wake_seconds` end the wake: the operator drops the ACP connection, the cost row has `over`, and the cursor stays. `tokens_per_day` stops the wakes of the day; with the stop `budget`, the member ends. | The gateway's counter counts only the calls it proxies (shortcut in the code). |
+| Cost | Table `costs` (not log rows: a wake must not see them as events): `wake` per wake, `inject` per prompt hook that gave thread messages (their tokens and the hook's time). `thread show` sums them per member. | B+4 cost to main. |
+| Overlay | The member's sandbox mounts main0's folder (the thread's `workdir`) as an overlay with an empty upper layer in `<runtime>/legionctl/overlay/<session>`, cleared after each wake. | B+3: the process job's steps never change main0's files. |
+| Backfill | `dossier append --member <name>`: only an active thread-observer of an open thread on that dossier, only while main0 is `idle` (its last hook call), one line marked `(by <name>)`; the idle check and the write are in one IMMEDIATE transaction of `operator.db`. Else the call is refused, and the observer nudges. Each backfill is an effect, and main0 gets one `notice` with the undo command. | E6 decision 3. There is no file lock on a dossier; the operator's write lock serializes it with main0's hook calls. |
+| Effects | `effects`: a backfill (undo: remove that exact line) and each message of a thread-observer (undo: retract). Commits of an observer are not effects. | An observer's patch is a `result` with its commit (B4); `git revert` is main0's choice. |
+| Branch | `thread branch <thread> <row>`: the log up to the row (each row keeps `from`), each member that did not leave, active again (operator members get new sessions at their first wake), the rules with their counts, the caller as main0, and the git branch `legionctl/thread-<new>` at the newest checkpoint up to the row. | Workspaces open from that branch with `workspace open --base`. |
+| Flow | Gates `checkpoint` (`workspace checkpoint` refuses), `declare:done` (`thread declare done` refuses with the open items), `task:completed` (the `TaskCompleted` hook, exit 2); conditions `<member>: no open hard-block` and `<member>: result <words>`. Stops `main0 ended` (the session-end hook), `declare:done`, `budget`. `restart.max` failed wakes within `restart.within`, then the member fails, its blocks expire and main0 gets a note. | B+4. `main0 ended and idle 30m` needs a timer: built as `main0 ended`. `when: ui` of ui0 is not built: ui0 has no trigger yet. |
+| Team mode | The operator gives `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` to each Claude Code session it starts that is no member. `thread start` tells the lead to spawn each member as a teammate of agent type `legionctl:<archetype>`. `TeammateIdle` gives the teammate's pending messages with exit 2 (it goes on with them); `TaskCompleted` holds the task with exit 2 while the gate fails. A teammate shares the lead's session, so it sends with `thread send --teammate <name>`. | Decision 4. The payload fields are the documented ones (`teammate_name`); not seen live. |
+
+Tests (`crates/legionctl/tests/threads.rs`, the CLI, the real operator, the real `legionctl hook` and the stand-in ACP
+agent, which runs a script per member):
+
+| Test | It catches |
+| --- | --- |
+| `a_team_thread_wakes_its_observer_only_on_a_trigger_and_within_its_budget` | A member awake or with a session at the start; a wake for a stop with nothing missed, or for main0's own lint; no wake for a missed lint or a test change; a lint that changes main0's folder; no notice, wrong counts, or a notice twice; the teams env var on a member; a wake past its budget with no `over`, or with the cursor moved; no cost of main0. |
+| `the_observer_backfills_only_while_main_is_idle_and_the_flow_gates_done` | A backfill while main0 runs; no nudge; a missing mark; the notice twice or never; a compensation that leaves the line or runs twice; `declare done` before the verification; no end of the pool at done; a branch with rows after the point, without its members or rules, or with its git branch at another commit; a parent changed by its branch. |
+| `an_operator_restart_restores_the_members_and_a_cut_off_wake_goes_on` | A cut-off wake not run again, run in a new ACP session, or from another cursor; the notice twice. |
+| `a_claude_lead_runs_the_team_as_teammates_and_a_lost_one_restarts_as_an_operator_member` | No teams env var for a Claude lead; members started as operator sessions with a Claude main; a teammate's message lost or given twice; a task or a checkpoint that passes an open hard-block of the teammate; a lost teammate not run as an operator session. |
+| `a_codex_lead_refuses_a_member_config_that_sets_its_own_sandbox` | A Codex subagent config with its own sandbox let through. |
+| `a_failed_member_restarts_within_its_limit_then_its_blocks_expire` | A restart loop past `max`; a dead observer that still blocks the main agent; no note to main0. |
+
+Not checked live: Claude Code's team mode (a lead spawning the teammates, the `TeammateIdle` and `TaskCompleted`
+payloads and their session id, a `SessionStart` with source `resume` without the teammates), and the real ACP
+adapters as members. The operator side of each is tested with the stand-ins.
+
 ## Part C: thread UI (todo-92)
 
 ### C1. What and why

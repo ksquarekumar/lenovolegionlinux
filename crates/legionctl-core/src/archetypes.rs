@@ -115,6 +115,141 @@ pub struct Team {
 pub struct Flow {
     /// Member -> the message kinds it may send; only kinds that its archetype may send.
     pub may: BTreeMap<String, Vec<String>>,
+    /// Gate -> its conditions, each `<member>: no open hard-block` or `<member>: result <first words>`. Gates:
+    /// `checkpoint` (`workspace checkpoint` of the main agent), `declare:done` (`thread declare done`),
+    /// `task:completed` (a teammate's task in team mode).
+    pub gates: BTreeMap<String, Vec<String>>,
+    /// When the pool ends (its members end, its log stays): `main0 ended` (the main agent's session ended),
+    /// `declare:done` (main0 declared done and the gate passed). With `budget`, a member that used its
+    /// `budget.tokens_per_day` gets no wake until the next day.
+    pub stop: Vec<String>,
+    /// How often a member whose wake failed starts again; past it, the member fails and its blocks expire.
+    pub restart: Restart,
+    /// Watch rules that the operator adds at the start: a member watches another, and a call of `tools` on `path`
+    /// with no Bash command that contains `expect` before the reply ends (the stop) is a miss that wakes it.
+    pub rules: Vec<FlowRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Restart {
+    pub max: u32,
+    /// `<n>s`, `<n>m` or `<n>h`.
+    pub within: String,
+}
+
+impl Default for Restart {
+    fn default() -> Restart {
+        Restart {
+            max: 3,
+            within: "1h".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FlowRule {
+    /// The member that watches and does the step (or nudges).
+    pub member: String,
+    #[serde(default = "main0")]
+    pub watched: String,
+    #[serde(default = "edit_tools")]
+    pub tools: String,
+    #[serde(default)]
+    pub path: String,
+    /// The Bash command that the watched member should run (`make lint`).
+    pub expect: String,
+}
+
+fn main0() -> String {
+    "main0".into()
+}
+
+fn edit_tools() -> String {
+    "Edit|Write|MultiEdit|NotebookEdit".into()
+}
+
+/// Seconds of a duration `<n>s`, `<n>m` or `<n>h`.
+///
+/// # Errors
+/// Another form.
+pub fn seconds(text: &str) -> Result<u64> {
+    let (n, unit) = text.split_at(text.len().saturating_sub(1));
+    let n: u64 = n
+        .parse()
+        .with_context(|| format!("{text} is not <n>s, <n>m or <n>h"))?;
+    Ok(match unit {
+        "s" => n,
+        "m" => n * 60,
+        "h" => n * 3600,
+        _ => anyhow::bail!("{text} is not <n>s, <n>m or <n>h"),
+    })
+}
+
+/// One gate condition: the member it names and what it needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Condition {
+    NoHardBlock(String),
+    /// The member's newest `result` message starts with these words.
+    Result(String, String),
+}
+
+/// # Errors
+/// A condition of another form.
+pub fn condition(text: &str) -> Result<Condition> {
+    let (member, need) = text
+        .split_once(": ")
+        .with_context(|| format!("gate condition '{text}' is not '<member>: <need>'"))?;
+    match need.strip_prefix("result ") {
+        Some(words) => Ok(Condition::Result(member.into(), words.into())),
+        None if need == "no open hard-block" => Ok(Condition::NoHardBlock(member.into())),
+        None => anyhow::bail!(
+            "gate condition '{text}': use '<member>: no open hard-block' or '<member>: result <words>'"
+        ),
+    }
+}
+
+const GATES: [&str; 3] = ["checkpoint", "declare:done", "task:completed"];
+const STOPS: [&str; 3] = ["main0 ended", "declare:done", "budget"];
+
+impl Flow {
+    /// What in the flow does not exist: a gate, a condition form, a stop, a member, a duration.
+    fn problems(&self, members: &BTreeMap<String, AgentConfig>) -> Vec<String> {
+        let mut out = Vec::new();
+        let named = |m: &str, out: &mut Vec<String>, what: &str| {
+            if !members.contains_key(m) {
+                out.push(format!("{what} names {m}, which is not a member"));
+            }
+        };
+        for (gate, conditions) in &self.gates {
+            if !GATES.contains(&gate.as_str()) {
+                out.push(format!("flow.gates: no gate {gate} ({})", GATES.join(", ")));
+            }
+            for c in conditions {
+                match condition(c) {
+                    Ok(Condition::NoHardBlock(m) | Condition::Result(m, _)) => {
+                        named(&m, &mut out, &format!("flow.gates.{gate}"));
+                    }
+                    Err(e) => out.push(format!("flow.gates.{gate}: {e}")),
+                }
+            }
+        }
+        for stop in self.stop.iter().filter(|s| !STOPS.contains(&s.as_str())) {
+            out.push(format!(
+                "flow.stop: no condition '{stop}' ({})",
+                STOPS.join(", ")
+            ));
+        }
+        if let Err(e) = seconds(&self.restart.within) {
+            out.push(format!("flow.restart.within: {e}"));
+        }
+        for rule in &self.rules {
+            named(&rule.member, &mut out, "flow.rules");
+            named(&rule.watched, &mut out, "flow.rules");
+        }
+        out
+    }
 }
 
 /// The JSON schema of team files, with its repository path.
@@ -467,6 +602,9 @@ pub struct Check {
     pub members: Vec<Member>,
     /// Each field that a run path cannot apply, each layer that widens, each missing file: one line each.
     pub refused: Vec<String>,
+    /// The team's flow (empty without a team).
+    #[serde(skip)]
+    pub flow: Flow,
 }
 
 /// What a check reads.
@@ -526,7 +664,7 @@ impl Sources {
         name: &str,
         layer: &AgentConfig,
         team: Option<&str>,
-        harness: Harness,
+        (harness, sessions): (Harness, bool),
         refused: &mut Vec<String>,
     ) -> Option<(Member, ArchetypeFile, AgentConfig)> {
         let mut no = |text: String| refused.push(format!("{name}: {text}"));
@@ -588,7 +726,7 @@ impl Sources {
                 serde_json::to_value(h).unwrap_or_default()
             ));
         }
-        let path = RunPath::of(harness, role == Role::MainAgent);
+        let path = RunPath::of(harness, role == Role::MainAgent || sessions);
         for (field, kind) in &from {
             if let Some(why) = path.refuses(field, *kind) {
                 no(format!(
@@ -685,11 +823,17 @@ impl Sources {
         })
     }
 
-    /// Resolve each member of `team` (none: each config as a member of its own) for `harness`.
+    /// Resolve each member of `team` (none: each config as a member of its own) for `harness`; with `sessions`, each
+    /// member runs as its own operator session (a main agent's run path), else in the main agent's harness.
     ///
     /// # Errors
     /// The team file cannot be found or read.
-    pub fn check(&self, team: Option<(&str, &Path)>, harness: Harness) -> Result<Check> {
+    pub fn check(
+        &self,
+        team: Option<(&str, &Path)>,
+        harness: Harness,
+        sessions: bool,
+    ) -> Result<Check> {
         let mut refused = Vec::new();
         let (members, flow) = match team {
             Some((_, path)) => {
@@ -710,9 +854,13 @@ impl Sources {
         };
         let mut resolved = Vec::new();
         for (name, layer) in &members {
-            let Some((mut member, _, _)) =
-                self.member(name, layer, team.map(|t| t.0), harness, &mut refused)
-            else {
+            let Some((mut member, _, _)) = self.member(
+                name,
+                layer,
+                team.map(|t| t.0),
+                (harness, sessions),
+                &mut refused,
+            ) else {
                 continue;
             };
             if let Some(may) = flow.may.get(name) {
@@ -734,6 +882,7 @@ impl Sources {
         for name in flow.may.keys().filter(|n| !members.contains_key(*n)) {
             refused.push(format!("flow.may names {name}, which is not a member"));
         }
+        refused.extend(flow.problems(&members));
         if team.is_some() {
             let mains = resolved
                 .iter()
@@ -750,6 +899,7 @@ impl Sources {
             team: team.map(|t| t.0.to_string()),
             members: resolved,
             refused,
+            flow,
         })
     }
 
@@ -770,7 +920,7 @@ impl Sources {
                 name,
                 &AgentConfig::default(),
                 None,
-                Harness::Codex,
+                (Harness::Codex, false),
                 &mut refused,
             ) else {
                 continue;
@@ -783,6 +933,24 @@ impl Sources {
             refused.join("; ")
         );
         Ok(out)
+    }
+
+    /// The instruction text of an operator member: its archetype file's text with the plugin folder in place of the
+    /// variable, and each instruction file that its config adds.
+    ///
+    /// # Errors
+    /// The archetype file is missing or not valid.
+    pub fn instructions(&self, archetype: &str, extra: &[String]) -> Result<String> {
+        let mut refused = Vec::new();
+        let file = archetype_file(&self.plugin, archetype, &mut refused)
+            .with_context(|| refused.join("; "))?;
+        let mut text = file
+            .body
+            .replace(ROOT_VAR, &format!("{}/", self.plugin.display()));
+        for path in extra.iter().filter_map(|e| self.instruction_path(e)) {
+            let _ = write!(text, "\n\nRead and follow {}.", path.display());
+        }
+        Ok(text)
     }
 
     fn codex_toml(&self, name: &str, file: &ArchetypeFile, merged: &AgentConfig) -> String {

@@ -20,22 +20,24 @@ skills: [dossier-practice, verify-and-ship, workspace-practice]
    Else send a nudge.
 8. You do these steps yourself: lint in check mode, the targeted tests (`code tests run`), `code graph refresh`,
    `dossier check`.
-9. Run each step in your overlay of the workspace of `#main0`. Never run a step in the workspace of `#main0`.
+9. Run each step in your overlay of the workspace of `#main0` (the wake names its folder). Never run a step in the
+   workspace of `#main0`.
 10. After a step, send one `notice` with the result: `thread send main0 notice "<text>" --rule <id>`.
 11. Send a nudge (`reminder` or `hint`) for a failed step, a change to a file that `#main0` changed since its last
     checkpoint, a decision about design, scope or test value, and a step that your config denies.
 12. You may backfill a record that `#main0` did not write into its dossier: a plan.md ledger row or an EVIDENCE
     artifact of a run that you did.
-13. Backfill only while `#main0` is idle (`thread peers`), through the dossier lock, and append only. Mark each row
-    `(by observer0)`.
+13. Backfill only while `#main0` is idle, one line at a time: `dossier append --member <your name> <path>`. The
+    operator checks that `#main0` is idle and adds the mark `(by <your name>)`.
 14. Never edit or delete a line or an artifact that `#main0` wrote. If the operator refuses the write, send a nudge
-    instead.
-15. After a backfill, send one `notice` that names each record that you wrote.
+    instead. The operator tells `#main0` each backfill in one `notice`.
 16. Verification: at `declare done` or `declare ready`, run the suite and `code plan status`.
 17. Send a `result` that names each open item. If the suite fails, send a `hard-block` on `workspace_checkpoint`.
 18. Send a `hard-block` only for a fault that makes the result of `#main0` wrong. Send a `soft-block` or a nudge for
     all else.
 19. Each message is short. It names the fact that you verified and how `#main0` clears it.
+20. As a teammate of a Claude Code lead (team mode), you share the session of `#main0`: add
+    `--teammate <your name>` to each `thread send`.
 
 ## Refs
 

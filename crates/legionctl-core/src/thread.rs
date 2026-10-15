@@ -153,7 +153,7 @@ words!(
 /// The message kinds that the prompt hook gives; the blocks go to the stop and pre-tool hooks.
 const TOLD: &str = "'note', 'hint', 'reminder', 'notice', 'result'";
 /// Message states that still act on the receiver.
-const OPEN: &str = "'pending', 'delivered'";
+pub(crate) const OPEN: &str = "'pending', 'delivered'";
 
 pub struct ThreadInfo {
     pub id: i64,
@@ -175,6 +175,10 @@ pub struct Member {
     pub joined: i64,
     /// The wakes the operator gave it.
     pub wakes: u32,
+    /// The agent config it uses (a team member).
+    pub config: Option<String>,
+    /// How it runs: self, operator, teammate or subagent.
+    pub run: String,
 }
 
 pub struct Message {
@@ -203,6 +207,8 @@ pub struct Rule {
     pub run: u32,
     pub misses: u32,
     pub done: u32,
+    /// The expected command must come before the reply ends: the stop counts the miss, not `every`.
+    pub reply: bool,
 }
 
 pub struct LogRow {
@@ -219,6 +225,10 @@ pub struct ThreadView {
     pub messages: Vec<Message>,
     pub rules: Vec<Rule>,
     pub log: Vec<LogRow>,
+    /// Per member: its wakes' tokens and time, or (main0) the context its hooks added and their wait.
+    pub costs: Vec<crate::pool::Cost>,
+    /// What the members did for main that `thread compensate` can undo.
+    pub effects: Vec<crate::pool::Effect>,
 }
 
 /// A watch rule as `thread rules add` takes it.
@@ -284,7 +294,7 @@ pub struct Observed {
 }
 
 /// 1st, 2nd, 3rd, 4th, ..., 11th, 12th, 13th, 21st.
-fn ordinal(n: u32) -> String {
+pub(crate) fn ordinal(n: u32) -> String {
     let suffix = match (n % 10, n % 100) {
         (_, 11..=13) => "th",
         (1, _) => "st",
@@ -296,7 +306,7 @@ fn ordinal(n: u32) -> String {
 }
 
 /// The clock time of `ts` (UTC).
-fn clock(ts: i64) -> String {
+pub(crate) fn clock(ts: i64) -> String {
     format!(
         "{:02}:{:02} UTC",
         ts.rem_euclid(86_400) / 3600,
@@ -304,7 +314,13 @@ fn clock(ts: i64) -> String {
     )
 }
 
-fn log(tx: &Transaction, thread: i64, member: &str, kind: &str, payload: &Value) -> Result<i64> {
+pub(crate) fn log(
+    tx: &Transaction,
+    thread: i64,
+    member: &str,
+    kind: &str,
+    payload: &Value,
+) -> Result<i64> {
     tx.execute(
         "INSERT INTO thread_log (thread, ts, member, kind, payload) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![thread, now(), member, kind, payload.to_string()],
@@ -313,7 +329,7 @@ fn log(tx: &Transaction, thread: i64, member: &str, kind: &str, payload: &Value)
 }
 
 /// Write a message into the outbox, with its log row.
-fn post(
+pub(crate) fn post(
     tx: &Transaction,
     thread: i64,
     (from, to): (&str, &str),
@@ -336,14 +352,14 @@ fn post(
     Ok(id)
 }
 
-/// Wake a member: the log events since its cursor go to it, and the cursor moves to the newest.
-// shortcut: a wake is only recorded (the member's ACP prompt comes with P6b), so the cursor moves at once, not after
-// the prompt ends
-fn wake(tx: &Transaction, thread: i64, member: &str, reason: &str) -> Result<()> {
-    let cursor: i64 = tx.query_row(
-        "SELECT cursor FROM members WHERE thread = ?1 AND name = ?2",
+/// Wake a member: the log events since its cursor go to it. A member that the operator runs (`run` operator) gets
+/// its wake as an ACP prompt (`pool`), and its cursor moves when the prompt ends; for the others the wake is a record,
+/// and the cursor moves at once.
+pub(crate) fn wake(tx: &Transaction, thread: i64, member: &str, reason: &str) -> Result<()> {
+    let (cursor, run): (i64, String) = tx.query_row(
+        "SELECT cursor, run FROM members WHERE thread = ?1 AND name = ?2",
         params![thread, member],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     let events: i64 = tx.query_row(
         "SELECT count(*) FROM thread_log WHERE thread = ?1 AND id > ?2",
@@ -357,8 +373,13 @@ fn wake(tx: &Transaction, thread: i64, member: &str, reason: &str) -> Result<()>
         "thread.wake",
         &json!({"reason": reason, "events": events}),
     )?;
+    let column = if run == crate::pool::Run::Operator.as_str() {
+        "due"
+    } else {
+        "cursor"
+    };
     tx.execute(
-        "UPDATE members SET cursor = ?3 WHERE thread = ?1 AND name = ?2",
+        &format!("UPDATE members SET {column} = ?3 WHERE thread = ?1 AND name = ?2"),
         params![thread, member, id],
     )?;
     Ok(())
@@ -387,7 +408,7 @@ fn wake_paced(
 }
 
 /// The messages to `session`: to its member name in a thread, or to its session id.
-fn to_session(states: &str, kinds: &str) -> String {
+pub(crate) fn to_session(states: &str, kinds: &str) -> String {
     format!(
         "SELECT m.id, m.thread, m.sender, m.recipient, m.kind, m.body, m.tool, m.state, m.created FROM messages m
          WHERE m.state IN ({states}) AND m.kind IN ({kinds}) AND (m.recipient = ?1 OR EXISTS (SELECT 1 FROM members b
@@ -402,7 +423,7 @@ fn word<T>(r: &rusqlite::Row, column: usize, parse: fn(&str) -> Result<T>) -> ru
     })
 }
 
-fn messages(
+pub(crate) fn messages(
     conn: &rusqlite::Connection,
     sql: &str,
     args: impl rusqlite::Params,
@@ -426,7 +447,7 @@ fn messages(
 }
 
 /// Mark these messages delivered.
-fn delivered(tx: &Transaction, list: &[Message]) -> Result<()> {
+pub(crate) fn delivered(tx: &Transaction, list: &[Message]) -> Result<()> {
     for m in list.iter().filter(|m| m.state == "pending") {
         tx.execute(
             "UPDATE messages SET state = 'delivered', delivered = ?2 WHERE id = ?1",
@@ -466,9 +487,9 @@ fn session_of(peer: &str) -> &str {
 }
 
 /// The sessions and their subagents that `thread peers` reads, by peer id (`peer_key`).
-struct Presence {
+pub(crate) struct Presence {
     /// The newest hook call, tool call or release of each peer.
-    seen: BTreeMap<String, EventRow>,
+    pub(crate) seen: BTreeMap<String, EventRow>,
     tools: BTreeMap<String, EventRow>,
     workspaces: Vec<Workspace>,
     /// (session, dossier) of each open binding.
@@ -477,6 +498,18 @@ struct Presence {
     members: Vec<(String, i64, String)>,
     /// The agent and account of each session that legionctl started.
     started: BTreeMap<String, (String, Option<String>)>,
+}
+
+/// running, idle, ended or unknown: from the session's last hook call, tool call or release.
+pub(crate) fn live_state(p: &Presence, session: &str) -> &'static str {
+    match p.seen.get(session) {
+        Some(e) => match (e.kind.as_str(), e.payload["input"]["event"].as_str()) {
+            ("dossier.release", _) => "ended",
+            ("internal.agent.tool", _) | (_, Some("prompt")) => "running",
+            _ => "idle",
+        },
+        None => "unknown",
+    }
 }
 
 impl Presence {
@@ -502,7 +535,7 @@ impl Presence {
 }
 
 impl Dossiers {
-    fn begin(&self) -> Result<Transaction<'_>> {
+    pub(crate) fn begin(&self) -> Result<Transaction<'_>> {
         Ok(Transaction::new_unchecked(
             self.db(),
             TransactionBehavior::Immediate,
@@ -510,7 +543,7 @@ impl Dossiers {
     }
 
     /// The open threads where `session` is an active member, with its name there.
-    fn memberships(&self, session: &str) -> Result<Vec<(i64, String)>> {
+    pub(crate) fn memberships(&self, session: &str) -> Result<Vec<(i64, String)>> {
         Ok(self
             .db()
             .prepare(
@@ -521,7 +554,7 @@ impl Dossiers {
             .collect::<Result<_, _>>()?)
     }
 
-    fn member(
+    pub(crate) fn member(
         &self,
         thread: i64,
         name: &str,
@@ -659,10 +692,10 @@ impl Dossiers {
         thread: Option<i64>,
         (to, kind, body): (&str, Kind, &str),
         tool: Option<&str>,
-        rule: Option<i64>,
+        (rule, teammate): (Option<i64>, Option<&str>),
     ) -> Result<i64> {
         let mine = self.memberships(session)?;
-        let (thread, from) = match (thread, mine.as_slice()) {
+        let (thread, mut from) = match (thread, mine.as_slice()) {
             (Some(t), _) => (
                 t,
                 mine.iter().find(|(m, _)| *m == t).map(|(_, n)| n.clone()),
@@ -672,6 +705,21 @@ impl Dossiers {
             (None, _) => bail!("this session is in more than one thread; give --thread"),
         };
         self.writable(thread)?;
+        if let Some(name) = teammate {
+            let run: Option<String> = self
+                .db()
+                .query_row(
+                    "SELECT run FROM members WHERE thread = ?1 AND name = ?2 AND state = 'active'",
+                    params![thread, name],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            ensure!(
+                from.as_deref() == Some("main0") && run.as_deref() == Some("teammate"),
+                "--teammate {name}: only a teammate of the lead (main0) of thread {thread} sends as itself"
+            );
+            from = Some(name.to_string());
+        }
         let from_archetype = match &from {
             Some(name) => self.member(thread, name)?.map(|(a, _, _)| a),
             None => None,
@@ -732,6 +780,14 @@ impl Dossiers {
             }
         };
         let id = post(&tx, thread, (&from, to), kind, &body, tool)?;
+        if from_archetype == Some(Archetype::ThreadObserver) {
+            crate::pool::effect(
+                &tx,
+                thread,
+                &from,
+                ("message", &id.to_string(), &id.to_string()),
+            )?;
+        }
         tx.commit()?;
         Ok(id)
     }
@@ -742,11 +798,12 @@ impl Dossiers {
     /// # Errors
     /// The database fails.
     pub fn thread_prompt(&self, session: &str) -> Result<Option<String>> {
+        let started = std::time::Instant::now();
         let tx = self.begin()?;
         let list = messages(&tx, &to_session("'pending'", TOLD), [session])?;
         delivered(&tx, &list)?;
-        tx.commit()?;
         if list.is_empty() {
+            tx.commit()?;
             return Ok(None);
         }
         let mut lines = vec![format!(
@@ -763,7 +820,10 @@ impl Dossiers {
                 m.body
             )
         }));
-        Ok(Some(lines.join("\n")))
+        let text = lines.join("\n");
+        crate::pool::injected(&tx, &list, &text, started)?;
+        tx.commit()?;
+        Ok(Some(text))
     }
 
     /// The stop hook: each open hard-block, and each soft-block not yet given, stop the end of the reply; `again`
@@ -783,6 +843,7 @@ impl Dossiers {
             )?);
             for (thread, name) in self.memberships(session)? {
                 wake_paced(&tx, thread, &name, &[Pace::OnStop], "stop")?;
+                crate::pool::reply_misses(&tx, thread, &name)?;
             }
         }
         delivered(&tx, &list)?;
@@ -877,6 +938,16 @@ impl Dossiers {
     ) -> Result<Vec<String>> {
         let mine = self.memberships(session)?;
         ensure!(!mine.is_empty(), "this session is in no thread");
+        if word == Declared::Done {
+            for (thread, _) in &mine {
+                let open = self.gate_failures(*thread, "declare:done")?;
+                ensure!(
+                    open.is_empty(),
+                    "thread {thread}: not done yet; the gate declare:done has open items:\n{}",
+                    open.join("\n")
+                );
+            }
+        }
         let tx = self.begin()?;
         let mut out = Vec::new();
         for (thread, name) in mine {
@@ -894,6 +965,12 @@ impl Dossiers {
                 &[Pace::OnDeclare, Pace::OnStop],
                 &format!("declare {}", word.as_str()),
             )?;
+            if matches!(word, Declared::Done | Declared::Ready) {
+                crate::pool::trigger(&tx, thread, &format!("declare {}", word.as_str()))?;
+            }
+            if word == Declared::Done {
+                crate::pool::stop_at(&tx, thread, "declare:done")?;
+            }
             out.push(format!(
                 "{name} declared {} in thread {thread}",
                 word.as_str()
@@ -983,17 +1060,17 @@ impl Dossiers {
     pub fn rules(&self, thread: i64) -> Result<Vec<Rule>> {
         self.db()
             .prepare(
-                "SELECT id, thread, member, watched, tools, path, expect, every, kind, created, run, misses, done
+                "SELECT id, thread, member, watched, tools, path, expect, every, kind, created, run, misses, done, reply
                  FROM watch_rules WHERE thread = ?1 ORDER BY id",
             )?
             .query_map([thread], |r| {
                 Ok((
                     (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?),
-                    (r.get(7)?, r.get::<_, String>(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?),
+                    (r.get(7)?, r.get::<_, String>(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?),
                 ))
             })?
             .map(|row| {
-                let ((id, thread, member, watched, tools, path, expect), (every, kind, created, run, misses, done)) = row?;
+                let ((id, thread, member, watched, tools, path, expect), (every, kind, created, run, misses, done, reply)) = row?;
                 Ok(Rule {
                     id,
                     thread,
@@ -1008,6 +1085,7 @@ impl Dossiers {
                     run,
                     misses,
                     done,
+                    reply,
                 })
             })
             .collect()
@@ -1026,6 +1104,7 @@ impl Dossiers {
         }
         let tx = self.begin()?;
         for (thread, name) in mine {
+            crate::pool::test_change(&tx, thread, &name, used)?;
             if used.tool == "SendMessage" {
                 log(
                     &tx,
@@ -1042,7 +1121,8 @@ impl Dossiers {
             {
                 if triggers(&rule, used) {
                     let run = rule.run + 1;
-                    if run < rule.every {
+                    // a reply rule counts its miss at the stop (`pool::reply_misses`)
+                    if run < rule.every || rule.reply {
                         tx.execute(
                             "UPDATE watch_rules SET run = ?2 WHERE id = ?1",
                             params![rule.id, run],
@@ -1267,14 +1347,14 @@ impl Dossiers {
             .db()
             .prepare(
                 "SELECT name, archetype, session, pace, cursor, state, joined, (SELECT count(*) FROM thread_log l
-                 WHERE l.thread = m.thread AND l.member = m.name AND l.kind = 'thread.wake') FROM members m
+                 WHERE l.thread = m.thread AND l.member = m.name AND l.kind = 'thread.wake'), config, run FROM members m
                  WHERE thread = ?1 ORDER BY joined, name",
             )?
             .query_map([id], |r| {
-                Ok((r.get(0)?, r.get::<_, String>(1)?, r.get(2)?, r.get::<_, String>(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))
+                Ok(((r.get(0)?, r.get::<_, String>(1)?, r.get(2)?, r.get::<_, String>(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?), (r.get(8)?, r.get(9)?)))
             })?
             .map(|row| {
-                let (name, archetype, session, pace, cursor, state, joined, wakes) = row?;
+                let ((name, archetype, session, pace, cursor, state, joined, wakes), (config, run)) = row?;
                 Ok(Member {
                     name,
                     archetype: Archetype::parse(&archetype)?,
@@ -1284,6 +1364,8 @@ impl Dossiers {
                     state,
                     joined,
                     wakes,
+                    config,
+                    run,
                 })
             })
             .collect::<Result<_>>()?;
@@ -1313,12 +1395,14 @@ impl Dossiers {
             messages,
             rules: self.rules(id)?,
             log,
+            costs: self.costs(id)?,
+            effects: self.effects(id)?,
         })
     }
 
     /// What the store and the operator's event log (`events`) know about the live sessions: the last hook call and
     /// tool call of each within the dossier stale time, the open bindings, thread members and started sessions.
-    fn presence(&self, events: &Db) -> Result<Presence> {
+    pub(crate) fn presence(&self, events: &Db) -> Result<Presence> {
         let since = now() - self.stale_after();
         let by_peer = |rows: Vec<EventRow>| -> BTreeMap<String, EventRow> {
             rows.into_iter()
@@ -1440,17 +1524,7 @@ impl Dossiers {
             .and_then(|e| e.payload["input"]["project"].as_str())
             .map(PathBuf::from);
         let workspace = project.as_deref().and_then(|dir| p.workspace_of(dir));
-        let (state, seen) = match p.seen.get(session) {
-            Some(e) => (
-                match (e.kind.as_str(), e.payload["input"]["event"].as_str()) {
-                    ("dossier.release", _) => "ended",
-                    ("internal.agent.tool", _) | (_, Some("prompt")) => "running",
-                    _ => "idle",
-                },
-                Some(e.ts),
-            ),
-            None => ("unknown", None),
-        };
+        let (state, seen) = (live_state(p, session), p.seen.get(session).map(|e| e.ts));
         let tool = |field: &str| {
             p.tools
                 .get(session)

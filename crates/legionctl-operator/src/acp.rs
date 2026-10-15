@@ -34,8 +34,52 @@ pub async fn run(
     stop: tokio::sync::oneshot::Receiver<()>,
     dossiers: &Dossiers,
 ) -> Result<RunOutput> {
+    Ok(run_within(
+        launch,
+        prompt,
+        (job, input),
+        (stop, Budget::default()),
+        dossiers,
+    )
+    .await?
+    .0)
+}
+
+/// The limits of one run (a member's wake, design 23 B5): the answer's tokens and the run's seconds.
+#[derive(Default)]
+pub struct Budget {
+    pub tokens: Option<u64>,
+    pub seconds: Option<u64>,
+}
+
+impl Budget {
+    /// The limit that an answer of `text` after `seconds` went past.
+    fn reached(&self, text: &str, seconds: u64) -> Option<&'static str> {
+        let past = |limit: Option<u64>, used: u64| limit.is_some_and(|l| used > l);
+        if past(self.tokens, legionctl_core::pool::tokens(text)) {
+            Some("tokens")
+        } else if past(self.seconds, seconds) {
+            Some("seconds")
+        } else {
+            None
+        }
+    }
+}
+
+/// `run` within `budget`: a run that reaches a limit ends there (its adapter stops, as at an offload), and the
+/// answer so far comes back with the limit's name (`tokens`, `seconds`).
+///
+/// # Errors
+/// The adapter does not start or speak ACP, or the prompt fails.
+pub async fn run_within(
+    launch: Launch,
+    prompt: &str,
+    (job, input): (i64, &serde_json::Value),
+    (stop, budget): (tokio::sync::oneshot::Receiver<()>, Budget),
+    dossiers: &Dossiers,
+) -> Result<(RunOutput, Option<&'static str>)> {
     let (id, inside) = (launch.id.clone(), launch.inside);
-    let out = drive(launch, prompt, (job, input.clone()), stop).await;
+    let out = drive(launch, prompt, (job, input.clone()), (stop, budget)).await;
     // the adapter can outlive its closed stdio, and a container or VM outlives its killed client
     if session::active(&id, inside)
         && let Err(e) = session::control(&id, inside, session::Control::Stop)
@@ -58,6 +102,9 @@ struct Live {
     prompting: bool,
     text: String,
     permissions: Vec<String>,
+    /// The answer's token limit, and the signal when the answer reaches it.
+    limit: Option<u64>,
+    over: Arc<tokio::sync::Notify>,
 }
 
 impl Live {
@@ -132,6 +179,12 @@ impl Live {
                     serde_json::json!({ "tag": tag, "text": chunk.text }),
                 );
                 self.text.push_str(&chunk.text);
+                if self
+                    .limit
+                    .is_some_and(|l| legionctl_core::pool::tokens(&self.text) > l)
+                {
+                    self.over.notify_one();
+                }
             }
             SessionUpdate::ToolCall(call) => self.record(
                 "session.output",
@@ -139,6 +192,30 @@ impl Live {
             ),
             _ => {}
         }
+    }
+}
+
+/// Ends after `seconds`, or never.
+async fn time_limit(seconds: Option<u64>) {
+    match seconds {
+        Some(s) => tokio::time::sleep(std::time::Duration::from_secs(s)).await,
+        None => std::future::pending().await,
+    }
+}
+
+impl Live {
+    /// The run's output; its ACP session id from the job, also when the connection was dropped.
+    fn output(&self, id: String, job: i64, started: Instant) -> Result<RunOutput> {
+        Ok(RunOutput {
+            id,
+            text: self.text.clone(),
+            ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            permissions: self.permissions.clone(),
+            acp: self
+                .db
+                .job(job)?
+                .and_then(|j| j.input["acp"].as_str().map(String::from)),
+        })
     }
 }
 
@@ -151,12 +228,13 @@ async fn drive(
     launch: Launch,
     prompt: &str,
     (job, mut input): (i64, serde_json::Value),
-    stop: tokio::sync::oneshot::Receiver<()>,
-) -> Result<RunOutput> {
+    (stop, budget): (tokio::sync::oneshot::Receiver<()>, Budget),
+) -> Result<(RunOutput, Option<&'static str>)> {
     let started = Instant::now();
     let (id, workdir) = (launch.id.clone(), launch.workdir.clone());
     let servers = servers(&launch)?;
     let agent = adapter(launch)?;
+    let over = Arc::new(tokio::sync::Notify::new());
     let live = Arc::new(Mutex::new(Live {
         db: Db::open_default()?,
         session: id.clone(),
@@ -164,6 +242,8 @@ async fn drive(
         prompting: false,
         text: String::new(),
         permissions: Vec::new(),
+        limit: budget.tokens,
+        over: over.clone(),
     }));
     let (asks, updates) = (live.clone(), live.clone());
     let client = Client
@@ -230,19 +310,18 @@ async fn drive(
             }
             Ok(())
         });
-    // a stop (offload) drops the connection, which ends the adapter
-    tokio::select! {
-        done = client => done?,
+    let seconds = time_limit(budget.seconds);
+    // a stop (offload) or a budget drops the connection, which ends the adapter
+    let reached = tokio::select! {
         _ = stop => anyhow::bail!("offloaded: memory is under pressure"),
-    }
+        () = over.notified() => Some("tokens"),
+        () = seconds => Some("seconds"),
+        done = client => { done?; None }
+    };
     let live = lock(&live);
-    Ok(RunOutput {
-        id,
-        text: live.text.clone(),
-        ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-        permissions: live.permissions.clone(),
-        acp: input["acp"].as_str().map(String::from),
-    })
+    // an answer that came in whole within one poll reached its limit too
+    let reached = reached.or_else(|| budget.reached(&live.text, started.elapsed().as_secs()));
+    Ok((live.output(id, job, started)?, reached))
 }
 
 /// The session's MCP servers as ACP's `session/new` takes them.

@@ -450,7 +450,8 @@ fn split(
         let tx =
             rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
         for table in SHARED {
-            let cols = columns(&tx, "main", table)?.join(", ");
+            // the old file's columns: a later operator schema adds columns with defaults
+            let cols = columns(&tx, "old", table)?.join(", ");
             tx.execute_batch(&format!(
                 "DELETE FROM main.{table}; INSERT INTO main.{table} ({cols}) SELECT {cols} FROM old.{table};"
             ))?;

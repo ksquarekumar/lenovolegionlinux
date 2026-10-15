@@ -164,6 +164,9 @@ pub struct Start<'a> {
     pub inside: Inside,
     /// The NVIDIA GPU: its device nodes on the host and in a container, the GPU itself (VFIO) in a VM.
     pub gpu: bool,
+    /// A thread member's session (design 23, P6b): `<thread>/<member>`, and the main agent's folder that it sees
+    /// as an overlay.
+    pub member: Option<(&'a str, &'a Path)>,
 }
 
 /// Where account profiles live: `~/.local/share/legionctl/accounts/<name>/{claude,codex}`.
@@ -542,6 +545,63 @@ fn account_mounts(
     Ok(())
 }
 
+/// The agent of a session, its command and account, and its thread membership (`<thread>/<member>`, the main
+/// agent's folder).
+struct Who<'a> {
+    agent: &'a str,
+    command: &'a [String],
+    account: Option<&'a str>,
+    member: Option<(&'a str, &'a Path)>,
+}
+
+/// A thread member sees the main agent's folder with its own empty upper layer, so its checks never change main's
+/// files (design 23, B+3, process job). Each other Claude Code session that legionctl starts may lead an agent team
+/// (B+ decision 4); a member is never a lead.
+fn team_role(
+    mounts: &mut Vec<Mount>,
+    env: &mut Vec<(String, String)>,
+    (runtime, id): (&Path, &str),
+    (agent, member): (&str, Option<(&str, &Path)>),
+) -> Result<()> {
+    match member {
+        Some((name, main)) => {
+            env.push(("LEGIONCTL_MEMBER".into(), name.into()));
+            let layer = overlay_layer(runtime, id);
+            crate::folder::clear(&layer)?;
+            for part in ["upper", "work"] {
+                std::fs::create_dir_all(layer.join(part))?;
+            }
+            mounts.push(Mount::Overlay {
+                folder: main.to_path_buf(),
+                upper: layer.join("upper"),
+                work: layer.join("work"),
+            });
+        }
+        None if agent == "claude" => {
+            env.push(("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS".into(), "1".into()));
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+/// The upper layer of a member's overlay of the main agent's folder (`<runtime>/legionctl/overlay/<session>`).
+fn overlay_layer(runtime: &Path, id: &str) -> PathBuf {
+    runtime.join("legionctl/overlay").join(id)
+}
+
+/// Remove a member's overlay layer after its wake: the next wake sees main's folder as it is then.
+///
+/// # Errors
+/// `XDG_RUNTIME_DIR` is not set, or the layer cannot be removed.
+pub fn drop_overlay(id: &str) -> Result<()> {
+    let runtime =
+        PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?);
+    let layer = overlay_layer(&runtime, id);
+    crate::folder::clear(&layer)?;
+    Ok(std::fs::remove_dir(&layer)?)
+}
+
 /// What a session's agent sees besides the host's root (read-only) or its image, in order: later mounts go over
 /// earlier ones.
 enum Mount {
@@ -658,11 +718,11 @@ fn bwrap_sandbox(
     .map(String::from)
     .to_vec();
     hide(&mut args, runtime, hidden);
-    if ws.is_folder() {
+    if mounts.iter().any(|m| matches!(m, Mount::Overlay { .. })) {
         let help = std::process::Command::new("bwrap").arg("--help").output()?;
         anyhow::ensure!(
             String::from_utf8_lossy(&help.stdout).contains("--overlay-src"),
-            "a plain folder's session needs bubblewrap 0.10 or newer (overlays); this bwrap has none"
+            "a plain folder's session and a thread member need bubblewrap 0.10 or newer (overlays); this bwrap has none"
         );
     }
     bwrap_args(&mut args, mounts, env);
@@ -1116,7 +1176,12 @@ impl Dossiers {
             id.clone(),
             (&ws, bound, start.token),
             config,
-            (command, start.account),
+            &Who {
+                agent,
+                command,
+                account: start.account,
+                member: start.member,
+            },
             (mcp_json, skills.as_deref()),
             (&runs, start.gpu),
         )
@@ -1169,11 +1234,25 @@ impl Dossiers {
             logins_out(account)?;
         }
         let ws = self.open_workspace(id, &record.workdir, None, None, &config.workspace.root)?;
+        let member: Option<(String, String)> = self
+            .db()
+            .query_row(
+                "SELECT m.thread || '/' || m.name, t.workdir FROM members m JOIN threads t ON t.id = m.thread
+                 WHERE m.session = ?1 AND t.workdir IS NOT NULL",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
         self.launch(
             id.to_string(),
             (&ws, bound, token),
             config,
-            (command, record.account.as_deref()),
+            &Who {
+                agent: &record.agent,
+                command,
+                account: record.account.as_deref(),
+                member: member.as_ref().map(|(m, w)| (m.as_str(), Path::new(w))),
+            },
             (mcp_json, skills.as_deref()),
             // the GPU is asked for each start: a resumed session runs without it
             (&runs, false),
@@ -1186,7 +1265,7 @@ impl Dossiers {
         id: String,
         (ws, bound, token): (&crate::workspace::Workspace, Vec<String>, &str),
         config: &Config,
-        (command, account): (&[String], Option<&str>),
+        who: &Who,
         (mcp_json, skills): (serde_json::Value, Option<&[(String, PathBuf)]>),
         (runs, gpu): (&Runs, bool),
     ) -> Result<Launch> {
@@ -1226,11 +1305,17 @@ impl Dossiers {
             ("LEGIONCTL_SESSION".to_string(), id.clone()),
             ("LEGIONCTL_TOKEN".to_string(), token.to_string()),
         ];
-        if let Some(account) = account {
+        if let Some(account) = who.account {
             account_mounts(&mut mounts, &mut env, account)?;
         }
+        team_role(
+            &mut mounts,
+            &mut env,
+            (&runtime, &id),
+            (who.agent, who.member),
+        )?;
         if let Some(skills) = skills {
-            skill_mounts(&mut mounts, account, skills)?;
+            skill_mounts(&mut mounts, who.account, skills)?;
         }
 
         let gateway = (config.gateway.port != 0).then_some(config.gateway.port);
@@ -1273,7 +1358,8 @@ impl Dossiers {
                 Runs::Container(_) => Inside::Container,
                 Runs::Vm(_) => Inside::Vm,
             },
-            agent: command
+            agent: who
+                .command
                 .iter()
                 .map(|a| {
                     a.replace("{id}", &id)

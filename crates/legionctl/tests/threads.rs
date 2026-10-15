@@ -88,6 +88,11 @@ impl Lab {
     }
 
     fn operator(tag: &str, home: &Path) -> Operator {
+        Self::operator_with(tag, home, &[])
+    }
+
+    /// The operator with `extra` in its environment besides its HOME, PATH and sysroot.
+    fn operator_with(tag: &str, home: &Path, extra: &[(&str, OsString)]) -> Operator {
         let bin = Path::new(env!("CARGO_BIN_EXE_legionctl"))
             .parent()
             .unwrap()
@@ -97,14 +102,12 @@ impl Lab {
         )
         .unwrap();
         std::fs::create_dir_all(home.join("root")).unwrap();
-        Operator::start(
-            &format!("th-{tag}"),
-            &[
-                ("LEGIONCTL_SYSROOT", home.join("root").into()),
-                ("HOME", home.into()),
-                ("PATH", path),
-            ],
-        )
+        let env = [
+            ("LEGIONCTL_SYSROOT", home.join("root").into()),
+            ("HOME", home.into()),
+            ("PATH", path),
+        ];
+        Operator::start(&format!("th-{tag}"), &[&env[..], extra].concat())
     }
 
     /// stdout of a CLI call of `session` in `cwd`, which must succeed.
@@ -1040,4 +1043,680 @@ fn a_view_cannot_bind_a_change_operation_or_a_widget_outside_the_set() {
     let listed = lab.json("main", &["views", "list"]);
     assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
     assert_eq!(listed[0]["layer"], "repository");
+}
+
+/// What observer0 does at a wake (the stand-in ACP agent runs it with the wake prompt): it records its environment,
+/// runs a missed lint in its overlay of main0's folder and tells main0 with the rule's counts (with a file `hold`, it
+/// waits for a file `release` first), backfills the record of a checkpoint (else it nudges), sends its verification
+/// at `declare ready`, and floods its answer once at a test change. With a file `crash`, it sends one hard-block and
+/// kills its agent at each wake.
+const OBSERVER: &str = r#"P="$FAKE_ACP_PROMPT"
+env | grep -E '^(LEGIONCTL_MEMBER|CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS)=' > member-env.txt
+ws=$(printf '%s\n' "$P" | sed -n 's/^main0 workdir: //p')
+ev=$(printf '%s\n' "$P" | sed -n '/^New events since/,$p')
+has() { printf '%s\n' "$ev" | grep -q "$1"; }
+if has 'missed `make lint`'; then
+  rule=$(printf '%s\n' "$ev" | sed -n 's/.*stop: rule \([0-9]*\) missed.*/\1/p' | tail -1)
+  i=0
+  while [ -e "$FAKE_ACP_SCRIPTS/hold" ] && [ ! -e "$FAKE_ACP_SCRIPTS/release" ] && [ $i -lt 600 ]; do sleep 0.1; i=$((i+1)); done
+  out=$(make -s -C "$ws" lint) && legionctl thread send main0 notice "ran make lint for you ($out)" --rule "$rule"
+fi
+if has thread.checkpoint; then
+  msg=$(printf '%s\n' "$ev" | grep thread.checkpoint | tail -1 | sed 's/.*"message":"\([^"]*\)".*/\1/')
+  printf -- '- checkpoint: %s\n' "$msg" | legionctl dossier append --member observer0 port/plan.md \
+    || legionctl thread send main0 reminder "record the checkpoint $msg in plan.md"
+fi
+if has 'declare ready'; then legionctl thread send main0 result "verification ok: suite passed"; fi
+if has 'test change' && [ ! -e .flooded ]; then
+  touch .flooded
+  awk 'BEGIN { s = sprintf("%1000s", ""); gsub(/ /, "w", s); for (i = 0; i < 200; i++) print s }'
+fi
+if [ -e "$FAKE_ACP_SCRIPTS/crash" ]; then
+  [ -e .blocked ] || { touch .blocked; legionctl thread send main0 hard-block "the suite fails" --tool workspace_checkpoint; }
+  kill -9 "$PPID"
+fi
+echo done
+"#;
+
+/// A team lab: the stand-in ACP agent as the adapter of `fake`, `claude` and `codex` (each interactive command is
+/// `true`), the members' scripts, a repository whose `make lint` writes a file, and main0: a session of `agent` on
+/// dossier port (its id and its workspace).
+struct Pool {
+    lab: Lab,
+    main: String,
+    ws: PathBuf,
+}
+
+fn pool(tag: &str, agent: &str) -> Pool {
+    let mut lab = Lab::new(tag);
+    let scripts = lab.home.join("scripts");
+    write(&scripts.join("observer0.sh"), OBSERVER);
+    write(&scripts.join("ui0.sh"), "echo ui0 has nothing to place\n");
+    let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-acp-agent.py");
+    let acp = json!(["python3", fake]);
+    write(
+        &lab.home.join(".config/legionctl/pool.jsonc"),
+        &json!({"session": {"acp": {"fake": acp, "claude": acp, "codex": acp},
+                "agents": {"fake": ["true"], "claude": ["true"], "codex": ["true"]},
+                "scope": false, "writable": []}})
+        .to_string(),
+    );
+    write(
+        &lab.repo.join("Makefile"),
+        "lint:\n\t@touch lint-ran && echo clean\n",
+    );
+    for args in [
+        &["add", "Makefile"][..],
+        &["commit", "--quiet", "-m", "lint"],
+    ] {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&lab.repo)
+            .args(args)
+            .env("HOME", &lab.home)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    // the members' scripts reach the stand-in through the operator's environment
+    lab.op.child.kill().unwrap();
+    lab.op.child.wait().unwrap();
+    lab.op = Lab::operator_with(&format!("{tag}p"), &lab.home, &pool_env(&scripts));
+    let launch = lab.launch(agent, "port");
+    Pool {
+        main: launch["id"].as_str().unwrap().to_string(),
+        ws: PathBuf::from(launch["workdir"].as_str().unwrap()),
+        lab,
+    }
+}
+
+/// The operator's environment of a team lab: this checkout's agent plugin (archetypes, teams) and the scripts.
+fn pool_env(scripts: &Path) -> [(&'static str, OsString); 2] {
+    let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integrations/agent-plugin");
+    [
+        ("LEGIONCTL_PLUGIN", plugin.into()),
+        ("FAKE_ACP_SCRIPTS", scripts.into()),
+    ]
+}
+
+impl Lab {
+    /// `session start <agent> --dossier <dossier>`: the session's launch.
+    fn launch(&self, agent: &str, dossier: &str) -> Value {
+        let out = self.op.run(
+            &self.repo,
+            &[("HOME", self.home.to_str().unwrap())],
+            &["session", "start", agent, "--dossier", dossier, "--json"],
+            "",
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap()
+    }
+
+    fn show(&self, session: &str, thread: u32) -> Value {
+        self.json(session, &["thread", "show", &thread.to_string()])
+    }
+
+    /// A team mode hook of the lead `session` for `teammate`: its exit code and stderr.
+    fn team_hook(&self, session: &str, event: &str, teammate: &str) -> (i32, String) {
+        let payload = claude_hook(
+            event,
+            &json!({"session_id": session, "cwd": self.repo, "teammate_name": teammate}),
+        );
+        let out = self.op.run(&self.repo, &[], &["hook", event], &payload);
+        (
+            out.status.code().unwrap(),
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        )
+    }
+}
+
+/// The summed cost of a member (`runs`, `tokens`, `over`), from `thread show`.
+fn cost(view: &Value, member: &str) -> Value {
+    view["costs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["member"] == member)
+        .cloned()
+        .unwrap_or_else(|| json!({"runs": 0, "tokens": 0, "over": 0}))
+}
+
+/// Wait (at most 60 s) until `done` holds.
+fn until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !done() {
+        assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+/// `thread start --team vanilla` with a main agent that is neither Claude Code nor Codex: observer0 and ui0 join as
+/// operator sessions, asleep, with no session yet. A stop with nothing missed wakes nobody; a code edit with no lint
+/// before the stop wakes observer0, which runs the lint in its overlay (main0's folder stays as it was) and sends a
+/// notice with the rule's counts, given once. main0's own lint wakes nobody. A test change wakes it again; its answer
+/// runs past the wake's token budget, so the wake stops, its cost says so, and its events stay after the cursor. The
+/// cost of main0 (the context its hooks got) is next to observer0's.
+#[test]
+fn a_team_thread_wakes_its_observer_only_on_a_trigger_and_within_its_budget() {
+    let Pool { lab, main, ws } = pool("wake", "fake");
+    let started = lab.ok(
+        &main,
+        &ws,
+        &["thread", "start", "port the parser", "--team", "vanilla"],
+    );
+    for line in [
+        "thread 1 started on dossier port with team vanilla: this session is main0",
+        "observer0: thread-observer as an operator session, asleep until a trigger (pace on-trigger; per wake at most 40000 tokens, 300 s)",
+        "ui0: ui-composer as an operator session, asleep until a trigger (pace on-trigger; per wake at most 15000 tokens, 60 s)",
+        "rule 1: observer0 watches main0 for `make lint` before each reply ends",
+    ] {
+        assert!(
+            started.lines().any(|l| l == line),
+            "{line} missing:\n{started}"
+        );
+    }
+    let view = lab.show(&main, 1);
+    for name in ["observer0", "ui0"] {
+        let m = Lab::member(&view, name);
+        assert_eq!(
+            [&m["run"], &m["state"], &m["wakes"], &m["session"]],
+            [
+                &json!("operator"),
+                &json!("active"),
+                &json!(0),
+                &Value::Null
+            ],
+            "{name} sleeps: {m}"
+        );
+    }
+
+    lab.hook(&main, &ws, "prompt", json!({"prompt": "port the lexer"}));
+    assert_eq!(lab.stop(&main, false), None);
+    assert_eq!(
+        lab.wakes("observer0"),
+        0,
+        "a stop with nothing missed is no trigger"
+    );
+
+    lab.hook(&main, &ws, "prompt", json!({"prompt": "go on"}));
+    lab.edit(&main, &ws, &ws.join("src/lexer.rs"));
+    assert_eq!(lab.stop(&main, false), None);
+    until("observer0's first wake", || {
+        cost(&lab.show(&main, 1), "observer0")["runs"] == 1
+    });
+    let view = lab.show(&main, 1);
+    assert!(
+        !ws.join("lint-ran").exists(),
+        "the lint ran in main0's folder"
+    );
+    let rule = &view["rules"][0];
+    assert_eq!(
+        [&rule["misses"], &rule["done"]],
+        [&json!(1), &json!(1)],
+        "{rule}"
+    );
+    assert_eq!(Lab::member(&view, "ui0")["wakes"], 0, "ui0 has no trigger");
+    let env = std::fs::read_to_string(
+        lab.home
+            .join("worktrees/repo/port--observer0/member-env.txt"),
+    )
+    .unwrap();
+    assert_eq!(
+        env.trim(),
+        "LEGIONCTL_MEMBER=1/observer0",
+        "a member is no team lead"
+    );
+    let told = lab.hook(&main, &ws, "prompt", json!({"prompt": "next"}));
+    let notice = told
+        .lines()
+        .find(|l| l.contains("notice from observer0"))
+        .unwrap_or_default();
+    assert!(
+        notice.contains("ran make lint for you (clean) — 1st miss since")
+            && notice.ends_with("1 done for you"),
+        "{told}"
+    );
+    assert!(
+        !lab.hook(&main, &ws, "prompt", json!({"prompt": "again"}))
+            .contains("observer0")
+    );
+
+    lab.edit(&main, &ws, &ws.join("src/lexer.rs"));
+    lab.bash(&main, &ws, "make lint");
+    assert_eq!(lab.stop(&main, false), None);
+    assert_eq!(lab.wakes("observer0"), 1, "main0 ran the lint itself");
+
+    a_test_change_wakes_it_and_its_wake_stops_at_the_token_budget(&lab, &main, &ws);
+}
+
+/// A test change wakes observer0; its answer runs past the wake's token budget, so the wake stops, its cost says so,
+/// and its events stay after the cursor. main0's cost (the context its hooks got) is next to observer0's.
+fn a_test_change_wakes_it_and_its_wake_stops_at_the_token_budget(lab: &Lab, main: &str, ws: &Path) {
+    lab.edit(main, ws, &ws.join("tests/lexer.rs"));
+    assert_eq!(
+        lab.wakes("observer0"),
+        2,
+        "a test change wakes the test review"
+    );
+    until("the wake over its budget", || {
+        cost(&lab.show(main, 1), "observer0")["over"] == 1
+    });
+    let view = lab.show(main, 1);
+    let change = view["log"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["kind"] == "thread.test-change")
+        .unwrap();
+    assert!(
+        Lab::member(&view, "observer0")["cursor"].as_i64() < change["id"].as_i64(),
+        "the events of a wake over its budget stay for the next wake"
+    );
+    let (observer, main0) = (cost(&view, "observer0"), cost(&view, "main0"));
+    assert_eq!(observer["runs"], 2);
+    assert!(observer["tokens"].as_i64().unwrap() > 40_000, "{observer}");
+    assert!(
+        main0["runs"] == 1 && main0["tokens"].as_i64().unwrap() > 0,
+        "the context given to main0 is its cost: {main0}"
+    );
+}
+
+/// The process job with main0's dossier: a checkpoint while main0 runs wakes observer0, whose backfill is refused,
+/// so it nudges; after main0's stop the next checkpoint's record is backfilled, marked `(by observer0)`, told once,
+/// and `thread compensate` removes exactly that line. The flow: `declare done` waits for observer0's verification;
+/// `declare ready` wakes it, its result passes the gate, and `declare done` ends the pool.
+#[test]
+fn the_observer_backfills_only_while_main_is_idle_and_the_flow_gates_done() {
+    let Pool { lab, main, ws } = pool("backfill", "fake");
+    lab.ok(
+        &main,
+        &ws,
+        &["thread", "start", "port the parser", "--team", "vanilla"],
+    );
+    let plan = lab.home.join("agentWorkspaces/port/plan.md");
+    let before = std::fs::read_to_string(&plan).unwrap();
+
+    lab.hook(&main, &ws, "prompt", json!({"prompt": "port the lexer"}));
+    write(&ws.join("src/a.rs"), "pub fn a() {}\n");
+    lab.ok(&main, &ws, &["workspace", "checkpoint", "first step"]);
+    until("the wake at the first checkpoint", || {
+        cost(&lab.show(&main, 1), "observer0")["runs"] == 1
+    });
+    assert_eq!(
+        std::fs::read_to_string(&plan).unwrap(),
+        before,
+        "a backfill while main0 runs"
+    );
+    let answers = lab.json(&main, &["jobs", "list"]).to_string();
+    assert!(
+        answers.contains("main0 is running: a backfill waits for its idle window"),
+        "{answers}"
+    );
+    let told = lab.hook(&main, &ws, "prompt", json!({"prompt": "go on"}));
+    assert!(
+        told.contains(
+            "reminder from observer0 (thread 1): record the checkpoint first step in plan.md"
+        ),
+        "{told}"
+    );
+
+    assert_eq!(lab.stop(&main, false), None);
+    write(&ws.join("src/b.rs"), "pub fn b() {}\n");
+    lab.ok(&main, &ws, &["workspace", "checkpoint", "second step"]);
+    until("the wake at the second checkpoint", || {
+        cost(&lab.show(&main, 1), "observer0")["runs"] == 2
+    });
+    let line = "- checkpoint: second step (by observer0)";
+    assert_eq!(
+        std::fs::read_to_string(&plan).unwrap(),
+        format!("{before}{line}\n")
+    );
+    let view = lab.show(&main, 1);
+    let backfill = view["effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "backfill")
+        .unwrap();
+    let id = backfill["id"].to_string();
+    let told = lab.hook(&main, &ws, "prompt", json!({"prompt": "next"}));
+    assert!(
+        told.contains(&format!(
+            "observer0 wrote for you: port/plan.md: {line} (undo: legionctl thread compensate {id})"
+        )),
+        "{told}"
+    );
+    assert!(
+        !lab.hook(&main, &ws, "prompt", json!({"prompt": "again"}))
+            .contains("wrote for you")
+    );
+    lab.ok(&main, &ws, &["thread", "compensate", &id]);
+    assert_eq!(std::fs::read_to_string(&plan).unwrap(), before);
+    assert!(
+        lab.refused(&main, &["thread", "compensate", &id])
+            .contains("is undone already")
+    );
+
+    let open = lab.refused(&main, &["thread", "declare", "done"]);
+    assert!(
+        open.contains("observer0: result verification ok: no result from observer0 yet"),
+        "{open}"
+    );
+    lab.ok(&main, &ws, &["thread", "declare", "ready"]);
+    until("the verification wake", || {
+        cost(&lab.show(&main, 1), "observer0")["runs"] == 3
+    });
+    lab.ok(&main, &ws, &["thread", "declare", "done"]);
+    let view = lab.show(&main, 1);
+    assert_eq!(view["thread"]["state"], "closed");
+    for name in ["main0", "observer0", "ui0"] {
+        assert_eq!(Lab::member(&view, name)["state"], "ended", "{name}");
+    }
+    a_branch_keeps_the_log_up_to_the_first_checkpoint(&lab, &main);
+}
+
+/// A branch of the ended pool at the first checkpoint's row: the log up to it, the members (active again) and rules,
+/// main0 the caller, a git branch at that checkpoint's commit; the parent stays as it is.
+fn a_branch_keeps_the_log_up_to_the_first_checkpoint(lab: &Lab, main: &str) {
+    let parent = lab.show(main, 1);
+    let log = parent["log"].as_array().unwrap();
+    let first = log
+        .iter()
+        .find(|r| r["kind"] == "thread.checkpoint")
+        .unwrap();
+    let at = first["id"].to_string();
+    let said = lab.thread(main, &["branch", "1", &at]);
+    assert!(said.contains("thread 2 is a branch of thread 1"), "{said}");
+    let branch = lab.show(main, 2);
+    let kept: Vec<&Value> = branch["log"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| &r["payload"]["from"])
+        .collect();
+    let upto: Vec<Value> = log
+        .iter()
+        .filter(|r| r["id"].as_i64() <= first["id"].as_i64())
+        .map(|r| r["id"].clone())
+        .collect();
+    assert_eq!(
+        kept[..upto.len()],
+        upto.iter().collect::<Vec<_>>()[..],
+        "the parent's rows up to the point"
+    );
+    assert_eq!(
+        branch["log"].as_array().unwrap().len(),
+        upto.len() + 1,
+        "and the branch row"
+    );
+    assert_eq!(Lab::member(&branch, "main0")["session"], main);
+    assert_eq!(
+        Lab::member(&branch, "observer0")["session"],
+        Value::Null,
+        "a new session at its first wake"
+    );
+    assert_eq!(branch["rules"][0]["expect"], "make lint");
+    let tip = Command::new("git")
+        .arg("-C")
+        .arg(&lab.repo)
+        .args(["rev-parse", "legionctl/thread-2"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&tip.stdout).trim(),
+        first["payload"]["commit"].as_str().unwrap()
+    );
+    assert_eq!(
+        lab.show(main, 1)["log"],
+        parent["log"],
+        "the parent is unchanged"
+    );
+}
+
+/// An operator restart in the middle of a wake: the wake goes on in the member's loaded ACP session, from the same
+/// cursor, and main0 gets its notice once.
+#[test]
+fn an_operator_restart_restores_the_members_and_a_cut_off_wake_goes_on() {
+    let Pool { mut lab, main, ws } = pool("restart", "fake");
+    let scripts = lab.home.join("scripts");
+    write(&scripts.join("hold"), "");
+    lab.ok(
+        &main,
+        &ws,
+        &["thread", "start", "port the parser", "--team", "vanilla"],
+    );
+    lab.hook(&main, &ws, "prompt", json!({"prompt": "go on"}));
+    lab.edit(&main, &ws, &ws.join("src/lexer.rs"));
+    assert_eq!(lab.stop(&main, false), None);
+    let jobs = |lab: &Lab| -> Vec<Value> {
+        lab.json(&main, &["jobs", "list"])["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|j| j["kind"] == "thread.wake")
+            .cloned()
+            .collect()
+    };
+    until("the wake's ACP session", || {
+        jobs(&lab)
+            .first()
+            .is_some_and(|j| j["input"]["acp"].is_string())
+    });
+    let acp = jobs(&lab)[0]["input"]["acp"].as_str().unwrap().to_string();
+    lab.op.child.kill().unwrap();
+    lab.op.child.wait().unwrap();
+    // the cut-off wake's overlay layer (its work folder has mode 000) is in the old runtime folder
+    Command::new("chmod")
+        .args(["-R", "u+rwx"])
+        .arg(&*lab.op.runtime)
+        .status()
+        .unwrap();
+    lab.op = Lab::operator_with("restart2", &lab.home, &pool_env(&scripts));
+    write(&scripts.join("release"), "");
+    until("the wake after the restart", || {
+        cost(&lab.show(&main, 1), "observer0")["runs"] == 1
+    });
+    let view = lab.show(&main, 1);
+    assert!(
+        view["log"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["kind"] == "thread.cut-off" && r["payload"]["acp"] == acp),
+        "the cut-off wake kept its ACP session"
+    );
+    let events: Value = lab.json(&main, &["events", "--limit", "1000"]);
+    assert!(
+        events["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["payload"]["text"].as_str() == Some(&format!("acp: loaded {acp}\n"))),
+        "the wake goes on in the loaded session"
+    );
+    let told = lab.hook(&main, &ws, "prompt", json!({"prompt": "next"}));
+    assert_eq!(told.matches("ran make lint for you").count(), 1, "{told}");
+    assert!(
+        !lab.hook(&main, &ws, "prompt", json!({"prompt": "again"}))
+            .contains("ran make lint")
+    );
+}
+
+/// Team mode: a Claude Code session that legionctl starts may lead a team (the env var), and vanilla's members are
+/// its teammates. `TeammateIdle` gives a teammate its new messages once (exit 2); a teammate's hard-block holds a task
+/// (`TaskCompleted`, exit 2) until main0 acks it; after /resume the teammates are lost and run as operator sessions,
+/// woken at once.
+#[test]
+fn a_claude_lead_runs_the_team_as_teammates_and_a_lost_one_restarts_as_an_operator_member() {
+    let Pool { lab, main, ws } = pool("team", "claude");
+    let sandbox = lab.launch("claude", "lead")["sandbox"].to_string();
+    assert!(
+        sandbox.contains(r#""--setenv","CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS","1""#),
+        "{sandbox}"
+    );
+    let started = lab.ok(
+        &main,
+        &ws,
+        &["thread", "start", "port the parser", "--team", "vanilla"],
+    );
+    assert!(
+        started.contains("observer0: team mode: spawn it as the teammate observer0 (agent type legionctl:thread-observer)"),
+        "{started}"
+    );
+    assert_eq!(
+        Lab::member(&lab.show(&main, 1), "observer0")["run"],
+        "teammate"
+    );
+
+    assert_eq!(
+        lab.team_hook(&main, "teammate-idle", "observer0"),
+        (0, String::new())
+    );
+    lab.ok(
+        &main,
+        &ws,
+        &[
+            "thread",
+            "send",
+            "observer0",
+            "note",
+            "look at the lexer tests",
+        ],
+    );
+    let (code, said) = lab.team_hook(&main, "teammate-idle", "observer0");
+    assert!(
+        code == 2 && said.contains("note from main0: look at the lexer tests"),
+        "{code}: {said}"
+    );
+    assert_eq!(
+        lab.team_hook(&main, "teammate-idle", "observer0"),
+        (0, String::new())
+    );
+
+    let sent = lab.ok(
+        &main,
+        &ws,
+        &[
+            "thread",
+            "send",
+            "main0",
+            "hard-block",
+            "weak test in tests/lexer.rs",
+            "--teammate",
+            "observer0",
+        ],
+    );
+    let id = sent
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .trim_start_matches('#')
+        .to_string();
+    let (code, said) = lab.team_hook(&main, "task-completed", "observer0");
+    assert!(
+        code == 2
+            && said.contains(&format!(
+                "observer0: no open hard-block: hard-block #{id} is open: weak test"
+            )),
+        "{code}: {said}"
+    );
+    let held = lab.refused(&main, &["workspace", "checkpoint", "while blocked"]);
+    assert!(
+        held.contains("the checkpoint gate holds: thread 1: observer0: no open hard-block"),
+        "{held}"
+    );
+    lab.ok(&main, &ws, &["thread", "ack", &id]);
+    assert_eq!(
+        lab.team_hook(&main, "task-completed", "observer0"),
+        (0, String::new())
+    );
+
+    let resumed = lab.hook(&main, &ws, "session-start", json!({}));
+    assert!(
+        resumed.contains(
+            "the teammate observer0 was lost at /resume; it now runs as an operator session"
+        ),
+        "{resumed}"
+    );
+    until("observer0 and ui0 as operator sessions", || {
+        let view = lab.show(&main, 1);
+        cost(&view, "observer0")["runs"] == 1 && cost(&view, "ui0")["runs"] == 1
+    });
+    let m = lab.show(&main, 1);
+    assert_eq!(Lab::member(&m, "observer0")["run"], "operator");
+    assert!(Lab::member(&m, "observer0")["session"].is_string());
+}
+
+/// A Codex main agent gets vanilla's members as Codex subagents, which inherit its sandbox: a config that sets its
+/// own sandbox refuses the team and names the field and the run path.
+#[test]
+fn a_codex_lead_refuses_a_member_config_that_sets_its_own_sandbox() {
+    let Pool { lab, .. } = pool("codex", "fake");
+    write(
+        &lab.home.join(".config/legionctl/agents.jsonc"),
+        r#"{ "agents": { "configs": { "thread-observer": { "sandbox": "workspace-write" } } } }"#,
+    );
+    let codex = lab.launch("codex", "other");
+    let out = lab.op.run(
+        &PathBuf::from(codex["workdir"].as_str().unwrap()),
+        &[
+            ("HOME", lab.home.to_str().unwrap()),
+            ("LEGIONCTL_SESSION", codex["id"].as_str().unwrap()),
+        ],
+        &["thread", "start", "port the parser", "--team", "vanilla"],
+        "",
+    );
+    let refused = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && refused.contains("observer0: sandbox (set by agents.configs.thread-observer) cannot apply on run path codex-subagent"),
+        "{refused}"
+    );
+}
+
+/// A member whose wake fails (its agent dies) starts again within `restart.max` (3) of vanilla's flow; the 4th failure
+/// within the hour fails it: its hard-block expires, so it cannot hold main0, and main0 gets a note.
+#[test]
+fn a_failed_member_restarts_within_its_limit_then_its_blocks_expire() {
+    let Pool { lab, main, ws } = pool("crash", "fake");
+    write(&lab.home.join("scripts/crash"), "");
+    lab.ok(
+        &main,
+        &ws,
+        &["thread", "start", "port the parser", "--team", "vanilla"],
+    );
+    write(&ws.join("src/a.rs"), "pub fn a() {}\n");
+    lab.ok(&main, &ws, &["workspace", "checkpoint", "first step"]);
+    until("observer0 failed", || {
+        Lab::member(&lab.show(&main, 1), "observer0")["state"] == "failed"
+    });
+    let view = lab.show(&main, 1);
+    let fails = view["log"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["kind"] == "thread.fail")
+        .count();
+    assert_eq!(fails, 4, "one wake and 3 restarts");
+    let block = view["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["kind"] == "hard-block")
+        .unwrap();
+    assert_eq!(block["state"], "expired");
+    assert_eq!(lab.pre_tool(&main, "workspace_checkpoint"), None);
+    let told = lab.hook(&main, &ws, "prompt", json!({"prompt": "go on"}));
+    assert!(
+        told.contains("note from observer0 (thread 1): observer0 failed 4 times within 1h:")
+            && told.contains("It stopped; 1 of its blocks expired."),
+        "{told}"
+    );
 }

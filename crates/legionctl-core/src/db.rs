@@ -24,17 +24,21 @@ pub struct Schema {
     pub steps: &'static [(i64, &'static str)],
 }
 
-/// The operator database at v11: the steps of v1-v10 merged into one (todo-68, after the first full release install),
-/// then the rows that span dossiers and the threads (design 23, E1 decision 1; they were in `workspace.db`).
+/// The operator database at v12: the steps of v1-v10 merged into one (todo-68, after the first full release install),
+/// then the rows that span dossiers and the threads (design 23, E1 decision 1; they were in `workspace.db`), then the
+/// pools (design 23, P6b: members that run, effects).
 pub(crate) const OPERATOR: &Schema = &Schema {
-    version: 11,
-    steps: &[(
-        10,
-        concat!(
-            crate::dossier::shared_tables!(),
-            crate::thread::tables!()
+    version: 12,
+    steps: &[
+        (
+            10,
+            concat!(
+                crate::dossier::shared_tables!(),
+                crate::thread::tables!()
+            ),
         ),
-    )],
+        (11, crate::pool::tables!()),
+    ],
     sql: concat!(
         "CREATE TABLE events (
         id      INTEGER PRIMARY KEY,
@@ -78,7 +82,8 @@ pub(crate) const OPERATOR: &Schema = &Schema {
         error    TEXT
      );",
         crate::dossier::shared_tables!(),
-        crate::thread::tables!()
+        crate::thread::tables!(),
+        crate::pool::tables!()
     ),
 };
 

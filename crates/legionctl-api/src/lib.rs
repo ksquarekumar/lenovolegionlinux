@@ -818,7 +818,9 @@ operations! {
     /// Each feature and work item of the plan at a ref: units done or missing, LOC planned and actual (tokei, symbol
     /// spans), linked tests, and the changes since a ref that touch each work item.
     code_plan_status / CodePlanStatus = "code.plan.status", Read, PlanStatusIn => PlanStatus;
-    /// Start a thread: one task with this session as its main agent `main0`, on the caller's dossier.
+    /// Start a thread: one task with this session as its main agent `main0`, on the caller's dossier. With `--team`,
+    /// the team file's members join asleep and its flow applies: a Claude main agent leads them as an agent team,
+    /// a Codex one as Codex subagents, any other agent gets them as operator sessions that wake on their triggers.
     thread_start / ThreadStart = "thread.start", Workspace, ThreadStartIn => Lines;
     /// Every thread, newest first.
     thread_list / ThreadList = "thread.list", Read, Empty => Vec<ThreadInfo>;
@@ -873,4 +875,12 @@ operations! {
     agent_tool / AgentTool = "internal.agent.tool", Session, AgentToolIn => HookReply;
     /// Why an open hard-block refuses this tool call of the session (the pre-tool hook).
     thread_gate / ThreadGate = "internal.thread.gate", Read, ThreadGateIn => Guard;
+    /// A new thread from a thread's log up to one row: the same members and rules, this session as main0, and a git
+    /// branch at the newest checkpoint up to that row. The parent stays as it is.
+    thread_branch / ThreadBranch = "thread.branch", Workspace, ThreadBranchIn => Lines;
+    /// Undo what a member did for the main agent: remove a backfill line, retract a message (`thread show`, effects).
+    thread_compensate / ThreadCompensate = "thread.compensate", Workspace, ThreadCompensateIn => Lines;
+    /// Team mode hooks of a lead: `TeammateIdle` (the teammate's new messages) and `TaskCompleted` (the task gate); the
+    /// refusal is the text that keeps the teammate working or holds the task.
+    thread_teammate / ThreadTeammate = "internal.thread.teammate", Session, TeammateIn => Guard;
 }

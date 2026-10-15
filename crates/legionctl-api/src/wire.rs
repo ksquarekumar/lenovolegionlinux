@@ -1492,6 +1492,33 @@ wire! {
         state: String,
         joined_at: i64 = joined,
         wakes: u32,
+        /// The agent config of a team member.
+        config: Option<String>,
+        /// self (its own session runs it), operator (an operator session, one prompt per wake), teammate (Claude
+        /// Code team mode) or subagent (a Codex subagent).
+        run: String,
+    }
+
+    /// The cost of one member of a thread.
+    struct ThreadCost from core::pool::Cost {
+        member: String,
+        /// Wakes of an operator member; prompts that got thread context for the main agent.
+        runs: u32,
+        tokens: i64,
+        ms: i64,
+        /// Wakes stopped at their budget.
+        over: u32,
+    }
+
+    /// What a member did for the main agent, and whether it is undone.
+    struct ThreadEffect from core::pool::Effect {
+        id: i64,
+        member: String,
+        /// backfill or message.
+        kind: String,
+        target: String,
+        /// done or undone.
+        state: String,
     }
 
     /// A message in the thread outbox.
@@ -1533,6 +1560,8 @@ wire! {
         misses: u32,
         /// Steps the member did for the watched member (`thread send ... notice --rule`).
         done: u32,
+        /// The expected command must come before the reply ends: the stop counts the miss and wakes the member.
+        reply: bool,
     }
 
     /// One row of the append-only thread log.
@@ -1551,6 +1580,9 @@ wire! {
         messages: Vec<ThreadMessage>,
         rules: Vec<WatchRule>,
         log: Vec<ThreadLogRow>,
+        /// Per member, the main agent first by name: tokens and time.
+        costs: Vec<ThreadCost>,
+        effects: Vec<ThreadEffect>,
     }
 
     /// A session that shares a dossier, a workspace or a thread with the caller.

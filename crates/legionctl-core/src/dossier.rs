@@ -1041,6 +1041,43 @@ impl Dossiers {
         Ok(full)
     }
 
+    /// A member's write into another session's dossier (design 23, E6 backfill): one line at the end of `rel`, which
+    /// must exist; recorded as `session`'s write. The caller checks the right to write.
+    ///
+    /// # Errors
+    /// The path leaves the dossier, the file does not exist, or it cannot be written.
+    pub(crate) fn append_line(&self, session: &str, rel: &str, line: &str) -> Result<()> {
+        let (_, full) = self.resolve(rel)?;
+        let old = std::fs::read_to_string(&full)
+            .with_context(|| format!("{rel} does not exist; a backfill only appends"))?;
+        let sep = if old.is_empty() || old.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        let new = format!("{old}{sep}{line}\n");
+        atomic_write(&full, &new)?;
+        self.log(session, "append", rel, (&old, &new))
+    }
+
+    /// Remove the last line of `rel` that is exactly `line` (the compensation of a backfill).
+    ///
+    /// # Errors
+    /// The line is no longer in the file, or the file cannot be written.
+    pub(crate) fn remove_line(&self, session: &str, rel: &str, line: &str) -> Result<()> {
+        let (_, full) = self.resolve(rel)?;
+        let old = std::fs::read_to_string(&full)?;
+        let mut lines: Vec<&str> = old.lines().collect();
+        let at = lines
+            .iter()
+            .rposition(|l| *l == line)
+            .with_context(|| format!("{rel} no longer has the line '{line}'"))?;
+        lines.remove(at);
+        let new = with_newline(&lines.join("\n"));
+        atomic_write(&full, &new)?;
+        self.log(session, "edit", rel, (&old, &new))
+    }
+
     /// Change anchored lines. Both anchors must match the current file, so an edit from an outdated read is refused.
     /// Returns the changed lines as hashlines.
     ///

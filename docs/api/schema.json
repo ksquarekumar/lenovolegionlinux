@@ -4306,6 +4306,14 @@
           "type": "boolean",
           "description": "Stop event: the reply goes on because a stop hook stopped it before (`stop_hook_active`); only a thread\nhard-block stops it again.",
           "default": false
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Session-start event: how the session started (`startup`, `resume`, `clear`, `compact`).",
+          "default": null
         }
       },
       "required": [
@@ -11468,6 +11476,14 @@
           "format": "stdin",
           "description": "The text to append; default: stdin."
         },
+        "member": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A thread-observer's backfill into the main agent's dossier: the caller's member name. One line, marked\n`(by <member>)`, only while main0 is idle; else the call is refused and the member sends a nudge.",
+          "default": null
+        },
         "session": {
           "type": "string",
           "format": "session",
@@ -14139,6 +14155,20 @@
           "description": "The dossier of the task; default: the caller's dossier.",
           "default": null
         },
+        "team": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A team file (`vanilla`): its members join the thread and its flow applies.",
+          "default": null
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "Where the main agent works: the members' checks see this folder.",
+          "default": "."
+        },
         "session": {
           "type": "string",
           "format": "session",
@@ -14370,6 +14400,17 @@
                 "type": "integer",
                 "format": "uint32",
                 "minimum": 0
+              },
+              "config": {
+                "description": "The agent config of a team member.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "run": {
+                "description": "self (its own session runs it), operator (an operator session, one prompt per wake), teammate (Claude\nCode team mode) or subagent (a Codex subagent).",
+                "type": "string"
               }
             },
             "required": [
@@ -14379,7 +14420,8 @@
               "cursor",
               "state",
               "joined_at",
-              "wakes"
+              "wakes",
+              "run"
             ]
           }
         },
@@ -14521,6 +14563,10 @@
                 "type": "integer",
                 "format": "uint32",
                 "minimum": 0
+              },
+              "reply": {
+                "description": "The expected command must come before the reply ends: the stop counts the miss and wakes the member.",
+                "type": "boolean"
               }
             },
             "required": [
@@ -14536,7 +14582,8 @@
               "created_at",
               "run",
               "misses",
-              "done"
+              "done",
+              "reply"
             ]
           }
         },
@@ -14570,6 +14617,80 @@
               "payload"
             ]
           }
+        },
+        "costs": {
+          "type": "array",
+          "items": {
+            "description": "The cost of one member of a thread.",
+            "type": "object",
+            "properties": {
+              "member": {
+                "type": "string"
+              },
+              "runs": {
+                "description": "Wakes of an operator member; prompts that got thread context for the main agent.",
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              },
+              "tokens": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "ms": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "over": {
+                "description": "Wakes stopped at their budget.",
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "member",
+              "runs",
+              "tokens",
+              "ms",
+              "over"
+            ]
+          },
+          "description": "Per member, the main agent first by name: tokens and time."
+        },
+        "effects": {
+          "type": "array",
+          "items": {
+            "description": "What a member did for the main agent, and whether it is undone.",
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "member": {
+                "type": "string"
+              },
+              "kind": {
+                "description": "backfill or message.",
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              },
+              "state": {
+                "description": "done or undone.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "member",
+              "kind",
+              "target",
+              "state"
+            ]
+          }
         }
       },
       "required": [
@@ -14577,7 +14698,9 @@
         "members",
         "messages",
         "rules",
-        "log"
+        "log",
+        "costs",
+        "effects"
       ],
       "description": "A thread with its members, messages, watch rules and log.",
       "title": "ThreadView",
@@ -14765,6 +14888,14 @@
           ],
           "format": "int64",
           "description": "For a notice: the watch rule whose step you did for the receiver; the message then tells the counts.",
+          "default": null
+        },
+        "teammate": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Team mode: a teammate shares its lead's session, so it names itself (its member name in the lead's thread).",
           "default": null
         },
         "session": {
@@ -15140,6 +15271,10 @@
             "type": "integer",
             "format": "uint32",
             "minimum": 0
+          },
+          "reply": {
+            "description": "The expected command must come before the reply ends: the stop counts the miss and wakes the member.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -15155,7 +15290,8 @@
           "created_at",
           "run",
           "misses",
-          "done"
+          "done",
+          "reply"
         ]
       },
       "title": "Array_of_WatchRule",
@@ -16121,6 +16257,141 @@
         "tool"
       ],
       "title": "ThreadGateIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "refusal": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Set when the write is refused."
+        }
+      },
+      "title": "Guard",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "thread.branch": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "at": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The last log row of the parent that the branch keeps (`thread show`)."
+        },
+        "session": {
+          "type": "string",
+          "format": "session",
+          "description": "Agent session id; the client fills it.",
+          "default": ""
+        }
+      },
+      "required": [
+        "thread",
+        "at"
+      ],
+      "title": "ThreadBranchIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "thread.compensate": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "effect": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The effect's id (`thread show`, effects)."
+        },
+        "session": {
+          "type": "string",
+          "format": "session",
+          "description": "Agent session id; the client fills it.",
+          "default": ""
+        }
+      },
+      "required": [
+        "effect"
+      ],
+      "title": "ThreadCompensateIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "internal.thread.teammate": {
+    "class": "session",
+    "internal": true,
+    "input": {
+      "type": "object",
+      "properties": {
+        "event": {
+          "type": "string"
+        },
+        "teammate": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The teammate's name.",
+          "default": null
+        },
+        "session": {
+          "type": "string",
+          "format": "session",
+          "description": "Agent session id; the client fills it.",
+          "default": ""
+        }
+      },
+      "required": [
+        "event"
+      ],
+      "description": "A team mode hook of the lead: `idle` (`TeammateIdle`) or `task` (`TaskCompleted`).",
+      "title": "TeammateIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {

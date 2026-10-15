@@ -9,7 +9,8 @@ working folder (at most 30 s), and one that starts with SLOW waits 30 s first (a
 operator in the middle of one). It can load its sessions (kept in `.fake-acp-sessions` in the working folder, so a
 new adapter process finds them): session/load replays the earlier prompts and a REPLAYED line before it answers.
 After session/new and session/load it offers two commands (available_commands_update): /plan <what to plan> and
-/status. Like the real adapters, it does not end when its input closes: the operator must end the session.
+/status. In a thread member's session (LEGIONCTL_MEMBER=<thread>/<member>), a prompt runs the script
+$FAKE_ACP_SCRIPTS/<member>.sh instead, with the prompt in FAKE_ACP_PROMPT, and its output lines are the answer. Like the real adapters, it does not end when its input closes: the operator must end the session.
 """
 
 import json
@@ -85,6 +86,9 @@ def prompt(params):
     session = params["sessionId"]
     text = " ".join(block.get("text", "") for block in params.get("prompt", []))
     keep(session, sessions().get(session, []) + [text])
+    script = os.path.join(os.environ.get("FAKE_ACP_SCRIPTS", ""), os.environ.get("LEGIONCTL_MEMBER", "").split("/")[-1] + ".sh")
+    if os.environ.get("LEGIONCTL_MEMBER") and os.path.isfile(script):
+        return member(session, text, script)
     if text.startswith("SLOW"):
         time.sleep(30)
     update(session, "tool_call", toolCallId="t1", title="git push", kind="execute", status="pending")
@@ -119,6 +123,19 @@ def prompt(params):
             while not os.path.exists("release") and time.time() < deadline:
                 time.sleep(0.1)
         time.sleep(0.1)
+    return {"stopReason": "end_turn"}
+
+
+def member(session, text, script):
+    """A thread member's wake: its archetype's script runs with the wake prompt, and each line it prints is a chunk of
+    the answer as it comes (a long or a loud script runs into the wake's budget)."""
+    loaded_note = "loaded" if loaded == session else "new"
+    update(session, "agent_message_chunk", content={"type": "text", "text": f"acp: {loaded_note} {session}\n"})
+    child = subprocess.Popen(["sh", script], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                             env={**os.environ, "FAKE_ACP_PROMPT": text})
+    for out in child.stdout:
+        update(session, "agent_message_chunk", content={"type": "text", "text": out})
+    child.wait()
     return {"stopReason": "end_turn"}
 
 

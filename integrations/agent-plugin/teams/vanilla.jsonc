@@ -1,6 +1,8 @@
 // The team vanilla (design 23, B+4): main0 does the critical-path work; observer0 and ui0 sleep until a trigger.
 // Each member names a config (agents.configs.<name>) or an archetype. A member may only narrow its config: tools,
-// commands and budget; flow.may removes message kinds. `legionctl agents check --team vanilla` resolves it.
+// commands and budget; flow.may removes message kinds. `legionctl agents check --team vanilla` resolves it, and
+// `legionctl thread start --team vanilla "<task>"` starts it: with a Claude main agent as a Claude Code agent team,
+// with a Codex one as Codex subagents, with any other agent as operator sessions.
 {
   "$schema": "./team.schema.json",
   "name": "vanilla",
@@ -10,6 +12,15 @@
     "ui0": { "agent": "ui-composer", "pace": "on-trigger", "budget": { "wake_tokens": 15000, "wake_seconds": 60 } }
   },
   "flow": {
-    "may": { "ui0": ["note", "result"] }
+    "may": { "ui0": ["note", "result"] },
+    "gates": {
+      "checkpoint": ["observer0: no open hard-block"],
+      "declare:done": ["observer0: result verification ok"],
+      "task:completed": ["observer0: no open hard-block"]
+    },
+    "stop": ["main0 ended", "declare:done", "budget"],
+    "restart": { "max": 3, "within": "1h" },
+    // a code edit with no lint before the reply ends wakes observer0: it runs the lint in its overlay and tells main0
+    "rules": [{ "member": "observer0", "expect": "make lint" }]
   }
 }
