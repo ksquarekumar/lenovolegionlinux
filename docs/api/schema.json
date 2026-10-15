@@ -811,6 +811,44 @@
               "connected"
             ]
           }
+        },
+        "nvidia_power": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "device": {
+              "type": "string",
+              "description": "Its PCI address."
+            },
+            "runtime_status": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "`active`, or `suspended` (D3cold on this laptop)."
+            },
+            "control": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "`auto`: it may sleep when no program uses it; `on`: it stays powered."
+            },
+            "users": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "The programs that keep it awake (only the ones the reader may see)."
+            }
+          },
+          "required": [
+            "device",
+            "users"
+          ],
+          "description": "The NVIDIA GPU's runtime power management; none without an NVIDIA GPU."
         }
       },
       "required": [
@@ -864,6 +902,260 @@
         "to"
       ],
       "title": "GpuGiveIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "gpu.power": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "on",
+            "off"
+          ],
+          "description": "off: the NVIDIA GPU sleeps (D3cold) when no program uses it (refused while one does); on: it stays powered."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Print what would change; change nothing.",
+          "default": false
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "GpuPowerIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "firmware.status": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "devices": {
+          "type": "array",
+          "items": {
+            "description": "A device that fwupd knows.",
+            "type": "object",
+            "properties": {
+              "id": {
+                "description": "fwupd's device id (`legionctl firmware update <id>`).",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "updatable": {
+                "description": "fwupd can write its firmware.",
+                "type": "boolean"
+              },
+              "update": {
+                "description": "The newest release that is an upgrade, if fwupd's metadata has one.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "update_summary": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "updatable"
+            ]
+          }
+        }
+      },
+      "required": [
+        "devices"
+      ],
+      "title": "FirmwareDevices",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "firmware.update": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "device": {
+          "type": "string",
+          "description": "fwupd's device id or the device's name (`legionctl firmware status`)."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Print what would change; change nothing.",
+          "default": false
+        }
+      },
+      "required": [
+        "device"
+      ],
+      "title": "FirmwareUpdateIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "rgb.status": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string",
+          "description": "Where `OpenRGB`'s SDK server answers (`LEGIONCTL_OPENRGB`)."
+        },
+        "keyboard_usb": {
+          "type": "boolean",
+          "description": "The per-key RGB keyboard (ITE 8258, USB 048d:c988) is on the USB bus."
+        },
+        "protocol": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The SDK protocol both sides speak; none when `OpenRGB` does not answer."
+        },
+        "controllers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The devices `OpenRGB` drives."
+        },
+        "profiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The profiles `OpenRGB` has saved; the knob rgb.profile names one."
+        },
+        "problem": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why `OpenRGB` cannot drive the keyboard now; none when it can."
+        }
+      },
+      "required": [
+        "address",
+        "keyboard_usb",
+        "controllers",
+        "profiles"
+      ],
+      "title": "RgbState",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "overlay": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "on",
+            "off"
+          ],
+          "description": "on: the vitals overlay shows on the desktop and updates every 2 s; off: it goes."
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "OverlayIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {

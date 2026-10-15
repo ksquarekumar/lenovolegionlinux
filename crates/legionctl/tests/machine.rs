@@ -1503,12 +1503,15 @@ mod daemon_events {
     fn configsets_plan_exactly_the_writes_the_profile_planned() {
         let golden = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/plans-82wq-before-configsets.txt");
-        // the knobs that were profile flags before (enable_all_idle_states, nvidia.start_*) are new in the catalog
+        // the knobs that were profile flags before (enable_all_idle_states, nvidia.start_*) are new in the catalog, and
+        // so is rgb.profile (todo-82)
         let plans = migration_plans();
         let plans: Vec<&str> = plans
             .lines()
             .filter(|l| {
-                !l.starts_with("cpu.idle_states = ") && !l.starts_with("nvidia.services = ")
+                !["cpu.idle_states = ", "nvidia.services = ", "rgb.profile = "]
+                    .iter()
+                    .any(|k| l.starts_with(k))
             })
             .collect();
         let expected = std::fs::read_to_string(golden).unwrap();
@@ -1673,9 +1676,14 @@ mod daemon_process {
     /// The daemon on the private bus of `m`, once it owns its name.
     pub(super) async fn daemon(m: &Machine, stand_ins: &zbus::Connection) -> Kill {
         let daemon_bin = crate::common::sibling("legionctl-system");
+        let mut command = Command::new(daemon_bin);
+        command.env_clear();
+        // a test's OpenRGB stand-in (`openrgb.addr`); without it the daemon has no OpenRGB
+        if let Ok(address) = std::fs::read_to_string(m.dir.join("openrgb.addr")) {
+            command.env("LEGIONCTL_OPENRGB", address);
+        }
         let daemon = Kill(
-            Command::new(daemon_bin)
-                .env_clear()
+            command
                 .env("PATH", m.dir.join("bin"))
                 .env("LEGIONCTL_SYSROOT", m.dir.join("root"))
                 .env(
@@ -2932,7 +2940,7 @@ mod operator_and_daemon {
     /// and `snd_hda_intel`, drawn on by `gnome-shell`), and the Windows `NVMe` controller (group 18, a partition
     /// mounted), with a stand-in kernel: a write of a device to `drivers_probe` moves its `driver` link to what
     /// `driver_override` names (or back to its own driver) and makes `/dev/vfio/<group>`, as the kernel does.
-    fn pci_machine(m: &Machine) -> std::thread::JoinHandle<()> {
+    pub(super) fn pci_machine(m: &Machine) -> std::thread::JoinHandle<()> {
         let root = m.dir.join("root");
         let link = |from: &str, to: &str| {
             let at = root.join(from);
@@ -7499,5 +7507,438 @@ mod sensors_and_events {
                 .map(String::as_str),
             Some("mode balanced (default on battery)")
         );
+    }
+}
+
+/// Windows parity in user space (todo-82 part 3): the NVIDIA GPU's sleep, keyboard RGB through `OpenRGB`, fwupd and the
+/// vitals overlay, each through the real operator (and the real daemon on a private bus for root writes).
+mod parity {
+    use super::daemon_process::{start, wait_for};
+    use super::operator_and_daemon::{on_bus, pci_machine};
+    use super::*;
+    use serde_json::Value;
+    use std::ffi::OsString;
+    use std::io::{Read, Write};
+    use std::sync::{Arc, Mutex};
+
+    const CONTROL: &str = "/sys/bus/pci/devices/0000:01:00.0/power/control";
+
+    fn refused(out: &Output, why: &str) {
+        let text = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success() && text.contains(why),
+            "{why} missing:\n{text}"
+        );
+    }
+
+    /// The NVIDIA GPU's sleep (`gpu power`): status names what keeps it awake, doctor finds a GPU that never sleeps,
+    /// off is refused before polkit while gnome-shell holds the GPU, the dry run changes nothing, the daemon writes
+    /// power/control after polkit, undo powers it again, and a GPU on vfio-pci is its owner's.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_nvidia_gpu_sleeps_only_when_no_program_uses_it_and_undo_keeps_it_powered_again() {
+        let m = Machine::new("gpupower");
+        let _kernel = pci_machine(&m);
+        m.set(CONTROL, "on");
+        m.set(
+            "/sys/bus/pci/devices/0000:01:00.0/power/runtime_status",
+            "active",
+        );
+        let (_stand_ins, asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "gpupower");
+        let asked_power = || {
+            asked
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|a| a.1 == "org.legionctl.gpu.power")
+                .count()
+        };
+
+        let status = op.ok(&["gpu", "status"]);
+        assert!(
+            status.contains("NVIDIA GPU power: active (power/control on)")
+                && status.contains("keeps it awake: gnome-shell (pid 4242) uses /dev/dri/card0"),
+            "{status}"
+        );
+        let doctor = String::from_utf8_lossy(&op.cli(&["doctor"]).stdout).to_string();
+        assert!(doctor.contains("the NVIDIA GPU never sleeps"), "{doctor}");
+
+        refused(&op.cli(&["gpu", "power", "off"]), "gnome-shell (pid 4242)");
+        assert_eq!(m.file(CONTROL), "on");
+        assert_eq!(asked_power(), 0, "refused before the polkit dialog");
+
+        std::fs::remove_file(m.dir.join("root/proc/4242/fd/7")).unwrap();
+        let plan = op.ok(&["gpu", "power", "off", "--dry-run"]);
+        assert!(
+            plan.contains(&format!("would write {CONTROL}: auto")),
+            "{plan}"
+        );
+        assert_eq!(m.file(CONTROL), "on", "a dry run changes nothing");
+
+        let done = op.ok(&["gpu", "power", "off"]);
+        assert!(
+            done.contains(&format!("wrote {CONTROL}: auto (was on)")),
+            "{done}"
+        );
+        assert_eq!(m.file(CONTROL), "auto");
+        assert_eq!(asked_power(), 1);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let event = loop {
+            let events: Value = serde_json::from_str(&op.ok(&["events", "--json"])).unwrap();
+            if let Some(e) = events["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["kind"] == "machine.set-gpu-power")
+            {
+                break e["id"].to_string();
+            }
+            assert!(std::time::Instant::now() < deadline, "not recorded");
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        };
+        op.ok(&["undo", &event]);
+        assert_eq!(m.file(CONTROL), "on", "undone");
+
+        let vfio = m.dir.join("root/sys/bus/pci/devices/0000:01:00.0/driver");
+        std::fs::remove_file(&vfio).unwrap();
+        std::os::unix::fs::symlink("../../drivers/vfio-pci", &vfio).unwrap();
+        refused(
+            &op.cli(&["gpu", "power", "on"]),
+            "its owner manages its power",
+        );
+    }
+
+    /// `OpenRGB`'s SDK server as `OpenRGB` 1.0 answers it: protocol 4, one controller (this keyboard), two saved
+    /// profiles; each loaded profile goes into the returned list.
+    fn openrgb(m: &Machine) -> Arc<Mutex<Vec<String>>> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std::fs::write(
+            m.dir.join("openrgb.addr"),
+            listener.local_addr().unwrap().to_string(),
+        )
+        .unwrap();
+        let loaded = Arc::new(Mutex::new(Vec::new()));
+        let log = loaded.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut s = stream.unwrap();
+                let log = log.clone();
+                std::thread::spawn(move || {
+                    let mut header = [0u8; 16];
+                    while s.read_exact(&mut header).is_ok() {
+                        let word =
+                            |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
+                        let (id, size) = (word(8), word(12));
+                        let mut data = vec![0u8; size as usize];
+                        s.read_exact(&mut data).unwrap();
+                        let string = |text: &str| {
+                            let mut b = u16::try_from(text.len() + 1)
+                                .unwrap()
+                                .to_le_bytes()
+                                .to_vec();
+                            b.extend(text.as_bytes());
+                            b.push(0);
+                            b
+                        };
+                        let reply: Option<Vec<u8>> = match id {
+                            40 => Some(4u32.to_le_bytes().to_vec()),
+                            0 => Some(1u32.to_le_bytes().to_vec()),
+                            1 => {
+                                let mut d = vec![0u8; 8];
+                                d[4] = 5; // keyboard
+                                d.extend(string("Lenovo Legion 7 Gen 8"));
+                                d.extend(string("Lenovo"));
+                                Some(d)
+                            }
+                            150 => {
+                                let mut d = vec![0u8; 4];
+                                d.extend(2u16.to_le_bytes());
+                                d.extend(string("ac-wave"));
+                                d.extend(string("battery-dim"));
+                                Some(d)
+                            }
+                            152 => {
+                                let name = String::from_utf8(data).unwrap();
+                                log.lock()
+                                    .unwrap()
+                                    .push(name.trim_end_matches('\0').to_string());
+                                None
+                            }
+                            _ => None,
+                        };
+                        if let Some(d) = reply {
+                            // a notice first, as OpenRGB sends one when its device list changes
+                            let mut p = b"ORGB".to_vec();
+                            for n in [0u32, 100, 0] {
+                                p.extend(n.to_le_bytes());
+                            }
+                            p.extend(b"ORGB");
+                            for n in [0u32, id, u32::try_from(d.len()).unwrap()] {
+                                p.extend(n.to_le_bytes());
+                            }
+                            p.extend(d);
+                            s.write_all(&p).unwrap();
+                        }
+                    }
+                });
+            }
+        });
+        loaded
+    }
+
+    /// Keyboard RGB (`OpenRGB`, knob rgb.profile): `rgb status` finds the keyboard on USB and in `OpenRGB` with its
+    /// profiles; the daemon loads the profile of the power source's layer at start and when the source changes (once,
+    /// not again for the same profile), the dry run names it, `knobs show` has it, and a profile `OpenRGB` does not have
+    /// is a warning with nothing loaded.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_keyboard_light_follows_the_power_source_through_openrgb_profiles() {
+        let m = Machine::new("rgb");
+        for (file, value) in [("idVendor", "048d"), ("idProduct", "c988")] {
+            m.set(&format!("/sys/bus/usb/devices/1-3/{file}"), value);
+        }
+        let layer = |source: &str, profile: &str| {
+            m.set(
+                &format!("/etc/legionctl/configsets/50-rgb-{source}.jsonc"),
+                &format!(
+                    r#"{{"when": {{"power": "{source}"}}, "set": {{"rgb.profile": "{profile}"}}}}"#
+                ),
+            );
+        };
+        layer("ac", "ac-wave");
+        layer("battery", "battery-dim");
+        let loaded = openrgb(&m);
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        wait_for("the AC profile at start", || {
+            loaded.lock().unwrap().as_slice() == ["ac-wave"]
+        });
+        let address = std::fs::read_to_string(m.dir.join("openrgb.addr")).unwrap();
+        let op = Operator::start(
+            "rgb",
+            &[
+                ("PATH", m.dir.join("bin").into()),
+                ("HOME", m.dir.join("home").into()),
+                ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+                (
+                    "DBUS_SYSTEM_BUS_ADDRESS",
+                    format!("unix:path={}", m.dir.join("bus").display()).into(),
+                ),
+                ("LEGIONCTL_OPENRGB", OsString::from(&address)),
+            ],
+        );
+
+        let status = op.ok(&["rgb", "status"]);
+        assert!(
+            status.contains("device: Lenovo Legion 7 Gen 8")
+                && status.contains("profile: battery-dim")
+                && status.contains("SDK protocol 4")
+                && !status.contains("problem"),
+            "{status}"
+        );
+
+        // still on AC: the daemon's own reaction to an unplug would race the calls below
+        let plan = op.ok(&["power", "apply", "--source", "battery", "--dry-run"]);
+        assert!(
+            plan.contains("would load the OpenRGB profile battery-dim"),
+            "{plan}"
+        );
+        assert_eq!(loaded.lock().unwrap().len(), 1, "a dry run loads nothing");
+
+        let applied = op.ok(&["power", "apply", "--source", "battery"]);
+        assert!(
+            applied.contains("loaded the OpenRGB profile battery-dim (was ac-wave)"),
+            "{applied}"
+        );
+        op.ok(&["power", "apply", "--source", "battery"]);
+        assert_eq!(
+            loaded.lock().unwrap().as_slice(),
+            ["ac-wave", "battery-dim"],
+            "the same profile is not loaded again"
+        );
+        let knob: Value =
+            serde_json::from_str(&op.ok(&["knobs", "show", "rgb.profile", "--json"])).unwrap();
+        assert_eq!(knob["knob"]["value"], "battery-dim");
+        // the machine is on AC: the AC layer's profile is what the policy wants at the next event
+        assert_eq!(knob["knob"]["desired"], "ac-wave");
+
+        layer("battery", "missing");
+        let missing = op.ok(&["power", "apply", "--source", "battery"]);
+        assert!(
+            missing.contains("OpenRGB has no profile missing"),
+            "{missing}"
+        );
+        // the daemon also replans on the layer change (on AC: ac-wave again), but never loads a missing profile
+        assert!(!loaded.lock().unwrap().iter().any(|p| p == "missing"));
+
+        std::fs::remove_dir_all(m.dir.join("root/sys/bus/usb/devices/1-3")).unwrap();
+        let out = op.cli(&["rgb", "status"]);
+        assert!(!out.status.success());
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("not on the USB bus"),
+            "{out:?}"
+        );
+    }
+
+    /// fwupd (`firmware status`, `firmware update`): a stand-in fwupdmgr with three devices; the status shows the
+    /// upgrade of each, the dry run names the versions and the exact command and runs nothing, a device with no
+    /// upgrade is refused, and the update runs fwupdmgr without a restart and records the old version.
+    #[test]
+    fn firmware_updates_come_from_fwupd_with_a_dry_run_first() {
+        let m = Machine::new("fwupd");
+        let missing = m.legion(&["firmware", "status"]);
+        refused(&missing, "install fwupd");
+        let log = m.dir.join("fwupdmgr.log");
+        let devices = r#"{"Devices": [
+          {"Name": "SK hynix PC801", "DeviceId": "aa11", "Version": "1.0", "Flags": ["internal", "updatable"],
+           "Releases": [{"Version": "1.0", "Flags": []}, {"Version": "1.2", "Summary": "Fixes resume", "Flags": ["is-upgrade"]}]},
+          {"Name": "Logi Bolt Receiver", "DeviceId": "bb22", "Version": "MBO04.00", "Flags": ["updatable"], "Releases": []},
+          {"Name": "UEFI dbx", "DeviceId": "cc33", "Version": "371", "Flags": []}
+        ]}"#;
+        Machine::script(
+            &m.dir.join("bin"),
+            "fwupdmgr",
+            &format!(
+                "echo \"$*\" >> {}; case $1 in get-devices) echo '{devices}';; update) echo 'Successfully installed firmware';; esac",
+                log.display()
+            ),
+        );
+        let status = m.ok(&["firmware", "status"]);
+        assert!(
+            status.contains("SK hynix PC801 1.0 - update to 1.2: Fixes resume")
+                && status.contains("Logi Bolt Receiver MBO04.00 - no update")
+                && status.contains("UEFI dbx 371 - fwupd cannot update it"),
+            "{status}"
+        );
+
+        let plan = m.ok(&["firmware", "update", "SK hynix PC801", "--dry-run"]);
+        assert!(
+            plan.contains("would update SK hynix PC801: 1.0 -> 1.2")
+                && plan.contains("would run: fwupdmgr update aa11 --assume-yes --no-reboot-check"),
+            "{plan}"
+        );
+        refused(
+            &m.legion(&["firmware", "update", "bb22", "--dry-run"]),
+            "fwupd has no upgrade for it",
+        );
+        refused(
+            &m.legion(&["firmware", "update", "zz99"]),
+            "fwupd has no device zz99",
+        );
+        assert!(
+            !std::fs::read_to_string(&log).unwrap().contains("update"),
+            "nothing updated yet"
+        );
+
+        let done = m.ok(&["firmware", "update", "aa11"]);
+        assert!(
+            done.contains("updated SK hynix PC801: 1.0 -> 1.2"),
+            "{done}"
+        );
+        assert!(
+            std::fs::read_to_string(&log)
+                .unwrap()
+                .lines()
+                .any(|l| l == "update aa11 --assume-yes --no-reboot-check"),
+            "fwupdmgr ran the update without a restart"
+        );
+        let events: Value = serde_json::from_str(&m.ok(&["events", "--json"])).unwrap();
+        let event = events["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["kind"] == "firmware.change")
+            .expect("the update is recorded with its versions");
+        assert_eq!(event["payload"]["from"], "1.0");
+        assert_eq!(event["payload"]["to"], "1.2");
+    }
+
+    #[derive(Clone, Default)]
+    struct Osd(Arc<Mutex<Vec<(String, String)>>>);
+
+    #[zbus::interface(name = "org.legionctl.Osd")]
+    impl Osd {
+        fn show(&self, kind: &str, value: &str, detail: &str, level: f64) {
+            // the overlay sends no detail and no level; the interface has them for the other kinds
+            let _ = (detail, level);
+            self.0.lock().unwrap().push((kind.into(), value.into()));
+        }
+    }
+
+    /// The vitals overlay (`overlay on|off`): the operator sends the key readings to the extension every 2 s (CPU
+    /// package temperature and power, the GPU asleep or its temperature and power, the fans, the firmware mode and
+    /// the power source), and an empty value once after off; nothing while it is off.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_vitals_overlay_shows_the_key_readings_until_it_is_turned_off() {
+        let m = Machine::new("vitals");
+        let _kernel = pci_machine(&m);
+        let gpu = "/sys/bus/pci/devices/0000:01:00.0/power/runtime_status";
+        m.set(gpu, "suspended");
+        m.set("/sys/class/hwmon/hwmon9/name", "coretemp");
+        m.set("/sys/class/hwmon/hwmon9/temp1_input", "71000");
+        m.set("/sys/class/hwmon/hwmon9/temp1_label", "Package id 0");
+        m.set("/sys/class/hwmon/hwmon10/name", "legion");
+        m.set("/sys/class/hwmon/hwmon10/fan1_input", "2400");
+        m.set("/sys/class/hwmon/hwmon10/fan2_input", "2600");
+        Machine::script(&m.dir.join("bin"), "nvidia-smi", "echo '42.4, 51, 3, 1200'");
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let address = format!("unix:path={}", m.dir.join("bus").display());
+        let shown = Osd::default();
+        let _extension = zbus::connection::Builder::address(address.as_str())
+            .unwrap()
+            .name("org.legionctl.Osd")
+            .unwrap()
+            .serve_at("/org/legionctl/Osd", shown.clone())
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let op = Operator::start(
+            "vitals",
+            &[
+                ("PATH", m.dir.join("bin").into()),
+                ("HOME", m.dir.join("home").into()),
+                ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+                ("DBUS_SYSTEM_BUS_ADDRESS", address.clone().into()),
+                ("DBUS_SESSION_BUS_ADDRESS", address.into()),
+            ],
+        );
+        let vitals = || -> Vec<String> {
+            shown
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(kind, _)| kind == "vitals")
+                .map(|(_, v)| v.clone())
+                .collect()
+        };
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        assert!(vitals().is_empty(), "nothing while it is off");
+
+        let on = op.ok(&["overlay", "on"]);
+        assert!(on.contains("CPU  71 °C"), "{on}");
+        wait_for("the overlay", || !vitals().is_empty());
+        let first = vitals()[0].clone();
+        assert!(
+            first.starts_with("CPU  71 °C  ")
+                && first.contains("\nGPU  asleep (D3cold)\n")
+                && first.contains("\nFans 2400 / 2600 RPM\n")
+                && first.ends_with("max-power on ac"),
+            "{first}"
+        );
+        m.set(gpu, "active");
+        wait_for("the GPU awake", || {
+            vitals()
+                .last()
+                .is_some_and(|v| v.contains("\nGPU  51 °C  42 W\n"))
+        });
+
+        op.ok(&["overlay", "off"]);
+        wait_for("the overlay hidden", || {
+            vitals().last().is_some_and(String::is_empty)
+        });
+        let count = vitals().len();
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        assert_eq!(vitals().len(), count, "one hide, then nothing");
     }
 }

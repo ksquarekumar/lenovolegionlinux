@@ -1,5 +1,7 @@
 // legionctl OSD: draws the on-screen display that legionctl-operator requests over D-Bus (org.legionctl.Osd.Show).
 // One OSD at a time; a new request while it shows animates from the current state instead of restarting.
+// The vitals overlay (kind "vitals", `legionctl overlay on`) is a separate pinned box: the operator sends its lines every
+// 2 s, and an empty value hides it.
 
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
@@ -213,15 +215,42 @@ class Osd {
     }
 }
 
+// The vitals overlay: always on top (fullscreen windows too), in the top-right corner of the primary monitor, below
+// the top bar. Clicks go through it.
+class Vitals {
+    constructor() {
+        this._label = new St.Label({style_class: 'osd-window legionctl-vitals', visible: false});
+        Main.layoutManager.addTopChrome(this._label, {affectsInputRegion: false, trackFullscreen: false});
+    }
+
+    destroy() {
+        this._label.destroy();
+    }
+
+    /** @param {string} text the lines; empty hides the overlay */
+    show(text) {
+        this._label.visible = text !== '';
+        if (!this._label.visible) return;
+        this._label.text = text;
+        const monitor = Main.layoutManager.primaryMonitor;
+        if (!monitor) return;
+        const [, natWidth] = this._label.get_preferred_width(-1);
+        this._label.set_position(monitor.x + monitor.width - natWidth - 16, monitor.y + Main.panel.height + 16);
+    }
+}
+
 export default class LegionctlOsd extends Extension {
     /** @type {Osd | null} */
     _osd = null;
+    /** @type {Vitals | null} */
+    _vitals = null;
     /** @type {Gio.DBusExportedObject | null} */
     _dbus = null;
     _nameId = 0;
 
     enable() {
         this._osd = new Osd();
+        this._vitals = new Vitals();
         this._dbus = Gio.DBusExportedObject.wrapJSObject(IFACE, this);
         this._dbus.export(Gio.DBus.session, OBJECT_PATH);
         this._nameId = Gio.bus_own_name_on_connection(
@@ -237,7 +266,9 @@ export default class LegionctlOsd extends Extension {
         Gio.bus_unown_name(this._nameId);
         this._dbus?.unexport();
         this._osd?.destroy();
+        this._vitals?.destroy();
         this._osd = null;
+        this._vitals = null;
         this._dbus = null;
     }
 
@@ -249,6 +280,7 @@ export default class LegionctlOsd extends Extension {
      * @param {number} _level
      */
     Show(kind, value, detail, _level) {
-        this._osd?.show(kind, value, detail);
+        if (kind === 'vitals') this._vitals?.show(value);
+        else this._osd?.show(kind, value, detail);
     }
 }

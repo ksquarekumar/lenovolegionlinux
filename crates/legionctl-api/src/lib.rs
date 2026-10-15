@@ -383,6 +383,22 @@ operations! {
     /// gets it by hot-plug (and an eject request to take it back; never forced). Apps on a GPU that leaves lose it. A
     /// human approves it in the polkit dialog.
     gpu_give / GpuGive = "gpu.give", Machine, GpuGiveIn => Lines;
+    /// Let the NVIDIA GPU sleep (D3cold) when no program uses it (off), or keep it powered (on). Off is refused while a
+    /// program uses it, with the programs named. The event log keeps the old value for `legionctl undo`. A human
+    /// approves it in the polkit dialog.
+    gpu_power / GpuPower = "gpu.power", Machine, GpuPowerIn => Changes;
+    /// The devices fwupd knows (`NVMe` drives, the Logitech receiver, ...), their firmware version and the upgrade that
+    /// fwupd can apply (read-only).
+    firmware_status / FirmwareStatus = "firmware.status", Read, Empty => FirmwareDevices;
+    /// Update one device's firmware through fwupd; `--dry-run` shows the versions and the command. fwupd asks polkit
+    /// itself; the machine does not restart, and the event log keeps the old version.
+    firmware_update / FirmwareUpdate = "firmware.update", Machine, FirmwareUpdateIn => Changes;
+    /// Keyboard RGB through `OpenRGB`: whether its SDK server answers, whether it drives this keyboard, and its saved
+    /// profiles. The configset knob rgb.profile loads a profile when its conditions change.
+    rgb_status / RgbStatus = "rgb.status", Read, Empty => RgbState;
+    /// Show or hide the vitals overlay: CPU and GPU temperature and power, fans, firmware mode and power source, on top
+    /// of the desktop (the legionctl-osd GNOME Shell extension draws it).
+    overlay / Overlay = "overlay", Workspace, OverlayIn => Lines;
     /// The monitors as GNOME uses them: resolution, refresh rate and the highest available, scale, pixel density,
     /// VRR and HDR; the fonts' antialiasing; and what makes the picture worse than it can be.
     display_status / DisplayStatus = "display.status", Read, Empty => Lines;

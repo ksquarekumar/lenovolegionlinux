@@ -168,6 +168,14 @@
       <arg type="as" direction="out"/>
     </method>
     <!--
+     The NVIDIA GPU's runtime power management: with `sleep` it goes to D3cold when no program uses it (refused
+     while one does), else it stays powered.
+     -->
+    <method name="SetGpuPower">
+      <arg name="sleep" type="b" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
      Disable conflicting units and, with `unload_modules`, unload conflicting kernel modules. Conflicting packages
      are reported with the command that removes them.
      -->

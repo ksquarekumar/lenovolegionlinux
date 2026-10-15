@@ -6,6 +6,7 @@
 //! | Mutter `MonitorsChanged` | OSD "refresh" when the built-in panel's rate changed |
 //! | `org.legionctl.System1.ModeChanged` | OSD "mode" |
 //! | `org.legionctl.System1.FnLock` | OSD "fnlock" |
+//! | `legionctl overlay on`, every 2 s | the vitals overlay (OSD "vitals" with the lines; an empty value hides it) |
 //! | `/run/legionctl/safe-mode` appears (the daemon failed and the firmware runs balanced) | a desktop notification |
 //!
 //! The OSD is drawn by the GNOME Shell extension `legionctl-osd@legionctl` (`org.legionctl.Osd.Show`); it is the only
@@ -23,7 +24,7 @@ use crate::system1::System1Proxy;
     interface = "org.legionctl.Osd"
 )]
 trait Osd {
-    /// `kind`: mode, refresh, fnlock; `value`: the new state; `detail`: one line under it; `level`: 0..1, or -1 for
+    /// `kind`: mode, refresh, fnlock, vitals; `value`: the new state; `detail`: one line under it; `level`: 0..1, or -1 for
     /// no level bar.
     fn show(&self, kind: &str, value: &str, detail: &str, level: f64) -> zbus::Result<()>;
 }
@@ -75,7 +76,10 @@ fn mode_detail(fn_q_choice: bool, source: &str) -> String {
 }
 
 /// Runs until the session bus or the system bus goes away; the operations keep working without it.
-pub async fn run(ready: crate::Ready) -> Result<()> {
+pub async fn run(
+    ready: crate::Ready,
+    operator: std::sync::Arc<crate::engine::Operator>,
+) -> Result<()> {
     let system = zbus::Connection::system()
         .await
         .context("connecting to the system bus")?;
@@ -97,6 +101,8 @@ pub async fn run(ready: crate::Ready) -> Result<()> {
     let mut told = None;
     // the first tick is at once: a safe mode from before this start is told too
     let mut check = tokio::time::interval(std::time::Duration::from_secs(30));
+    let mut vitals = tokio::time::interval(std::time::Duration::from_secs(2));
+    let mut overlay_shown = false;
     let mut rate = display::built_in_rate(&mutter).await;
     eprintln!(
         "operator: session module running (built-in panel at {} Hz)",
@@ -132,6 +138,22 @@ pub async fn run(ready: crate::Ready) -> Result<()> {
             // the daemon stopping or starting, and a slow check besides (systemd starts legionctl-safe after it)
             Some(_) = owners.next() => safe_mode_notice(&session, &mut told).await,
             _ = check.tick() => safe_mode_notice(&session, &mut told).await,
+            _ = vitals.tick() => {
+                let on = operator.overlay.load(std::sync::atomic::Ordering::Relaxed);
+                if on || overlay_shown {
+                    let text = if on {
+                        let operator = operator.clone();
+                        match tokio::task::spawn_blocking(move || operator.vitals()).await? {
+                            Ok(lines) => lines.join("\n"),
+                            Err(e) => format!("no vitals: {e:#}"),
+                        }
+                    } else {
+                        String::new()
+                    };
+                    osd.show("vitals", &text, "").await;
+                    overlay_shown = on;
+                }
+            }
         }
     }
 }

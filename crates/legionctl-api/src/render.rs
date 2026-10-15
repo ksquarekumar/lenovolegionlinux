@@ -5,11 +5,11 @@ use std::collections::BTreeMap;
 use crate::{
     AgentCheck, BatteryState, BenchCompare, BenchRun, BootState, CapabilityList, Changes,
     Conditions, ConfigFile, ConfigView, DossierFindings, DossierInfo, Empty, EventRow, Explanation,
-    Findings, GpuState, GreeterState, Guard, HookReply, HookTable, KernelBench, Knob, KnobDetail,
-    Launch, LayerList, Lines, LoadState, Lock, Manifest, PackageState, PlanView, Reading,
-    Recording, Reminder, RuleDetail, RuleState, Rules, RunEnv, Sample, SessionState, SetupReport,
-    SkillInfo, Snapshot, TestDetail, TestReview, TestRow, ToolCallRow, TuneReport, Validation,
-    VfioDevices, WindowsState, WindowsVmBegun, Workspace, WorkspaceStatus,
+    Findings, FirmwareDevices, GpuState, GreeterState, Guard, HookReply, HookTable, KernelBench,
+    Knob, KnobDetail, Launch, LayerList, Lines, LoadState, Lock, Manifest, PackageState, PlanView,
+    Reading, Recording, Reminder, RgbState, RuleDetail, RuleState, Rules, RunEnv, Sample,
+    SessionState, SetupReport, SkillInfo, Snapshot, TestDetail, TestReview, TestRow, ToolCallRow,
+    TuneReport, Validation, VfioDevices, WindowsState, WindowsVmBegun, Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -235,7 +235,69 @@ impl Render for GpuState {
                 if o.connected { "connected" } else { "-" }
             )
         }));
+        if let Some(p) = &self.nvidia_power {
+            let or = |v: &Option<String>| v.clone().unwrap_or_else(|| "unknown".into());
+            out.push(format!(
+                "NVIDIA GPU power: {} (power/control {})",
+                or(&p.runtime_status),
+                or(&p.control)
+            ));
+            out.extend(p.users.iter().map(|u| format!("  keeps it awake: {u}")));
+        }
         out.join("\n")
+    }
+}
+
+impl Render for FirmwareDevices {
+    fn text(&self) -> String {
+        if self.devices.is_empty() {
+            return "fwupd knows no devices".into();
+        }
+        self.devices
+            .iter()
+            .map(|d| {
+                let version = d.version.as_deref().unwrap_or("unknown");
+                let state = match (&d.update, d.updatable) {
+                    (Some(u), _) => format!(
+                        "update to {u}{}",
+                        d.update_summary
+                            .as_ref()
+                            .map_or_else(String::new, |s| format!(": {s}"))
+                    ),
+                    (None, true) => "no update".into(),
+                    (None, false) => "fwupd cannot update it".into(),
+                };
+                format!("{} {version} - {state}\n  id {}", d.name, d.id)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+impl Render for RgbState {
+    fn text(&self) -> String {
+        let mut out = vec![format!(
+            "keyboard (ITE 8258, USB 048d:c988): {}",
+            if self.keyboard_usb {
+                "on the USB bus"
+            } else {
+                "not found"
+            }
+        )];
+        match self.protocol {
+            Some(p) => out.push(format!("OpenRGB at {}: SDK protocol {p}", self.address)),
+            None => out.push(format!("OpenRGB at {}: no answer", self.address)),
+        }
+        out.extend(self.controllers.iter().map(|c| format!("  device: {c}")));
+        out.extend(self.profiles.iter().map(|p| format!("  profile: {p}")));
+        if let Some(problem) = &self.problem {
+            out.push(format!("problem: {problem}"));
+        }
+        out.join("\n")
+    }
+
+    fn success(&self) -> bool {
+        self.problem.is_none()
     }
 }
 

@@ -1437,6 +1437,22 @@ impl System1 {
         Ok(lines)
     }
 
+    /// The NVIDIA GPU's runtime power management: with `sleep` it goes to D3cold when no program uses it (refused
+    /// while one does), else it stays powered.
+    async fn set_gpu_power(
+        &self,
+        sleep: bool,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        authorize(conn, &header, "org.legionctl.gpu.power").await?;
+        let lines = carry_out(&self.root, |m| gpu::set_nvidia_power(m, sleep))
+            .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("{e:#}")))?;
+        self.tell(&emitter, "SetGpuPower", &lines).await?;
+        Ok(lines)
+    }
+
     /// Disable conflicting units and, with `unload_modules`, unload conflicting kernel modules. Conflicting packages
     /// are reported with the command that removes them.
     async fn cleanup(

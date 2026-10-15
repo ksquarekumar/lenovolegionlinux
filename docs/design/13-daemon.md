@@ -130,6 +130,8 @@ exit status come back as for `Step::Run`. The calling method's polkit check come
 | --- | --- | --- |
 | `/sys` (platform_profile, firmware attributes, cpufreq, hwmon, battery, vfio bind, `/sys/fs/bpf/legionctl`), `/sys/firmware/efi/efivars` (`LoaderEntryOneShot`, `chattr -i`) | power, fan, battery, GPU, VFIO, eBPF pins, `kernel try`, `kernel cmdline` | `ProtectSystem=strict` keeps `/sys`, `/proc` and `/dev` writable; the unit has no `ProtectKernelTunables=` and no `PrivateDevices=` |
 | `/proc/acpi/call`, `/dev/port`, `/dev/vfio/*` | firmware calls, EC byte, VFIO | as above |
+| `/sys/bus/pci/devices/<NVIDIA GPU>/power/control` | `gpu power` | as `/sys` above |
+| OpenRGB's SDK server (TCP `127.0.0.1:6742`, `LEGIONCTL_OPENRGB`) | knob `rgb.profile` | a connection, not a path: the unit does not limit the network |
 | `/run/legionctl` (safe-mode, workload) | safe mode, workload sensor | `RuntimeDirectory=legionctl` |
 | `/var/lib/legionctl` (`system.db`, generated configsets, tune reports, `kernel-install`) | ledger, sets, tune, `kernel install` | `StateDirectory=legionctl` |
 | `/etc/legionctl` (`configsets`, `kernel/<kernel>.cmdline`, `.old`, `.trial`) | `rules`, boot and kernel lines | `ConfigurationDirectory=legionctl` |
@@ -174,7 +176,7 @@ primary; polkit `org.legionctl.gpu.primary`), `Cleanup`, `Tune`, `RebootWindows`
 `WatchSessions`, `Hold` and `Release` (D1, polkit `org.legionctl.knobs.hold`), `FanStatus` (no polkit),
 `SetFanCurve`, `ResetFanCurve`, `SetFanMax`, `SetFanFullSpeed` (polkit `org.legionctl.fan`) and `SetFanLock` (polkit
 `org.legionctl.fan.lock`, no kept authorization; 02-platform, Fan control), `Reload` (no polkit), `SetLayer` and
-`SetLayerState` (polkit `org.legionctl.rules`; configsets, 01-core). The `Version` property is the hash of the committed file; `doctor` says when the daemon and the
+`SetLayerState` (polkit `org.legionctl.rules`; configsets, 01-core), `SetGpuPower` (gpu power; polkit `org.legionctl.gpu.power`). The `Version` property is the hash of the committed file; `doctor` says when the daemon and the
 operator come from different files. Change events are `machine.<cause in kebab case>` (`machine.apply-power`).
 Not done, on purpose: a `SafeMode` property (in safe mode the daemon does not run, so the marker file
 `/run/legionctl/safe-mode` stays the channel), the Fn+Q ledger through D-Bus (the operator's dry runs read the same

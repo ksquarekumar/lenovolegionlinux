@@ -247,3 +247,73 @@ pub fn set_desktop(
     ));
     Ok(steps)
 }
+
+/// The NVIDIA GPU's runtime power management (PCI): `runtime_status` (`active`, `suspended`: D3cold on this laptop) and
+/// `control` (`auto`: it may sleep when no program uses it; `on`: it stays powered).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NvidiaPower {
+    pub device: String,
+    pub runtime_status: Option<String>,
+    pub control: Option<String>,
+    /// The programs that keep it awake (only the ones the reader may see).
+    pub users: Vec<String>,
+}
+
+pub(crate) fn control_path(device: &str) -> String {
+    format!("/sys/bus/pci/devices/{device}/power/control")
+}
+
+/// The NVIDIA GPU's power state; `None` without an NVIDIA GPU.
+#[must_use]
+pub fn nvidia_power(root: &SysRoot) -> Option<NvidiaPower> {
+    let group = crate::vfio::nvidia_group(root).ok()?;
+    let device = group.first()?.clone();
+    Some(NvidiaPower {
+        runtime_status: root.read(format!(
+            "/sys/bus/pci/devices/{device}/power/runtime_status"
+        )),
+        control: root.read(control_path(&device)),
+        users: crate::vfio::users(root, &group),
+        device,
+    })
+}
+
+/// Plan the NVIDIA GPU's runtime power management: `sleep` lets it go to D3cold when no program uses it (`auto`),
+/// else it stays powered (`on`). Sleep is refused while a program uses it, since it would not sleep then.
+///
+/// # Errors
+/// No NVIDIA GPU, the GPU is not on Linux's `nvidia` driver (its owner manages its power), or a program uses it.
+pub fn set_nvidia_power(machine: &Machine, sleep: bool) -> Result<Vec<Step>> {
+    let root = machine.root;
+    let Some(power) = nvidia_power(root) else {
+        bail!("this machine has no NVIDIA GPU with an IOMMU group");
+    };
+    let driver = crate::vfio::driver(root, &power.device);
+    if driver.as_deref() != Some("nvidia") {
+        bail!(
+            "the NVIDIA GPU is on {}, not on Linux's nvidia driver: its owner manages its power (legionctl gpu give \
+             nvidia linux gives it back)",
+            driver.as_deref().unwrap_or("no driver")
+        );
+    }
+    if sleep && !power.users.is_empty() {
+        bail!(
+            "the NVIDIA GPU cannot sleep while programs use it:\n{}\nclose them; if gnome-shell holds it, run \
+             `legionctl gpu primary intel --release-nvidia` and log in again",
+            power.users.join("\n")
+        );
+    }
+    let mut steps = Vec::new();
+    machine.write(
+        &mut steps,
+        control_path(&power.device),
+        if sleep { "auto" } else { "on" },
+    );
+    if steps.is_empty() {
+        steps.push(Step::Info(format!(
+            "the NVIDIA GPU's power/control is already {}",
+            power.control.as_deref().unwrap_or("?")
+        )));
+    }
+    Ok(steps)
+}

@@ -8,6 +8,8 @@
 pub trait System1 {
     fn apply_power(&self, source: &str) -> zbus::Result<Vec<String>>;
     fn set_primary_gpu(&self, choice: &str, release_nvidia: bool) -> zbus::Result<Vec<String>>;
+    /// The NVIDIA GPU's runtime power management: sleep (`auto`) or stay powered (`on`).
+    fn set_gpu_power(&self, sleep: bool) -> zbus::Result<Vec<String>>;
     fn cleanup(&self, unload_modules: bool) -> zbus::Result<Vec<String>>;
     fn reboot_windows(&self) -> zbus::Result<Vec<String>>;
     /// Hold knobs at values against the policy (path -> value).

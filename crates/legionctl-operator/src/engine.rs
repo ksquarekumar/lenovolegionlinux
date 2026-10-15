@@ -23,9 +23,10 @@ use legionctl_api::{
     WorkspaceOpenIn, WorkspaceStatus, Workspaces,
 };
 use legionctl_api::{
-    Autostart, AutostartIn, DisplayFixIn, FanCurveIn, FanState, GpuGiveIn, GpuName, GpuOwner,
-    KnobHoldIn, KnobIn, PackIn, PackKind, Switch, SwitchIn, UndoIn, VfioBindIn, VfioDevices,
-    VfioIn, WindowsVmBeginIn, WindowsVmBegun,
+    Autostart, AutostartIn, DisplayFixIn, FanCurveIn, FanState, FirmwareDevices, FirmwareUpdateIn,
+    GpuGiveIn, GpuName, GpuOwner, GpuPowerIn, KnobHoldIn, KnobIn, OnOff, OverlayIn, PackIn,
+    PackKind, RgbState, Switch, SwitchIn, UndoIn, VfioBindIn, VfioDevices, VfioIn,
+    WindowsVmBeginIn, WindowsVmBegun,
 };
 use legionctl_api::{
     CachePurgeIn, CacheStat, CachedCall, EventRow, JobIdIn, Page, PageIn, Principal,
@@ -68,13 +69,15 @@ use legionctl_machine::profile::{self, Profile};
 use legionctl_machine::snapshot::Detail;
 use legionctl_machine::sysroot::SysRoot;
 use legionctl_machine::telemetry::{self, RootSample};
-use legionctl_machine::{bench, cleanup, fan, gpu, knobs, load, windows};
+use legionctl_machine::{bench, cleanup, fan, fwupd, gpu, knobs, load, rgb, sensors, windows};
 
 pub struct Operator {
     /// Runs the D-Bus calls of machine changes; engine methods run on blocking threads.
     pub runtime: tokio::runtime::Handle,
     /// The telemetry ring: the last [`RING`] samples of `monitor`, `sensors` and `/v1/metrics`, oldest first.
     pub ring: std::sync::Mutex<std::collections::VecDeque<telemetry::Sample>>,
+    /// The vitals overlay is on (`overlay`); the session module draws it.
+    pub overlay: std::sync::atomic::AtomicBool,
 }
 
 /// Samples the telemetry ring keeps (10 minutes of `sensors --watch`).
@@ -1287,6 +1290,35 @@ pub(crate) fn config(project: Option<&ClientPath>) -> Result<Resolved> {
 }
 
 impl Operator {
+    /// The rows of `legionctl sensors`: a new sample with the ring's history, and the daemon's fan state.
+    fn readings(&self) -> Result<Vec<sensors::Reading>> {
+        let earlier: Vec<telemetry::Sample> = self
+            .ring
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect();
+        let now = self.sample(std::time::Duration::from_millis(250));
+        let fan = self
+            .system(async |p| p.fan_status().await)
+            .ok()
+            .and_then(|json| serde_json::from_str::<fan::FanState>(&json).ok());
+        let (profile, _) = profile::load(None)?;
+        Ok(sensors::view(
+            &SysRoot::from_env(),
+            &now,
+            &earlier,
+            fan.as_ref(),
+            &profile.paths.ac_adapter,
+        ))
+    }
+
+    /// The vitals overlay's lines (`overlay`).
+    pub fn vitals(&self) -> Result<Vec<String>> {
+        Ok(sensors::vitals(&self.readings()?))
+    }
+
     /// One telemetry sample over `window`; the root-only part comes from `legionctl-system`, and stays unknown when
     /// the daemon does not answer.
     pub fn sample(&self, window: std::time::Duration) -> telemetry::Sample {
@@ -1468,6 +1500,115 @@ impl Engine for Operator {
             mode: gpu::mode(&outputs).into_wire(),
             desktop_gpu: gpu::desktop_preference(&root).into_wire(),
             outputs: outputs.into_wire(),
+            nvidia_power: gpu::nvidia_power(&root).into_wire(),
+        })
+    }
+
+    fn gpu_power(&self, _: &Ctx, input: GpuPowerIn) -> Result<Changes> {
+        let sleep = input.state == OnOff::Off;
+        // planned here too, so a refusal (a program uses the GPU) comes before the polkit dialog
+        let plan = Plan::load(None)?;
+        let steps = gpu::set_nvidia_power(&plan.machine(), sleep)
+            .map_err(|e| coded(Code::InvalidInput, format!("{e:#}")))?;
+        if input.dry_run {
+            return Ok(dry_run(&steps));
+        }
+        Ok(Changes {
+            lines: self.system(async move |p| p.set_gpu_power(sleep).await)?,
+            dry_run: false,
+        })
+    }
+
+    fn firmware_status(&self, _: &Ctx, _: Empty) -> Result<FirmwareDevices> {
+        Ok(FirmwareDevices {
+            devices: fwupd::devices()?.into_wire(),
+        })
+    }
+
+    fn firmware_update(&self, ctx: &Ctx, input: FirmwareUpdateIn) -> Result<Changes> {
+        let (device, argv) = fwupd::update_plan(&input.device)
+            .map_err(|e| coded(Code::InvalidInput, format!("{e:#}")))?;
+        let from = device.version.clone().unwrap_or_default();
+        let to = device.update.clone().unwrap_or_default();
+        let what = format!("{}: {from} -> {to}", device.name);
+        if input.dry_run {
+            return Ok(Changes {
+                lines: vec![
+                    format!("would update {what}"),
+                    format!("would run: {}", argv.join(" ")),
+                ],
+                dry_run: true,
+            });
+        }
+        let event = Db::open_default()?.record(
+            &ctx.actor,
+            "firmware.change",
+            &serde_json::json!({"device": device.id, "name": device.name, "from": from, "to": to}),
+        )?;
+        let out = Command::new(&argv[0]).args(&argv[1..]).output()?;
+        let mut lines: Vec<String> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(String::from)
+            .collect();
+        if !out.status.success() {
+            return Err(anyhow::anyhow!(
+                "fwupdmgr update failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        lines.push(format!(
+            "updated {what} (event {event}; fwupd keeps the old version in fwupdmgr get-history)"
+        ));
+        Ok(Changes {
+            lines,
+            dry_run: false,
+        })
+    }
+
+    fn rgb_status(&self, _: &Ctx, _: Empty) -> Result<RgbState> {
+        let address = rgb::address();
+        let keyboard_usb = rgb::keyboard_present(&SysRoot::from_env());
+        let mut state = RgbState {
+            address: address.clone(),
+            keyboard_usb,
+            protocol: None,
+            controllers: Vec::new(),
+            profiles: Vec::new(),
+            problem: None,
+        };
+        let read = rgb::Client::connect(&address).and_then(|mut c| {
+            state.protocol = Some(c.protocol);
+            state.controllers = c.controllers()?;
+            state.profiles = c.profiles()?;
+            Ok(())
+        });
+        state.problem = match read {
+            Err(e) => Some(format!("{e:#}")),
+            Ok(()) if !keyboard_usb => Some("the keyboard is not on the USB bus".into()),
+            // OpenRGB names this keyboard's controller "Lenovo Legion ..." (its LEGION_7GEN8 detector)
+            Ok(()) if !state.controllers.iter().any(|c| c.contains("Legion")) => Some(
+                "OpenRGB does not list the keyboard: install OpenRGB's udev rules (60-openrgb.rules) so that it may \
+                 open the keyboard's hidraw device, then start it again"
+                    .into(),
+            ),
+            Ok(()) => None,
+        };
+        Ok(state)
+    }
+
+    fn overlay(&self, _: &Ctx, input: OverlayIn) -> Result<Lines> {
+        let on = input.state == OnOff::On;
+        self.overlay.store(on, std::sync::atomic::Ordering::Relaxed);
+        Ok(Lines {
+            lines: if on {
+                let mut lines = vec![
+                    "vitals overlay: on (every 2 s, drawn by the legionctl-osd extension)".into(),
+                ];
+                lines.extend(self.vitals()?);
+                lines
+            } else {
+                vec!["vitals overlay: off".into()]
+            },
         })
     }
 
@@ -2299,27 +2440,7 @@ impl Engine for Operator {
     }
 
     fn sensors(&self, _: &Ctx, _: SensorsIn) -> Result<Readings> {
-        let earlier: Vec<telemetry::Sample> = self
-            .ring
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .cloned()
-            .collect();
-        let now = self.sample(std::time::Duration::from_millis(250));
-        let fan = self
-            .system(async |p| p.fan_status().await)
-            .ok()
-            .and_then(|json| serde_json::from_str::<fan::FanState>(&json).ok());
-        let (profile, _) = profile::load(None)?;
-        Ok(legionctl_machine::sensors::view(
-            &SysRoot::from_env(),
-            &now,
-            &earlier,
-            fan.as_ref(),
-            &profile.paths.ac_adapter,
-        )
-        .into_wire())
+        Ok(self.readings()?.into_wire())
     }
 
     fn events(&self, _: &Ctx, input: EventsIn) -> Result<Page<EventRow>> {

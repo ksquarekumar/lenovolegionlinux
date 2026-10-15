@@ -260,6 +260,26 @@ fn gpu_warnings(root: &SysRoot, profile: &Profile, services: bool) -> Vec<String
         );
     }
 
+    if let Some(power) = gpu::nvidia_power(root)
+        && power.control.as_deref() == Some("on")
+    {
+        w.push(
+            "the NVIDIA GPU never sleeps (power/control is on); `legionctl gpu power off` lets it go to D3cold when no \
+             program uses it"
+                .into(),
+        );
+    }
+    if root
+        .read("/proc/driver/nvidia/params")
+        .is_some_and(|p| p.lines().any(|l| l.trim() == "DynamicPowerManagement: 0"))
+    {
+        w.push(
+            "the nvidia driver has runtime power management off (NVreg_DynamicPowerManagement=0): the GPU never \
+             reaches D3cold"
+                .into(),
+        );
+    }
+
     if services {
         for unit in ["nvidia-powerd.service", "nvidia-persistenced.service"] {
             let state = system::unit_state("is-active", unit);

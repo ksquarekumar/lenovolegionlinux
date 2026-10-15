@@ -283,3 +283,52 @@ fn machine_states(root: &SysRoot, fan: Option<&FanState>, ac_adapter: &str) -> V
     }
     rows
 }
+
+/// The key readings of `rows` in a few short lines, for the vitals overlay: CPU and GPU temperature and power (or the
+/// GPU asleep), the fans, the firmware mode and the power source. A reading that is not there shows `?`.
+#[must_use]
+pub fn vitals(rows: &[Reading]) -> Vec<String> {
+    let number = |name: &str, unit: &str| {
+        rows.iter()
+            .find(|r| r.name == name && r.unit == unit)
+            .and_then(|r| r.value)
+            .map_or_else(|| format!("? {unit}"), |v| format!("{v:.0} {unit}"))
+    };
+    let text = |name: &str| {
+        rows.iter()
+            .find(|r| r.name == name && r.value.is_none())
+            .and_then(|r| r.text.clone())
+            .unwrap_or_else(|| "?".into())
+    };
+    let gpu = match text("NVIDIA GPU").as_str() {
+        "suspended" => "GPU  asleep (D3cold)".to_string(),
+        _ => format!(
+            "GPU  {}  {}",
+            number("GPU temperature", "°C"),
+            number("GPU power", "W")
+        ),
+    };
+    let fans: Vec<String> = rows
+        .iter()
+        .filter(|r| r.unit == "RPM")
+        .filter_map(|r| r.value)
+        .map(|v| format!("{v:.0}"))
+        .collect();
+    vec![
+        format!(
+            "CPU  {}  {}",
+            number("Package id 0", "°C"),
+            number("CPU package power", "W")
+        ),
+        gpu,
+        format!(
+            "Fans {} RPM",
+            if fans.is_empty() {
+                "?".into()
+            } else {
+                fans.join(" / ")
+            }
+        ),
+        format!("{} on {}", text("firmware mode"), text("power source")),
+    ]
+}

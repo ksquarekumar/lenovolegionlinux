@@ -22,6 +22,8 @@ pub enum Key {
     WindowsVm,
     /// The NVIDIA services that `GpuRelease` stopped (space-separated), for `GpuReturn`.
     GpuServices,
+    /// The `OpenRGB` profile legionctl loaded last (`rgb.profile`).
+    RgbProfile,
 }
 
 impl Key {
@@ -31,6 +33,7 @@ impl Key {
             Key::Override => "firmware-override",
             Key::WindowsVm => "windows-vm",
             Key::GpuServices => "gpu-services",
+            Key::RgbProfile => "rgb-profile",
         }
     }
 }

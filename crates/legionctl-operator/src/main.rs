@@ -97,6 +97,7 @@ async fn main() -> Result<()> {
     let operator = Arc::new(engine::Operator {
         runtime: tokio::runtime::Handle::current(),
         ring: std::sync::Mutex::default(),
+        overlay: std::sync::atomic::AtomicBool::default(),
     });
     // retention (`events.keep_days`): the log and gateway usage lose their old rows at each start, before the first
     // call reads them
@@ -128,7 +129,9 @@ async fn main() -> Result<()> {
     }
     let modules = vec![
         module("the machine event recorder", recorder::run),
-        module("the session module", session::run),
+        module("the session module", |ready| {
+            session::run(ready, operator.clone())
+        }),
         module("the model gateway", gateway),
         module("the session policy", |ready| {
             policy::run(ready, operator.clone())

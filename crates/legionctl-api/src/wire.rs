@@ -1525,3 +1525,30 @@ wire! {
         events: Vec<EventRow>,
     }
 }
+
+wire! {
+    /// The NVIDIA GPU's runtime power management.
+    struct NvidiaPower from machine::gpu::NvidiaPower {
+        /// Its PCI address.
+        device: String,
+        /// `active`, or `suspended` (D3cold on this laptop).
+        runtime_status: Option<String>,
+        /// `auto`: it may sleep when no program uses it; `on`: it stays powered.
+        control: Option<String>,
+        /// The programs that keep it awake (only the ones the reader may see).
+        users: Vec<String>,
+    }
+
+    /// A device that fwupd knows.
+    struct FirmwareDevice from machine::fwupd::Device {
+        /// fwupd's device id (`legionctl firmware update <id>`).
+        id: String,
+        name: String,
+        version: Option<String>,
+        /// fwupd can write its firmware.
+        updatable: bool,
+        /// The newest release that is an upgrade, if fwupd's metadata has one.
+        update: Option<String>,
+        update_summary: Option<String>,
+    }
+}

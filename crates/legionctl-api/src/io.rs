@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::wire::{
     Action, Battery, BenchResult, Binding, Capability, ConfigFile, ConfigLayer, DesktopGpu,
-    DossierInfo, EditMode, Event, EventRow, GpuMode, Harness, Inside, Knob, Lock, Output,
-    PackageState, Reading, Reminder, RuleLayer, Sample, Scenario, SessionRecord, SkillInfo,
-    VfioDevice, Workspace,
+    DossierInfo, EditMode, Event, EventRow, FirmwareDevice, GpuMode, Harness, Inside, Knob, Lock,
+    NvidiaPower, Output, PackageState, Reading, Reminder, RuleLayer, Sample, Scenario,
+    SessionRecord, SkillInfo, VfioDevice, Workspace,
 };
 use crate::{ClientPath, SessionId, StdinText};
 
@@ -437,6 +437,60 @@ pub struct GpuState {
     /// GPU GNOME draws the desktop on; Mutter reads it at login.
     pub desktop_gpu: DesktopGpu,
     pub outputs: Vec<Output>,
+    /// The NVIDIA GPU's runtime power management; none without an NVIDIA GPU.
+    pub nvidia_power: Option<NvidiaPower>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum OnOff {
+    On,
+    Off,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GpuPowerIn {
+    /// off: the NVIDIA GPU sleeps (D3cold) when no program uses it (refused while one does); on: it stays powered.
+    pub state: OnOff,
+    /// Print what would change; change nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FirmwareDevices {
+    pub devices: Vec<FirmwareDevice>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FirmwareUpdateIn {
+    /// fwupd's device id or the device's name (`legionctl firmware status`).
+    pub device: String,
+    /// Print what would change; change nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RgbState {
+    /// Where `OpenRGB`'s SDK server answers (`LEGIONCTL_OPENRGB`).
+    pub address: String,
+    /// The per-key RGB keyboard (ITE 8258, USB 048d:c988) is on the USB bus.
+    pub keyboard_usb: bool,
+    /// The SDK protocol both sides speak; none when `OpenRGB` does not answer.
+    pub protocol: Option<u32>,
+    /// The devices `OpenRGB` drives.
+    pub controllers: Vec<String>,
+    /// The profiles `OpenRGB` has saved; the knob rgb.profile names one.
+    pub profiles: Vec<String>,
+    /// Why `OpenRGB` cannot drive the keyboard now; none when it can.
+    pub problem: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OverlayIn {
+    /// on: the vitals overlay shows on the desktop and updates every 2 s; off: it goes.
+    pub state: OnOff,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

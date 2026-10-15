@@ -13,6 +13,10 @@ commands take `--dry-run`.
 | `fan curve set <10 levels>`, `fan curve reset`, `fan max on\|off`, `fan clean on\|off` | Fan curve (custom mode only), fan max mode, dust-clean speed. | Now; set again after resume |
 | `battery mode standard\|conservation\|rapid`, `battery usb-charging on\|off` | Charge mode; USB power while off. | Now |
 | `gpu primary nvidia\|intel\|auto [--release-nvidia]` | The GPU that draws the desktop. | Next login |
+| `gpu power off\|on` | off: the NVIDIA GPU sleeps (D3cold) when no program uses it; refused while one does. on: it stays powered. | Now |
+| `firmware update <id\|name>` | One device's firmware through fwupd (fwupd's own polkit dialog). No restart; some updates finish at the next start. | Now or next start |
+| `overlay on\|off` (W) | The vitals overlay on the desktop. | Now |
+| knob `rgb.profile` (in a layer: `rules edit`) | The keyboard light: a saved OpenRGB profile, loaded when its conditions change. | At the next policy event |
 | `gpu give igpu\|nvidia linux\|windows\|none`, `vfio bind\|unbind <devices>` | A GPU or an IOMMU group to Linux, to the Windows VM, or to no one. Apps on that GPU lose it. | Now |
 | `display fix <id>\|all [--persistent]` (W) | Your own settings only: antialiasing, an app's flags file, a monitor's rate, the session environment. | Now; a mode until next login without `--persistent` |
 | `kernel default <name>` | The default kernel. Needs `boot install` first. | Next start |

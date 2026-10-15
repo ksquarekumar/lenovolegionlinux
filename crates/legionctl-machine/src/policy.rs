@@ -71,6 +71,8 @@ pub enum Step {
         name: String,
         value: String,
     },
+    /// Load an `OpenRGB` profile (`rgb.profile`) and record it.
+    Rgb(String),
     /// One EC RAM byte through port I/O (the EC fan lock only).
     Ec {
         addr: u16,
@@ -124,7 +126,7 @@ fn quoted(s: &str) -> String {
 }
 
 impl Machine<'_> {
-    fn write(&self, steps: &mut Vec<Step>, path: impl AsRef<Path>, value: &str) {
+    pub(crate) fn write(&self, steps: &mut Vec<Step>, path: impl AsRef<Path>, value: &str) {
         let path = path.as_ref();
         if !self.root.exists(path) {
             steps.push(Step::Warn(format!("missing path: {}", path.display())));
@@ -340,6 +342,15 @@ impl Machine<'_> {
         }
     }
 
+    /// The `OpenRGB` profile, when it is not the one loaded last in this boot.
+    fn rgb(&self, steps: &mut Vec<Step>, wanted: &Merged) {
+        if let Some(profile) = wanted.text("rgb.profile")
+            && self.ledger.get(Key::RgbProfile).as_deref() != Some(profile.as_str())
+        {
+            steps.push(Step::Rgb(profile));
+        }
+    }
+
     #[must_use]
     pub fn ac_online(&self) -> bool {
         self.root.read(&self.profile.paths.ac_adapter).as_deref() == Some("1")
@@ -455,6 +466,7 @@ impl Machine<'_> {
             self.sysctl(&mut steps, &wanted);
             self.cpu_policy(&mut steps, &wanted, override_mode.is_some());
             self.nvidia(&mut steps, &wanted);
+            self.rgb(&mut steps, &wanted);
         }
         Ok((source, self.without_held(steps)))
     }
@@ -562,6 +574,7 @@ pub fn describe(step: &Step) -> Option<String> {
         } => Some(format!("would hold {path} at {}", quoted(v))),
         Step::Hold { path, value: None } => Some(format!("would release {path}")),
         Step::Acpi(call) => Some(format!("would call {call}")),
+        Step::Rgb(profile) => Some(format!("would load the OpenRGB profile {profile}")),
         Step::LoaderVar { name, value } => {
             Some(format!("would set the EFI variable {name} to {value}"))
         }
@@ -656,6 +669,19 @@ pub fn execute(root: &SysRoot, ledger: &Ledger, steps: &[Step]) -> Vec<String> {
                 Ok(reply) => format!("called {call}: {reply}"),
                 Err(e) => format!("warning: firmware call failed: {e:#}"),
             }),
+            Step::Rgb(profile) => {
+                let before = ledger.get(Key::RgbProfile).unwrap_or_default();
+                out.push(
+                    match crate::rgb::load(profile)
+                        .and_then(|()| ledger.set(Key::RgbProfile, Some(profile)))
+                    {
+                        Ok(()) => format!("loaded the OpenRGB profile {profile} (was {before})"),
+                        Err(e) => {
+                            format!("warning: the OpenRGB profile {profile} was not loaded: {e:#}")
+                        }
+                    },
+                );
+            }
             Step::FanCurve(levels) => out.extend(fan::write_curve(root, levels)),
             Step::Fan { key, value } => {
                 if let Err(e) = ledger.set_fan(*key, value.as_deref()) {

@@ -24,6 +24,7 @@ const PPD_PROFILES: [&str; 3] = ["performance", "balanced", "power-saver"];
 /// The knobs that are actions, not files: their only values.
 const IDLE_STATES: [&str; 1] = ["enabled"];
 const NVIDIA_SERVICES: [&str; 2] = ["start", "unchanged"];
+const RUNTIME_PM: [&str; 2] = ["auto", "on"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -192,6 +193,36 @@ fn cpu(m: &Machine, wanted: &Merged) -> Vec<Knob> {
     knobs
 }
 
+/// The knobs of `gpu power` (so that `undo` may hold it) and of the keyboard light.
+fn parity_knobs(m: &Machine, wanted: &Merged) -> Vec<Knob> {
+    let mut knobs = Vec::new();
+    if let Some(device) = crate::vfio::nvidia_group(m.root)
+        .ok()
+        .and_then(|g| g.into_iter().next())
+    {
+        let path = crate::gpu::control_path(&device);
+        knobs.push(
+            Knob::new(
+                "nvidia.runtime_pm",
+                &path,
+                m.root.read(&path),
+                KnobPolicy::Observe,
+            )
+            .choices(&RUNTIME_PM),
+        );
+    }
+    knobs.push(
+        Knob::new(
+            "rgb.profile",
+            format!("OpenRGB at {}", crate::rgb::address()),
+            m.ledger.get(Key::RgbProfile),
+            KnobPolicy::Observe,
+        )
+        .wants(wanted),
+    );
+    knobs
+}
+
 /// Every knob, read now.
 #[must_use]
 pub fn catalog(m: &Machine) -> Vec<Knob> {
@@ -279,6 +310,7 @@ pub fn catalog(m: &Machine) -> Vec<Knob> {
         .choices(&NVIDIA_SERVICES)
         .wants(&wanted),
     );
+    knobs.extend(parity_knobs(m, &wanted));
     let holds = m.ledger.holds();
     for knob in &mut knobs {
         // a hold on the knob's path, or on one CPU's file of a per-CPU knob
@@ -397,6 +429,8 @@ pub fn check(
         "cpu.idle_states" => one_of(id, &scalar, &IDLE_STATES),
         "nvidia.services" => one_of(id, &scalar, &NVIDIA_SERVICES),
         "ppd" => one_of(id, &scalar, &PPD_PROFILES),
+        // the profiles are OpenRGB's; a missing one is a warning when the policy loads it
+        "rgb.profile" if !scalar.is_empty() => Ok(()),
         "firmware.fan_mode" if profile.paths.fan_mode.is_some() => Ok(()),
         _ => match id.strip_prefix("sysctl.") {
             Some(key) => {

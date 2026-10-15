@@ -1,0 +1,47 @@
+// todo-82 part 3: Windows parity in user space (docs/design/10-gap.md). Out of scope (user): sound profiles, game
+// library and overlay; factory ICC is last.
+{
+  "$schema": "../feature.schema.json",
+  "id": "parity",
+  "title": "Windows parity in user space",
+  "status": "in-progress",
+  "plan_rows": ["legionctl#todo-82"],
+  "objectives": [
+    { "id": "O1", "text": "The keyboard light follows the same conditions as the power policy, through OpenRGB." },
+    { "id": "O2", "text": "Firmware updates come from fwupd with a dry run first and the old version in the event log." },
+    { "id": "O3", "text": "The key sensors stay in view on the desktop." },
+    { "id": "O4", "text": "The NVIDIA GPU sleeps when no program uses it, and the user sees what keeps it awake." },
+    { "id": "O5", "text": "GPU clock offsets and the boot logo come only through verified writes." }
+  ],
+  "stories": [
+    { "id": "S1", "kind": "data-flow", "text": "A layer's rgb.profile reaches OpenRGB once per profile when the power source changes; a missing profile is a warning.", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/machine.rs::the_keyboard_light_follows_the_power_source_through_openrgb_profiles"] },
+    { "id": "S2", "text": "firmware status shows each device's upgrade; update has a dry run and runs fwupdmgr without a restart.", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/machine.rs::firmware_updates_come_from_fwupd_with_a_dry_run_first"] },
+    { "id": "S3", "kind": "data-flow", "text": "overlay on sends the key readings to the extension every 2 s; off hides it once.", "objectives": ["O3"],
+      "tests": ["test:crates/legionctl/tests/machine.rs::the_vitals_overlay_shows_the_key_readings_until_it_is_turned_off"] },
+    { "id": "S4", "kind": "requirement", "text": "gpu power off is refused before polkit while a program uses the GPU; undo keeps it powered again.", "objectives": ["O4"],
+      "tests": ["test:crates/legionctl/tests/machine.rs::the_nvidia_gpu_sleeps_only_when_no_program_uses_it_and_undo_keeps_it_powered_again"] }
+  ],
+  "work_items": [
+    { "id": "W1", "text": "Keyboard RGB through OpenRGB's SDK protocol and the knob rgb.profile", "status": "done", "stories": ["S1"], "units": [
+      { "key": "file:crates/legionctl-machine/src/rgb.rs", "change": "add", "loc": 190 },
+      { "key": "op:rgb.status", "change": "add" }
+    ] },
+    { "id": "W2", "text": "fwupd status and update", "status": "done", "stories": ["S2"], "units": [
+      { "key": "file:crates/legionctl-machine/src/fwupd.rs", "change": "add", "loc": 110 },
+      { "key": "op:firmware.status", "change": "add" },
+      { "key": "op:firmware.update", "change": "add" }
+    ] },
+    { "id": "W3", "text": "Vitals overlay in the legionctl-osd extension", "status": "done", "stories": ["S3"], "units": [
+      { "key": "rust:crates/legionctl-machine:sensors::vitals", "change": "add" },
+      { "key": "op:overlay", "change": "add" }
+    ] },
+    { "id": "W4", "text": "NVIDIA GPU runtime power management", "status": "done", "stories": ["S4"], "units": [
+      { "key": "rust:crates/legionctl-machine:gpu::set_nvidia_power", "change": "add" },
+      { "key": "op:gpu.power", "change": "add" }
+    ] },
+    { "id": "W5", "text": "GPU clock offsets: the driver allows them (NVML probe), the write needs NVML in the daemon; waits for the user's decision (no live GPU clock changes)", "status": "planned" },
+    { "id": "W6", "text": "Boot logo: an unverified EFI variable write; waits for todo-17", "status": "planned" }
+  ]
+}

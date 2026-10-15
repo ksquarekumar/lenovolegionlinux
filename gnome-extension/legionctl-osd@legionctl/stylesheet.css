@@ -46,3 +46,9 @@
 .legionctl-osd-lock {
   icon-size: 48px;
 }
+.legionctl-vitals {
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-family: monospace;
+  font-size: 0.9em;
+}
