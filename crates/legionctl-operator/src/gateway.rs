@@ -6,6 +6,7 @@
 //! exposes nothing. An account with a key serves only callers that send the gateway token
 //! (`x-legionctl-token`, from `~/.local/state/legionctl/gateway-token`): any local user can reach a local port.
 
+use std::os::unix::fs::OpenOptionsExt;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -106,8 +107,16 @@ fn token() -> Result<String> {
         hex
     });
     std::fs::create_dir_all(path.parent().context("no state folder")?)?;
-    std::fs::write(&path, &token)?;
-    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    // 0600 from the first byte, and whole or absent for a reader: never readable by others, never half written
+    let part = path.with_extension("part");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&part)?;
+    std::io::Write::write_all(&mut file, token.as_bytes())?;
+    std::fs::rename(&part, &path)?;
     Ok(token)
 }
 
