@@ -1571,7 +1571,7 @@ Rules:
    at the rebased head. A failure refuses with the check, the exit code and the log path. A command that was not
    found (exit 127, or make's `Error 127`) adds "command not found in the operator's PATH (<command>): run legionctl
    setup apply and log in again": the operator has the systemd user manager's PATH, and `setup apply` writes
-   ~/.config/environment.d/50-legionctl.conf (todo-131). This uses the A7 gate
+   ~/.config/environment.d/99-legionctl.conf (todo-131). This uses the A7 gate
    path; the fixed command of P4's `code tests run` is removed: it runs the repository's `test` checks.
 5. Each run is a job (`code.checks.run`) in a transient user unit (`systemd-run --user --wait --collect`), so its
    profile comes from the cgroup: wall time, CPU time, memory peak, IO bytes. It goes in `check_runs` (repository,

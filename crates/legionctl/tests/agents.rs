@@ -382,7 +382,7 @@ fn setup_apply_writes_each_agent_config_as_a_codex_agent_with_instructions_model
 fn setup_apply_puts_the_users_tool_folders_before_the_user_managers_path_once() {
     let lab = Lab::new("path", &shipped_plugin());
     lab.stand_in_ctx();
-    let conf = lab.home.join(".config/environment.d/50-legionctl.conf");
+    let conf = lab.home.join(".config/environment.d/99-legionctl.conf");
     let status = || -> String {
         let check: Value = serde_json::from_str(&lab.op.ok(&["setup", "check", "--json"])).unwrap();
         let item = check["items"]
@@ -415,7 +415,7 @@ fn setup_apply_puts_the_users_tool_folders_before_the_user_managers_path_once() 
     assert_eq!(std::fs::read_to_string(&conf).unwrap(), want);
     assert_eq!(status(), "current");
     assert!(!apply().contains("legionctl PATH"), "written once");
-    assert_eq!(file_names(conf.parent().unwrap()), ["50-legionctl.conf"]);
+    assert_eq!(file_names(conf.parent().unwrap()), ["99-legionctl.conf"]);
 
     write(&conf, "PATH=/old:$PATH\n");
     assert_eq!(status(), "outdated");
@@ -426,6 +426,11 @@ fn setup_apply_puts_the_users_tool_folders_before_the_user_managers_path_once() 
         "/usr/lib/systemd/user-environment-generators/30-systemd-environment-d-generator",
     );
     if generator.is_file() {
+        // a user file that sorts before ours sets PATH as a system file (Ubuntu's 90-*.conf) does: ours still wins
+        write(
+            &conf.with_file_name("90-system.conf"),
+            "PATH=/usr/local/bin:/usr/bin\n",
+        );
         let out = Command::new(generator)
             .env_clear()
             .env("PATH", "/usr/bin")
@@ -433,9 +438,12 @@ fn setup_apply_puts_the_users_tool_folders_before_the_user_managers_path_once() 
             .output()
             .unwrap();
         let env = String::from_utf8_lossy(&out.stdout);
+        let path = env
+            .lines()
+            .rfind(|l| l.starts_with("PATH="))
+            .unwrap_or_default();
         assert!(
-            env.lines()
-                .any(|l| l == format!("PATH={home}/.local/bin:{home}/.cargo/bin:/usr/bin")),
+            path.starts_with(&format!("PATH={home}/.local/bin:{home}/.cargo/bin:")),
             "{env}"
         );
     }

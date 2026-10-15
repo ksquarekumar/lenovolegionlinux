@@ -5,7 +5,7 @@
 //!   agent config as a Codex agent in ~/.codex/agents/<name>.toml (instructions, model and effort only).
 //! - Claude Code gets legionctl's MCP server, hooks and skills from the plugin itself.
 //! - The systemd user manager (and so the operator and its checks) gets ~/.local/bin and ~/.cargo/bin before its
-//!   PATH through ~/.config/environment.d/50-legionctl.conf; it reads the file at the next login.
+//!   PATH through ~/.config/environment.d/99-legionctl.conf; it reads the file at the next login.
 //!
 //! `check()` only reports; `apply()` changes user-level files and returns what it did.
 
@@ -241,8 +241,10 @@ fn codex_items() -> Vec<Item> {
     items
 }
 
+/// 99-: environment.d(5) reads the files of all its folders in file-name order, so a system file (Ubuntu's
+/// 90-*.conf) that sets PATH after ours would replace it; the last file's `$PATH` keeps all earlier values.
 fn path_conf() -> PathBuf {
-    home().join(".config/environment.d/50-legionctl.conf")
+    home().join(".config/environment.d/99-legionctl.conf")
 }
 
 /// The text of `path_conf()`: absolute folders, because environment.d(5) expands only variables (`$PATH`), not `~`.
