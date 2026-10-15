@@ -56,9 +56,6 @@ pub struct Operator {
     pub child: Kill,
     /// The test's other folders (its HOME): they go after the operator stopped.
     pub held: Vec<Scratch>,
-    /// The `PATH` the test gave the operator (its stand-ins): the client has it too, as an agent on the same machine
-    /// has the user's tools, and the repository's checks run with the client's `PATH`.
-    path: Option<OsString>,
 }
 
 impl Operator {
@@ -94,27 +91,18 @@ impl Operator {
             runtime,
             child,
             held: Vec::new(),
-            path: env
-                .iter()
-                .find(|(k, _)| *k == "PATH")
-                .map(|(_, v)| v.clone()),
         }
     }
 
-    /// `legionctl` with only `XDG_RUNTIME_DIR` (to find the socket), `PATH` (the operator's, else the test's), `env`,
-    /// the working directory `cwd` and `stdin` as its input.
+    /// `legionctl` with only `XDG_RUNTIME_DIR` (to find the socket), `PATH`, `env`, the working directory `cwd` and
+    /// `stdin` as its input.
     pub fn run(&self, cwd: &Path, env: &[(&str, &str)], args: &[&str], stdin: &str) -> Output {
         let mut child = Command::new(env!("CARGO_BIN_EXE_legionctl"))
             .args(args)
             .current_dir(cwd)
             .env_clear()
             .env("XDG_RUNTIME_DIR", &*self.runtime)
-            .env(
-                "PATH",
-                self.path
-                    .clone()
-                    .unwrap_or_else(|| std::env::var_os("PATH").unwrap()),
-            )
+            .env("PATH", std::env::var_os("PATH").unwrap())
             .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

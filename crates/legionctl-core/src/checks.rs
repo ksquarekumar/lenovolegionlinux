@@ -188,13 +188,6 @@ pub struct Profile {
     pub write_bytes: u64,
 }
 
-/// Who runs a check: the agent session, and its PATH (the operator's own PATH lacks the user's tool folders).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Caller<'a> {
-    pub session: Option<&'a str>,
-    pub path: Option<&'a str>,
-}
-
 /// One run of a check.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CheckRun {
@@ -545,7 +538,7 @@ impl Dossiers {
         (name, check): (&str, &Check),
         args: &[&str],
         job: i64,
-        caller: Caller,
+        session: Option<&str>,
     ) -> Result<CheckRun> {
         let (top, repo, tree) = (top(dir)?, repo_key(dir)?, tree(dir)?);
         let dossier = self.writer_name(dir)?;
@@ -563,9 +556,6 @@ impl Dossiers {
                 .arg(format!("{} \"$@\"", check.run))
                 .arg("sh")
                 .args(args);
-        }
-        if let Some(path) = caller.path {
-            cmd.env("PATH", path);
         }
         cmd.current_dir(&top)
             .stdin(Stdio::null())
@@ -635,7 +625,7 @@ impl Dossiers {
                 i(profile.write_bytes),
                 run.folder.to_string_lossy(),
                 job,
-                caller.session,
+                session,
                 run.at
             ],
         )?;
@@ -667,7 +657,7 @@ impl Dossiers {
     /// # Errors
     /// A check fails (the error names the check, its exit code and log, and ends with the log's last lines), or a
     /// run cannot start.
-    pub fn gate(&self, dir: &Path, gate: Gate, caller: Caller) -> Result<Vec<String>> {
+    pub fn gate(&self, dir: &Path, gate: Gate, session: Option<&str>) -> Result<Vec<String>> {
         let checks = config_at(dir)?;
         let wanted: Vec<(&String, &Check)> = checks
             .defs
@@ -693,7 +683,7 @@ impl Dossiers {
                         &serde_json::json!({"dir": dir, "gate": gate}),
                     )?),
                 };
-                let run = self.run_check(dir, (name, check), &[], id, caller)?;
+                let run = self.run_check(dir, (name, check), &[], id, session)?;
                 if run.tree.is_empty() {
                     return Err(coded(
                         Code::Conflict,
@@ -743,7 +733,7 @@ impl Dossiers {
         &self,
         dir: &Path,
         names: &[String],
-        caller: Caller,
+        session: Option<&str>,
     ) -> Result<Vec<CheckRun>> {
         let checks = config_at(dir)?;
         for name in names {
@@ -781,7 +771,7 @@ impl Dossiers {
                     names.contains(n)
                 }
             })
-            .map(|(n, c)| self.run_check(dir, (n, c), &[], job, caller))
+            .map(|(n, c)| self.run_check(dir, (n, c), &[], job, session))
             .collect::<Result<Vec<_>>>();
         let outcome = match &out {
             Ok(runs) => Ok(serde_json::to_value(runs)?),
@@ -887,7 +877,7 @@ impl Dossiers {
                 .optional()?;
             if exit == Some(127) {
                 findings.push(format!(
-                    "{}: check {name} broken: its command was not found (exit 127): {}",
+                    "{}: check {name} broken: its command was not found in the operator's PATH (exit 127): {}",
                     dir.display(),
                     check.run
                 ));

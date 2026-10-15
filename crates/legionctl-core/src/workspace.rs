@@ -469,12 +469,7 @@ impl Dossiers {
     /// # Errors
     /// The workspace is not open, there are conflicts, the test gate or a check refuses (nothing is committed), or git
     /// refuses.
-    pub fn checkpoint(
-        &self,
-        ws: &Workspace,
-        message: &str,
-        caller: crate::checks::Caller,
-    ) -> Result<Vec<String>> {
+    pub fn checkpoint(&self, ws: &Workspace, message: &str, session: &str) -> Result<Vec<String>> {
         ensure!(!message.trim().is_empty(), "a checkpoint needs a message");
         if ws.is_folder() {
             return Ok(vec![crate::folder::checkpoint(
@@ -487,7 +482,7 @@ impl Dossiers {
         }
         self.test_gate(&ws.path)?;
         let mut lines = self
-            .gate(&ws.path, crate::checks::Gate::Checkpoint, caller)
+            .gate(&ws.path, crate::checks::Gate::Checkpoint, Some(session))
             .map_err(|e| refused("checkpoint refused, nothing committed", &e))?;
         git(&ws.path, &["commit", "--quiet", "-m", message])?;
         lines.push(git(&ws.path, &["log", "-1", "--format=%h %s"])?);
@@ -501,7 +496,7 @@ impl Dossiers {
     /// The workspace has uncommitted or untracked files (the gate would test files that the merge does not ship), the
     /// rebase stops on conflicts, the branch changes `.legionctl/` (its own gates: the user merges it), or the main
     /// checkout is not clean or not on the base branch.
-    pub fn merge(&self, ws: &Workspace, caller: crate::checks::Caller) -> Result<Vec<String>> {
+    pub fn merge(&self, ws: &Workspace, session: &str) -> Result<Vec<String>> {
         if ws.is_folder() {
             return crate::folder::merge(&ws.path, &ws.repo);
         }
@@ -529,7 +524,7 @@ impl Dossiers {
         );
         let tested = git(&ws.path, &["rev-parse", "HEAD"])?;
         let mut lines = self
-            .gate(&ws.path, crate::checks::Gate::Merge, caller)
+            .gate(&ws.path, crate::checks::Gate::Merge, Some(session))
             .map_err(|e| {
                 refused(
                     &format!(

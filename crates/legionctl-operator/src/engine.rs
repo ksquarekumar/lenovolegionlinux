@@ -2072,11 +2072,7 @@ impl Engine for Operator {
         if let Some(held) = store.checkpoint_gate(session)? {
             anyhow::bail!(held);
         }
-        let caller = legionctl_core::checks::Caller {
-            session: Some(session),
-            path: input.search_path.as_deref(),
-        };
-        let lines = store.checkpoint(&ws, &input.message, caller)?;
+        let lines = store.checkpoint(&ws, &input.message, session)?;
         // the commit's patch id links it to this checkpoint, also after `workspace merge` rebased it; a folder
         // workspace has no commits
         let patch = if ws.is_folder() {
@@ -2108,8 +2104,7 @@ impl Engine for Operator {
             "code.tests.run",
             &serde_json::json!({"repo": repo, "filter": input.filter}),
         )?;
-        let scope = (input.filter.as_deref(), input.search_path.as_deref());
-        let out = dossiers()?.run_tests(repo, scope, job, |counts| {
+        let out = dossiers()?.run_tests(repo, input.filter.as_deref(), job, |counts| {
             let _ = db.job_step(
                 job,
                 &serde_json::json!({"repo": repo, "filter": input.filter, "results": counts}),
@@ -2133,11 +2128,8 @@ impl Engine for Operator {
     }
 
     fn code_checks_run(&self, _: &Ctx, input: ChecksRunIn) -> Result<Lines> {
-        let caller = legionctl_core::checks::Caller {
-            session: Some(input.session.0.as_str()).filter(|s| !s.is_empty()),
-            path: input.search_path.as_deref(),
-        };
-        let runs = dossiers()?.run_checks(input.repo.get()?, &input.checks, caller)?;
+        let session = Some(input.session.0.as_str()).filter(|s| !s.is_empty());
+        let runs = dossiers()?.run_checks(input.repo.get()?, &input.checks, session)?;
         Ok(Lines {
             lines: runs
                 .iter()
@@ -2239,11 +2231,7 @@ impl Engine for Operator {
         let store = dossiers()?;
         let session = session(&input.session)?;
         let ws = store.workspace_of(session, input.repo.get()?, input.topic.as_deref())?;
-        let caller = legionctl_core::checks::Caller {
-            session: Some(session),
-            path: input.search_path.as_deref(),
-        };
-        let lines = store.merge(&ws, caller)?;
+        let lines = store.merge(&ws, session)?;
         crate::code::trigger(&ws.repo);
         Ok(Lines { lines })
     }

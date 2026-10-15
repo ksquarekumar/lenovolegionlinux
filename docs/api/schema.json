@@ -2300,14 +2300,6 @@
           "format": "session",
           "description": "Agent session id; the client fills it.",
           "default": ""
-        },
-        "search_path": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The caller's PATH (the client fills it from its environment): the repository's checks run with it, as the\nagent would run them (the operator's own PATH lacks the user's tool folders).",
-          "x-env": "PATH"
         }
       },
       "description": "Which of this session's workspaces: the topic's, else the one that contains `repo`, else the dossier's own\nworkspace in the repository of `repo`.",
@@ -2503,14 +2495,6 @@
           "format": "session",
           "description": "Agent session id; the client fills it.",
           "default": ""
-        },
-        "search_path": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The caller's PATH (the client fills it from its environment): the repository's checks run with it, as the\nagent would run them (the operator's own PATH lacks the user's tool folders).",
-          "x-env": "PATH"
         }
       },
       "required": [
@@ -2556,14 +2540,6 @@
           "format": "path",
           "description": "A folder in the repository.",
           "default": "."
-        },
-        "search_path": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The caller's PATH (the client fills it from its environment): the repository's checks run with it, as the\nagent would run them (the operator's own PATH lacks the user's tool folders).",
-          "x-env": "PATH"
         }
       },
       "title": "TestsRunIn",
@@ -2680,14 +2656,6 @@
           "format": "session",
           "description": "Agent session id; the client fills it.",
           "default": ""
-        },
-        "search_path": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The caller's PATH (the client fills it from its environment): the repository's checks run with it, as the\nagent would run them (the operator's own PATH lacks the user's tool folders).",
-          "x-env": "PATH"
         }
       },
       "title": "ChecksRunIn",
@@ -3197,14 +3165,6 @@
           "format": "session",
           "description": "Agent session id; the client fills it.",
           "default": ""
-        },
-        "search_path": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The caller's PATH (the client fills it from its environment): the repository's checks run with it, as the\nagent would run them (the operator's own PATH lacks the user's tool folders).",
-          "x-env": "PATH"
         }
       },
       "description": "Which of this session's workspaces: the topic's, else the one that contains `repo`, else the dossier's own\nworkspace in the repository of `repo`.",
@@ -3254,14 +3214,6 @@
           "format": "session",
           "description": "Agent session id; the client fills it.",
           "default": ""
-        },
-        "search_path": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The caller's PATH (the client fills it from its environment): the repository's checks run with it, as the\nagent would run them (the operator's own PATH lacks the user's tool folders).",
-          "x-env": "PATH"
         }
       },
       "description": "Which of this session's workspaces: the topic's, else the one that contains `repo`, else the dossier's own\nworkspace in the repository of `repo`.",

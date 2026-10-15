@@ -1628,7 +1628,6 @@ Review round 3 (todo-107, EV-review-03) changed the gates:
 | The tree of a run | Computed again after the run; when the files changed (a fixing tool, a generator, a peer), the run has no tree, is evidence for none, and the gate refuses. |
 | A hanging check | Each run is in its own process group; past `checks.timeout_minutes` (60) the group is killed and the run fails (128 + 9), with a line in its log. |
 | Kept runs | `runs: [...]` of an EVIDENCE front matter in any subfolder of `EVIDENCE/` keeps a run. |
-| The caller's PATH | The client sends its `PATH` (`search_path`, `x-env` PATH) with checkpoint, merge, `code checks run` and `code tests run`; each check runs with it, so a tool in `~/.local/bin` is found. |
 | Findings | A worktree that is gone gives no check finding (its workspace's drift says so); a check config that does not resolve is a finding, not an error of `doctor`. |
 
 ### E3. Test runners in the graph (todo-101)

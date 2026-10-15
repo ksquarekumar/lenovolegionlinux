@@ -609,55 +609,6 @@ fn a_broken_checks_file_and_a_check_that_changes_the_files_refuse_the_checkpoint
     assert_eq!(commits(), "1");
 }
 
-/// A gate check runs with the caller's PATH (R3-11): the linter is only in a folder on the agent's PATH, not on the
-/// operator's, and the checkpoint passes with it. Before the fix the check ran with the operator's PATH and failed
-/// with exit 127 ("check broken").
-#[test]
-fn a_gate_check_finds_a_tool_on_the_callers_path() {
-    let lab = Lab::new("callpath");
-    let repo = lab.repo(
-        "repo",
-        &[
-            (".gitignore", "/agentWorkspaces\n"),
-            (
-                ".legionctl/checks.jsonc",
-                r#"{ "checks": { "lint": { "kind": "lint", "run": "house-lint", "gate": "checkpoint" } } }"#,
-            ),
-        ],
-    );
-    let ws = lab.workspace(&repo, "callpath");
-    let tools = lab.home.join("tools");
-    write(
-        &tools.join("house-lint"),
-        "#!/bin/sh\necho house-lint clean\n",
-    );
-    std::fs::set_permissions(
-        tools.join("house-lint"),
-        std::os::unix::fs::PermissionsExt::from_mode(0o755),
-    )
-    .unwrap();
-    let path = std::env::join_paths(
-        std::iter::once(tools).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
-    )
-    .unwrap();
-    write(&ws.join("notes.txt"), "notes\n");
-    let out = lab.op.run(
-        &ws,
-        &[
-            ("HOME", lab.home.to_str().unwrap()),
-            ("LEGIONCTL_SESSION", "s1"),
-            ("PATH", path.to_str().unwrap()),
-        ],
-        &["workspace", "checkpoint", "add notes"],
-        "",
-    );
-    let (said, err) = text(&out);
-    assert!(
-        out.status.success() && said.contains("check lint: passed (run "),
-        "{said}\n{err}"
-    );
-}
-
 /// A repository without a required kind (`checks.required`) is a finding in `doctor` and `dossier check`, and the
 /// agent is told at session start; a check whose command is not found (exit 127) is a "check broken" finding. The
 /// checks are the branch's own: once the workspace's file has the kinds, the nudge and the finding go. A worktree
@@ -708,7 +659,7 @@ fn a_missing_check_kind_is_a_finding_and_a_session_start_nudge() {
             .starts_with("lint: exit 127")
     );
     let broken = format!(
-        "{}: check lint broken: its command was not found (exit 127): no-such-linter --check",
+        "{}: check lint broken: its command was not found in the operator's PATH (exit 127): no-such-linter --check",
         ws.display()
     );
     assert!(lab.findings(&ws, &["dossier", "check"]).contains(&broken));

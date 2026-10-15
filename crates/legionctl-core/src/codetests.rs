@@ -770,7 +770,7 @@ impl Dossiers {
     pub fn run_tests(
         &self,
         dir: &Path,
-        (filter, path): (Option<&str>, Option<&str>),
+        filter: Option<&str>,
         job: i64,
         mut progress: impl FnMut(&BTreeMap<String, u32>),
     ) -> Result<Vec<String>> {
@@ -798,11 +798,7 @@ impl Dossiers {
                 Some(f) => vec!["--", f],
                 None => Vec::new(),
             };
-            let caller = crate::checks::Caller {
-                session: None,
-                path,
-            };
-            let run = self.run_check(dir, (name, check), &args, job, caller)?;
+            let run = self.run_check(dir, (name, check), &args, job, None)?;
             if check.runner.is_none() {
                 lines.push(format!("{name}: exit {} (run {})", run.exit, run.id));
                 continue;
