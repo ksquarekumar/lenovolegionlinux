@@ -11,6 +11,7 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 use common::Operator;
+use common::scratch::Scratch;
 use serde_json::Value;
 
 fn write(path: &Path, text: &str) {
@@ -41,16 +42,17 @@ fn standin() -> PathBuf {
 /// An operator with its own HOME (ctx is `ctx` there), and a repository with one commit on main.
 struct Lab {
     op: Operator,
-    home: PathBuf,
+    home: Scratch,
     repo: PathBuf,
 }
 
 impl Lab {
     fn new(tag: &str, ctx: &Path) -> Lab {
         // outside /tmp and outside any git repository
-        let home =
-            Path::new("/var/tmp").join(format!("legionctl-code-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
+        let home = Scratch::new(format!(
+            "/var/tmp/legionctl-code-{tag}-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(home.join(".local/bin")).unwrap();
         // stand-ins a test puts there (tokei, cargo) come before the user's own
         std::fs::create_dir_all(home.join(".cargo/bin")).unwrap();
@@ -72,7 +74,7 @@ impl Lab {
             &format!("code-{tag}"),
             &[
                 ("LEGIONCTL_SYSROOT", root.into()),
-                ("HOME", home.clone().into()),
+                ("HOME", home.as_os_str().to_owned()),
                 ("PATH", path_with(&home.join(".cargo/bin"))),
             ],
         );
@@ -150,12 +152,6 @@ impl Lab {
 
     fn graph(&self, tree: &str) -> PathBuf {
         self.repo.join(format!(".graf/refs/{tree}.db"))
-    }
-}
-
-impl Drop for Lab {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.home);
     }
 }
 
@@ -716,9 +712,10 @@ fn each_commit_links_its_own_checkpoint_also_after_a_rebase(lab: &Lab, ws: &Path
 /// job fails.
 #[test]
 fn a_burst_of_background_refreshes_builds_one_at_a_time_and_each_tree_once() {
-    let home =
-        Path::new("/var/tmp").join(format!("legionctl-code-burstctx-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
+    let home = Scratch::new(format!(
+        "/var/tmp/legionctl-code-burstctx-{}",
+        std::process::id()
+    ));
     let (ctx, log) = (home.join("ctx"), home.join("builds"));
     write(
         &ctx,
@@ -774,8 +771,6 @@ fn a_burst_of_background_refreshes_builds_one_at_a_time_and_each_tree_once() {
     for c in &commits {
         assert!(lab.graph(&lab.tree(&repo, c)).exists());
     }
-    drop(lab);
-    let _ = std::fs::remove_dir_all(&home);
 }
 
 /// Annotations follow their symbol: valid where its content is the same (also with other byte offsets), stale after a

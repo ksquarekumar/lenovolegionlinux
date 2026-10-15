@@ -74,7 +74,9 @@ mod tests {
 
     #[test]
     fn reports_validity_and_sections_without_values() {
-        let dir = std::env::temp_dir().join(format!("legionctl-agents-{}", std::process::id()));
+        let dir = crate::scratch::Scratch::new(
+            std::env::temp_dir().join(format!("legionctl-agents-{}", std::process::id())),
+        );
         std::fs::create_dir_all(dir.join(".claude")).unwrap();
         std::fs::create_dir_all(dir.join(".codex")).unwrap();
         std::fs::write(
@@ -112,7 +114,6 @@ mod tests {
         );
         let mcp = files.iter().find(|f| f.scope == "project-mcp").unwrap();
         assert_eq!(mcp.valid, Some(false));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

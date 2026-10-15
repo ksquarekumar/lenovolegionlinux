@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+pub mod scratch;
+
+use scratch::Scratch;
+
 /// Another package's binary `name` beside this test's `legionctl`, refused when it is older than a source it was built
 /// from: `cargo test -p legionctl` builds only `legionctl`, so an old daemon or operator would give false results.
 pub fn sibling(name: &str) -> PathBuf {
@@ -45,16 +49,17 @@ pub fn fresh(bin: &Path) -> PathBuf {
 
 pub struct Operator {
     /// Short on purpose: a unix socket path must fit in 108 bytes.
-    pub runtime: PathBuf,
+    pub runtime: Scratch,
     /// The operator (systemd-socket-activate execs it).
     pub child: Child,
+    /// The test's other folders (its HOME): they go after the operator stopped.
+    pub held: Vec<Scratch>,
 }
 
 impl Operator {
     pub fn start(tag: &str, env: &[(&str, OsString)]) -> Operator {
         // outside /tmp like /run/user/<uid>: the session sandbox replaces /tmp, which would hide what it must hide
-        let runtime = PathBuf::from(format!("/var/tmp/lc-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&runtime);
+        let runtime = Scratch::new(format!("/var/tmp/lc-{tag}-{}", std::process::id()));
         let socket = runtime.join("legionctl/api.sock");
         std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
         let nowhere = OsString::from("unix:path=/nonexistent/bus");
@@ -66,7 +71,7 @@ impl Operator {
             ("DBUS_SESSION_BUS_ADDRESS", nowhere.clone()),
             ("DBUS_SYSTEM_BUS_ADDRESS", nowhere),
             ("DOCKER_HOST", "unix:///nonexistent/docker.sock".into()),
-            ("XDG_RUNTIME_DIR", runtime.clone().into()),
+            ("XDG_RUNTIME_DIR", runtime.as_os_str().to_owned()),
         ];
         let unset = defaults
             .into_iter()
@@ -80,7 +85,11 @@ impl Operator {
             assert!(Instant::now() < deadline, "the test socket did not appear");
             std::thread::sleep(Duration::from_millis(20));
         }
-        Operator { runtime, child }
+        Operator {
+            runtime,
+            child,
+            held: Vec::new(),
+        }
     }
 
     /// `legionctl` with only `XDG_RUNTIME_DIR` (to find the socket), `PATH`, `env`, the working directory `cwd` and
@@ -90,7 +99,7 @@ impl Operator {
             .args(args)
             .current_dir(cwd)
             .env_clear()
-            .env("XDG_RUNTIME_DIR", &self.runtime)
+            .env("XDG_RUNTIME_DIR", &*self.runtime)
             .env("PATH", std::env::var_os("PATH").unwrap())
             .envs(env.iter().copied())
             .stdin(Stdio::piped())
@@ -131,6 +140,6 @@ impl Drop for Operator {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.runtime);
+        self.held.clear();
     }
 }

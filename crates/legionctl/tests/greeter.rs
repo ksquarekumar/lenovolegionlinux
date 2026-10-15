@@ -5,7 +5,7 @@
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixListener;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -15,6 +15,11 @@ use gpui_kit::{
 };
 use legionctl_app::greeter::{Auth, Greetd, Greeter, Session, Stage, sessions};
 use serde_json::{Value, json};
+
+#[path = "common/scratch.rs"]
+mod scratch;
+
+use scratch::Scratch;
 
 type Requests = Arc<Mutex<Vec<Value>>>;
 
@@ -28,13 +33,12 @@ enum Pam {
     Authenticated,
 }
 
-/// A stand-in greetd at a new socket; returns the socket and every request it got, in order.
-fn greetd(tag: &str, fingerprint: bool) -> (PathBuf, Requests) {
-    let dir = std::env::temp_dir().join(format!("legionctl-greeter-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("greetd.sock");
-    let listener = UnixListener::bind(&path).unwrap();
+/// A stand-in greetd at `greetd.sock` in a new folder; returns the folder and every request it got, in order.
+fn greetd(tag: &str, fingerprint: bool) -> (Scratch, Requests) {
+    let dir = Scratch::new(
+        std::env::temp_dir().join(format!("legionctl-greeter-{tag}-{}", std::process::id())),
+    );
+    let listener = UnixListener::bind(dir.join("greetd.sock")).unwrap();
     let requests = Requests::default();
     let seen = requests.clone();
     std::thread::spawn(move || {
@@ -92,7 +96,7 @@ fn greetd(tag: &str, fingerprint: bool) -> (PathBuf, Requests) {
             stream.write_all(&body).unwrap();
         }
     });
-    (path, requests)
+    (dir, requests)
 }
 
 fn gnome() -> Session {
@@ -122,7 +126,8 @@ fn password() -> Auth {
 
 #[test]
 fn a_password_login_starts_the_session_with_its_command_and_environment() {
-    let (socket, requests) = greetd("password", false);
+    let (stand_in, requests) = greetd("password", false);
+    let socket = stand_in.join("greetd.sock");
     let mut g = Greetd::connect(&socket).unwrap();
     assert_eq!(g.create_session("alice").unwrap(), password());
     assert_eq!(g.respond(Some("right".into())).unwrap(), Auth::Done);
@@ -141,7 +146,8 @@ fn a_password_login_starts_the_session_with_its_command_and_environment() {
 /// After a wrong password greetd keeps the failed session: the client cancels it, so the next try is a new session.
 #[test]
 fn a_wrong_password_is_refused_and_the_next_try_logs_in() {
-    let (socket, requests) = greetd("retry", false);
+    let (stand_in, requests) = greetd("retry", false);
+    let socket = stand_in.join("greetd.sock");
     let mut g = Greetd::connect(&socket).unwrap();
     g.create_session("alice").unwrap();
     assert_eq!(
@@ -166,7 +172,8 @@ fn a_wrong_password_is_refused_and_the_next_try_logs_in() {
 /// PAM asks for the password (the reader gave up).
 #[test]
 fn a_fingerprint_message_comes_first_then_the_password() {
-    let (socket, requests) = greetd("fingerprint", true);
+    let (stand_in, requests) = greetd("fingerprint", true);
+    let socket = stand_in.join("greetd.sock");
     let mut g = Greetd::connect(&socket).unwrap();
     assert_eq!(
         g.create_session("alice").unwrap(),
@@ -182,7 +189,8 @@ fn a_fingerprint_message_comes_first_then_the_password() {
 
 #[test]
 fn a_cancelled_login_lets_another_user_start_one() {
-    let (socket, requests) = greetd("cancel", false);
+    let (stand_in, requests) = greetd("cancel", false);
+    let socket = stand_in.join("greetd.sock");
     let mut g = Greetd::connect(&socket).unwrap();
     g.create_session("alice").unwrap();
     g.cancel().unwrap();
@@ -205,7 +213,8 @@ fn desktop(dir: &Path, id: &str, body: &str) {
 /// user name, Enter, the password, Enter: greetd starts COSMIC's command.
 #[gpui_kit::test]
 fn the_screen_logs_in_with_the_keyboard_and_starts_the_chosen_session(cx: &mut TestAppContext) {
-    let (socket, requests) = greetd("screen", false);
+    let (stand_in, requests) = greetd("screen", false);
+    let socket = stand_in.join("greetd.sock");
     let dir = socket.with_file_name("wayland-sessions");
     std::fs::create_dir_all(&dir).unwrap();
     desktop(

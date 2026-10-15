@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use common::Operator;
+use common::scratch::Scratch;
 use serde_json::{Value, json};
 
 fn write(path: &Path, text: &str) {
@@ -36,8 +37,10 @@ fn git(home: &Path, dir: &Path, args: &[&str]) {
 /// The operator with its own HOME (workspaces under it, the stand-in agent as `fake` of config session.acp) and a
 /// repository with one commit on main.
 fn lab(tag: &str) -> (Operator, PathBuf, PathBuf) {
-    let home = Path::new("/var/tmp").join(format!("legionctl-tui-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
+    let home = Scratch::new(format!(
+        "/var/tmp/legionctl-tui-{tag}-{}",
+        std::process::id()
+    ));
     write(
         &home.join(".gitconfig"),
         "[user]\n  name = Test\n  email = test@example.com\n[init]\n  defaultBranch = main\n",
@@ -67,16 +70,18 @@ fn lab(tag: &str) -> (Operator, PathBuf, PathBuf) {
     .unwrap();
     std::fs::create_dir_all(home.join("root")).unwrap();
     let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integrations/agent-plugin");
-    let op = Operator::start(
+    let mut op = Operator::start(
         &format!("tui-{tag}"),
         &[
             ("LEGIONCTL_SYSROOT", home.join("root").into()),
-            ("HOME", home.clone().into()),
+            ("HOME", home.as_os_str().to_owned()),
             ("PATH", path),
             ("LEGIONCTL_PLUGIN", plugin.into()),
         ],
     );
-    (op, home, repo)
+    let path = home.to_path_buf();
+    op.held.push(home);
+    (op, path, repo)
 }
 
 /// Runs `legionctl <args>` in a 200x50 pty and does each step in order: wait until the screen shows `wait`, run the

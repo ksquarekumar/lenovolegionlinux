@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use common::Operator;
+use common::scratch::Scratch;
 use serde_json::Value;
 
 fn write(path: &Path, text: &str) {
@@ -23,15 +24,16 @@ fn shipped_plugin() -> PathBuf {
 /// An operator with its own HOME, a git repository, and the agent plugin at `plugin`.
 struct Lab {
     op: Operator,
-    home: PathBuf,
+    home: Scratch,
     repo: PathBuf,
 }
 
 impl Lab {
     fn new(tag: &str, plugin: &Path) -> Lab {
-        let home =
-            Path::new("/var/tmp").join(format!("legionctl-agents-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
+        let home = Scratch::new(format!(
+            "/var/tmp/legionctl-agents-{tag}-{}",
+            std::process::id()
+        ));
         let repo = home.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         assert!(
@@ -47,7 +49,7 @@ impl Lab {
             &format!("ag-{tag}"),
             &[
                 ("LEGIONCTL_SYSROOT", home.join("root").into()),
-                ("HOME", home.clone().into()),
+                ("HOME", home.as_os_str().to_owned()),
                 ("PATH", std::env::var_os("PATH").unwrap()),
                 ("LEGIONCTL_PLUGIN", OsString::from(plugin)),
             ],
@@ -388,13 +390,14 @@ fn the_archetype_files_carry_only_the_frontmatter_fields_that_plugin_agents_hono
     drop(lab);
 
     // a copy with a field that plugin agents ignore, and a ref that is not there
-    let copy =
-        Path::new("/var/tmp").join(format!("legionctl-agents-plugin-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&copy);
+    let copy = Scratch::new(format!(
+        "/var/tmp/legionctl-agents-plugin-{}",
+        std::process::id()
+    ));
     assert!(
         Command::new("cp")
             .arg("-r")
-            .arg(shipped_plugin())
+            .arg(shipped_plugin().join("."))
             .arg(&copy)
             .status()
             .unwrap()
@@ -427,5 +430,4 @@ fn the_archetype_files_carry_only_the_frontmatter_fields_that_plugin_agents_hono
         lines[1].ends_with("ui-composer.md: the ref agent-refs/missing.md does not exist"),
         "{lines:?}"
     );
-    let _ = std::fs::remove_dir_all(&copy);
 }

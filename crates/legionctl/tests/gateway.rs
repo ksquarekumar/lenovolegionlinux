@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use common::Operator;
+use common::scratch::Scratch;
 use provider::{Kill, free_port};
 use serde_json::{Value, json};
 
@@ -83,17 +84,16 @@ fn provider_calls(log: &Path) -> Vec<String> {
 struct Setup {
     _provider: Kill,
     op: Operator,
-    home: PathBuf,
+    home: Scratch,
     port: u16,
     log: PathBuf,
 }
 
 fn setup(tag: &str) -> Setup {
-    let home = PathBuf::from(format!(
+    let home = Scratch::new(format!(
         "/var/tmp/legionctl-gateway-{tag}-{}",
         std::process::id()
     ));
-    let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(home.join(".config/legionctl")).unwrap();
     let (provider_port, port) = (free_port(), free_port());
     let log = home.join("provider.log");
@@ -143,7 +143,10 @@ fn setup(tag: &str) -> Setup {
         std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
     )
     .unwrap();
-    let op = Operator::start(tag, &[("HOME", home.clone().into()), ("PATH", path)]);
+    let op = Operator::start(
+        tag,
+        &[("HOME", home.as_os_str().to_owned()), ("PATH", path)],
+    );
     op.ok(&["load"]);
     wait_for(provider_port);
     wait_for(port);

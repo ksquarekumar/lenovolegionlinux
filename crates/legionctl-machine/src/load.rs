@@ -449,7 +449,9 @@ mod tests {
         assert_eq!(why, vec!["I/O stalls (full) 65%".to_string()]);
 
         // the cgroup tree of that measurement: the container stalls, the rest of the system does not
-        let dir = std::env::temp_dir().join(format!("legionctl-io-source-{}", std::process::id()));
+        let dir = crate::scratch::Scratch::new(
+            std::env::temp_dir().join(format!("legionctl-io-source-{}", std::process::id())),
+        );
         let id = "09bd9c9baa5f59137a2440fe5cc44399965edc74eb94f4a04559353cd7d099ef";
         for (cgroup, some) in [
             ("", 28.6),
@@ -476,6 +478,5 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sample_io(&root, Some(&path)).1, Some(0));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

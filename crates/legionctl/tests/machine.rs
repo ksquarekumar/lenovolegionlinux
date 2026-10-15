@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use common::Operator;
+use common::scratch::Scratch;
 
 const FIXTURE: &str = "../../tests/fixtures/sysroot-82wq-2026-10-12";
 const PROFILE: &str = "../../profiles/lenovo-82wq-legion-pro-7-16irx8h.json";
@@ -18,7 +19,7 @@ const INSTALLED_LAYERS: &str = "usr/share/legionctl/configsets/lenovo-82wq-legio
 
 struct Machine {
     tag: &'static str,
-    dir: PathBuf,
+    dir: Scratch,
 }
 
 fn copy_tree(from: &Path, to: &Path) {
@@ -38,9 +39,8 @@ fn copy_tree(from: &Path, to: &Path) {
 }
 
 impl Drop for Machine {
-    /// As root, the BPF filesystem the daemon pinned into goes with the machine (and the pinned programs detach). Then
-    /// the machine's folder goes: each one has more than 1000 files, and runs of many test processes filled the inodes
-    /// of /tmp.
+    /// As root, the BPF filesystem the daemon pinned into goes with the machine (and the pinned programs detach), before
+    /// the machine's folder goes.
     fn drop(&mut self) {
         if std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/proc/self").unwrap()) == 0 {
             let _ = std::process::Command::new("umount")
@@ -48,15 +48,14 @@ impl Drop for Machine {
                 .stderr(std::process::Stdio::null())
                 .status();
         }
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
 impl Machine {
     fn new(tag: &'static str) -> Machine {
-        let dir =
-            std::env::temp_dir().join(format!("legionctl-machine-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = Scratch::new(
+            std::env::temp_dir().join(format!("legionctl-machine-{tag}-{}", std::process::id())),
+        );
         copy_tree(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE),
             &dir.join("root"),
@@ -864,8 +863,8 @@ fn a_daemon_older_than_a_source_it_was_built_from_is_refused() {
         .map(|s| std::fs::metadata(s).unwrap().modified().unwrap())
         .max()
         .unwrap();
-    let dir = std::env::temp_dir().join(format!("legionctl-stale-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir =
+        Scratch::new(std::env::temp_dir().join(format!("legionctl-stale-{}", std::process::id())));
     let bin = dir.join("legionctl-system");
     std::fs::write(bin.with_extension("d"), &deps).unwrap();
     let file = std::fs::File::create(&bin).unwrap();
@@ -885,7 +884,6 @@ fn a_daemon_older_than_a_source_it_was_built_from_is_refused() {
     // built after it: accepted
     file.set_modified(changed).unwrap();
     assert_eq!(crate::common::fresh(&bin), bin);
-    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 /// Safe mode: after repeated failures systemd runs `legionctl-system --safe`, which hands the machine to the
@@ -2398,7 +2396,8 @@ mod operator_and_daemon {
         let (_stand_ins, _asked, _processes) = start(&m).await;
         let op = on_bus(&m, "blockio");
         // on a disk: /tmp can be a tmpfs
-        let file = PathBuf::from(format!("/var/tmp/legionctl-dd-{}", std::process::id()));
+        let scratch = Scratch::new(format!("/var/tmp/legionctl-dd-{}", std::process::id()));
+        let file = scratch.join("dd");
         std::fs::write(&file, b"").unwrap();
         // the disk of the file: its partition's sysfs path is .../block/<disk>[/<partition>]
         let dev = std::fs::metadata(&file).unwrap().dev();
@@ -2433,7 +2432,6 @@ mod operator_and_daemon {
         );
         let out = op.cli(&["monitor", "--interval-ms", "1500", "--json"]);
         drop(dd);
-        let _ = std::fs::remove_file(&file);
         let sample = &serde_json::from_slice::<Value>(&out.stdout).unwrap()[0];
         let count = sample["io_latency"][&disk]["count"]
             .as_u64()

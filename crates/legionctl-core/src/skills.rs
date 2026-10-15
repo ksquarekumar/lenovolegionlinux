@@ -91,7 +91,9 @@ mod tests {
 
     #[test]
     fn reads_the_claude_plugin_registry() {
-        let home = std::env::temp_dir().join(format!("legionctl-skills-{}", std::process::id()));
+        let home = crate::scratch::Scratch::new(
+            std::env::temp_dir().join(format!("legionctl-skills-{}", std::process::id())),
+        );
         std::fs::create_dir_all(home.join(".claude/plugins")).unwrap();
         std::fs::write(
             home.join(".claude/plugins/installed_plugins.json"),
@@ -102,6 +104,5 @@ mod tests {
             claude_plugin_dir(&home),
             Some(PathBuf::from("/x/legionctl/0.4.0"))
         );
-        let _ = std::fs::remove_dir_all(&home);
     }
 }

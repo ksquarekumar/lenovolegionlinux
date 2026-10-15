@@ -272,8 +272,9 @@ mod tests {
 
     #[test]
     fn custom_command_actions_run_in_order_and_failures_stay_contained() {
-        let dir = std::env::temp_dir().join(format!("legionctl-hooks-run-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::scratch::Scratch::new(
+            std::env::temp_dir().join(format!("legionctl-hooks-run-{}", std::process::id())),
+        );
         let dirs = Dirs {
             system: dir.join("etc"),
             user: dir.join("user"),
@@ -305,6 +306,5 @@ mod tests {
             ["broken", "hello"],
             "removing an action drops its bindings"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

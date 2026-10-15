@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use common::Operator;
+use common::scratch::Scratch;
 use serde_json::{Value, json};
 
 fn write(path: &Path, text: &str) {
@@ -36,15 +37,16 @@ fn claude_hook(event: &str, fields: &Value) -> String {
 /// An operator with its own HOME and a repository with one commit on main.
 struct Lab {
     op: Operator,
-    home: PathBuf,
+    home: Scratch,
     repo: PathBuf,
 }
 
 impl Lab {
     fn new(tag: &str) -> Lab {
-        let home =
-            Path::new("/var/tmp").join(format!("legionctl-thread-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
+        let home = Scratch::new(format!(
+            "/var/tmp/legionctl-thread-{tag}-{}",
+            std::process::id()
+        ));
         write(
             &home.join(".gitconfig"),
             "[user]\n  name = Test\n  email = test@example.com\n[init]\n  defaultBranch = main\n",
@@ -224,12 +226,6 @@ impl Lab {
             .iter()
             .find(|m| m["name"] == name)
             .unwrap()
-    }
-}
-
-impl Drop for Lab {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.home);
     }
 }
 
@@ -571,7 +567,7 @@ fn the_outbox_survives_a_restart_and_peers_on_one_dossier_see_each_other_with_th
         "b",
         &["send", "main0", "hint", "the lexer is done on topic b"],
     );
-    let home = lab.home.clone();
+    let home = lab.home.to_path_buf();
     drop(std::mem::replace(
         &mut lab.op,
         Lab::operator("peers2", &home),

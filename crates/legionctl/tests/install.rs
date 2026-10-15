@@ -5,18 +5,24 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
+use scratch::Scratch;
+
 const WRAPPER: &str = "../../packaging/install/legionctl-install";
 const SUDOERS: &str = "../../packaging/install/sudoers";
 const PACKAGE: &str = "legionctl-1-1-x86_64.pkg.tar.zst";
 
 struct Lab {
-    dir: PathBuf,
+    dir: Scratch,
 }
 
 impl Lab {
     fn new() -> Lab {
-        let dir = std::env::temp_dir().join(format!("legionctl-install-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = Scratch::new(
+            std::env::temp_dir().join(format!("legionctl-install-{}", std::process::id())),
+        );
         let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         // what tmpfiles.d makes in the real root

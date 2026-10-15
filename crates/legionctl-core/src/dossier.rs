@@ -1019,8 +1019,9 @@ mod tests {
         assert_eq!(line_hash("hello"), "accd");
         assert_eq!(line_hash("alpha"), "0cf8");
 
-        let dir = std::env::temp_dir().join(format!("legionctl-dossier-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::scratch::Scratch::new(
+            std::env::temp_dir().join(format!("legionctl-dossier-{}", std::process::id())),
+        );
         let config: crate::config::Config = crate::config::resolve(
             &crate::config::Dirs {
                 system: dir.join("etc"),
@@ -1075,7 +1076,6 @@ mod tests {
             ws.check("port").is_empty(),
             "a new dossier has every ledger section"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A v12 file (before P5's threads) and a v13 file (with them) reach v14: the threads table is there, and the
@@ -1083,8 +1083,9 @@ mod tests {
     /// evidence again; the kills keep their test names.
     #[test]
     fn v12_and_v13_kills_and_accepts_stay_without_a_key() {
-        let dir = std::env::temp_dir().join(format!("legionctl-ws-v13-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::scratch::Scratch::new(
+            std::env::temp_dir().join(format!("legionctl-ws-v13-{}", std::process::id())),
+        );
         std::fs::create_dir_all(&dir).unwrap();
         for version in [12, 13] {
             let path = dir.join(format!("v{version}.db"));
@@ -1138,7 +1139,6 @@ mod tests {
                 .unwrap();
             assert_eq!(accept, ("a".into(), None, None), "v{version}");
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The user's v9 file (one open workspace per dossier and repository) becomes the current version in place: its
@@ -1146,8 +1146,9 @@ mod tests {
     /// a new file's.
     #[test]
     fn a_v9_workspace_database_takes_topic_workspaces_and_keeps_its_rows() {
-        let dir = std::env::temp_dir().join(format!("legionctl-ws-v9-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::scratch::Scratch::new(
+            std::env::temp_dir().join(format!("legionctl-ws-v9-{}", std::process::id())),
+        );
         std::fs::create_dir_all(&dir).unwrap();
         let (old, new) = (dir.join("old.db"), dir.join("new.db"));
         let v9 = rusqlite::Connection::open(&old).unwrap();
@@ -1222,6 +1223,5 @@ mod tests {
             columns
         };
         assert_eq!(shape(conn), shape(Db::open(&new, SCHEMA).unwrap().conn()));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

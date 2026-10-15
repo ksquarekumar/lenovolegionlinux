@@ -33,6 +33,11 @@ pub mod vfio;
 pub mod windows;
 pub mod winvm;
 
+/// The test folder guard that the integration tests use too.
+#[cfg(test)]
+#[path = "../../legionctl/tests/common/scratch.rs"]
+mod scratch;
+
 #[must_use]
 pub fn human_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];

@@ -658,8 +658,9 @@ mod tests {
     /// and keeps its data; a file at this version opens with its data.
     #[test]
     fn a_database_of_another_schema_version_is_refused_and_kept() {
-        let dir = std::env::temp_dir().join(format!("legionctl-db-version-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::scratch::Scratch::new(
+            std::env::temp_dir().join(format!("legionctl-db-version-{}", std::process::id())),
+        );
         let path = dir.join("operator.db");
         let db = Db::open(&path, OPERATOR).unwrap();
         db.record("cli", "kept", &serde_json::json!({})).unwrap();
@@ -697,8 +698,9 @@ mod tests {
     /// database that many connections open at once gets its schema once, and every open succeeds.
     #[test]
     fn many_connections_that_open_a_new_database_at_once_all_succeed() {
-        let dir = std::env::temp_dir().join(format!("legionctl-db-race-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::scratch::Scratch::new(
+            std::env::temp_dir().join(format!("legionctl-db-race-{}", std::process::id())),
+        );
         let path = dir.join("operator.db");
         let start = std::sync::Barrier::new(16);
         std::thread::scope(|scope| {

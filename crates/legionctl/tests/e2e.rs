@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use common::Operator;
+use common::scratch::Scratch;
 use serde_json::{Value, json};
 
 /// A hook payload as Claude Code sends it (recorded 2026-10-13, anonymized in tests/fixtures/claude-code-hooks), with
@@ -55,12 +56,21 @@ fn path_with_build() -> OsString {
     .unwrap()
 }
 
+/// A new home: outside /tmp (private in a session sandbox) and outside any git repository, like a real home.
+fn home(tag: &str) -> Scratch {
+    Scratch::new(format!(
+        "/var/tmp/legionctl-e2e-{tag}-{}",
+        std::process::id()
+    ))
+}
+
+/// The operator of a new home, which goes with the operator.
 fn operator(tag: &str) -> (Operator, PathBuf) {
-    // outside /tmp (private in a session sandbox) and outside any git repository, like a real home
-    let home = Path::new("/var/tmp").join(format!("legionctl-e2e-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
-    std::fs::create_dir_all(&home).unwrap();
-    (operator_in(tag, &home), home)
+    let home = home(tag);
+    let mut op = operator_in(tag, &home);
+    let path = home.to_path_buf();
+    op.held.push(home);
+    (op, path)
 }
 
 /// The operator of `home`, which keeps its files (an operator that starts again reads the config anew).
@@ -70,9 +80,11 @@ fn operator_in(tag: &str, home: &Path) -> Operator {
 
 /// An operator that reaches this machine's Docker, for the tests that build and run their own images and containers.
 fn docker_operator(tag: &str) -> (Operator, PathBuf) {
-    let (op, home) = operator(tag);
-    drop(op);
-    (operator_with(tag, &home, &docker()), home)
+    let home = home(tag);
+    let mut op = operator_with(tag, &home, &docker());
+    let path = home.to_path_buf();
+    op.held.push(home);
+    (op, path)
 }
 
 /// This machine's Docker (the harness points every other operator nowhere).
@@ -994,7 +1006,8 @@ fn the_wire_format_matches_the_committed_schema() {
 /// next start.
 #[test]
 fn the_event_log_pages_and_keeps_only_its_days() {
-    let (op, home) = operator("pages");
+    let home = home("pages");
+    let op = operator_in("pages", &home);
     for name in ["one", "two", "three"] {
         let out = op.run(
             &home,
@@ -1047,7 +1060,7 @@ fn the_event_log_pages_and_keeps_only_its_days() {
     let again = Operator::start(
         "pages2",
         &[
-            ("HOME", home.clone().into()),
+            ("HOME", home.as_os_str().to_owned()),
             ("LEGIONCTL_SYSROOT", home.join("root").into()),
             ("PATH", path_with_build()),
         ],
@@ -2115,8 +2128,7 @@ fn a_test_run_that_does_not_build_fails_with_the_compiler_error() {
 #[test]
 #[ignore = "needs cargo-mutants; CI does not install it"]
 fn cargo_mutants_on_a_fixture_crate_records_the_tests_that_kill_its_mutants() {
-    let (op, home) = operator("realmutants");
-    drop(op);
+    let home = home("realmutants");
     let toolchain: Vec<(&str, OsString)> = ["RUSTUP_HOME", "CARGO_HOME"]
         .iter()
         .map(|k| {
@@ -2963,7 +2975,8 @@ fn sandbox_calls(home: &Path) -> usize {
 /// to make one. Needs docker and `make static`.
 #[test]
 fn sessions_in_a_container_work_on_the_mounted_workspace_behind_the_git_gate() {
-    let (op, home) = docker_operator("container");
+    let home = home("container");
+    let op = operator_with("container", &home, &docker());
     let (_provider, ports) = gateway_ports(&home);
     let repo = container_repository(&home, ports);
     drop(op);
@@ -3094,11 +3107,12 @@ fn vm_repository(
     again: &'static str,
 ) -> (Operator, PathBuf, PathBuf, provider::Kill) {
     let image = debian_cloud_image();
-    let (op, home) = operator(tag);
+    let home = home(tag);
+    let op = operator_in(tag, &home);
     let (provider, ports) = gateway_ports(&home);
     let repo = container_repository(&home, ports);
     drop(op);
-    let op = operator_in(again, &home);
+    let mut op = operator_in(again, &home);
     let virtiofsd = ["/usr/lib/virtiofsd", "/usr/libexec/virtiofsd"]
         .into_iter()
         .find(|p| Path::new(p).exists())
@@ -3111,7 +3125,9 @@ fn vm_repository(
         }}})
         .to_string(),
     );
-    (op, home, repo, provider)
+    let path = home.to_path_buf();
+    op.held.push(home);
+    (op, path, repo, provider)
 }
 
 /// W5 part 3 (note 18): `workspace pack --as vm` makes the repository's disk from a cloud image (checked against its
@@ -3205,7 +3221,8 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
 /// with it in the same session (its ACP session loaded, told that it was cut off) and records how it ended.
 #[test]
 fn a_headless_run_cut_off_by_a_restart_goes_on_in_its_session() {
-    let (op, home) = operator("jobs");
+    let home = home("jobs");
+    let op = operator_in("jobs", &home);
     let repo = repository(&home);
     let agent =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-acp-agent.py");
@@ -3255,7 +3272,7 @@ fn a_headless_run_cut_off_by_a_restart_goes_on_in_its_session() {
     let again = Operator::start(
         "jobs2",
         &[
-            ("HOME", home.clone().into()),
+            ("HOME", home.as_os_str().to_owned()),
             ("LEGIONCTL_SYSROOT", home.join("root").into()),
             ("PATH", path_with_keyring(&home)),
         ],
@@ -3819,8 +3836,10 @@ fn dossier_graph_keeps_each_status_change_with_its_session() {
 /// logs its arguments.
 #[test]
 fn plugin_installs_follow_the_allowlist() {
-    let home = Path::new("/var/tmp").join(format!("legionctl-e2e-plugins-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
+    let home = Scratch::new(format!(
+        "/var/tmp/legionctl-e2e-plugins-{}",
+        std::process::id()
+    ));
     let bin = home.join("bin");
     write(
         &bin.join("claude"),
@@ -3847,7 +3866,10 @@ fn plugin_installs_follow_the_allowlist() {
     let path =
         std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path_with_build())))
             .unwrap();
-    let op = Operator::start("plugins", &[("HOME", home.clone().into()), ("PATH", path)]);
+    let op = Operator::start(
+        "plugins",
+        &[("HOME", home.as_os_str().to_owned()), ("PATH", path)],
+    );
     let run = |args: &[&str]| op.run(&home, &[("HOME", home.to_str().unwrap())], args, "");
 
     for (id, why) in [
@@ -4616,8 +4638,10 @@ fn profile_listed_and_counted(op: &Operator, repo: &Path) {
 /// `secret-tool` keeps entries as files.
 #[test]
 fn account_logins_rest_in_the_keyring_and_come_back_refreshed() {
-    let home = Path::new("/var/tmp").join(format!("legionctl-e2e-keyring-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
+    let home = Scratch::new(format!(
+        "/var/tmp/legionctl-e2e-keyring-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&home).unwrap();
     let keyring = home.join("keyring");
     let path = path_with_keyring(&home);
@@ -4626,7 +4650,7 @@ fn account_logins_rest_in_the_keyring_and_come_back_refreshed() {
         Operator::start(
             tag,
             &[
-                ("HOME", home.clone().into()),
+                ("HOME", home.as_os_str().to_owned()),
                 ("LEGIONCTL_SYSROOT", home.join("root").into()),
                 ("PATH", path.clone()),
             ],
@@ -4920,7 +4944,7 @@ fn vm_test_base(image: &Path) -> PathBuf {
     if base.exists() {
         return base;
     }
-    let dir = Path::new("/var/tmp").join(format!("lc-kmod-base-{}", std::process::id()));
+    let dir = Scratch::new(format!("/var/tmp/lc-kmod-base-{}", std::process::id()));
     let seed = dir.join("seed");
     std::fs::create_dir_all(&seed).unwrap();
     write(
@@ -4964,7 +4988,6 @@ fn vm_test_base(image: &Path) -> PathBuf {
         &console[console.len().saturating_sub(4000)..]
     );
     std::fs::rename(&part, &base).unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
     base
 }
 
@@ -5028,8 +5051,7 @@ const LEGIONCTL_WMI_CHECKS: [&str; 46] = [
 #[ignore = "boots VMs (KVM, QEMU, a cloud image) and builds a kernel module: CI runs it in the VM step"]
 fn the_legionctl_wmi_module_gives_the_legion_wmi_through_sysfs() {
     let base = vm_test_base(&debian_cloud_image());
-    let dir = Path::new("/var/tmp").join(format!("lc-kmod-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = Scratch::new(format!("/var/tmp/lc-kmod-{}", std::process::id()));
     let test = dir.join("test");
     let module = test.join("legionctl-wmi");
     std::fs::create_dir_all(&module).unwrap();
@@ -5105,7 +5127,6 @@ fn the_legionctl_wmi_module_gives_the_legion_wmi_through_sysfs() {
         "results:\n{report}\nconsole:\n{}",
         &console[console.len().saturating_sub(3000)..]
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The checks of fixtures/daemon-sandbox/run.sh, in their order: each must report ok.
@@ -5136,8 +5157,7 @@ const DAEMON_SANDBOX_CHECKS: [&str; 14] = [
 #[ignore = "boots a VM (KVM, QEMU, a cloud image) and runs the daemon under systemd: CI runs it in the VM step"]
 fn under_its_own_unit_the_daemon_writes_the_greeter_the_esp_and_the_rules() {
     let base = vm_test_base(&debian_cloud_image());
-    let dir = Path::new("/var/tmp").join(format!("lc-sandbox-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = Scratch::new(format!("/var/tmp/lc-sandbox-{}", std::process::id()));
     let test = dir.join("test");
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let profile = "lenovo-82wq-legion-pro-7-16irx8h";
@@ -5206,5 +5226,75 @@ fn under_its_own_unit_the_daemon_writes_the_greeter_the_esp_and_the_rules() {
         "results:\n{report}\nconsole:\n{}",
         &console[console.len().saturating_sub(3000)..]
     );
-    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// todo-118: the folders of a test (the operator's runtime folder and the HOME it holds) go when their owner is
+/// dropped and when the test panics; a failed test keeps them only with `LEGIONCTL_TEST_KEEP=1`, and says where.
+/// The test runs its own body in two child processes of this binary (without and with the variable), so the
+/// outer environment does not change the result.
+#[test]
+fn test_folders_go_with_their_owner_and_a_failed_test_keeps_them_only_when_asked() {
+    const NAME: &str =
+        "test_folders_go_with_their_owner_and_a_failed_test_keeps_them_only_when_asked";
+    if std::env::var_os("LEGIONCTL_TEST_CHILD").is_some() {
+        let folders = |op: &Operator, home: PathBuf| [op.runtime.to_path_buf(), home];
+        let (op, home) = operator("dropped");
+        let made = folders(&op, home);
+        assert!(made.iter().all(|f| f.is_dir()), "{made:?}");
+        drop(op);
+        assert!(
+            made.iter().all(|f| !f.exists()),
+            "left after drop: {made:?}"
+        );
+        let mut made = Vec::new();
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (op, home) = operator("panicked");
+            made.extend(folders(&op, home));
+            panic!("the test failed");
+        }));
+        assert!(failed.is_err());
+        assert!(
+            made.iter().all(|f| !f.exists()),
+            "left after a panic: {made:?}"
+        );
+        return;
+    }
+    let child = |keep: bool| {
+        let mut c = Command::new(std::env::current_exe().unwrap());
+        c.args([NAME, "--exact", "--nocapture", "--test-threads", "1"])
+            .env("LEGIONCTL_TEST_CHILD", "1")
+            .env_remove("LEGIONCTL_TEST_KEEP");
+        if keep {
+            c.env("LEGIONCTL_TEST_KEEP", "1");
+        }
+        let out = c.output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        (out.status.success(), stderr)
+    };
+    let (passed, stderr) = child(false);
+    assert!(passed, "{stderr}");
+    let (passed, stderr) = child(true);
+    let kept: Vec<PathBuf> = stderr
+        .lines()
+        .filter_map(|l| l.strip_prefix("LEGIONCTL_TEST_KEEP=1: kept "))
+        .map(PathBuf::from)
+        .collect();
+    for f in &kept {
+        assert!(f.is_dir(), "{f:?} is said kept but is not there");
+        std::fs::remove_dir_all(f).unwrap();
+    }
+    assert!(
+        !passed,
+        "with LEGIONCTL_TEST_KEEP=1 the panic must keep the folders: {stderr}"
+    );
+    let names: Vec<String> = kept
+        .iter()
+        .map(|f| f.file_name().unwrap().to_string_lossy().into_owned())
+        .map(|n| n[..n.rfind('-').unwrap()].to_string())
+        .collect();
+    assert_eq!(
+        names,
+        ["legionctl-e2e-panicked", "lc-panicked"],
+        "only the folders of the failed part are kept, the HOME then the runtime: {stderr}"
+    );
 }

@@ -24,3 +24,8 @@ pub mod setup;
 pub mod skills;
 pub mod thread;
 pub mod workspace;
+
+/// The test folder guard that the integration tests use too.
+#[cfg(test)]
+#[path = "../../legionctl/tests/common/scratch.rs"]
+mod scratch;

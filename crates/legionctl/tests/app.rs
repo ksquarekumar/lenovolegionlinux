@@ -8,6 +8,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use common::Operator;
+use common::scratch::Scratch;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
     AppContext, Entity, TestAppContext, VisualTestContext, WindowHandle, WindowOptions,
@@ -59,8 +60,8 @@ fn wait(
 /// The operator on a copy of the recorded machine, unplugged with the AC policy still applied, without a daemon; `tag`
 /// keeps the folders of tests that run at the same time apart.
 fn unplugged_machine(tag: &'static str) -> Operator {
-    let dir = std::env::temp_dir().join(format!("legionctl-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir =
+        Scratch::new(std::env::temp_dir().join(format!("legionctl-{tag}-{}", std::process::id())));
     let root = dir.join("root");
     copy_tree(&Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE), &root);
     let installed = root.join("usr/share/legionctl/profiles/lenovo-82wq-legion-pro-7-16irx8h.json");
@@ -77,7 +78,7 @@ fn unplugged_machine(tag: &'static str) -> Operator {
     std::fs::write(root.join("sys/class/power_supply/ADP0/online"), "0\n").unwrap();
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    Operator::start(
+    let mut op = Operator::start(
         tag,
         &[
             ("PATH", bin.into()),
@@ -85,7 +86,9 @@ fn unplugged_machine(tag: &'static str) -> Operator {
             ("LEGIONCTL_SYSROOT", root.into()),
             // never this machine's Docker (its WinBoat): the pages list containers and run their actions
         ],
-    )
+    );
+    op.held.push(dir);
+    op
 }
 
 #[gpui_kit::test]
