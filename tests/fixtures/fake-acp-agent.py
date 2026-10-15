@@ -8,7 +8,8 @@ line by line, 0.1 s apart; a prompt that starts with WAIT holds after the first 
 working folder (at most 30 s), and one that starts with SLOW waits 30 s first (a long run, for the test that stops the
 operator in the middle of one). It can load its sessions (kept in `.fake-acp-sessions` in the working folder, so a
 new adapter process finds them): session/load replays the earlier prompts and a REPLAYED line before it answers.
-Like the real adapters, it does not end when its input closes: the operator must end the session.
+After session/new and session/load it offers two commands (available_commands_update): /plan <what to plan> and
+/status. Like the real adapters, it does not end when its input closes: the operator must end the session.
 """
 
 import json
@@ -145,5 +146,11 @@ for line in sys.stdin:
         continue
     if ident is not None:
         send({"jsonrpc": "2.0", "id": ident, "result": result})
+    if method in ("session/new", "session/load"):
+        # as the real adapters: the session's commands come after session/new or session/load
+        update(result.get("sessionId", loaded), "available_commands_update", availableCommands=[
+            {"name": "plan", "description": "Plan a change", "input": {"hint": "what to plan"}},
+            {"name": "status", "description": "Show the session state"},
+        ])
 
 threading.Event().wait()

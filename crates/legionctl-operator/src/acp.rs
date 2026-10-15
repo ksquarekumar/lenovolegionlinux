@@ -9,14 +9,14 @@ use std::time::Instant;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    CloseSessionRequest, ContentBlock, ContentChunk, InitializeRequest, LoadSessionRequest,
-    McpServer, McpServerStdio, NewSessionRequest, PermissionOptionKind, PromptRequest,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    AvailableCommandInput, CloseSessionRequest, ContentBlock, ContentChunk, InitializeRequest,
+    LoadSessionRequest, McpServer, McpServerStdio, NewSessionRequest, PermissionOptionKind,
+    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate, TextContent,
 };
 use agent_client_protocol::{AcpAgent, Client};
 use anyhow::{Context, Result};
-use legionctl_api::RunOutput;
+use legionctl_api::{AgentCommand, RunOutput};
 use legionctl_core::db::Db;
 use legionctl_core::dossier::Dossiers;
 use legionctl_core::session::{self, Inside, Launch};
@@ -96,6 +96,28 @@ impl Live {
 
     /// The answer's chunks and the tool calls, as they come.
     fn update(&mut self, update: SessionUpdate) {
+        // the agent sends its commands after session/new or session/load, before the prompt
+        if let SessionUpdate::AvailableCommandsUpdate(list) = &update {
+            let commands: Vec<AgentCommand> = list
+                .available_commands
+                .iter()
+                .map(|c| AgentCommand {
+                    name: c.name.clone(),
+                    description: c.description.clone(),
+                    hint: match &c.input {
+                        Some(AvailableCommandInput::Unstructured(input)) => {
+                            Some(input.hint.clone())
+                        }
+                        _ => None,
+                    },
+                })
+                .collect();
+            self.record(
+                "session.commands",
+                serde_json::json!({ "commands": commands }),
+            );
+            return;
+        }
         if !self.prompting {
             return;
         }
@@ -133,17 +155,7 @@ async fn drive(
 ) -> Result<RunOutput> {
     let started = Instant::now();
     let (id, workdir) = (launch.id.clone(), launch.workdir.clone());
-    let servers: Vec<McpServer> = launch.mcp["mcpServers"]
-        .as_object()
-        .into_iter()
-        .flatten()
-        .map(|(name, server)| {
-            let mut stdio = server.clone();
-            stdio["name"] = name.clone().into();
-            stdio["env"] = serde_json::json!([]);
-            serde_json::from_value::<McpServer>(stdio).with_context(|| format!("MCP server {name}"))
-        })
-        .collect::<Result<_>>()?;
+    let servers = servers(&launch)?;
     let agent = adapter(launch)?;
     let live = Arc::new(Mutex::new(Live {
         db: Db::open_default()?,
@@ -174,6 +186,13 @@ async fn drive(
                 .send_request(InitializeRequest::new(ProtocolVersion::V1))
                 .block_task()
                 .await?;
+            if input["load"] == true && !init.agent_capabilities.load_session {
+                return Err(anyhow::anyhow!(
+                    "the agent cannot load an ACP session, so the run cannot go on in {}",
+                    input["acp"]
+                )
+                .into());
+            }
             let loading = input["acp"]
                 .as_str()
                 .filter(|_| init.agent_capabilities.load_session)
@@ -222,7 +241,23 @@ async fn drive(
         text: live.text.clone(),
         ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         permissions: live.permissions.clone(),
+        acp: input["acp"].as_str().map(String::from),
     })
+}
+
+/// The session's MCP servers as ACP's `session/new` takes them.
+fn servers(launch: &Launch) -> Result<Vec<McpServer>> {
+    launch.mcp["mcpServers"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(name, server)| {
+            let mut stdio = server.clone();
+            stdio["name"] = name.clone().into();
+            stdio["env"] = serde_json::json!([]);
+            serde_json::from_value::<McpServer>(stdio).with_context(|| format!("MCP server {name}"))
+        })
+        .collect()
 }
 
 /// The adapter's process: the session's scope and sandbox, the git gate and the agent's ACP command.

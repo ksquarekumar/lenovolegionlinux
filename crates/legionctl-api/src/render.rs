@@ -1505,8 +1505,32 @@ impl Render for crate::RunOutput {
     fn text(&self) -> String {
         let mut out = vec![self.text.clone()];
         out.extend(self.permissions.iter().map(|p| format!("permission: {p}")));
+        if let Some(acp) = &self.acp {
+            out.push(format!(
+                "ACP session {acp}: give --acp {acp} to go on in it"
+            ));
+        }
         out.push(format!("session {} in {} ms", self.id, self.ms));
         out.join("\n")
+    }
+}
+
+impl Render for Vec<crate::AgentCommand> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "the agent offered no commands".into();
+        }
+        self.iter()
+            .map(|c| {
+                let hint = c
+                    .hint
+                    .as_deref()
+                    .map(|h| format!(" <{h}>"))
+                    .unwrap_or_default();
+                format!("/{}{hint}  {}", c.name, c.description)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 

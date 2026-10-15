@@ -41,7 +41,18 @@ fn client_only() -> Vec<Command> {
                     .required_unless_present("url")
                     .last(true),
             ),
-        Command::new("tui").about("Live dashboard"),
+        Command::new("tui")
+            .about("The thread screen: views, the thread's events, and a chat bar for / commands and the agent")
+            .arg(
+                Arg::new("thread")
+                    .long("thread")
+                    .value_parser(clap::value_parser!(i64))
+                    .help("The thread of pane 2 (thread list); default: the newest open thread"),
+            )
+            .arg(Arg::new("agent").long("agent").help(
+                "The agent that the chat bar talks to: a headless run (session run) of this agent of config session.acp",
+            ))
+            .arg(Arg::new("dossier").long("dossier").help("The dossier of the agent's runs")),
         // a session in a VM (W5): the host's runner and relay, and the guest's boot service; legionctl starts them
         Command::new("vm")
             .hide(true)
@@ -322,7 +333,7 @@ fn main() -> Result<()> {
                 },
             ));
         }
-        Some(("tui", _)) => return tui::run(),
+        Some(("tui", sub)) => return tui::run(sub),
         Some(("vm", sub)) => {
             let spec = sub.get_one::<String>("spec").context("the spec")?;
             let agent = sub
@@ -379,7 +390,7 @@ fn watch(client: &Client, name: &str, input: &serde_json::Value, json: bool) -> 
 
 /// An operation of the registry: called, then shown as JSON or text.
 fn operation(matches: &ArgMatches) -> Result<()> {
-    let (op, input) = cli::operation(matches)?.context("not an operation")?;
+    let (op, input) = cli::operation(matches, true)?.context("not an operation")?;
     let json = matches.get_flag("json");
     let client = Client::new("cli")?;
     if op.name == "sensors" && input["watch"] == true {

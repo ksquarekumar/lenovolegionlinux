@@ -811,6 +811,10 @@ pub struct SessionRunIn {
     /// run` sets one.
     #[serde(default)]
     pub tag: Option<String>,
+    /// The ACP session of an earlier run (its `acp`) to go on in: the agent loads it, so it keeps the conversation.
+    /// The run fails when the agent cannot load sessions.
+    #[serde(default)]
+    pub acp: Option<String>,
 }
 
 /// What a headless run gave back.
@@ -823,6 +827,18 @@ pub struct RunOutput {
     /// Each permission the agent asked for, and the answer (the sandbox and the gates are the boundary, so asks
     /// inside it are allowed).
     pub permissions: Vec<String>,
+    /// The agent's ACP session: give it as `--acp` to the next run to go on in it.
+    pub acp: Option<String>,
+}
+
+/// A command that the agent of a session offers (ACP `available_commands_update`); the client runs it with a
+/// prompt that starts with `/<name>`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AgentCommand {
+    pub name: String,
+    pub description: String,
+    /// What to type after the name, when the command takes input.
+    pub hint: Option<String>,
 }
 
 /// A session and whether its scope still runs.

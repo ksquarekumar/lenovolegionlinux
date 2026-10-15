@@ -3776,8 +3776,9 @@ impl Engine for Operator {
         let launch = store.start_session(&start, &resolved.config)?;
         let db = Db::open_default()?;
         db.issue_token(&launch.id, &token)?;
-        let job_input =
-            serde_json::json!({"session": launch.id, "prompt": input.prompt, "tag": input.tag});
+        // `load`: the caller asked to go on in `acp`, so an agent that cannot load it fails the run
+        let job_input = serde_json::json!({"session": launch.id, "prompt": input.prompt, "tag": input.tag,
+            "acp": input.acp, "load": input.acp.is_some()});
         let job = db.job_begin("session.run", &job_input)?;
         let out = self.runtime.block_on(crate::acp::run(
             launch,
@@ -3806,6 +3807,27 @@ impl Engine for Operator {
                 }
             })
             .collect())
+    }
+
+    fn session_commands(
+        &self,
+        _: &Ctx,
+        input: SessionIdIn,
+    ) -> Result<Vec<legionctl_api::AgentCommand>> {
+        anyhow::ensure!(
+            dossiers()?.sessions()?.iter().any(|s| s.id == input.id),
+            "no session {} (session list)",
+            input.id
+        );
+        let newest = Db::open_default()?.last_event(&EventFilter {
+            kinds: &["session.commands"],
+            field: Some(("$.session", &input.id)),
+            naming: None,
+        })?;
+        Ok(match newest {
+            Some(event) => serde_json::from_value(event.payload["commands"].clone())?,
+            None => Vec::new(),
+        })
     }
 
     fn session_stop(&self, _: &Ctx, input: SessionIdIn) -> Result<Lines> {

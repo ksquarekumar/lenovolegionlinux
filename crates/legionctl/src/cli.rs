@@ -267,11 +267,11 @@ pub fn command(client_only: Vec<Command>) -> Command {
         .subcommands(client_only)
 }
 
-/// The operation a parsed command line names, and its input.
+/// The operation a parsed command line names, and its input; `stdin` as in [`fill_client_fields`].
 ///
 /// # Errors
 /// A client-filled field cannot be filled (see [`fill_client_fields`]).
-pub fn operation(matches: &ArgMatches) -> Result<Option<(&'static OpInfo, Value)>> {
+pub fn operation(matches: &ArgMatches, stdin: bool) -> Result<Option<(&'static OpInfo, Value)>> {
     let mut words = Vec::new();
     let mut at = matches;
     while let Some((word, sub)) = at.subcommand() {
@@ -313,7 +313,7 @@ pub fn operation(matches: &ArgMatches) -> Result<Option<(&'static OpInfo, Value)
         }
     }
     let mut input = Value::Object(input);
-    fill_client_fields(op, &mut input, true)?;
+    fill_client_fields(op, &mut input, stdin)?;
     Ok(Some((op, input)))
 }
 

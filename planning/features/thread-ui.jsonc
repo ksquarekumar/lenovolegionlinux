@@ -3,19 +3,23 @@
   "$schema": "../feature.schema.json",
   "id": "thread-ui",
   "title": "Thread UI",
-  "status": "planned",
+  "status": "in-progress",
   "plan_rows": ["legionctl#todo-92"],
   "objectives": [{ "id": "O1", "text": "Humans and agents see one thread in the same views." }],
   "stories": [
     { "id": "S1", "text": "The TUI folds panes and runs an agent's ACP command.", "objectives": ["O1"],
-      "tests": ["test:crates/legionctl/tests/e2e.rs::the_thread_tui_folds_panes_and_runs_an_agent_command"] },
+      "tests": ["test:crates/legionctl/tests/tui.rs::the_thread_tui_sizes_its_panes_folds_them_and_grows_the_chat_bar",
+                "test:crates/legionctl/tests/tui.rs::the_thread_tui_runs_an_agent_command_and_a_registry_operation"] },
     { "id": "S2", "text": "The app thread page updates from the event stream; a view cannot bind a change.", "objectives": ["O1"],
       "tests": ["test:crates/legionctl/tests/app.rs::the_app_thread_page_updates_from_the_event_stream",
                 "test:crates/legionctl/tests/e2e.rs::a_view_cannot_bind_a_change_operation"] }
   ],
   "work_items": [
-    { "id": "P7", "text": "TUI triple pane, chat bar, / commands", "status": "planned", "stories": ["S1"], "units": [
-      { "key": "file:crates/legionctl/src/tui.rs", "change": "edit", "loc": 1200 }
+    { "id": "P7", "text": "TUI triple pane, chat bar, / commands", "status": "done", "stories": ["S1"], "units": [
+      { "key": "file:crates/legionctl/src/tui.rs", "change": "edit", "loc": 1200 },
+      { "key": "file:crates/legionctl-operator/src/acp.rs", "change": "edit" },
+      { "key": "op:session.commands", "change": "add" },
+      { "key": "file:crates/legionctl/tests/tui.rs", "change": "add" }
     ] },
     { "id": "P8", "text": "App thread page, views, ui-composer, import", "status": "planned", "stories": ["S2"], "depends_on": ["P7"], "units": [
       { "key": "file:crates/legionctl-app/src/thread.rs", "change": "add", "loc": 1200 },

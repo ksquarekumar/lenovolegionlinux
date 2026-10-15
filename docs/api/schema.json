@@ -11779,6 +11779,14 @@
           ],
           "description": "A tag for the run's live output events (`session.output`), so a client can follow them; `legionctl session\nrun` sets one.",
           "default": null
+        },
+        "acp": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The ACP session of an earlier run (its `acp`) to go on in: the agent loads it, so it keeps the conversation.\nThe run fails when the agent cannot load sessions.",
+          "default": null
         }
       },
       "required": [
@@ -11809,6 +11817,13 @@
             "type": "string"
           },
           "description": "Each permission the agent asked for, and the answer (the sandbox and the gates are the boundary, so asks\ninside it are allowed)."
+        },
+        "acp": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The agent's ACP session: give it as `--acp` to the next run to go on in it."
         }
       },
       "required": [
@@ -11897,6 +11912,52 @@
         ]
       },
       "title": "Array_of_SessionState",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "session.commands": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Session id (`session list`)."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "SessionIdIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "description": "A command that the agent of a session offers (ACP `available_commands_update`); the client runs it with a\nprompt that starts with `/<name>`.",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "hint": {
+            "description": "What to type after the name, when the command takes input.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "description"
+        ]
+      },
+      "title": "Array_of_AgentCommand",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },

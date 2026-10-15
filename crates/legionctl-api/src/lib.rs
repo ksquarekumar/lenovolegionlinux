@@ -737,6 +737,9 @@ operations! {
     session_run / SessionRun = "session.run", Workspace, SessionRunIn => RunOutput;
     /// Sessions legionctl started, newest first, with the state of their scope.
     session_list / SessionList = "session.list", Read, Empty => Sessions;
+    /// The commands that the agent of a headless run (`session run`) offers through ACP, from its newest list; run
+    /// one with a prompt that starts with `/<name>`.
+    session_commands / SessionCommands = "session.commands", Read, SessionIdIn => Vec<AgentCommand>;
     /// Stop a session's scope (the agent and everything it started).
     session_stop / SessionStop = "session.stop", Workspace, SessionIdIn => Lines;
     /// The programs a session's processes started, oldest first (legionctl-system's eBPF sensor; needs its scope).

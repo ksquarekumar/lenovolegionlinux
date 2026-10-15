@@ -13,6 +13,9 @@ user-invocable: true
 3. Use a plain subagent when the task is short, reads only, needs this conversation's context, or you wait for the
    answer in this turn. A subagent that changes code still uses its own topic workspace (skill workspace-practice).
 4. `session run <agent> "<prompt>"` runs the agent headless through its ACP adapter and returns its answer. It is a job.
+   `--acp <id>` goes on in the ACP session of an earlier run (its `acp`); the run fails when the agent cannot load
+   sessions. `session commands <session>` lists the commands that the agent offered in that run; a prompt that
+   starts with `/<name>` runs one.
 5. `session start <agent>` prepares an interactive session; the client then runs it in your terminal. It takes the
    options of `run` except `--tag`.
 6. `--in host|container|vm` picks the sandbox. A container needs `workspace pack` first; a VM needs `workspace pack --as
