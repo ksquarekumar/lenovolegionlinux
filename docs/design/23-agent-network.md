@@ -2,7 +2,8 @@
 
 Status: approved (2026-10-15, "Decisions" at the end). Plan rows todo-90 (two code graphs), todo-91 (agent
 network), todo-92 (thread UI). Part B+ (todo-97 presence, todo-98 agent configs and pools) was added and approved on
-2026-10-15 ("Decisions on Part B+"). Built: P1 and P2 (section "Built: P1 and P2", after A11), P3 (section "Built: P3"). The user's request (verbatim) and the decisions are in the
+2026-10-15 ("Decisions on Part B+"). Part E (todo-100..todo-104: project checks, test runners, graph schema, change
+watcher, dossier home, observer recovery) is proposed (2026-10-15), at the end. Built: P1 and P2 (section "Built: P1 and P2", after A11), P3 (section "Built: P3"). The user's request (verbatim) and the decisions are in the
 dossier: `MEMORY/11-agent-network-and-code-graphs.md`.
 
 ## In short
@@ -15,6 +16,7 @@ dossier: `MEMORY/11-agent-network-and-code-graphs.md`.
 | A. Tests (todo-90) | Tests linked to stories, test runs, test review | Mutation kills per test are the main signal; the gate is `workspace checkpoint` |
 | B. Agent network (todo-91) | `#main0` and observers in one durable thread | Recommended: observers are operator ACP sessions with a durable outbox; messages reach the main agent through its hooks |
 | B+. Configs, pools, presence (todo-97, todo-98) | Three archetypes, one team `vanilla`, one config per agent, peers | Archetype files are the lowest config layer; members are operator sessions that sleep until a trigger; the main agent's critical path comes first |
+| E. Checks, runners, schema, watcher, home, recovery (todo-100..104) | Repository checks, three test sets, graph rules and queries, a change watcher, dossier homes, the recovery brief | Checks and queries are repository config; the root daemon watches with fanotify and the user's operator records; each dossier's SQLite is in `~/agentWorkspaces/<name>` |
 | C. Thread UI (todo-92) | Triple pane, chat bar, `/` commands, views | One layout in the TUI (ratatui) and the app (GPUI); views are declarative JSONC from a closed widget set |
 
 Each part has: what, why, data model, API, hooks, storage, failure and restart behaviour, tests and phases. The
@@ -22,7 +24,8 @@ questions for the user are at the end.
 
 ## Coverage of the request
 
-Each phrase of the user's request maps to a section. "Open" means a question at the end.
+Each phrase of the user's request maps to a section. "Open" means a question at the end. Part E's phrases are in
+E10.
 
 | Phrase of the request | Section |
 | --- | --- |
@@ -1174,7 +1177,7 @@ The user approved this design and chose the recommendation for each question:
    `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` for the sessions it starts. Limits that follow (research, dossier
    MEMORY/12): one team per session, no nesting, a fixed lead, in-process teammates not restored after `/resume`
    (the operator starts them again from the thread's members), spawning needs an interactive session.
-5. Dossier writes: no exception. An observer writes only its own dossier; for a missing record in the main agent's
+5. Dossier writes (replaced by Part E, E0 decision 3: a marked backfill while the main agent is idle): no exception. An observer writes only its own dossier; for a missing record in the main agent's
    dossier it sends a nudge.
 6. Codex members run as Codex subagents of the main Codex session (`~/.codex/agents`), with the inherited sandbox,
    approval and MCP. With decision 3, a Codex member config that sets its own sandbox, approval or MCP is refused.
@@ -1182,3 +1185,498 @@ The user approved this design and chose the recommendation for each question:
 With these, the process job in B+ changes: the observer still runs the steps it can do in its overlay (lint,
 targeted tests) and makes no checkpoint and no dossier write for the main agent; it sends a `notice` with the
 result and a nudge for the record or the checkpoint.
+
+## Part E: project checks, test runners, graph schema, change watcher, dossier home, observer recovery (todo-100..todo-104)
+
+Status: proposed (2026-10-15), an addition to the approved design. The user's words, the breakdown and the four
+user decisions are in the dossier: `MEMORY/13-project-checks-watcher-dossier-home.md`. The decisions of Parts A, B
+and B+ stay binding, except B+ decision 5, which E0 decision 3 replaces. Part B and B+ internals (threads, outbox,
+watch rules, presence; P5, built now) are used only through the behaviour that B2-B6 and B+1-B+4 state.
+
+### E0. User decisions (binding, 2026-10-15)
+
+1. Dossier home: each dossier moves to `~/agentWorkspaces/<descriptive-name>/`. A stable id in `dossier.jsonc`
+   names it; a rename changes only the folder. The operator migrates `~/.agentworkspace` once and removes it. All
+   SQLite of a dossier lives in its home.
+   Addition (same day): each directory where a dossier is used gets the link `<root>/agentWorkspaces` →
+   `$HOME/agentWorkspaces` (the whole home; the bound dossier is `agentWorkspaces/<name>`). It replaces the
+   `.agentworkspace` link everywhere. A real folder `<root>/agentWorkspaces/` is imported first (E1a).
+2. Code-graph snapshots stay in the repository (`.graf/refs`, as built).
+3. The observer may backfill missing records into the main agent's dossier: each marked `by observer0`, through the
+   dossier lock, only while the main agent is idle, never an edit of the main agent's own text, and it tells the
+   main agent what it backfilled. This replaces B+ decision 5.
+4. The root daemon (`legionctl-system`) runs the file-system watcher on the dossier homes and the attached
+   repositories. It never writes a user's file as root, it watches only registered paths, and it survives restarts.
+
+### E1. Dossier home and the SQLite split (todo-103, first part)
+
+What and why: one folder per dossier holds all of its data, so a dossier is one unit to copy, back up and read. A
+stable id lets a person rename the folder to a descriptive name.
+
+```text
+~/agentWorkspaces/
+  <descriptive-name>/
+    dossier.jsonc          "id": "dsr-<ulid>" (new, never changes), title, entities, objectives
+    plan.md  MEMORY/  DESIGN/  EVIDENCE/  SPIKE/
+    queries/<name>.jsonc   queries of this dossier (E4)
+    .state/dossier.db      SQLite (WAL): this dossier's rows (table below)
+    .state/runs/<run>/     logs and profiles of check and test runs (E2)
+```
+
+| Data | Today (`~/.agentworkspace/workspace.db`) | After |
+| --- | --- | --- |
+| `status_changes`, `nudges`, `writes` | one file for all dossiers | `<home>/.state/dossier.db` |
+| `annotations`, `test_runs`, `mutants`, `test_accepts` | one file, per repository | `dossier.db` of the session's dossier; a read takes the union of the dossiers that attach the repository (E1 rule 4) |
+| P5's thread tables (B2) | one file | `dossier.db` of the thread's dossier (`threads.dossier`) |
+| new: `check_runs`, `changes`, `change_entities`, `diagnostics`, `backfills` | — | `dossier.db` |
+| `bindings`, `sessions`, `workspaces` (rows that span dossiers) | one file | `~/.local/state/legionctl/operator.db`, by dossier id |
+
+Rules:
+
+1. A dossier is found by id. The operator keeps `id → folder` in `operator.db` and checks it at each start and at
+   each watcher event on `~/agentWorkspaces` (a moved folder keeps its id; two folders with one id: the second is
+   refused and named in `doctor`).
+2. Bindings, events, links (`<dossier>#<row>` in `planning/`) and workspace branches use the name for people and
+   the id for the record. `planning/` links keep the name form; `code plan check` resolves a name through the
+   registry, also an old name (the registry keeps renames).
+3. `dossier.root` becomes `~/agentWorkspaces`. Paths outside it are refused as before.
+4. Rows that count for a repository (kills, runs, annotations) are written into the writer's dossier and read as the
+   union of `dossier.db` of each dossier whose `entities` name the repository (SQLite `ATTACH`, at most 10 at once;
+   more: one read per file, merged).
+
+Migration (one time, an operator job `dossier.migrate` at its first start with the new build):
+
+1. Wait until no binding is live (a live one: the job waits and `doctor` says why).
+2. Back up `workspace.db` to `~/.local/state/legionctl/backup/workspace.db.<time>` (online backup).
+3. For each `~/.agentworkspace/<name>/`: write an `id` into `dossier.jsonc` when it has none; move the folder to
+   `~/agentWorkspaces/<name>/` (`rename` on one file system, else copy, compare the file hashes, then remove).
+4. Split the rows by dossier into each `dossier.db`, and the shared rows into `operator.db`. A repository row with
+   no dossier goes by its session's binding (the `dossier.use` events), else to the oldest dossier that attaches the
+   repository.
+5. In each main checkout and open workspace (the `workspaces` rows have the paths): remove the `.agentworkspace`
+   link and its ignore line (`.gitignore` staged, not committed), then do E1a there.
+6. Compare the row counts per table, then remove `~/.agentworkspace`. A failure at any step stops the job before
+   step 6; a new start does the steps again (each step is idempotent).
+
+### E1a. The directory link and the import (decision 1, addition)
+
+At the first dossier use in a directory (`dossier use`, `workspace open`, `session start`), the operator does
+these steps in `<root>` (the repository root, else the folder):
+
+1. `<root>/agentWorkspaces` is a link to `$HOME/agentWorkspaces`: nothing to do. A link to another place is refused
+   with its target (`doctor` names it); legionctl does not replace a link that the user made.
+2. It is a real folder: import it (rules below), then replace it by the link.
+3. It does not exist: make the link.
+4. In a git repository: when `git check-ignore -q agentWorkspaces` fails, add `/agentWorkspaces` to
+   `<root>/.gitignore` and stage the file (`git add .gitignore`; no commit). The pattern has no trailing `/`: git
+   sees a link as a file, and `agentWorkspaces/` matches only a folder. Then `git check-ignore` must pass, else the
+   step fails with git's answer. A plain folder (no git) skips this step.
+5. Worktrees: each worktree (main checkout and each workspace) gets its own link, because a session works there.
+   The staged line is only in the main checkout's index; until it is committed and on the workspace's branch, step 4
+   in a worktree adds `/agentWorkspaces` to `<common dir>/info/exclude` (one file for all worktrees, no commit, as
+   for `/.graf/`), and `git check-ignore` passes.
+
+Import of a real `<root>/agentWorkspaces/` (data is never lost):
+
+1. Each first-level subfolder is one old dossier; files at the first level and deeper folders are not dossiers
+   (files are listed in the result and stay in the folder until the user moves them; the folder is then not
+   replaced, and `doctor` names it).
+2. Copy each subfolder to a temporary folder in `$HOME/agentWorkspaces/.import-<time>/<name>/`, compare the file
+   hashes, write an `id` into its `dossier.jsonc` (make the file when it is missing), register it, then `rename` it
+   to `$HOME/agentWorkspaces/<name>/`.
+3. Name clash: a name that exists in the home gets the next free `<name>-imported-<n>`; the result names each
+   renamed dossier. The source folder names cannot clash with each other (one folder level), so only the home can
+   clash.
+4. Only after each subfolder is registered and in place, the source folder is moved to
+   `~/.local/state/legionctl/backup/agentWorkspaces-<root hash>-<time>/` (not deleted) and the link is made.
+5. A failure at any step leaves the source folder as it is; the copies of that run stay in `.import-<time>/` and the
+   next start finishes them (a registered copy is not copied again). The import is a job (`dossier.import`) with
+   one event per dossier.
+
+### E2. Project checks (todo-100)
+
+What and why: each repository declares how it is linted, formatted, checked, built, deployed and installed. Agents,
+the test gate and the observer then run the repository's own commands, not a guess or a fixed `make lint`.
+
+Where: the config key `checks` in the repository layer (`<repo>/.legionctl/checks.jsonc`, versioned with the code),
+so a branch can change its checks and `config explain checks.lint` names the file.
+
+```jsonc
+// <repo>/.legionctl/checks.jsonc
+{ "checks": {
+  "format":  { "kind": "format", "run": "cargo fmt --all --check", "fix": "cargo fmt --all" },
+  "lint":    { "kind": "lint",   "run": "make lint", "gate": "checkpoint" },
+  "static":  { "kind": "static", "run": "cargo clippy --workspace --all-targets -- -D warnings" },
+  "build":   { "kind": "build",  "run": "cargo build --release --workspace --bins --locked", "gate": "merge",
+               "profiles": ["target/cargo-timings/cargo-timing.html"] },
+  "e2e":     { "kind": "test",   "run": "cargo test --release --workspace --no-fail-fast -j8", "gate": "merge",
+               "runner": { "format": "libtest", "list": "cargo test --release --workspace -- --list --format terse",
+                           "one": "cargo test --release -p {crate} --test {file} -- --exact {fn}" } },
+  "e2e-root": { "kind": "test",  "run": "cargo test --release --workspace -- --ignored",
+               "runner": { "format": "libtest", "requires": ["root", "kvm"] } },
+  "package": { "kind": "deploy", "run": "make package" },
+  "install": { "kind": "install", "run": "make install-package", "ask": true }
+} }
+```
+
+| Field | Meaning |
+| --- | --- |
+| `kind` | `format`, `lint`, `static`, `types`, `build`, `test`, `deploy`, `install` (closed set) |
+| `run`, `fix` | the command (in the workspace, as the user); `fix` changes files, so only the main agent runs it |
+| `gate` | `checkpoint` or `merge`: E2 rule 4 |
+| `profiles` | files the run writes that the run folder keeps |
+| `runner` | for `test` only: E3 |
+| `requires` | probes from a closed set: `root`, `kvm`, `docker`, `gpu`, `tool:<name>`, `env:<VAR>` |
+| `ask` | the run needs the user's approval (`install` and `deploy` by default) |
+
+Rules:
+
+1. `checks.required` (default `["format", "lint", "build", "test"]`) names the kinds each repository must have.
+2. A missing kind is a finding in `doctor` (group Agents) and in `dossier check` for each dossier that attaches the
+   repository. At `session-start` the agent gets one line (config `checks.nudge`, as `workspace.nudge`): "This
+   repository has no checks of kind lint, test: run `code checks detect` and write `.legionctl/checks.jsonc`."
+3. `code checks detect` reads the repository (Makefile targets, `Cargo.toml`, `package.json` scripts,
+   `.pre-commit-config.yaml`, `pyproject.toml`) and prints a proposed `checks.jsonc`. It writes nothing; the agent
+   reviews and writes the file. A check whose command is not found (exit 127) is a finding "check broken".
+4. Gates: `workspace checkpoint` needs a passing run of each `gate: checkpoint` check at the tree that it commits
+   (the working tree's hash, E5); without one it runs them first. `workspace merge` needs the same for `gate: merge`
+   at the rebased head. A failure refuses with the check, the exit code and the log path. This uses the A7 gate
+   path; the fixed command of P4's `code tests run` is removed: it runs the repository's `test` checks.
+5. Each run is a job (`code.checks.run`) in a transient user unit (`systemd-run --user --wait --collect`), so its
+   profile comes from the cgroup: wall time, CPU time, memory peak, IO bytes. It goes in `check_runs` (repository,
+   tree, check, kind, exit, wall, cpu, memory peak, io, job, session, member, time) and in `.state/runs/<run>/`
+   (`log.txt`, `profile.json`, the `profiles` files). `checks.keep_runs` (20 per check) limits the folders; a run
+   that an EVIDENCE front matter names (`runs: [<run>]`) stays.
+6. The observer (B+3 process job) runs the missed `lint`, `format`, `static`, `types` and `test` checks in its
+   overlay, never `fix`, `deploy` or `install`. The verification job runs each `gate: merge` check at `declare done`.
+
+API (group `code`): `code checks list` (each check, its layer, its last run per tree; read), `code checks detect`
+(read), `code checks run [<check>...] [--kind] [--changed]` (session; `--changed`: only checks whose `paths`, when
+set, match the change), `code checks show <run>` (read: the log tail and the profile).
+
+### E3. Test runners in the graph (todo-101)
+
+What and why: a test is useful evidence only when it is planned, present and runnable here. The three sets differ,
+and the difference is the work that is left.
+
+| Set | Source | A test is in it when |
+| --- | --- | --- |
+| planned | `planning/` (story `tests`) | a story names its key |
+| actual | the tree (P4's scan of test functions; the code graph's function node) | the function exists at the tree |
+| runnable | a `test` check's runner (E2) | the runner's `list` command gives it here and each `requires` probe passes |
+
+- The runner lists with its own command (`cargo test -- --list --format terse`, also with `--ignored`), so an
+  `#[ignore]` test is runnable only through a runner whose `requires` passes (for example `root`, `kvm` in CI).
+- `code tests run <test>` runs one test with the runner's `one` template; `code tests run --changed` runs the
+  tests of the work items that the open changes touch (E5).
+- Each test gets one state: `planned only` (not in the tree), `not runnable` (with the reason: no runner lists it,
+  or the failed probe), `runnable`, then its last run (`passed`, `failed`, `ignored`) with tree and age.
+- A container runner sets `"in": "container"`; it uses the `workspace pack` image (W5) and the same `one`
+  template.
+
+Stories with variations. A story may declare the branches of its behaviour and the expected result of each; a
+test entry names the variations that it covers:
+
+```jsonc
+{ "id": "S2", "kind": "story", "text": "A checkpoint runs the checkpoint gates.",
+  "variations": [
+    { "id": "V1", "given": "a passing lint run at this tree", "expect": "success", "detail": "no new run" },
+    { "id": "V2", "given": "no run at this tree", "expect": "success", "detail": "the gate runs lint first" },
+    { "id": "V3", "given": "lint fails", "expect": "failure", "detail": "refused with the check and the log path" }
+  ],
+  "tests": [ { "test": "test:crates/legionctl/tests/code.rs::a_checkpoint_runs_its_gates", "covers": ["V1", "V2", "V3"] } ] }
+```
+
+- `expect` is `success` or `failure`; `detail` is the exact outcome (an output, a state, an error text).
+- A test entry is a key (the story has no variations) or `{test, covers}`. `code plan check` refuses an unknown
+  variation id, and for a `done` item a variation that no test covers.
+- The thread-observer's test review (B+3) reads each `failure` variation's test and sends a `hint` when the test
+  does not assert the failure (`detail`). This is judgment, so it is not a static check.
+- Story tests must be at a boundary (`tests/`, P4's rule); `code plan check` reports one in `src/` as a finding.
+
+### E4. Graph schema and watched queries (todo-102)
+
+What and why: the joined graph (planned, actual, changes, runs, dossier) has rules that a person or an agent must
+not have to remember. Each rule is data: the fields an entity needs, a check, and an action.
+
+The schema is `planning/graph.schema.jsonc` (versioned) over the built-in defaults:
+
+```jsonc
+{ "entities": {
+    "work_item": { "required": ["text", "stories", "units"], "optional": ["depends_on", "status"],
+                   "checks": [ { "check": "has_tests", "action": "finding:warn" } ] },
+    "story":     { "required": ["text", "tests"], "optional": ["variations"],
+                   "checks": [ { "check": "variations_covered", "when": "done", "action": "finding:error" } ] },
+    "test":      { "checks": [ { "check": "runnable", "action": "finding:warn" },
+                               { "check": "run_since_change", "action": "run:tests" } ] } },
+  "relations": {
+    "change→work_item": { "checks": [ { "check": "planned", "action": "message:hint" } ] },
+    "plan_row→feature": { "checks": [ { "check": "status_matches", "action": "finding:error" } ] } } }
+```
+
+- `check` is a name from a closed set in legionctl (`resolves`, `exists_at_tree`, `has_tests`,
+  `variations_covered`, `runnable`, `run_since_change`, `killed`, `boundary`, `planned`, `status_matches`). A new
+  check is code, with its own e2e test.
+- `action` is a closed set: `finding:<info|warn|error>` (doctor, `dossier check`), `message:<note|hint>` (to the
+  main agent, through B3), `run:<checks|tests|graph>` (a job: a check of E2, the linked tests, a graph refresh). No
+  action runs a free command; a command is always a named check of E2.
+- `code plan check` applies `required` and the checks; it replaces the fixed rules of P3 where a rule is the same.
+
+Queries. A query is a named read that gives diagnostics:
+
+```jsonc
+// <repo>/.legionctl/queries/changed-not-run.jsonc  (or <dossier home>/queries/)
+{ "name": "changed-not-run", "on": ["change", "stop"], "severity": "warn",
+  "sql": "SELECT item, test FROM v_item_tests WHERE last_run < item_changed",
+  "message": "{item}: {test} did not run since the change", "action": "message:hint" }
+```
+
+- `sql` is one `SELECT` on a read-only connection (`PRAGMA query_only`) over documented views: `v_units`,
+  `v_items`, `v_tests`, `v_item_tests`, `v_changes`, `v_change_entities`, `v_check_runs`, `v_plan_rows`,
+  `v_artifacts`. The views are a contract with a version; `code queries check` refuses a query on an unknown view or
+  column. The operator fills the views from `planning/` at the tree, the graph snapshot, and the `dossier.db` files.
+- `on` is a set of triggers: `change` (E5), `stop`, `checkpoint`, `tests.run`, `checks.run`, `session-start`.
+- Built-in queries (shipped, can be turned off per repository): `changed-entity-not-planned`, `changed-not-run`,
+  `story-variation-not-covered`, `test-planned-not-written`, `test-not-runnable-here`, `check-kind-missing`,
+  `done-row-open-item`, `dossier-edited-outside-tools`, `item-done-not-releasable`.
+- Each result row is one diagnostic with an id (`query` + row key). Table `diagnostics` keeps first seen, last seen
+  and closed (with the change that closed it), so a reader sees new, open and closed ones.
+- Readers: `doctor` (group Agents, open errors), `dossier check` (all open ones of the dossier), the observer's
+  watch rules (a new diagnostic is an event `code.diagnostic`; a rule may wake the observer for it).
+
+API (group `code`): `code queries list` (each query, source file, last result; read), `code queries run [<name>]
+[--on <trigger>]` (read), `code queries check` (read), `code diagnostics [--open] [--feature]` (read).
+
+### E5. Change watcher (todo-103, second part; decision 4)
+
+What and why: edits happen outside legionctl's tools (an editor, a script, an agent's own write). The watcher sees
+each one, so each change gets a record, a hash and its test state, also between checkpoints.
+
+Split of work (the root daemon never reads or writes user content):
+
+| Part | Who | Does |
+| --- | --- | --- |
+| Watch | `legionctl-system` (root) | fanotify on the registered roots; the path, the event, the writer's pid, `comm` and cgroup |
+| Record | the user's operator | reads the files as the user, makes the change records, the hash and the test state |
+
+Daemon:
+
+1. fanotify with `FAN_MARK_FILESYSTEM` and `FAN_REPORT_DFID_NAME` (needs `CAP_SYS_ADMIN`, so the root daemon), events
+   `CREATE`, `DELETE`, `MOVED_FROM`, `MOVED_TO`, `CLOSE_WRITE`. This is why root: one mark per file system covers
+   new folders with no recursive setup, and each event has the writer's pid, so the change has its session (the pid's
+   cgroup is the legionctl session scope).
+2. Only registered roots: an event outside them is dropped in the daemon. The daemon resolves each event's folder
+   handle to a path (`open_by_handle_at`, a cache keyed by handle) and drops paths under each root's ignore list.
+3. Registration over D-Bus: `Watch(roots as, ignore as)`, `Unwatch(roots as)`. The daemon accepts a root only when
+   the caller's uid (`GetConnectionUnixUser`) owns it (`O_PATH|O_NOFOLLOW`, `fstat`). polkit action
+   `org.legionctl.watch`, allowed for the active user without a prompt; the owner check is the guard.
+4. Delivery: the daemon appends events to `watch_events` in `system.db` (uid, seq, root, path, event, pid, comm,
+   cgroup, time), bounded per uid (`watch.max_events`, 100 000). It sends the unicast signal `ChangesReady(seq t)` to
+   the registering connection only (other users do not see paths). The operator reads with `Changes(after t) →
+   (events, last t)`; its cursor is in `operator.db`.
+5. Restart: `watch_roots` (uid, root, ignore) are in `system.db`. A daemon start marks them again and adds one
+   `rescan` event per root (the gap is unknown). A queue overflow (`FAN_Q_OVERFLOW`) or the bound adds `rescan` too.
+   The operator answers `rescan` with a full compare (E5 rule 9). A file system without fanotify FID support
+   refuses the root with the reason; `doctor` names it.
+
+Operator:
+
+6. Roots: the folder `~/agentWorkspaces`, and for each dossier each repository in `entities` (main checkout) and
+   each open workspace path. It registers at start, at `workspace open/close`, at a dossier change of `entities`.
+   Ignore: `.git/`, `.graf/`, `.state/`, the `agentWorkspaces` link (the home is its own root), and the top-level
+   ignored folders of the repository (`git ls-files --others --ignored --exclude-standard --directory`), sent again
+   when a `.gitignore` changes.
+7. A change closes at the writer session's `stop` hook (its edits of that reply), or after `watch.quiet` (5 s)
+   with no event for edits with no session. One change has one root.
+8. A change record (`changes`: id, hash, dossier, root, session, member, from tree, to tree, opened, closed):
+   - Repository root: the working tree's hash through a private index (`GIT_INDEX_FILE=<tmp> git add -A`, then
+     `git write-tree`); the user's index does not change. Entities: each path with `change` and blob id (`git diff
+     --raw <from tree> <to tree>`), and each planned unit that the paths address (`file:`, `unit:`, and symbol units
+     by their file). Symbol entities come from `code graph changes <from tree> <to tree> --build` in a job after
+     `stop`; they go in `change_entities` but not in the hash, so the hash is known at once.
+   - Dossier root: entities are plan rows (`plan#<id>`) and artifacts (front-matter id) with the hash of their text.
+     A status that changed in an editor goes into `status_changes` with `by: outside`, which closes the gap of 18 ("a
+     change made outside legionctl is not seen").
+   - Hash: BLAKE2b-128 over the sorted lines `<path>\t<change>\t<blob id>` and `<unit key or node id>\t<work item
+     or row>`. Two dossiers that record the same main-checkout change get the same hash; union reads keep one.
+   - An edit in a workspace goes to its dossier. An edit in a main checkout goes to the writer session's dossier,
+     else to each dossier that attaches the repository, as an `outside workspace` diagnostic.
+9. Rescan: the operator compares the working tree's hash with its last record (repositories) and the text hashes of
+   the nodes (dossier homes), and records the difference as one change marked `rescan`.
+
+Test state per member and per work item (computed at read, from `changes`, `change_entities`, E3 and `test_runs`):
+
+| State | Rule |
+| --- | --- |
+| `not defined` | the work item's stories have no test, or a story with variations has one not covered |
+| `planned, not written` | a test key is planned and not at the tree |
+| `written` | the test was added or changed in a change of the work item (test authored) |
+| `not run since change` | the test's last run is older than the newest change that touches the item, or is at a tree without it |
+| `not runnable here` | E3 |
+| `passed` / `failed` since change | a run at a tree that has the change |
+
+A member (an entity or a path) that no work item addresses is `unplanned` (the query `changed-entity-not-planned`).
+"How untested a feature is": `code plan status` gets per work item and per feature the changed members since
+`--since` (default: the workspace base) and how many of them have each state; `untested` is the share of changed
+members whose tests are not `passed since change`, with the list.
+
+API (group `code`): `code watch status` (roots, the daemon's state, the cursor lag, the last change; read), `code
+watch changes [--since] [--session] [--feature] [--root]` (change records with entities and hash; read), and the
+new fields of `code plan status`. Events: `code.change` (one per closed change), `code.diagnostic`.
+
+### E6. Observer: tools on time, backfill and the recovery brief (todo-104; decision 3)
+
+What and why: the main agent forgets reads and writes of the dossier, the plan, the tests and the release steps, and
+it loses its state at a compaction. The operator finds each miss without a model; the observer acts only on the
+misses that need it, while the main agent stays on the critical path (B+0).
+
+Tools on time. Default watch rules of the `thread-observer` archetype (B3 form: trigger, expect, window), shipped as
+data in its config defaults:
+
+| Tool area | Trigger | Expected within the window |
+| --- | --- | --- |
+| dossier read | `session-start` (also after a compaction) | a read of `plan.md` or `dossier brief` before the first edit |
+| planning read | the first edit of a planned unit in a session | `code plan status --feature <f>` |
+| dossier write | a checkpoint; a failed test or check run | a ledger write in the same reply |
+| dev | a change that touches a work item | the `lint` and `format` checks before `stop` |
+| test | a change that touches a work item | its tests run before `declare done` (`not run since change` is empty) |
+| test authoring | a change of a work item with `not defined` or `planned, not written` tests | a test of that item in a later change of the same reply set |
+| release | `workspace merge`, `declare ready` | each `gate: merge` check passed at the head tree; `code graph changes` from the merge base after a rebase (A8) |
+
+What the main agent is told (B3 kinds, batched at the next prompt after a `stop` or `declare`, B+0):
+
+| Finding | Kind | Example |
+| --- | --- | --- |
+| miss | `reminder` with the count | "observer0: no `lint` check after 3 changes of W2 — 2nd miss since 10:42" |
+| deviation | `hint` | "change 4f1c… edits `codegraph::prune`, which no open work item plans" |
+| drift | `hint` | "plan row todo-101 says done; W3 has 2 tests not run since change 9a2e…" |
+| backfill | `notice` | "observer0 wrote for you: plan.md row done-41 (checkpoint c48fa60), EVIDENCE/validation/13-checks (run 812)" |
+
+Backfill (replaces B+ decision 5):
+
+1. What: a ledger row (append only), an EVIDENCE artifact of a run that the observer did (a new file), a status
+   change that a real result supports (a passed `gate: merge` set and `complete` items for `done`; a failed run for
+   `failed`).
+2. Mark: a row ends with `(by observer0)`; an artifact has `by: observer0` in its front matter; a status change
+   writes only the status cell, `done (by observer0)`, and `status_changes` keeps the old value and `by`.
+3. Never: an edit or a delete of another cell, another line or another artifact of the main agent.
+4. When: only while the main agent's state is `idle` (B+1), through the dossier lock as a member write
+   (`dossier_* --member observer0`, allowed only for a `thread-observer` member of the thread whose dossier it is);
+   the anchored edit refuses an outdated anchor, so a write that races the main agent fails and waits for the next
+   idle window.
+5. Record: each backfill is a row in `backfills` (path, anchor, what, the result it rests on) and an effect (B2), so
+   `thread compensate` removes it; the next prompt gets one `notice` that lists them.
+
+Recovery brief. After a compaction the main agent gets its state back from data, not from a model:
+
+- Hook: `session-start` with source `compact`, `resume` or `clear` (Claude Code's `SessionStart` matchers) adds the
+  brief as `additionalContext`; `dossier brief` gives it on request. The operator builds it; no observer wakes.
+- Sources: the plan rows of the dossier, `planning/` at the workspace's working tree, `code plan status`, the open
+  changes and their test state (E5), the last check runs (E2), open diagnostics (E4), pending messages (B4).
+- Each work item of each feature that the dossier's plan rows name gets one class:
+
+| Class | Rule |
+| --- | --- |
+| `active` | in progress, or has a change since the last checkpoint |
+| `pending` | planned and each `depends_on` item is complete |
+| `blocked` | a `depends_on` item is open, a failed check or run, or an open hard block |
+| `releasable` | complete, its tests `passed since change`, each `gate: merge` check passed at the head tree, its plan row not `done` yet |
+| `done` | complete and its plan row `done` |
+
+- Form: one line per feature (`code-graphs: active W5; pending W6; releasable W4`), then the open items with the
+  next step of each, then the misses and backfills since the compaction. `brief.max_tokens` (1500) limits it; the
+  rest is one `dossier brief --feature <f>` line. The tokens count in the cost to the main agent (B+4).
+- The observer wakes only when a rule finds work for a model in the brief (for example a drift that needs a
+  judgment), at its normal triggers (B5).
+
+API: `dossier brief [--feature]` (group `dossier`, read: the brief belongs to the dossier and works without a
+thread), the `--member` option of the dossier write operations (session), and `backfills` in `thread show`.
+
+### E7. Storage, failure and restart
+
+| Data | Place |
+| --- | --- |
+| Checks, schema, queries of a repository | `<repo>/.legionctl/checks.jsonc`, `planning/graph.schema.jsonc`, `<repo>/.legionctl/queries/` (versioned) |
+| Runs, changes, diagnostics, backfills, tests, annotations | `<home>/.state/dossier.db`; logs and profiles in `<home>/.state/runs/` |
+| Watch roots and the event queue | `/var/lib/legionctl/system.db` (root; paths and pids only, no content) |
+| Cursor, dossier registry, bindings, sessions, workspaces | `~/.local/state/legionctl/operator.db` |
+| Graph snapshots | `.graf/refs/` (decision 2, unchanged) |
+
+| Event | Behaviour |
+| --- | --- |
+| Daemon restart | Roots marked again from `system.db`; one `rescan` per root; the operator compares. |
+| Operator restart | It reads from its cursor; open changes close by `watch.quiet`; jobs resume (check runs restart from the start). |
+| Queue overflow | `rescan`; `doctor` shows the count of overflows. |
+| Dossier folder renamed | The id stays; the operator unregisters the old root and registers the new one. |
+| Migration cut off | The next start runs the job again; `~/.agentworkspace` stays until step 6 passes. |
+| A check hangs | `timeout` per check (default 30 min); the unit is stopped; the run is `timeout`. |
+
+### E8. Tests (e2e, high diagnostic value)
+
+Real operator and a real `legionctl-system` on a private bus (as the machine tests), temporary homes and
+repositories; stand-ins only where a tool is not the subject.
+
+| Test | It catches |
+| --- | --- |
+| `the_dossiers_move_to_their_homes_once_and_keep_their_ids_links_and_rows` | A row in the wrong `dossier.db`; a worktree link left on the old path; a second run that moves again; removal before the counts match; a rename that loses bindings. |
+| `the_first_use_in_a_repository_imports_its_agentworkspaces_folder_and_links_the_home` | A first-level file taken as a dossier; a name that exists in the home overwritten (must be `-imported-1`); the source removed before each copy is registered; a cut-off import that loses or copies twice; `.gitignore` with `agentWorkspaces/` (does not ignore a link); `.gitignore` committed, not staged; a worktree where `git check-ignore` fails; a plain folder given a `.gitignore`. |
+| `the_watcher_records_an_editor_change_with_its_session_hash_and_untested_items` | A change with no session when the writer runs in a session scope; a hash that differs for the same content; the user's index changed by the record; a work item not `not run since change` after its edit; a test run that does not clear it. |
+| `the_daemon_watches_only_owned_registered_roots_and_survives_a_restart` | A root of another uid accepted; a path outside the roots delivered; the signal sent to another connection; an edit during a daemon stop not found (`rescan`); a file written by root. |
+| `a_checkpoint_and_a_merge_run_the_repositorys_gates_and_keep_their_profiles` | A gate skipped with no run at the tree; a passing run at another tree accepted; no memory peak in the profile; a missing kind not a finding; `detect` writing a file. |
+| `planned_actual_and_runnable_tests_differ_and_variations_need_their_tests` | An `#[ignore]` test shown runnable without its probe; a planned test shown as written; a `done` story with an uncovered variation accepted. |
+| `a_query_on_watch_opens_and_closes_its_diagnostic_and_wakes_no_model` | A diagnostic opened twice; not closed by the change that fixes it; a query on an unknown view accepted; a model wake for a diagnostic that needs none. |
+| `the_observer_backfills_only_while_main_is_idle_and_tells_main_once` | A write while main runs; an edit of main's text; a missing `by observer0`; the notice given twice or not at all; `thread compensate` not removing it. |
+| `after_a_compaction_the_brief_classes_each_item_from_data` | A `releasable` item with a test not run since change; an `active` item without a change; a brief past its token limit. |
+
+### E9. Phases
+
+| Phase | Content | Size (new lines, estimate) | Needs |
+| --- | --- | --- | --- |
+| P9 | Dossier home, ids, the registry, the SQLite split, the migration, the directory link and the import (E1a), skill and doc text (`~/.agentworkspace` everywhere) | M (900) | P5 merged (its tables move) |
+| P10 | Project checks: config, `detect`, runs with profiles, gates, findings and nudge; `code tests run` uses the `test` checks | M (700) | P9 |
+| P11 | Watcher: daemon fanotify, D-Bus, `system.db` queue; operator roots, change records, hash, test state, `code watch`, untested in `plan status` | L (1200) | P9, P10 |
+| P12 | Runners and the three test sets; story variations in `planning/` and its schema | M (600) | P10 |
+| P13 | Graph schema rules, queries, views, diagnostics | M (900) | P11, P12 |
+| P14a | Recovery brief and its hook | S (400) | P11 |
+| P14b | Observer rules of E6, backfill, notices | S (400) | P6b, P13 |
+
+### E10. Coverage of the request (Part E)
+
+| Phrase of the request | Section |
+| --- | --- |
+| passes lint/format/static/type analyses/checks and builds/deploys/installs as configured in repo | E2 |
+| agent is nudged to define it in workspace config/settings correctly | E2 rules 2 and 3 |
+| has a home for profiles from runs | E2 rule 5, E1 (`.state/runs/`) |
+| test-runners for tests in codegraphs; planned v/s actual; runnable is a test with a runner the env can run | E3 |
+| codegraph has required and optional fields, linked programmatic checks and actions for entities and relations | E4 schema |
+| ootb/added queries on watch for diagnostics | E4 queries |
+| all stored durably on dossier/workspace's local filesystem spaces | E1, E7 |
+| home of all dossiers is `$HOME/agentWorkspaces/<name>`, names mutable but unique; all the sqlite there | E1 (decision 1), E7 (graphs stay in `.graf`: decision 2) |
+| a link to the home in each directory root; import of a real `./agentWorkspaces/`; gitignore staged and checked | E1a |
+| daemon watches dossiers and attached repos (watcher on fs), records edits and diffs | E5 (decision 4) |
+| a unique hash per change from plan/repo-graph addressed content and paths | E5 rule 8 |
+| tests run / authored / not ready or defined; not run for a member or a work item | E5 test state |
+| how untested a feature is with its changes | E5 (`untested` in `code plan status`) |
+| e2e grade tests across user stories, variations, branches, expected success/failure with details | E3 variations |
+| observer makes sure dossier/planning/dev/test/release tools are used on time, reads and writes | E6 watch rules |
+| informs main of misses, deviations, drifts, and what it backfilled | E6 table, backfill (decision 3) |
+| gets main back on track after compactions; active/pending/releasable across work items x features | E6 recovery brief |
+
+### E11. Questions for the user
+
+1. Where do the rows that span dossiers live (bindings, sessions, workspaces, the id registry)? Recommendation:
+   `~/.local/state/legionctl/operator.db`, the operator's own database; each dossier home then holds only its own
+   rows.
+2. Kills, runs and annotations count for a repository, but a dossier home owns each row. Recommendation: write into
+   the writer's dossier and read the union of the dossiers that attach the repository (so a kill stays evidence
+   for all of them, as P4 decided).
+3. Where does a repository declare its checks? Recommendation: the config key `checks` in the repository layer
+   (`<repo>/.legionctl/checks.jsonc`, versioned), so a branch can change them and `config explain` names the file.
+4. How strong are the check gates? Recommendation: `workspace checkpoint` runs the `gate: checkpoint` checks
+   (format, lint) when no passing run exists at that tree; `workspace merge` refuses without passing `gate: merge`
+   checks (build, test) at the rebased head.
+5. How does the root daemon watch? Recommendation: fanotify per file system with the writer's pid (the session of
+   each change), only for roots that the caller owns, events queued in `system.db` and read by the user's
+   operator; the daemon never opens user content. No inotify path.
+6. Query language for watched queries? Recommendation: one read-only SQL `SELECT` over versioned views, with
+   actions from a closed set (finding, message, a named check or test run); no free commands.
