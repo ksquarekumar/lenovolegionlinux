@@ -41,6 +41,8 @@ pub trait System1 {
     fn kernel(&self, action: &str, name: &str, line: &str) -> zbus::Result<Vec<String>>;
     /// The greeter in place of GDM: install or remove.
     fn greeter(&self, action: &str) -> zbus::Result<Vec<String>>;
+    /// The plan of a `boot` or `greeter` action as lines, with no change (no polkit).
+    fn plan(&self, kind: &str, action: &str) -> zbus::Result<Vec<String>>;
     /// Give devices back from vfio-pci to their own drivers.
     fn passthrough_end(&self, devices: &[String]) -> zbus::Result<Vec<String>>;
     /// The Windows disk's partitions to Linux (`attach`) or away from it.

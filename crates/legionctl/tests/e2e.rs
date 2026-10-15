@@ -5277,10 +5277,12 @@ fn the_legionctl_wmi_module_gives_the_legion_wmi_through_sysfs() {
 }
 
 /// The checks of fixtures/daemon-sandbox/run.sh, in their order: each must report ok.
-const DAEMON_SANDBOX_CHECKS: [&str; 18] = [
+const DAEMON_SANDBOX_CHECKS: [&str; 20] = [
     "unit-active",
     "esp-after-start",
     "usr-read-only",
+    "keys-root-only",
+    "boot-dry-run-user",
     "greeter-install",
     "greeter-config",
     "greeter-display-manager",
@@ -5304,7 +5306,9 @@ const DAEMON_SANDBOX_CHECKS: [&str; 18] = [
 /// partition mounted at `/boot/efi` after the daemon started) and `/etc/legionctl`, and boot rebuild writes it when
 /// it is an automount that nothing opened yet (the daemon's open mounts it); and its signers and `efibootmgr` run as `legionctl-step-*`
 /// transient units; the Windows VM autostart writes `/etc/polkit-1/rules.d`, the desktop GPU `/etc/udev/rules.d`; the
-/// daemon cannot write `/usr`. A path that the unit does not allow fails its check.
+/// daemon cannot write `/usr`. A path that the unit does not allow fails its check. A user without a session runs
+/// `boot install --dry-run` through the user's own operator while the MOK key folder is root's alone (todo-128): the
+/// daemon's plan lists the steps, without polkit, and nothing changes.
 #[test]
 #[ignore = "boots a VM (KVM, QEMU, a cloud image) and runs the daemon under systemd: CI runs it in the VM step"]
 fn under_its_own_unit_the_daemon_writes_the_greeter_the_esp_and_the_rules() {
@@ -5323,6 +5327,11 @@ fn under_its_own_unit_the_daemon_writes_the_greeter_the_esp_and_the_rules() {
             Path::new(env!("CARGO_BIN_EXE_legionctl")).with_file_name("legionctl-system"),
             "legionctl-system",
         ),
+        (
+            Path::new(env!("CARGO_BIN_EXE_legionctl")).with_file_name("legionctl-operator"),
+            "legionctl-operator",
+        ),
+        (PathBuf::from(env!("CARGO_BIN_EXE_legionctl")), "legionctl"),
         (
             repo.join("systemd/legionctl-system.service"),
             "legionctl-system.service",

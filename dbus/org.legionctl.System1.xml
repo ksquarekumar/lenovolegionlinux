@@ -125,6 +125,16 @@
       <arg type="as" direction="out"/>
     </method>
     <!--
+     The plan of a `boot` or `greeter` action as lines, with no change: the dry run (`boot install --dry-run`), and
+     the greeter's refusal before the polkit dialog. The daemon plans as root, so a root-only file (the MOK key in
+     /etc/refind.d/keys) is seen, and the user sees what the run would do. Read-only, so polkit is not asked.
+     -->
+    <method name="Plan">
+      <arg name="kind" type="s" direction="in"/>
+      <arg name="action" type="s" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
      A choice of the greeter before login for `user`: `vm-start`, `vm-stop`, `autostart-off|login|boot`,
      `disk-attach`, `disk-detach`, `gpu-linux`, `gpu-none`.
      -->

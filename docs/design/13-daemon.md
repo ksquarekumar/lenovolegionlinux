@@ -184,7 +184,9 @@ primary; polkit `org.legionctl.gpu.primary`), `Cleanup`, `Tune`, `RebootWindows`
 `WatchSessions`, `Hold` and `Release` (D1, polkit `org.legionctl.knobs.hold`), `FanStatus` (no polkit),
 `SetFanCurve`, `ResetFanCurve`, `SetFanMax`, `SetFanFullSpeed` (polkit `org.legionctl.fan`) and `SetFanLock` (polkit
 `org.legionctl.fan.lock`, no kept authorization; 02-platform, Fan control), `Reload` (no polkit), `SetLayer` and
-`SetLayerState` (polkit `org.legionctl.rules`; configsets, 01-core), `SetGpuPower` (gpu power; polkit `org.legionctl.gpu.power`). The `Version` property is the hash of the committed file; `doctor` says when the daemon and the
+`SetLayerState` (polkit `org.legionctl.rules`; configsets, 01-core), `SetGpuPower` (gpu power; polkit `org.legionctl.gpu.power`), `Plan` (no polkit, todo-128: the plan of a `boot` or
+`greeter` action as lines; the dry runs of boot and greeter and the greeter's refusal before the polkit dialog come
+from it, because the daemon reads root-only files such as the MOK key in `/etc/refind.d/keys`). The `Version` property is the hash of the committed file; `doctor` says when the daemon and the
 operator come from different files. Change events are `machine.<cause in kebab case>` (`machine.apply-power`).
 Not done, on purpose: a `SafeMode` property (in safe mode the daemon does not run, so the marker file
 `/run/legionctl/safe-mode` stays the channel), the Fn+Q ledger through D-Bus (the operator's dry runs read the same

@@ -987,33 +987,29 @@ impl Operator {
         })
     }
 
-    /// A boot action: its plan for a dry run, else the daemon carries it out.
-    fn boot_action(
-        &self,
-        action: &'static str,
-        dry: bool,
-        plan: impl FnOnce(&SysRoot) -> Result<Vec<legionctl_machine::policy::Step>>,
-    ) -> Result<Changes> {
-        if dry {
-            return Ok(dry_run(&plan(&SysRoot::from_env())?));
-        }
+    /// A boot action: the daemon's plan for a dry run (root reads what the user cannot, todo-128), else the daemon
+    /// carries it out.
+    fn boot_action(&self, action: &'static str, dry: bool) -> Result<Changes> {
+        let lines = if dry {
+            self.system(async move |p| p.plan("boot", action).await)?
+        } else {
+            self.system(async move |p| p.boot(action).await)?
+        };
         Ok(Changes {
-            lines: self.system(async move |p| p.boot(action).await)?,
-            dry_run: false,
+            lines,
+            dry_run: dry,
         })
     }
 
-    /// A greeter action: its plan for a dry run, else the daemon carries it out (the plan refuses first, before the
-    /// polkit dialog).
-    fn greeter_action(
-        &self,
-        action: &'static str,
-        dry: bool,
-        plan: fn(&SysRoot) -> Result<Vec<legionctl_machine::policy::Step>>,
-    ) -> Result<Changes> {
-        let steps = plan(&SysRoot::from_env())?;
+    /// A greeter action: the daemon's plan (it refuses first, before the polkit dialog), then for a run the daemon
+    /// carries it out.
+    fn greeter_action(&self, action: &'static str, dry: bool) -> Result<Changes> {
+        let plan = self.system(async move |p| p.plan("greeter", action).await)?;
         if dry {
-            return Ok(dry_run(&steps));
+            return Ok(Changes {
+                lines: plan,
+                dry_run: true,
+            });
         }
         Ok(Changes {
             lines: self.system(async move |p| p.greeter(action).await)?,
@@ -3062,31 +3058,19 @@ impl Engine for Operator {
     }
 
     fn boot_install(&self, _: &Ctx, input: DryRunIn) -> Result<Changes> {
-        self.boot_action("install", input.dry_run, |root| {
-            let mut plan = legionctl_machine::boot::install_plan(root)?;
-            plan.push(legionctl_machine::policy::Step::Info(
-                "then the next start tries legionctl's entry once (BootNext)".into(),
-            ));
-            Ok(plan)
-        })
+        self.boot_action("install", input.dry_run)
     }
 
     fn boot_confirm(&self, _: &Ctx, input: DryRunIn) -> Result<Changes> {
-        self.boot_action("confirm", input.dry_run, |root| {
-            legionctl_machine::boot::confirm_plan(&legionctl_machine::boot::state(root)?)
-        })
+        self.boot_action("confirm", input.dry_run)
     }
 
     fn boot_rebuild(&self, _: &Ctx, input: DryRunIn) -> Result<Changes> {
-        self.boot_action("rebuild", input.dry_run, |root| {
-            legionctl_machine::boot::rebuild_plan(root, &legionctl_machine::boot::state(root)?)
-        })
+        self.boot_action("rebuild", input.dry_run)
     }
 
     fn boot_remove(&self, _: &Ctx, input: DryRunIn) -> Result<Changes> {
-        self.boot_action("remove", input.dry_run, |root| {
-            legionctl_machine::boot::remove_plan(root, &legionctl_machine::boot::state(root)?)
-        })
+        self.boot_action("remove", input.dry_run)
     }
 
     fn kernel_list(&self, _: &Ctx, _: Empty) -> Result<legionctl_api::Kernels> {
@@ -3154,19 +3138,11 @@ impl Engine for Operator {
     }
 
     fn greeter_install(&self, _: &Ctx, input: DryRunIn) -> Result<Changes> {
-        self.greeter_action(
-            "install",
-            input.dry_run,
-            legionctl_machine::greeter::install_plan,
-        )
+        self.greeter_action("install", input.dry_run)
     }
 
     fn greeter_remove(&self, _: &Ctx, input: DryRunIn) -> Result<Changes> {
-        self.greeter_action(
-            "remove",
-            input.dry_run,
-            legionctl_machine::greeter::remove_plan,
-        )
+        self.greeter_action("remove", input.dry_run)
     }
 
     fn windows_status(&self, _: &Ctx, _: Empty) -> Result<WindowsState> {

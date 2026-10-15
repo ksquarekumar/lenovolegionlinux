@@ -732,12 +732,37 @@ fn start_set(root: &SysRoot) {
 
 /// Every kernel's UKI again (the pacman hook); nothing when legionctl does not own the boot. Each warning (a kernel
 /// whose image is not made again) also goes to the journal: the hook's output is gone after pacman ends.
-fn boot_rebuild(root: &SysRoot) -> Result<Vec<String>> {
-    let state = boot::state(root)?;
-    if state.ours.is_none() {
-        return Ok(vec!["no legionctl boot entry: nothing to rebuild".into()]);
+/// The plan of the boot action `action` (for `install`: before its `BootNext` step, which needs the new entry): for
+/// its run and its dry run (`Plan`).
+fn boot_plan(root: &SysRoot, action: &str) -> Result<Vec<Step>> {
+    if action == "install" {
+        return boot::install_plan(root);
     }
-    let plan = boot::rebuild_plan(root, &state)?;
+    let state = boot::state(root)?;
+    match action {
+        "confirm" => boot::confirm_plan(&state),
+        "rebuild" if state.ours.is_none() => Ok(vec![Step::Info(
+            "no legionctl boot entry: nothing to rebuild".into(),
+        )]),
+        "rebuild" => boot::rebuild_plan(root, &state),
+        "remove" => boot::remove_plan(root, &state),
+        other => {
+            anyhow::bail!("boot action must be install, confirm, rebuild or remove, not {other}")
+        }
+    }
+}
+
+/// The plan of the greeter action `action`, for its run and its dry run (`Plan`).
+fn greeter_plan(root: &SysRoot, action: &str) -> Result<Vec<Step>> {
+    match action {
+        "install" => greeter::install_plan(root),
+        "remove" => greeter::remove_plan(root),
+        other => anyhow::bail!("greeter action must be install or remove, not {other}"),
+    }
+}
+
+fn boot_rebuild(root: &SysRoot) -> Result<Vec<String>> {
+    let plan = boot_plan(root, "rebuild")?;
     for step in &plan {
         if let Step::Warn(text) = step {
             let logged = std::process::Command::new("logger")
@@ -1279,7 +1304,7 @@ impl System1 {
         let lines = tokio::task::spawn_blocking(move || -> Result<Vec<String>> {
             match action.as_str() {
                 "install" => {
-                    let mut lines = boot_steps(&root, &boot::install_plan(&root)?)?;
+                    let mut lines = boot_steps(&root, &boot_plan(&root, "install")?)?;
                     let once = boot::try_once(&boot::state(&root)?)?;
                     lines.extend(boot_steps(&root, &[once])?);
                     lines.push(
@@ -1287,13 +1312,8 @@ impl System1 {
                     );
                     Ok(lines)
                 }
-                "confirm" => boot_steps(&root, &boot::confirm_plan(&boot::state(&root)?)?),
                 "rebuild" => boot_rebuild(&root),
-                "remove" => {
-                    let state = boot::state(&root)?;
-                    boot_steps(&root, &boot::remove_plan(&root, &state)?)
-                }
-                other => anyhow::bail!("boot action must be install, confirm, rebuild or remove, not {other}"),
+                _ => boot_steps(&root, &boot_plan(&root, &action)?),
             }
         })
         .await
@@ -1357,18 +1377,34 @@ impl System1 {
         authorize(conn, &header, "org.legionctl.greeter").await?;
         let root = self.root.clone();
         let lines = tokio::task::spawn_blocking(move || -> Result<Vec<String>> {
-            let plan = match action.as_str() {
-                "install" => greeter::install_plan(&root)?,
-                "remove" => greeter::remove_plan(&root)?,
-                other => anyhow::bail!("greeter action must be install or remove, not {other}"),
-            };
-            boot_steps(&root, &plan)
+            boot_steps(&root, &greeter_plan(&root, &action)?)
         })
         .await
         .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
         .map_err(|e| failed(&e))?;
         self.tell(&emitter, "Greeter", &lines).await?;
         Ok(lines)
+    }
+
+    /// The plan of a `boot` or `greeter` action as lines, with no change: the dry run (`boot install --dry-run`), and
+    /// the greeter's refusal before the polkit dialog. The daemon plans as root, so a root-only file (the MOK key in
+    /// /etc/refind.d/keys) is seen, and the user sees what the run would do. Read-only, so polkit is not asked.
+    async fn plan(&self, kind: String, action: String) -> zbus::fdo::Result<Vec<String>> {
+        let root = self.root.clone();
+        tokio::task::spawn_blocking(move || -> Result<Vec<String>> {
+            let mut lines = policy::grouped(&match kind.as_str() {
+                "boot" => boot_plan(&root, &action)?,
+                "greeter" => greeter_plan(&root, &action)?,
+                other => anyhow::bail!("plan kind must be boot or greeter, not {other}"),
+            });
+            if kind == "boot" && action == "install" {
+                lines.push("then the next start tries legionctl's entry once (BootNext)".into());
+            }
+            Ok(lines)
+        })
+        .await
+        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
+        .map_err(|e| failed(&e))
     }
 
     /// A choice of the greeter before login for `user`: `vm-start`, `vm-stop`, `autostart-off|login|boot`,

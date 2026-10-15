@@ -3732,7 +3732,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
     async fn legionctl_boot_comes_beside_the_old_chain_and_is_tried_once_before_it_leads() {
         let m = Machine::new("boot");
         let state = boot_machine(&m);
-        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let (_stand_ins, asked, _processes) = start(&m).await;
         let op = on_bus(&m, "boot");
         let esp = m.dir.join("root/boot/efi");
         let efivars = || -> Value {
@@ -3748,9 +3748,9 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             assert!(plan.contains(expected), "{expected} missing:\n{plan}");
         }
         assert_eq!(
-            efivars()["order"],
-            serde_json::json!(["0003", "0004"]),
-            "a dry run changes nothing"
+            (efivars()["order"].clone(), asked.lock().unwrap().len()),
+            (serde_json::json!(["0003", "0004"]), 0),
+            "a dry run changes nothing; it is the daemon's plan, without polkit"
         );
 
         op.ok(&["boot", "install"]);
@@ -4875,7 +4875,8 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             String::from_utf8_lossy(&refused.stderr)
         );
         assert_eq!(config(), original);
-        assert!(unit_changes().is_empty(), "{:?}", unit_changes());
+        // the daemon's plan refuses before the polkit dialog
+        assert_eq!((unit_changes(), asked.lock().unwrap().len()), (vec![], 0));
 
         m.set("/usr/bin/cage", "");
         op.ok(&["greeter", "install"]);

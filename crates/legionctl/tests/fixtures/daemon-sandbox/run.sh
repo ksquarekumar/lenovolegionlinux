@@ -116,6 +116,34 @@ else
 fi
 
 call() { busctl --timeout=120 call org.legionctl.System1 /org/legionctl/System1 org.legionctl.System1 "$@"; }
+# the MOK key folder is root's alone, as on Arch (todo-128): a user's dry run is the daemon's plan, through the user's
+# own operator, without polkit (the user has no session), and it changes nothing
+chmod 700 /etc/refind.d/keys
+useradd -m tester
+install -Dm755 "$here/legionctl-operator" /usr/lib/legionctl/legionctl-operator
+install -Dm755 "$here/legionctl" /usr/bin/legionctl
+rt=/run/tester
+install -d -o tester -m700 "$rt" "$rt/legionctl"
+# systemd-socket-activate gives the operator only the variables it names
+runuser -u tester -- systemd-socket-activate -l "$rt/legionctl/api.sock" -E HOME=/home/tester -E XDG_RUNTIME_DIR="$rt" \
+  /usr/lib/legionctl/legionctl-operator &
+for _ in $(seq 50); do
+  [ -S "$rt/legionctl/api.sock" ] && break
+  sleep 0.1
+done
+check keys-root-only sh -c '! runuser -u tester -- test -e /etc/refind.d/keys/refind_local.key'
+dry_run() {
+  local out
+  out=$(runuser -u tester -- env XDG_RUNTIME_DIR="$rt" legionctl boot install --dry-run 2>&1) || {
+    echo "$out"
+    return 1
+  }
+  grep -q -- "--label legionctl" <<<"$out" && grep -q BootNext <<<"$out" && [ ! -e /boot/efi/EFI/legionctl ] || {
+    echo "$out"
+    return 1
+  }
+}
+check boot-dry-run-user dry_run
 check greeter-install call Greeter s install
 check greeter-config grep -q '^# legionctl greeter' /etc/greetd/config.toml
 check greeter-display-manager sh -c 'readlink /etc/systemd/system/display-manager.service | grep -q greetd.service'
