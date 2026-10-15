@@ -4,6 +4,8 @@
 //! - Codex: legionctl's MCP server in ~/.codex/config.toml, the plugin's skills linked into ~/.codex/skills, and each
 //!   agent config as a Codex agent in ~/.codex/agents/<name>.toml (instructions, model and effort only).
 //! - Claude Code gets legionctl's MCP server, hooks and skills from the plugin itself.
+//! - The systemd user manager (and so the operator and its checks) gets ~/.local/bin and ~/.cargo/bin before its
+//!   PATH through ~/.config/environment.d/50-legionctl.conf; it reads the file at the next login.
 //!
 //! `check()` only reports; `apply()` changes user-level files and returns what it did.
 
@@ -239,6 +241,35 @@ fn codex_items() -> Vec<Item> {
     items
 }
 
+fn path_conf() -> PathBuf {
+    home().join(".config/environment.d/50-legionctl.conf")
+}
+
+/// The text of `path_conf()`: absolute folders, because environment.d(5) expands only variables (`$PATH`), not `~`.
+fn path_conf_text() -> String {
+    let home = home();
+    format!(
+        "# Written by `legionctl setup apply`: the user's tool folders for the systemd user manager (the operator's checks)\n\
+         PATH={}:{}:$PATH\n",
+        home.join(".local/bin").display(),
+        home.join(".cargo/bin").display()
+    )
+}
+
+fn path_item() -> Item {
+    let status = match std::fs::read_to_string(path_conf()) {
+        Ok(have) if have == path_conf_text() => "current",
+        Ok(_) => "outdated",
+        Err(_) => "missing",
+    };
+    Item {
+        what: "legionctl PATH".into(),
+        agent: "systemd".into(),
+        status: status.into(),
+        path: path_conf().display().to_string(),
+    }
+}
+
 #[must_use]
 pub fn check(agents: &Sources) -> Report {
     let ctx_version = ctx(&["--version"]).ok().map(|v| v.trim().to_string());
@@ -254,6 +285,7 @@ pub fn check(agents: &Sources) -> Report {
     };
     items.extend(codex_items());
     items.extend(codex_agent_items(agents));
+    items.push(path_item());
     Report { ctx_version, items }
 }
 
@@ -362,6 +394,15 @@ pub fn apply(install_missing_ctx: bool, agents: &Sources) -> Result<Vec<String>>
     }
 
     done.extend(write_codex_agents(&codex_agents)?);
+    if path_item().status != "current" {
+        let conf = path_conf();
+        std::fs::create_dir_all(conf.parent().context("environment.d file has no parent")?)?;
+        std::fs::write(&conf, path_conf_text())?;
+        done.push(format!(
+            "legionctl PATH: written to {} (active at the next login)",
+            conf.display()
+        ));
+    }
     Ok(done)
 }
 

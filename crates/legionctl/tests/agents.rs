@@ -1,6 +1,7 @@
 //! End-to-end: agent archetypes, configs and teams (design 23, B+2 to B+4, P6a) through the CLI and the real
 //! operator: `agents check` resolves the layers (archetype file, `agents.configs.<name>`, team) and refuses each field
-//! that a member's run path cannot apply and each layer that widens; `setup apply` writes each config as a Codex agent.
+//! that a member's run path cannot apply and each layer that widens; `setup apply` writes each config as a Codex agent
+//! and the systemd user manager's PATH (environment.d).
 
 mod common;
 
@@ -372,6 +373,72 @@ fn setup_apply_writes_each_agent_config_as_a_codex_agent_with_instructions_model
         std::fs::read_to_string(agents.join("thread-observer.toml")).unwrap(),
         before
     );
+}
+
+/// The operator runs checks with the PATH of the systemd user manager, which lacks the user's tool folders (todo-131):
+/// `setup check` reports the environment.d file as missing or outdated, and `setup apply` writes it once. The real
+/// environment.d generator, when the machine has it, reads the file as the folders before the manager's PATH.
+#[test]
+fn setup_apply_puts_the_users_tool_folders_before_the_user_managers_path_once() {
+    let lab = Lab::new("path", &shipped_plugin());
+    lab.stand_in_ctx();
+    let conf = lab.home.join(".config/environment.d/50-legionctl.conf");
+    let status = || -> String {
+        let check: Value = serde_json::from_str(&lab.op.ok(&["setup", "check", "--json"])).unwrap();
+        let item = check["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["what"] == "legionctl PATH")
+            .unwrap_or_else(|| panic!("{check:#}"))
+            .clone();
+        assert_eq!(item["path"], conf.display().to_string());
+        item["status"].as_str().unwrap().into()
+    };
+    let apply = || -> String {
+        let out = lab.op.cli_in(&lab.home, &["setup", "apply"]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let home = lab.home.display();
+    let want = format!(
+        "# Written by `legionctl setup apply`: the user's tool folders for the systemd user manager (the operator's checks)\n\
+         PATH={home}/.local/bin:{home}/.cargo/bin:$PATH\n"
+    );
+
+    assert_eq!(status(), "missing");
+    assert!(apply().contains(&format!("legionctl PATH: written to {}", conf.display())));
+    assert_eq!(std::fs::read_to_string(&conf).unwrap(), want);
+    assert_eq!(status(), "current");
+    assert!(!apply().contains("legionctl PATH"), "written once");
+    assert_eq!(file_names(conf.parent().unwrap()), ["50-legionctl.conf"]);
+
+    write(&conf, "PATH=/old:$PATH\n");
+    assert_eq!(status(), "outdated");
+    apply();
+    assert_eq!(std::fs::read_to_string(&conf).unwrap(), want);
+
+    let generator = Path::new(
+        "/usr/lib/systemd/user-environment-generators/30-systemd-environment-d-generator",
+    );
+    if generator.is_file() {
+        let out = Command::new(generator)
+            .env_clear()
+            .env("PATH", "/usr/bin")
+            .env("XDG_CONFIG_HOME", lab.home.join(".config"))
+            .output()
+            .unwrap();
+        let env = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            env.lines()
+                .any(|l| l == format!("PATH={home}/.local/bin:{home}/.cargo/bin:/usr/bin")),
+            "{env}"
+        );
+    }
 }
 
 #[test]

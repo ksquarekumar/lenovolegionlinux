@@ -441,6 +441,30 @@ fn tail(log: &Path) -> String {
     lines[lines.len().saturating_sub(TAIL)..].join("\n")
 }
 
+/// The hint for a command that was not found: the shell's exit 127, or make's `Error 127` for a recipe line (make
+/// itself exits 2). It names the command (the last `<cmd>: not found`, `<cmd>: command not found` or `<cmd>: No such
+/// file or directory` line of the log tail) and the fix (todo-131: the operator has the PATH of the systemd user
+/// manager, which `setup apply` extends through environment.d).
+fn not_found(exit: i32, tail: &str) -> Option<String> {
+    if exit != 127 && !tail.lines().any(|l| l.ends_with("] Error 127")) {
+        return None;
+    }
+    let command = tail
+        .lines()
+        .rev()
+        .find_map(|l| {
+            let head = l
+                .strip_suffix(": not found")
+                .or_else(|| l.strip_suffix(": command not found"))
+                .or_else(|| l.strip_suffix(": No such file or directory"))?;
+            head.rsplit(": ").next()
+        })
+        .map_or_else(String::new, |c| format!(" ({c})"));
+    Some(format!(
+        "\ncommand not found in the operator's PATH{command}: run legionctl setup apply and log in again"
+    ))
+}
+
 /// The run ids that an EVIDENCE front matter of the dossier home names (`runs: [<run>, ...]`), in any subfolder:
 /// they stay.
 fn evidence_runs(home: &Path) -> BTreeSet<String> {
@@ -696,14 +720,15 @@ impl Dossiers {
                     ));
                 }
                 if run.exit != 0 {
+                    let tail = tail(&run.log());
+                    let hint = not_found(run.exit, &tail).unwrap_or_default();
                     return Err(coded(
                         Code::Conflict,
                         format!(
-                            "check {name} ({}) failed with exit {}; log {}\n{}",
+                            "check {name} ({}) failed with exit {}; log {}{hint}\n{tail}",
                             check.kind.name(),
                             run.exit,
                             run.log().display(),
-                            tail(&run.log())
                         ),
                     ));
                 }

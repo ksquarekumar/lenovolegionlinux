@@ -610,9 +610,9 @@ fn a_broken_checks_file_and_a_check_that_changes_the_files_refuse_the_checkpoint
 }
 
 /// A repository without a required kind (`checks.required`) is a finding in `doctor` and `dossier check`, and the
-/// agent is told at session start; a check whose command is not found (exit 127) is a "check broken" finding. The
-/// checks are the branch's own: once the workspace's file has the kinds, the nudge and the finding go. A worktree
-/// that is gone is a finding of its workspace in `doctor`.
+/// agent is told at session start; a check whose command is not found (exit 127) is a "check broken" finding, and the
+/// gate names the command and the fix. The checks are the branch's own: once the workspace's file has the kinds, the
+/// nudge and the finding go. A worktree that is gone is a finding of its workspace in `doctor`.
 #[test]
 fn a_missing_check_kind_is_a_finding_and_a_session_start_nudge() {
     let lab = Lab::new("missing");
@@ -624,7 +624,7 @@ fn a_missing_check_kind_is_a_finding_and_a_session_start_nudge() {
                 ".legionctl/checks.jsonc",
                 r#"{ "checks": {
   "format": { "kind": "format", "run": "true" },
-  "lint": { "kind": "lint", "run": "no-such-linter --check" } } }"#,
+  "lint": { "kind": "lint", "run": "no-such-linter --check", "gate": "checkpoint" } } }"#,
             ),
         ],
     );
@@ -664,6 +664,29 @@ fn a_missing_check_kind_is_a_finding_and_a_session_start_nudge() {
     );
     assert!(lab.findings(&ws, &["dossier", "check"]).contains(&broken));
     assert!(doctor().contains(&broken));
+    // the gate names the command it did not find and the fix (todo-131): from the shell (exit 127) and from a make
+    // recipe (make exits 2 and says `Error 127`, as `make lint` without pre-commit on the PATH)
+    write(&ws.join("notes.txt"), "notes\n");
+    let refusal = |exit: &str| {
+        let refused = lab.run(&ws, &["workspace", "checkpoint", "add notes"]);
+        let (_, err) = text(&refused);
+        assert!(
+            !refused.status.success()
+                && err.contains(&format!("failed with exit {exit}; log "))
+                && err.contains(
+                    "\ncommand not found in the operator's PATH (no-such-linter): run legionctl setup apply and log \
+                     in again\n"
+                ),
+            "{err}"
+        );
+    };
+    refusal("127");
+    write(&ws.join("Makefile"), "lint:\n\tno-such-linter --check\n");
+    write(
+        &ws.join(".legionctl/checks.jsonc"),
+        r#"{ "checks": { "lint": { "kind": "lint", "run": "make lint", "gate": "checkpoint" } } }"#,
+    );
+    refusal("2");
 
     write(
         &ws.join(".legionctl/checks.jsonc"),

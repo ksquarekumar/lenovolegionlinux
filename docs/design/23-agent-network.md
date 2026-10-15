@@ -1060,6 +1060,7 @@ Tests (`crates/legionctl/tests/agents.rs`, the CLI and the real operator):
 | `vanilla_resolves_its_three_members_through_their_layers_and_a_layer_that_widens_is_refused` | A layer in the wrong order or `set_by` wrong; a team that narrows refused; a team that adds a tool or a message kind, or a repository layer that removes a deny, let through. |
 | `a_field_that_a_run_path_cannot_apply_refuses_the_member_and_names_the_field` | `mcp` on a teammate or a Codex subagent let through; a sandbox on a Codex subagent let through; a field refused on a path that applies it (the lead's `mcp`, a Codex lead's sandbox). |
 | `setup_apply_writes_each_agent_config_as_a_codex_agent_with_instructions_model_and_effort_only` | Another key in the TOML; a Claude-only config written; the plugin variable left in the text; a user file replaced or a stale file kept; a refused config that writes some files. |
+| `setup_apply_puts_the_users_tool_folders_before_the_user_managers_path_once` (todo-131) | No environment.d file, a stale one reported current, a rewrite on each apply, a line that environment.d does not expand to the folders before the manager's PATH. |
 | `the_archetype_files_carry_only_the_frontmatter_fields_that_plugin_agents_honour` | A shipped file with a field that plugin agents ignore or a missing ref; such a field or ref let through. |
 
 ### Built: P6b and P6c (2026-10-15)
@@ -1567,7 +1568,10 @@ Rules:
    reviews and writes the file. A check whose command is not found (exit 127) is a finding "check broken".
 4. Gates: `workspace checkpoint` needs a passing run of each `gate: checkpoint` check at the tree that it commits
    (the working tree's hash, E5); without one it runs them first. `workspace merge` needs the same for `gate: merge`
-   at the rebased head. A failure refuses with the check, the exit code and the log path. This uses the A7 gate
+   at the rebased head. A failure refuses with the check, the exit code and the log path. A command that was not
+   found (exit 127, or make's `Error 127`) adds "command not found in the operator's PATH (<command>): run legionctl
+   setup apply and log in again": the operator has the systemd user manager's PATH, and `setup apply` writes
+   ~/.config/environment.d/50-legionctl.conf (todo-131). This uses the A7 gate
    path; the fixed command of P4's `code tests run` is removed: it runs the repository's `test` checks.
 5. Each run is a job (`code.checks.run`) in a transient user unit (`systemd-run --user --wait --collect`), so its
    profile comes from the cgroup: wall time, CPU time, memory peak, IO bytes. It goes in `check_runs` (repository,
@@ -1613,7 +1617,7 @@ Tests (`crates/legionctl/tests/checks.rs`, the CLI and the real operator on fixt
 | `detect_proposes_the_checks_of_each_language_from_the_language_files` | A language file that does not parse or proposes other commands or tools; two languages with names that collide; a repository with no known manifest that is not refused; a proposal that is not a valid checks file; `detect` that writes a file. |
 | `a_checkpoint_runs_its_gate_once_per_tree_and_a_failing_check_refuses_with_its_output` | A checkpoint that commits past a failing check, or refuses without the exit code, the log path or the output; a passing run at the tree that runs again; a run at another tree that counts; a run without its log, profile or `profiles` files; `keep_runs` that keeps too many folders or removes one that an EVIDENCE names. |
 | `a_merge_refuses_without_passing_build_and_test_runs_at_the_rebased_head` | A merge that counts a run at the branch before the rebase; a merge past a failing check; a gate that goes on after a failure; a merge that does not run the checks at the new tree. |
-| `a_missing_check_kind_is_a_finding_and_a_session_start_nudge` | A missing kind not in `doctor`, `dossier check` or the session start; exit 127 not a "check broken" finding; a nudge or finding from the main checkout when the workspace's branch has the kinds. |
+| `a_missing_check_kind_is_a_finding_and_a_session_start_nudge` | A missing kind not in `doctor`, `dossier check` or the session start; exit 127 not a "check broken" finding; the gate's hint missing or without the command (shell exit 127, make's `Error 127`); a nudge or finding from the main checkout when the workspace's branch has the kinds. |
 | `a_test_run_records_each_test_with_its_file_result_and_ref`, `a_test_run_that_does_not_build_fails_with_the_compiler_error` (changed) | `code tests run` that does not run the repository's test check, puts the filter in without `--`, is not a check run, or runs without a test check. |
 
 Not built in P10: the observer's runs (B+3, rule 6), the verification job's runs at `declare done`, the tooling
