@@ -51,19 +51,24 @@ and its source. It takes one telemetry sample (the same `sample()` as `monitor`)
 | `nvidia-smi`, `PCI runtime PM` | The NVIDIA GPU's power, temperature, utilization and clock only while it is `active`; else only its runtime state. legionctl never wakes it. |
 | `RAPL`, `cpufreq`, `PSI`, `eBPF runq` | Package power, mean CPU clock, pressure, run-queue latency p99 per CPU class. |
 | `MSR`, `legionctl-system`, `eBPF workload`, `power_supply` | Throttle reasons now and since boot; the firmware mode, fan max mode and the fan table; the workloads that run; the power source and the battery. |
+| `eBPF power`, `eBPF block I/O`, `eBPF thermal`, `MSR, eBPF workload` | The 5 processes with the largest estimated CPU energy share in the window; I/O latency p99 per disk; trip points crossed per thermal zone; the starts of each throttle reason per workload kind (note 04). An eBPF sensor that does not run is a row `not running` with the reason. |
+| `cgroup PSI` | Memory pressure of each agent session of your user (the `memory.pressure` file of its scope). |
 
 History: the operator keeps a telemetry ring of the last 600 samples that `monitor`, `sensors` and `/v1/metrics`
 take. Each number has its values from the ring (`history`, oldest first); the text shows their range. The ring
 fills only while something takes samples (for example `sensors --watch`, the app, or Prometheus). `--watch` shows the
 view again each second (with `--json`, one line per view). `/v1/metrics` has each hwmon channel as
-`legionctl_hwmon_<celsius|rpm|watts|volts|amperes|mhz>{device,sensor}` and each active throttle reason as
-`legionctl_throttle_active{reason}`. The TUI shows the view with `s`; the app shows it on the Now page.
+`legionctl_hwmon_<celsius|rpm|watts|volts|amperes|mhz>{device,sensor}`, each active throttle reason as
+`legionctl_throttle_active{reason}`, and `legionctl_cpu_energy_share_percent{pid,name}`,
+`legionctl_io_latency_p99_microseconds{disk}`, `legionctl_thermal_trips{zone}`,
+`legionctl_throttle_episodes{reason,workload}` and `legionctl_session_memory_pressure_some_percent{session}`. The TUI shows the view with `s`; the app shows it on the Now page.
 
 ## For other tools: system events
 
 Built (2026-10-15, todo-95): `legionctl-system` compares the state that other tools follow with the last state it
-announced. It does this after each event (start, power source, Fn+Q, resume, the 30 s tick, reload, workload) and
-after each change that sends `Changed`. Each difference gives one D-Bus signal on `org.legionctl.System1` and one
+announced. It does this after each event (start, power source, Fn+Q, resume, the 30 s tick, reload, workload), after
+each change that sends `Changed`, at each trigger of the eBPF power sensor (a CPU clock drops, or a thermal interrupt
+comes), and each second while a throttle reason is active. Each difference gives one D-Bus signal on `org.legionctl.System1` and one
 structured journal entry (through the journal's native socket, `/run/systemd/journal/socket`):
 
 | What changed | D-Bus signal | `LEGIONCTL_EVENT` | Fields |
@@ -71,7 +76,7 @@ structured journal entry (through the journal's native socket, `/run/systemd/jou
 | Firmware mode (platform profile, Fn+Q) | `ModeChanged(mode s, fn_q_choice b, source s)` | `mode` | `LEGIONCTL_MODE`, `LEGIONCTL_FN_Q_CHOICE` (1 or 0), `LEGIONCTL_SOURCE` |
 | Power source | `PowerSourceChanged(source s)` | `power-source` | `LEGIONCTL_SOURCE` (`ac`, `battery`) |
 | Workloads that run (eBPF) | `WorkloadChanged(kinds as)` | `workload` | `LEGIONCTL_WORKLOAD` (`build,game`, or `none`) |
-| Throttling starts, changes or stops (MSR) | `ThrottleChanged(reasons as)`; empty: stopped | `throttle` | `LEGIONCTL_REASONS` (empty: stopped) |
+| Throttling starts, changes or stops (MSR) | `ThrottleChanged(reasons as)`; empty: stopped | `throttle` | `LEGIONCTL_REASONS` (empty: stopped), `LEGIONCTL_WORKLOAD` (the kinds active then, or `none`) |
 | Fan max mode | `FanModeChanged(max b)` | `fan-mode` | `LEGIONCTL_FAN_MAX` (`on`, `off`) |
 
 Each entry has `SYSLOG_IDENTIFIER=legionctl-system`, `PRIORITY=6` and a `MESSAGE` (for example `power source
@@ -82,8 +87,10 @@ journalctl -f -o json -t legionctl-system LEGIONCTL_EVENT=power-source
 busctl monitor --system --match "type='signal',interface='org.legionctl.System1'"
 ```
 
-Limits: throttling is compared at the events above, so a throttle period shorter than the 30 s tick between two
-events is not seen. Full fan speed (`fan clean`) has no state that the daemon can read, so it has no event.
+Limits: a throttle start is seen at the events and triggers above. With `intel_pstate` in active mode with HWP (the
+Legion's default), the kernel reports no clock change (`power:cpu_frequency`), and the thermal interrupt comes for
+thermal throttling only: a power-limit throttle shorter than the 30 s tick between two events is then not seen. The
+end of a throttle that was seen is seen within a second. Full fan speed (`fan clean`) has no state that the daemon can read, so it has no event.
 
 ## Check: is the machine correct
 

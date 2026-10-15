@@ -1948,8 +1948,8 @@ mod operator_and_daemon {
         assert_eq!(m.file(PL1), "90");
     }
 
-    /// Without BPF permission (a non-root daemon) the daemon runs on, and the sensor's error reaches the sample and
-    /// doctor.
+    /// Without BPF permission (a non-root daemon) the daemon runs on, and each eBPF sensor's error reaches the
+    /// sample, the sensors view and doctor.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_sensor_that_cannot_load_is_reported_by_monitor_and_doctor() {
         let m = Machine::new("nobpf");
@@ -1957,26 +1957,51 @@ mod operator_and_daemon {
         let op = on_bus(&m, "nobpf");
         let out = op.cli(&["monitor", "--interval-ms", "100", "--json"]);
         let sample = &serde_json::from_slice::<Value>(&out.stdout).unwrap()[0];
-        assert!(
-            sample["runq_error"]
-                .as_str()
-                .is_some_and(|e| e.contains("Operation not permitted")),
+        let errors = sample["sensor_errors"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{sample}"));
+        assert_eq!(
+            errors.keys().collect::<Vec<_>>(),
+            [
+                "block I/O",
+                "power",
+                "run-queue",
+                "session activity",
+                "thermal"
+            ],
             "{sample}"
         );
-        assert_eq!(sample["runq_latency"], Value::Null);
+        assert!(
+            errors
+                .values()
+                .all(|e| e.as_str().unwrap().contains("Operation not permitted")),
+            "{sample}"
+        );
+        for reading in ["runq_latency", "cpu_energy", "io_latency", "thermal_trips"] {
+            assert_eq!(sample[reading], Value::Null, "{reading}: {sample}");
+        }
+        let rows: Value = serde_json::from_str(&op.ok(&["sensors", "--json"])).unwrap();
+        assert!(
+            rows.as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["source"] == "eBPF power"
+                    && r["text"]
+                        .as_str()
+                        .is_some_and(|t| t.starts_with("not running: loading the power object"))),
+            "{rows:#}"
+        );
         let doctor = String::from_utf8(op.cli(&["doctor"]).stdout).unwrap();
-        assert!(
-            doctor.contains(
-                "- the eBPF run-queue sensor does not run: loading the runq object: map error"
-            ),
-            "{doctor}"
-        );
-        assert!(
-            doctor.contains(
-                "- the eBPF workload sensor does not run: loading the workload object: map error"
-            ),
-            "{doctor}"
-        );
+        for line in [
+            "- the eBPF run-queue sensor does not run: loading the runq object: map error",
+            "- the eBPF power sensor does not run: loading the power object: map error",
+            "- the eBPF block I/O sensor does not run: loading the io object: map error",
+            "- the eBPF thermal sensor does not run: loading the thermal object: map error",
+            "- the eBPF session activity sensor does not run: loading the exec object: map error",
+            "- the eBPF workload sensor does not run: loading the workload object: map error",
+        ] {
+            assert!(doctor.contains(line), "{line}\n{doctor}");
+        }
     }
 
     /// As root (CI runs it with sudo): the eBPF programs pass the verifier of the running kernel, attach, and the
@@ -2078,19 +2103,8 @@ mod operator_and_daemon {
             panic!("{e}");
         }
         let op = on_bus(&m, "execs");
-        let uid = std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/proc/self").unwrap());
-        let user = PathBuf::from(format!(
-            "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/app.slice"
-        ));
-        // the cgroups this test makes, deepest last, so they go in reverse
-        let made: Vec<PathBuf> = user
-            .join("legionctl-session-acttest.scope")
-            .ancestors()
-            .take_while(|p| !p.exists())
-            .map(Path::to_path_buf)
-            .collect();
-        std::fs::create_dir_all(made.first().unwrap()).unwrap();
-        let scope = user.join("legionctl-session-acttest.scope");
+        let scope = SessionScope::new("acttest");
+        let scope = &scope.0;
         let probe = |inside: bool, word: &str| {
             let enter = if inside {
                 format!("echo $$ > {}/cgroup.procs && ", scope.display())
@@ -2119,9 +2133,6 @@ mod operator_and_daemon {
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         };
-        for dir in &made {
-            let _ = std::fs::remove_dir(dir);
-        }
         let argvs: Vec<Value> = activity["items"]
             .as_array()
             .unwrap_or_else(|| panic!("no activity: {activity}"))
@@ -2203,6 +2214,188 @@ mod operator_and_daemon {
     }
 
     const SWAPPINESS: &str = "/proc/sys/vm/swappiness";
+
+    /// An agent session's scope cgroup (`legionctl-session-<id>.scope`) of this user, made for the test and removed
+    /// at its end with the folders above it that the test made.
+    struct SessionScope(PathBuf, Vec<PathBuf>);
+
+    impl SessionScope {
+        fn new(id: &str) -> SessionScope {
+            let uid =
+                std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/proc/self").unwrap());
+            let scope = PathBuf::from(format!(
+                "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/legionctl-session-{id}.scope"
+            ));
+            // deepest first, so they go in this order
+            let made: Vec<PathBuf> = scope
+                .ancestors()
+                .take_while(|p| !p.exists())
+                .map(Path::to_path_buf)
+                .collect();
+            std::fs::create_dir_all(&scope).unwrap();
+            SessionScope(scope, made)
+        }
+    }
+
+    impl Drop for SessionScope {
+        fn drop(&mut self) {
+            for dir in &self.1 {
+                let _ = std::fs::remove_dir(dir);
+            }
+        }
+    }
+
+    /// As root (CI runs it with sudo): the power, block I/O and thermal programs pass the verifier of the running
+    /// kernel, and a busy loop gets a large share of the CPU energy, under its own name and process id.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs root: CI runs it with sudo"]
+    async fn as_root_the_power_sensor_finds_a_busy_loop() {
+        let m = Machine::new("power");
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "power");
+        // a link, not a copy (a parallel test's fork can hold a copy's write fd): its name is the process's name
+        let busy = m.dir.join("bin/lc-busy");
+        std::os::unix::fs::symlink("/bin/sh", &busy).unwrap();
+        let looping = Kill(
+            std::process::Command::new(&busy)
+                .args(["-c", "while :; do :; done"])
+                .spawn()
+                .unwrap(),
+        );
+        let out = op.cli(&["monitor", "--interval-ms", "1000", "--json"]);
+        let sample = &serde_json::from_slice::<Value>(&out.stdout).unwrap()[0];
+        assert_eq!(sample["sensor_errors"], Value::Null, "{sample}");
+        assert!(sample["thermal_trips"].is_object(), "{sample}");
+        assert!(sample["io_latency"].is_object(), "{sample}");
+        let top = sample["cpu_energy"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{sample}"));
+        let ours = top
+            .iter()
+            .find(|e| e["pid"] == looping.0.id())
+            .unwrap_or_else(|| panic!("the busy loop is not in the top: {sample}"));
+        assert_eq!(ours["name"], "lc-busy", "{sample}");
+        // one CPU all the time; other tests may run beside it
+        assert!(ours["share_percent"].as_f64().unwrap() >= 15.0, "{sample}");
+    }
+
+    /// As root (CI runs it with sudo): direct writes to a file give I/O latency counts to the disk that holds it (not
+    /// to its partition).
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs root: CI runs it with sudo"]
+    async fn as_root_the_block_sensor_counts_the_writes_of_a_dd() {
+        use std::os::unix::fs::MetadataExt;
+
+        let m = Machine::new("blockio");
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "blockio");
+        // on a disk: /tmp can be a tmpfs
+        let file = PathBuf::from(format!("/var/tmp/legionctl-dd-{}", std::process::id()));
+        std::fs::write(&file, b"").unwrap();
+        // the disk of the file: its partition's sysfs path is .../block/<disk>[/<partition>]
+        let dev = std::fs::metadata(&file).unwrap().dev();
+        let (major, minor) = (
+            ((dev >> 32) & 0xffff_f000) | ((dev >> 8) & 0xfff),
+            ((dev >> 12) & 0xffff_ff00) | (dev & 0xff),
+        );
+        let link = std::fs::read_link(format!("/sys/dev/block/{major}:{minor}")).unwrap();
+        let parts: Vec<String> = link
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        let disk = parts[parts.iter().position(|c| c == "block").unwrap() + 1].clone();
+        // writes all through the sample window (the window starts when the operator has started)
+        let dd = Kill(
+            std::process::Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    &format!(
+                        "while dd if=/dev/zero of={} bs=1M count=32 oflag=direct 2>/dev/null; do :; done",
+                        file.display()
+                    ),
+                ])
+                .spawn()
+                .unwrap(),
+        );
+        let out = op.cli(&["monitor", "--interval-ms", "1500", "--json"]);
+        drop(dd);
+        let _ = std::fs::remove_file(&file);
+        let sample = &serde_json::from_slice::<Value>(&out.stdout).unwrap()[0];
+        let count = sample["io_latency"][&disk]["count"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("no latency for {disk}: {sample}"));
+        assert!(count >= 32, "{count} requests on {disk}: {sample}");
+    }
+
+    /// As root (CI runs it with sudo): a file that a process in an agent session's scope opens reaches `session
+    /// activity`, once however often it is opened, through a signal sent to the operator alone (another connection on
+    /// the bus with a match rule for it gets nothing); a file opened outside the scope does not.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs root: CI runs it with sudo"]
+    async fn as_root_a_session_file_open_reaches_only_its_owner() {
+        let m = Machine::new("opens");
+        let (stand_ins, _asked, _processes) = start(&m).await;
+        let system = zbus::Proxy::new(
+            &stand_ins,
+            "org.legionctl.System1",
+            "/org/legionctl/System1",
+            "org.legionctl.System1",
+        )
+        .await
+        .unwrap();
+        let mut overheard = system.receive_signal("SessionOpen").await.unwrap();
+        let op = on_bus(&m, "opens");
+        let scope = SessionScope::new("opentest");
+        let (inside, outside) = (m.dir.join("opened-inside"), m.dir.join("opened-outside"));
+        std::fs::write(&inside, "in").unwrap();
+        std::fs::write(&outside, "out").unwrap();
+        let open = |enter: bool, file: &Path| {
+            let enter = if enter {
+                format!("echo $$ > {}/cgroup.procs && ", scope.0.display())
+            } else {
+                String::new()
+            };
+            std::process::Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    &format!("{enter}exec /bin/cat {0} {0}", file.display()),
+                ])
+                .output()
+                .unwrap();
+        };
+        open(false, &outside);
+        let inside_path = inside.to_str().unwrap();
+        let opened = |rows: &Value| -> usize {
+            rows["items"]
+                .as_array()
+                .map_or(0, |r| r.iter().filter(|e| e["path"] == inside_path).count())
+        };
+        let activity = || -> Value {
+            serde_json::from_slice(
+                &op.cli(&["session", "activity", "opentest", "--json"])
+                    .stdout,
+            )
+            .unwrap_or(Value::Null)
+        };
+        // the operator asks to watch at its start; the daemon looks for new scopes each second
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while opened(&activity()) == 0 && std::time::Instant::now() < deadline {
+            open(true, &inside);
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        // more opens of the same file after the first one was recorded
+        open(true, &inside);
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let rows = activity();
+        assert_eq!(opened(&rows), 1, "{rows}");
+        assert!(!rows.to_string().contains("opened-outside"), "{rows}");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), overheard.next())
+                .await
+                .is_err(),
+            "another connection heard a session's open"
+        );
+    }
 
     /// You are the user in front (logind seat0) with your home on machine `m`; the operator runs as you, on the bus of
     /// the daemon. Returns the operator and your layer folder.
@@ -6273,6 +6466,15 @@ mod sensors_and_events {
             ),
         );
         msr(m, 0b11);
+        // an agent session of this user under memory pressure (its scope's cgroup PSI)
+        let uid = std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/proc/self").unwrap());
+        m.set(
+            &format!(
+                "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/\
+                 legionctl-session-psi1.scope/memory.pressure"
+            ),
+            "some avg10=12.50 avg60=3.00 avg300=1.00 total=100\nfull avg10=4.00 avg60=1.00 avg300=0.00 total=50",
+        );
         (reads, smi)
     }
 
@@ -6312,6 +6514,12 @@ mod sensors_and_events {
             // the firmware's fan RPM through the daemon's acpi_call (the stand-in answers 0)
             ("firmware acpi_call", "fan1", 0.0, "RPM"),
             ("firmware acpi_call", "fan2", 0.0, "RPM"),
+            (
+                "cgroup PSI",
+                "memory pressure of session psi1, some avg10",
+                12.5,
+                "%",
+            ),
         ] {
             let r = row(&rows, source, name);
             assert_eq!(
@@ -6372,6 +6580,7 @@ mod sensors_and_events {
             "legionctl_hwmon_watts{device=\"hwmon1 BAT0\",sensor=\"power1\"} 12.5",
             "legionctl_hwmon_rpm{device=\"hwmon4 legionctl_wmi\",sensor=\"fan1\"} 2200",
             "legionctl_throttle_active{reason=\"thermal\"} 1",
+            "legionctl_session_memory_pressure_some_percent{session=\"psi1\"} 12.5",
         ] {
             assert!(metrics.contains(line), "{line}\n{metrics}");
         }
@@ -6548,7 +6757,10 @@ mod sensors_and_events {
             ),
             ["performance", "1", "battery"]
         );
-        assert_eq!(event(&entries[4], &["LEGIONCTL_REASONS"]), ["thermal"]);
+        assert_eq!(
+            event(&entries[4], &["LEGIONCTL_REASONS", "LEGIONCTL_WORKLOAD"]),
+            ["thermal", "build"]
+        );
         assert_eq!(event(&entries[6], &["LEGIONCTL_FAN_MAX"]), ["on"]);
     }
 
@@ -6602,12 +6814,19 @@ mod sensors_and_events {
         m.record(Key::Override, "performance");
         resume().await;
         wait(4);
-        // throttling starts and stops (the MSR's thermal status bit)
+        // throttling starts during the build (the MSR's thermal status bit, seen at an event) and is counted with it
         msr(&m, 0b11);
         resume().await;
         wait(5);
+        let sample: String = system.call("Sample", &()).await.unwrap();
+        let sample: Value = serde_json::from_str(&sample).unwrap();
+        assert_eq!(
+            sample["throttle_episodes"],
+            serde_json::json!({"thermal": {"build": 1}}),
+            "{sample}"
+        );
+        // it stops with no event: the daemon looks each second while throttled (not at the 30 s tick)
         msr(&m, 0b10);
-        resume().await;
         wait(6);
         // fan max mode through the daemon's method
         let _: Vec<String> = system.call("SetFanMax", &(true,)).await.unwrap();

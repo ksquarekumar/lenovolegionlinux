@@ -4140,6 +4140,102 @@
               ]
             }
           },
+          "cpu_energy": {
+            "description": "The processes with the largest estimated CPU energy share in the window, largest first (the daemon's eBPF\npower sensor).",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "description": "A process's estimated share of the CPU energy in a sample window: its CPU time weighted by the clock.",
+              "type": "object",
+              "properties": {
+                "pid": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                },
+                "name": {
+                  "type": "string"
+                },
+                "share_percent": {
+                  "type": "number",
+                  "format": "double"
+                },
+                "watts": {
+                  "description": "The share of the package power (RAPL) in the window.",
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "format": "double"
+                }
+              },
+              "required": [
+                "pid",
+                "name",
+                "share_percent"
+              ]
+            }
+          },
+          "io_latency": {
+            "description": "I/O latency in the window per disk (the daemon's eBPF block I/O sensor).",
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "description": "Run-queue latency over a sample window: how long woken tasks waited for a CPU. Log2 resolution: a percentile is\nthe upper bound of its bucket.",
+              "type": "object",
+              "properties": {
+                "count": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0
+                },
+                "p50_us": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0
+                },
+                "p99_us": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "count",
+                "p50_us",
+                "p99_us"
+              ]
+            }
+          },
+          "session_memory_pressure": {
+            "description": "The memory pressure of each agent session of this user (its cgroup's PSI), by session id.",
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "some_avg10": {
+                  "description": "Percent of the last 10 s in which at least one task stalled on this resource.",
+                  "type": "number",
+                  "format": "double"
+                },
+                "full_avg10": {
+                  "description": "Percent of the last 10 s in which all non-idle tasks stalled (not reported for CPU on every kernel).",
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "format": "double"
+                }
+              },
+              "required": [
+                "some_avg10"
+              ]
+            }
+          },
           "hwmon": {
             "description": "Every hwmon channel.",
             "type": "array",
@@ -4210,6 +4306,18 @@
               "type": "string"
             }
           },
+          "throttle_episodes": {
+            "description": "How often each throttle reason started since the daemon started, per workload kind that was active then\n(`none`: no kind): reason -> kind -> starts.",
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              }
+            }
+          },
           "runq": {
             "description": "The eBPF sensor's cumulative run-queue wait histogram per CPU class (bucket i: 2^i to 2^(i+1) µs). A sample\nturns two of these into `runq_latency`.",
             "type": [
@@ -4225,16 +4333,76 @@
               }
             }
           },
-          "runq_error": {
-            "description": "Why the eBPF sensor does not run (no permission, the verifier's message).",
+          "processes": {
+            "description": "The eBPF power sensor's cumulative weight of each process (CPU time × clock). A sample turns two of these\ninto `cpu_energy`.",
             "type": [
-              "string",
+              "array",
               "null"
-            ]
+            ],
+            "items": {
+              "description": "One process's cumulative CPU time weighted by the clock of its CPU (µs × MHz), from the eBPF power sensor.",
+              "type": "object",
+              "properties": {
+                "pid": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                },
+                "name": {
+                  "description": "The process's name (`comm`).",
+                  "type": "string"
+                },
+                "weight": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "pid",
+                "name",
+                "weight"
+              ]
+            }
+          },
+          "io": {
+            "description": "The eBPF block I/O sensor's cumulative latency histogram per disk (bucket i: 2^i to 2^(i+1) µs). A sample\nturns two of these into `io_latency`.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              }
+            }
+          },
+          "thermal_trips": {
+            "description": "Thermal trip points crossed per thermal zone since the eBPF thermal sensor started.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "sensor_errors": {
+            "description": "Why each eBPF sensor that does not run does not (no permission, the verifier's message), by sensor.",
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
           }
         },
         "required": [
           "at_ms",
+          "session_memory_pressure",
           "hwmon",
           "hwmon_asleep"
         ]
@@ -11643,7 +11811,7 @@
         "items": {
           "type": "array",
           "items": {
-            "description": "A program that a process in an agent session started (the eBPF sensor in legionctl-system).",
+            "description": "What a process in an agent session did (the eBPF sensor in legionctl-system): started a program (`argv`), or\nopened a file for the first time in the session (`path`).",
             "type": "object",
             "properties": {
               "at": {
@@ -11657,11 +11825,18 @@
                 "minimum": 0
               },
               "argv": {
-                "description": "The arguments, cut at 512 bytes.",
+                "description": "The arguments of the program it started, cut at 512 bytes; empty for an open.",
                 "type": "array",
                 "items": {
                   "type": "string"
                 }
+              },
+              "path": {
+                "description": "The file it opened, as the program gave it (it can be relative to its folder), cut at 255 bytes.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [

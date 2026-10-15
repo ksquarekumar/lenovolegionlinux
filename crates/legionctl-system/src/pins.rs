@@ -7,7 +7,9 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use aya::maps::{Map, MapData};
+use aya::programs::BtfTracePoint;
 use aya::programs::links::FdLink;
+use aya::{Btf, Ebpf};
 use legionctl_machine::sysroot::SysRoot;
 
 const PINS: &str = "/sys/fs/bpf/legionctl";
@@ -62,6 +64,46 @@ impl Pins {
         }
         Ok(())
     }
+}
+
+/// The maps `maps` of `sensor`: pinned by this build, else from a new load of `object` with each (program, tracepoint)
+/// attached and pinned. A failed daemon's successor so reuses the attached programs.
+///
+/// # Errors
+/// No BPF permission, no BTF, the verifier refuses a program (its message is in the error), or a pin fails.
+pub fn attach(
+    root: &SysRoot,
+    sensor: &'static str,
+    object: &[u8],
+    programs: &[(&str, &str)],
+    maps: &[&str],
+) -> Result<Vec<Map>> {
+    let pins = Pins::of(root, sensor, object);
+    if let Some(pinned) = maps.iter().map(|m| pins.map(m)).collect::<Option<Vec<_>>>() {
+        return Ok(pinned);
+    }
+    let mut bpf = Ebpf::load(object).with_context(|| format!("loading the {sensor} object"))?;
+    let btf = Btf::from_sys_fs().context("reading the kernel BTF")?;
+    let mut links = Vec::new();
+    for (program, tracepoint) in programs {
+        let p: &mut BtfTracePoint = bpf
+            .program_mut(program)
+            .with_context(|| format!("no program {program}"))?
+            .try_into()?;
+        p.load(tracepoint, &btf)
+            .with_context(|| format!("loading {program}"))?;
+        let link = p
+            .attach()
+            .with_context(|| format!("attaching {program} to {tracepoint}"))?;
+        links.push((*program, FdLink::from(p.take_link(link)?)));
+    }
+    let taken = maps
+        .iter()
+        .map(|m| bpf.take_map(m).with_context(|| format!("no {m} map")))
+        .collect::<Result<Vec<_>>>()?;
+    let named: Vec<(&str, &Map)> = maps.iter().copied().zip(taken.iter()).collect();
+    pins.pin(links, &named)?;
+    Ok(taken)
 }
 
 /// Remove every pin: the programs detach when the daemon's own handles close.

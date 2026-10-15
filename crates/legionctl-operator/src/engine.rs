@@ -1421,8 +1421,8 @@ impl Engine for Operator {
         let mut findings = legionctl_machine::doctor::doctor(&plan.machine());
         match self.system(async |p| p.sample().await) {
             Ok(json) => {
-                if let Some(e) = serde_json::from_str::<RootSample>(&json)?.runq_error {
-                    findings.push(format!("the eBPF run-queue sensor does not run: {e}"));
+                for (sensor, e) in serde_json::from_str::<RootSample>(&json)?.sensor_errors {
+                    findings.push(format!("the eBPF {sensor} sensor does not run: {e}"));
                 }
             }
             Err(e) => findings.push(format!(
@@ -3771,7 +3771,7 @@ impl Engine for Operator {
     fn session_activity(&self, _: &Ctx, input: SessionActivityIn) -> Result<Page<SessionExec>> {
         let (after, limit) = page_of(input.cursor.as_deref(), input.limit)?;
         let filter = EventFilter {
-            kinds: &["session.exec"],
+            kinds: &["session.exec", "session.open"],
             field: Some(("$.session", &input.id)),
             naming: None,
         };
@@ -3783,7 +3783,8 @@ impl Engine for Operator {
                     Some(SessionExec {
                         at: e.ts,
                         pid: u32::try_from(e.payload["pid"].as_u64()?).ok()?,
-                        argv: serde_json::from_value(e.payload["argv"].clone()).ok()?,
+                        argv: serde_json::from_value(e.payload["argv"].clone()).unwrap_or_default(),
+                        path: e.payload["path"].as_str().map(String::from),
                     })
                 })
                 .collect(),

@@ -1,9 +1,12 @@
 //! One telemetry sample (note 16, `legionctl monitor`): package power from RAPL energy over a short window, CPU
 //! temperature and clock, the NVIDIA GPU (only when it is already awake: a query would wake a suspended GPU), PSI,
-//! every hwmon channel (a device that sleeps is not read: the read would wake it), and the root-only part from
-//! `legionctl-system` (fan RPM, throttle reasons from the MSR).
+//! every hwmon channel (a device that sleeps is not read: the read would wake it), the memory pressure of each agent
+//! session (cgroup PSI), and the root-only part from `legionctl-system` (fan RPM, throttle reasons from the MSR, the
+//! eBPF sensors).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use schemars::JsonSchema;
@@ -16,6 +19,8 @@ use crate::sysroot::SysRoot;
 const RAPL_PACKAGE: &str = "/sys/class/powercap/intel-rapl:0/energy_uj";
 const RAPL_RANGE: &str = "/sys/class/powercap/intel-rapl:0/max_energy_range_uj";
 const NVIDIA_VENDOR: &str = "0x10de";
+/// The processes in [`Sample::cpu_energy`].
+const TOP: usize = 5;
 
 /// What only root can read; `legionctl-system` answers it over D-Bus (`Sample`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -25,13 +30,47 @@ pub struct RootSample {
     pub throttle_now: Option<Vec<String>>,
     /// Throttle reasons logged since boot (the MSR's sticky bits).
     pub throttle_logged: Option<Vec<String>>,
+    /// How often each throttle reason started since the daemon started, per workload kind that was active then
+    /// (`none`: no kind): reason -> kind -> starts.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub throttle_episodes: BTreeMap<String, BTreeMap<String, u64>>,
     /// The eBPF sensor's cumulative run-queue wait histogram per CPU class (bucket i: 2^i to 2^(i+1) µs). A sample
     /// turns two of these into `runq_latency`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runq: Option<BTreeMap<String, Vec<u64>>>,
-    /// Why the eBPF sensor does not run (no permission, the verifier's message).
+    /// The eBPF power sensor's cumulative weight of each process (CPU time × clock). A sample turns two of these into
+    /// `cpu_energy`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runq_error: Option<String>,
+    pub processes: Option<Vec<ProcessWeight>>,
+    /// The eBPF block I/O sensor's cumulative latency histogram per disk (bucket i: 2^i to 2^(i+1) µs). A sample
+    /// turns two of these into `io_latency`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io: Option<BTreeMap<String, Vec<u64>>>,
+    /// Thermal trip points crossed per thermal zone since the eBPF thermal sensor started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thermal_trips: Option<BTreeMap<String, u64>>,
+    /// Why each eBPF sensor that does not run does not (no permission, the verifier's message), by sensor.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sensor_errors: BTreeMap<String, String>,
+}
+
+/// One process's cumulative CPU time weighted by the clock of its CPU (µs × MHz), from the eBPF power sensor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ProcessWeight {
+    pub pid: u32,
+    /// The process's name (`comm`).
+    pub name: String,
+    pub weight: u64,
+}
+
+/// A process's estimated share of the CPU energy in a sample window: its CPU time weighted by the clock.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct EnergyShare {
+    pub pid: u32,
+    pub name: String,
+    pub share_percent: f64,
+    /// The share of the package power (RAPL) in the window.
+    pub watts: Option<f64>,
 }
 
 /// Run-queue latency over a sample window: how long woken tasks waited for a CPU. Log2 resolution: a percentile is
@@ -124,6 +163,89 @@ pub fn latency(
                     },
                 )
             })
+        })
+        .collect()
+}
+
+/// The [`TOP`] processes by their share of the weight added between two cumulative readings, largest first;
+/// `package_w` is the package power in the window.
+#[must_use]
+pub fn cpu_energy(
+    before: &[ProcessWeight],
+    after: &[ProcessWeight],
+    package_w: Option<f64>,
+) -> Vec<EnergyShare> {
+    let old: HashMap<u32, u64> = before.iter().map(|p| (p.pid, p.weight)).collect();
+    let mut added: Vec<(&ProcessWeight, u64)> = after
+        .iter()
+        .map(|p| {
+            (
+                p,
+                p.weight
+                    .saturating_sub(old.get(&p.pid).copied().unwrap_or(0)),
+            )
+        })
+        .filter(|(_, w)| *w > 0)
+        .collect();
+    let total: u64 = added.iter().map(|(_, w)| w).sum();
+    added.sort_by_key(|a| std::cmp::Reverse(a.1));
+    added
+        .into_iter()
+        .take(TOP)
+        .map(|(p, w)| {
+            // in hundredths of a percent, so the weights (which pass u32) stay integers
+            let hundredths = u128::from(w) * 10_000 / u128::from(total);
+            let share = f64::from(u32::try_from(hundredths).unwrap_or(u32::MAX)) / 100.0;
+            EnergyShare {
+                pid: p.pid,
+                name: p.name.clone(),
+                share_percent: share,
+                watts: package_w.map(|watts| watts * share / 100.0),
+            }
+        })
+        .collect()
+}
+
+/// The agent session scopes of user `uid` (`legionctl-session-<id>.scope`) in the cgroup tree at `cgroup`
+/// (`/sys/fs/cgroup`): their folders and session ids.
+#[must_use]
+pub fn session_scopes(cgroup: &Path, uid: u32) -> Vec<(PathBuf, String)> {
+    fn walk(dir: &Path, depth: u32, out: &mut Vec<(PathBuf, String)>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            if !entry.metadata().is_ok_and(|m| m.is_dir()) {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            match name
+                .strip_prefix("legionctl-session-")
+                .and_then(|n| n.strip_suffix(".scope"))
+            {
+                Some(id) => out.push((entry.path(), id.to_string())),
+                None if depth > 0 => walk(&entry.path(), depth - 1, out),
+                None => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    // the scopes sit in app.slice, or a slice below it
+    walk(
+        &cgroup.join(format!("user.slice/user-{uid}.slice/user@{uid}.service")),
+        2,
+        &mut out,
+    );
+    out
+}
+
+/// The memory pressure of each agent session of this process's user: its scope's `memory.pressure`.
+fn session_memory_pressure(root: &SysRoot) -> BTreeMap<String, Pressure> {
+    let Ok(me) = std::fs::metadata("/proc/self") else {
+        return BTreeMap::new();
+    };
+    session_scopes(&root.path("/sys/fs/cgroup"), me.uid())
+        .into_iter()
+        .filter_map(|(dir, id)| {
+            let text = std::fs::read_to_string(dir.join("memory.pressure")).ok()?;
+            Some((id, parse_pressure(&text)?))
         })
         .collect()
 }
@@ -238,6 +360,13 @@ pub struct Sample {
     pub io_pressure: Option<Pressure>,
     /// Run-queue latency in the window per CPU class (the daemon's eBPF sensor).
     pub runq_latency: Option<BTreeMap<String, Latency>>,
+    /// The processes with the largest estimated CPU energy share in the window, largest first (the daemon's eBPF
+    /// power sensor).
+    pub cpu_energy: Option<Vec<EnergyShare>>,
+    /// I/O latency in the window per disk (the daemon's eBPF block I/O sensor).
+    pub io_latency: Option<BTreeMap<String, Latency>>,
+    /// The memory pressure of each agent session of this user (its cgroup's PSI), by session id.
+    pub session_memory_pressure: BTreeMap<String, Pressure>,
     /// Every hwmon channel.
     pub hwmon: Vec<Channel>,
     /// The hwmon devices not read: their device sleeps.
@@ -338,6 +467,14 @@ pub fn sample(root: &SysRoot, window: Duration, root_part: &dyn Fn() -> RootSamp
         .runq
         .zip(last.runq.take())
         .map(|(a, b)| latency(&a, &b));
+    let io_latency = first.io.zip(last.io.take()).map(|(a, b)| latency(&a, &b));
+    let package_w = before
+        .zip(after)
+        .and_then(|(b, a)| watts(b, a, read_f64(root, RAPL_RANGE), window));
+    let cpu_energy = first
+        .processes
+        .zip(last.processes.take())
+        .map(|(a, b)| cpu_energy(&a, &b, package_w));
     let psi = |name: &str| {
         root.read(format!("/proc/pressure/{name}"))
             .as_deref()
@@ -348,9 +485,7 @@ pub fn sample(root: &SysRoot, window: Duration, root_part: &dyn Fn() -> RootSamp
         ts_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
-        package_w: before
-            .zip(after)
-            .and_then(|(b, a)| watts(b, a, read_f64(root, RAPL_RANGE), window)),
+        package_w,
         cpu_temp_c: cpu_temp(root),
         cpu_mhz: cpu_mhz(root),
         gpu: gpu(root),
@@ -358,6 +493,9 @@ pub fn sample(root: &SysRoot, window: Duration, root_part: &dyn Fn() -> RootSamp
         memory_pressure: psi("memory"),
         io_pressure: psi("io"),
         runq_latency,
+        cpu_energy,
+        io_latency,
+        session_memory_pressure: session_memory_pressure(root),
         hwmon,
         hwmon_asleep,
         root: last,
@@ -380,6 +518,86 @@ fn gauge(lines: &mut Vec<String>, name: &str, help: &str, values: Vec<(String, S
                 .map(|(labels, v)| format!("legionctl_{name}{labels} {v}")),
         );
     }
+}
+
+/// The eBPF sensors' readings and the sessions' memory pressure.
+fn ebpf_gauges(lines: &mut Vec<String>, s: &Sample) {
+    gauge(
+        lines,
+        "cpu_energy_share_percent",
+        "A process's estimated share of the CPU energy over the sample window (the largest only)",
+        s.cpu_energy
+            .iter()
+            .flatten()
+            .map(|e| {
+                (
+                    format!("{{pid=\"{}\",name=\"{}\"}}", e.pid, escape(&e.name)),
+                    e.share_percent.to_string(),
+                )
+            })
+            .collect(),
+    );
+    gauge(
+        lines,
+        "io_latency_p99_microseconds",
+        "Block I/O latency p99 over the sample window, per disk",
+        s.io_latency
+            .iter()
+            .flatten()
+            .map(|(disk, l)| {
+                (
+                    format!("{{disk=\"{}\"}}", escape(disk)),
+                    l.p99_us.to_string(),
+                )
+            })
+            .collect(),
+    );
+    gauge(
+        lines,
+        "thermal_trips",
+        "Trip points crossed per thermal zone since the sensor started",
+        s.root
+            .thermal_trips
+            .iter()
+            .flatten()
+            .map(|(zone, n)| (format!("{{zone=\"{}\"}}", escape(zone)), n.to_string()))
+            .collect(),
+    );
+    gauge(
+        lines,
+        "throttle_episodes",
+        "Starts of a throttle reason since the daemon started, per workload kind active then",
+        s.root
+            .throttle_episodes
+            .iter()
+            .flat_map(|(reason, kinds)| {
+                kinds.iter().map(move |(kind, n)| {
+                    (
+                        format!(
+                            "{{reason=\"{}\",workload=\"{}\"}}",
+                            escape(reason),
+                            escape(kind)
+                        ),
+                        n.to_string(),
+                    )
+                })
+            })
+            .collect(),
+    );
+    gauge(
+        lines,
+        "session_memory_pressure_some_percent",
+        "Memory PSI some avg10 of each agent session's cgroup",
+        s.session_memory_pressure
+            .iter()
+            .map(|(id, p)| {
+                (
+                    format!("{{session=\"{}\"}}", escape(id)),
+                    p.some_avg10.to_string(),
+                )
+            })
+            .collect(),
+    );
 }
 
 /// Each hwmon channel, per unit, and each active throttle reason.
@@ -498,6 +716,7 @@ pub fn openmetrics(s: &Sample) -> String {
             .collect(),
     );
     sensor_gauges(&mut lines, s);
+    ebpf_gauges(&mut lines, s);
     lines.push("# EOF".into());
     lines.join("\n") + "\n"
 }

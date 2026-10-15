@@ -60,8 +60,51 @@ cgroup (a Proton game runs as its `.exe` name under the wine preloader, which is
 error path (e2e); as root (CI's eBPF step, and a Debian 13 VM with kernel 7.2 by hand): a build tool that ran before
 the daemon and one that starts later make a `workload build` layer apply, and the end of the process stops it.
 
-Not built yet: the other uses below (power attribution, throttle correlation, HID-BPF), and the workload as an input
-of the predictor (sched_ext mode, EPP, uclamp).
+## Built (2026-10-15, todo-23, todo-96): power, throttle, block I/O, thermal, files, session memory
+
+One loader (`src/pins.rs` `attach`) loads each object, attaches its programs (`tp_btf`), and pins them and the maps
+the daemon reads, or finds the pins of its build; the run-queue, workload and exec sensors use it too. Each sensor
+that cannot load is an entry in `sensor_errors` of `Sample()` (`run-queue`, `power`, `block I/O`, `thermal`,
+`session activity`), a row `not running` in `legionctl sensors` and a `doctor` finding; the daemon runs on.
+
+- **Power attribution** (`bpf/power.bpf.c`): at each `sched_switch`, the CPU time of the process that ran (by
+  process id, with the name of its main thread) goes into an LRU map (8192), weighted by the CPU's clock in MHz
+  (µs × MHz). The clock comes from `power:cpu_frequency`; the daemon writes each CPU's `scaling_cur_freq` at load,
+  because the tracepoint gives changes only. A CPU without cpufreq weighs by time alone. A sample reads the map at
+  the start and the end of its window: `cpu_energy` gives the 5 processes with the largest share, and their share of
+  the RAPL package power in watts. This is an estimate: power is not linear in the clock, and the voltage is not
+  known.
+- **Throttle correlation**: the same object puts a trigger into a ring buffer (at most one each 100 ms) when a CPU's
+  clock drops or a thermal interrupt comes (`thermal_apic_entry`). At each trigger, and each second while a reason is
+  active, the daemon reads the MSR and announces a change (`ThrottleChanged`, note 16). Each start of a reason counts
+  once per workload kind active then (`throttle_episodes`: reason -> kind -> starts; `none` without a kind), in
+  `Sample()`, `sensors` and `/v1/metrics`. The workload is the kinds of the workload sensor (`/run/legionctl/workload`).
+  Limit: `intel_pstate` in active mode with HWP (this machine) gives no `cpu_frequency` events, so there the clock
+  stays the one read at load, and only thermal throttling has a trigger; a short power-limit throttle between two
+  events is not seen.
+- **Block I/O latency** (`bpf/io.bpf.c`): `block_rq_issue` to `block_rq_complete` per request, as a log2 histogram
+  in µs per disk (`gendisk` major and first minor, named from `/sys/dev/block`). A sample gives `io_latency` per disk
+  (count, p50, p99), as for the run-queue latency.
+- **Thermal trips** (`bpf/thermal.bpf.c`): `thermal_zone_trip` counts per zone, named `<type> <id>` from
+  `/sys/class/thermal`.
+- **Files opened in agent sessions**: `bpf/exec.bpf.c` also hooks `sys_enter`; for `open`, `openat` and `openat2`
+  (x86-64 numbers) of a process in a watched scope, the path as the program gave it (it can be relative), cut at 255
+  bytes, goes into a second ring buffer. The daemon sends the first open of each path per session as
+  `SessionOpen(session, pid, path)` to the session owner's connection alone, like `SessionExec` (paths can be
+  private). The operator records `session.open`; `legionctl session activity <id>` lists the opens with the programs.
+  Shortcut: a session that opens more than 4096 paths starts the list of sent paths again.
+- **Memory pressure per session**: no eBPF. The kernel has PSI per cgroup, so the telemetry sample (in the operator)
+  reads `memory.pressure` of each `legionctl-session-<id>.scope` of its user (`session_memory_pressure`).
+
+Tests: without root, each sensor's error is in the sample, the view and doctor (e2e); a throttle that starts during a
+build is counted for `build`, and its end is announced with no event (the look each second); a session scope's
+memory pressure is a row and a metric. As root (CI's eBPF step, and the Debian 13 VM with kernel 7.2): a busy loop is
+in the top of `cpu_energy` with its name and process id; 32 direct 1 MiB writes give at least 32 latency counts to the
+disk of the file; a file opened in a session scope is recorded once, however often it is opened, and another
+connection on the bus does not get the signal.
+
+Not built yet: HID-BPF (it needs a decision per device against logiops), and the workload as an input of the predictor
+(sched_ext mode, EPP, uclamp).
 
 ## Worth doing
 
@@ -69,9 +112,9 @@ of the predictor (sched_ext mode, EPP, uclamp).
 | --- | --- | --- |
 | Workload detection (built) | `sched_process_exec` / `sched_process_exit` tracepoints | `Workload` events (game, build, vm) from a classifier over the name; the cgroup later |
 | Jank metric | `sched_wakeup` → `sched_switch` run-queue latency histogram, per CPU class (P/E core) | p50/p99 latency in the app; compare scx modes with numbers instead of feel |
-| Power attribution | `sched_switch` + `power:cpu_frequency` | estimated per-process CPU energy share ("what is keeping the fans up") |
-| Throttle correlation | `power:cpu_frequency` drops aligned with MSR throttle-status reads | which throttle reason fired during which workload |
-| Session activity | exec and file-open tracepoints, filtered by the session's cgroup | what each agent session ran and touched, in its event log (14-sessions) |
+| Power attribution (built) | `sched_switch` + `power:cpu_frequency` | estimated per-process CPU energy share ("what is keeping the fans up") |
+| Throttle correlation (built) | `power:cpu_frequency` drops and thermal interrupts, then MSR throttle-status reads | which throttle reason fired during which workload |
+| Session activity (built) | exec and file-open tracepoints, filtered by the session's cgroup | what each agent session ran and touched, in its event log (14-sessions) |
 | Input fixes | HID-BPF on HID devices (keyboard, Logitech receiver) | in-kernel remap/debounce, decided per device against logiops (one owner per device) |
 
 ## Not doing

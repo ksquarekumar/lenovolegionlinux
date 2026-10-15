@@ -9,6 +9,7 @@
 //! | tick | every 30 s, on AC (knobs that cannot notify) |
 //! | reload | a configset layer changed (inotify), or the user in front did |
 //! | workload | a game, build or VM started, or the last one ended (the eBPF workload sensor) |
+//! | throttle trigger | a CPU's clock dropped or a thermal interrupt came (the eBPF power sensor); each second while throttled |
 //!
 //! While a tune runs (`Tune`), events wait: the sweep owns the firmware limits, and the policy applies again after.
 //!
@@ -16,13 +17,17 @@
 //! caller, and signals tell the session what changed (`Changed`), the firmware mode after a change (`ModeChanged`),
 //! Fn lock (`FnLock`) and which Fn key was pressed (`Key`). After each event and each change, the state that other
 //! tools follow (firmware mode, power source, workload, throttling, fan max mode) is compared with the last one
-//! announced; each difference is a signal and a structured journal entry (note 16, "For other tools"). Decisions come
-//! from `legionctl_machine`; this file only wires event sources and the bus to it.
+//! announced; each difference is a signal and a structured journal entry (note 16, "For other tools"); each start of a
+//! throttle reason is counted with the workload kinds active then. Decisions come from `legionctl_machine`; this file
+//! only wires event sources and the bus to it.
 
+mod block;
 mod exec;
 mod folders;
 mod pins;
+mod power;
 mod runq;
+mod thermal;
 mod workload;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -193,6 +198,17 @@ struct Observed {
     fan_max: bool,
 }
 
+impl Observed {
+    /// The workload kinds active, or `none`.
+    fn kinds(&self) -> Vec<String> {
+        if self.workload.is_empty() {
+            vec!["none".into()]
+        } else {
+            self.workload.iter().cloned().collect()
+        }
+    }
+}
+
 fn observe(root: &SysRoot) -> Observed {
     Observed {
         mode: mode(root),
@@ -200,6 +216,46 @@ fn observe(root: &SysRoot) -> Observed {
         throttle: firmware::current_throttle_reasons(root)
             .map(|r| r.into_iter().map(String::from).collect()),
         fan_max: Ledger::open(root).is_ok_and(|l| l.fan(FanKey::Max).is_some()),
+    }
+}
+
+/// What other tools heard last, and each throttle reason's starts per workload kind active then (reason -> kind ->
+/// starts; `none`: no kind).
+struct Announced {
+    last: Observed,
+    episodes: BTreeMap<String, BTreeMap<String, u64>>,
+}
+
+impl Announced {
+    fn new(last: Observed) -> Announced {
+        Announced {
+            last,
+            episodes: BTreeMap::new(),
+        }
+    }
+
+    /// `now` is announced: the state before it, and each throttle reason that starts counts once for each workload
+    /// kind active now.
+    fn update(&mut self, now: &Observed) -> Observed {
+        let before = std::mem::replace(&mut self.last, now.clone());
+        let was = before.throttle.clone().unwrap_or_default();
+        for reason in now.throttle.iter().flatten().filter(|r| !was.contains(r)) {
+            for kind in now.kinds() {
+                *self
+                    .episodes
+                    .entry(reason.clone())
+                    .or_default()
+                    .entry(kind)
+                    .or_default() += 1;
+            }
+        }
+        before
+    }
+
+    /// A throttle reason is active now (as last announced).
+    fn throttled(announced: &Mutex<Announced>) -> bool {
+        let a = announced.lock().unwrap_or_else(PoisonError::into_inner);
+        a.last.throttle.as_ref().is_some_and(|r| !r.is_empty())
     }
 }
 
@@ -229,13 +285,13 @@ fn sent(what: &str, result: zbus::Result<()>) {
 }
 
 /// Compare the state other tools follow with the last one announced; each difference is one signal and one journal
-/// entry.
-async fn announce(root: &SysRoot, emitter: &SignalEmitter<'_>, announced: &Mutex<Observed>) {
+/// entry. A throttle reason that starts counts once for each workload kind active now (the correlation).
+async fn announce(root: &SysRoot, emitter: &SignalEmitter<'_>, announced: &Mutex<Announced>) {
     let now = observe(root);
-    let before = std::mem::replace(
-        &mut *announced.lock().unwrap_or_else(PoisonError::into_inner),
-        now.clone(),
-    );
+    let before = announced
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .update(&now);
     if now.mode != before.mode
         && let Some(m) = &now.mode
     {
@@ -302,7 +358,10 @@ async fn announce(root: &SysRoot, emitter: &SignalEmitter<'_>, announced: &Mutex
             root,
             "throttle",
             &message,
-            &[("REASONS", reasons.join(","))],
+            &[
+                ("REASONS", reasons.join(",")),
+                ("WORKLOAD", now.kinds().join(",")),
+            ],
         );
         sent(
             "ThrottleChanged",
@@ -330,7 +389,7 @@ async fn handle(
     root: &SysRoot,
     emitter: &SignalEmitter<'_>,
     event: Event,
-    announced: &Mutex<Observed>,
+    announced: &Mutex<Announced>,
 ) {
     match carry_out(root, |m| react(m, event)) {
         Ok(lines) if lines.is_empty() => {
@@ -603,16 +662,14 @@ struct System1 {
     root: SysRoot,
     /// A tune runs: the event loop waits.
     tuning: Arc<AtomicBool>,
-    /// The run-queue latency sensor, or why it does not run.
-    runq: Arc<Result<runq::Runq, String>>,
+    /// The eBPF sensors that samples read.
+    meters: Arc<Meters>,
     /// Who gets the session activity: uid -> its connection (`WatchSessions`; the newest call of a user wins).
     watchers: Arc<Mutex<BTreeMap<u32, String>>>,
-    /// Why the session activity sensor does not run.
-    exec_error: Option<String>,
     /// The hash of the interface this build serves (`Version`).
     version: String,
     /// What other tools heard last (shared with the event loop).
-    announced: Arc<Mutex<Observed>>,
+    announced: Arc<Mutex<Announced>>,
 }
 
 impl System1 {
@@ -694,13 +751,63 @@ fn write_layer(root: &SysRoot, name: &str, content: &str) -> Result<String> {
     Ok(format!("wrote {file}"))
 }
 
-/// The readings only root makes, with the eBPF sensor's histogram (or its error).
-fn root_part(root: &SysRoot, runq: &Result<runq::Runq, String>) -> telemetry::RootSample {
+/// The eBPF sensors that samples read. One that cannot load is its reason (Sample, doctor), and the daemon runs
+/// without it (note 04).
+struct Meters {
+    runq: Result<runq::Runq, String>,
+    power: Result<power::Power, String>,
+    block: Result<block::Block, String>,
+    thermal: Result<thermal::Thermal, String>,
+    /// Why the session activity sensor does not run.
+    exec: Option<String>,
+}
+
+/// What `sensor` (`name`) reads now, or why it cannot, in `errors`.
+fn read<S, T>(
+    name: &str,
+    sensor: &Result<S, String>,
+    read: impl FnOnce(&S) -> Result<T>,
+    errors: &mut BTreeMap<String, String>,
+) -> Option<T> {
+    match sensor.as_ref().map(read) {
+        Ok(Ok(value)) => Some(value),
+        Ok(Err(e)) => {
+            errors.insert(name.into(), format!("reading its map: {e:#}"));
+            None
+        }
+        Err(e) => {
+            errors.insert(name.into(), e.clone());
+            None
+        }
+    }
+}
+
+/// The readings only root makes, with the eBPF sensors' (or why each does not run) and the throttle starts per
+/// workload kind.
+fn root_part(
+    root: &SysRoot,
+    meters: &Meters,
+    announced: &Mutex<Announced>,
+) -> telemetry::RootSample {
     let mut part = telemetry::root_sample(root);
-    match runq.as_ref().map(runq::Runq::per_cpu) {
-        Ok(Ok(per_cpu)) => part.runq = Some(telemetry::by_class(root, &per_cpu)),
-        Ok(Err(e)) => part.runq_error = Some(format!("reading the histogram: {e:#}")),
-        Err(e) => part.runq_error = Some(e.clone()),
+    part.throttle_episodes = announced
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .episodes
+        .clone();
+    let errors = &mut part.sensor_errors;
+    part.runq = read("run-queue", &meters.runq, runq::Runq::per_cpu, errors)
+        .map(|per_cpu| telemetry::by_class(root, &per_cpu));
+    part.processes = read("power", &meters.power, power::Power::processes, errors);
+    part.io = read("block I/O", &meters.block, block::Block::per_disk, errors);
+    part.thermal_trips = read(
+        "thermal",
+        &meters.thermal,
+        thermal::Thermal::per_zone,
+        errors,
+    );
+    if let Some(e) = &meters.exec {
+        errors.insert("session activity".into(), e.clone());
     }
     part
 }
@@ -1276,13 +1383,17 @@ impl System1 {
             return Err(zbus::fdo::Error::Failed("a tune runs already".into()));
         }
         let root = self.root.clone();
-        let runq = self.runq.clone();
+        let (meters, announced) = (self.meters.clone(), self.announced.clone());
         let report = tokio::task::spawn_blocking(move || {
             let report = tune::run(
                 &root,
                 &spec,
                 &|argv, cancel| tune::run_workload(argv, user, cancel),
-                &|| telemetry::sample(&root, Duration::from_secs(1), &|| root_part(&root, &runq)),
+                &|| {
+                    telemetry::sample(&root, Duration::from_secs(1), &|| {
+                        root_part(&root, &meters, &announced)
+                    })
+                },
             );
             let reapplied = carry_out(&root, |m| {
                 Ok(m.apply(
@@ -1468,11 +1579,15 @@ impl System1 {
             .await
     }
 
-    /// The readings only root can make (fan RPM, throttle reasons from the MSR), as JSON (`telemetry::RootSample`).
-    /// Read-only, so polkit is not asked.
+    /// The readings only root can make (fan RPM, throttle reasons from the MSR, the eBPF sensors), as JSON
+    /// (`telemetry::RootSample`). Read-only, so polkit is not asked.
     async fn sample(&self) -> zbus::fdo::Result<String> {
-        let (root, runq) = (self.root.clone(), self.runq.clone());
-        let sample = tokio::task::spawn_blocking(move || root_part(&root, &runq))
+        let (root, meters, announced) = (
+            self.root.clone(),
+            self.meters.clone(),
+            self.announced.clone(),
+        );
+        let sample = tokio::task::spawn_blocking(move || root_part(&root, &meters, &announced))
             .await
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
         serde_json::to_string(&sample).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
@@ -1487,14 +1602,15 @@ impl System1 {
         serde_json::to_string(&list).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
-    /// Send the starts of programs in the caller's own agent sessions (`SessionExec`) to the caller's connection, from
-    /// now on. Only the caller's sessions, and only to it: arguments can hold secrets.
+    /// Send the starts of programs (`SessionExec`) and the files opened (`SessionOpen`) in the caller's own agent
+    /// sessions to the caller's connection, from now on. Only the caller's sessions, and only to it: arguments and
+    /// paths can hold secrets.
     async fn watch_sessions(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
         #[zbus(connection)] conn: &zbus::Connection,
     ) -> zbus::fdo::Result<()> {
-        if let Some(e) = &self.exec_error {
+        if let Some(e) = &self.meters.exec {
             return Err(zbus::fdo::Error::Failed(format!(
                 "the eBPF session activity sensor does not run: {e}"
             )));
@@ -1517,6 +1633,16 @@ impl System1 {
         session: &str,
         pid: u32,
         argv: &[String],
+    ) -> zbus::Result<()>;
+
+    /// A process in agent session `session` opened `path` (the first open of each path); sent only to the session
+    /// owner's watcher.
+    #[zbus(signal)]
+    async fn session_open(
+        emitter: &SignalEmitter<'_>,
+        session: &str,
+        pid: u32,
+        path: &str,
     ) -> zbus::Result<()>;
 
     /// Something changed the machine: an event or a method (`cause`), with what it did. Never sent for no change.
@@ -1553,7 +1679,8 @@ impl System1 {
     #[zbus(signal)]
     async fn workload_changed(emitter: &SignalEmitter<'_>, kinds: &[String]) -> zbus::Result<()>;
 
-    /// The throttle reasons active now changed (the MSR; empty: throttling stopped).
+    /// The throttle reasons active now changed (the MSR, read at each event, at each eBPF trigger and each second
+    /// while throttled; empty: throttling stopped).
     #[zbus(signal)]
     async fn throttle_changed(emitter: &SignalEmitter<'_>, reasons: &[String]) -> zbus::Result<()>;
 
@@ -1616,18 +1743,24 @@ fn reread(mut file: &std::fs::File) -> std::io::Result<String> {
     Ok(value.trim().to_string())
 }
 
+/// Opened paths kept per session to send only the first open of each; a session past this starts again.
+const SEEN: usize = 4096;
+
 /// The session activity sensor's loop: each second it watches the scopes of the users who asked; each program start
-/// goes to its session owner's watcher.
+/// and the first open of each file go to its session owner's watcher.
 async fn session_activity(
     bus: zbus::Connection,
     watchers: Arc<Mutex<BTreeMap<u32, String>>>,
-    mut ring: AsyncFd<aya::maps::RingBuf<aya::maps::MapData>>,
+    mut rings: exec::Rings,
     mut watch: exec::Watch,
 ) {
     // new and ended session scopes reach the sensor within a second
     let mut scan = tokio::time::interval(Duration::from_secs(1));
+    // session -> the paths sent; shortcut: a session that opens more than SEEN files sends some again; keep a
+    // bounded LRU when that floods the event log
+    let mut seen: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     loop {
-        tokio::select! {
+        let activity = tokio::select! {
             _ = scan.tick() => {
                 let uids: BTreeSet<u32> = watchers
                     .lock()
@@ -1638,28 +1771,53 @@ async fn session_activity(
                 if let Err(e) = watch.refresh(&uids) {
                     eprintln!("exec sensor: cannot watch the sessions: {e:#}");
                 }
+                seen.retain(|session, _| watch.watches(session));
+                continue;
             }
-            ready = ring.readable_mut() => {
+            ready = rings.execs.readable_mut() => {
                 let Ok(mut guard) = ready else {
                     eprintln!("exec sensor: the ring buffer failed; stopped");
                     return;
                 };
-                let execs = watch.drain(guard.get_inner_mut());
+                let execs = watch.drain(guard.get_inner_mut(), false);
                 guard.clear_ready();
-                for e in execs {
-                    send_exec(&bus, &watchers, e).await;
+                execs
+            }
+            ready = rings.opens.readable_mut() => {
+                let Ok(mut guard) = ready else {
+                    eprintln!("exec sensor: the ring buffer of opened files failed; stopped");
+                    return;
+                };
+                let opens = watch.drain(guard.get_inner_mut(), true);
+                guard.clear_ready();
+                opens
+            }
+        };
+        for a in activity {
+            if let exec::Did::Open(path) = &a.did {
+                let paths = seen.entry(a.session.clone()).or_default();
+                if paths.len() >= SEEN {
+                    paths.clear();
+                }
+                if !paths.insert(path.clone()) {
+                    continue;
                 }
             }
+            send_activity(&bus, &watchers, a).await;
         }
     }
 }
 
-/// Send one session's program start to its owner's watcher alone (a unicast signal).
-async fn send_exec(bus: &zbus::Connection, watchers: &Mutex<BTreeMap<u32, String>>, e: exec::Exec) {
+/// Send one thing a session did to its owner's watcher alone (a unicast signal).
+async fn send_activity(
+    bus: &zbus::Connection,
+    watchers: &Mutex<BTreeMap<u32, String>>,
+    a: exec::Activity,
+) {
     let Some(name) = watchers
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .get(&e.uid)
+        .get(&a.uid)
         .cloned()
     else {
         return;
@@ -1667,7 +1825,10 @@ async fn send_exec(bus: &zbus::Connection, watchers: &Mutex<BTreeMap<u32, String
     let sent = async {
         let to = SignalEmitter::new(bus, OBJECT_PATH)?
             .set_destination(zbus::names::BusName::try_from(name.as_str())?);
-        System1::session_exec(&to, &e.session, e.pid, &e.argv).await
+        match &a.did {
+            exec::Did::Exec(argv) => System1::session_exec(&to, &a.session, a.pid, argv).await,
+            exec::Did::Open(path) => System1::session_open(&to, &a.session, a.pid, path).await,
+        }
     }
     .await;
     if let Err(err) = sent {
@@ -1687,19 +1848,32 @@ fn udev_event(e: &udev::Event) -> Option<Event> {
     }
 }
 
-/// The eBPF sensors. One that cannot load is reported (Sample, doctor), and the daemon runs without it (note 04).
-type Execs = Result<(AsyncFd<aya::maps::RingBuf<aya::maps::MapData>>, exec::Watch), String>;
-
-fn sensors(root: &SysRoot) -> (Arc<Result<runq::Runq, String>>, Execs) {
-    let runq = Arc::new(runq::Runq::start(root).map_err(|e| format!("{e:#}")));
-    if let Err(e) = runq.as_ref() {
-        eprintln!("runq sensor: not running: {e}");
+/// Start the eBPF sensors; each one that cannot load says why, and the daemon runs without it (note 04). Also the
+/// session activity's rings and watch, and the power sensor's triggers.
+fn sensors(root: &SysRoot) -> (Meters, Option<(exec::Rings, exec::Watch)>, power::Triggers) {
+    fn started<T>(name: &str, sensor: Result<T>) -> Result<T, String> {
+        sensor.map_err(|e| {
+            let why = format!("{e:#}");
+            eprintln!("{name} sensor: not running: {why}");
+            why
+        })
     }
-    let execs = exec::start(root).map_err(|e| format!("{e:#}"));
-    if let Err(e) = &execs {
-        eprintln!("exec sensor: not running: {e}");
-    }
-    (runq, execs)
+    let (power, triggers) = match started("power", power::Power::start(root)) {
+        Ok((power, triggers)) => (Ok(power), Some(triggers)),
+        Err(e) => (Err(e), None),
+    };
+    let (execs, exec) = match started("exec", exec::start(root)) {
+        Ok(execs) => (Some(execs), None),
+        Err(e) => (None, Some(e)),
+    };
+    let meters = Meters {
+        runq: started("runq", runq::Runq::start(root)),
+        power,
+        block: started("block I/O", block::Block::start(root)),
+        thermal: started("thermal", thermal::Thermal::start(root)),
+        exec,
+    };
+    (meters, execs, power::Triggers::new(triggers))
 }
 
 /// The udev events of the power supply and the platform profile.
@@ -1729,17 +1903,16 @@ async fn main() -> Result<()> {
         return done;
     }
     let tuning = Arc::new(AtomicBool::new(false));
-    let (runq, execs) = sensors(&root);
+    let (meters, execs, mut triggers) = sensors(&root);
     let watchers = Arc::new(Mutex::new(BTreeMap::new()));
     let monitor = udev_monitor()?;
     // announce later changes only; the session asks for the current state when it starts
-    let announced = Arc::new(Mutex::new(observe(&root)));
+    let announced = Arc::new(Mutex::new(Announced::new(observe(&root))));
     let bus = serve(System1 {
         root: root.clone(),
         tuning: tuning.clone(),
-        runq,
+        meters: Arc::new(meters),
         watchers: watchers.clone(),
-        exec_error: execs.as_ref().err().cloned(),
         version: legionctl_machine::interface_version(),
         announced: announced.clone(),
     })
@@ -1748,8 +1921,7 @@ async fn main() -> Result<()> {
     // the exec sensor runs beside the loop below; if it stops after it started, the daemon stops with an error and
     // systemd starts it again (DESIGN/02)
     let mut activity = execs
-        .ok()
-        .map(|(ring, watch)| tokio::spawn(session_activity(bus.clone(), watchers, ring, watch)));
+        .map(|(rings, watch)| tokio::spawn(session_activity(bus.clone(), watchers, rings, watch)));
     let mut sleep = Login1Proxy::new(&bus)
         .await?
         .receive_prepare_for_sleep()
@@ -1819,6 +1991,7 @@ async fn main() -> Result<()> {
                     handle(&root, &emitter, Event::Reload, &announced).await;
                 }
             }
+            () = triggers.next(Announced::throttled(&announced)) => announce(&root, &emitter, &announced).await,
             changed = workloads.changed(&root) => {
                 changed?;
                 if !tuning.load(Ordering::SeqCst) {

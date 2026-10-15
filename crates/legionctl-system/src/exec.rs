@@ -1,6 +1,6 @@
 //! Session activity (note 04): loads `bpf/exec.bpf.c`, points its `watched` map at the agent sessions' scopes
-//! (`legionctl-session-<id>.scope`) of the users who asked (`WatchSessions`), and reads the programs they start from
-//! its ring buffer.
+//! (`legionctl-session-<id>.scope`) of the users who asked (`WatchSessions`), and reads the programs they start and
+//! the files they open from its ring buffers.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::MetadataExt;
@@ -8,23 +8,31 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use aya::maps::{HashMap, MapData, RingBuf};
-use aya::programs::BtfTracePoint;
-use aya::programs::links::FdLink;
-use aya::{Btf, Ebpf};
 use legionctl_machine::sysroot::SysRoot;
+use legionctl_machine::telemetry::session_scopes;
 use tokio::io::unix::AsyncFd;
 
-use crate::pins::Pins;
-
-/// `struct exec` of the program: cgroup id, pid, length, then the arguments.
+/// `struct exec` and `struct open` of the program: cgroup id, pid, length, then the arguments or the path.
 const HEADER: usize = 16;
 
-/// One program a session started.
-pub struct Exec {
+/// What a process of a session did: started a program (its arguments) or opened a file (its path).
+pub enum Did {
+    Exec(Vec<String>),
+    Open(String),
+}
+
+/// One thing a session did.
+pub struct Activity {
     pub uid: u32,
     pub session: String,
     pub pid: u32,
-    pub argv: Vec<String>,
+    pub did: Did,
+}
+
+/// The two ring buffers, ready for the event loop.
+pub struct Rings {
+    pub execs: AsyncFd<RingBuf<MapData>>,
+    pub opens: AsyncFd<RingBuf<MapData>>,
 }
 
 /// The `watched` map of the program, with the scopes it watches: cgroup id -> (uid, session id).
@@ -33,39 +41,22 @@ pub struct Watch {
     scopes: BTreeMap<u64, (u32, String)>,
 }
 
-/// The pinned program of this build, else load, attach and pin it; its ring buffer, ready for the event loop, and the
-/// watch.
+/// The pinned programs of this build, else load, attach and pin them; their ring buffers and the watch.
 ///
 /// # Errors
-/// No BPF permission, no BTF, the verifier refuses the program (its message is in the error), or a pin fails.
-pub fn start(root: &SysRoot) -> Result<(AsyncFd<RingBuf<MapData>>, Watch)> {
+/// No BPF permission, no BTF, the verifier refuses a program (its message is in the error), or a pin fails.
+pub fn start(root: &SysRoot) -> Result<(Rings, Watch)> {
     let object = aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/exec.bpf.o"));
-    let pins = Pins::of(root, "exec", object);
-    let (ring, watched) =
-        if let (Some(ring), Some(watched)) = (pins.map("execs"), pins.map("watched")) {
-            (ring, watched)
-        } else {
-            let mut bpf = Ebpf::load(object).context("loading the exec object")?;
-            let btf = Btf::from_sys_fs().context("reading the kernel BTF")?;
-            let program: &mut BtfTracePoint = bpf
-                .program_mut("exec")
-                .context("no program exec")?
-                .try_into()?;
-            program
-                .load("sched_process_exec", &btf)
-                .context("loading exec")?;
-            let link = program
-                .attach()
-                .context("attaching exec to sched_process_exec")?;
-            let link = FdLink::from(program.take_link(link)?);
-            let ring = bpf.take_map("execs").context("no execs map")?;
-            let watched = bpf.take_map("watched").context("no watched map")?;
-            pins.pin(
-                vec![("exec", link)],
-                &[("execs", &ring), ("watched", &watched)],
-            )?;
-            (ring, watched)
-        };
+    let [execs, opens, watched] = crate::pins::attach(
+        root,
+        "exec",
+        object,
+        &[("exec", "sched_process_exec"), ("open", "sys_enter")],
+        &["execs", "opens", "watched"],
+    )?
+    .try_into()
+    .ok()
+    .context("three maps")?;
     let mut watched: HashMap<MapData, u64, u32> = HashMap::try_from(watched)?;
     // the scopes a failed daemon watched; `refresh` adds the live ones again
     let stale: Vec<u64> = watched.keys().collect::<Result<_, _>>()?;
@@ -73,7 +64,10 @@ pub fn start(root: &SysRoot) -> Result<(AsyncFd<RingBuf<MapData>>, Watch)> {
         watched.remove(id)?;
     }
     Ok((
-        AsyncFd::new(RingBuf::try_from(ring)?)?,
+        Rings {
+            execs: AsyncFd::new(RingBuf::try_from(execs)?)?,
+            opens: AsyncFd::new(RingBuf::try_from(opens)?)?,
+        },
         Watch {
             watched,
             scopes: BTreeMap::new(),
@@ -84,34 +78,13 @@ pub fn start(root: &SysRoot) -> Result<(AsyncFd<RingBuf<MapData>>, Watch)> {
 /// The session scopes of `uids` in the cgroup tree under `root` (`/sys/fs/cgroup`): cgroup id (the folder's inode)
 /// -> (uid, session id).
 fn scopes(root: &Path, uids: &BTreeSet<u32>) -> BTreeMap<u64, (u32, String)> {
-    fn walk(dir: &Path, depth: u32, uid: u32, out: &mut BTreeMap<u64, (u32, String)>) {
-        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-            let Ok(meta) = entry.metadata() else {
-                continue;
-            };
-            if !meta.is_dir() {
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy().into_owned();
-            match name
-                .strip_prefix("legionctl-session-")
-                .and_then(|n| n.strip_suffix(".scope"))
-            {
-                Some(id) => {
-                    out.insert(meta.ino(), (uid, id.to_string()));
-                }
-                None if depth > 0 => walk(&entry.path(), depth - 1, uid, out),
-                None => {}
-            }
-        }
-    }
-    let mut out = BTreeMap::new();
-    for uid in uids {
-        let user = root.join(format!("user.slice/user-{uid}.slice/user@{uid}.service"));
-        // the scopes sit in app.slice, or a slice below it
-        walk(&user, 2, *uid, &mut out);
-    }
-    out
+    uids.iter()
+        .flat_map(|uid| {
+            session_scopes(root, *uid)
+                .into_iter()
+                .filter_map(move |(dir, id)| Some((std::fs::metadata(dir).ok()?.ino(), (*uid, id))))
+        })
+        .collect()
 }
 
 impl Watch {
@@ -131,8 +104,13 @@ impl Watch {
         Ok(())
     }
 
-    /// The events in `ring` now, for the scopes still watched.
-    pub fn drain(&self, ring: &mut RingBuf<MapData>) -> Vec<Exec> {
+    /// Whether `session`'s scope is watched now.
+    pub fn watches(&self, session: &str) -> bool {
+        self.scopes.values().any(|(_, s)| s == session)
+    }
+
+    /// The events in `ring` now, for the scopes still watched; `open`: the ring of opened files.
+    pub fn drain(&self, ring: &mut RingBuf<MapData>, open: bool) -> Vec<Activity> {
         let mut out = Vec::new();
         while let Some(item) = ring.next() {
             let bytes: &[u8] = &item;
@@ -150,16 +128,25 @@ impl Watch {
             let len = usize::try_from(word(12))
                 .unwrap_or(0)
                 .min(bytes.len() - HEADER);
-            let argv = bytes[HEADER..HEADER + len]
-                .split(|b| *b == 0)
-                .filter(|a| !a.is_empty())
-                .map(|a| String::from_utf8_lossy(a).into_owned())
-                .collect();
-            out.push(Exec {
+            let data = &bytes[HEADER..HEADER + len];
+            let did = if open {
+                if data.is_empty() {
+                    continue;
+                }
+                Did::Open(String::from_utf8_lossy(data).into_owned())
+            } else {
+                Did::Exec(
+                    data.split(|b| *b == 0)
+                        .filter(|a| !a.is_empty())
+                        .map(|a| String::from_utf8_lossy(a).into_owned())
+                        .collect(),
+                )
+            };
+            out.push(Activity {
                 uid: *uid,
                 session: session.clone(),
                 pid: word(8),
-                argv,
+                did,
             });
         }
         out

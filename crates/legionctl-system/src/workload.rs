@@ -8,14 +8,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use aya::maps::{MapData, RingBuf};
-use aya::programs::BtfTracePoint;
-use aya::programs::links::FdLink;
-use aya::{Btf, Ebpf};
 use legionctl_machine::configset;
 use legionctl_machine::sysroot::SysRoot;
 use tokio::io::unix::AsyncFd;
-
-use crate::pins::Pins;
 
 /// `struct event` of the program: process id, ended, then the name.
 const EVENT: usize = 24;
@@ -68,32 +63,19 @@ pub struct Tracker {
 /// No BPF permission, no BTF, the verifier refuses a program (its message is in the error), or a pin fails.
 fn start(root: &SysRoot) -> Result<(AsyncFd<RingBuf<MapData>>, Tracker)> {
     let object = aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/workload.bpf.o"));
-    let pins = Pins::of(root, "workload", object);
-    let ring = if let Some(ring) = pins.map("events") {
-        ring
-    } else {
-        let mut bpf = Ebpf::load(object).context("loading the workload object")?;
-        let btf = Btf::from_sys_fs().context("reading the kernel BTF")?;
-        let mut links = Vec::new();
-        for (program, tracepoint) in [
+    let [ring] = crate::pins::attach(
+        root,
+        "workload",
+        object,
+        &[
             ("exec", "sched_process_exec"),
             ("ended", "sched_process_exit"),
-        ] {
-            let p: &mut BtfTracePoint = bpf
-                .program_mut(program)
-                .with_context(|| format!("no program {program}"))?
-                .try_into()?;
-            p.load(tracepoint, &btf)
-                .with_context(|| format!("loading {program}"))?;
-            let link = p
-                .attach()
-                .with_context(|| format!("attaching {program} to {tracepoint}"))?;
-            links.push((program, FdLink::from(p.take_link(link)?)));
-        }
-        let ring = bpf.take_map("events").context("no events map")?;
-        pins.pin(links, &[("events", &ring)])?;
-        ring
-    };
+        ],
+        &["events"],
+    )?
+    .try_into()
+    .ok()
+    .context("one map")?;
     let mut tracker = Tracker {
         live: BTreeMap::new(),
         seen: BTreeMap::new(),

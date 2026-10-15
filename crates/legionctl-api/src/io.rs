@@ -837,14 +837,18 @@ pub struct SessionIdIn {
     pub id: String,
 }
 
-/// A program that a process in an agent session started (the eBPF sensor in legionctl-system).
+/// What a process in an agent session did (the eBPF sensor in legionctl-system): started a program (`argv`), or
+/// opened a file for the first time in the session (`path`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionExec {
     /// Seconds since the epoch.
     pub at: i64,
     pub pid: u32,
-    /// The arguments, cut at 512 bytes.
+    /// The arguments of the program it started, cut at 512 bytes; empty for an open.
     pub argv: Vec<String>,
+    /// The file it opened, as the program gave it (it can be relative to its folder), cut at 255 bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

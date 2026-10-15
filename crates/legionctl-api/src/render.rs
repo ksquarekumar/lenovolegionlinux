@@ -919,8 +919,11 @@ impl Render for Vec<Sample> {
                         .collect::<Vec<_>>()
                         .join(" ")
                 });
+                let top = s.cpu_energy.as_ref().and_then(|e| e.first()).map_or("-".into(), |e| {
+                    format!("{} {:.0}%", e.name, e.share_percent)
+                });
                 format!(
-                    "pkg {}  cpu {} {}  gpu {gpu}  fans {fans} rpm  throttle {throttle}  runq p99 {runq} µs  psi cpu/mem/io {}/{}/{}",
+                    "pkg {}  cpu {} {}  gpu {gpu}  fans {fans} rpm  throttle {throttle}  runq p99 {runq} µs  top {top}  psi cpu/mem/io {}/{}/{}",
                     some(s.package_w, " W"),
                     some(s.cpu_temp_c, " °C"),
                     some(s.cpu_mhz, " MHz"),
@@ -1688,10 +1691,13 @@ impl Render for Vec<crate::ServiceState> {
 impl Render for Vec<crate::SessionExec> {
     fn text(&self) -> String {
         if self.is_empty() {
-            return "no programs recorded for this session".into();
+            return "no programs or files recorded for this session".into();
         }
         self.iter()
-            .map(|e| format!("{} {:>7} {}", e.at, e.pid, e.argv.join(" ")))
+            .map(|e| match &e.path {
+                Some(path) => format!("{} {:>7} open {path}", e.at, e.pid),
+                None => format!("{} {:>7} {}", e.at, e.pid, e.argv.join(" ")),
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }

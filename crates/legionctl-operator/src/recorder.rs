@@ -1,6 +1,7 @@
 //! The machine daemon's signals in the event log (actor `legionctl-system`), so `legionctl events` and
 //! `legionctl trace` show what the machine did next to what agents and people did, and the programs that agent
-//! sessions start (`session.exec`, from the daemon's eBPF sensor). Needs only the system bus.
+//! sessions start and the files they open (`session.exec`, `session.open`, from the daemon's eBPF sensor). Needs only
+//! the system bus.
 
 use anyhow::Result;
 use futures_util::StreamExt;
@@ -28,6 +29,7 @@ pub async fn run(ready: crate::Ready) -> Result<()> {
     let system = zbus::Connection::system().await?;
     let machine = System1Proxy::new(&system).await?;
     let mut execs = machine.receive_session_exec().await?;
+    let mut opens = machine.receive_session_open().await?;
     // a restarted daemon forgets who watches: ask again
     let mut owners = machine.inner().receive_owner_changed().await?;
     watch_sessions(&machine).await;
@@ -62,6 +64,10 @@ pub async fn run(ready: crate::Ready) -> Result<()> {
             Some(s) = execs.next() => {
                 let a = s.args()?;
                 ("session.exec".into(), json!({"session": a.session, "pid": a.pid, "argv": a.argv}))
+            }
+            Some(s) = opens.next() => {
+                let a = s.args()?;
+                ("session.open".into(), json!({"session": a.session, "pid": a.pid, "path": a.path}))
             }
             Some(owner) = owners.next() => {
                 if owner.is_some() {

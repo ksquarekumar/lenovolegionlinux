@@ -69,6 +69,48 @@ fn numbers(s: &Sample) -> Vec<(String, String, f64, String)> {
             "µs",
         );
     }
+    for e in s.cpu_energy.iter().flatten() {
+        add(
+            "eBPF power",
+            &format!("CPU energy share, {} ({})", e.name, e.pid),
+            Some(e.share_percent),
+            "%",
+        );
+    }
+    for (disk, l) in s.io_latency.iter().flatten() {
+        add(
+            "eBPF block I/O",
+            &format!("I/O latency p99, {disk}"),
+            Some(float(l.p99_us)),
+            "µs",
+        );
+    }
+    for (zone, n) in s.root.thermal_trips.iter().flatten() {
+        add(
+            "eBPF thermal",
+            &format!("trip points crossed, {zone}"),
+            Some(float(*n)),
+            "",
+        );
+    }
+    for (reason, kinds) in &s.root.throttle_episodes {
+        for (kind, n) in kinds {
+            add(
+                "MSR, eBPF workload",
+                &format!("throttle {reason} starts, workload {kind}"),
+                Some(float(*n)),
+                "",
+            );
+        }
+    }
+    for (session, p) in &s.session_memory_pressure {
+        add(
+            "cgroup PSI",
+            &format!("memory pressure of session {session}, some avg10"),
+            Some(p.some_avg10),
+            "%",
+        );
+    }
     // the legionctl-wmi module's hwmon has the fan RPM in place of acpi_call (it is in the hwmon rows above)
     if !s
         .hwmon
@@ -131,8 +173,12 @@ fn states(root: &SysRoot, now: &Sample, fan: Option<&FanState>, ac_adapter: &str
     if let Some(g) = &now.gpu {
         state("PCI runtime PM", "NVIDIA GPU", g.state.clone());
     }
-    if let Some(e) = &now.root.runq_error {
-        state("eBPF runq", "run-queue latency", format!("unknown: {e}"));
+    for (sensor, e) in &now.root.sensor_errors {
+        state(
+            &format!("eBPF {sensor}"),
+            "sensor",
+            format!("not running: {e}"),
+        );
     }
     let root_only = |v: &Option<Vec<String>>| {
         v.as_ref().map_or_else(

@@ -72,11 +72,16 @@ pub trait System1 {
     fn set_layer(&self, name: &str, content: &str) -> zbus::Result<Vec<String>>;
     /// Turn a layer on, off, or back to its default.
     fn set_layer_state(&self, name: &str, state: &str) -> zbus::Result<Vec<String>>;
-    /// Send this connection the program starts of its user's agent sessions (`SessionExec`).
+    /// Send this connection the program starts and the opened files of its user's agent sessions (`SessionExec`,
+    /// `SessionOpen`).
     fn watch_sessions(&self) -> zbus::Result<()>;
 
     #[zbus(signal)]
     fn session_exec(&self, session: String, pid: u32, argv: Vec<String>) -> zbus::Result<()>;
+
+    /// A process in one of this user's agent sessions opened `path` (the first open of each path).
+    #[zbus(signal)]
+    fn session_open(&self, session: String, pid: u32, path: String) -> zbus::Result<()>;
 
     #[zbus(signal)]
     fn changed(&self, cause: String, lines: Vec<String>) -> zbus::Result<()>;

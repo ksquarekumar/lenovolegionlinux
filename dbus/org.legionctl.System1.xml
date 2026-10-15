@@ -248,8 +248,8 @@
       <arg type="as" direction="out"/>
     </method>
     <!--
-     The readings only root can make (fan RPM, throttle reasons from the MSR), as JSON (`telemetry::RootSample`).
-     Read-only, so polkit is not asked.
+     The readings only root can make (fan RPM, throttle reasons from the MSR, the eBPF sensors), as JSON
+     (`telemetry::RootSample`). Read-only, so polkit is not asked.
      -->
     <method name="Sample">
       <arg type="s" direction="out"/>
@@ -261,8 +261,9 @@
       <arg type="s" direction="out"/>
     </method>
     <!--
-     Send the starts of programs in the caller's own agent sessions (`SessionExec`) to the caller's connection, from
-     now on. Only the caller's sessions, and only to it: arguments can hold secrets.
+     Send the starts of programs (`SessionExec`) and the files opened (`SessionOpen`) in the caller's own agent
+     sessions to the caller's connection, from now on. Only the caller's sessions, and only to it: arguments and
+     paths can hold secrets.
      -->
     <method name="WatchSessions">
     </method>
@@ -273,6 +274,15 @@
       <arg name="session" type="s"/>
       <arg name="pid" type="u"/>
       <arg name="argv" type="as"/>
+    </signal>
+    <!--
+     A process in agent session `session` opened `path` (the first open of each path); sent only to the session
+     owner's watcher.
+     -->
+    <signal name="SessionOpen">
+      <arg name="session" type="s"/>
+      <arg name="pid" type="u"/>
+      <arg name="path" type="s"/>
     </signal>
     <!--
      Something changed the machine: an event or a method (`cause`), with what it did. Never sent for no change.
@@ -315,7 +325,8 @@
       <arg name="kinds" type="as"/>
     </signal>
     <!--
-     The throttle reasons active now changed (the MSR; empty: throttling stopped).
+     The throttle reasons active now changed (the MSR, read at each event, at each eBPF trigger and each second
+     while throttled; empty: throttling stopped).
      -->
     <signal name="ThrottleChanged">
       <arg name="reasons" type="as"/>

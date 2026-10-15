@@ -981,6 +981,13 @@ wire! {
         io_pressure: Option<Pressure>,
         /// Run-queue latency in the window per CPU class (the daemon's eBPF sensor).
         runq_latency: Option<BTreeMap<String, Latency>>,
+        /// The processes with the largest estimated CPU energy share in the window, largest first (the daemon's eBPF
+        /// power sensor).
+        cpu_energy: Option<Vec<EnergyShare>>,
+        /// I/O latency in the window per disk (the daemon's eBPF block I/O sensor).
+        io_latency: Option<BTreeMap<String, Latency>>,
+        /// The memory pressure of each agent session of this user (its cgroup's PSI), by session id.
+        session_memory_pressure: BTreeMap<String, Pressure>,
         /// Every hwmon channel.
         hwmon: Vec<Channel>,
         /// The hwmon devices not read: their device sleeps.
@@ -1020,13 +1027,45 @@ wire! {
         throttle_now: Option<Vec<String>>,
         /// Throttle reasons logged since boot (the MSR's sticky bits).
         throttle_logged: Option<Vec<String>>,
+        /// How often each throttle reason started since the daemon started, per workload kind that was active then
+        /// (`none`: no kind): reason -> kind -> starts.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        throttle_episodes: BTreeMap<String, BTreeMap<String, u64>>,
         /// The eBPF sensor's cumulative run-queue wait histogram per CPU class (bucket i: 2^i to 2^(i+1) µs). A sample
         /// turns two of these into `runq_latency`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         runq: Option<BTreeMap<String, Vec<u64>>>,
-        /// Why the eBPF sensor does not run (no permission, the verifier's message).
+        /// The eBPF power sensor's cumulative weight of each process (CPU time × clock). A sample turns two of these
+        /// into `cpu_energy`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        runq_error: Option<String>,
+        processes: Option<Vec<ProcessWeight>>,
+        /// The eBPF block I/O sensor's cumulative latency histogram per disk (bucket i: 2^i to 2^(i+1) µs). A sample
+        /// turns two of these into `io_latency`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        io: Option<BTreeMap<String, Vec<u64>>>,
+        /// Thermal trip points crossed per thermal zone since the eBPF thermal sensor started.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thermal_trips: Option<BTreeMap<String, u64>>,
+        /// Why each eBPF sensor that does not run does not (no permission, the verifier's message), by sensor.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        sensor_errors: BTreeMap<String, String>,
+    }
+
+    /// One process's cumulative CPU time weighted by the clock of its CPU (µs × MHz), from the eBPF power sensor.
+    struct ProcessWeight from machine::telemetry::ProcessWeight {
+        pid: u32,
+        /// The process's name (`comm`).
+        name: String,
+        weight: u64,
+    }
+
+    /// A process's estimated share of the CPU energy in a sample window: its CPU time weighted by the clock.
+    struct EnergyShare from machine::telemetry::EnergyShare {
+        pid: u32,
+        name: String,
+        share_percent: f64,
+        /// The share of the package power (RAPL) in the window.
+        watts: Option<f64>,
     }
 
     struct TuneStep from machine::tune::TuneStep {

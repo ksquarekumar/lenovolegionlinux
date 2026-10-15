@@ -1,19 +1,31 @@
-// todo-94 and todo-95: one sensors view, and system events for other tools.
+// todo-94 and todo-95: one sensors view, and system events for other tools; todo-23 and todo-96: the eBPF sensors in it.
 {
   "$schema": "../feature.schema.json",
   "id": "sensors-events",
   "title": "Sensors view and system events",
   "status": "done",
-  "plan_rows": ["legionctl#todo-94", "legionctl#todo-95"],
+  "plan_rows": ["legionctl#todo-94", "legionctl#todo-95", "legionctl#todo-23", "legionctl#todo-96"],
   "objectives": [
     { "id": "O1", "text": "One table shows every sensor with unit, source and history, and wakes no sleeping device." },
-    { "id": "O2", "text": "Other tools follow mode, power, workload, throttle and fan changes." }
+    { "id": "O2", "text": "Other tools follow mode, power, workload, throttle and fan changes." },
+    { "id": "O3", "text": "eBPF sensors show what uses the CPU energy, I/O latency, thermal trips, which throttle reason fired during which workload, and what agent sessions open." }
   ],
   "stories": [
     { "id": "S1", "text": "Sensors merge every source with units and ring history.", "objectives": ["O1"],
       "tests": ["test:crates/legionctl/tests/machine.rs::sensors_merge_every_source_with_units_and_ring_history_and_never_wake_a_sleeping_gpu"] },
     { "id": "S2", "kind": "data-flow", "text": "Each change other tools follow is one D-Bus signal and one journal entry.", "objectives": ["O2"],
-      "tests": ["test:crates/legionctl/tests/machine.rs::each_change_other_tools_follow_is_one_signal_and_one_journal_entry"] }
+      "tests": ["test:crates/legionctl/tests/machine.rs::each_change_other_tools_follow_is_one_signal_and_one_journal_entry"] },
+    { "id": "S3", "kind": "requirement", "text": "An eBPF sensor that cannot load is a sample error, a sensors row and a doctor finding; the daemon runs on.", "objectives": ["O3"],
+      "tests": ["test:crates/legionctl/tests/machine.rs::a_sensor_that_cannot_load_is_reported_by_monitor_and_doctor"] },
+    { "id": "S4", "text": "A busy loop is at the top of the CPU energy share; the power, block I/O and thermal programs pass the verifier.", "objectives": ["O3"],
+      "tests": ["test:crates/legionctl/tests/machine.rs::as_root_the_power_sensor_finds_a_busy_loop"] },
+    { "id": "S5", "text": "Direct writes to a file give I/O latency counts to its disk.", "objectives": ["O3"],
+      "tests": ["test:crates/legionctl/tests/machine.rs::as_root_the_block_sensor_counts_the_writes_of_a_dd"] },
+    { "id": "S6", "kind": "data-flow", "text": "A file opened in a session scope reaches only its owner, once per path.", "objectives": ["O3"],
+      "tests": ["test:crates/legionctl/tests/machine.rs::as_root_a_session_file_open_reaches_only_its_owner"] },
+    { "id": "S7", "kind": "data-flow", "text": "A throttle start counts per workload kind; its end is seen within a second; a session's memory pressure is a sensors row.", "objectives": ["O2", "O3"],
+      "tests": ["test:crates/legionctl/tests/machine.rs::each_change_other_tools_follow_is_one_signal_and_one_journal_entry",
+                "test:crates/legionctl/tests/machine.rs::sensors_merge_every_source_with_units_and_ring_history_and_never_wake_a_sleeping_gpu"] }
   ],
   "work_items": [
     { "id": "W1", "text": "legionctl sensors", "status": "done", "stories": ["S1"], "units": [
@@ -25,6 +37,26 @@
       { "key": "symbol:crates/legionctl-system/src/main.rs::impl System1.tell", "change": "add" },
       { "key": "rust:crates/legionctl-system:journal", "change": "add", "loc": 60 },
       { "key": "unit:legionctl-system", "change": "edit" }
+    ] },
+    { "id": "W3", "text": "One eBPF loader for every sensor; sensor errors in the sample and doctor", "status": "done", "stories": ["S3"], "units": [
+      { "key": "file:crates/legionctl-system/src/pins.rs", "change": "edit", "loc": 45 },
+      { "key": "rust:crates/legionctl-system:pins::attach", "change": "add" }
+    ] },
+    { "id": "W4", "text": "Power attribution and throttle correlation", "status": "done", "stories": ["S4", "S7"], "depends_on": ["W3"], "units": [
+      { "key": "file:crates/legionctl-system/bpf/power.bpf.c", "change": "add", "loc": 130 },
+      { "key": "file:crates/legionctl-system/src/power.rs", "change": "add", "loc": 120 },
+      { "key": "rust:crates/legionctl-machine:telemetry::cpu_energy", "change": "add" }
+    ] },
+    { "id": "W5", "text": "Block I/O latency and thermal trips", "status": "done", "stories": ["S5"], "depends_on": ["W3"], "units": [
+      { "key": "file:crates/legionctl-system/bpf/io.bpf.c", "change": "add", "loc": 90 },
+      { "key": "file:crates/legionctl-system/bpf/thermal.bpf.c", "change": "add", "loc": 45 },
+      { "key": "file:crates/legionctl-system/src/block.rs", "change": "add", "loc": 60 },
+      { "key": "file:crates/legionctl-system/src/thermal.rs", "change": "add", "loc": 50 }
+    ] },
+    { "id": "W6", "text": "Files opened in agent sessions, and memory pressure per session", "status": "done", "stories": ["S6", "S7"], "depends_on": ["W3"], "units": [
+      { "key": "file:crates/legionctl-system/bpf/exec.bpf.c", "change": "edit", "loc": 40 },
+      { "key": "rust:crates/legionctl-machine:telemetry::session_scopes", "change": "add" },
+      { "key": "op:session.activity", "change": "edit" }
     ] }
   ]
 }
