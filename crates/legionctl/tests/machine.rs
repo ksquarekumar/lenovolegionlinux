@@ -5826,10 +5826,10 @@ mod resources {
             "quiet rw root=UUID=a9e6 initrd=\\initramfs-linux-cachyos.img",
         );
         let _third = daemon(&m, &stand_ins).await;
+        // the daemon switches back first and drops before-boot after it: wait for both
         wait_for("the selection before at the next start", || {
-            m.file(SWAPPINESS) == "150"
+            m.file(SWAPPINESS) == "150" && !m.ledger().sets().contains_key("before-boot")
         });
-        assert!(!m.ledger().sets().contains_key("before-boot"));
         assert_eq!(held(&op, "sysctl.vm.swappiness"), Value::Null);
     }
 
