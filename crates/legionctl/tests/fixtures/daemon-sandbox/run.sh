@@ -3,7 +3,8 @@
 # own unit (ProtectSystem=strict and its ReadWritePaths), and root calls the methods that write /etc and the ESP over
 # the system bus, through polkit. Stand-ins: greetd, cage and GDM (units that do nothing), the signers and efibootmgr
 # (their state in /dev/shm, which the sandbox and the transient units can write), a kernel and the MOK key. The ESP is
-# a vfat partition of a loop device at /boot/efi. Each check writes "ok <name>" or "FAIL <name>: <why>" to the results
+# a vfat partition of a loop device at /boot/efi: it is mounted after the daemon started, then it is an automount
+# (x-systemd.automount) that the daemon's first open mounts. Each check writes "ok <name>" or "FAIL <name>: <why>" to the results
 # disk (serial lwmiresults); the test reads it after power-off.
 set -u
 here=$(dirname "$0")
@@ -54,11 +55,16 @@ systemctl enable gdm.service
 truncate -s 64M /var/tmp/esp.img
 echo 'type=uefi' | sfdisk -q --label gpt /var/tmp/esp.img
 loop=$(losetup -fP --show /var/tmp/esp.img)
+# systemd stops a mount whose device udev did not announce yet: it unmounted /boot/efi in CI run 38754218394
+udevadm settle
 mkfs.vfat "${loop}p1" >/dev/null
-mkdir -p /boot/efi && mount "${loop}p1" /boot/efi
+# the image's own ESP goes: the daemon starts with no ESP
+umount /boot/efi
+mount "${loop}p1" /boot/efi
 mkdir -p /boot/efi/EFI/BOOT /etc/refind.d/keys /usr/lib/systemd/boot/efi /usr/lib/modules/0.0.0-test
 echo shim >/boot/efi/EFI/BOOT/bootx64.efi
 echo mokmanager >/boot/efi/EFI/BOOT/mmx64.efi
+umount /boot/efi
 echo key >/etc/refind.d/keys/refind_local.key
 echo cert >/etc/refind.d/keys/refind_local.crt
 [ -e /usr/lib/systemd/boot/efi/systemd-bootx64.efi ] || echo systemd-boot >/usr/lib/systemd/boot/efi/systemd-bootx64.efi
@@ -101,6 +107,8 @@ chmod 755 /usr/local/bin/efibootmgr
 systemctl start legionctl-system.service
 check unit-active systemctl is-active legionctl-system.service
 pid=$(systemctl show -P MainPID legionctl-system.service)
+check esp-after-start nsenter -t "$pid" -m sh -c '! grep -q " vfat " /proc/self/mounts'
+mount "${loop}p1" /boot/efi
 if nsenter -t "$pid" -m touch /usr/lib/legionctl/written 2>/dev/null; then
   fail usr-read-only "the daemon can write /usr"
 else
@@ -117,6 +125,16 @@ check boot-image grep -q 'unit=/system.slice/legionctl-step-' /boot/efi/EFI/Linu
 check boot-line test -s /etc/legionctl/kernel/linux-test.cmdline
 check boot-loader-conf grep -q 'default legionctl-linux-test.efi' /boot/efi/loader/loader.conf
 check boot-entry python3 -c 'import json; s = json.load(open("/dev/shm/efi.json")); assert s["entries"]["0007"] == "legionctl" and s["next"] == "0007", s'
+# the ESP as an automount: the daemon's rebuild must mount it to make the image again
+rm /boot/efi/EFI/Linux/legionctl-linux-test.efi
+umount /boot/efi
+sed -i '\| /boot/efi |d' /etc/fstab
+echo "${loop}p1 /boot/efi vfat noauto,x-systemd.automount 0 0" >>/etc/fstab
+systemctl daemon-reload
+systemctl start boot-efi.automount
+check esp-automount-idle sh -c '! grep -q " /boot/efi vfat " /proc/self/mounts'
+check boot-rebuild-automount call Boot s rebuild
+check boot-image-automount grep -q 'unit=/system.slice/legionctl-step-' /boot/efi/EFI/Linux/legionctl-linux-test.efi
 check autostart-rule call SetWindowsAutostart b true
 check autostart-rule-file grep -q 'subject.user == "root"' /etc/polkit-1/rules.d/49-legionctl-windows-vm-root.rules
 call SetPrimaryGpu sb intel false >/dev/null

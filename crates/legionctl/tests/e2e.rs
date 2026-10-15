@@ -5163,8 +5163,9 @@ fn the_legionctl_wmi_module_gives_the_legion_wmi_through_sysfs() {
 }
 
 /// The checks of fixtures/daemon-sandbox/run.sh, in their order: each must report ok.
-const DAEMON_SANDBOX_CHECKS: [&str; 14] = [
+const DAEMON_SANDBOX_CHECKS: [&str; 18] = [
     "unit-active",
+    "esp-after-start",
     "usr-read-only",
     "greeter-install",
     "greeter-config",
@@ -5175,6 +5176,9 @@ const DAEMON_SANDBOX_CHECKS: [&str; 14] = [
     "boot-line",
     "boot-loader-conf",
     "boot-entry",
+    "esp-automount-idle",
+    "boot-rebuild-automount",
+    "boot-image-automount",
     "autostart-rule",
     "autostart-rule-file",
     "primary-gpu-rule",
@@ -5183,7 +5187,8 @@ const DAEMON_SANDBOX_CHECKS: [&str; 14] = [
 /// The daemon's sandbox (docs/design/13-daemon.md, Sandbox): `legionctl-system` under the package's own unit
 /// (`ProtectSystem=strict`, its `ReadWritePaths`) in a Debian 13 VM, and root's calls over the system bus through
 /// polkit. Greeter install writes `/etc/greetd` and changes the display manager; boot install writes the ESP (a vfat
-/// partition at `/boot/efi`) and `/etc/legionctl`, and its signers and `efibootmgr` run as `legionctl-step-*`
+/// partition mounted at `/boot/efi` after the daemon started) and `/etc/legionctl`, and boot rebuild writes it when
+/// it is an automount that nothing opened yet (the daemon's open mounts it); and its signers and `efibootmgr` run as `legionctl-step-*`
 /// transient units; the Windows VM autostart writes `/etc/polkit-1/rules.d`, the desktop GPU `/etc/udev/rules.d`; the
 /// daemon cannot write `/usr`. A path that the unit does not allow fails its check.
 #[test]

@@ -98,11 +98,17 @@ fn efibootmgr(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The ESP's mount point and its partition's device (`/dev/nvme1n1p1`).
+/// The ESP's mount point and its partition's device (`/dev/nvme1n1p1`). An automount (`x-systemd.automount`, or
+/// the ESP that systemd-gpt-auto-generator gives) is `autofs` in the mount table until a program opens the place, so
+/// each place is opened first.
 fn esp(root: &SysRoot) -> Option<(String, String)> {
+    const PLACES: [&str; 3] = ["/boot/efi", "/efi", "/boot"];
+    for place in PLACES {
+        drop(std::fs::read_dir(root.path(place)));
+    }
     root.read("/proc/self/mounts")?.lines().find_map(|l| {
         let f: Vec<&str> = l.split_whitespace().collect();
-        (f.len() > 2 && f[2] == "vfat" && ["/boot/efi", "/efi", "/boot"].contains(&f[1]))
+        (f.len() > 2 && f[2] == "vfat" && PLACES.contains(&f[1]))
             .then(|| (f[1].to_string(), f[0].to_string()))
     })
 }
