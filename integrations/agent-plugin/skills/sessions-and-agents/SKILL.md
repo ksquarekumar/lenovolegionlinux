@@ -41,6 +41,9 @@ user-invocable: true
     `thread ack <id>`. A hard-block holds its tool and each reply end until you ack it.
 21. Send through the thread outbox (`thread send`); it is durable. For an urgent message to an idle Claude peer, also
     use `SendMessage`; the post-tool hook records it in the thread log.
+22. A member is an archetype (`main-agent`, `thread-observer`, `ui-composer`) plus its config `agents.configs.<name>`.
+    Before you start a team, run `agents check --team <team> --harness claude|codex`.
+23. If `agents check` refuses a field, change the config. Do not drop the field in silence.
 
 ## Refs
 
@@ -49,3 +52,5 @@ user-invocable: true
 - `refs/scenario-headless-review.md` - read for a headless run in a container.
 - `refs/scenario-second-account.md` - read when a rate limit stops a session.
 - `refs/reference-threads.md` - read when you start a thread, add a member or a watch rule, or send a message.
+- `refs/reference-agent-configs.md` - read when you write an agent config or a team file, or `agents check` refuses
+  one.

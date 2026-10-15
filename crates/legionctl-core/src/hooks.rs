@@ -208,21 +208,25 @@ fn run_action(config: &Resolved, action: &Action, event: Event) -> String {
             })
         }
         "setup-check" => {
-            let report = setup::check();
-            let todo = report.needs_attention();
-            Ok(if todo.is_empty() {
-                String::new()
-            } else {
-                let names: Vec<String> = todo
-                    .iter()
-                    .map(|i| format!("{} for {}", i.what, i.agent))
-                    .collect();
-                format!(
-                    "legionctl setup: {} need attention ({}). Run /legionctl:setup.",
-                    todo.len(),
-                    names.join(", ")
-                )
-            })
+            crate::archetypes::Sources::resolve(&crate::config::Dirs::from_env(), None).map(
+                |agents| {
+                    let report = setup::check(&agents);
+                    let todo = report.needs_attention();
+                    if todo.is_empty() {
+                        String::new()
+                    } else {
+                        let names: Vec<String> = todo
+                            .iter()
+                            .map(|i| format!("{} for {}", i.what, i.agent))
+                            .collect();
+                        format!(
+                            "legionctl setup: {} need attention ({}). Run /legionctl:setup.",
+                            todo.len(),
+                            names.join(", ")
+                        )
+                    }
+                },
+            )
         }
         _ => Command::new("timeout")
             .args([

@@ -41,6 +41,15 @@ pub struct Config {
     /// Namespace -> its limit in the disposable cache (`tools`, `gateway`).
     pub cache: BTreeMap<String, CacheLimit>,
     pub windows: WindowsConfig,
+    pub agents: AgentsConfig,
+}
+
+/// Agent configs (design 23, B+2): each one is an archetype file plus the fields that it changes.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AgentsConfig {
+    /// Config name -> its layer over its archetype file.
+    pub configs: BTreeMap<String, crate::archetypes::AgentConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

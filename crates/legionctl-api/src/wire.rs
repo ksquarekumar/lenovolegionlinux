@@ -128,6 +128,11 @@ macro_rules! wire_enum {
 }
 
 wire_enum! {
+    /// The harness of an agent.
+    enum Harness from core::archetypes::Harness as "lowercase" {
+        Claude,
+        Codex,
+    }
     /// Where a session runs.
     enum Inside from core::session::Inside as "lowercase" {
         /// On this machine, in a bwrap sandbox.
@@ -282,6 +287,29 @@ wire! {
     struct Setting from core::config::Setting {
         source: Source,
         value: Value,
+    }
+
+    /// What `agents check` found: each member with its layers resolved, and each refusal.
+    struct AgentCheck from core::archetypes::Check {
+        harness: Harness,
+        team: Option<String>,
+        members: Vec<AgentMember>,
+        /// Each field that a run path cannot apply, each layer that widens, each missing file: one line each.
+        refused: Vec<String>,
+    }
+
+    /// One member of `agents check`.
+    struct AgentMember from core::archetypes::Member {
+        name: String,
+        archetype: String,
+        /// The config (`agents.configs.<name>`) it uses.
+        config: String,
+        /// `claude-session`, `claude-team` (a teammate of the lead), `codex-session` or `codex-subagent`.
+        run_path: String,
+        /// The resolved fields that are set, and `may` (the message kinds it may send).
+        fields: serde_json::Map<String, Value>,
+        /// Field -> the layer that set it last.
+        set_by: BTreeMap<String, String>,
     }
 
     /// What `legionctl config explain` shows for one key.

@@ -1025,6 +1025,40 @@ real operator; the observer is a member with a session and no model):
 | `a_send_message_call_of_main_lands_in_the_thread_log` | A `SendMessage` call not in the log, with the wrong member, receiver, text or sent state. |
 | `the_outbox_survives_a_restart_and_peers_on_one_dossier_see_each_other_with_their_state` | A message lost or given twice after an operator restart; a peer in another topic workspace of the dossier not shown, or a session on another dossier shown; a wrong topic, state (running, idle, ended), last tool, open message count, shared scope or channel; `observe` of a member name or of a session that is not a peer. |
 
+### Built: P6a (2026-10-15)
+
+| Part | Where |
+| --- | --- |
+| Archetype files | `integrations/agent-plugin/agents/{main-agent,thread-observer,ui-composer}.md`; refs in `integrations/agent-plugin/agent-refs/` |
+| Team file and its schema | `integrations/agent-plugin/teams/vanilla.jsonc`, `teams/team.schema.json` (from `archetypes::Team`) |
+| Config layer | `agents.configs.<name>` (`config/defaults.jsonc`: one entry per archetype), `crates/legionctl-core/src/archetypes.rs` |
+| Operation | `agents.check` (read; CLI `agents check [--team] [--harness claude\|codex]`, MCP `agents_check`) |
+| Codex agents | `setup apply` writes `~/.codex/agents/<config>.toml`; `setup check` lists each one |
+
+What is different from B+2 to B+5, and why:
+
+| Item | Built | Why |
+| --- | --- | --- |
+| Refs | `agent-refs/<kind>-<slug>.md`, named in the text as `${CLAUDE_PLUGIN_ROOT}/agent-refs/...`; for Codex, setup puts the plugin folder in place of the variable. | Claude Code reads `agents/` with its subfolders (plugins/components, "Organize agents in subfolders"), so `agents/refs/` would load as agents. Claude Code puts the plugin folder in place of `${CLAUDE_PLUGIN_ROOT}` in an agent's text. |
+| Run paths | `claude-session` and `codex-session` (the main agent), `claude-team` (a member with a Claude Code lead: a teammate, a plugin agent type), `codex-subagent` (a member with a Codex lead). | Decisions 4 and 6 of B+. |
+| Fields per path | `claude-session` refuses `sandbox`, `approval`; `codex-session` refuses `tools`; `claude-team` applies the archetype file and, from a config or team, only `model` (the Agent tool's model), `pace`, `budget`; `codex-subagent` refuses `tools`, `mcp`, `account`, `commands`, `sandbox`, `approval`, and from a team also `model`, `effort`, `skills`, `instructions`. `pace` and `budget` are the operator's on each path. | A teammate's frontmatter and text are the shipped file; a Codex subagent inherits sandbox, approval and MCP, and its file is per config. Decision 3: refuse, name the field. |
+| Codex install | `setup apply` writes one file per config that is not `"harness": "claude"` (not per archetype, not `agents install --agent codex`), with `name`, `description`, `developer_instructions`, `model`, `model_reasoning_effort`. It refuses all before a write when one config cannot apply; it removes a file that it wrote for a config that is gone, and never replaces a file that it did not write. | A config with its own model must reach Codex; `name` and `description` are the identity of a Codex agent. One setup command for each Codex part. |
+| Model | The archetype files set no model. | Claude Code model names do not apply to Codex; a config sets the model of its harness. |
+| Budget | One `budget` (`tokens_per_day`, `wake_tokens`, `wake_seconds`) in configs and team members, not `wake_budget`. | One field, one narrowing rule (a higher layer may not raise or remove a limit). |
+| Narrowing | Config over archetype and team over config: `tools.allow` and `commands.allow` may not add an item. Repository layer over the user's config: also no removed deny, ask or limit, and no other archetype. `flow.may` may only remove kinds. | B+2, B+3. |
+| Team files | The first `<team>.jsonc` of `.legionctl/teams/`, the user's `teams/`, then the plugin's; team files do not merge. `vanilla` has the members and `flow.may`. | `gates`, `stop`, `restart` and `when` come with the flow in P6b. |
+| `agents check` | Not run by `make static`. | It needs the operator; the e2e test checks the shipped files. |
+| Backfill | The observer's text has the rule (idle only, the dossier lock, append only, `(by observer0)`, a nudge when refused). | Member writes (`--member`, E6) are not built: the operator refuses a write into another dossier, so the observer sends a nudge until then. |
+
+Tests (`crates/legionctl/tests/agents.rs`, the CLI and the real operator):
+
+| Test | It catches |
+| --- | --- |
+| `vanilla_resolves_its_three_members_through_their_layers_and_a_layer_that_widens_is_refused` | A layer in the wrong order or `set_by` wrong; a team that narrows refused; a team that adds a tool or a message kind, or a repository layer that removes a deny, let through. |
+| `a_field_that_a_run_path_cannot_apply_refuses_the_member_and_names_the_field` | `mcp` on a teammate or a Codex subagent let through; a sandbox on a Codex subagent let through; a field refused on a path that applies it (the lead's `mcp`, a Codex lead's sandbox). |
+| `setup_apply_writes_each_agent_config_as_a_codex_agent_with_instructions_model_and_effort_only` | Another key in the TOML; a Claude-only config written; the plugin variable left in the text; a user file replaced or a stale file kept; a refused config that writes some files. |
+| `the_archetype_files_carry_only_the_frontmatter_fields_that_plugin_agents_honour` | A shipped file with a field that plugin agents ignore or a missing ref; such a field or ref let through. |
+
 ## Part C: thread UI (todo-92)
 
 ### C1. What and why

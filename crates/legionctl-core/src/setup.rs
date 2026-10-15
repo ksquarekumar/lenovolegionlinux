@@ -1,7 +1,8 @@
 //! Agent setup: make ctx (<https://ctx.rs>) and legionctl available to Claude Code and Codex out of the box.
 //!
 //! - ctx: its bundled skill and MCP server for both agents (`ctx integrations install skill|mcp`).
-//! - Codex: legionctl's MCP server in ~/.codex/config.toml, and the plugin's skills linked into ~/.codex/skills.
+//! - Codex: legionctl's MCP server in ~/.codex/config.toml, the plugin's skills linked into ~/.codex/skills, and each
+//!   agent config as a Codex agent in ~/.codex/agents/<name>.toml (instructions, model and effort only).
 //! - Claude Code gets legionctl's MCP server, hooks and skills from the plugin itself.
 //!
 //! `check()` only reports; `apply()` changes user-level files and returns what it did.
@@ -13,9 +14,11 @@ use anyhow::{Context, Result, ensure};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::archetypes::{Sources, written_by_legionctl};
+
 /// ctx names for the agents legionctl sets up.
 pub const AGENTS: [&str; 2] = ["claude-code", "codex"];
-const PLUGIN_SKILLS: &str = "/usr/share/legionctl/agent-plugin/skills";
+const PLUGIN: &str = "/usr/share/legionctl/agent-plugin";
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Item {
@@ -142,9 +145,51 @@ pub fn codex_has_legionctl(text: &str) -> Result<bool> {
         == Some("legionctl"))
 }
 
+/// The agent plugin's folder (`LEGIONCTL_PLUGIN` for a checkout's `integrations/agent-plugin`).
+#[must_use]
+pub fn plugin_root() -> PathBuf {
+    std::env::var_os("LEGIONCTL_PLUGIN").map_or_else(|| PathBuf::from(PLUGIN), PathBuf::from)
+}
+
+#[must_use]
 pub fn plugin_skills() -> PathBuf {
-    std::env::var_os("LEGIONCTL_PLUGIN_SKILLS")
-        .map_or_else(|| PathBuf::from(PLUGIN_SKILLS), PathBuf::from)
+    plugin_root().join("skills")
+}
+
+fn codex_agents_dir() -> PathBuf {
+    home().join(".codex/agents")
+}
+
+/// One item per agent config for Codex: current when its file has the text that `apply` writes.
+fn codex_agent_items(agents: &Sources) -> Vec<Item> {
+    let files = match agents.codex_agents() {
+        Ok(files) => files,
+        Err(e) => {
+            return vec![Item {
+                what: "legionctl agents".into(),
+                agent: "codex".into(),
+                status: format!("{e:#}"),
+                path: codex_agents_dir().display().to_string(),
+            }];
+        }
+    };
+    files
+        .into_iter()
+        .map(|(name, text)| {
+            let path = codex_agents_dir().join(format!("{name}.toml"));
+            let status = match std::fs::read_to_string(&path) {
+                Ok(have) if have == text => "current",
+                Ok(_) => "outdated",
+                Err(_) => "missing",
+            };
+            Item {
+                what: format!("legionctl agent {name}"),
+                agent: "codex".into(),
+                status: status.into(),
+                path: path.display().to_string(),
+            }
+        })
+        .collect()
 }
 
 fn skill_names() -> Vec<String> {
@@ -195,7 +240,7 @@ fn codex_items() -> Vec<Item> {
 }
 
 #[must_use]
-pub fn check() -> Report {
+pub fn check(agents: &Sources) -> Report {
     let ctx_version = ctx(&["--version"]).ok().map(|v| v.trim().to_string());
     let mut items = if ctx_version.is_some() {
         ctx_items()
@@ -208,6 +253,7 @@ pub fn check() -> Report {
         }]
     };
     items.extend(codex_items());
+    items.extend(codex_agent_items(agents));
     Report { ctx_version, items }
 }
 
@@ -229,8 +275,10 @@ fn install_ctx() -> Result<()> {
 /// Bring every item to "current". Returns one line per change.
 ///
 /// # Errors
-/// A config file or skill link cannot be read, parsed or written, or ctx cannot be installed or run.
-pub fn apply(install_missing_ctx: bool) -> Result<Vec<String>> {
+/// An agent config that a Codex subagent cannot apply (before any change), a config file, skill link or agent file
+/// cannot be read, parsed or written, or ctx cannot be installed or run.
+pub fn apply(install_missing_ctx: bool, agents: &Sources) -> Result<Vec<String>> {
+    let codex_agents = agents.codex_agents()?;
     let mut done = Vec::new();
     if ctx_bin().is_none() {
         ensure!(
@@ -311,6 +359,49 @@ pub fn apply(install_missing_ctx: bool) -> Result<Vec<String>> {
         );
         std::os::unix::fs::symlink(&target, &link)?;
         done.push(format!("legionctl skill {name}: linked for codex"));
+    }
+
+    done.extend(write_codex_agents(&codex_agents)?);
+    Ok(done)
+}
+
+/// Write each Codex agent file of `files` (name -> text), and remove each file that legionctl wrote for a config that
+/// is gone. A file that legionctl did not write stays.
+fn write_codex_agents(files: &std::collections::BTreeMap<String, String>) -> Result<Vec<String>> {
+    let mut done = Vec::new();
+    let agents_dir = codex_agents_dir();
+    // an agent file that legionctl wrote for a config that is gone
+    for entry in std::fs::read_dir(&agents_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let path = entry.path();
+        let name = path.file_stem().map(|n| n.to_string_lossy().into_owned());
+        if path.extension().is_some_and(|e| e == "toml")
+            && name.is_some_and(|n| !files.contains_key(&n))
+            && std::fs::read_to_string(&path).is_ok_and(|t| written_by_legionctl(&t))
+        {
+            std::fs::remove_file(&path)?;
+            done.push(format!("removed agent file {}", path.display()));
+        }
+    }
+    for (name, text) in files {
+        let path = agents_dir.join(format!("{name}.toml"));
+        let have = std::fs::read_to_string(&path).ok();
+        if have.as_deref() == Some(text.as_str()) {
+            continue;
+        }
+        ensure!(
+            have.as_deref().is_none_or(written_by_legionctl),
+            "{} exists and legionctl did not write it; not replacing it",
+            path.display()
+        );
+        std::fs::create_dir_all(&agents_dir)?;
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, text)?;
+        std::fs::rename(&tmp, &path)?;
+        done.push(format!("legionctl agent {name}: written for codex"));
     }
     Ok(done)
 }

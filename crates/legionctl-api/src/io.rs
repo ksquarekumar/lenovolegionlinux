@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::wire::{
     Action, Battery, BenchResult, Binding, Capability, ConfigFile, ConfigLayer, DesktopGpu,
-    DossierInfo, EditMode, Event, EventRow, GpuMode, Inside, Knob, Lock, Output, PackageState,
-    Reading, Reminder, RuleLayer, Sample, Scenario, SessionRecord, SkillInfo, VfioDevice,
-    Workspace,
+    DossierInfo, EditMode, Event, EventRow, GpuMode, Harness, Inside, Knob, Lock, Output,
+    PackageState, Reading, Reminder, RuleLayer, Sample, Scenario, SessionRecord, SkillInfo,
+    VfioDevice, Workspace,
 };
 use crate::{ClientPath, SessionId, StdinText};
 
@@ -1368,6 +1368,24 @@ pub struct AgentSetIn {
     /// Show the changed lines; write nothing.
     #[serde(default)]
     pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AgentsCheckIn {
+    /// A team file (`teams/<team>.jsonc` of the repository's .legionctl, the user's config or the plugin); none:
+    /// each agent config alone.
+    #[serde(default)]
+    pub team: Option<String>,
+    /// The harness of the main agent: claude (members are teammates) or codex (members are Codex subagents).
+    #[serde(default = "claude")]
+    pub harness: Harness,
+    /// The project whose repository's .legionctl config layer and teams apply.
+    #[serde(default = "here")]
+    pub project: ClientPath,
+}
+
+fn claude() -> Harness {
+    Harness::Claude
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]

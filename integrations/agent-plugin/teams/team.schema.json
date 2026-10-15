@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Team",
+  "description": "A team file (`teams/<name>.jsonc`): the members of a thread and the flow between them.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "name": {
+      "type": "string"
+    },
+    "members": {
+      "description": "Member name -> its layer: `agent` names a config or an archetype; the other fields narrow it.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/AgentConfig"
+      }
+    },
+    "flow": {
+      "$ref": "#/$defs/Flow",
+      "default": {
+        "may": {}
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "members"
+  ],
+  "$defs": {
+    "AgentConfig": {
+      "description": "One layer of an agent: a config (`agents.configs.<name>`, which names its `archetype`) or a team member (which\nnames its config or archetype with `agent`). Each field is optional; a layer sets only what it changes.",
+      "type": "object",
+      "properties": {
+        "archetype": {
+          "description": "A config: its archetype (`main-agent`, `thread-observer`, `ui-composer`).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "agent": {
+          "description": "A team member: the config (or archetype) that it uses.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "harness": {
+          "description": "The harness that this config is for; none: both.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Harness"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "account": {
+          "description": "An `agents accounts` profile.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "effort": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "tools": {
+          "$ref": "#/$defs/ToolRules",
+          "default": {
+            "allow": [],
+            "deny": []
+          }
+        },
+        "skills": {
+          "description": "Skills to add (names of legionctl skills).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "mcp": {
+          "description": "MCP servers to add: `legionctl` or names in `mcp.servers`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "commands": {
+          "$ref": "#/$defs/CommandRules",
+          "default": {
+            "allow": [],
+            "deny": [],
+            "ask": []
+          }
+        },
+        "instructions": {
+          "description": "Instruction files to add (`~/` is the home; a relative path is from the repository root).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "pace": {
+          "description": "`on-trigger`, `on-stop` or `on-declare`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "budget": {
+          "$ref": "#/$defs/AgentBudget",
+          "default": {
+            "tokens_per_day": null,
+            "wake_tokens": null,
+            "wake_seconds": null
+          }
+        },
+        "sandbox": {
+          "description": "Codex sandbox mode of an operator session.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "approval": {
+          "description": "Codex approval policy of an operator session.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "Harness": {
+      "type": "string",
+      "enum": [
+        "claude",
+        "codex"
+      ]
+    },
+    "ToolRules": {
+      "description": "Tools the agent may call (`allow`, empty: each tool) and may not call (`deny`).",
+      "type": "object",
+      "properties": {
+        "allow": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "deny": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false
+    },
+    "CommandRules": {
+      "description": "Command patterns (`Bash(cargo publish*)`) the agent may run, may not run, and runs only after a person agrees.",
+      "type": "object",
+      "properties": {
+        "allow": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "deny": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "ask": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false
+    },
+    "AgentBudget": {
+      "description": "Token and time limits: per day, and per wake of a member that sleeps until a trigger.",
+      "type": "object",
+      "properties": {
+        "tokens_per_day": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "wake_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "wake_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "Flow": {
+      "type": "object",
+      "properties": {
+        "may": {
+          "description": "Member -> the message kinds it may send; only kinds that its archetype may send.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "default": {}
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

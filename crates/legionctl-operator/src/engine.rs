@@ -15,11 +15,11 @@ use legionctl_api::{
     ToolCallsIn, TuneIn, TuneReport, WindowsState, coded,
 };
 use legionctl_api::{
-    AccountAddIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath, CloseIn,
-    ConfigFiles, ConfigView, Ctx, Empty, Engine, ExplainIn, Explanation, Findings, GpuPrimaryIn,
-    GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LayerList, LoadState, PowerApplyIn,
-    PowerSource, ProfileIn, ProjectIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn, SetupApplyIn,
-    SetupReport, SkillList, Snapshot, StatusIn, Validation, Workspace, WorkspaceIn,
+    AccountAddIn, AgentCheck, AgentsCheckIn, CapabilityList, Changes, CheckpointIn, CleanupIn,
+    ClientPath, CloseIn, ConfigFiles, ConfigView, Ctx, Empty, Engine, ExplainIn, Explanation,
+    Findings, GpuPrimaryIn, GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LayerList, LoadState,
+    PowerApplyIn, PowerSource, ProfileIn, ProjectIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn,
+    SetupApplyIn, SetupReport, SkillList, Snapshot, StatusIn, Validation, Workspace, WorkspaceIn,
     WorkspaceOpenIn, WorkspaceStatus, Workspaces,
 };
 use legionctl_api::{
@@ -34,6 +34,7 @@ use legionctl_api::{
 use legionctl_api::{
     MutantRecordIn, TestDetail, TestReview, TestReviewIn, TestRow, TestShowIn, TestsRunIn,
 };
+use legionctl_core::archetypes::Sources;
 use legionctl_core::cache::Cache;
 use legionctl_core::codetests::Side;
 use legionctl_core::config::{Dirs, Resolved, resolve};
@@ -1040,7 +1041,7 @@ pub(crate) fn dossiers() -> Result<Dossiers> {
 
 /// The agent side of `doctor`: setup gaps, stale dossier bindings, workspaces that drifted from their record.
 fn agent_findings() -> Result<Vec<String>> {
-    let mut w: Vec<String> = setup::check()
+    let mut w: Vec<String> = setup::check(&Sources::resolve(&Dirs::from_env(), None)?)
         .needs_attention()
         .iter()
         .map(|i| {
@@ -1665,6 +1666,27 @@ impl Engine for Operator {
         .into_wire())
     }
 
+    fn agents_check(&self, _: &Ctx, input: AgentsCheckIn) -> Result<AgentCheck> {
+        let sources = Sources::resolve(&Dirs::from_env(), Some(input.project.get()?))?;
+        let team = match &input.team {
+            Some(name) => Some((
+                name.as_str(),
+                sources.team_path(name).with_context(|| {
+                    format!(
+                        "no team {name} in .legionctl/teams, the user's teams or the plugin's teams"
+                    )
+                })?,
+            )),
+            None => None,
+        };
+        Ok(sources
+            .check(
+                team.as_ref().map(|(n, p)| (*n, p.as_path())),
+                input.harness.into(),
+            )?
+            .into_wire())
+    }
+
     fn agents_usage(&self, _: &Ctx, input: AgentUsageIn) -> Result<UsageReport> {
         let (claude, codex) = match &input.account {
             Some(account) => {
@@ -1937,12 +1959,15 @@ impl Engine for Operator {
     }
 
     fn setup_check(&self, _: &Ctx, _: Empty) -> Result<SetupReport> {
-        Ok(setup::check().into_wire())
+        Ok(setup::check(&Sources::resolve(&Dirs::from_env(), None)?).into_wire())
     }
 
     fn setup_apply(&self, _: &Ctx, input: SetupApplyIn) -> Result<Changes> {
         Ok(Changes {
-            lines: setup::apply(input.install_ctx)?,
+            lines: setup::apply(
+                input.install_ctx,
+                &Sources::resolve(&Dirs::from_env(), None)?,
+            )?,
             dry_run: false,
         })
     }

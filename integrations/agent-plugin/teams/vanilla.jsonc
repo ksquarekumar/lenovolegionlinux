@@ -1,0 +1,15 @@
+// The team vanilla (design 23, B+4): main0 does the critical-path work; observer0 and ui0 sleep until a trigger.
+// Each member names a config (agents.configs.<name>) or an archetype. A member may only narrow its config: tools,
+// commands and budget; flow.may removes message kinds. `legionctl agents check --team vanilla` resolves it.
+{
+  "$schema": "./team.schema.json",
+  "name": "vanilla",
+  "members": {
+    "main0": { "agent": "main-agent" },
+    "observer0": { "agent": "thread-observer", "pace": "on-trigger", "budget": { "wake_tokens": 40000, "wake_seconds": 300 } },
+    "ui0": { "agent": "ui-composer", "pace": "on-trigger", "budget": { "wake_tokens": 15000, "wake_seconds": 60 } }
+  },
+  "flow": {
+    "may": { "ui0": ["note", "result"] }
+  }
+}

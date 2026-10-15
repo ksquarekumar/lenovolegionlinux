@@ -3,13 +3,13 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    BatteryState, BenchCompare, BenchRun, BootState, CapabilityList, Changes, Conditions,
-    ConfigFile, ConfigView, DossierFindings, DossierInfo, Empty, EventRow, Explanation, Findings,
-    GpuState, GreeterState, Guard, HookReply, HookTable, KernelBench, Knob, KnobDetail, Launch,
-    LayerList, Lines, LoadState, Lock, Manifest, PackageState, PlanView, Reading, Recording,
-    Reminder, RuleDetail, RuleState, Rules, RunEnv, Sample, SessionState, SetupReport, SkillInfo,
-    Snapshot, TestDetail, TestReview, TestRow, ToolCallRow, TuneReport, Validation, VfioDevices,
-    WindowsState, WindowsVmBegun, Workspace, WorkspaceStatus,
+    AgentCheck, BatteryState, BenchCompare, BenchRun, BootState, CapabilityList, Changes,
+    Conditions, ConfigFile, ConfigView, DossierFindings, DossierInfo, Empty, EventRow, Explanation,
+    Findings, GpuState, GreeterState, Guard, HookReply, HookTable, KernelBench, Knob, KnobDetail,
+    Launch, LayerList, Lines, LoadState, Lock, Manifest, PackageState, PlanView, Reading,
+    Recording, Reminder, RuleDetail, RuleState, Rules, RunEnv, Sample, SessionState, SetupReport,
+    SkillInfo, Snapshot, TestDetail, TestReview, TestRow, ToolCallRow, TuneReport, Validation,
+    VfioDevices, WindowsState, WindowsVmBegun, Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -582,6 +582,42 @@ impl Render for WorkspaceStatus {
 
     fn success(&self) -> bool {
         self.drift.is_empty()
+    }
+}
+
+impl Render for AgentCheck {
+    fn text(&self) -> String {
+        let mut out = vec![format!(
+            "{} for {}",
+            self.team
+                .as_deref()
+                .map_or("each agent config".into(), |t| format!("team {t}")),
+            self.harness
+        )];
+        for m in &self.members {
+            out.push(format!(
+                "{} ({}, config {}) on {}",
+                m.name, m.archetype, m.config, m.run_path
+            ));
+            for (field, value) in &m.fields {
+                let by = m
+                    .set_by
+                    .get(field)
+                    .map_or(String::new(), |b| format!("  [{b}]"));
+                out.push(format!("  {field}: {value}{by}"));
+            }
+        }
+        out.extend(self.refused.iter().map(|r| format!("refused: {r}")));
+        out.push(if self.refused.is_empty() {
+            "ok".into()
+        } else {
+            format!("{} refused", self.refused.len())
+        });
+        out.join("\n")
+    }
+
+    fn success(&self) -> bool {
+        self.refused.is_empty()
     }
 }
 

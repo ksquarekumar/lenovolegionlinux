@@ -1701,6 +1701,117 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "agents.check": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "team": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A team file (`teams/<team>.jsonc` of the repository's .legionctl, the user's config or the plugin); none:\neach agent config alone.",
+          "default": null
+        },
+        "harness": {
+          "type": "string",
+          "enum": [
+            "claude",
+            "codex"
+          ],
+          "description": "The harness of the main agent: claude (members are teammates) or codex (members are Codex subagents).",
+          "default": "claude"
+        },
+        "project": {
+          "type": "string",
+          "format": "path",
+          "description": "The project whose repository's .legionctl config layer and teams apply.",
+          "default": "."
+        }
+      },
+      "title": "AgentsCheckIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "harness": {
+          "type": "string",
+          "enum": [
+            "claude",
+            "codex"
+          ],
+          "description": "The harness of an agent."
+        },
+        "team": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "description": "One member of `agents check`.",
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "archetype": {
+                "type": "string"
+              },
+              "config": {
+                "description": "The config (`agents.configs.<name>`) it uses.",
+                "type": "string"
+              },
+              "run_path": {
+                "description": "`claude-session`, `claude-team` (a teammate of the lead), `codex-session` or `codex-subagent`.",
+                "type": "string"
+              },
+              "fields": {
+                "description": "The resolved fields that are set, and `may` (the message kinds it may send).",
+                "type": "object",
+                "additionalProperties": true
+              },
+              "set_by": {
+                "description": "Field -> the layer that set it last.",
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "name",
+              "archetype",
+              "config",
+              "run_path",
+              "fields",
+              "set_by"
+            ]
+          }
+        },
+        "refused": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Each field that a run path cannot apply, each layer that widens, each missing file: one line each."
+        }
+      },
+      "required": [
+        "harness",
+        "members",
+        "refused"
+      ],
+      "description": "What `agents check` found: each member with its layers resolved, and each refusal.",
+      "title": "AgentCheck",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "agents.usage": {
     "class": "read",
     "internal": false,

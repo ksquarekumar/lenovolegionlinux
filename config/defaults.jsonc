@@ -219,6 +219,21 @@
     }
   },
 
+  // Agent configs (design 23, B+2): name -> { "archetype": main-agent|thread-observer|ui-composer, and the fields it
+  // changes: "harness" (claude|codex; none: both), "account", "model", "effort", "tools": {allow, deny}, "skills",
+  // "mcp" (legionctl or names in mcp.servers), "commands": {allow, deny, ask}, "instructions" (files), "pace",
+  // "budget": {tokens_per_day, wake_tokens, wake_seconds}, "sandbox" and "approval" (Codex sessions) }. The archetype
+  // file (integrations/agent-plugin/agents/<archetype>.md) is the layer below; the repository layer and a team may
+  // only narrow tools, commands and budgets. `legionctl agents check [--team <t>] [--harness claude|codex]` resolves
+  // them and refuses each field that a run path cannot apply; `legionctl setup apply` writes them as Codex agents.
+  "agents": {
+    "configs": {
+      "main-agent": { "archetype": "main-agent" },
+      "thread-observer": { "archetype": "thread-observer", "pace": "on-trigger", "budget": { "tokens_per_day": 2000000 } },
+      "ui-composer": { "archetype": "ui-composer", "pace": "on-trigger", "budget": { "tokens_per_day": 500000 } }
+    }
+  },
+
   "gates": {
     "git": {
       // Refused: a subcommand and the flags that make it unsafe. Merge goes through workspace_merge; pushes and

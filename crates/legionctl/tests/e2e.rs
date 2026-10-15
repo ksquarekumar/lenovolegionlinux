@@ -40,7 +40,7 @@ fn hook_out(op: &Operator, cwd: &Path, event: &str) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
-/// An operator with an empty HOME and the repo's plugin skills.
+/// An operator with an empty HOME and the repo's agent plugin.
 /// `PATH` with this build's binaries first: the operator finds this `legionctl` (the git gate), not an installed one.
 fn path_with_build() -> OsString {
     let bin = Path::new(env!("CARGO_BIN_EXE_legionctl"))
@@ -84,8 +84,7 @@ fn docker() -> [(&'static str, OsString); 1] {
 }
 
 fn operator_with(tag: &str, home: &Path, extra: &[(&str, OsString)]) -> Operator {
-    let skills =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integrations/agent-plugin/skills");
+    let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integrations/agent-plugin");
     // an empty machine: no /etc/legionctl unless a test writes one
     let root = home.join("root");
     std::fs::create_dir_all(&root).unwrap();
@@ -93,7 +92,7 @@ fn operator_with(tag: &str, home: &Path, extra: &[(&str, OsString)]) -> Operator
         ("LEGIONCTL_SYSROOT", root.into()),
         ("HOME", home.into()),
         ("PATH", path_with_keyring(home)),
-        ("LEGIONCTL_PLUGIN_SKILLS", OsString::from(skills)),
+        ("LEGIONCTL_PLUGIN", OsString::from(plugin)),
     ];
     env.extend(extra.iter().cloned());
     Operator::start(tag, &env)
@@ -930,10 +929,13 @@ fn trace_shows_each_change_as_it_happens() {
 /// The wire format is reviewed: `docs/api/schema.json` holds every operation's class, visibility, input and output
 /// schema, and the code must match it, so a change to a type on the wire shows up as a diff of that file
 /// (`LEGIONCTL_WRITE_SCHEMA=1` writes it after a deliberate change). The schemas of the planning files
-/// (`planning/*.schema.json`) are reviewed the same way.
+/// (`planning/*.schema.json`) and of team files (`teams/team.schema.json`) are reviewed the same way.
 #[test]
 fn the_wire_format_matches_the_committed_schema() {
-    for (rel, schema) in legionctl_core::planning::schemas() {
+    for (rel, schema) in legionctl_core::planning::schemas()
+        .into_iter()
+        .chain([legionctl_core::archetypes::team_schema()])
+    {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join(rel);

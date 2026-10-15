@@ -424,6 +424,10 @@ operations! {
     /// Install a Claude Code plugin that `plugins.marketplaces` allows (`claude plugin install`); a command the
     /// marketplace declares still needs a person to accept it.
     agents_plugins_install / AgentsPluginsInstall = "agents.plugins.install", Workspace, PluginInstallIn => Lines;
+    /// Resolve the agent configs of a team (or each config alone) for a harness: the archetype file, then
+    /// `agents.configs.<name>`, then the team. Refuses, with the field named, each field that a member's run path cannot
+    /// apply, and each layer that widens tools, commands, budgets or message kinds.
+    agents_check / AgentsCheck = "agents.check", Read, AgentsCheckIn => AgentCheck;
     /// Tokens per agent, day and model from Claude Code's and Codex's own transcripts, and Codex's rate-limit use.
     agents_usage / AgentsUsage = "agents.usage", Read, AgentUsageIn => UsageReport;
     /// Open (or reopen) this session's dossier workspace in a repository: a worktree on legionctl/<dossier> with the
