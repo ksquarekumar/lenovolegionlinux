@@ -4909,6 +4909,12 @@ fn iso(dir: &Path, label: &str, out: &Path) {
 /// of 7.x) with its headers, DKMS, python3, polkit, sfdisk, mkfs.vfat and the unit that runs the test from the disk
 /// labelled LWMITEST, then powers off.
 fn vm_test_base(image: &Path) -> PathBuf {
+    // the VM tests of this binary run in parallel: one makes the disk, the others wait for it (two at once fight
+    // over the write lock of the part file, CI run 38737131349)
+    static MAKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _making = MAKING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // a new name when the preparation changes
     let base = image.with_file_name("legionctl-vm-base-v2.qcow2");
     if base.exists() {
