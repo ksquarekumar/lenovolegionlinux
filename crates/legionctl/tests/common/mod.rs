@@ -8,6 +8,41 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+/// Another package's binary `name` beside this test's `legionctl`, refused when it is older than a source it was built
+/// from: `cargo test -p legionctl` builds only `legionctl`, so an old daemon or operator would give false results.
+pub fn sibling(name: &str) -> PathBuf {
+    fresh(&Path::new(env!("CARGO_BIN_EXE_legionctl")).with_file_name(name))
+}
+
+/// `bin`, when no source in its dep-info (`<bin>.d`, which cargo writes with each build) is newer than it.
+pub fn fresh(bin: &Path) -> PathBuf {
+    let missing = format!(
+        "{} is missing: run cargo build --release first",
+        bin.display()
+    );
+    let built = std::fs::metadata(bin)
+        .and_then(|m| m.modified())
+        .expect(&missing);
+    let deps = std::fs::read_to_string(bin.with_extension("d")).expect(&missing);
+    let (_, sources) = deps
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .split_once(": ")
+        .unwrap_or_default();
+    for source in sources.split_whitespace() {
+        // a removed source changed the file that named it, which is still in the list
+        if let Ok(changed) = std::fs::metadata(source).and_then(|m| m.modified()) {
+            assert!(
+                changed <= built,
+                "{} is older than this build: run cargo build --release first ({source} changed)",
+                bin.display()
+            );
+        }
+    }
+    bin.to_path_buf()
+}
+
 pub struct Operator {
     /// Short on purpose: a unix socket path must fit in 108 bytes.
     pub runtime: PathBuf,
@@ -39,15 +74,7 @@ impl Operator {
         for (name, value) in env.iter().cloned().chain(unset) {
             cmd.arg(format!("--setenv={name}={}", value.to_string_lossy()));
         }
-        // another package's binary: cargo builds it into the same folder (`make test` builds every binary first)
-        let operator =
-            Path::new(env!("CARGO_BIN_EXE_legionctl")).with_file_name("legionctl-operator");
-        assert!(
-            operator.exists(),
-            "{} is missing: run `cargo build --workspace --bins`",
-            operator.display()
-        );
-        let child = cmd.arg(operator).spawn().unwrap();
+        let child = cmd.arg(sibling("legionctl-operator")).spawn().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while !socket.exists() {
             assert!(Instant::now() < deadline, "the test socket did not appear");

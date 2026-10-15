@@ -284,10 +284,46 @@ fn sent(what: &str, result: zbus::Result<()>) {
     }
 }
 
+/// The power source of `o`.
+fn source(o: &Observed) -> Option<&'static str> {
+    o.mode.as_ref().map(|m| m.source)
+}
+
+/// The state to announce, after the policy of its power source: when the source differs from the last one announced
+/// and the power source plan did not run just now (`source_planned`), it runs first. Without it, a look before the
+/// late (or lost) udev event, or a source change during another event's plan, announces the old source's mode with the
+/// new source. While a tune runs, no plan runs.
+async fn settled(
+    root: &SysRoot,
+    emitter: &SignalEmitter<'_>,
+    announced: &Mutex<Announced>,
+    tuning: &AtomicBool,
+    source_planned: bool,
+) -> Observed {
+    let now = observe(root);
+    let last = source(
+        &announced
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .last,
+    );
+    if source_planned || tuning.load(Ordering::SeqCst) || source(&now) == last {
+        return now;
+    }
+    plan(root, emitter, Event::PowerSource).await;
+    observe(root)
+}
+
 /// Compare the state other tools follow with the last one announced; each difference is one signal and one journal
 /// entry. A throttle reason that starts counts once for each workload kind active now (the correlation).
-async fn announce(root: &SysRoot, emitter: &SignalEmitter<'_>, announced: &Mutex<Announced>) {
-    let now = observe(root);
+async fn announce(
+    root: &SysRoot,
+    emitter: &SignalEmitter<'_>,
+    announced: &Mutex<Announced>,
+    tuning: &AtomicBool,
+    source_planned: bool,
+) {
+    let now = settled(root, emitter, announced, tuning, source_planned).await;
     let before = announced
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -315,7 +351,6 @@ async fn announce(root: &SysRoot, emitter: &SignalEmitter<'_>, announced: &Mutex
             System1::mode_changed(emitter, &m.mode, m.fn_q_choice, m.source).await,
         );
     }
-    let source = |o: &Observed| o.mode.as_ref().map(|m| m.source);
     if let Some(s) = source(&now).filter(|s| Some(*s) != source(&before)) {
         journal(
             root,
@@ -383,14 +418,28 @@ async fn announce(root: &SysRoot, emitter: &SignalEmitter<'_>, announced: &Mutex
     }
 }
 
-/// One event: log what happened (every event but the tick leaves a line), tell the session if anything changed, and
-/// announce what other tools follow when it differs from the last one announced.
+/// One event: its plan, then the announcement of what other tools follow when it differs from the last one announced.
 async fn handle(
     root: &SysRoot,
     emitter: &SignalEmitter<'_>,
     event: Event,
     announced: &Mutex<Announced>,
+    tuning: &AtomicBool,
 ) {
+    plan(root, emitter, event).await;
+    announce(
+        root,
+        emitter,
+        announced,
+        tuning,
+        event == Event::PowerSource,
+    )
+    .await;
+}
+
+/// Carry out the plan of `event`: log what happened (every event but the tick leaves a line) and tell the session if
+/// anything changed.
+async fn plan(root: &SysRoot, emitter: &SignalEmitter<'_>, event: Event) {
     match carry_out(root, |m| react(m, event)) {
         Ok(lines) if lines.is_empty() => {
             if event != Event::Tick {
@@ -407,7 +456,6 @@ async fn handle(
         }
         Err(e) => eprintln!("{event:?}: error: {e:#}"),
     }
-    announce(root, emitter, announced).await;
 }
 
 /// Carry out a boot plan step by step, stopping at the first failure: a later step (a firmware entry) must not follow a
@@ -727,7 +775,7 @@ impl System1 {
         lines: &[String],
     ) -> zbus::Result<()> {
         Self::changed(emitter, cause, lines).await?;
-        announce(&self.root, emitter, &self.announced).await;
+        announce(&self.root, emitter, &self.announced, &self.tuning, false).await;
         Ok(())
     }
 
@@ -1984,7 +2032,7 @@ async fn main() -> Result<()> {
         .inspect_err(|e| eprintln!("FnLock: not watched: {e:#}"))
         .ok();
     start_set(&root);
-    handle(&root, &emitter, Event::Start, &announced).await;
+    handle(&root, &emitter, Event::Start, &announced, &tuning).await;
     notify(sd_notify::NotifyState::Ready);
     // running again: safe mode is over
     let _ = std::fs::remove_file(root.path(SAFE_MODE));
@@ -1999,12 +2047,12 @@ async fn main() -> Result<()> {
                 let events: Vec<Event> = guard.get_inner().iter().filter_map(|e| udev_event(&e)).collect();
                 guard.clear_ready();
                 for event in events.into_iter().filter(|_| !tuning.load(Ordering::SeqCst)) {
-                    handle(&root, &emitter, event, &announced).await;
+                    handle(&root, &emitter, event, &announced, &tuning).await;
                 }
             }
             Some(signal) = sleep.next() => {
                 if !signal.args()?.start && !tuning.load(Ordering::SeqCst) {
-                    handle(&root, &emitter, Event::Resume, &announced).await;
+                    handle(&root, &emitter, Event::Resume, &announced, &tuning).await;
                 }
             }
             Some(()) = presses.recv() => {
@@ -2028,19 +2076,19 @@ async fn main() -> Result<()> {
                 }
             }
             _ = tick.tick() => if !tuning.load(Ordering::SeqCst) {
-                handle(&root, &emitter, Event::Tick, &announced).await;
+                handle(&root, &emitter, Event::Tick, &announced, &tuning).await;
             },
             changed = folders.changed() => {
                 changed?;
                 if !tuning.load(Ordering::SeqCst) {
-                    handle(&root, &emitter, Event::Reload, &announced).await;
+                    handle(&root, &emitter, Event::Reload, &announced, &tuning).await;
                 }
             }
-            () = triggers.next(Announced::throttled(&announced)) => announce(&root, &emitter, &announced).await,
+            () = triggers.next(Announced::throttled(&announced)) => announce(&root, &emitter, &announced, &tuning, false).await,
             changed = workloads.changed(&root) => {
                 changed?;
                 if !tuning.load(Ordering::SeqCst) {
-                    handle(&root, &emitter, Event::Workload, &announced).await;
+                    handle(&root, &emitter, Event::Workload, &announced, &tuning).await;
                 }
             }
             _ = term.recv() => {

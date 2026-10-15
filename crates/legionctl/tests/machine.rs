@@ -38,7 +38,9 @@ fn copy_tree(from: &Path, to: &Path) {
 }
 
 impl Drop for Machine {
-    /// As root, the BPF filesystem the daemon pinned into goes with the machine (and the pinned programs detach).
+    /// As root, the BPF filesystem the daemon pinned into goes with the machine (and the pinned programs detach). Then
+    /// the machine's folder goes: each one has more than 1000 files, and runs of many test processes filled the inodes
+    /// of /tmp.
     fn drop(&mut self) {
         if std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/proc/self").unwrap()) == 0 {
             let _ = std::process::Command::new("umount")
@@ -46,6 +48,7 @@ impl Drop for Machine {
                 .stderr(std::process::Stdio::null())
                 .status();
         }
+        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -108,7 +111,11 @@ impl Machine {
     fn set(&self, machine_path: &str, value: &str) {
         let path = self.dir.join("root").join(&machine_path[1..]);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, format!("{value}\n")).unwrap();
+        // in one step, as the kernel changes an attribute: a daemon that reads during a plain write (truncate, then
+        // write) reads an empty value and announces it
+        let new = self.dir.join(machine_path[1..].replace('/', "%"));
+        std::fs::write(&new, format!("{value}\n")).unwrap();
+        std::fs::rename(new, path).unwrap();
     }
 
     /// The operator on this machine; it runs the stand-in commands.
@@ -181,6 +188,12 @@ impl Machine {
 /// A stand-in for the `acpi_call` module at the machine's `/proc/acpi/call` (a FIFO): a call is written, then the
 /// reply read. It records each call and answers as this firmware does: `Fan_Get_Table` returns its table (u32 FSFL,
 /// FSS0-FSS9 as u32, FSSA), `Fan_Set_Table` keeps the bytes at 0x06 + 2·i, other calls return 0x0.
+///
+/// Another test's spawn copies the FIFO ends open in this process into its child until the child's exec. An end that
+/// the stand-in closes can thus live on in a copy alone: the caller's call or the stand-in's reply went to that copy,
+/// the pipe dropped it at the copy's close, and the caller and the stand-in each waited for the other's open forever
+/// (the hang under load). So the stand-in keeps its read end open all the time, and closes its write end only after
+/// the caller read the whole reply, or after 10 s with the reply removed (the caller is gone).
 #[derive(Clone)]
 struct AcpiCall {
     calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
@@ -189,6 +202,7 @@ struct AcpiCall {
 
 impl AcpiCall {
     fn start(m: &Machine, table: [u8; 10]) -> AcpiCall {
+        use rustix::fs::{Mode, OFlags};
         let path = m.dir.join("root/proc/acpi/call");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         assert!(
@@ -203,33 +217,74 @@ impl AcpiCall {
             table: std::sync::Arc::new(std::sync::Mutex::new(table)),
         };
         let firmware = acpi.clone();
+        // the open does not wait for a writer
+        let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC;
+        let mut reader =
+            std::fs::File::from(rustix::fs::open(&path, flags, Mode::empty()).unwrap());
         std::thread::spawn(move || {
             loop {
-                let call = std::fs::read_to_string(&path).unwrap().trim().to_string();
-                let reply = if call == "\\_SB_.GZFD.WMAB 0 5" {
-                    let mut bytes = [0u8; 48];
-                    for (i, level) in firmware.table.lock().unwrap().iter().enumerate() {
-                        bytes[4 + 4 * i] = *level;
-                    }
-                    let bytes: Vec<String> = bytes.iter().map(|b| format!("0x{b:02x}")).collect();
-                    format!("{{{}}}", bytes.join(", "))
-                } else if let Some(hex) = call.strip_prefix("\\_SB_.GZFD.WMAB 0 6 b") {
-                    let mut table = firmware.table.lock().unwrap();
-                    for (i, level) in table.iter_mut().enumerate() {
-                        let at = 2 * (0x06 + 2 * i);
-                        *level = u8::from_str_radix(&hex[at..at + 2], 16).unwrap();
-                    }
-                    "0x0".into()
+                let call = Self::take_call(&mut reader);
+                let reply = firmware.answer(&call);
+                // the open does not wait: the read end is open
+                let mut writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+                std::io::Write::write_all(&mut writer, reply.as_bytes()).unwrap();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while rustix::io::ioctl_fionread(&writer).unwrap() > 0
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                if rustix::io::ioctl_fionread(&writer).unwrap() > 0 {
+                    // the caller is gone (a stopped daemon): its reply goes, so the next caller gets its own
+                    let mut gone = Vec::new();
+                    let _ = std::io::Read::read_to_end(&mut reader, &mut gone);
                 } else {
-                    "0x0".into()
-                };
-                // counted only once the daemon took the reply: a test that waits for a call and then stops the daemon
-                // must not leave this write waiting for a reader that is gone (the next daemon's call would wait too)
-                std::fs::write(&path, reply).unwrap();
-                firmware.calls.lock().unwrap().push(call);
+                    // counted once the caller took the reply and before its end of file: a test that waits for a
+                    // call sees it when the caller's call returns, and stops the daemon after the call
+                    firmware.calls.lock().unwrap().push(call);
+                }
+                drop(writer);
             }
         });
         acpi
+    }
+
+    /// The next call: the bytes up to the caller's close.
+    fn take_call(reader: &mut std::fs::File) -> String {
+        let mut call = Vec::new();
+        loop {
+            match std::io::Read::read_to_end(reader, &mut call) {
+                // the end of a call: its writer closed
+                Ok(_) if !call.is_empty() => {
+                    return String::from_utf8(call).unwrap().trim().to_string();
+                }
+                // no writer yet
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => panic!("reading a call: {e}"),
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    fn answer(&self, call: &str) -> String {
+        if call == "\\_SB_.GZFD.WMAB 0 5" {
+            let mut bytes = [0u8; 48];
+            for (i, level) in self.table.lock().unwrap().iter().enumerate() {
+                bytes[4 + 4 * i] = *level;
+            }
+            let bytes: Vec<String> = bytes.iter().map(|b| format!("0x{b:02x}")).collect();
+            format!("{{{}}}", bytes.join(", "))
+        } else if let Some(hex) = call.strip_prefix("\\_SB_.GZFD.WMAB 0 6 b") {
+            let mut table = self.table.lock().unwrap();
+            for (i, level) in table.iter_mut().enumerate() {
+                let at = 2 * (0x06 + 2 * i);
+                *level = u8::from_str_radix(&hex[at..at + 2], 16).unwrap();
+            }
+            "0x0".into()
+        } else {
+            "0x0".into()
+        }
     }
 
     fn calls(&self) -> Vec<String> {
@@ -794,13 +849,52 @@ fn an_operator_without_a_docker_of_its_own_reaches_no_docker() {
     );
 }
 
+/// `cargo test -p legionctl` builds only `legionctl`: a daemon built before a source it depends on changed is refused,
+/// so no test runs it. Checked with cargo's own dep-info of the daemon beside a stand-in binary.
+#[test]
+fn a_daemon_older_than_a_source_it_was_built_from_is_refused() {
+    let real = crate::common::sibling("legionctl-system");
+    let deps = std::fs::read_to_string(real.with_extension("d")).unwrap();
+    let changed = deps
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .skip(1)
+        .map(|s| std::fs::metadata(s).unwrap().modified().unwrap())
+        .max()
+        .unwrap();
+    let dir = std::env::temp_dir().join(format!("legionctl-stale-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bin = dir.join("legionctl-system");
+    std::fs::write(bin.with_extension("d"), &deps).unwrap();
+    let file = std::fs::File::create(&bin).unwrap();
+
+    // built one second before the newest source changed: refused, with a source
+    file.set_modified(changed - std::time::Duration::from_secs(1))
+        .unwrap();
+    let refused = std::panic::catch_unwind(|| crate::common::fresh(&bin)).unwrap_err();
+    let refused = refused.downcast_ref::<String>().unwrap();
+    assert!(
+        refused.starts_with(&format!(
+            "{} is older than this build: run cargo build --release first (",
+            bin.display()
+        )),
+        "{refused}"
+    );
+    // built after it: accepted
+    file.set_modified(changed).unwrap();
+    assert_eq!(crate::common::fresh(&bin), bin);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Safe mode: after repeated failures systemd runs `legionctl-system --safe`, which hands the machine to the
 /// firmware's balanced mode and leaves the reason, which `doctor` shows first.
 #[test]
 fn safe_mode_hands_the_machine_to_the_firmware_and_doctor_says_why() {
     let m = Machine::new("safe");
     assert_eq!(m.file(PROFILE_PATH), "max-power");
-    let daemon = Path::new(env!("CARGO_BIN_EXE_legionctl")).with_file_name("legionctl-system");
+    let daemon = crate::common::sibling("legionctl-system");
     let out = std::process::Command::new(daemon)
         .arg("--safe")
         .env_clear()
@@ -1580,8 +1674,7 @@ mod daemon_process {
 
     /// The daemon on the private bus of `m`, once it owns its name.
     pub(super) async fn daemon(m: &Machine, stand_ins: &zbus::Connection) -> Kill {
-        let daemon_bin =
-            Path::new(env!("CARGO_BIN_EXE_legionctl")).with_file_name("legionctl-system");
+        let daemon_bin = crate::common::sibling("legionctl-system");
         let daemon = Kill(
             Command::new(daemon_bin)
                 .env_clear()
@@ -4710,15 +4803,13 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
     /// `legionctl-system` in one of its one-shot modes (`--boot-rebuild`, `--remove-check`) on machine `m`, as a
     /// pacman hook runs it.
     fn one_shot(m: &Machine, args: &[&str]) -> std::process::Output {
-        std::process::Command::new(
-            Path::new(env!("CARGO_BIN_EXE_legionctl")).with_file_name("legionctl-system"),
-        )
-        .args(args)
-        .env_clear()
-        .env("PATH", m.dir.join("bin"))
-        .env("LEGIONCTL_SYSROOT", m.dir.join("root"))
-        .output()
-        .unwrap()
+        std::process::Command::new(crate::common::sibling("legionctl-system"))
+            .args(args)
+            .env_clear()
+            .env("PATH", m.dir.join("bin"))
+            .env("LEGIONCTL_SYSROOT", m.dir.join("root"))
+            .output()
+            .unwrap()
     }
 
     /// The pacman hook after a kernel upgrade (review 02, HIGH): the line of one kernel fails its check (a module
@@ -5959,7 +6050,7 @@ mod resources {
     }
 
     /// The kinds of the events after event `after`, once the recorder has them (the daemon's signals come late).
-    fn kinds_after(op: &Operator, after: i64) -> Vec<String> {
+    pub(super) fn kinds_after(op: &Operator, after: i64) -> Vec<String> {
         json(op, &["events", "--limit", "1000"])["items"]
             .as_array()
             .unwrap()
@@ -5969,7 +6060,7 @@ mod resources {
             .collect()
     }
 
-    fn last_event(op: &Operator) -> i64 {
+    pub(super) fn last_event(op: &Operator) -> i64 {
         json(op, &["events", "--limit", "1000"])["items"]
             .as_array()
             .unwrap()
@@ -6568,6 +6659,7 @@ mod resources {
 mod fan_control {
     use super::daemon_process::{daemon, start, wait_for};
     use super::operator_and_daemon::on_bus;
+    use super::resources::{kinds_after, last_event};
     use super::*;
     use serde_json::Value;
 
@@ -6776,16 +6868,24 @@ mod fan_control {
         let (ok, text) = run(&op, &["fan", "max", "off"]);
         assert!(ok, "{text}");
         assert_eq!(acpi.calls().last().unwrap(), "\\_SB_.GZFD.WMAA 0 13 b00");
-        // off stays off after resume: wait for the resume repair, then no fan max call
+        // off stays off after resume: wait for the whole resume repair (its record comes after its last step), then
+        // no fan max call
         let calls = acpi.calls().len();
+        let before = last_event(&op);
         m.set(
             "/sys/devices/system/cpu/cpufreq/policy3/scaling_governor",
             "powersave",
         );
         resume(&stand_ins).await;
         wait_for("the resume repair", || {
-            m.file("/sys/devices/system/cpu/cpufreq/policy3/scaling_governor") == "performance"
+            kinds_after(&op, before)
+                .iter()
+                .any(|k| k == "machine.resume")
         });
+        assert_eq!(
+            m.file("/sys/devices/system/cpu/cpufreq/policy3/scaling_governor"),
+            "performance"
+        );
         assert_eq!(acpi.calls().len(), calls);
 
         // full speed: custom mode only; Other Method 18, feature 0x04020000, value 1 or 0
@@ -7283,9 +7383,10 @@ mod sensors_and_events {
         m.set("/sys/class/power_supply/ADP0/online", "0");
         resume().await;
         wait(3);
-        // Fn+Q to performance: the firmware's choice, which the policy keeps
-        m.set(PROFILE_PATH, "performance");
+        // Fn+Q to performance: the firmware's choice, which the policy keeps (the choice first: a look between the two
+        // writes, such as a resume still in the queue, sees no change, not the mode without its choice)
         m.record(Key::Override, "performance");
+        m.set(PROFILE_PATH, "performance");
         resume().await;
         wait(4);
         // throttling starts during the build (the MSR's thermal status bit, seen at an event) and is counted with it
@@ -7297,7 +7398,8 @@ mod sensors_and_events {
         assert_eq!(
             sample["throttle_episodes"],
             serde_json::json!({"thermal": {"build": 1}}),
-            "{sample}"
+            "{sample} {:?}",
+            signals.lock().unwrap()
         );
         // it stops with no event: the daemon looks each second while throttled (not at the 30 s tick)
         msr(&m, 0b10);
@@ -7331,5 +7433,63 @@ mod sensors_and_events {
             "{signals:?}"
         );
         assert_journal(&entries.lock().unwrap());
+    }
+
+    /// The adapter is unplugged and its udev event comes late: the daemon's next look (here the look each second while
+    /// throttled) applies the battery policy before it announces, so no tool hears the AC mode as the battery default.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_power_source_change_without_its_event_is_announced_after_its_policy() {
+        let m = Machine::new("late-source");
+        let _acpi = AcpiCall::start(&m, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        let entries = journal(&m);
+        let (stand_ins, _asked, _processes) = start(&m).await;
+        let system = zbus::Proxy::new(
+            &stand_ins,
+            "org.legionctl.System1",
+            "/org/legionctl/System1",
+            "org.legionctl.System1",
+        )
+        .await
+        .unwrap();
+        let signals = collect(&system).await;
+        // throttling, seen at a resume: from then on the daemon looks each second
+        msr(&m, 0b11);
+        stand_ins
+            .emit_signal(
+                None::<()>,
+                "/org/freedesktop/login1",
+                "org.freedesktop.login1.Manager",
+                "PrepareForSleep",
+                &(false,),
+            )
+            .await
+            .unwrap();
+        wait_for("the throttle start", || signals.lock().unwrap().len() == 1);
+        assert_eq!(m.file(PROFILE_PATH), "max-power");
+
+        m.set("/sys/class/power_supply/ADP0/online", "0");
+        wait_for("the power source change and the mode", || {
+            signals.lock().unwrap().len() == 3 && entries.lock().unwrap().len() == 3
+        });
+        let signals = signals.lock().unwrap().clone();
+        let shown: Vec<(&str, &Value)> = signals.iter().map(|(m, b)| (m.as_str(), b)).collect();
+        assert_eq!(
+            shown[1..],
+            [
+                (
+                    "ModeChanged",
+                    &serde_json::json!(["balanced", false, "battery"])
+                ),
+                ("PowerSourceChanged", &serde_json::json!("battery")),
+            ],
+            "{signals:?}"
+        );
+        assert_eq!(m.file(PROFILE_PATH), "balanced");
+        assert_eq!(
+            entries.lock().unwrap()[1]
+                .get("MESSAGE")
+                .map(String::as_str),
+            Some("mode balanced (default on battery)")
+        );
     }
 }
