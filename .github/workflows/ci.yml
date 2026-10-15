@@ -51,6 +51,27 @@ jobs:
       # the session test runs bwrap; Ubuntu blocks unprivileged user namespaces through AppArmor by default
       - name: Allow user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # the static client builds in the Makefile's RUST_IMAGE; a registry rate limit ("toomanyrequests") failed CI
+      # twice (run 38734868166): the image is kept in the cache, and a pull waits and tries again
+      - name: Static build image name
+        id: rustimage
+        run: echo "image=$(sed -n 's/^RUST_IMAGE := //p' Makefile)" >> "$GITHUB_OUTPUT"
+      - name: Cache the static build image
+        id: rustimagecache
+        uses: actions/cache@v4
+        with:
+          path: ~/rust-image.tar
+          key: static-image-${{ steps.rustimage.outputs.image }}
+      - name: Static build image
+        env:
+          IMAGE: ${{ steps.rustimage.outputs.image }}
+        run: |
+          if [ -f ~/rust-image.tar ]; then
+            docker load -i ~/rust-image.tar
+          else
+            for wait in 20 40 80 160; do docker pull "$IMAGE" && break; sleep "$wait"; done
+            docker save -o ~/rust-image.tar "$IMAGE"
+          fi
       - name: Lint, format check, profile validation, tests
         run: make ci
       # the kernel style of legionctl-wmi with checkpatch of v7.2; the module builds in the VM step (DKMS, Debian's
