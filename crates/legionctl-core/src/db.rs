@@ -1,7 +1,9 @@
 //! The operator database: one SQLite file in WAL mode, shared by every legionctl process of this user.
 //!
 //! - Bootstrap: `open` applies pending schema migrations in order, each in its own transaction, tracked by
-//!   `PRAGMA user_version`. Installs, upgrades and plain starts all go through the same path.
+//!   `PRAGMA user_version`. Installs, upgrades and plain starts all go through the same path. Before a step, `open`
+//!   copies the file to `<db>.v<old>.bak`, and it refuses the step while an operator of another build holds the
+//!   folder's `operator.lock` (todo-122: a worktree build stepped the user's database under the installed operator).
 //! - Concurrency: WAL lets readers run while one writer commits; a busy timeout makes concurrent hooks wait
 //!   instead of failing.
 //! - Event log: every state change appends a row to `events` (who, what, payload). The daemon (Phase 1b) turns this
@@ -306,7 +308,8 @@ impl Db {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let mut version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version < schema.version {
-            version = upgrade(&conn, schema)?;
+            let _stepping = step_lock(path)?;
+            version = upgrade(&conn, path, schema)?;
         }
         anyhow::ensure!(
             version == schema.version,
@@ -643,11 +646,115 @@ pub struct EventRow {
     pub payload: serde_json::Value,
 }
 
+/// This build's fingerprint: the schema version of each database it reads. An operator writes it into its
+/// `operator.lock`.
+#[must_use]
+pub fn build() -> String {
+    [
+        ("operator.db", OPERATOR),
+        ("dossier.db", crate::dossier::DOSSIER),
+        ("cache.db", crate::cache::SCHEMA),
+        ("workspace.db", crate::migrate::LEGACY),
+    ]
+    .map(|(name, schema)| format!("{name} v{}", schema.version))
+    .join(", ")
+}
+
+/// The lock that the operators of the databases in `db`'s folder hold.
+fn lock_path(db: &Path) -> PathBuf {
+    db.with_file_name("operator.lock")
+}
+
+/// The operator holds the lock beside its database `db` (shared, with this build's fingerprint in it) until it exits.
+///
+/// # Errors
+/// An operator of another build holds it, or the lock file fails.
+pub fn hold(db: &Path) -> Result<std::fs::File> {
+    use rustix::fs::{FlockOperation, flock};
+    let path = lock_path(db);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    // shared first: it waits while a process steps a database of the folder (that one holds it exclusive)
+    flock(&file, FlockOperation::LockShared)?;
+    let holders = std::fs::read_to_string(&path)?;
+    if holders == build() {
+        return Ok(file);
+    }
+    // another build's fingerprint: only from an operator that stopped, when no other process holds the lock
+    if flock(&file, FlockOperation::NonBlockingLockExclusive).is_err() {
+        anyhow::bail!(
+            "operator ({holders}) of another build holds {}; stop it or install this build",
+            db.display()
+        );
+    }
+    file.set_len(0)?;
+    std::io::Write::write_all(&mut file, build().as_bytes())?;
+    flock(&file, FlockOperation::LockShared)?;
+    Ok(file)
+}
+
+/// Before a schema step of `db`: the folder's lock, exclusive while no operator holds it; nothing when an operator of
+/// this build holds it, or when no operator ever ran there.
+fn step_lock(db: &Path) -> Result<Option<std::fs::File>> {
+    use rustix::fs::{FlockOperation, flock};
+    let path = lock_path(db);
+    let file = match std::fs::File::open(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        opened => opened.with_context(|| format!("opening {}", path.display()))?,
+    };
+    if flock(&file, FlockOperation::NonBlockingLockExclusive).is_ok() {
+        return Ok(Some(file));
+    }
+    let holders = std::fs::read_to_string(&path)?;
+    anyhow::ensure!(
+        holders == build(),
+        "operator ({holders}) of another build holds {}; stop it or install this build",
+        db.display()
+    );
+    Ok(None)
+}
+
+/// A copy of `db` at `version` in `<db>.v<version>.bak`, made by SQLite from the committed state (not a copy of the
+/// file and its WAL), and put in place only when it is whole.
+fn backup(db: &Path, version: i64) -> Result<PathBuf> {
+    let bak = PathBuf::from(format!("{}.v{version}.bak", db.display()));
+    let new = PathBuf::from(format!(
+        "{}.new-{}-{:?}",
+        bak.display(),
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_file(&new);
+    Connection::open(db)?
+        .execute("VACUUM INTO ?1", [new.to_string_lossy()])
+        .with_context(|| format!("backing up {} to {}", db.display(), new.display()))?;
+    std::fs::rename(&new, &bak)?;
+    Ok(bak)
+}
+
 /// Apply the steps from the file's version on, in one write transaction: an opener that comes second reads the new
-/// version and has nothing to do. A version with no step stays as it is.
-fn upgrade(conn: &Connection, schema: &Schema) -> Result<i64> {
+/// version and has nothing to do. A version with no step stays as it is. Before the first step, the file goes to its
+/// backup while this transaction keeps other writers out.
+fn upgrade(conn: &Connection, path: &Path, schema: &Schema) -> Result<i64> {
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     let mut version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if schema.steps.iter().any(|(from, _)| *from == version) {
+        let bak = backup(path, version)?;
+        eprintln!(
+            "legionctl: {} goes from schema v{version} to v{}; the v{version} file is in {}",
+            path.display(),
+            schema.version,
+            bak.display()
+        );
+    }
     while let Some((_, sql)) = schema.steps.iter().find(|(from, _)| *from == version) {
         tx.execute_batch(sql)
             .with_context(|| format!("the schema step from v{version}"))?;
@@ -728,6 +835,72 @@ mod tests {
                 .unwrap();
             assert_eq!(left, 1, "the refused file keeps its data");
         }
+    }
+
+    /// todo-122: a schema step while an operator of another build holds the folder's lock is refused and changes
+    /// nothing; with no holder, the file goes to `<db>.v<old>.bak` first, and that copy opens as the old version.
+    #[test]
+    fn a_schema_step_waits_for_no_operator_of_another_build_and_keeps_the_old_file() {
+        use rustix::fs::{FlockOperation, flock};
+        const OLD: &Schema = &Schema {
+            version: 1,
+            steps: &[],
+            sql: "CREATE TABLE t (v TEXT NOT NULL); INSERT INTO t VALUES ('kept');",
+        };
+        const NEW: &Schema = &Schema {
+            version: 2,
+            steps: &[(1, "ALTER TABLE t ADD COLUMN w TEXT;")],
+            sql: "CREATE TABLE t (v TEXT NOT NULL, w TEXT);",
+        };
+        let dir = crate::scratch::Scratch::new(
+            std::env::temp_dir().join(format!("legionctl-db-holder-{}", std::process::id())),
+        );
+        let path = dir.join("operator.db");
+        let bak = dir.join("operator.db.v1.bak");
+        drop(Db::open(&path, OLD).unwrap());
+        let version = |p: &Path| -> i64 {
+            Connection::open(p)
+                .unwrap()
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap()
+        };
+        // a running operator of another build: its lock (another open file, so flock sees another holder)
+        let lock = dir.join("operator.lock");
+        std::fs::write(&lock, "operator.db v1").unwrap();
+        let other = std::fs::File::open(&lock).unwrap();
+        flock(&other, FlockOperation::LockShared).unwrap();
+        let refused = Db::open(&path, NEW).err().unwrap().to_string();
+        assert_eq!(
+            refused,
+            format!(
+                "operator (operator.db v1) of another build holds {}; stop it or install this build",
+                path.display()
+            )
+        );
+        assert_eq!(version(&path), 1, "the refused step changed nothing");
+        assert!(!bak.exists(), "no backup without a step");
+        // an operator of this build may hold it: its own step goes on
+        drop(other);
+        let held = hold(&path).unwrap();
+        drop(Db::open(&path, NEW).unwrap());
+        drop(held);
+        assert_eq!(version(&path), 2);
+        assert_eq!(version(&bak), 1, "the backup is the file before the step");
+        let columns: i64 = Connection::open(&bak)
+            .unwrap()
+            .query_row("SELECT count(*) FROM pragma_table_info('t')", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(columns, 1, "the backup has the old table");
+        // the backup put back is the old database, which the old build opens with its rows
+        std::fs::rename(&bak, &path).unwrap();
+        let restored = Db::open(&path, OLD).unwrap();
+        let kept: String = restored
+            .conn()
+            .query_row("SELECT v FROM t", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, "kept");
     }
 
     /// The operator opens its database for each call, from several threads, while the recorder writes: a new

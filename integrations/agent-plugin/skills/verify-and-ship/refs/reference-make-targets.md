@@ -9,4 +9,5 @@
 | `make rust-lint` | `cargo fmt --check`, clippy pedantic with warnings as errors, `cargo machete`, `cargo deny check`. |
 | `make js-lint` | Biome and tsc for the GNOME Shell extension. |
 | `make validate` | Each profile and its shipped configset layers (no hardware access). |
-| `make ci` | `lint`, `rust-lint`, `js-lint`, `validate` and `test`: the first CI step. |
+| `make stray-tests` | Lists the legionctl test processes (operators, daemons, private buses, stand-ins, test binaries) that run for more than `STRAY_SECONDS` (3600); fails when there is one. |
+| `make ci` | `lint`, `rust-lint`, `js-lint`, `validate`, `test` and `stray-tests`: the first CI step. |

@@ -11,7 +11,8 @@ user-invocable: true
 2. Run each check in the workspace path (skill workspace-practice), never in the main checkout. The repository declares
    its checks in `.legionctl/checks.jsonc`: `code checks list` shows them, `code checks run [<check>...]` runs them as
    a job and keeps each log and profile (`code checks show <run>`), and checkpoint and merge run their gates. A
-   repository without the file: `code checks detect` proposes one; review it, then write it.
+   repository without the file: `code checks detect` proposes one; review it, then write it. Never run a binary of
+   a workspace build with the real HOME, XDG folders, sockets or state: use a temporary HOME (todo-122).
 3. Build first: `cargo build --profile test-fast --workspace --bins --locked`. `cargo test -p legionctl` does not build
    the operator and daemon again, so without this the tests run old binaries. Each test command uses the profile
    `test-fast` (`Cargo.toml`): it compiles fast after an edit and runs the suite as fast as release. The package and

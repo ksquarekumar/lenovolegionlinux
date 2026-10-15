@@ -81,8 +81,16 @@ test: static ## end-to-end and behavior tests (no hardware access); the CLI test
 	cargo build --profile test-fast --workspace --bins --locked
 	cargo test --profile test-fast --workspace --locked
 
+# a process of a test: a binary of this tree (worktree builds too), a test's socket folder or private bus, a stand-in
+STRAY_SECONDS ?= 3600
+STRAY = /target\/[^ ]*\/(legionctl|deps\/)|\/var\/tmp\/lc-|legionctl-machine-|tests\/fixtures\//
+
+.PHONY: stray-tests
+stray-tests: ## list legionctl test processes that run for more than STRAY_SECONDS (3600); fails when there is one
+	@ps -eo pid=,etimes=,args= | awk '$$2 > $(STRAY_SECONDS) && $(STRAY) { print; n++ } END { if (n) { print n " stray test processes: stop them (kill <pid>)"; exit 1 } }'
+
 .PHONY: ci
-ci: lint rust-lint js-lint validate test ## what CI runs
+ci: lint rust-lint js-lint validate test stray-tests ## what CI runs
 
 .PHONY: kmod
 kmod: kmod-checkpatch ## build the legionctl-wmi kernel module against KDIR (this kernel's headers) as a check; it loads nothing

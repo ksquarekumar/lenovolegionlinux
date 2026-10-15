@@ -628,13 +628,11 @@ fn virt_machine(
     );
     let socket = m.dir.join("docker.sock");
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-docker.py");
-    let docker = daemon_process::Kill(
+    let docker = daemon_process::Kill::spawn(
         std::process::Command::new("python3")
             .arg(fixture)
             .arg(&socket)
-            .arg(m.dir.join("docker.log"))
-            .spawn()
-            .unwrap(),
+            .arg(m.dir.join("docker.log")),
     );
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while !socket.exists() {
@@ -1572,7 +1570,7 @@ mod daemon_process {
     use super::*;
     use futures_util::StreamExt;
     use std::collections::HashMap;
-    use std::process::{Child, Command, Stdio};
+    use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
     use zbus::zvariant::OwnedValue;
 
@@ -1607,14 +1605,7 @@ mod daemon_process {
         }
     }
 
-    pub(super) struct Kill(pub(super) Child);
-
-    impl Drop for Kill {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
+    pub(super) use crate::common::process::Kill;
 
     pub(super) fn wait_for(what: &str, mut ok: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -1628,12 +1619,10 @@ mod daemon_process {
     /// processes stop when the returned guards drop.
     pub(super) async fn start(m: &Machine) -> (zbus::Connection, Asked, (Kill, Kill)) {
         let bus_path = m.dir.join("bus");
-        let bus = Kill(
+        let bus = Kill::spawn(
             Command::new("dbus-daemon")
                 .args(["--session", "--nofork", "--nopidfile"])
-                .arg(format!("--address=unix:path={}", bus_path.display()))
-                .spawn()
-                .unwrap(),
+                .arg(format!("--address=unix:path={}", bus_path.display())),
         );
         wait_for("the private bus", || bus_path.exists());
         let address = format!("unix:path={}", bus_path.display());
@@ -1682,7 +1671,7 @@ mod daemon_process {
         if let Ok(address) = std::fs::read_to_string(m.dir.join("openrgb.addr")) {
             command.env("LEGIONCTL_OPENRGB", address);
         }
-        let daemon = Kill(
+        let daemon = Kill::spawn(
             command
                 .env("PATH", m.dir.join("bin"))
                 .env("LEGIONCTL_SYSROOT", m.dir.join("root"))
@@ -1690,9 +1679,7 @@ mod daemon_process {
                     "DBUS_SYSTEM_BUS_ADDRESS",
                     format!("unix:path={}", m.dir.join("bus").display()),
                 )
-                .stderr(Stdio::null())
-                .spawn()
-                .unwrap(),
+                .stderr(Stdio::null()),
         );
         let dbus = zbus::fdo::DBusProxy::new(stand_ins).await.unwrap();
         let name = zbus::names::BusName::try_from("org.legionctl.System1").unwrap();
@@ -2129,10 +2116,10 @@ mod operator_and_daemon {
             // wakeups: short sleeps in a few shells
             let load: Vec<_> = (0..4)
                 .map(|_| {
-                    std::process::Command::new("/bin/sh")
-                        .args(["-c", "for i in $(seq 200); do /usr/bin/sleep 0.005; done"])
-                        .spawn()
-                        .unwrap()
+                    Kill::spawn(
+                        std::process::Command::new("/bin/sh")
+                            .args(["-c", "for i in $(seq 200); do /usr/bin/sleep 0.005; done"]),
+                    )
                 })
                 .collect();
             let out = op.cli(&["monitor", "--interval-ms", "1000", "--json"]);
@@ -2180,13 +2167,13 @@ mod operator_and_daemon {
         // a stop removes the pins
         assert!(
             std::process::Command::new("kill")
-                .args(["-TERM", &second.0.id().to_string()])
+                .args(["-TERM", &second.id().to_string()])
                 .status()
                 .unwrap()
                 .success()
         );
         let mut second = second;
-        second.0.wait().unwrap();
+        second.wait().unwrap();
         assert!(!pins.exists(), "{}", pins.display());
     }
 
@@ -2280,14 +2267,7 @@ mod operator_and_daemon {
         // copy: a parallel test's fork can hold a copy's write fd, and exec then fails with ETXTBSY
         let ninja = m.dir.join("bin/ninja");
         std::os::unix::fs::symlink("/bin/sleep", &ninja).unwrap();
-        let run = || {
-            Kill(
-                std::process::Command::new(&ninja)
-                    .arg("60")
-                    .spawn()
-                    .unwrap(),
-            )
-        };
+        let run = || Kill::spawn(std::process::Command::new(&ninja).arg("60"));
         let workload = || m.file("/run/legionctl/workload");
 
         let before = run();
@@ -2370,12 +2350,8 @@ mod operator_and_daemon {
         // a link, not a copy (a parallel test's fork can hold a copy's write fd): its name is the process's name
         let busy = m.dir.join("bin/lc-busy");
         std::os::unix::fs::symlink("/bin/sh", &busy).unwrap();
-        let looping = Kill(
-            std::process::Command::new(&busy)
-                .args(["-c", "while :; do :; done"])
-                .spawn()
-                .unwrap(),
-        );
+        let looping =
+            Kill::spawn(std::process::Command::new(&busy).args(["-c", "while :; do :; done"]));
         let out = op.cli(&["monitor", "--interval-ms", "1000", "--json"]);
         let sample = &serde_json::from_slice::<Value>(&out.stdout).unwrap()[0];
         assert_eq!(sample["sensor_errors"], Value::Null, "{sample}");
@@ -2386,7 +2362,7 @@ mod operator_and_daemon {
             .unwrap_or_else(|| panic!("{sample}"));
         let ours = top
             .iter()
-            .find(|e| e["pid"] == looping.0.id())
+            .find(|e| e["pid"] == looping.id())
             .unwrap_or_else(|| panic!("the busy loop is not in the top: {sample}"));
         assert_eq!(ours["name"], "lc-busy", "{sample}");
         // one CPU all the time; other tests may run beside it
@@ -2426,18 +2402,13 @@ mod operator_and_daemon {
             .to_string_lossy()
             .into_owned();
         // writes all through the sample window (the window starts when the operator has started)
-        let dd = Kill(
-            std::process::Command::new("/bin/sh")
-                .args([
-                    "-c",
-                    &format!(
-                        "while dd if=/dev/zero of={} bs=1M count=32 oflag=direct 2>/dev/null; do :; done",
-                        file.display()
-                    ),
-                ])
-                .spawn()
-                .unwrap(),
-        );
+        let dd = Kill::spawn(std::process::Command::new("/bin/sh").args([
+            "-c",
+            &format!(
+                "while dd if=/dev/zero of={} bs=1M count=32 oflag=direct 2>/dev/null; do :; done",
+                file.display()
+            ),
+        ]));
         let out = op.cli(&["monitor", "--interval-ms", "1500", "--json"]);
         drop(dd);
         let sample = &serde_json::from_slice::<Value>(&out.stdout).unwrap()[0];
@@ -3084,10 +3055,7 @@ mod operator_and_daemon {
             "given back after the refusal"
         );
 
-        let mut runner = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
+        let runner = Kill::spawn(std::process::Command::new("sleep").arg("30"));
         let uid = std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/proc/self").unwrap());
         m.set(
             &format!("/proc/{}/status", runner.id()),
@@ -3115,8 +3083,7 @@ mod operator_and_daemon {
                 .any(|l| l.starts_with("Max locked memory") && l.contains("1048576")),
             "{limits}"
         );
-        let _ = runner.kill();
-        let _ = runner.wait();
+        drop(runner);
 
         let back = op.ok(&[&["vfio", "unbind"], &gpu[..]].concat());
         assert!(back.contains("0000:01:00.0: vfio-pci -> nvidia"), "{back}");
@@ -3427,12 +3394,12 @@ while True:
             devices.clear()
             f.write(json.dumps({"event": "DEVICE_DELETED", "data": {"device": args["id"]}}) + "\n"); f.flush()
 "#;
-        let child = std::process::Command::new("python3")
-            .args(["-c", script])
-            .arg(&socket)
-            .arg(m.dir.join("qmp.log"))
-            .spawn()
-            .unwrap();
+        let child = Kill::spawn(
+            std::process::Command::new("python3")
+                .args(["-c", script])
+                .arg(&socket)
+                .arg(m.dir.join("qmp.log")),
+        );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !socket.exists() {
             assert!(
@@ -3441,7 +3408,7 @@ while True:
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        Kill(child)
+        child
     }
 
     /// GPU owners (note 05, `gpu give`): the NVIDIA GPU goes to Windows only when a VM runs (nothing moves before), is
@@ -4611,15 +4578,14 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         let (m, _stand_ins, asked, _processes, op) = build_machine("kbuild").await;
         let args = build_args("rt", &m.dir.join("rt.config"));
         std::fs::write(m.dir.join("hang"), "").unwrap();
-        let client = std::process::Command::new(env!("CARGO_BIN_EXE_legionctl"))
-            .args(&args)
-            .env_clear()
-            .env("XDG_RUNTIME_DIR", &op.runtime)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        let _client = daemon_process::Kill(client);
+        let _client = daemon_process::Kill::spawn(
+            std::process::Command::new(env!("CARGO_BIN_EXE_legionctl"))
+                .args(&args)
+                .env_clear()
+                .env("XDG_RUNTIME_DIR", &op.runtime)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null()),
+        );
         wait_for("makepkg", || m.dir.join("started").exists());
         assert_eq!(last_job(&op, "kernel.build")["state"], "running");
         let dir = m.dir.join(
@@ -7219,17 +7185,15 @@ mod sensors_and_events {
 
     /// The history length of coretemp's package temperature in the first two views of `sensors --watch --json`.
     fn watched_histories(op: &Operator) -> (usize, usize) {
-        let mut watch = Kill(
+        let mut watch = Kill::spawn(
             std::process::Command::new(env!("CARGO_BIN_EXE_legionctl"))
                 .args(["sensors", "--watch", "--json"])
                 .env_clear()
                 .env("XDG_RUNTIME_DIR", &op.runtime)
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .unwrap(),
+                .stdout(std::process::Stdio::piped()),
         );
         let mut lines =
-            std::io::BufRead::lines(std::io::BufReader::new(watch.0.stdout.take().unwrap()));
+            std::io::BufRead::lines(std::io::BufReader::new(watch.stdout.take().unwrap()));
         let mut history = || {
             let view: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
             row(&view, "hwmon0 coretemp", "Package id 0")["history"]

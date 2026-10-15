@@ -1,17 +1,9 @@
 //! The stand-in model provider for the tests that use the gateway (gateway.rs, e2e.rs).
 
 use std::path::Path;
-use std::process::{Child, Command};
+use std::process::Command;
 
-/// A child process that ends with the test.
-pub struct Kill(pub Child);
-
-impl Drop for Kill {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
+pub use crate::common::process::Kill;
 
 pub fn free_port() -> u16 {
     // the port is free again when this returns: two tests of one binary must not get the same one (a gateway that
@@ -37,12 +29,10 @@ pub fn free_port() -> u16 {
 pub fn provider(port: u16, log: &Path) -> Kill {
     let fixture =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-provider.py");
-    Kill(
+    Kill::spawn(
         Command::new("python3")
             .arg(fixture)
             .arg(port.to_string())
-            .arg(log)
-            .spawn()
-            .unwrap(),
+            .arg(log),
     )
 }

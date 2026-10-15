@@ -94,6 +94,8 @@ async fn gateway(ready: Ready) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // while it runs: no process of another build steps the schema of a database it reads (todo-122)
+    let _holder = legionctl_core::db::hold(&legionctl_core::db::default_path())?;
     let listener = server::activated_listener()?;
     let operator = Arc::new(engine::Operator {
         runtime: tokio::runtime::Handle::current(),

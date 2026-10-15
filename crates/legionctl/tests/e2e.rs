@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use common::Operator;
+use common::process::{Kill, own};
 use common::scratch::Scratch;
 use serde_json::{Value, json};
 
@@ -177,22 +178,22 @@ fn prompt_hook_injects_skill_reminders_and_user_actions_as_configured() {
 }
 
 struct Mcp {
-    child: std::process::Child,
+    child: Kill,
     out: BufReader<std::process::ChildStdout>,
     next: u64,
 }
 
 impl Mcp {
     fn start(operator: &Operator, env: &[(&str, &str)]) -> Mcp {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_legionctl"))
-            .arg("mcp")
-            .env_clear()
-            .env("XDG_RUNTIME_DIR", &operator.runtime)
-            .envs(env.iter().copied())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let mut child = Kill::spawn(
+            Command::new(env!("CARGO_BIN_EXE_legionctl"))
+                .arg("mcp")
+                .env_clear()
+                .env("XDG_RUNTIME_DIR", &operator.runtime)
+                .envs(env.iter().copied())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped()),
+        );
         let out = BufReader::new(child.stdout.take().unwrap());
         let mut mcp = Mcp {
             child,
@@ -221,12 +222,6 @@ impl Mcp {
         let reply: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(reply["id"], self.next, "{reply}");
         reply["result"].clone()
-    }
-}
-
-impl Drop for Mcp {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
     }
 }
 
@@ -900,14 +895,14 @@ fn trace_shows_each_change_as_it_happens() {
         );
     };
     use_dossier("before");
-    let mut trace = Command::new(env!("CARGO_BIN_EXE_legionctl"))
-        .arg("trace")
-        .env_clear()
-        .env("XDG_RUNTIME_DIR", &op.runtime)
-        .env("PATH", std::env::var_os("PATH").unwrap())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut trace = Kill::spawn(
+        Command::new(env!("CARGO_BIN_EXE_legionctl"))
+            .arg("trace")
+            .env_clear()
+            .env("XDG_RUNTIME_DIR", &op.runtime)
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .stdout(Stdio::piped()),
+    );
     let (lines, seen) = std::sync::mpsc::channel();
     let out = BufReader::new(trace.stdout.take().unwrap());
     std::thread::spawn(move || {
@@ -924,8 +919,7 @@ fn trace_shows_each_change_as_it_happens() {
     let line = seen
         .recv_timeout(std::time::Duration::from_secs(5))
         .expect("trace showed nothing");
-    let _ = trace.kill();
-    let _ = trace.wait();
+    drop(trace);
     assert!(
         line.contains("dossier.use") && line.contains("during"),
         "{line}"
@@ -2267,6 +2261,7 @@ fn the_mcp_proxy_offers_only_allowed_tools_and_logs_every_call() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (tools, load, doctor) = runtime.block_on(async {
         let mut proxy = tokio::process::Command::new(exe);
+        own(proxy.as_std_mut());
         proxy
             .args([
                 "mcp-proxy",
@@ -2357,11 +2352,7 @@ fn the_proxy_reaches_a_remote_server_with_its_header() {
     let fixture =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-remote-mcp.py");
     // the stand-in picks its own port and says which: listening by then, and no race for the port
-    let mut server = Command::new("python3")
-        .arg(fixture)
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut server = Kill::spawn(Command::new("python3").arg(fixture).stdout(Stdio::piped()));
     let mut port = String::new();
     BufReader::new(server.stdout.take().unwrap())
         .read_line(&mut port)
@@ -2370,6 +2361,7 @@ fn the_proxy_reaches_a_remote_server_with_its_header() {
     let url = format!("http://127.0.0.1:{port}/mcp");
     let (tools, answer) = tokio::runtime::Runtime::new().unwrap().block_on(async {
         let mut proxy = tokio::process::Command::new(env!("CARGO_BIN_EXE_legionctl"));
+        own(proxy.as_std_mut());
         proxy
             .args([
                 "mcp-proxy",
@@ -2404,8 +2396,7 @@ fn the_proxy_reaches_a_remote_server_with_its_header() {
             .unwrap();
         (tools, answer)
     });
-    let _ = server.kill();
-    let _ = server.wait();
+    drop(server);
     assert_eq!(tools, ["docs"]);
     let text = serde_json::to_string(&answer.content).unwrap();
     assert!(text.contains("key=abc"), "{text}");
@@ -2434,6 +2425,7 @@ fn the_proxy_reuses_a_cached_result_until_the_working_copy_changes() {
     let exe = env!("CARGO_BIN_EXE_legionctl");
     let results = tokio::runtime::Runtime::new().unwrap().block_on(async {
         let mut proxy = tokio::process::Command::new(exe);
+        own(proxy.as_std_mut());
         proxy
             .args([
                 "mcp-proxy",
@@ -2506,6 +2498,7 @@ fn tool_cache_entries_belong_to_a_session_and_fit_the_limit() {
         let exe = env!("CARGO_BIN_EXE_legionctl");
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let mut proxy = tokio::process::Command::new(exe);
+            own(proxy.as_std_mut());
             proxy
                 .args([
                     "mcp-proxy",
@@ -2639,6 +2632,7 @@ fn mcp_tools(op: &Operator, home: &Path, args: &[String]) -> Vec<String> {
     let path = path_with_build();
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let mut proxy = tokio::process::Command::new(exe);
+        own(proxy.as_std_mut());
         proxy
             .args(args)
             .env("XDG_RUNTIME_DIR", &op.runtime)
@@ -2911,17 +2905,17 @@ fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
         "the tool call is an output event: {events}"
     );
     // the CLI shows the answer while the run goes on: the stand-in holds after its first line until it is released
-    let mut again = Command::new(env!("CARGO_BIN_EXE_legionctl"))
-        .args(["session", "run", "fake", "WAIT go on", "--dossier", "port"])
-        .current_dir(&repo)
-        .env_clear()
-        .env("XDG_RUNTIME_DIR", &op.runtime)
-        .env("PATH", std::env::var_os("PATH").unwrap())
-        .env("HOME", &home)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut again = Kill::spawn(
+        Command::new(env!("CARGO_BIN_EXE_legionctl"))
+            .args(["session", "run", "fake", "WAIT go on", "--dossier", "port"])
+            .current_dir(&repo)
+            .env_clear()
+            .env("XDG_RUNTIME_DIR", &op.runtime)
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("HOME", &home)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    );
     let (lines, seen) = std::sync::mpsc::channel();
     let out = BufReader::new(again.stdout.take().unwrap());
     std::thread::spawn(move || {
@@ -2936,12 +2930,12 @@ fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
         Ok("prompt: WAIT go on"),
         "the first line of the answer comes before the run ends"
     );
-    let done = again.wait_with_output().unwrap();
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut again.stderr.take().unwrap(), &mut stderr).unwrap();
     let rest = seen.iter().collect::<Vec<_>>().join("\n");
     assert!(
-        done.status.success(),
-        "a run that ended releases its dossier: {}",
-        String::from_utf8_lossy(&done.stderr)
+        again.wait().unwrap().success(),
+        "a run that ended releases its dossier: {stderr}"
     );
     assert!(
         !rest.contains("prompt:") && rest.contains("PUSH_REFUSED") && rest.ends_with(" ms"),
@@ -3294,24 +3288,24 @@ fn a_headless_run_cut_off_by_a_restart_goes_on_in_its_session() {
             .to_string(),
     );
     // a long run (the stand-in waits 30 s on SLOW), from a client that stays connected
-    let mut client = Command::new(env!("CARGO_BIN_EXE_legionctl"))
-        .args([
-            "session",
-            "run",
-            "fake",
-            "SLOW port the parser",
-            "--dossier",
-            "port",
-        ])
-        .current_dir(&repo)
-        .env_clear()
-        .env("XDG_RUNTIME_DIR", &op.runtime)
-        .env("PATH", std::env::var_os("PATH").unwrap())
-        .env("HOME", &home)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let client = Kill::spawn(
+        Command::new(env!("CARGO_BIN_EXE_legionctl"))
+            .args([
+                "session",
+                "run",
+                "fake",
+                "SLOW port the parser",
+                "--dossier",
+                "port",
+            ])
+            .current_dir(&repo)
+            .env_clear()
+            .env("XDG_RUNTIME_DIR", &op.runtime)
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("HOME", &home)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    );
     let job = |op: &Operator| -> Value {
         let jobs: Value = serde_json::from_str(&op.ok(&["jobs", "list", "--json"])).unwrap();
         jobs["items"]
@@ -3328,8 +3322,7 @@ fn a_headless_run_cut_off_by_a_restart_goes_on_in_its_session() {
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
     drop(op);
-    let _ = client.kill();
-    let _ = client.wait();
+    drop(client);
 
     let again = Operator::start(
         "jobs2",
@@ -3404,24 +3397,24 @@ fn a_headless_run_waits_out_memory_pressure() {
         );
     };
     memory(12_000_000);
-    let client = Command::new(env!("CARGO_BIN_EXE_legionctl"))
-        .args([
-            "session",
-            "run",
-            "fake",
-            "SLOW port the parser",
-            "--dossier",
-            "port",
-        ])
-        .current_dir(&repo)
-        .env_clear()
-        .env("XDG_RUNTIME_DIR", &op.runtime)
-        .env("PATH", std::env::var_os("PATH").unwrap())
-        .env("HOME", &home)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut client = Kill::spawn(
+        Command::new(env!("CARGO_BIN_EXE_legionctl"))
+            .args([
+                "session",
+                "run",
+                "fake",
+                "SLOW port the parser",
+                "--dossier",
+                "port",
+            ])
+            .current_dir(&repo)
+            .env_clear()
+            .env("XDG_RUNTIME_DIR", &op.runtime)
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("HOME", &home)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped()),
+    );
     let state = || -> Value {
         let jobs: Value = serde_json::from_str(&op.ok(&["jobs", "list", "--json"])).unwrap();
         jobs["items"][0].clone()
@@ -3440,11 +3433,12 @@ fn a_headless_run_waits_out_memory_pressure() {
     wait_for("running", 15);
     memory(800_000);
     wait_for("offloaded", 25);
-    let out = client.wait_with_output().unwrap();
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut client.stderr.take().unwrap(), &mut stderr).unwrap();
+    client.wait().unwrap();
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("offloaded: memory is under pressure"),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
+        stderr.contains("offloaded: memory is under pressure"),
+        "{stderr}"
     );
     memory(12_000_000);
     let done = wait_for("done", 30);
@@ -4974,14 +4968,13 @@ fn boot_until_poweroff(
             ))
             .args(["-device", "virtio-blk-pci,drive=results,serial=lwmiresults"]);
     }
-    let mut child = qemu.spawn().expect("qemu-system-x86_64");
+    let mut child = Kill::spawn(&mut qemu);
     let deadline = std::time::Instant::now() + std::time::Duration::from_mins(minutes);
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
         }
         if std::time::Instant::now() > deadline {
-            let _ = child.kill();
             let console = std::fs::read_to_string(log).unwrap_or_default();
             panic!(
                 "the VM ran over {minutes} min; console:\n{}",
@@ -5378,6 +5371,183 @@ fn test_folders_go_with_their_owner_and_a_failed_test_keeps_them_only_when_asked
         ["legionctl-e2e-panicked", "lc-panicked"],
         "only the folders of the failed part are kept, the HOME then the runtime: {stderr}"
     );
+}
+
+/// A process that ended: its `/proc` entry is gone, or it is a zombie that its new parent did not reap yet.
+fn ended(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
+        stat.rsplit_once(") ")
+            .is_some_and(|(_, rest)| rest.starts_with('Z'))
+    })
+}
+
+/// Waits up to 10 s for each process of `pids` to end.
+fn wait_ended(pids: &[u32], what: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !pids.iter().all(|&pid| ended(pid)) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what}: still running {:?}",
+            pids.iter().filter(|&&pid| !ended(pid)).collect::<Vec<_>>()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// todo-123: the processes of a test end with it (63 stayed after hung and killed runs, one with the user's real
+/// HOME). When the test panics, the guards kill their process groups: the real operator, a stand-in and the process
+/// that the stand-in started. When the test binary is killed with SIGKILL (no drop runs), the real operator gets the
+/// parent-death signal. The test runs its body in a child process of this binary, which it kills.
+#[test]
+fn the_processes_of_a_test_end_when_it_panics_and_when_its_binary_is_killed() {
+    const NAME: &str = "the_processes_of_a_test_end_when_it_panics_and_when_its_binary_is_killed";
+    if std::env::var_os("LEGIONCTL_TEST_CHILD").is_some() {
+        let mut pids = Vec::new();
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (op, _home) = operator("procs-panic");
+            op.ok(&["events"]);
+            let mut tree = Kill::spawn(
+                Command::new("sh")
+                    .args(["-c", "sleep 600 & echo $!; wait"])
+                    .stdout(Stdio::piped()),
+            );
+            let mut started = String::new();
+            BufReader::new(tree.stdout.take().unwrap())
+                .read_line(&mut started)
+                .unwrap();
+            pids.extend([op.child.id(), tree.id(), started.trim().parse().unwrap()]);
+            panic!("the test failed");
+        }));
+        assert!(failed.is_err());
+        // on a line of its own: libtest wrote "test <name> ... " before it
+        println!("\nafter the panic: {pids:?}");
+        let (op, home) = operator("procs-kill");
+        op.ok(&["events"]);
+        // the folders stay when the binary is killed: the outer test removes them
+        println!(
+            "\nrunning: {} {} {}",
+            op.child.id(),
+            home.display(),
+            op.runtime.display()
+        );
+        // the outer test kills this binary before then
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        return;
+    }
+    let mut test = Kill::spawn(
+        Command::new(std::env::current_exe().unwrap())
+            .args([NAME, "--exact", "--nocapture", "--test-threads", "1"])
+            .env("LEGIONCTL_TEST_CHILD", "1")
+            .stdout(Stdio::piped()),
+    );
+    let mut lines = BufReader::new(test.stdout.take().unwrap()).lines();
+    let mut line = |prefix: &str| -> String {
+        lines
+            .by_ref()
+            .map(Result::unwrap)
+            .find_map(|l| l.strip_prefix(prefix).map(str::to_string))
+            .unwrap_or_else(|| panic!("the test binary ended before {prefix}"))
+    };
+    let panicked: Vec<u32> = serde_json::from_str(&line("after the panic: ")).unwrap();
+    assert_eq!(panicked.len(), 3);
+    wait_ended(&panicked, "after the panic");
+    let running = line("running: ");
+    let running: Vec<&str> = running.split(' ').collect();
+    let operator: u32 = running[0].parse().unwrap();
+    assert!(!ended(operator), "the operator of the second part runs");
+    // SIGKILL to the test binary alone: its process group is not killed, and no drop runs in it
+    test.kill().unwrap();
+    test.wait().unwrap();
+    wait_ended(&[operator], "after SIGKILL of the test binary");
+    for folder in &running[1..] {
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+}
+
+/// todo-122, as on 2026-10-15: the user's operator.db at v10 while an operator of another build runs (a stand-in that
+/// holds `operator.lock` with that build's fingerprint). An operator of this build does not start, and the file stays
+/// at v10 without a backup. After the other operator stopped, this one starts: it keeps the v10 file in
+/// `operator.db.v10.bak`, then takes the database to v12 with its rows.
+#[test]
+fn an_operator_does_not_start_beside_one_of_another_build_and_keeps_the_old_database() {
+    let home = home("holder");
+    let state = home.join(".local/state/legionctl");
+    std::fs::create_dir_all(&state).unwrap();
+    let db = state.join("operator.db");
+    let bak = state.join("operator.db.v10.bak");
+    // the tables of v10 (the release before the threads)
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute_batch(
+            "PRAGMA journal_mode = WAL;
+             CREATE TABLE events (id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, actor TEXT NOT NULL,
+                kind TEXT NOT NULL, payload TEXT NOT NULL);
+             CREATE INDEX events_kind ON events (kind, id);
+             CREATE TABLE gateway_usage (id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, account TEXT NOT NULL,
+                model TEXT NOT NULL, tokens_in INTEGER NOT NULL, tokens_out INTEGER NOT NULL, cached INTEGER NOT NULL,
+                status INTEGER NOT NULL, ms INTEGER NOT NULL, cost_usd REAL NOT NULL DEFAULT 0);
+             CREATE TABLE tokens (hash TEXT PRIMARY KEY, session TEXT NOT NULL, created INTEGER NOT NULL);
+             CREATE TABLE jobs (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, input TEXT NOT NULL, state TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 1, created INTEGER NOT NULL, updated INTEGER NOT NULL, result TEXT,
+                error TEXT);
+             INSERT INTO events (ts, actor, kind, payload) VALUES (strftime('%s'), 'cli', 'kept.v10', '{}');
+             PRAGMA user_version = 10;",
+        )
+        .unwrap();
+    let version = |path: &Path| -> i64 {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap()
+    };
+    let lock = state.join("operator.lock");
+    let other = "operator.db v10, dossier.db v1, cache.db v1, workspace.db v14";
+    std::fs::write(&lock, other).unwrap();
+    let holder = Kill::spawn(
+        Command::new("flock")
+            .arg("--shared")
+            .arg(&lock)
+            .args(["sleep", "600"]),
+    );
+    let probe = std::fs::File::open(&lock).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while rustix::fs::flock(&probe, rustix::fs::FlockOperation::NonBlockingLockExclusive).is_ok() {
+        rustix::fs::flock(&probe, rustix::fs::FlockOperation::Unlock).unwrap();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the stand-in holds no lock"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    drop(probe);
+    let refused = Command::new(common::sibling("legionctl-operator"))
+        .env_clear()
+        .env("HOME", &*home)
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(!refused.status.success(), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "operator ({other}) of another build holds {}; stop it or install this build",
+            db.display()
+        )),
+        "{stderr}"
+    );
+    assert_eq!(version(&db), 10, "the refused operator changed nothing");
+    assert!(!bak.exists());
+    drop(holder);
+    let op = operator_in("holder", &home);
+    let events = op.ok(&["events", "--json"]);
+    assert!(events.contains("kept.v10"), "{events}");
+    assert_eq!(version(&db), 12);
+    assert_eq!(version(&bak), 10, "the backup is the v10 file");
+    let kept: String = rusqlite::Connection::open(&bak)
+        .unwrap()
+        .query_row("SELECT kind FROM events", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(kept, "kept.v10");
 }
 
 /// The rows of `query` on the SQLite file `db` as JSON arrays (python3's sqlite3: what is on disk).

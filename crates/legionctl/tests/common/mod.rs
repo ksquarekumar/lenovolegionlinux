@@ -5,11 +5,13 @@
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+pub mod process;
 pub mod scratch;
 
+use process::Kill;
 use scratch::Scratch;
 
 /// Another package's binary `name` beside this test's `legionctl`, refused when it is older than a source it was built
@@ -51,7 +53,7 @@ pub struct Operator {
     /// Short on purpose: a unix socket path must fit in 108 bytes.
     pub runtime: Scratch,
     /// The operator (systemd-socket-activate execs it).
-    pub child: Child,
+    pub child: Kill,
     /// The test's other folders (its HOME): they go after the operator stopped.
     pub held: Vec<Scratch>,
 }
@@ -79,7 +81,7 @@ impl Operator {
         for (name, value) in env.iter().cloned().chain(unset) {
             cmd.arg(format!("--setenv={name}={}", value.to_string_lossy()));
         }
-        let child = cmd.arg(sibling("legionctl-operator")).spawn().unwrap();
+        let child = Kill::spawn(cmd.arg(sibling("legionctl-operator")));
         let deadline = Instant::now() + Duration::from_secs(5);
         while !socket.exists() {
             assert!(Instant::now() < deadline, "the test socket did not appear");
@@ -137,9 +139,9 @@ impl Operator {
 }
 
 impl Drop for Operator {
+    /// The operator stops before its folders go.
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.child.stop();
         self.held.clear();
     }
 }

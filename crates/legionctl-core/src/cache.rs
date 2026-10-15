@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::db::{Db, Schema};
 
 /// Entries of every namespace; the semantic cache's prompt embeddings beside the answers they find.
-const SCHEMA: &Schema = &Schema {
+pub(crate) const SCHEMA: &Schema = &Schema {
     version: 1,
     steps: &[],
     sql: "CREATE TABLE entries (

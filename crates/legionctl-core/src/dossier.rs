@@ -104,7 +104,7 @@ pub(crate) use shared_tables;
 
 /// A dossier's own database, `<home>/.state/dossier.db` (design 23, E1): its writes, status history and nudges, and
 /// the repository facts (annotations, test runs, mutants, accepts) that its sessions wrote.
-const DOSSIER: &Schema = &Schema {
+pub(crate) const DOSSIER: &Schema = &Schema {
     version: 2,
     steps: &[(1, crate::checks::table!())],
     sql: concat!(

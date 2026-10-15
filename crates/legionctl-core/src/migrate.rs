@@ -96,10 +96,12 @@ pub fn plan(config: &DossierConfig) -> Result<Vec<String>> {
     let root = crate::config::expand_home(&config.root)?;
     let old_db = legacy.join("workspace.db");
     let mut lines = Vec::new();
-    let copy =
-        std::env::temp_dir().join(format!("legionctl-migrate-plan-{}.db", std::process::id()));
-    let _ = std::fs::remove_file(&copy);
+    // a folder: the copy's schema step puts its backup beside it
+    let plan = std::env::temp_dir().join(format!("legionctl-migrate-plan-{}", std::process::id()));
+    let copy = plan.join("workspace.db");
+    let _ = std::fs::remove_dir_all(&plan);
     if old_db.exists() {
+        std::fs::create_dir_all(&plan)?;
         Connection::open(&old_db)?.execute("VACUUM INTO ?1", [copy.to_string_lossy()])?;
         let read = (|| -> Result<()> {
             drop(Db::open(&copy, LEGACY)?);
@@ -134,7 +136,7 @@ pub fn plan(config: &DossierConfig) -> Result<Vec<String>> {
             }
             Ok(())
         })();
-        let _ = std::fs::remove_file(&copy);
+        let _ = std::fs::remove_dir_all(&plan);
         read?;
     }
     let mut entries: Vec<_> = std::fs::read_dir(&legacy)?.flatten().collect();
@@ -215,7 +217,7 @@ pub fn summary(result: &Value) -> Vec<String> {
 /// `~/.agentworkspace/workspace.db` at v14, its last version: the steps of v1-v9 merged into one (todo-68), then the topic workspaces, then
 /// the code graph annotations, then the test records (design 23, A7), then the threads (design 23, B2, v13), then the kills
 /// and accepts keyed by the test's token hash.
-const LEGACY: &Schema = &Schema {
+pub(crate) const LEGACY: &Schema = &Schema {
     version: 14,
     steps: &[
         (
