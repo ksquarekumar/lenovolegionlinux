@@ -7,12 +7,12 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use legionctl_api::{
     Account, BenchCompare, BenchCompareIn, BenchIn, BenchRun, Code, DossierAddIn, DossierAppendIn,
-    DossierCheckIn, DossierEditIn, DossierFindings, DossierList, DossierReadIn, DossierRenameIn,
-    DossierSearchIn, DossierUseIn, DossierWriteIn, DryRunIn, Events, EventsIn, GateIn, Guard,
-    GuardIn, HookReply, HookRunIn, InspectIn, IntoWire, KnobDetail, Knobs, Launch, Lines, Locks,
-    MonitorIn, Readings, RecordIn, Recording, ReplayIn, Samples, SensorsIn, SessionExec, SessionId,
-    SessionIdIn, SessionIn, SessionResumeIn, SessionStartIn, SessionState, Sessions, ToolCall,
-    ToolCallRow, ToolCallsIn, TuneIn, TuneReport, WindowsState, coded,
+    DossierCheckIn, DossierEditIn, DossierFindings, DossierList, DossierMigrateIn, DossierReadIn,
+    DossierRenameIn, DossierSearchIn, DossierUseIn, DossierWriteIn, DryRunIn, Events, EventsIn,
+    GateIn, Guard, GuardIn, HookReply, HookRunIn, InspectIn, IntoWire, KnobDetail, Knobs, Launch,
+    Lines, Locks, MonitorIn, Readings, RecordIn, Recording, ReplayIn, Samples, SensorsIn,
+    SessionExec, SessionId, SessionIdIn, SessionIn, SessionResumeIn, SessionStartIn, SessionState,
+    Sessions, ToolCall, ToolCallRow, ToolCallsIn, TuneIn, TuneReport, WindowsState, coded,
 };
 use legionctl_api::{
     AccountAddIn, AgentCheck, AgentsCheckIn, CapabilityList, Changes, CheckpointIn, CleanupIn,
@@ -234,12 +234,6 @@ pub fn stop_run(job: i64) -> bool {
 }
 
 /// Record how a job ended.
-/// Run the dossier migration as job `job` and record how it ended.
-fn migrate(db: &Db, job: i64) -> Result<()> {
-    let out = config(None).and_then(|r| legionctl_core::migrate::run(&r.config.dossier, db, job));
-    end_job(db, job, &out)
-}
-
 pub(crate) fn end_job<T: serde::Serialize>(db: &Db, job: i64, out: &Result<T>) -> Result<()> {
     let outcome = match out {
         Ok(value) => Ok(serde_json::to_value(value)?),
@@ -1409,7 +1403,14 @@ impl Operator {
                             .and_then(|r| pack_job(&job.input, &r.config.session));
                         end_job(&db, job.id, &out)
                     }
-                    legionctl_core::migrate::JOB => migrate(&db, job.id),
+                    // never on its own (decided 2026-10-15): the user runs it again
+                    legionctl_core::migrate::JOB => db.job_end(
+                        job.id,
+                        &Err(
+                            "cut off by an operator restart: run legionctl dossier migrate again"
+                                .into(),
+                        ),
+                    ),
                     crate::code::REFRESH => crate::code::queue(job.id, job.input.clone())
                         .or_else(|e| end_job(&db, job.id, &Err::<Lines, _>(e))),
                     other => db.job_end(job.id, &Err(format!("no way to resume a {other} job"))),
@@ -1419,30 +1420,6 @@ impl Operator {
                 }
             });
         }
-        Ok(())
-    }
-
-    /// Start the dossier migration (design 23, E1) while `~/.agentworkspace` exists and no migration job runs; it
-    /// runs in the background, and the dossier operations refuse until it is done.
-    ///
-    /// # Errors
-    /// The operator's database cannot be read or written.
-    pub fn migrate_dossiers() -> Result<()> {
-        let db = Db::open_default()?;
-        let running = db
-            .jobs_in("running")?
-            .iter()
-            .any(|j| j.kind == legionctl_core::migrate::JOB);
-        if !legionctl_core::migrate::pending() || running {
-            return Ok(());
-        }
-        let job = db.job_begin(legionctl_core::migrate::JOB, &serde_json::json!({}))?;
-        std::thread::spawn(move || {
-            let outcome = Db::open_default().and_then(|db| migrate(&db, job));
-            if let Err(e) = outcome {
-                eprintln!("operator: job {job} not recorded: {e:#}");
-            }
-        });
         Ok(())
     }
 
@@ -2362,6 +2339,33 @@ impl Engine for Operator {
 
     fn dossier_list(&self, _: &Ctx, _: Empty) -> Result<DossierList> {
         Ok(dossiers()?.list().into_wire())
+    }
+
+    fn dossier_migrate(&self, _: &Ctx, input: DossierMigrateIn) -> Result<Lines> {
+        use legionctl_core::migrate;
+        let config = config(None)?.config.dossier;
+        if input.dry_run || !migrate::pending() {
+            return Ok(Lines {
+                lines: migrate::plan(&config)?,
+            });
+        }
+        let db = Db::open_default()?;
+        if db
+            .jobs_in("running")?
+            .iter()
+            .any(|j| j.kind == migrate::JOB)
+        {
+            return Err(coded(
+                Code::Conflict,
+                "a dossier migration runs already; see legionctl jobs list",
+            ));
+        }
+        let job = db.job_begin(migrate::JOB, &serde_json::json!({}))?;
+        let out = migrate::run(&config, &db);
+        end_job(&db, job, &out)?;
+        Ok(Lines {
+            lines: migrate::summary(&out?),
+        })
     }
 
     fn dossier_rename(&self, ctx: &Ctx, input: DossierRenameIn) -> Result<Lines> {

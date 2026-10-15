@@ -1349,7 +1349,7 @@ Rules:
    union of `dossier.db` of each dossier whose `entities` name the repository (SQLite `ATTACH`, at most 10 at once;
    more: one read per file, merged).
 
-Migration (one time, an operator job `dossier.migrate` at its first start with the new build):
+Migration (one time, an operator job `dossier.migrate`; built as `legionctl dossier migrate`, only when the user runs it, see "Built: P9"):
 
 1. Wait until no binding is live (a live one: the job waits and `doctor` says why).
 2. Back up `workspace.db` to `~/.local/state/legionctl/backup/workspace.db.<time>` (online backup).
@@ -1405,7 +1405,7 @@ Import of a real `<root>/agentWorkspaces/` (data is never lost):
 | Home, ids, registry, rename | `dossier.root` `~/agentWorkspaces`; `dsr-<ulid>` in `dossier.jsonc` (a new dossier, a folder without one, each import); tables `dossiers` and `dossier_names` in `operator.db`; `dossier rename <name> <to>` (class workspace) and `sync_registry` at each operator start and in `doctor` (`crates/legionctl-core/src/dossier.rs`) |
 | SQLite split | `operator.db` v11: `bindings`, `workspaces`, `sessions`, the thread tables, the registry; `<home>/.state/dossier.db` v1: `writes`, `status_changes`, `nudges`, `annotations`, `test_runs`, `mutants`, `test_accepts` |
 | Repository facts | Written into the dossier of the workspace that holds the folder, else the oldest dossier attached to the repository; read as the union of the attached dossiers, one `ATTACH` at a time into one database in memory (no limit of 10) |
-| Migration | Job `dossier.migrate` (`crates/legionctl-core/src/migrate.rs`), started by the operator at each start while `~/.agentworkspace` exists; the dossier operations refuse until it is done and say why |
+| Migration | Operation and job `dossier.migrate` (`legionctl dossier migrate [--dry-run]`, class workspace; `crates/legionctl-core/src/migrate.rs`), only when the user runs it (user decision 2026-10-15: never at an operator start). Until it is done, each other dossier operation, also `dossier list`, refuses with "the dossiers are not migrated yet: run legionctl dossier migrate"; `doctor` says the same or names the failed run. `--dry-run` lists the live bindings that refuse it, the backup, each move with its id or clash, the counts it compares (from a copy of `workspace.db` at v14 in the temporary folder) and the places it links, and changes nothing. A run that an operator restart cut off ends as failed with "run legionctl dossier migrate again" |
 | Link and import | `crates/legionctl-core/src/home.rs`: `dossier use`, the session-start rebind, `session start`, `workspace open` (each worktree, and a plain folder's source) |
 | Text | 18-workspaces, 12, 13, 14, README, skills dossier-practice (rules 1, 21-23), workspace-practice (rule 4), the threads reference, the plugin command `/legionctl:dossier` |
 
@@ -1417,7 +1417,7 @@ What is different from E1, E1a and E7, and why:
 | Rows that name a dossier | `bindings`, `workspaces`, `sessions` and `threads` keep the name; a rename (or a folder renamed by hand, found by its id) changes them in one transaction and records the old name. | The same result as rows keyed by id, without a lookup in each query; old names still resolve (`planning/` plan rows in `dossier check`). |
 | Attached dossiers | A dossier is attached to a repository when it has a binding or a workspace there, or its `entities` name it. | No dossier has `entities` yet; the bindings and workspaces have the paths. |
 | Writer | The dossier of the open workspace that holds the folder, else the oldest attached dossier; none: refused. | `code tests run`, `mutant record` and the pre-commit gate have no session; the folder names the workspace. |
-| Live binding | The job waits (2 s steps) and the dossier operations answer with the wait and the sessions; `doctor` says the same. | The operator serves during the wait; nothing writes the old file. |
+| Live binding | The call is refused and names each session that holds a dossier. | The user runs the migration: a refusal that says what to end is clearer than a call that waits. |
 | Step 2 | The first run backs up `workspace.db` as it was (`VACUUM INTO`); a run after a cut keeps that backup. | The file changes to v14 after the backup. |
 | Step 3 | The registry gets the id and the old folder before the move; a copy across file systems that a cut left (same id) is made again. | A cut after the move still finds the dossier's rows by its origin. |
 | Step 6 | What is left of `~/.agentworkspace` (old backups, the empty folder) moves to `~/.local/state/legionctl/backup/agentworkspace-<time>`, not deleted. | Data is never lost; the old `.bak` files of the user stay. |
@@ -1430,7 +1430,7 @@ Tests (`crates/legionctl/tests/e2e.rs`, the CLI and the real operator, temporary
 
 | Test | It catches |
 | --- | --- |
-| `the_dossiers_move_to_their_homes_once_and_keep_their_ids_links_and_rows` | A job that does not wait for a live binding; an id that a dossier has before the move and does not keep; a cut at the backup, the move, the split or the links that loses or doubles rows on the next start; an id that changes; a row in the wrong `dossier.db` (session binding before repository); kills not keyed; a count compare that does not hold; the old link or line left; the line committed; a worktree not ignored; a second migration. |
+| `the_dossiers_move_to_their_homes_once_and_keep_their_ids_links_and_rows` | A migration at an operator start; a dossier operation (also `dossier list`) that does not refuse with the one message; a dry run that changes a file or does not list the live binding, the backup, a move, the clash, a count or a link; a migration that is not refused for a live binding; an id that a dossier has before the move and does not keep; a cut at the backup, the move, the split or the links that loses or doubles rows on the next start; an id that changes; a row in the wrong `dossier.db` (session binding before repository); kills not keyed; a count compare that does not hold; the old link or line left; the line committed; a worktree not ignored; a second migration. |
 | `the_first_use_in_a_repository_imports_its_agentworkspaces_folder_and_links_the_home` | A first-level file taken as a dossier or the folder replaced while it is there; a name in use overwritten (must be `-imported-1`); a cut-off import that copies again; the source not in the backup; `agentWorkspaces/` with a slash, committed, or not staged; a worktree where `git check-ignore` fails; a plain folder with a `.gitignore`; a user's link replaced; the home imported into itself. |
 | `facts_written_from_one_dossier_are_read_from_another_and_a_rename_keeps_rows_and_links` | A kill in the reader's dossier or not read from the writer's; a write from a workspace that goes into the oldest dossier, not the workspace's; a rename to a used name; a rename that loses the id, the binding, the workspace row, the facts or the link; the next fact in the old dossier; a write into another dossier through the link. |
 | `a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_hold` (changed) | A session sandbox that can write its dossier's `.state/dossier.db` (the test gate's evidence). |
@@ -1753,7 +1753,7 @@ thread), the `--member` option of the dossier write operations (session), and `b
 | Operator restart | It reads from its cursor; open changes close by `watch.quiet`; jobs resume (check runs restart from the start). |
 | Queue overflow | `rescan`; `doctor` shows the count of overflows. |
 | Dossier folder renamed | The id stays; the operator unregisters the old root and registers the new one. |
-| Migration cut off | The next start runs the job again; `~/.agentworkspace` stays until step 6 passes. |
+| Migration cut off | The user runs `legionctl dossier migrate` again; `~/.agentworkspace` stays until step 6 passes. |
 | A check hangs | `timeout` per check (default 30 min); the unit is stopped; the run is `timeout`. |
 
 ### E8. Tests (e2e, high diagnostic value)

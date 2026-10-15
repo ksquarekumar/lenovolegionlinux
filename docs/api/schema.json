@@ -11221,6 +11221,39 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "dossier.migrate": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "dry_run": {
+          "type": "boolean",
+          "description": "List what the migration would do (moves, backups, clashes, the counts it compares) and change nothing.",
+          "default": false
+        }
+      },
+      "title": "DossierMigrateIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "dossier.rename": {
     "class": "workspace",
     "internal": false,

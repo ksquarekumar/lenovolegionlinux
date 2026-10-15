@@ -72,6 +72,7 @@ legionctl gpu primary nvidia             # applies at the next login
 legionctl validate                # profile structure, no hardware access
 legionctl config layers           # config files in merge order; `config explain <key>` says which file set a value
 legionctl dossier list            # agent dossiers in ~/agentWorkspaces (agents bind them; see Agents)
+legionctl dossier migrate --dry-run  # once, from ~/.agentworkspace: what moves; then without --dry-run to move
 legionctl workspace list          # each dossier's git worktree: path, branch, base
 legionctl session start claude    # Claude Code in a sandbox on the dossier's workspace: home read-only, git gated
 legionctl tui                     # live dashboard

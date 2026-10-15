@@ -5381,12 +5381,12 @@ fn dossier_id(dir: &Path) -> String {
     value["id"].as_str().unwrap().to_string()
 }
 
-/// The old home of the migration test in `home`: alpha (with a commented dossier.jsonc) and beta (with an id), an
-/// old backup file, the workspace.db of `tests/fixtures/workspace-v13.sql`, a main checkout that ignores the old link
-/// by a committed line, and alpha's worktree with the old link. Returns the repository and the worktree.
 /// The id that beta has before the migration.
 const BETA: &str = "dsr-01JAAAAAAAAAAAAAAAAAAAAAAA";
 
+/// The old home of the migration test in `home`: alpha (with a commented dossier.jsonc) and beta (with an id), an
+/// old backup file, the workspace.db of `tests/fixtures/workspace-v13.sql`, a main checkout that ignores the old link
+/// by a committed line, and alpha's worktree with the old link. Returns the repository and the worktree.
 fn old_home(home: &Path) -> (PathBuf, PathBuf) {
     let repo = repository(home);
     let old = home.join(".agentworkspace");
@@ -5447,57 +5447,95 @@ fn old_home(home: &Path) -> (PathBuf, PathBuf) {
     (repo, wt)
 }
 
-/// The operator of `home` again: the migration runs at each start.
+/// The operator of `home` again.
 fn start_again(home: &Path, n: u32) -> Operator {
     operator_in(&format!("migrate{n}"), home)
 }
 
-/// The migration job failed at the step that `why` names, and the old root is still there.
+/// The refusal of each dossier operation until the migration is done.
+const NOT_MIGRATED: &str = "the dossiers are not migrated yet: run legionctl dossier migrate";
+
+/// `dossier migrate` failed at the step that `why` names, and the old root is still there.
 fn migration_failed(op: &Operator, home: &Path, why: &str) {
+    let out = op.cli(&["dossier", "migrate"]);
+    assert!(
+        !out.status.success() && String::from_utf8_lossy(&out.stderr).contains(why),
+        "{out:?}"
+    );
     let job = job_when(op, "dossier.migrate", |j| j["state"] != "running");
     assert_eq!(job["state"], "failed", "{job:#}");
-    assert!(job["error"].as_str().unwrap().contains(why), "{job:#}");
     assert!(
         home.join(".agentworkspace").exists(),
         "the old root stays until the counts match"
     );
 }
 
-/// Steps 1 to 5 of the migration, each cut by an obstacle in its way, then the obstacle removed; returns the ids of
-/// alpha and beta.
-fn migrate_with_a_cut_at_each_step(home: &Path, repo: &Path) -> (String, String) {
+/// An operator start with the old home there: nothing moves, each dossier operation (also `dossier list`) refuses
+/// with the one message; then the dry run lists the refusal, the backup, the moves (with the
+/// clash), the counts and the links, and changes nothing.
+fn nothing_moves_before_the_user_runs_the_migration(op: &Operator, home: &Path, repo: &Path) {
+    let (old, homes) = (home.join(".agentworkspace"), home.join("agentWorkspaces"));
+    let page: Value = serde_json::from_str(&op.ok(&["jobs", "list", "--json"])).unwrap();
+    assert!(
+        !page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|j| j["kind"] == "dossier.migrate"),
+        "a start runs no migration: {page:#}"
+    );
+    assert!(old.join("alpha/plan.md").is_file() && !homes.join("alpha").exists());
+    for args in [&["dossier", "list"][..], &["dossier", "use", "alpha"]] {
+        let (done, why) = as_session(op, home, ("s-new", repo), args);
+        assert!(!done && why.contains(NOT_MIGRATED), "{args:?}: {why}");
+    }
+
+    write(&homes.join("beta"), "in the way");
+    let count = |table: &str| {
+        rows(
+            &old.join("workspace.db"),
+            &format!("SELECT count(*) FROM {table}"),
+        )[0][0]
+            .clone()
+    };
+    let before = std::fs::read(old.join("workspace.db")).unwrap();
+    let plan = op.ok(&["dossier", "migrate", "--dry-run"]);
+    for line in [
+        "refused while session s-live holds dossier beta".to_string(),
+        format!("back up {}", old.join("workspace.db").display()),
+        format!(
+            "move {} to {} (a new id)",
+            old.join("alpha").display(),
+            homes.join("alpha").display()
+        ),
+        format!(
+            "clash: {} exists, so {} cannot move there",
+            homes.join("beta").display(),
+            old.join("beta").display()
+        ),
+        format!("compare bindings: {} rows", count("bindings")),
+        format!("compare mutants: {} rows", count("mutants")),
+        format!("link {}/agentWorkspaces", repo.display()),
+    ] {
+        assert!(plan.contains(&line), "{line}\n{plan}");
+    }
+    assert_eq!(std::fs::read(old.join("workspace.db")).unwrap(), before);
+    assert!(!homes.join("alpha").exists() && !repo.join("agentWorkspaces").exists());
+}
+
+/// Steps 2 to 5 of the migration (no live binding is left), each cut by an obstacle in its way, then the obstacle
+/// removed and `dossier migrate` run again; returns the ids of alpha and beta.
+fn migrate_with_a_cut_at_each_step(op: &Operator, home: &Path, repo: &Path) -> (String, String) {
     let (old, homes) = (home.join(".agentworkspace"), home.join("agentWorkspaces"));
     let state = home.join(".local/state/legionctl");
-    // 1. the live binding of s-live: the job waits, and the dossier tools refuse and say why (as doctor does)
+    // 2. the backup fails on a file in its place
     write(&state.join("backup"), "a file where the backup folder goes");
-    let op = start_again(home, 1);
-    let waiting = job_when(&op, "dossier.migrate", |j| j["input"]["waiting"].is_array());
-    assert_eq!(
-        waiting["input"]["waiting"],
-        json!(["session s-live holds dossier beta"])
-    );
-    let refused = op.cli(&["dossier", "list"]);
-    assert!(
-        !refused.status.success()
-            && String::from_utf8_lossy(&refused.stderr).contains(
-                "waits until these sessions end or go stale: session s-live holds dossier beta"
-            ),
-        "{refused:?}"
-    );
-    // 2. the binding goes stale; the backup fails on the file in its place
-    rows(
-        &old.join("workspace.db"),
-        "UPDATE bindings SET updated = 0 WHERE session = 's-live'",
-    );
-    migration_failed(&op, home, "backing up");
+    migration_failed(op, home, "backing up");
     assert!(old.join("alpha").is_dir() && !homes.join("alpha").exists());
-    drop(op);
     std::fs::remove_file(state.join("backup")).unwrap();
 
     // 3. the move: a file holds beta's place, so alpha moves and beta stays
-    write(&homes.join("beta"), "in the way");
-    let op = start_again(home, 2);
-    migration_failed(&op, home, "agentWorkspaces/beta exists");
+    migration_failed(op, home, "agentWorkspaces/beta exists");
     assert!(homes.join("alpha/MEMORY/01-x.md").is_file() && !old.join("alpha").exists());
     assert!(old.join("beta/plan.md").is_file());
     let alpha = dossier_id(&homes.join("alpha"));
@@ -5508,25 +5546,20 @@ fn migrate_with_a_cut_at_each_step(home: &Path, repo: &Path) -> (String, String)
             .starts_with("// alpha's data\n{\n  \"id\": "),
         "the id goes in, the comment stays"
     );
-    drop(op);
     std::fs::remove_file(homes.join("beta")).unwrap();
 
     // 4. the split: alpha's .state is a file
     write(&homes.join("alpha/.state"), "in the way");
-    let op = start_again(home, 3);
-    migration_failed(&op, home, "alpha/.state");
+    migration_failed(op, home, "alpha/.state");
     let beta = dossier_id(&homes.join("beta"));
     assert_eq!(beta, BETA, "an id that the dossier has stays");
-    drop(op);
     std::fs::remove_file(homes.join("alpha/.state")).unwrap();
 
     // 5. the links: the repository's info/exclude is a folder
     let exclude = repo.join(".git/info/exclude");
     let _ = std::fs::remove_file(&exclude);
     std::fs::create_dir_all(&exclude).unwrap();
-    let op = start_again(home, 4);
-    migration_failed(&op, home, "info/exclude");
-    drop(op);
+    migration_failed(op, home, "info/exclude");
     std::fs::remove_dir(&exclude).unwrap();
     (alpha, beta)
 }
@@ -5608,25 +5641,48 @@ fn migrated_rows_links_and_lines(op: &Operator, home: &Path, repo: &Path, wt: &P
     );
 }
 
-/// The one-time move of a realistic old home (design 23, E1): two dossiers (beta without a dossier.jsonc), a v13
-/// workspace.db (P5's threads, kills not keyed) with bindings, sessions, a live binding, kills, annotations and an
-/// accept, and alpha's worktree with the old link. The job waits for the live binding, is cut at the backup, the move,
-/// the split and the links (an obstacle in the way each time), and runs again at each operator start. Then each row
-/// is in its place and counted once, the ids stay, the links and ignore lines are new, and `~/.agentworkspace` is in
-/// the backup; a later start does nothing.
+/// The one-time move of a realistic old home (design 23, E1, decided 2026-10-15: only by `dossier migrate`): two
+/// dossiers (beta with an id), a v13 workspace.db (P5's threads, kills not keyed) with bindings, sessions, a live
+/// binding, kills, annotations and an accept, and alpha's worktree with the old link. An operator start moves nothing
+/// and the dossier operations refuse; the dry run changes nothing; the migration is refused for the live binding and
+/// cut at the backup, the move, the split and the links (an obstacle in the way each time), and each call does the
+/// steps again. Then each row is in its place and counted once, the ids stay, the links and ignore lines are new, and
+/// `~/.agentworkspace` is in the backup; a later start and a later call do nothing.
 #[test]
 fn the_dossiers_move_to_their_homes_once_and_keep_their_ids_links_and_rows() {
     let (op, home) = operator("migrate");
     drop(op);
     let (repo, wt) = old_home(&home);
-    let (alpha, beta) = migrate_with_a_cut_at_each_step(&home, &repo);
     let (old, homes, state) = (
         home.join(".agentworkspace"),
         home.join("agentWorkspaces"),
         home.join(".local/state/legionctl"),
     );
+    let op = start_again(&home, 1);
+    nothing_moves_before_the_user_runs_the_migration(&op, &home, &repo);
+    // 1. the live binding of s-live: refused, and nothing moved
+    migration_failed(&op, &home, "session s-live holds dossier beta");
+    assert!(old.join("alpha").is_dir() && !homes.join("alpha").exists());
+    // the binding goes stale; a start still moves nothing
+    rows(
+        &old.join("workspace.db"),
+        "UPDATE bindings SET updated = 0 WHERE session = 's-live'",
+    );
+    drop(op);
+    let op = start_again(&home, 2);
+    // the socket starts the operator at the first call
+    op.ok(&["jobs", "list"]);
+    assert!(
+        old.join("alpha").is_dir() && !homes.join("alpha").exists(),
+        "a start does not migrate"
+    );
+    let (alpha, beta) = migrate_with_a_cut_at_each_step(&op, &home, &repo);
     // 6. the counts match, and the old root goes to the backup
-    let op = start_again(&home, 5);
+    let said = op.ok(&["dossier", "migrate"]);
+    assert!(
+        said.contains("moved the dossiers alpha, beta to their homes"),
+        "{said}"
+    );
     let done = job_when(&op, "dossier.migrate", |j| j["state"] != "running");
     assert_eq!(done["state"], "done", "{done:#}");
     assert_eq!(done["result"]["dossiers"], json!(["alpha", "beta"]));
@@ -5678,8 +5734,12 @@ fn the_dossiers_move_to_their_homes_once_and_keep_their_ids_links_and_rows() {
     migrated_rows_links_and_lines(&op, &home, &repo, &wt);
     drop(op);
 
-    // a later start has nothing to move
-    let op = start_again(&home, 6);
+    // a later start and a later call have nothing to move
+    let op = start_again(&home, 3);
+    assert!(
+        op.ok(&["dossier", "migrate"])
+            .contains("nothing to migrate")
+    );
     let page: Value = serde_json::from_str(&op.ok(&["jobs", "list", "--json"])).unwrap();
     let runs = page["items"]
         .as_array()
@@ -5687,7 +5747,10 @@ fn the_dossiers_move_to_their_homes_once_and_keep_their_ids_links_and_rows() {
         .iter()
         .filter(|j| j["kind"] == "dossier.migrate")
         .count();
-    assert_eq!(runs, 5);
+    assert_eq!(
+        runs, 6,
+        "the refused call, four cut calls and the one that is done"
+    );
 }
 
 /// The run of `args` as session `s` in `cwd`: whether it succeeded, and its stdout and stderr.

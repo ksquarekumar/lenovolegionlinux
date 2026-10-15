@@ -101,6 +101,10 @@ each first-level subfolder becomes a registered dossier (`<name>-imported-<n>` o
 trailing `/`: git sees a link as a file), staged, not committed; a worktree uses `<common dir>/info/exclude` until
 the line is on its branch; `git check-ignore` must pass. A plain folder gets the link only.
 
+The dossiers of the old root `~/.agentworkspace` move to `~/agentWorkspaces` only when the user runs
+`legionctl dossier migrate` (`--dry-run` first: what moves, the backups, the clashes, the counts it compares). Until
+then each other dossier operation refuses with "the dossiers are not migrated yet: run legionctl dossier migrate".
+
 ## Git: legionctl owns the copy and its state
 
 For a git source, legionctl does the git work around the agent; the agent edits files and asks for checkpoints:

@@ -11,7 +11,7 @@
     { "id": "O2", "text": "Each directory where a dossier is used links the home; git ignores the link; a real folder there is imported first." }
   ],
   "stories": [
-    { "id": "S1", "kind": "data-flow", "text": "The old home moves once: each row in its place and counted, the ids kept, a cut step done again at the next start.", "objectives": ["O1"],
+    { "id": "S1", "kind": "data-flow", "text": "The old home moves once, only when the user runs dossier migrate (a dry run first): each row in its place and counted, the ids kept, a cut step done again at the next call.", "objectives": ["O1"],
       "tests": ["test:crates/legionctl/tests/e2e.rs::the_dossiers_move_to_their_homes_once_and_keep_their_ids_links_and_rows"] },
     { "id": "S2", "text": "The first use in a directory imports its agentWorkspaces folder, links the home and makes git ignore the link.", "objectives": ["O2"],
       "tests": ["test:crates/legionctl/tests/e2e.rs::the_first_use_in_a_repository_imports_its_agentworkspaces_folder_and_links_the_home"] },
@@ -24,7 +24,8 @@
       { "key": "file:crates/legionctl-core/src/migrate.rs", "change": "add", "loc": 650 },
       { "key": "file:crates/legionctl-core/src/dossier.rs", "change": "edit" },
       { "key": "file:crates/legionctl-core/src/workspace.rs", "change": "edit" },
-      { "key": "op:dossier.rename", "change": "add" }
+      { "key": "op:dossier.rename", "change": "add" },
+      { "key": "op:dossier.migrate", "change": "add" }
     ] }
   ]
 }

@@ -724,6 +724,9 @@ operations! {
     dossier_locks / DossierLocks = "dossier.locks", Read, Empty => Locks;
     /// Dossiers, most recently changed first.
     dossier_list / DossierListOp = "dossier.list", Read, Empty => DossierList;
+    /// Move the dossiers of ~/.agentworkspace to ~/agentWorkspaces, once; the other dossier operations refuse until
+    /// it is done. `--dry-run` lists the moves, the backups, the clashes and the counts it compares, and changes nothing.
+    dossier_migrate / DossierMigrate = "dossier.migrate", Workspace, DossierMigrateIn => Lines;
     /// Rename a dossier: its folder in ~/agentWorkspaces gets the new name; its id, bindings, workspaces, sessions
     /// and threads stay with it. A name in use is refused.
     dossier_rename / DossierRename = "dossier.rename", Workspace, DossierRenameIn => Lines;

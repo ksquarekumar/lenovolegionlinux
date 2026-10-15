@@ -134,10 +134,6 @@ async fn main() -> Result<()> {
     if let Err(e) = operator.resume_jobs("running") {
         eprintln!("operator: jobs not resumed: {e:#}");
     }
-    // the dossiers of ~/.agentworkspace move to their homes (design 23, E1), once
-    if let Err(e) = engine::Operator::migrate_dossiers() {
-        eprintln!("operator: the dossier migration did not start: {e:#}");
-    }
     let modules = vec![
         module("the machine event recorder", recorder::run),
         module("the session module", |ready| {

@@ -252,22 +252,13 @@ impl Dossiers {
     /// database.
     ///
     /// # Errors
-    /// The dossiers of `~/.agentworkspace` are not moved yet (job `dossier.migrate`), or the root or the operator's
-    /// database cannot be created.
+    /// The dossiers of `~/.agentworkspace` are not moved yet (`legionctl dossier migrate`), or the root or the
+    /// operator's database cannot be created.
     pub fn open(config: &DossierConfig) -> Result<Dossiers> {
-        let legacy = crate::migrate::legacy_root()?;
-        if legacy.exists() {
+        if crate::migrate::pending() {
             return Err(crate::error::coded(
                 crate::error::Code::Conflict,
-                format!(
-                    "the dossiers move from {} to {}: {}",
-                    legacy.display(),
-                    config.root,
-                    crate::migrate::state(&Db::open(
-                        &crate::db::default_path(),
-                        crate::db::OPERATOR
-                    )?)
-                ),
+                crate::migrate::NOT_MIGRATED,
             ));
         }
         Self::at(config, &crate::db::default_path())

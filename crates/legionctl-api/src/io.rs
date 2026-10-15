@@ -665,6 +665,13 @@ pub struct DossierUseIn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DossierMigrateIn {
+    /// List what the migration would do (moves, backups, clashes, the counts it compares) and change nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DossierRenameIn {
     /// The dossier's name now.
     pub name: String,

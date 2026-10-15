@@ -1,8 +1,8 @@
-//! The one-time move of the dossiers to their homes (design 23, E1): operator job `dossier.migrate`, at each operator
-//! start while `~/.agentworkspace` exists. Each step can run again, so a cut-off job does them all again at the next
-//! start:
+//! The one-time move of the dossiers to their homes (design 23, E1): operation and job `dossier.migrate`, only when
+//! the user runs `legionctl dossier migrate` (decided 2026-10-15: never at an operator start). Until it is done, the
+//! dossier operations refuse. Each step can run again, so a cut-off run does them all again at the next call:
 //!
-//! 1. Wait until no session holds a live binding (`doctor` says which).
+//! 1. Refuse while a session holds a live binding (the error names each).
 //! 2. Back up `workspace.db` to `~/.local/state/legionctl/backup/workspace.db.<time>`, then take it to its last schema.
 //! 3. Give each dossier folder an id and move it to `<dossier.root>/<name>` (rename, else copy with a hash compare).
 //! 4. Copy the rows that span dossiers into the operator's database, and each dossier's rows into its `dossier.db`
@@ -50,13 +50,16 @@ pub fn legacy_root() -> Result<PathBuf> {
     Ok(PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?).join(".agentworkspace"))
 }
 
+/// The refusal of each dossier operation until the migration is done.
+pub const NOT_MIGRATED: &str = "the dossiers are not migrated yet: run legionctl dossier migrate";
+
 /// Whether the migration has work to do.
 #[must_use]
 pub fn pending() -> bool {
     legacy_root().is_ok_and(|r| r.exists())
 }
 
-/// What `doctor` says while the migration is pending: the job's wait, its failure, or that it runs.
+/// What `doctor` says while the migration is pending: its last run's failure, that it runs, or that it is not run.
 #[must_use]
 pub fn state(ops: &Db) -> String {
     let last = ops
@@ -64,23 +67,148 @@ pub fn state(ops: &Db) -> String {
         .map(|(jobs, _)| jobs.into_iter().rev().find(|j| j.kind == JOB));
     match last {
         Ok(Some(job)) if job.state == "failed" => format!(
-            "the dossier migration (job {}) failed: {}; it runs again at the next operator start",
+            "{NOT_MIGRATED} (job {} failed: {})",
             job.id,
             job.error.unwrap_or_default()
         ),
-        Ok(Some(job)) => match job.input["waiting"].as_array() {
-            Some(live) => format!(
-                "the dossier migration (job {}) waits until these sessions end or go stale: {}",
-                job.id,
-                live.iter()
-                    .filter_map(Value::as_str)
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            ),
-            None => format!("the dossier migration (job {}) runs", job.id),
-        },
-        _ => "the dossier migration starts at the next operator start".into(),
+        Ok(Some(job)) if job.state == "running" => {
+            format!("the dossier migration (job {}) runs", job.id)
+        }
+        _ => NOT_MIGRATED.into(),
     }
+}
+
+/// What a migration would do now, and nothing changed (`dossier migrate --dry-run`): the live bindings that refuse it,
+/// the backups, each move with its id or clash, the counts it compares, the places it links, and where the old root
+/// goes. The counts come from a copy of `workspace.db` at its last schema, in the temporary folder.
+///
+/// # Errors
+/// The old database cannot be copied or read.
+pub fn plan(config: &DossierConfig) -> Result<Vec<String>> {
+    let legacy = legacy_root()?;
+    if !legacy.exists() {
+        return Ok(vec![format!(
+            "nothing to migrate: {} is not there",
+            legacy.display()
+        )]);
+    }
+    let root = crate::config::expand_home(&config.root)?;
+    let old_db = legacy.join("workspace.db");
+    let mut lines = Vec::new();
+    let copy =
+        std::env::temp_dir().join(format!("legionctl-migrate-plan-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&copy);
+    if old_db.exists() {
+        Connection::open(&old_db)?.execute("VACUUM INTO ?1", [copy.to_string_lossy()])?;
+        let read = (|| -> Result<()> {
+            drop(Db::open(&copy, LEGACY)?);
+            let stale = i64::try_from(config.stale_hours.saturating_mul(3600)).unwrap_or(i64::MAX);
+            for live in live_bindings(&copy, stale)? {
+                lines.push(format!(
+                    "refused while {live}: end it or wait until it goes stale"
+                ));
+            }
+            lines.push(match backup_of() {
+                Some(kept) => format!("keep the backup {} of an earlier run", kept.display()),
+                None => format!(
+                    "back up {} to {}",
+                    old_db.display(),
+                    backup_root().join("workspace.db.<time>").display()
+                ),
+            });
+            let conn = Connection::open(&copy)?;
+            for table in SHARED.iter().chain(OWN.iter()) {
+                let n: i64 =
+                    conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))?;
+                lines.push(format!("compare {table}: {n} rows"));
+            }
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT repo FROM workspaces UNION SELECT path FROM workspaces WHERE closed IS NULL ORDER BY 1",
+            )?;
+            for place in stmt.query_map([], |r| r.get::<_, String>(0))? {
+                lines.push(format!(
+                    "link {}/agentWorkspaces (and remove its .agentworkspace link)",
+                    place?
+                ));
+            }
+            Ok(())
+        })();
+        let _ = std::fs::remove_file(&copy);
+        read?;
+    }
+    let mut entries: Vec<_> = std::fs::read_dir(&legacy)?.flatten().collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let from = entry.path();
+        if !from.is_dir() || !valid_name(&name) {
+            continue;
+        }
+        let to = root.join(&name);
+        let id = read_id(&from)?.map_or("a new id".into(), |id| format!("id {id}"));
+        lines.push(if std::fs::symlink_metadata(&to).is_ok() {
+            format!(
+                "clash: {} exists, so {} cannot move there: rename one of them",
+                to.display(),
+                from.display()
+            )
+        } else {
+            format!("move {} to {} ({id})", from.display(), to.display())
+        });
+    }
+    lines.push(format!(
+        "then move what is left of {} to {}",
+        legacy.display(),
+        backup_root().join("agentworkspace-<time>").display()
+    ));
+    Ok(lines)
+}
+
+/// The backup of `workspace.db` that an earlier run made, if any.
+fn backup_of() -> Option<PathBuf> {
+    std::fs::read_dir(backup_root()).ok().and_then(|entries| {
+        entries
+            .flatten()
+            .find(|e| e.file_name().to_string_lossy().starts_with("workspace.db."))
+            .map(|e| e.path())
+    })
+}
+
+/// The lines of a migration's result.
+#[must_use]
+pub fn summary(result: &Value) -> Vec<String> {
+    let mut lines = vec![format!(
+        "moved the dossiers {} to their homes",
+        result["dossiers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )];
+    for (key, what) in [
+        ("rows", "rows placed"),
+        ("dropped", "rows without a dossier (kept in the backup)"),
+    ] {
+        if let Some(counts) = result[key].as_object().filter(|c| !c.is_empty()) {
+            let text: Vec<String> = counts.iter().map(|(t, n)| format!("{t} {n}")).collect();
+            lines.push(format!("{what}: {}", text.join(", ")));
+        }
+    }
+    lines.extend(
+        result["lines"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(String::from),
+    );
+    lines.push(format!(
+        "the old root and the old backups are in {}",
+        result["backup"].as_str().unwrap_or_default()
+    ));
+    lines
 }
 
 /// `~/.agentworkspace/workspace.db` at v14, its last version: the steps of v1-v9 merged into one (todo-68), then the topic workspaces, then
@@ -172,28 +300,21 @@ const LEGACY: &Schema = &Schema {
 /// Run the migration as job `job` of `ops`; returns the moved dossiers, the row counts and the link lines.
 ///
 /// # Errors
-/// A step fails; `~/.agentworkspace` stays, and the next operator start does the steps again.
-pub fn run(config: &DossierConfig, ops: &Db, job: i64) -> Result<Value> {
+/// A session holds a live binding, or a step fails; `~/.agentworkspace` stays, and the next call does the steps again.
+pub fn run(config: &DossierConfig, ops: &Db) -> Result<Value> {
     let legacy = legacy_root()?;
     let old_db = legacy.join("workspace.db");
     let stale = i64::try_from(config.stale_hours.saturating_mul(3600)).unwrap_or(i64::MAX);
     // 1. no live binding
-    loop {
-        let live = live_bindings(&old_db, stale)?;
-        if live.is_empty() {
-            break;
-        }
-        ops.job_step(job, &json!({"waiting": live}))?;
-        std::thread::sleep(std::time::Duration::from_secs(2));
-    }
+    let live = live_bindings(&old_db, stale)?;
+    ensure!(
+        live.is_empty(),
+        "{}: end each of these sessions or wait until it goes stale, then run legionctl dossier migrate again",
+        live.join("; ")
+    );
     // 2. the backup (the first run's: the file as it was, before its schema steps), then the last schema
     let time = now();
-    let backed_up = std::fs::read_dir(backup_root()).is_ok_and(|entries| {
-        entries
-            .flatten()
-            .any(|e| e.file_name().to_string_lossy().starts_with("workspace.db."))
-    });
-    if old_db.exists() && !backed_up {
+    if old_db.exists() && backup_of().is_none() {
         let backup = backup_root().join(format!("workspace.db.{time}"));
         std::fs::create_dir_all(backup_root())
             .map_err(anyhow::Error::from)
