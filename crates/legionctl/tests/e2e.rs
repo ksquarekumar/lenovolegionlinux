@@ -7,7 +7,7 @@ mod provider;
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
 use common::Operator;
 use serde_json::{Value, json};
@@ -1328,20 +1328,7 @@ fn topic_workspaces_of_one_dossier_work_in_parallel_and_merge_one_by_one() {
         "b is behind main by a's work"
     );
 
-    // close of b with uncommitted work is refused; --force closes it and keeps the branch
-    let refused = run(&repo, &["workspace", "close", "--topic", "b"]);
-    assert!(
-        String::from_utf8_lossy(&refused.stderr).contains("uncommitted changes"),
-        "{}",
-        String::from_utf8_lossy(&refused.stderr)
-    );
-    assert!(b.join("loose.txt").exists());
-    ok(&repo, &["workspace", "close", "--topic", "b", "--force"]);
-    assert!(!b.exists());
-    assert!(
-        ok(&repo, &["workspace", "list"]).contains("legionctl/port--a"),
-        "closing b leaves a open"
-    );
+    close_with_changes_needs_force_and_keeps_an_unmerged_branch(&repo, &b, run, ok);
 
     // reopen: the same branch with its committed work, without the discarded file
     ok(&repo, &["workspace", "open", "--topic", "b"]);
@@ -1354,6 +1341,49 @@ fn topic_workspaces_of_one_dossier_work_in_parallel_and_merge_one_by_one() {
         "4",
         "linear: start, ignore line, work a, work b (b's own ignore line is the same patch)"
     );
+    close_deletes_merged_topic_branches(&home, &repo, ok);
+}
+
+/// Close of b with uncommitted work is refused; `--force` closes it and keeps the unmerged branch; a stays open.
+fn close_with_changes_needs_force_and_keeps_an_unmerged_branch(
+    repo: &Path,
+    b: &Path,
+    run: impl Fn(&Path, &[&str]) -> Output,
+    ok: impl Fn(&Path, &[&str]) -> String,
+) {
+    let refused = run(repo, &["workspace", "close", "--topic", "b"]);
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("uncommitted changes"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(b.join("loose.txt").exists());
+    let closed = ok(repo, &["workspace", "close", "--topic", "b", "--force"]);
+    assert!(
+        closed.contains("branch legionctl/port--b kept: it is not merged into main"),
+        "{closed}"
+    );
+    assert!(!b.exists());
+    assert!(
+        ok(repo, &["workspace", "list"]).contains("legionctl/port--a"),
+        "closing b leaves a open"
+    );
+}
+
+/// Close of a merged topic deletes its branch (`git branch -d`); no topic branch stays after its merge and close.
+fn close_deletes_merged_topic_branches(
+    home: &Path,
+    repo: &Path,
+    ok: impl Fn(&Path, &[&str]) -> String,
+) {
+    for t in ["a", "b"] {
+        let closed = ok(repo, &["workspace", "close", "--topic", t]);
+        assert!(
+            closed.contains(&format!("branch legionctl/port--{t} merged and deleted")),
+            "{closed}"
+        );
+    }
+    assert_eq!(git(home, repo, &["branch", "--list", "legionctl/*"]), "");
 }
 
 /// The MCP proxy between a session's agent and a server (here legionctl's own MCP server): the agent sees only the

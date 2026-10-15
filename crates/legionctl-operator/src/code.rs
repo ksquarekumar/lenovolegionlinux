@@ -88,7 +88,14 @@ pub fn impact(input: &GraphImpactIn) -> Result<CodeNodes> {
 }
 
 pub fn changes(input: &GraphChangesIn) -> Result<Vec<ChangeSet>> {
-    Ok(codegraph::changes(input.repo.get()?, &input.refs, input.build)?.into_wire())
+    let mut sets = codegraph::changes(input.repo.get()?, &input.refs, input.build)?;
+    for set in &mut sets {
+        set.detail = input.detail;
+        if let Some(kind) = &input.kind {
+            set.entities.retain(|e| &e.kind == kind);
+        }
+    }
+    Ok(sets.into_wire())
 }
 
 pub fn annotate(ctx: &Ctx, input: &AnnotateIn) -> Result<Lines> {

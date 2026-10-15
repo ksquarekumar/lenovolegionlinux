@@ -1904,6 +1904,11 @@ impl Render for crate::CodeNodes {
     }
 }
 
+/// The kinds of entity that `code graph changes` lists by default; the other kinds are a count per file.
+const CODE_KINDS: [&str; 7] = [
+    "function", "method", "struct", "enum", "impl", "constant", "module",
+];
+
 impl Render for Vec<crate::ChangeSet> {
     fn text(&self) -> String {
         let mut out = Vec::new();
@@ -1912,17 +1917,55 @@ impl Render for Vec<crate::ChangeSet> {
                 "{} -> {} (change set {})",
                 set.from, set.to, set.id
             ));
-            out.extend(set.entities.iter().map(|e| {
-                format!(
-                    "  {:<8} {:<10} {}  {}  {}  [{}]",
-                    e.change,
-                    e.kind,
-                    e.key,
-                    e.file,
-                    e.lines,
-                    e.commits.join(" ")
-                )
-            }));
+            let mut files: BTreeMap<&str, Vec<&crate::EntityChange>> = BTreeMap::new();
+            for e in &set.entities {
+                files.entry(&e.file).or_default().push(e);
+            }
+            for (file, rows) in files {
+                // kind -> [added, removed, modified, moved]
+                let mut kinds: BTreeMap<&str, [usize; 4]> = BTreeMap::new();
+                for e in rows.iter().filter(|e| e.kind != "file") {
+                    let at = ["added", "removed", "modified", "moved"]
+                        .iter()
+                        .position(|c| *c == e.change)
+                        .unwrap_or(2);
+                    kinds.entry(&e.kind).or_default()[at] += 1;
+                }
+                let counts: Vec<String> = kinds
+                    .iter()
+                    .map(|(kind, n)| {
+                        let signs = ["+", "-", "~", ">"]
+                            .iter()
+                            .zip(n)
+                            .filter(|(_, n)| **n > 0)
+                            .map(|(sign, n)| format!("{sign}{n}"));
+                        format!("{kind} {}", signs.collect::<Vec<_>>().join(" "))
+                    })
+                    .collect();
+                let lines = rows
+                    .iter()
+                    .find(|e| e.kind == "file")
+                    .map(|e| format!("{} {}", e.change, e.lines))
+                    .unwrap_or_default();
+                out.push(format!("  {file}  {lines}  {}", counts.join(", ")));
+                out.extend(
+                    rows.iter()
+                        .filter(|e| {
+                            e.kind != "file"
+                                && (set.detail || CODE_KINDS.contains(&e.kind.as_str()))
+                        })
+                        .map(|e| {
+                            format!(
+                                "    {:<8} {:<10} {}  {}  [{}]",
+                                e.change,
+                                e.kind,
+                                e.key,
+                                e.lines,
+                                e.commits.join(" ")
+                            )
+                        }),
+                );
+            }
             out.extend(set.commits.iter().map(|c| {
                 let checkpoint = c
                     .checkpoint

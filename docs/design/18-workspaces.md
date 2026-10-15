@@ -56,8 +56,8 @@ Replaces the "plan workspaces" section of 12-operator. Sessions (14) and sandbox
   `/.agentworkspace` ignore line on the dossier branch when it is missing. `status` reports ahead/behind, staged,
   unstaged, untracked, conflicts and drift (a branch switched outside legionctl, a missing worktree);
   `checkpoint` commits everything; `merge` rebases onto the base
-  and fast-forwards the base in a clean main checkout (decided 2026-10-13); `close` removes the worktree and keeps
-  the branch. Writes into the main checkout are not blocked (decided 2026-10-13: nudge only): the session-start
+  and fast-forwards the base in a clean main checkout (decided 2026-10-13); `close` removes the worktree, keeps
+  the dossier's branch and deletes a merged topic branch (decided 2026-10-15). Writes into the main checkout are not blocked (decided 2026-10-13: nudge only): the session-start
   line names the workspace (with its drift) or says to open one, and the stop hook tells the agent when the main
   checkout has changes and the dossier has no workspace there (`workspace.nudge`).
 - Next: plain-folder sources (overlay copies, with sandboxes in 14), then the work graph.
@@ -105,7 +105,7 @@ For a git source, legionctl does the git work around the agent; the agent edits 
 | open | A worktree from a recorded base ref on the dossier's branch `legionctl/<dossier>` (created on first open, reused after). If the session started inside the source checkout, the agent is moved to the worktree path. With `--topic <t>`: a separate topic workspace (below). |
 | checkpoint | Stage and commit the change set's files with a message from the plan entry; update the code graph. |
 | merge | With approval: rebase the workspace's branch onto the base ref, then fast-forward the base in the main checkout; conflicts become git state (14) that the agent resolves in the worktree. |
-| close | Remove the worktree; keep the branch until merged; the dossier stays. Uncommitted changes stop it without `--force`. |
+| close | Remove the worktree; the dossier stays. Delete a topic branch that is merged into its base (`git branch -d`, never `-D`); keep an unmerged topic branch (close says so) and the branch `legionctl/<dossier>`. Uncommitted changes stop it without `--force`. |
 
 Topic workspaces (decided 2026-10-14): parallel agents of one dossier each get their own worktree.
 `workspace open --topic <t>` makes the worktree `<workspace.root>/<repo>/<dossier>--<t>` on the branch

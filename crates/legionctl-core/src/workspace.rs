@@ -589,13 +589,32 @@ impl Dossiers {
             "UPDATE workspaces SET closed = ?1 WHERE path = ?2 AND closed IS NULL",
             params![now(), ws.path.to_string_lossy()],
         )?;
-        Ok(if ws.is_folder() {
-            format!(
+        if ws.is_folder() {
+            return Ok(format!(
                 "closed {} (its changes dropped or merged)",
                 ws.path.display()
-            )
+            ));
+        }
+        let closed = format!("closed {}", ws.path.display());
+        if ws.branch == format!("legionctl/{}", ws.dossier) {
+            return Ok(format!("{closed} (branch {} kept)", ws.branch));
+        }
+        // A topic branch goes when the base has all its commits; `branch -d` refuses it otherwise.
+        let merged = git(
+            &ws.repo,
+            &["merge-base", "--is-ancestor", &ws.branch, &ws.base],
+        )
+        .is_ok();
+        Ok(if merged {
+            match git(&ws.repo, &["branch", "-d", &ws.branch]) {
+                Ok(_) => format!("{closed} (branch {} merged and deleted)", ws.branch),
+                Err(e) => format!("{closed} (branch {} kept: {e})", ws.branch),
+            }
         } else {
-            format!("closed {} (branch {} kept)", ws.path.display(), ws.branch)
+            format!(
+                "{closed} (branch {} kept: it is not merged into {})",
+                ws.branch, ws.base
+            )
         })
     }
 }

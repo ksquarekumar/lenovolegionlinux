@@ -662,6 +662,8 @@ pub struct ChangeSet {
     pub to_tree: String,
     pub entities: Vec<EntityChange>,
     pub commits: Vec<CommitRow>,
+    /// The text lists every entity; else it folds the entities that are not code into counts per file.
+    pub detail: bool,
 }
 
 /// The change sets between consecutive refs (`a b c`: a to b, b to c); one ref: from its first parent.
@@ -773,6 +775,7 @@ fn change_set(dir: &Path, from: &str, to: &str, build: bool) -> Result<ChangeSet
         from_tree,
         to_tree,
         entities,
+        detail: false,
     })
 }
 

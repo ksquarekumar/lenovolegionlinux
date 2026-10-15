@@ -6,4 +6,4 @@
    `topic`.
 4. The lead merges one topic at a time: `legionctl workspace merge --topic kernels`, then `--topic display`.
 5. On a conflict, the lead follows the conflict rules of the skill, then merges again.
-6. The lead closes each topic: `legionctl workspace close --topic kernels`. The branch stays.
+6. The lead closes each topic: `legionctl workspace close --topic kernels`. A merged topic branch is deleted.

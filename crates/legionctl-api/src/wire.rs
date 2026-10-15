@@ -1189,6 +1189,9 @@ wire! {
         entities: Vec<EntityChange>,
         /// Newest first.
         commits: Vec<CommitRow>,
+        /// The text lists every entity; else it folds the entities that are not code (`config_key` and others) into
+        /// counts per file. The JSON has every entity.
+        detail: bool,
     }
 
     /// The state of an annotation at one ref.

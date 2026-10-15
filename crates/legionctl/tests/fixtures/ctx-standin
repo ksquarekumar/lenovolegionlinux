@@ -4,7 +4,9 @@ the node shape that ctx gives for free Rust functions in a one-crate repository:
 (rust:<file>:<name>@<start byte>), binding_key rust:.:<module path>::<name>, binding aliases (a private function has
 only symbol:<name> and symbol:<file>::<name>), start_byte and end_byte, one module node per file (binding_key
 rust:module:.:<module path>), a closure `let <name> = |..| ..;` in a function body (no binding_key; aliases
-symbol:<closure@C> and symbol:<file>::<fn>.<block@B>.<closure@C>), and calls edges. It answers graph index, graph search, graph impact
+symbol:<closure@C> and symbol:<file>::<fn>.<block@B>.<closure@C>), calls edges, and for each .json file one
+config_key node per key at any depth (id config:<file>:<n>, binding_key config:key:<file>#<JSON pointer>, lines 1-1,
+breadth first, keys sorted per object). It answers graph index, graph search, graph impact
 and blame commit. The ignored test with the real ctx checks that both give the same change rows."""
 
 import hashlib
@@ -145,6 +147,27 @@ def index(root, db):
                               {"binding_aliases": [f"symbol:<closure@{c.start(1)}>", f"symbol:{rel}::{path}",
                                                    f"symbol:{path}"],
                                "start_byte": c.start(1), "end_byte": c.end(1), "language": "rust"}))
+    configs = sorted(
+        os.path.relpath(os.path.join(d, f), root)
+        for d, _, names in os.walk(root)
+        for f in names
+        if f.endswith(".json")
+    )
+    for fkey, rel in enumerate(configs, len(files) + 1):
+        text = open(os.path.join(root, rel), "rb").read()
+        conn.execute("INSERT INTO files VALUES (?, ?, ?, ?, '[]', NULL)",
+                     (fkey, rel, hashlib.sha256(text).hexdigest(), rel))
+        level, n = [("", json.loads(text))], 1
+        while level:
+            deeper = []
+            for parent, value in level:
+                for name, child in sorted(value.items()) if isinstance(value, dict) else []:
+                    n += 1
+                    pointer = f"{parent}/{name}"
+                    nodes.append((fkey, f"config:{rel}:{n}", name, "config_key", rel, 1, 1, name,
+                                  f"config:key:{rel}#{pointer}", {"binding_aliases": [], "pointer": pointer}))
+                    deeper.append((pointer, child))
+            level = deeper
     for source, _, body, rel in fns:
         for target, name, _, _ in fns:
             if name and target != source and re.search(rb"\b" + name.encode() + rb"\(", body):

@@ -578,6 +578,99 @@ fn changes_between_refs_are_the_changed_entities_by_stable_key_with_their_commit
     assert!(keys.contains(&"rust:.:two"), "{impact}");
 }
 
+/// The text of a change set for a person: one line per changed file with counts per kind, the code entities under
+/// their file, JSON schema keys folded into a count (a schema of a few hundred keys drowned the code in the first
+/// dogfood run) unless `--detail`; `--kind` filters the rows, also in the JSON; the JSON has every row.
+#[test]
+fn the_change_text_is_one_line_per_file_with_counts_and_schema_keys_folded() {
+    let lab = Lab::new("text", &standin());
+    let repo = lab.repo.clone();
+    lab.ok(&repo, &["dossier", "use", "port"]);
+    lab.ok(&repo, &["workspace", "open"]);
+    let ws = lab.home.join("worktrees/repo/port");
+    write(
+        &ws.join("schema.json"),
+        "{\"properties\": {\"a\": {\"type\": \"string\"}, \"b\": {\"type\": \"integer\"}}, \"type\": \"object\"}\n",
+    );
+    let lib = std::fs::read_to_string(ws.join("src/lib.rs"))
+        .unwrap()
+        .replace(
+            "pub fn add",
+            "pub fn zero() -> i32 {\n    0\n}\n\npub fn add",
+        )
+        .replace("\nfn old_fn() -> i32 {\n    0\n}\n", "");
+    write(&ws.join("src/lib.rs"), &lib);
+    lab.ok(
+        &ws,
+        &["workspace", "checkpoint", "a schema, zero, no old_fn"],
+    );
+
+    let all = lab.json(&ws, &["code", "graph", "changes", "HEAD", "--build"]);
+    let kinds = |sets: &Value| -> Vec<String> {
+        sets[0]["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["kind"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(
+        kinds(&all).iter().filter(|k| *k == "config_key").count(),
+        6,
+        "the JSON has every schema key: {all:#}"
+    );
+
+    let text = lab.ok(&ws, &["code", "graph", "changes", "HEAD"]);
+    let lines: Vec<&str> = text.lines().collect();
+    let at = |prefix: &str| {
+        let found: Vec<usize> = (0..lines.len())
+            .filter(|i| lines[*i].starts_with(prefix))
+            .collect();
+        assert_eq!(found.len(), 1, "one line {prefix:?}:\n{text}");
+        found[0]
+    };
+    let schema = at("  schema.json ");
+    assert!(lines[schema].ends_with("config_key +6"), "{text}");
+    assert!(!text.contains("config:key:"), "keys are folded:\n{text}");
+    let lib = at("  src/lib.rs ");
+    assert!(
+        lines[lib].contains("function +1 -1") && lines[lib].contains("module ~1"),
+        "{text}"
+    );
+    for key in ["rust:.:zero", "rust:.:old_fn"] {
+        let row = (0..lines.len())
+            .find(|i| lines[*i].contains(key))
+            .unwrap_or_else(|| panic!("{key} listed:\n{text}"));
+        assert!(
+            row > lib
+                && lines[row].starts_with("    ")
+                && (lib + 1..row).all(|i| lines[i].starts_with("    ")),
+            "{key} is under its file:\n{text}"
+        );
+    }
+
+    let detail = lab.ok(&ws, &["code", "graph", "changes", "HEAD", "--detail"]);
+    assert_eq!(
+        detail.matches("config:key:schema.json#/").count(),
+        6,
+        "{detail}"
+    );
+
+    let functions = lab.json(
+        &ws,
+        &["code", "graph", "changes", "HEAD", "--kind", "function"],
+    );
+    assert_eq!(kinds(&functions), ["function", "function"], "{functions:#}");
+    let text = lab.ok(
+        &ws,
+        &["code", "graph", "changes", "HEAD", "--kind", "function"],
+    );
+    assert!(
+        !text.contains("schema.json") && text.contains("rust:.:zero"),
+        "{text}"
+    );
+}
+
 /// Annotations follow their symbol: valid where its content is the same (also with other byte offsets), stale after a
 /// body change, absent after its removal, no graph at a ref without one; a symbol that is not at the ref refuses.
 #[test]

@@ -12591,6 +12591,19 @@
           "description": "Make the graphs of the refs that have none.",
           "default": false
         },
+        "kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Only the entities of this kind (`function`, `method`, `struct`, `config_key`, `file`, ...).",
+          "default": null
+        },
+        "detail": {
+          "type": "boolean",
+          "description": "List every entity in the text; else the entities that are not code are a count per file.",
+          "default": false
+        },
         "repo": {
           "type": "string",
           "format": "path",
@@ -12718,6 +12731,10 @@
                 "provenance"
               ]
             }
+          },
+          "detail": {
+            "description": "The text lists every entity; else it folds the entities that are not code (`config_key` and others) into\ncounts per file. The JSON has every entity.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -12727,7 +12744,8 @@
           "to",
           "to_tree",
           "entities",
-          "commits"
+          "commits",
+          "detail"
         ]
       },
       "title": "Array_of_ChangeSet",

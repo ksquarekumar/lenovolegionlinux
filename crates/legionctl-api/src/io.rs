@@ -1710,6 +1710,12 @@ pub struct GraphChangesIn {
     /// Make the graphs of the refs that have none.
     #[serde(default)]
     pub build: bool,
+    /// Only the entities of this kind (`function`, `method`, `struct`, `config_key`, `file`, ...).
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// List every entity in the text; else the entities that are not code are a count per file.
+    #[serde(default)]
+    pub detail: bool,
     /// A folder in the repository.
     #[serde(default = "here")]
     pub repo: ClientPath,
