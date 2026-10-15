@@ -63,7 +63,7 @@ if command -v rustup >/dev/null; then as_build rustup default stable; fi
 # BUILDDIR and PKGDEST in the build home: makepkg.conf can put them in a folder that the user can write (/tmp/makepkg)
 rm -rf "$home/pkg"
 (cd "$src/packaging/arch" && as_build BUILDDIR="$home/build" PKGDEST="$home/pkg" makepkg -f --noconfirm)
-pkg=$(cd "$src/packaging/arch" && as_build PKGDEST="$home/pkg" makepkg --packagelist | grep '/legionctl-[0-9]') ||
+pkg=$(cd "$src/packaging/arch" && as_build BUILDDIR="$home/build" PKGDEST="$home/pkg" makepkg --packagelist | grep '/legionctl-[0-9]') ||
   refuse "makepkg lists no legionctl package"
 [ -f "$pkg" ] || refuse "makepkg built no package at $pkg"
 

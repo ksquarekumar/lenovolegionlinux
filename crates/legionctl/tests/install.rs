@@ -39,6 +39,7 @@ impl Lab {
                 "makepkg",
                 format!(
                     "[ -f PKGBUILD ] || exit 1\n\
+                     [ -n \"$BUILDDIR\" ] || {{ echo 'ERROR: You do not have write permission for the directory $BUILDDIR (/tmp/makepkg).' >&2; exit 1; }}\n\
                      if [ \"$1\" = --packagelist ]; then echo \"$PKGDEST/{PACKAGE}\"; exit; fi\n\
                      echo \"$AS $PWD BUILDDIR=$BUILDDIR PKGDEST=$PKGDEST\" >> {d}/makepkg.log\n\
                      mkdir -p \"$PKGDEST\" && git rev-parse HEAD > \"$PKGDEST/{PACKAGE}\""
