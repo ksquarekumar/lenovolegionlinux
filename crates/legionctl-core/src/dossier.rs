@@ -1078,56 +1078,66 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A v12 file's kills and accepts stay as history, without a file and a hash: no test has them, so the gate asks
-    /// for evidence again; the kills keep their test names.
+    /// A v12 file (before P5's threads) and a v13 file (with them) reach v14: the threads table is there, and the
+    /// kills and accepts stay as history without a file and a hash, so no test has them and the gate asks for
+    /// evidence again; the kills keep their test names.
     #[test]
-    fn v12_kills_and_accepts_stay_without_a_key() {
-        let dir = std::env::temp_dir().join(format!("legionctl-ws-v12-{}", std::process::id()));
+    fn v12_and_v13_kills_and_accepts_stay_without_a_key() {
+        let dir = std::env::temp_dir().join(format!("legionctl-ws-v13-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("v12.db");
-        let v12 = rusqlite::Connection::open(&path).unwrap();
-        v12.execute_batch(
-            "CREATE TABLE workspaces (dossier TEXT NOT NULL, repo TEXT NOT NULL, path TEXT NOT NULL,
-                branch TEXT NOT NULL, base TEXT NOT NULL, opened INTEGER NOT NULL, closed INTEGER);
-             CREATE UNIQUE INDEX open_workspace ON workspaces (dossier, repo) WHERE closed IS NULL;",
-        )
-        .unwrap();
-        for (_, sql) in SCHEMA.steps.iter().filter(|(from, _)| *from < 12) {
-            v12.execute_batch(sql).unwrap();
+        for version in [12, 13] {
+            let path = dir.join(format!("v{version}.db"));
+            let old = rusqlite::Connection::open(&path).unwrap();
+            old.execute_batch(
+                "CREATE TABLE workspaces (dossier TEXT NOT NULL, repo TEXT NOT NULL, path TEXT NOT NULL,
+                    branch TEXT NOT NULL, base TEXT NOT NULL, opened INTEGER NOT NULL, closed INTEGER);
+                 CREATE UNIQUE INDEX open_workspace ON workspaces (dossier, repo) WHERE closed IS NULL;",
+            )
+            .unwrap();
+            for (_, sql) in SCHEMA.steps.iter().filter(|(from, _)| *from < version) {
+                old.execute_batch(sql).unwrap();
+            }
+            old.execute_batch(&format!(
+                "INSERT INTO mutants (repo, ref, file, line, description, killed, source, ts)
+                     VALUES ('/r', 'h', 'src/lib.rs', 2, 'm', '[\"a\",\"t::b\"]', 'agent', 1),
+                            ('/r', 'h', 'src/lib.rs', 3, 'missed', '[]', 'tool', 1);
+                 INSERT INTO test_accepts (repo, test, reason, session, ts) VALUES ('/r', 'a', 'why', 's1', 1);
+                 PRAGMA user_version = {version};"
+            ))
+            .unwrap();
+            drop(old);
+            let db = Db::open(&path, SCHEMA).unwrap();
+            assert_eq!(db.schema_version().unwrap(), 14);
+            let threads: i64 = db
+                .conn()
+                .query_row("SELECT count(*) FROM threads", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(threads, 0, "v{version}: P5's tables are there");
+            let killed: Vec<String> = db
+                .conn()
+                .prepare("SELECT killed FROM mutants ORDER BY id")
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            assert_eq!(
+                killed,
+                [
+                    r#"[{"test":"a","file":null,"hash":null},{"test":"t::b","file":null,"hash":null}]"#,
+                    "[]"
+                ],
+                "v{version}"
+            );
+            let accept: (String, Option<String>, Option<String>) = db
+                .conn()
+                .query_row("SELECT test, file, hash FROM test_accepts", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
+                .unwrap();
+            assert_eq!(accept, ("a".into(), None, None), "v{version}");
         }
-        v12.execute_batch(
-            "INSERT INTO mutants (repo, ref, file, line, description, killed, source, ts)
-                 VALUES ('/r', 'h', 'src/lib.rs', 2, 'm', '[\"a\",\"t::b\"]', 'agent', 1),
-                        ('/r', 'h', 'src/lib.rs', 3, 'missed', '[]', 'tool', 1);
-             INSERT INTO test_accepts (repo, test, reason, session, ts) VALUES ('/r', 'a', 'why', 's1', 1);
-             PRAGMA user_version = 12;",
-        )
-        .unwrap();
-        drop(v12);
-        let db = Db::open(&path, SCHEMA).unwrap();
-        let killed: Vec<String> = db
-            .conn()
-            .prepare("SELECT killed FROM mutants ORDER BY id")
-            .unwrap()
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        assert_eq!(
-            killed,
-            [
-                r#"[{"test":"a","file":null,"hash":null},{"test":"t::b","file":null,"hash":null}]"#,
-                "[]"
-            ]
-        );
-        let accept: (String, Option<String>, Option<String>) = db
-            .conn()
-            .query_row("SELECT test, file, hash FROM test_accepts", [], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })
-            .unwrap();
-        assert_eq!(accept, ("a".into(), None, None));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
