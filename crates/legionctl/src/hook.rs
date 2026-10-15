@@ -6,21 +6,30 @@
 //! | --- | --- | --- |
 //! | session-start | `internal.hooks.run` | stdout: added to the context |
 //! | prompt | `internal.hooks.run` | stdout, or `{"decision":"block","reason":...}` from the dossier gate |
-//! | pre-tool | `internal.dossier.guard` | `permissionDecision: deny` for a write into another dossier |
-//! | stop | `internal.hooks.run` | `{"decision":"block","reason":...}` to the agent when the session is not set up; once per reply |
+//! | pre-tool | `internal.thread.gate`, `internal.dossier.guard` | `permissionDecision: deny` for a tool that a thread hard-block holds, or a write into another dossier |
+//! | post-tool | `internal.agent.tool` | nothing: the call is recorded (thread log, watch rules, presence) |
+//! | stop | `internal.hooks.run` | `{"decision":"block","reason":...}` to the agent when the session is not set up (once per reply), or for a thread block |
 //! | session-end | `dossier.release` | nothing |
 //!
 //! A hook must never stop the agent because legionctl is down: errors go to stderr and the exit code stays 0.
 
 use anyhow::{Context, Result};
 use legionctl_api::{
-    ClientPath, Event, Guard, GuardIn, HookReply, HookRunIn, SessionId, SessionIn, op,
+    AgentToolIn, ClientPath, Event, Guard, GuardIn, HookReply, HookRunIn, SessionId, SessionIn,
+    ThreadGateIn, op,
 };
 use serde_json::{Value, json};
 
 use legionctl_api::client::Client;
 
-pub const EVENTS: [&str; 5] = ["session-start", "prompt", "pre-tool", "stop", "session-end"];
+pub const EVENTS: [&str; 6] = [
+    "session-start",
+    "prompt",
+    "pre-tool",
+    "post-tool",
+    "stop",
+    "session-end",
+];
 
 async fn answer(event: &str, input: &Value) -> Result<Option<String>> {
     let client = Client::new("hook")?;
@@ -36,7 +45,14 @@ async fn answer(event: &str, input: &Value) -> Result<Option<String>> {
         project: project.clone(),
         session: session.clone(),
         prompt: input["prompt"].as_str().map(String::from),
+        // Claude Code sets stop_hook_active when a stop hook already made the agent go on in this reply
+        again: input["stop_hook_active"] == true,
     };
+    let tool = &input["tool_input"];
+    let path = tool["file_path"]
+        .as_str()
+        .or(tool["notebook_path"].as_str())
+        .map(String::from);
     Ok(match event {
         "session-start" => Some(
             client
@@ -53,22 +69,25 @@ async fn answer(event: &str, input: &Value) -> Result<Option<String>> {
             })
         }
         "pre-tool" => {
-            let tool = &input["tool_input"];
-            let Some(path) = tool["file_path"]
-                .as_str()
-                .or(tool["notebook_path"].as_str())
-            else {
-                return Ok(None);
-            };
             let Some(session) = session else {
                 return Ok(None);
             };
-            let Guard { refusal } = client
-                .call::<op::DossierGuard>(&GuardIn {
-                    path: path.to_string(),
-                    session,
+            let held = client
+                .call::<op::ThreadGate>(&ThreadGateIn {
+                    session: session.clone(),
+                    tool: input["tool_name"].as_str().unwrap_or_default().to_string(),
                 })
                 .await?;
+            let refusal = match (held.refusal, path) {
+                (Some(reason), _) => Some(reason),
+                (None, Some(path)) => {
+                    let Guard { refusal } = client
+                        .call::<op::DossierGuard>(&GuardIn { path, session })
+                        .await?;
+                    refusal
+                }
+                (None, None) => None,
+            };
             refusal.map(|reason| {
                 json!({"hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
@@ -78,8 +97,26 @@ async fn answer(event: &str, input: &Value) -> Result<Option<String>> {
                 .to_string()
             })
         }
-        // Claude Code sets stop_hook_active when this hook already made the agent continue: never block twice
-        "stop" if input["stop_hook_active"] == true => None,
+        "post-tool" => {
+            let Some(session) = session else {
+                return Ok(None);
+            };
+            let text = |key: &str| tool[key].as_str().map(String::from);
+            client
+                .call::<op::AgentTool>(&AgentToolIn {
+                    session,
+                    project: project.clone(),
+                    tool: input["tool_name"].as_str().unwrap_or_default().to_string(),
+                    path,
+                    command: text("command"),
+                    to: text("to"),
+                    message: text("message"),
+                    // a tool that reports its result has `success: false` when it failed (SendMessage)
+                    ok: input["tool_response"]["success"] != false,
+                })
+                .await?;
+            None
+        }
         "stop" => client
             .call::<op::HooksRun>(&run(Event::Stop))
             .await?

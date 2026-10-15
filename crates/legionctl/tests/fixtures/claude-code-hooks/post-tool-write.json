@@ -1,0 +1,26 @@
+{
+  "session_id": "SESSION",
+  "transcript_path": "/tmp/transcript.jsonl",
+  "cwd": "CWD",
+  "prompt_id": "PROMPT",
+  "permission_mode": "auto",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Write",
+  "tool_input": {
+    "file_path": "FILE",
+    "content": "TEXT"
+  },
+  "tool_response": {
+    "type": "create",
+    "filePath": "FILE",
+    "content": "TEXT",
+    "structuredPatch": [],
+    "originalFile": null,
+    "userModified": false
+  },
+  "tool_use_id": "TOOL",
+  "duration_ms": 1
+}

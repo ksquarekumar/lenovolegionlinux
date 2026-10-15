@@ -785,4 +785,45 @@ operations! {
     /// Each feature and work item of the plan at a ref: units done or missing, LOC planned and actual (tokei, symbol
     /// spans), linked tests, and the changes since a ref that touch each work item.
     code_plan_status / CodePlanStatus = "code.plan.status", Read, PlanStatusIn => PlanStatus;
+    /// Start a thread: one task with this session as its main agent `main0`, on the caller's dossier.
+    thread_start / ThreadStart = "thread.start", Workspace, ThreadStartIn => Lines;
+    /// Every thread, newest first.
+    thread_list / ThreadList = "thread.list", Read, Empty => Vec<ThreadInfo>;
+    /// One thread: its members (pace, cursor, wakes), messages, watch rules with their counts, and its log.
+    thread_show / ThreadShow = "thread.show", Read, ThreadIdIn => ThreadView;
+    /// Add a member to a thread (an observer with its session and pace).
+    thread_join / ThreadJoin = "thread.join", Workspace, ThreadJoinIn => Lines;
+    /// A member leaves its thread; its open blocks expire, so it cannot hold the main agent.
+    thread_leave / ThreadLeave = "thread.leave", Workspace, ThreadMemberIn => Lines;
+    /// Send a message through the thread outbox. The receiver's hooks deliver it: note, hint, reminder, notice and
+    /// result at its next prompt; a soft-block at the end of one reply; a hard-block at each reply end and at each
+    /// call of the tool it names, until the receiver acks it. Only a thread-observer member sends blocks; a peer that
+    /// is not a member sends notes and hints.
+    thread_send / ThreadSend = "thread.send", Session, ThreadSendIn => Lines;
+    /// The messages to this session that it did not ack.
+    thread_inbox / ThreadInbox = "thread.inbox", Read, SessionIn => Vec<ThreadMessage>;
+    /// Ack a message to this session (it clears a block); `--reply` sends a note back.
+    thread_ack / ThreadAck = "thread.ack", Session, ThreadAckIn => Lines;
+    /// Announce a state (done, ready, blocked, tests-written) in each thread of this session; it wakes the members
+    /// with pace on-declare or on-stop.
+    thread_declare / ThreadDeclare = "thread.declare", Session, ThreadDeclareIn => Lines;
+    /// Change when the operator wakes a member: on-trigger (only when its watch rules find work), on-stop, on-declare.
+    thread_pace / ThreadPace = "thread.pace", Session, ThreadPaceIn => Lines;
+    /// The watch rules of a thread with their counts.
+    thread_rules_list / ThreadRulesList = "thread.rules.list", Read, ThreadIdIn => Vec<WatchRule>;
+    /// Add a watch rule: when the watched member makes `--every` tool calls of `--tools` on `--path` with no Bash
+    /// command that contains `<expect>` between them, the member sends a message with the count of the misses.
+    thread_rules_add / ThreadRulesAdd = "thread.rules.add", Session, RuleAddIn => Lines;
+    /// Remove a watch rule.
+    thread_rules_rm / ThreadRulesRm = "thread.rules.rm", Session, RuleRmIn => Lines;
+    /// The sessions that share the caller's dossier, workspace or threads (or the scope given), with their state,
+    /// last tool call, declared state and messages they did not ack.
+    thread_peers / ThreadPeers = "thread.peers", Read, PeersIn => Vec<Peer>;
+    /// One peer's state and its newest events (the same rows as `trace`).
+    thread_observe / ThreadObserve = "thread.observe", Read, ObserveIn => Observed;
+    /// Record one tool call of an agent (the post-tool hook): the thread log takes each `SendMessage`, and the watch
+    /// rules count the call.
+    agent_tool / AgentTool = "internal.agent.tool", Session, AgentToolIn => Empty;
+    /// Why an open hard-block refuses this tool call of the session (the pre-tool hook).
+    thread_gate / ThreadGate = "internal.thread.gate", Read, ThreadGateIn => Guard;
 }

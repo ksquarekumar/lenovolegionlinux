@@ -22,6 +22,7 @@ W workspace, M machine (polkit). "client" runs in the client only, with no opera
 | `code tests` (`run`, `list`, `show`, `review`, `mutant record`, `mutant run`) | R, S | operator, cargo, cargo-mutants; `run` and `mutant run` are jobs | `code tests review`, `jobs` | verify-and-ship |
 | `code plan` (`check`, `status`) | R | operator, ctx, tokei | `code plan status` | workspace-practice |
 | `workspace` | R, S, W | operator, git; `pack`: docker or QEMU, a job | `workspace status`, `workspace list` | workspace-practice |
+| `thread` (`start`, `list`, `show`, `join`, `leave`, `send`, `inbox`, `ack`, `declare`, `pace`, `rules`, `peers`, `observe`) | R, S, W (`start`, `join`, `leave`) | operator; delivery through the hooks | `thread show`, `thread peers`, `trace` | sessions-and-agents |
 | `session`, `jobs`, `tools`, `agents`, `gateway` | R, W | systemd scope, bwrap, docker or QEMU; `session run` is a job | `session list`, `jobs`, `trace` | sessions-and-agents |
 | `mcp-proxy` | client | - | `tools calls` | sessions-and-agents |
 | `packages`, `cache`, `images` | R, W | operator, network, docker buildx and compose; `images build` is a job | its `list`/`stats`/`status` | sessions-and-agents |

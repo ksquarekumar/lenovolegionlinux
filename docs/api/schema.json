@@ -3832,6 +3832,11 @@
           ],
           "description": "The prompt text (prompt event): a prompt that runs /legionctl:dossier passes the gate.",
           "default": null
+        },
+        "again": {
+          "type": "boolean",
+          "description": "Stop event: the reply goes on because a stop hook stopped it before (`stop_hook_active`); only a thread\nhard-block stops it again.",
+          "default": false
         }
       },
       "required": [
@@ -13313,6 +13318,1579 @@
       ],
       "description": "The plan against the code of a ref.",
       "title": "PlanStatus",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "thread.start": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "The task, in a few words."
+        },
+        "dossier": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The dossier of the task; default: the caller's dossier.",
+          "default": null
+        },
+        "session": {
+          "type": "string",
+          "format": "session",
+          "description": "Agent session id; the client fills it.",
+          "default": ""
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "title": "ThreadStartIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "thread.list": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "description": "A thread: one task with its members.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "title": {
+            "type": "string"
+          },
+          "dossier": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "state": {
+            "description": "open or closed.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "dossier",
+          "created_at",
+          "state"
+        ]
+      },
+      "title": "Array_of_ThreadInfo",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "thread.show": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The thread's id (`thread list`)."
+        }
+      },
+      "required": [
+        "thread"
+      ],
+      "title": "ThreadIdIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "title": {
+              "type": "string"
+            },
+            "dossier": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "state": {
+              "type": "string",
+              "description": "open or closed."
+            }
+          },
+          "required": [
+            "id",
+            "title",
+            "dossier",
+            "created_at",
+            "state"
+          ],
+          "description": "A thread: one task with its members."
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "description": "A member of a thread.",
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "archetype": {
+                "description": "The role of a thread member.",
+                "oneOf": [
+                  {
+                    "description": "Owns the task and its completion.",
+                    "type": "string",
+                    "const": "main-agent"
+                  },
+                  {
+                    "description": "Test review, process and verification for the main agent.",
+                    "type": "string",
+                    "const": "thread-observer"
+                  },
+                  {
+                    "description": "Makes and places the thread's views.",
+                    "type": "string",
+                    "const": "ui-composer"
+                  }
+                ]
+              },
+              "session": {
+                "description": "Its agent session; none for a member that has no session yet.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "pace": {
+                "description": "When the operator wakes a member.",
+                "oneOf": [
+                  {
+                    "description": "Only when a watch rule of the member finds work.",
+                    "type": "string",
+                    "const": "on-trigger"
+                  },
+                  {
+                    "description": "After each stop and each declare of another member.",
+                    "type": "string",
+                    "const": "on-stop"
+                  },
+                  {
+                    "description": "Only at a declare of another member.",
+                    "type": "string",
+                    "const": "on-declare"
+                  }
+                ]
+              },
+              "cursor": {
+                "description": "The last thread log id it saw (its last wake).",
+                "type": "integer",
+                "format": "int64"
+              },
+              "state": {
+                "description": "active or left.",
+                "type": "string"
+              },
+              "joined_at": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "wakes": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "name",
+              "archetype",
+              "pace",
+              "cursor",
+              "state",
+              "joined_at",
+              "wakes"
+            ]
+          }
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "description": "A message in the thread outbox.",
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "thread": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "description": "A member name, or a peer's session id.",
+                "type": "string"
+              },
+              "kind": {
+                "description": "What a thread message does to its receiver: note, hint, reminder, notice and result go into its next prompt;\na soft-block stops the end of one reply; a hard-block stops each reply and refuses the tool it names until\nthe receiver acks it.",
+                "type": "string",
+                "enum": [
+                  "note",
+                  "hint",
+                  "reminder",
+                  "notice",
+                  "result",
+                  "soft-block",
+                  "hard-block"
+                ]
+              },
+              "body": {
+                "type": "string"
+              },
+              "tool": {
+                "description": "The tool that a hard-block refuses.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "state": {
+                "description": "pending, delivered, acked or expired.",
+                "type": "string"
+              },
+              "created_at": {
+                "type": "integer",
+                "format": "int64"
+              }
+            },
+            "required": [
+              "id",
+              "thread",
+              "from",
+              "to",
+              "kind",
+              "body",
+              "state",
+              "created_at"
+            ]
+          }
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "description": "A watch rule and its counts.",
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "thread": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "member": {
+                "description": "The member that watches.",
+                "type": "string"
+              },
+              "watched": {
+                "type": "string"
+              },
+              "tools": {
+                "description": "The tools that count (`|` between names).",
+                "type": "string"
+              },
+              "path": {
+                "description": "A part of the path that a tool call must touch to count.",
+                "type": "string"
+              },
+              "expect": {
+                "description": "The Bash command that sets the count back to 0.",
+                "type": "string"
+              },
+              "every": {
+                "description": "The count at which the rule sends its message.",
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              },
+              "kind": {
+                "description": "What a thread message does to its receiver: note, hint, reminder, notice and result go into its next prompt;\na soft-block stops the end of one reply; a hard-block stops each reply and refuses the tool it names until\nthe receiver acks it.",
+                "type": "string",
+                "enum": [
+                  "note",
+                  "hint",
+                  "reminder",
+                  "notice",
+                  "result",
+                  "soft-block",
+                  "hard-block"
+                ]
+              },
+              "created_at": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "run": {
+                "description": "Calls counted since the expected command.",
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              },
+              "misses": {
+                "description": "Times the rule sent its message.",
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              },
+              "done": {
+                "description": "Steps the member did for the watched member (`thread send ... notice --rule`).",
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "id",
+              "thread",
+              "member",
+              "watched",
+              "tools",
+              "path",
+              "expect",
+              "every",
+              "kind",
+              "created_at",
+              "run",
+              "misses",
+              "done"
+            ]
+          }
+        },
+        "log": {
+          "type": "array",
+          "items": {
+            "description": "One row of the append-only thread log.",
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "at": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "member": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "payload": true
+            },
+            "required": [
+              "id",
+              "at",
+              "member",
+              "kind",
+              "payload"
+            ]
+          }
+        }
+      },
+      "required": [
+        "thread",
+        "members",
+        "messages",
+        "rules",
+        "log"
+      ],
+      "description": "A thread with its members, messages, watch rules and log.",
+      "title": "ThreadView",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "thread.join": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "name": {
+          "type": "string",
+          "description": "The member's name in the thread (`observer0`)."
+        },
+        "archetype": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "main-agent",
+              "description": "Owns the task and its completion."
+            },
+            {
+              "type": "string",
+              "const": "thread-observer",
+              "description": "Test review, process and verification for the main agent."
+            },
+            {
+              "type": "string",
+              "const": "ui-composer",
+              "description": "Makes and places the thread's views."
+            }
+          ],
+          "description": "The role of a thread member."
+        },
+        "member_session": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The agent session of the member, which its hooks and calls carry.",
+          "default": null
+        },
+        "pace": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "on-trigger",
+              "description": "Only when a watch rule of the member finds work."
+            },
+            {
+              "type": "string",
+              "const": "on-stop",
+              "description": "After each stop and each declare of another member."
+            },
+            {
+              "type": "string",
+              "const": "on-declare",
+              "description": "Only at a declare of another member."
+            }
+          ],
+          "description": "When the operator wakes a member.",
+          "default": "on-trigger"
+        }
+      },
+      "required": [
+        "thread",
+        "name",
+        "archetype"
+      ],
+      "title": "ThreadJoinIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "thread.leave": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "name": {
+          "type": "string",
+          "description": "The member's name in the thread."
+        }
+      },
+      "required": [
+        "thread",
+        "name"
+      ],
+      "title": "ThreadMemberIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "thread.send": {
+    "class": "session",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "to": {
+          "type": "string",
+          "description": "A member name of the thread, or a peer's session id (`thread peers`)."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "note",
+            "hint",
+            "reminder",
+            "notice",
+            "result",
+            "soft-block",
+            "hard-block"
+          ],
+          "description": "What a thread message does to its receiver: note, hint, reminder, notice and result go into its next prompt;\na soft-block stops the end of one reply; a hard-block stops each reply and refuses the tool it names until\nthe receiver acks it."
+        },
+        "text": {
+          "type": "string",
+          "description": "The message: the fact you verified and how the receiver clears it."
+        },
+        "thread": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "description": "The thread; default: the caller's only open thread.",
+          "default": null
+        },
+        "tool": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "For a hard-block: the tool it refuses until the receiver acks it (`workspace_checkpoint`).",
+          "default": null
+        },
+        "rule": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "description": "For a notice: the watch rule whose step you did for the receiver; the message then tells the counts.",
+          "default": null
+        },
+        "session": {
+          "type": "string",
+          "format": "session",
+          "description": "Agent session id; the client fills it.",
+          "default": ""
+        }
+      },
+      "required": [
+        "to",
+        "kind",
+        "text"
+      ],
+      "title": "ThreadSendIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "thread.inbox": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "format": "session",
+          "description": "Agent session id; the client fills it.",
+          "default": ""
+        }
+      },
+      "title": "SessionIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "description": "A message in the thread outbox.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "thread": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "description": "A member name, or a peer's session id.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "What a thread message does to its receiver: note, hint, reminder, notice and result go into its next prompt;\na soft-block stops the end of one reply; a hard-block stops each reply and refuses the tool it names until\nthe receiver acks it.",
+            "type": "string",
+            "enum": [
+              "note",
+              "hint",
+              "reminder",
+              "notice",
+              "result",
+              "soft-block",
+              "hard-block"
+            ]
+          },
+          "body": {
+            "type": "string"
+          },
+          "tool": {
+            "description": "The tool that a hard-block refuses.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "description": "pending, delivered, acked or expired.",
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "required": [
+          "id",
+          "thread",
+          "from",
+          "to",
+          "kind",
+          "body",
+          "state",
+          "created_at"
+        ]
+      },
+      "title": "Array_of_ThreadMessage",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "thread.ack": {
+    "class": "session",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The message id."
+        },
+        "reply": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A note back to the sender.",
+          "default": null
+        },
+        "session": {
+          "type": "string",
+          "format": "session",
+          "description": "Agent session id; the client fills it.",
+          "default": ""
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "ThreadAckIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "thread.declare": {
+    "class": "session",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "word": {
+          "type": "string",
+          "enum": [
+            "done",
+            "ready",
+            "blocked",
+            "tests-written"
+          ],
+          "description": "A state that a member announces."
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "session": {
+          "type": "string",
+          "format": "session",
+          "description": "Agent session id; the client fills it.",
+          "default": ""
+        }
+      },
+      "required": [
+        "word"
+      ],
+      "title": "ThreadDeclareIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "thread.pace": {
+    "class": "session",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "name": {
+          "type": "string",
+          "description": "The member's name in the thread."
+        },
+        "pace": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "on-trigger",
+              "description": "Only when a watch rule of the member finds work."
+            },
+            {
+              "type": "string",
+              "const": "on-stop",
+              "description": "After each stop and each declare of another member."
+            },
+            {
+              "type": "string",
+              "const": "on-declare",
+              "description": "Only at a declare of another member."
+            }
+          ],
+          "description": "When the operator wakes a member."
+        }
+      },
+      "required": [
+        "thread",
+        "name",
+        "pace"
+      ],
+      "title": "ThreadPaceIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "thread.rules.list": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The thread's id (`thread list`)."
+        }
+      },
+      "required": [
+        "thread"
+      ],
+      "title": "ThreadIdIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "description": "A watch rule and its counts.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "thread": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "member": {
+            "description": "The member that watches.",
+            "type": "string"
+          },
+          "watched": {
+            "type": "string"
+          },
+          "tools": {
+            "description": "The tools that count (`|` between names).",
+            "type": "string"
+          },
+          "path": {
+            "description": "A part of the path that a tool call must touch to count.",
+            "type": "string"
+          },
+          "expect": {
+            "description": "The Bash command that sets the count back to 0.",
+            "type": "string"
+          },
+          "every": {
+            "description": "The count at which the rule sends its message.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "kind": {
+            "description": "What a thread message does to its receiver: note, hint, reminder, notice and result go into its next prompt;\na soft-block stops the end of one reply; a hard-block stops each reply and refuses the tool it names until\nthe receiver acks it.",
+            "type": "string",
+            "enum": [
+              "note",
+              "hint",
+              "reminder",
+              "notice",
+              "result",
+              "soft-block",
+              "hard-block"
+            ]
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "run": {
+            "description": "Calls counted since the expected command.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "misses": {
+            "description": "Times the rule sent its message.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "done": {
+            "description": "Steps the member did for the watched member (`thread send ... notice --rule`).",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "id",
+          "thread",
+          "member",
+          "watched",
+          "tools",
+          "path",
+          "expect",
+          "every",
+          "kind",
+          "created_at",
+          "run",
+          "misses",
+          "done"
+        ]
+      },
+      "title": "Array_of_WatchRule",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "thread.rules.add": {
+    "class": "session",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "member": {
+          "type": "string",
+          "description": "The member that watches and sends the message."
+        },
+        "expect": {
+          "type": "string",
+          "description": "The Bash command that must come between the counted tool calls (`make lint`)."
+        },
+        "watched": {
+          "type": "string",
+          "description": "The member it watches.",
+          "default": "main0"
+        },
+        "tools": {
+          "type": "string",
+          "description": "The tool calls that count, `|` between names.",
+          "default": "Edit|Write|MultiEdit|NotebookEdit"
+        },
+        "path": {
+          "type": "string",
+          "description": "A part of the path that a counted call touches (`crates/`); empty: every path.",
+          "default": ""
+        },
+        "every": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The count of calls without the command at which the rule sends its message.",
+          "default": 4
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "note",
+            "hint",
+            "reminder",
+            "notice",
+            "result",
+            "soft-block",
+            "hard-block"
+          ],
+          "description": "What a thread message does to its receiver: note, hint, reminder, notice and result go into its next prompt;\na soft-block stops the end of one reply; a hard-block stops each reply and refuses the tool it names until\nthe receiver acks it.",
+          "default": "reminder"
+        }
+      },
+      "required": [
+        "thread",
+        "member",
+        "expect"
+      ],
+      "title": "RuleAddIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "thread.rules.rm": {
+    "class": "session",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The rule's id (`thread rules list`)."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "RuleRmIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "thread.peers": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "dossier": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Peers on this dossier, in place of the caller's own scope.",
+          "default": null
+        },
+        "topic": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Peers in this topic workspace of the caller's dossier.",
+          "default": null
+        },
+        "thread": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "description": "Peers that are members of this thread.",
+          "default": null
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "Where the caller works.",
+          "default": "."
+        },
+        "session": {
+          "type": "string",
+          "format": "session",
+          "description": "Agent session id; the client fills it.",
+          "default": ""
+        }
+      },
+      "title": "PeersIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "description": "A session that shares a dossier, a workspace or a thread with the caller.",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "agent": {
+            "description": "claude or codex.",
+            "type": "string"
+          },
+          "account": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dossier": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "topic": {
+            "description": "The topic of its workspace (\"\" for the dossier's own workspace).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workspace": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "members": {
+            "description": "`<thread>/<member>` for each thread it is a member of.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "shares": {
+            "description": "What it shares with the caller.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "state": {
+            "description": "running, idle, ended or unknown, from its last hook call.",
+            "type": "string"
+          },
+          "seen_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "last_tool": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "declared": {
+            "description": "The last word it declared in a thread.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pending": {
+            "description": "Messages to it that it did not ack.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "channels": {
+            "description": "outbox (`thread send`), and claude-inbox (Claude Code's `SendMessage`).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "session",
+          "agent",
+          "members",
+          "shares",
+          "state",
+          "pending",
+          "channels"
+        ]
+      },
+      "title": "Array_of_Peer",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "thread.observe": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "peer": {
+          "type": "string",
+          "description": "A peer's session id, or a member name in one of the caller's threads."
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "Where the caller works.",
+          "default": "."
+        },
+        "session": {
+          "type": "string",
+          "format": "session",
+          "description": "Agent session id; the client fills it.",
+          "default": ""
+        }
+      },
+      "required": [
+        "peer"
+      ],
+      "title": "ObserveIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "peer": {
+          "type": "object",
+          "properties": {
+            "session": {
+              "type": "string"
+            },
+            "agent": {
+              "type": "string",
+              "description": "claude or codex."
+            },
+            "account": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "dossier": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "topic": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The topic of its workspace (\"\" for the dossier's own workspace)."
+            },
+            "workspace": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "`<thread>/<member>` for each thread it is a member of."
+            },
+            "shares": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "What it shares with the caller."
+            },
+            "state": {
+              "type": "string",
+              "description": "running, idle, ended or unknown, from its last hook call."
+            },
+            "seen_at": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            },
+            "last_tool": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "last_path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "declared": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The last word it declared in a thread."
+            },
+            "pending": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0,
+              "description": "Messages to it that it did not ack."
+            },
+            "channels": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "outbox (`thread send`), and claude-inbox (Claude Code's `SendMessage`)."
+            }
+          },
+          "required": [
+            "session",
+            "agent",
+            "members",
+            "shares",
+            "state",
+            "pending",
+            "channels"
+          ],
+          "description": "A session that shares a dossier, a workspace or a thread with the caller."
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "description": "One entry of the event log: who did what, when.",
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "at": {
+                "description": "Seconds since the epoch.",
+                "type": "integer",
+                "format": "int64"
+              },
+              "actor": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "payload": true
+            },
+            "required": [
+              "id",
+              "at",
+              "actor",
+              "kind",
+              "payload"
+            ]
+          }
+        }
+      },
+      "required": [
+        "peer",
+        "events"
+      ],
+      "description": "A peer's state and its newest events.",
+      "title": "Observed",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "internal.agent.tool": {
+    "class": "session",
+    "internal": true,
+    "input": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "format": "session",
+          "description": "Agent session id; the client fills it.",
+          "default": ""
+        },
+        "project": {
+          "type": "string",
+          "format": "path",
+          "description": "The agent's working directory.",
+          "default": "."
+        },
+        "tool": {
+          "type": "string"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The file it wrote.",
+          "default": null
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The Bash command.",
+          "default": null
+        },
+        "to": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`SendMessage`: the receiver.",
+          "default": null
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`SendMessage`: the text.",
+          "default": null
+        },
+        "ok": {
+          "type": "boolean",
+          "description": "False when the tool reports that it failed.",
+          "default": false
+        }
+      },
+      "required": [
+        "tool"
+      ],
+      "description": "One tool call of an agent, from Claude Code's `PostToolUse` hook.",
+      "title": "AgentToolIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "internal.thread.gate": {
+    "class": "read",
+    "internal": true,
+    "input": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "format": "session",
+          "description": "Agent session id; the client fills it.",
+          "default": ""
+        },
+        "tool": {
+          "type": "string",
+          "description": "The tool that the agent is about to call."
+        }
+      },
+      "required": [
+        "tool"
+      ],
+      "title": "ThreadGateIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "refusal": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Set when the write is refused."
+        }
+      },
+      "title": "Guard",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   }

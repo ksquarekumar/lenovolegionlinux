@@ -1072,7 +1072,7 @@ fn agent_findings() -> Result<Vec<String>> {
     Ok(w)
 }
 
-fn session(id: &SessionId) -> Result<&str> {
+pub(crate) fn session(id: &SessionId) -> Result<&str> {
     anyhow::ensure!(
         !id.0.is_empty(),
         "this acts on an agent session's dossier: run it in a session (LEGIONCTL_SESSION or CLAUDE_CODE_SESSION_ID)"
@@ -1998,6 +1998,16 @@ impl Engine for Operator {
         let resolved = config(Some(&input.project))?;
         let store = Dossiers::open(&resolved.config.dossier)?;
         let session = input.session.as_ref().filter(|s| !s.0.is_empty());
+        if input.again {
+            // the reply goes on because a stop hook stopped it: only a thread hard-block stops it again
+            return Ok(HookReply {
+                text: String::new(),
+                block: match session {
+                    Some(s) => store.thread_stop(&s.0, true)?,
+                    None => None,
+                },
+            });
+        }
         let mut active = match session {
             Some(s) => store.active(&s.0)?,
             None => None,
@@ -2033,6 +2043,18 @@ impl Engine for Operator {
             });
         }
         let mut lines = Vec::new();
+        match (session, Event::from(input.event)) {
+            (Some(s), Event::Stop) => {
+                if let Some(block) = store.thread_stop(&s.0, false)? {
+                    return Ok(HookReply {
+                        text: String::new(),
+                        block: Some(block),
+                    });
+                }
+            }
+            (Some(s), Event::Prompt) => lines.extend(store.thread_prompt(&s.0)?),
+            _ => {}
+        }
         if let (Some(s), Some(d), Some(p)) = (session, active.as_deref(), place.as_ref())
             && let Some(told) =
                 dossier_nudge(ctx, &resolved, &store, (&s.0, d, p), input.event.into())?
@@ -3552,6 +3574,90 @@ impl Engine for Operator {
         input: legionctl_api::PlanStatusIn,
     ) -> Result<legionctl_api::PlanStatus> {
         crate::code::plan_status(&input)
+    }
+
+    fn thread_start(&self, _: &Ctx, input: legionctl_api::ThreadStartIn) -> Result<Lines> {
+        crate::thread::start(&input)
+    }
+
+    fn thread_list(&self, _: &Ctx, _: Empty) -> Result<Vec<legionctl_api::ThreadInfo>> {
+        crate::thread::list()
+    }
+
+    fn thread_show(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::ThreadIdIn,
+    ) -> Result<legionctl_api::ThreadView> {
+        crate::thread::show(&input)
+    }
+
+    fn thread_join(&self, _: &Ctx, input: legionctl_api::ThreadJoinIn) -> Result<Lines> {
+        crate::thread::join(&input)
+    }
+
+    fn thread_leave(&self, _: &Ctx, input: legionctl_api::ThreadMemberIn) -> Result<Lines> {
+        crate::thread::leave(&input)
+    }
+
+    fn thread_send(&self, _: &Ctx, input: legionctl_api::ThreadSendIn) -> Result<Lines> {
+        crate::thread::send(&input)
+    }
+
+    fn thread_inbox(&self, _: &Ctx, input: SessionIn) -> Result<Vec<legionctl_api::ThreadMessage>> {
+        crate::thread::inbox(&input)
+    }
+
+    fn thread_ack(&self, _: &Ctx, input: legionctl_api::ThreadAckIn) -> Result<Lines> {
+        crate::thread::ack(&input)
+    }
+
+    fn thread_declare(&self, _: &Ctx, input: legionctl_api::ThreadDeclareIn) -> Result<Lines> {
+        crate::thread::declare(&input)
+    }
+
+    fn thread_pace(&self, _: &Ctx, input: legionctl_api::ThreadPaceIn) -> Result<Lines> {
+        crate::thread::pace(&input)
+    }
+
+    fn thread_rules_list(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::ThreadIdIn,
+    ) -> Result<Vec<legionctl_api::WatchRule>> {
+        crate::thread::rules(&input)
+    }
+
+    fn thread_rules_add(&self, _: &Ctx, input: legionctl_api::RuleAddIn) -> Result<Lines> {
+        crate::thread::rule_add(&input)
+    }
+
+    fn thread_rules_rm(&self, _: &Ctx, input: legionctl_api::RuleRmIn) -> Result<Lines> {
+        crate::thread::rule_rm(&input)
+    }
+
+    fn thread_peers(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::PeersIn,
+    ) -> Result<Vec<legionctl_api::Peer>> {
+        crate::thread::peers(&input)
+    }
+
+    fn thread_observe(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::ObserveIn,
+    ) -> Result<legionctl_api::Observed> {
+        crate::thread::observe(&input)
+    }
+
+    fn agent_tool(&self, _: &Ctx, input: legionctl_api::AgentToolIn) -> Result<Empty> {
+        crate::thread::tool(&input)
+    }
+
+    fn thread_gate(&self, _: &Ctx, input: legionctl_api::ThreadGateIn) -> Result<Guard> {
+        crate::thread::gate(&input)
     }
 
     fn knobs_show(&self, _: &Ctx, input: InspectIn) -> Result<KnobDetail> {

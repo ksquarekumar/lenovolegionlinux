@@ -1,14 +1,10 @@
 {
-  "description": "legionctl hooks: hook actions per event (manage them with /legionctl:hooks), the dossier gate and the dossier write guard",
+  "description": "legionctl hooks: hook actions per event (manage them with /legionctl:hooks), the dossier gate, the dossier write guard, and thread delivery and tool records",
   "hooks": {
     "SessionStart": [{ "hooks": [{ "type": "command", "command": "legionctl hook session-start", "timeout": 30 }] }],
     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "legionctl hook prompt", "timeout": 30 }] }],
-    "PreToolUse": [
-      {
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
-        "hooks": [{ "type": "command", "command": "legionctl hook pre-tool", "timeout": 10 }]
-      }
-    ],
+    "PreToolUse": [{ "hooks": [{ "type": "command", "command": "legionctl hook pre-tool", "timeout": 10 }] }],
+    "PostToolUse": [{ "hooks": [{ "type": "command", "command": "legionctl hook post-tool", "timeout": 10 }] }],
     "Stop": [{ "hooks": [{ "type": "command", "command": "legionctl hook stop", "timeout": 30 }] }],
     "SessionEnd": [{ "hooks": [{ "type": "command", "command": "legionctl hook session-end", "timeout": 10 }] }]
   }

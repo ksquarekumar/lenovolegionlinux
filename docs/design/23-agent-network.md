@@ -3,7 +3,7 @@
 Status: approved (2026-10-15, "Decisions" at the end). Plan rows todo-90 (two code graphs), todo-91 (agent
 network), todo-92 (thread UI). Part B+ (todo-97 presence, todo-98 agent configs and pools) was added and approved on
 2026-10-15 ("Decisions on Part B+"). Part E (todo-100..todo-104: project checks, test runners, graph schema, change
-watcher, dossier home, observer recovery) is proposed (2026-10-15), at the end. Built: P1 and P2 (section "Built: P1 and P2", after A11), P3 (section "Built: P3"). The user's request (verbatim) and the decisions are in the
+watcher, dossier home, observer recovery) was added and approved on 2026-10-15 ("Decisions on Part E"), at the end. Built: P1 and P2 (section "Built: P1 and P2", after A11), P3 (section "Built: P3"), P5 (section "Built: P5", after B+7). The user's request (verbatim) and the decisions are in the
 dossier: `MEMORY/11-agent-network-and-code-graphs.md`.
 
 ## In short
@@ -982,6 +982,48 @@ their argv, env and the files they get):
 6. Codex members: Codex subagents inherit sandbox, approval and MCP. Recommendation: a Codex member of a pool always
    runs as its own operator session; `~/.codex/agents` files are installed only for quick use in a Codex session,
    with instructions, model and effort.
+
+### Built: P5 (2026-10-15)
+
+| Part | Where |
+| --- | --- |
+| Tables `threads`, `thread_log`, `members`, `messages`, `watch_rules` | `workspace.db` v13 (`crates/legionctl-core/src/thread.rs`) |
+| Operations | `thread.start`, `list`, `show`, `join`, `leave`, `send`, `inbox`, `ack`, `declare`, `pace`, `rules.list`, `rules.add`, `rules.rm`, `peers`, `observe` (CLI `thread <name>`, MCP `thread_<name>`); internal `agent.tool` (the `post-tool` hook) and `thread.gate` (the `pre-tool` hook) |
+| Delivery | `engine::hooks_run` (prompt, stop), `crates/legionctl/src/hook.rs` (pre-tool, post-tool), `integrations/agent-plugin/hooks/hooks.json` (`PreToolUse` for each tool, new `PostToolUse`) |
+| Skill text | sessions-and-agents (rules 19-21, `refs/reference-threads.md`), dossier-practice (`refs/reference-hooks.md`), tool-lifecycle (group `thread`) |
+
+What is different from B2-B8 and B+1, and why:
+
+| Item | Built | Why |
+| --- | --- | --- |
+| Thread log | Table `thread_log` in `workspace.db`, append-only; each projection changes in the same transaction as its row. The `agent.tool` rows stay in the operator's event log (kind `internal.agent.tool`, the audit of the hook's call). | The operator's event log is in another file and is pruned after its days; the thread log must stay. A tool call of a session that is in no thread is not a thread fact. |
+| Watch counts | The columns `run`, `misses`, `done` of `watch_rules`, not a table `watch_counts`. | One rule has one count row. |
+| Watch rule | Trigger: a tool of `tools` (`Edit\|Write\|MultiEdit\|NotebookEdit`) on a path that has `path` as a part; expect: a Bash call whose command contains `expect`; at `every` calls the rule sends its message, its count goes back to 0, and `misses` goes up. "Since" is the rule's start time, in UTC. | The operator has no time zone of the user. The path match is text, not from the repository root (a shortcut in the code). |
+| Steps done for main | `thread send main0 notice "<text>" --rule <id>` adds 1 to `done` and adds the counts to the text. | The observer that does the step says so; the operator does not run steps in P5. |
+| Pace | `on-trigger`, `on-stop`, `on-declare`. A wake is a `thread.wake` row with the count of log rows since the member's cursor, and the cursor moves at once. | No model member runs in P5: the ACP prompt of a wake, the timed paces (`on-event`, `poll`) and the move of the cursor after the prompt come with P6b. |
+| Soft-block | Stops one reply end; it does not stop a reply that goes on because a stop hook stopped it (`stop_hook_active`). | Claude Code sets `stop_hook_active`; only a hard-block may stop that reply again. |
+| Hard-block | Stops each reply end, also with `stop_hook_active`, and refuses the call of its tool (`--tool`; the same name, or an MCP tool that ends with `__<name>`) until the receiver acks it. A member that leaves makes its blocks `expired`. | B6: a member that is gone cannot hold the main agent. Failed members (P6b) use the same expiry. |
+| Rights | `note` and `hint` from any session; `reminder`, `notice`, `result` from a member; blocks from a `thread-observer` member of the thread. | B+1. |
+| Receiver | A member name of the thread, or a peer's session id. | B+1 (`thread send --to <peer>`). |
+| `SendMessage` | The post-tool hook writes a `thread.message` row (channel `claude-inbox`, receiver, text, `sent` from the tool's `success`) in each thread of the sender. | Decision 1 of B+. The payload is the one Claude Code 2.1.296 sent (recorded in the e2e fixtures). |
+| Peers | Sessions from the last hook call, tool call and dossier release of each session in the operator's event log (within `dossier.stale_hours`), the open bindings and the thread members. The dossier of a session is its binding, else the dossier of the workspace that contains its folder; the topic comes from the workspace's branch. State: `running` (prompt, tool call), `idle` (stop, session start), `ended` (session end), `unknown` (no hook call). | One dossier has one binding, so the agents of its topic workspaces are found by the folder of their hook calls. `paused` and `offloaded` (the systemd scope) are not read yet. |
+| Channels | `outbox`, and `claude-inbox` for a Claude Code session. | legionctl cannot see if a session started with `--bare`. |
+| Observe | `thread observe <peer>`: the peer row and its newest 50 events (the rows of `trace` whose input has its session). | `--follow` and `--kinds` are not built: `trace` follows live. |
+| Classes | `start`, `join`, `leave`: workspace; `send`, `ack`, `declare`, `pace`, `rules add/rm`: session; the others read. | B8. |
+
+Not built yet: model members through ACP, wake budgets, timed paces, branch, compensation and the `effects` table
+(P6b); archetype files, default watch rules of the `thread-observer` and agent configs (P6a); `thread.commands` (P7).
+The prompt hook gives the messages as text on stdout, which Claude Code adds to the context, as the other prompt lines.
+
+Tests (`crates/legionctl/tests/threads.rs`; the real `legionctl hook` with Claude Code's payloads, the CLI and the
+real operator; the observer is a member with a session and no model):
+
+| Test | It catches |
+| --- | --- |
+| `a_watch_rule_reminds_main_once_with_the_count_of_its_misses_and_wakes_only_on_its_trigger` | A lint that does not set the count back; an edit outside the path that counts; the reminder not at the next prompt, or twice; the wrong miss count or start time; a notice that does not count the step done; a wake of an on-trigger member at a stop or a declare; no wake at a firing rule; an on-stop member not woken at a stop, or with the wrong event count. |
+| `blocks_hold_main_until_acked_and_only_an_observer_of_the_thread_sends_them` | A block or reminder from a peer outside the thread or from the main agent; a soft-block that stops twice or stops a reply that goes on; a hard-block that does not hold its tool, holds another tool or another session, or lets a reply end before the ack; a reply that is not a note back; blocks of a member that left. |
+| `a_send_message_call_of_main_lands_in_the_thread_log` | A `SendMessage` call not in the log, with the wrong member, receiver, text or sent state. |
+| `the_outbox_survives_a_restart_and_peers_on_one_dossier_see_each_other_with_their_state` | A message lost or given twice after an operator restart; a peer in another topic workspace of the dossier not shown, or a session on another dossier shown; a wrong topic, state (running, idle, ended), last tool, open message count, shared scope or channel; `observe` of a member name or of a session that is not a peer. |
 
 ## Part C: thread UI (todo-92)
 

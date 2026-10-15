@@ -1285,3 +1285,162 @@ wire! {
         notes: Vec<String>,
     }
 }
+
+wire_enum! {
+    /// What a thread message does to its receiver: note, hint, reminder, notice and result go into its next prompt;
+    /// a soft-block stops the end of one reply; a hard-block stops each reply and refuses the tool it names until
+    /// the receiver acks it.
+    enum MessageKind from core::thread::Kind as "kebab-case" {
+        Note,
+        Hint,
+        Reminder,
+        Notice,
+        Result,
+        SoftBlock,
+        HardBlock,
+    }
+    /// The role of a thread member.
+    enum Archetype from core::thread::Archetype as "kebab-case" {
+        /// Owns the task and its completion.
+        MainAgent,
+        /// Test review, process and verification for the main agent.
+        ThreadObserver,
+        /// Makes and places the thread's views.
+        UiComposer,
+    }
+    /// When the operator wakes a member.
+    enum Pace from core::thread::Pace as "kebab-case" {
+        /// Only when a watch rule of the member finds work.
+        OnTrigger,
+        /// After each stop and each declare of another member.
+        OnStop,
+        /// Only at a declare of another member.
+        OnDeclare,
+    }
+    /// A state that a member announces.
+    enum Declared from core::thread::Declared as "kebab-case" {
+        Done,
+        Ready,
+        Blocked,
+        TestsWritten,
+    }
+}
+
+wire! {
+    /// A thread: one task with its members.
+    struct ThreadInfo from core::thread::ThreadInfo {
+        id: i64,
+        title: String,
+        dossier: String,
+        created_at: i64 = created,
+        /// open or closed.
+        state: String,
+    }
+
+    /// A member of a thread.
+    struct ThreadMember from core::thread::Member {
+        name: String,
+        archetype: Archetype,
+        /// Its agent session; none for a member that has no session yet.
+        session: Option<String>,
+        pace: Pace,
+        /// The last thread log id it saw (its last wake).
+        cursor: i64,
+        /// active or left.
+        state: String,
+        joined_at: i64 = joined,
+        wakes: u32,
+    }
+
+    /// A message in the thread outbox.
+    struct ThreadMessage from core::thread::Message {
+        id: i64,
+        thread: i64,
+        from: String,
+        /// A member name, or a peer's session id.
+        to: String,
+        kind: MessageKind,
+        body: String,
+        /// The tool that a hard-block refuses.
+        tool: Option<String>,
+        /// pending, delivered, acked or expired.
+        state: String,
+        created_at: i64 = created,
+    }
+
+    /// A watch rule and its counts.
+    struct WatchRule from core::thread::Rule {
+        id: i64,
+        thread: i64,
+        /// The member that watches.
+        member: String,
+        watched: String,
+        /// The tools that count (`|` between names).
+        tools: String,
+        /// A part of the path that a tool call must touch to count.
+        path: String,
+        /// The Bash command that sets the count back to 0.
+        expect: String,
+        /// The count at which the rule sends its message.
+        every: u32,
+        kind: MessageKind,
+        created_at: i64 = created,
+        /// Calls counted since the expected command.
+        run: u32,
+        /// Times the rule sent its message.
+        misses: u32,
+        /// Steps the member did for the watched member (`thread send ... notice --rule`).
+        done: u32,
+    }
+
+    /// One row of the append-only thread log.
+    struct ThreadLogRow from core::thread::LogRow {
+        id: i64,
+        at: i64 = ts,
+        member: String,
+        kind: String,
+        payload: Value,
+    }
+
+    /// A thread with its members, messages, watch rules and log.
+    struct ThreadView from core::thread::ThreadView {
+        thread: ThreadInfo,
+        members: Vec<ThreadMember>,
+        messages: Vec<ThreadMessage>,
+        rules: Vec<WatchRule>,
+        log: Vec<ThreadLogRow>,
+    }
+
+    /// A session that shares a dossier, a workspace or a thread with the caller.
+    struct Peer from core::thread::Peer {
+        session: String,
+        /// claude or codex.
+        agent: String,
+        account: Option<String>,
+        dossier: Option<String>,
+        /// The topic of its workspace ("" for the dossier's own workspace).
+        topic: Option<String>,
+        workspace: Option<PathBuf>,
+        /// `<thread>/<member>` for each thread it is a member of.
+        members: Vec<String>,
+        /// What it shares with the caller.
+        shares: Vec<String>,
+        /// running, idle, ended or unknown, from its last hook call.
+        state: String,
+        seen_at: Option<i64> = seen,
+        last_tool: Option<String>,
+        last_path: Option<String>,
+        /// The last word it declared in a thread.
+        declared: Option<String>,
+        /// Messages to it that it did not ack.
+        pending: u32,
+        /// outbox (`thread send`), and claude-inbox (Claude Code's `SendMessage`).
+        channels: Vec<String>,
+    }
+
+    /// A peer's state and its newest events.
+    struct Observed from core::thread::Observed {
+        peer: Peer,
+        events: Vec<EventRow>,
+    }
+}

@@ -39,10 +39,10 @@ macro_rules! annotations {
     };
 }
 
-/// The workspace database at v12: the steps of v1-v9 merged into one (todo-68), then the topic workspaces, then
-/// the code graph annotations, then the test records (design 23, A7).
+/// The workspace database at v13: the steps of v1-v9 merged into one (todo-68), then the topic workspaces, then
+/// the code graph annotations, then the test records (design 23, A7), then the threads (design 23, B2).
 const SCHEMA: &Schema = &Schema {
-    version: 12,
+    version: 13,
     steps: &[
         (
             9,
@@ -52,6 +52,7 @@ const SCHEMA: &Schema = &Schema {
         ),
         (10, annotations!()),
         (11, crate::codetests::tables!()),
+        (12, crate::thread::tables!()),
     ],
     sql: concat!(
         "-- one open binding per dossier and per session; released rows stay as history; place: where the session worked
@@ -116,7 +117,8 @@ const SCHEMA: &Schema = &Schema {
         level   TEXT
      );",
         annotations!(),
-        crate::codetests::tables!()
+        crate::codetests::tables!(),
+        crate::thread::tables!()
     ),
 };
 
@@ -231,7 +233,7 @@ impl Dossiers {
         self.db.conn()
     }
 
-    fn stale_after(&self) -> i64 {
+    pub(crate) fn stale_after(&self) -> i64 {
         i64::try_from(self.config.stale_hours.saturating_mul(3600)).unwrap_or(i64::MAX)
     }
 

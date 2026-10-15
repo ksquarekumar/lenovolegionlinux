@@ -1,0 +1,25 @@
+{
+  "session_id": "SESSION",
+  "transcript_path": "/tmp/transcript.jsonl",
+  "cwd": "CWD",
+  "prompt_id": "PROMPT",
+  "permission_mode": "auto",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "COMMAND",
+    "description": "TEXT"
+  },
+  "tool_response": {
+    "stdout": "TEXT",
+    "stderr": "",
+    "interrupted": false,
+    "isImage": false,
+    "noOutputExpected": false
+  },
+  "tool_use_id": "TOOL",
+  "duration_ms": 1405
+}

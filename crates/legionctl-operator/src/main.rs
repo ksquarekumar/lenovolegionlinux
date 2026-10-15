@@ -17,6 +17,7 @@ mod semantic;
 mod server;
 mod session;
 mod system1;
+mod thread;
 mod translate;
 mod virt;
 

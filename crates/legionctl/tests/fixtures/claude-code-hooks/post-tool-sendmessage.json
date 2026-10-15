@@ -1,0 +1,24 @@
+{
+  "session_id": "SESSION",
+  "transcript_path": "/tmp/transcript.jsonl",
+  "cwd": "CWD",
+  "prompt_id": "PROMPT",
+  "permission_mode": "auto",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "SendMessage",
+  "tool_input": {
+    "to": "PEER",
+    "summary": "TEXT",
+    "message": "TEXT"
+  },
+  "tool_response": {
+    "success": false,
+    "message": "No agent named 'PEER' is reachable.\nUse ListAgents to see everyone you can message.",
+    "display": "Not sent — no agent named 'PEER' is reachable."
+  },
+  "tool_use_id": "TOOL",
+  "duration_ms": 7
+}

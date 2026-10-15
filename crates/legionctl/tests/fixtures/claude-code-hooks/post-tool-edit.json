@@ -1,0 +1,40 @@
+{
+  "session_id": "SESSION",
+  "transcript_path": "/tmp/transcript.jsonl",
+  "cwd": "CWD",
+  "prompt_id": "PROMPT",
+  "permission_mode": "auto",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Edit",
+  "tool_input": {
+    "file_path": "FILE",
+    "old_string": "TEXT",
+    "new_string": "TEXT",
+    "replace_all": false
+  },
+  "tool_response": {
+    "filePath": "FILE",
+    "oldString": "TEXT",
+    "newString": "TEXT",
+    "originalFile": "TEXT",
+    "structuredPatch": [
+      {
+        "oldStart": 1,
+        "oldLines": 1,
+        "newStart": 1,
+        "newLines": 1,
+        "lines": [
+          "-TEXT",
+          "+TEXT"
+        ]
+      }
+    ],
+    "userModified": false,
+    "replaceAll": false
+  },
+  "tool_use_id": "TOOL",
+  "duration_ms": 3
+}

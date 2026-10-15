@@ -35,6 +35,12 @@ user-invocable: true
 16. Give each parallel agent its own topic and tell it the topic. Check `legionctl load` first.
 17. Do not use `--steal` without the user's agreement.
 18. Record each session id, its job id and its result in the dossier.
+19. Before you start or message a parallel agent, run `thread peers`: it shows who works on your dossier, workspace or
+    thread, and its state.
+20. A thread message in your prompt or at the end of a reply comes from a member of your thread. Act on it, then
+    `thread ack <id>`. A hard-block holds its tool and each reply end until you ack it.
+21. Send through the thread outbox (`thread send`); it is durable. For an urgent message to an idle Claude peer, also
+    use `SendMessage`; the post-tool hook records it in the thread log.
 
 ## Refs
 
@@ -42,3 +48,4 @@ user-invocable: true
 - `refs/reference-follow-a-session.md` - read to follow or audit a session.
 - `refs/scenario-headless-review.md` - read for a headless run in a container.
 - `refs/scenario-second-account.md` - read when a rate limit stops a session.
+- `refs/reference-threads.md` - read when you start a thread, add a member or a watch rule, or send a message.

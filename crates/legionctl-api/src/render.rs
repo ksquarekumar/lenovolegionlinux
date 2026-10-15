@@ -2156,3 +2156,141 @@ impl Render for crate::PlanStatus {
         out.join("\n")
     }
 }
+
+impl Render for Vec<crate::ThreadInfo> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no thread".into();
+        }
+        self.iter()
+            .map(|t| format!("{:>4} {:<7} {:<20} {}", t.id, t.state, t.dossier, t.title))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+fn message_line(m: &crate::ThreadMessage) -> String {
+    let tool = m
+        .tool
+        .as_deref()
+        .map(|t| format!(" [holds {t}]"))
+        .unwrap_or_default();
+    format!(
+        "#{} {} {} -> {} ({}){tool}: {}",
+        m.id, m.kind, m.from, m.to, m.state, m.body
+    )
+}
+
+fn rule_text(r: &crate::WatchRule) -> String {
+    format!(
+        "rule {}: {} watches {}: {} on '{}' x{} without '{}' -> {}; run {}, misses {}, done for {} {}",
+        r.id,
+        r.member,
+        r.watched,
+        r.tools,
+        r.path,
+        r.every,
+        r.expect,
+        r.kind,
+        r.run,
+        r.misses,
+        r.watched,
+        r.done
+    )
+}
+
+impl Render for Vec<crate::ThreadMessage> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no open message".into();
+        }
+        self.iter().map(message_line).collect::<Vec<_>>().join("\n")
+    }
+}
+
+impl Render for Vec<crate::WatchRule> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no watch rule".into();
+        }
+        self.iter().map(rule_text).collect::<Vec<_>>().join("\n")
+    }
+}
+
+impl Render for crate::ThreadView {
+    fn text(&self) -> String {
+        let t = &self.thread;
+        let mut out = vec![format!(
+            "thread {} ({}, dossier {}): {}",
+            t.id, t.state, t.dossier, t.title
+        )];
+        out.push("members:".into());
+        out.extend(self.members.iter().map(|m| {
+            format!(
+                "  {:<12} {:<16} {:<11} {:<7} session {}  wakes {}",
+                m.name,
+                m.archetype,
+                m.pace,
+                m.state,
+                m.session.as_deref().unwrap_or("-"),
+                m.wakes
+            )
+        }));
+        if !self.rules.is_empty() {
+            out.push("rules:".into());
+            out.extend(self.rules.iter().map(|r| format!("  {}", rule_text(r))));
+        }
+        if !self.messages.is_empty() {
+            out.push("messages:".into());
+            out.extend(
+                self.messages
+                    .iter()
+                    .map(|m| format!("  {}", message_line(m))),
+            );
+        }
+        out.push(format!("log: {} rows (--json shows them)", self.log.len()));
+        out.join("\n")
+    }
+}
+
+fn peer_line(p: &crate::Peer) -> String {
+    let place = match (&p.dossier, &p.topic) {
+        (Some(d), Some(t)) if !t.is_empty() => format!("{d}--{t}"),
+        (Some(d), _) => d.clone(),
+        (None, _) => "-".into(),
+    };
+    let last = match (&p.last_tool, &p.last_path) {
+        (Some(t), Some(path)) => format!("  last {t} {path}"),
+        (Some(t), None) => format!("  last {t}"),
+        _ => String::new(),
+    };
+    let declared = p
+        .declared
+        .as_deref()
+        .map(|d| format!("  declared {d}"))
+        .unwrap_or_default();
+    format!(
+        "{:<38} {:<7} {:<8} {place}  pending {}  via {}  ({}){last}{declared}",
+        p.session,
+        p.agent,
+        p.state,
+        p.pending,
+        p.channels.join("+"),
+        p.shares.join(", ")
+    )
+}
+
+impl Render for Vec<crate::Peer> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no peer".into();
+        }
+        self.iter().map(peer_line).collect::<Vec<_>>().join("\n")
+    }
+}
+
+impl Render for crate::Observed {
+    fn text(&self) -> String {
+        format!("{}\n{}", peer_line(&self.peer), self.events.text())
+    }
+}

@@ -565,6 +565,10 @@ pub struct HookRunIn {
     /// The prompt text (prompt event): a prompt that runs /legionctl:dossier passes the gate.
     #[serde(default)]
     pub prompt: Option<String>,
+    /// Stop event: the reply goes on because a stop hook stopped it before (`stop_hook_active`); only a thread
+    /// hard-block stops it again.
+    #[serde(default)]
+    pub again: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -1822,4 +1826,201 @@ fn three() -> u8 {
 
 fn note() -> String {
     "note".into()
+}
+
+fn main0() -> String {
+    "main0".into()
+}
+
+fn edit_tools() -> String {
+    "Edit|Write|MultiEdit|NotebookEdit".into()
+}
+
+fn four() -> u32 {
+    4
+}
+
+fn on_trigger() -> crate::Pace {
+    crate::Pace::OnTrigger
+}
+
+fn reminder() -> crate::MessageKind {
+    crate::MessageKind::Reminder
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThreadStartIn {
+    /// The task, in a few words.
+    pub title: String,
+    /// The dossier of the task; default: the caller's dossier.
+    #[serde(default)]
+    pub dossier: Option<String>,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThreadIdIn {
+    /// The thread's id (`thread list`).
+    pub thread: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThreadJoinIn {
+    pub thread: i64,
+    /// The member's name in the thread (`observer0`).
+    pub name: String,
+    pub archetype: crate::Archetype,
+    /// The agent session of the member, which its hooks and calls carry.
+    #[serde(default)]
+    pub member_session: Option<String>,
+    #[serde(default = "on_trigger")]
+    pub pace: crate::Pace,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThreadMemberIn {
+    pub thread: i64,
+    /// The member's name in the thread.
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThreadSendIn {
+    /// A member name of the thread, or a peer's session id (`thread peers`).
+    pub to: String,
+    pub kind: crate::MessageKind,
+    /// The message: the fact you verified and how the receiver clears it.
+    pub text: String,
+    /// The thread; default: the caller's only open thread.
+    #[serde(default)]
+    pub thread: Option<i64>,
+    /// For a hard-block: the tool it refuses until the receiver acks it (`workspace_checkpoint`).
+    #[serde(default)]
+    pub tool: Option<String>,
+    /// For a notice: the watch rule whose step you did for the receiver; the message then tells the counts.
+    #[serde(default)]
+    pub rule: Option<i64>,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThreadAckIn {
+    /// The message id.
+    pub id: i64,
+    /// A note back to the sender.
+    #[serde(default)]
+    pub reply: Option<String>,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThreadDeclareIn {
+    pub word: crate::Declared,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThreadPaceIn {
+    pub thread: i64,
+    /// The member's name in the thread.
+    pub name: String,
+    pub pace: crate::Pace,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RuleAddIn {
+    pub thread: i64,
+    /// The member that watches and sends the message.
+    pub member: String,
+    /// The Bash command that must come between the counted tool calls (`make lint`).
+    pub expect: String,
+    /// The member it watches.
+    #[serde(default = "main0")]
+    pub watched: String,
+    /// The tool calls that count, `|` between names.
+    #[serde(default = "edit_tools")]
+    pub tools: String,
+    /// A part of the path that a counted call touches (`crates/`); empty: every path.
+    #[serde(default)]
+    pub path: String,
+    /// The count of calls without the command at which the rule sends its message.
+    #[serde(default = "four")]
+    pub every: u32,
+    #[serde(default = "reminder")]
+    pub kind: crate::MessageKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RuleRmIn {
+    /// The rule's id (`thread rules list`).
+    pub id: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PeersIn {
+    /// Peers on this dossier, in place of the caller's own scope.
+    #[serde(default)]
+    pub dossier: Option<String>,
+    /// Peers in this topic workspace of the caller's dossier.
+    #[serde(default)]
+    pub topic: Option<String>,
+    /// Peers that are members of this thread.
+    #[serde(default)]
+    pub thread: Option<i64>,
+    /// Where the caller works.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ObserveIn {
+    /// A peer's session id, or a member name in one of the caller's threads.
+    pub peer: String,
+    /// Where the caller works.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+/// One tool call of an agent, from Claude Code's `PostToolUse` hook.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AgentToolIn {
+    #[serde(default)]
+    pub session: SessionId,
+    /// The agent's working directory.
+    #[serde(default = "here")]
+    pub project: ClientPath,
+    pub tool: String,
+    /// The file it wrote.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// The Bash command.
+    #[serde(default)]
+    pub command: Option<String>,
+    /// `SendMessage`: the receiver.
+    #[serde(default)]
+    pub to: Option<String>,
+    /// `SendMessage`: the text.
+    #[serde(default)]
+    pub message: Option<String>,
+    /// False when the tool reports that it failed.
+    #[serde(default)]
+    pub ok: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThreadGateIn {
+    #[serde(default)]
+    pub session: SessionId,
+    /// The tool that the agent is about to call.
+    pub tool: String,
 }

@@ -21,4 +21,5 @@ pub mod reminders;
 pub mod session;
 pub mod setup;
 pub mod skills;
+pub mod thread;
 pub mod workspace;

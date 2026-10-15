@@ -489,6 +489,37 @@ impl Db {
         Ok(rows.into_iter().next())
     }
 
+    /// The newest `limit` events that `filter` lets through, oldest first.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn events_newest(&self, filter: &EventFilter, limit: u32) -> Result<Vec<EventRow>> {
+        let (mut rows, _) = self.events_page_in(filter, 0, limit, "DESC")?;
+        rows.reverse();
+        Ok(rows)
+    }
+
+    /// For each session (`$.input.session` of a call's audit), its newest event of these kinds since `ts`.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn newest_per_session(&self, kinds: &[&str], ts: i64) -> Result<Vec<EventRow>> {
+        let marks = vec!["?"; kinds.len()].join(", ");
+        let sql = format!(
+            "SELECT id, ts, actor, kind, payload FROM events WHERE id IN (SELECT max(id) FROM events
+             WHERE kind IN ({marks}) AND ts >= ? GROUP BY json_extract(payload, '$.input.session')) ORDER BY id"
+        );
+        let mut args: Vec<Box<dyn rusqlite::ToSql>> = kinds
+            .iter()
+            .map(|k| Box::new((*k).to_string()) as Box<dyn rusqlite::ToSql>)
+            .collect();
+        args.push(Box::new(ts));
+        self.query_events(
+            &sql,
+            rusqlite::params_from_iter(args.iter().map(AsRef::as_ref)),
+        )
+    }
+
     /// The event with this id.
     ///
     /// # Errors
