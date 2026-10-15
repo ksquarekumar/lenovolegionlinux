@@ -3236,7 +3236,7 @@ mod operator_and_daemon {
         let op = on_bus(&m, "winauto");
         let rule = m
             .dir
-            .join("root/etc/polkit-1/rules.d/49-legionctl-windows-vm.rules");
+            .join("root/etc/polkit-1/rules.d/49-legionctl-windows-vm-tester.rules");
         let log = || std::fs::read_to_string(m.dir.join("systemctl.log")).unwrap_or_default();
 
         op.ok(&["windows", "vm", "autostart", "login"]);
@@ -3406,7 +3406,7 @@ while True:
     pub(super) fn boot_machine(m: &Machine) -> PathBuf {
         let bin = m.dir.join("bin");
         // the daemon's PATH in the test has only stand-ins; the boot plans use these system tools
-        for tool in ["mkdir", "install", "rm", "mv"] {
+        for tool in ["mkdir", "install", "rm", "mv", "bsdtar"] {
             std::os::unix::fs::symlink(format!("/usr/bin/{tool}"), bin.join(tool)).unwrap();
         }
         m.set(
@@ -3564,11 +3564,18 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             serde_json::json!(["0007", "0003", "0004"])
         );
 
+        // the default kernel's package goes: loader.conf must not start an image that rebuild removes
+        op.ok(&["kernel", "default", "linux-cachyos"]);
         std::fs::remove_file(m.dir.join("root/boot/vmlinuz-linux-cachyos")).unwrap();
         op.ok(&["boot", "rebuild"]);
         assert!(
             !esp.join("EFI/Linux/legionctl-linux-cachyos.efi").exists(),
             "the image of a removed kernel goes"
+        );
+        let loader = std::fs::read_to_string(esp.join("loader/loader.conf")).unwrap();
+        assert!(
+            loader.contains("default legionctl-linux-cachyos-bore-lto.efi\n"),
+            "the running kernel becomes the default: {loader}"
         );
 
         op.ok(&["boot", "remove"]);
@@ -3748,10 +3755,61 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         );
     }
 
-    /// A kernel's own command line (todo-84 part 2): it goes into that kernel's image only, signed and checked; a line
-    /// without root=, with a parameter of a module the kernel does not have, or an image that is not signed is
-    /// refused with the old image and line left; `boot rebuild` keeps each kernel's line (it is the one source), and
-    /// undo puts the line before back.
+    /// The start of this boot through legionctl's image `image`, as systemd-boot leaves it: `LoaderEntrySelected` is
+    /// the image, and the one-time entry is used up.
+    fn start_through(m: &Machine, image: &str) {
+        let vars = m.dir.join("root/sys/firmware/efi/efivars");
+        let mut bytes = vec![6, 0, 0, 0];
+        bytes.extend(image.encode_utf16().chain([0]).flat_map(u16::to_le_bytes));
+        std::fs::write(
+            vars.join("LoaderEntrySelected-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"),
+            bytes,
+        )
+        .unwrap();
+        let _ = std::fs::remove_file(
+            vars.join("LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"),
+        );
+    }
+
+    /// `command` (`kernel cmdline set` or `undo` of linux-cachyos, to `line`) two times before a start through the
+    /// trial image: the trial image has `line` and is the next start's only; linux-cachyos's image and line stay.
+    fn trial_only(m: &Machine, op: &Operator, command: &[&str], line: &str) {
+        let image = |name: &str| {
+            std::fs::read_to_string(m.dir.join(format!("root/boot/efi/EFI/Linux/{name}"))).unwrap()
+        };
+        let kernel = || {
+            (
+                image("legionctl-linux-cachyos.efi"),
+                m.file("/etc/legionctl/kernel/linux-cachyos.cmdline"),
+            )
+        };
+        let before = kernel();
+        let first = op.ok(command);
+        assert!(
+            first.contains("the next start only uses the new line"),
+            "{first}"
+        );
+        let trial = image("legionctl-linux-cachyos.trial.efi");
+        assert!(trial.contains(&format!("--cmdline {line} --")), "{trial}");
+        assert_eq!(
+            oneshot(m).as_deref(),
+            Some("legionctl-linux-cachyos.trial.efi")
+        );
+        assert_eq!(kernel(), before, "the kernel's image and line stay");
+        op.ok(command);
+        assert_eq!(
+            kernel(),
+            before,
+            "the same command again without a start through the trial image changes nothing of the kernel"
+        );
+    }
+
+    /// A kernel's own command line (todo-84 part 2): it goes into that kernel's image only, signed and checked, and
+    /// only after one start through a trial image (the next start only, as `kernel try`; the same command after that
+    /// start makes it the kernel's), so a bad line never replaces the default image; a line without root=, with a
+    /// parameter of a module the kernel does not have, or an image that is not signed is refused with the old image
+    /// and line left; `boot rebuild` keeps each kernel's line (it is the one source), and undo puts the line before
+    /// back the same way.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_kernels_command_line_goes_into_its_image_only_and_undo_puts_the_old_one_back() {
         const LINE: &str = "quiet mitigations=off nvidia-drm.modeset=1 clocksource=tsc tsc=invariant \
@@ -3781,13 +3839,17 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         let bore = image("linux-cachyos-bore-lto");
 
         let mine = LINE.replace("mitigations=off ", "");
-        op.ok(&["kernel", "cmdline", "set", "linux-cachyos", &mine]);
+        let set = ["kernel", "cmdline", "set", "linux-cachyos", &mine];
+        trial_only(&m, &op, &set, &mine);
+        start_through(&m, "legionctl-linux-cachyos.trial.efi");
+        op.ok(&set);
         assert!(
             image("linux-cachyos").contains(&format!("--cmdline {mine} --")),
             "{}",
             image("linux-cachyos")
         );
         assert_eq!(saved(), mine);
+        assert!(!linux.join("legionctl-linux-cachyos.trial.efi").exists());
         assert_eq!(
             image("linux-cachyos-bore-lto"),
             bore,
@@ -3835,7 +3897,12 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             image("linux-cachyos")
         );
 
-        op.ok(&["kernel", "cmdline", "undo", "linux-cachyos"]);
+        // undo also goes through one start: this start came through the earlier trial image, but the new one-time
+        // entry is not used yet, so the second undo makes the trial image again and changes nothing of the kernel
+        let undo = ["kernel", "cmdline", "undo", "linux-cachyos"];
+        trial_only(&m, &op, &undo, LINE);
+        start_through(&m, "legionctl-linux-cachyos.trial.efi");
+        op.ok(&undo);
         assert!(
             image("linux-cachyos").contains(&format!("--cmdline {LINE} --")),
             "{}",
@@ -4240,16 +4307,14 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
                  cd \"$src\" && exec /usr/bin/env PATH={t}:/usr/bin \"$env\" /usr/bin/bash -c 'set -e; source ./PKGBUILD; \
                  startdir=$PWD; srcdir=$PWD/src; mkdir -p \"$srcdir/$_srcname/scripts/kconfig\"; \
                  cp {t}/merge_config.sh \"$srcdir/$_srcname/scripts/kconfig/\"; cd \"$srcdir\"; prepare; cd \"$startdir\"; \
-                 touch \"$pkgbase-$pkgver-$pkgrel-x86_64.pkg.tar.zst\" \"$pkgbase-headers-$pkgver-$pkgrel-x86_64.pkg.tar.zst\"'",
+                 for p in $pkgbase $pkgbase-headers; do \
+                 printf \"pkgname = %s\\npkgbase = %s\\npkgver = %s\\npkgdesc = built\\n\" $p $pkgbase $pkgver-$pkgrel > .PKGINFO; \
+                 /usr/bin/bsdtar --zstd -cf $p-$pkgver-$pkgrel-x86_64.pkg.tar.zst .PKGINFO; done; rm .PKGINFO'",
                 d = m.dir.display(),
                 t = tools.display()
             ),
         );
-        Machine::script(
-            &bin,
-            "pacman",
-            &format!("echo \"$*\" >> {}/pacman.log", m.dir.display()),
-        );
+        pacman_stand_in(&m);
         std::fs::write(
             m.dir.join("rt.config"),
             "CONFIG_PREEMPT_RT=y\n# CONFIG_DEBUG_INFO is not set\n",
@@ -4259,6 +4324,76 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         let op = on_bus(&m, tag);
         op.ok(&["boot", "install"]);
         (m, stand_ins, asked, processes, op)
+    }
+
+    /// A stand-in pacman: one line in `pacman.log` for each package it gets: the file, and `pkgname`, `pkgver` and
+    /// `pkgdesc` of its `.PKGINFO`.
+    fn pacman_stand_in(m: &Machine) {
+        Machine::script(
+            &m.dir.join("bin"),
+            "pacman",
+            &format!(
+                "for a; do case $a in *.pkg.tar.zst) /usr/bin/bsdtar -xOf \"$a\" .PKGINFO | /usr/bin/awk -v f=\"$a\" \
+                 '{{v[$1]=$3}} END {{print f, v[\"pkgname\"], v[\"pkgver\"], v[\"pkgdesc\"]}}' >> {}/pacman.log;; esac; done",
+                m.dir.display()
+            ),
+        );
+    }
+
+    /// A package `file` in `dir` whose `.PKGINFO` has `pkgname`, `pkgbase`, `pkgver` and `pkgdesc`.
+    fn package(dir: &Path, file: &str, [name, base, version, desc]: [&str; 4]) {
+        let work = dir.join(format!(".{file}"));
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(
+            work.join(".PKGINFO"),
+            format!("pkgname = {name}\npkgbase = {base}\npkgver = {version}\npkgdesc = {desc}\n"),
+        )
+        .unwrap();
+        let out = std::process::Command::new("/usr/bin/bsdtar")
+            .args(["--zstd", "-cf"])
+            .arg(dir.join(file))
+            .arg("-C")
+            .arg(&work)
+            .arg(".PKGINFO")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        std::fs::remove_dir_all(work).unwrap();
+    }
+
+    /// Packages of earlier builds in the PKGBUILD's folder `dir`: an older version, and this version with another
+    /// fragment (its record).
+    fn stale_packages(dir: &Path) {
+        let rt = "linux-cachyos-rt";
+        for version in ["7.2.9-1", "7.2.9-2"] {
+            package(
+                dir,
+                &format!("{rt}-{version}-x86_64.pkg.tar.zst"),
+                [rt, rt, version, "stale"],
+            );
+        }
+        std::fs::write(dir.join("legionctl.built"), "7.2.9-2\nCONFIG_HZ_1000=y\n").unwrap();
+    }
+
+    /// pacman got root's copies of this build's packages (7.2.9-2, `built`) only, and the stale ones are gone.
+    fn only_this_build_installed(m: &Machine, dir: &Path) {
+        assert_eq!(
+            log(m, "pacman.log"),
+            format!(
+                "{d}/linux-cachyos-rt-7.2.9-2-x86_64.pkg.tar.zst linux-cachyos-rt 7.2.9-2 built\n\
+             {d}/linux-cachyos-rt-headers-7.2.9-2-x86_64.pkg.tar.zst linux-cachyos-rt-headers 7.2.9-2 built\n",
+                d = m
+                    .dir
+                    .join("root/var/lib/legionctl/kernel-install")
+                    .display()
+            ),
+            "the pinned version, the new name, this build's packages only, root's copies"
+        );
+        assert!(
+            !dir.join("linux-cachyos-rt-7.2.9-1-x86_64.pkg.tar.zst")
+                .exists(),
+            "the old package is removed"
+        );
     }
 
     fn log(m: &Machine, name: &str) -> String {
@@ -4338,7 +4473,8 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
     }
 
     /// A kernel build (todo-84 part 4) with the real operator and daemon: cut off by an operator restart in makepkg,
-    /// it goes on as its job with the same clone; the PKGBUILD of 7.2.9-2 (not the newer 7.2.10-1), the package named
+    /// it goes on as its job with the same clone, and packages of an earlier build in the folder (an older version,
+    /// the same version with another fragment) are removed, never installed; the PKGBUILD of 7.2.9-2 (not the newer 7.2.10-1), the package named
     /// `linux-cachyos-<name>`, the fragment merged by `merge_config.sh` after the PKGBUILD's own `prepare()` and
     /// completed by `olddefconfig`, the base's LTO, then `pacman -U` of the kernel and its headers through the daemon
     /// (polkit). After pacman's hook, the new kernel has its signed image, and its name is refused as installed.
@@ -4358,6 +4494,10 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         let _client = daemon_process::Kill(client);
         wait_for("makepkg", || m.dir.join("started").exists());
         assert_eq!(last_job(&op, "kernel.build")["state"], "running");
+        let dir = m.dir.join(
+            "home/.cache/legionctl/kernel-build/linux-cachyos-rt/linux-cachyos/linux-cachyos-bore",
+        );
+        stale_packages(&dir);
         drop(op);
         let op = on_bus(&m, "kbuild");
         op.ok(&["jobs", "list"]);
@@ -4371,17 +4511,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             "one clone"
         );
 
-        let dir = m.dir.join(
-            "home/.cache/legionctl/kernel-build/linux-cachyos-rt/linux-cachyos/linux-cachyos-bore",
-        );
-        assert_eq!(
-            log(&m, "pacman.log"),
-            format!(
-                "-U --noconfirm {d}/linux-cachyos-rt-7.2.9-2-x86_64.pkg.tar.zst {d}/linux-cachyos-rt-headers-7.2.9-2-x86_64.pkg.tar.zst\n",
-                d = dir.display()
-            ),
-            "the pinned version, the new name"
-        );
+        only_this_build_installed(&m, &dir);
         assert!(
             asked
                 .lock()
@@ -4555,6 +4685,326 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         assert!(
             status.contains("display manager at the next start: gdm.service"),
             "{status}"
+        );
+    }
+
+    /// `legionctl-system` in one of its one-shot modes (`--boot-rebuild`, `--remove-check`) on machine `m`, as a
+    /// pacman hook runs it.
+    fn one_shot(m: &Machine, args: &[&str]) -> std::process::Output {
+        std::process::Command::new(
+            Path::new(env!("CARGO_BIN_EXE_legionctl")).with_file_name("legionctl-system"),
+        )
+        .args(args)
+        .env_clear()
+        .env("PATH", m.dir.join("bin"))
+        .env("LEGIONCTL_SYSROOT", m.dir.join("root"))
+        .output()
+        .unwrap()
+    }
+
+    /// The pacman hook after a kernel upgrade (review 02, HIGH): the line of one kernel fails its check (a module
+    /// that the kernel does not have); that kernel keeps its old image and the hook says why, in its output and in
+    /// the journal, and `doctor` keeps the finding; the default kernel's image is made again all the same.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_pacman_hook_makes_each_kernel_image_on_its_own_and_reports_the_one_it_cannot_make()
+    {
+        let m = Machine::new("rebuildeach");
+        boot_machine(&m);
+        kernel_modules(&m);
+        Machine::script(
+            &m.dir.join("bin"),
+            "logger",
+            &format!("echo \"$*\" >> {}/journal.log", m.dir.display()),
+        );
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "rebuildeach");
+        op.ok(&["boot", "install"]);
+        let linux = m.dir.join("root/boot/efi/EFI/Linux");
+        let (other, default) = (
+            linux.join("legionctl-linux-cachyos.efi"),
+            linux.join("legionctl-linux-cachyos-bore-lto.efi"),
+        );
+        m.set(
+            "/etc/legionctl/kernel/linux-cachyos.cmdline",
+            "quiet rw zwsap.enabled=0 root=UUID=a9e6",
+        );
+        std::fs::write(&other, "old image").unwrap();
+        std::fs::write(&default, "old image").unwrap();
+
+        let hook = one_shot(&m, &["--boot-rebuild"]);
+        let out = String::from_utf8_lossy(&hook.stdout);
+        assert!(hook.status.success(), "{hook:?}");
+        assert!(
+            out.contains(
+                "warning: the image of linux-cachyos is not made again, its old image stays"
+            ) && out.contains("zwsap.enabled=0"),
+            "{out}"
+        );
+        let made = std::fs::read_to_string(&default).unwrap();
+        assert!(
+            made.contains("vmlinuz-linux-cachyos-bore-lto")
+                && made.contains("--secureboot-private-key"),
+            "the default kernel's image is made again: {made}"
+        );
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "old image");
+        let journal = log(&m, "journal.log");
+        assert!(
+            journal.contains(
+                "-t legionctl-system -p warning -- the image of linux-cachyos is not made again"
+            ),
+            "{journal}"
+        );
+        let doctor = String::from_utf8(op.cli(&["doctor"]).stdout).unwrap();
+        assert!(
+            doctor.contains(
+                "boot rebuild (the pacman hook) does not make the signed image of linux-cachyos again"
+            ) && !doctor.contains("image of linux-cachyos-bore-lto again"),
+            "{doctor}"
+        );
+    }
+
+    /// A parameter of a built-in module that `modules.builtin` does not list (review 02, MED: `rcupdate`, `rcutree`,
+    /// `pcie_aspm`, `module`): the running kernel has the module in `/sys/module`, so its line takes it; another
+    /// kernel's line takes it with a warning; a module that `/sys/module` does not have either is still refused.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_built_in_module_that_the_running_kernel_has_is_accepted_on_each_kernels_line() {
+        let m = Machine::new("builtinparam");
+        boot_machine(&m);
+        kernel_modules(&m);
+        m.set("/sys/module/rcupdate/parameters/rcu_expedited", "0");
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "builtinparam");
+        op.ok(&["boot", "install"]);
+        let line = "quiet rw root=UUID=a9e6 rcupdate.rcu_expedited=1";
+        let trial = |kernel: &str| {
+            std::fs::read_to_string(m.dir.join(format!(
+                "root/boot/efi/EFI/Linux/legionctl-{kernel}.trial.efi"
+            )))
+            .unwrap_or_default()
+        };
+
+        let running = op.ok(&["kernel", "cmdline", "set", "linux-cachyos-bore-lto", line]);
+        assert!(!running.contains("warning"), "{running}");
+        assert!(trial("linux-cachyos-bore-lto").contains(&format!("--cmdline {line} --")));
+
+        let other = op.ok(&["kernel", "cmdline", "set", "linux-cachyos", line]);
+        assert!(
+            other.contains(
+                "warning: rcupdate.rcu_expedited=1: the running kernel has the module rcupdate (/sys/module)"
+            ),
+            "{other}"
+        );
+        assert!(trial("linux-cachyos").contains(&format!("--cmdline {line} --")));
+
+        let refused = op.cli(&[
+            "kernel",
+            "cmdline",
+            "set",
+            "linux-cachyos",
+            "quiet rw root=UUID=a9e6 rcutree.kthread_prio=1",
+        ]);
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("has no module rcutree"),
+            "{refused:?}"
+        );
+    }
+
+    /// `kernel install` (review 02, MED): root runs `pacman -U` on files of the caller's folder. It takes only a
+    /// kernel that `kernel build` makes (`linux-cachyos-<name>`), copies the packages into root's own folder, checks
+    /// the copies' `.PKGINFO` (the name and base, one kernel package, one version), and pacman gets those copies only.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn kernel_install_takes_only_a_built_kernel_and_installs_roots_checked_copies() {
+        let m = Machine::new("kinstall");
+        boot_machine(&m);
+        pacman_stand_in(&m);
+        let (stand_ins, _asked, _processes) = start(&m).await;
+        let system = zbus::Proxy::new(
+            &stand_ins,
+            "org.legionctl.System1",
+            "/org/legionctl/System1",
+            "org.legionctl.System1",
+        )
+        .await
+        .unwrap();
+        let dir = m.dir.join("built");
+        std::fs::create_dir_all(&dir).unwrap();
+        let folder = dir.to_str().unwrap();
+        let rt = "linux-cachyos-rt";
+        let install = async |name: &str| -> String {
+            match system
+                .call::<_, _, Vec<String>>("Kernel", &("install", name, folder))
+                .await
+            {
+                Ok(lines) => lines.join("\n"),
+                Err(e) => format!("refused: {e}"),
+            }
+        };
+
+        package(
+            &dir,
+            "glibc-2.41-1-x86_64.pkg.tar.zst",
+            ["glibc", "glibc", "2.41-1", "x"],
+        );
+        let glibc = install("glibc").await;
+        assert!(
+            glibc.contains("refused: ")
+                && glibc.contains("kernel install takes only a kernel of kernel build"),
+            "{glibc}"
+        );
+        let posing = "linux-cachyos-rt-7.2.9-2-x86_64.pkg.tar.zst";
+        package(&dir, posing, ["glibc", "glibc", "7.2.9-2", "x"]);
+        let named = install(rt).await;
+        assert!(
+            named.contains("its .PKGINFO names glibc of glibc, not linux-cachyos-rt"),
+            "{named}"
+        );
+        package(&dir, posing, [rt, rt, "7.2.9-2", "built"]);
+        package(
+            &dir,
+            "linux-cachyos-rt-7.2.9-1-x86_64.pkg.tar.zst",
+            [rt, rt, "7.2.9-1", "old"],
+        );
+        let two = install(rt).await;
+        assert!(two.contains("2 packages of linux-cachyos-rt"), "{two}");
+        assert_eq!(log(&m, "pacman.log"), "", "nothing reached pacman");
+
+        std::fs::remove_file(dir.join("linux-cachyos-rt-7.2.9-1-x86_64.pkg.tar.zst")).unwrap();
+        package(
+            &dir,
+            "linux-cachyos-rt-headers-7.2.9-1-x86_64.pkg.tar.zst",
+            ["linux-cachyos-rt-headers", rt, "7.2.9-1", "old"],
+        );
+        let versions = install(rt).await;
+        assert!(versions.contains("more than one version"), "{versions}");
+        package(
+            &dir,
+            "linux-cachyos-rt-headers-7.2.9-1-x86_64.pkg.tar.zst",
+            ["linux-cachyos-rt-headers", rt, "7.2.9-2", "built"],
+        );
+        let done = install(rt).await;
+        assert!(!done.contains("refused"), "{done}");
+        let stage = m.dir.join("root/var/lib/legionctl/kernel-install");
+        assert_eq!(
+            log(&m, "pacman.log"),
+            format!(
+                "{s}/linux-cachyos-rt-7.2.9-2-x86_64.pkg.tar.zst linux-cachyos-rt 7.2.9-2 built\n\
+                 {s}/linux-cachyos-rt-headers-7.2.9-1-x86_64.pkg.tar.zst linux-cachyos-rt-headers 7.2.9-2 built\n",
+                s = stage.display()
+            ),
+            "root's copies, never the caller's files"
+        );
+        assert!(!stage.exists(), "the copies go after pacman");
+    }
+
+    /// The package's removal (review 02, MED): pacman ignores a failed `pre_remove`, so a hook before the
+    /// transaction (`AbortOnFail`) stops the removal while the boot takeover is installed (its images would never be
+    /// made again) or while legionctl's greeter cannot be taken back (GDM gone: greetd would start a deleted
+    /// binary). The reason names the command to run first.
+    #[test]
+    fn the_package_removal_stops_while_the_boot_takeover_or_a_greeter_without_gdm_is_installed() {
+        let m = Machine::new("removal");
+        let efivars = boot_machine(&m);
+        let hook = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../packaging/libalpm/05-legionctl-remove.hook"),
+        )
+        .unwrap();
+        for line in [
+            "Operation = Remove",
+            "Target = legionctl",
+            "When = PreTransaction",
+            "AbortOnFail",
+        ] {
+            assert!(hook.lines().any(|l| l == line), "{line} missing:\n{hook}");
+        }
+        let exec: Vec<&str> = hook
+            .lines()
+            .find_map(|l| l.strip_prefix("Exec = "))
+            .unwrap()
+            .split_whitespace()
+            .collect();
+        assert_eq!(exec[0], "/usr/lib/legionctl/legionctl-system");
+        let check = || one_shot(&m, &exec[1..]);
+        let refusal = |out: std::process::Output| {
+            assert!(!out.status.success(), "{out:?}");
+            String::from_utf8(out.stderr).unwrap()
+        };
+        assert!(
+            check().status.success(),
+            "nothing of legionctl is installed"
+        );
+
+        let before = std::fs::read_to_string(&efivars).unwrap();
+        let mut vars: Value = serde_json::from_str(&before).unwrap();
+        vars["entries"]["0007"] = "legionctl".into();
+        std::fs::write(&efivars, vars.to_string()).unwrap();
+        let takeover = refusal(check());
+        assert!(
+            takeover.contains("the boot takeover is installed")
+                && takeover.contains("Run `legionctl boot remove` first"),
+            "{takeover}"
+        );
+        std::fs::write(&efivars, before).unwrap();
+
+        m.set(
+            "/etc/greetd/config.toml",
+            "# legionctl greeter (legionctl greeter install)\n[default_session]\ncommand = \"cage -s -- /usr/lib/legionctl/legionctl-greeter\"",
+        );
+        let greeter = refusal(check());
+        assert!(
+            greeter.contains("GDM is not installed")
+                && greeter.contains("`legionctl greeter remove`"),
+            "{greeter}"
+        );
+        m.set("/usr/lib/systemd/system/gdm.service", "");
+        assert!(check().status.success(), "pre_remove puts GDM back");
+    }
+
+    async fn greeter_act(
+        system: &zbus::Proxy<'_>,
+        user: &str,
+        action: &str,
+    ) -> zbus::Result<Vec<String>> {
+        system.call("GreeterAct", &(user, action)).await
+    }
+
+    /// The greeter's Windows VM autostart for two people (review 02, LOW): each user has a polkit rule of their own,
+    /// so ben's choice keeps anna's, and anna's VM still starts before login after ben turned his autostart off.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn each_users_windows_vm_autostart_is_a_rule_of_its_own() {
+        let m = Machine::new("autostarts");
+        m.set(
+            "/etc/passwd",
+            "root:x:0:0::/root:/bin/sh\nanna:x:1000:1000::/home/anna:/bin/sh\nben:x:1001:1001::/home/ben:/bin/sh",
+        );
+        let rules = m.dir.join("root/etc/polkit-1/rules.d");
+        std::fs::create_dir_all(&rules).unwrap();
+        let (stand_ins, _asked, _processes) = start(&m).await;
+        let system = zbus::Proxy::new(
+            &stand_ins,
+            "org.legionctl.System1",
+            "/org/legionctl/System1",
+            "org.legionctl.System1",
+        )
+        .await
+        .unwrap();
+        greeter_act(&system, "anna", "autostart-login")
+            .await
+            .unwrap();
+        greeter_act(&system, "ben", "autostart-login")
+            .await
+            .unwrap();
+        greeter_act(&system, "ben", "autostart-off").await.unwrap();
+        let anna = std::fs::read_to_string(rules.join("49-legionctl-windows-vm-anna.rules"))
+            .unwrap_or_default();
+        assert!(anna.contains("subject.user == \"anna\""), "{anna}");
+        assert!(!rules.join("49-legionctl-windows-vm-ben.rules").exists());
+        greeter_act(&system, "anna", "vm-start").await.unwrap();
+        let ben = greeter_act(&system, "ben", "vm-start").await.unwrap_err();
+        assert!(
+            ben.to_string()
+                .contains("starts before login only with autostart on"),
+            "{ben}"
         );
     }
 

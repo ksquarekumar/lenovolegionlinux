@@ -157,6 +157,7 @@ pub fn doctor(machine: &Machine) -> Vec<String> {
     w.extend(conflict_warnings(root, profile));
 
     w.extend(module_warnings(root, profile));
+    w.extend(crate::boot::unbuilt(root));
     if let Some(reasons) = firmware::logged_throttle_reasons(root)
         && reasons
             .iter()

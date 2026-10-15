@@ -417,7 +417,11 @@ fn boot_steps(root: &SysRoot, steps: &[Step]) -> Result<Vec<String>> {
     let mut lines = Vec::new();
     for step in steps {
         let done = policy::execute(root, &ledger, std::slice::from_ref(step));
-        if let Some(failure) = done.iter().find(|l| l.starts_with("warning")) {
+        // a warning of the plan is a line, not a failed step
+        if let Some(failure) = done
+            .iter()
+            .find(|l| l.starts_with("warning") && !matches!(step, Step::Warn(_)))
+        {
             anyhow::bail!("{failure}\ndone before it:\n- {}", lines.join("\n- "));
         }
         lines.extend(done);
@@ -426,8 +430,8 @@ fn boot_steps(root: &SysRoot, steps: &[Step]) -> Result<Vec<String>> {
 }
 
 /// A mode that runs once and ends, instead of the daemon: `--safe` (the safe-mode unit), `--boot-rebuild` (the pacman
-/// hook after a kernel or initramfs change), `--greeter-remove` (the package's removal: GDM back, so the computer keeps
-/// a login screen).
+/// hook after a kernel or initramfs change), `--remove-check` (the pacman hook before the package's removal; it fails
+/// to stop the removal), `--greeter-remove` (the package's removal: GDM back, so the computer keeps a login screen).
 fn one_shot(root: &SysRoot) -> Option<Result<()>> {
     let print = |lines: Vec<String>| {
         for line in lines {
@@ -437,6 +441,7 @@ fn one_shot(root: &SysRoot) -> Option<Result<()>> {
     match std::env::args().nth(1).as_deref() {
         Some("--safe") => Some(safe(root)),
         Some("--boot-rebuild") => Some(boot_rebuild(root).map(print)),
+        Some("--remove-check") => Some(remove_check(root)),
         Some("--greeter-remove") if greeter::state(root).installed => Some(
             greeter::remove_plan(root)
                 .and_then(|plan| boot_steps(root, &plan))
@@ -445,6 +450,35 @@ fn one_shot(root: &SysRoot) -> Option<Result<()>> {
         Some("--greeter-remove") => Some(Ok(())),
         _ => None,
     }
+}
+
+/// Refuse the package's removal while it leaves a bad state: the boot takeover first in the firmware with images that
+/// no hook makes again, or greetd with a greeter that `pre_remove` cannot take back (GDM gone). Each reason names the
+/// command to run first.
+fn remove_check(root: &SysRoot) -> Result<()> {
+    let mut reasons = Vec::new();
+    let state = boot::state(root)?;
+    if state.ours.is_some() || boot::default_kernel(root).is_some() {
+        reasons.push(
+            "the boot takeover is installed: without legionctl its kernel images are not made again after a kernel \
+             update. Run `legionctl boot remove` first"
+                .to_string(),
+        );
+    }
+    if greeter::state(root).installed
+        && let Err(e) = greeter::remove_plan(root)
+    {
+        reasons.push(format!(
+            "legionctl's greeter is the login screen and the removal cannot put the old one back ({e:#}). Make \
+             `legionctl greeter remove` work, and run it first"
+        ));
+    }
+    anyhow::ensure!(
+        reasons.is_empty(),
+        "legionctl is not removed:\n- {}",
+        reasons.join("\n- ")
+    );
+    Ok(())
 }
 
 /// Take the NVIDIA GPU from Linux for `uid` (its services kept in the ledger for the return).
@@ -598,13 +632,25 @@ fn start_set(root: &SysRoot) {
     }
 }
 
-/// Every kernel's UKI again (the pacman hook); nothing when legionctl does not own the boot.
+/// Every kernel's UKI again (the pacman hook); nothing when legionctl does not own the boot. Each warning (a kernel
+/// whose image is not made again) also goes to the journal: the hook's output is gone after pacman ends.
 fn boot_rebuild(root: &SysRoot) -> Result<Vec<String>> {
     let state = boot::state(root)?;
     if state.ours.is_none() {
         return Ok(vec!["no legionctl boot entry: nothing to rebuild".into()]);
     }
-    boot_steps(root, &boot::rebuild_plan(root, &state)?)
+    let plan = boot::rebuild_plan(root, &state)?;
+    for step in &plan {
+        if let Step::Warn(text) = step {
+            let logged = std::process::Command::new("logger")
+                .args(["-t", "legionctl-system", "-p", "warning", "--", text])
+                .status();
+            if !logged.is_ok_and(|s| s.success()) {
+                eprintln!("warning: not in the journal: {text}");
+            }
+        }
+    }
+    boot_steps(root, &plan)
 }
 
 /// The uid of the caller of a method.
@@ -1068,8 +1114,7 @@ impl System1 {
             .find(|f| f.get(2) == Some(&uid.to_string().as_str()))
             .and_then(|f| f.first().map(|n| (*n).to_string()))
             .ok_or_else(|| zbus::fdo::Error::Failed(format!("uid {uid} is not in /etc/passwd")))?;
-        let line = winvm::set_autostart_rule(&self.root, on.then_some(user.as_str()))
-            .map_err(|e| failed(&e))?;
+        let line = winvm::set_autostart_rule(&self.root, &user, on).map_err(|e| failed(&e))?;
         let lines = vec![line];
         self.tell(&emitter, "SetWindowsAutostart", &lines).await?;
         Ok(lines)

@@ -87,8 +87,8 @@ Built (2026-10-14, part 2): the user unit `legionctl-windows-vm.service` (packag
 (after giving back what a crashed run left), its stop (`legionctl windows-vm-stop`, also at logout and shutdown)
 sends the power button through QMP and waits, after 2 minutes ends the VM, and the runner (which ignores SIGTERM) gives
 the host back; `windows vm stop` stops the unit. `windows vm autostart off|login|boot`: on writes, after one polkit
-approval, `/etc/polkit-1/rules.d/49-legionctl-windows-vm.rules` (this user, this action only; removed by off and by
-the package's removal) and enables the unit; boot also enables lingering. `windows vm view` opens `remote-viewer` on
+approval, `/etc/polkit-1/rules.d/49-legionctl-windows-vm-<user>.rules` (this user, this action only; one file for
+each user, so one user's off keeps another user's rule; removed by off and by the package's removal) and enables the unit; boot also enables lingering. `windows vm view` opens `remote-viewer` on
 the SPICE socket as a user service (the desktop's environment). `windows.vm.shares`: one virtiofsd per folder (tag:
 the folder's name) and shareable memory (memfd). QMP is one module in the core crate. e2e: the autostart rule's
 content, enable/disable and lingering (off mutation-checked), view refused without a VM; as root, the share's devices.

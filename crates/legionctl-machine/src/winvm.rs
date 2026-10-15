@@ -307,22 +307,32 @@ pub fn msdm(root: &SysRoot) -> Result<Vec<u8>> {
         .context("the firmware has no MSDM table")
 }
 
-/// The polkit rule that lets user `user` start and end the Windows VM without a prompt (autostart: at boot no
-/// polkit agent can ask, and a prompt at every login is no autostart). Only this action, only this user.
-pub const AUTOSTART_RULE: &str = "/etc/polkit-1/rules.d/49-legionctl-windows-vm.rules";
+/// The file of the polkit rule that lets user `user` start and end the Windows VM without a prompt (autostart: at
+/// boot no polkit agent can ask, and a prompt at every login is no autostart). Only this action, only this user; one
+/// file for each user, so one user's choice does not change another user's.
+///
+/// # Errors
+/// The user name has characters a file name or a rule cannot hold.
+pub fn autostart_file(user: &str) -> Result<String> {
+    anyhow::ensure!(
+        !user.is_empty()
+            && !user.starts_with('.')
+            && user
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)),
+        "{user} is not a user name a rule can hold"
+    );
+    Ok(format!(
+        "/etc/polkit-1/rules.d/49-legionctl-windows-vm-{user}.rules"
+    ))
+}
 
 /// The autostart rule of `user`.
 ///
 /// # Errors
 /// The user name has characters a rule cannot hold.
 pub fn autostart_rule(user: &str) -> Result<String> {
-    anyhow::ensure!(
-        !user.is_empty()
-            && user
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)),
-        "{user} is not a user name a rule can hold"
-    );
+    autostart_file(user)?;
     Ok(format!(
         "// legionctl windows vm autostart: {user} may start and end the Windows VM without a prompt\n\
          polkit.addRule(function(action, subject) {{\n    \
@@ -331,27 +341,28 @@ pub fn autostart_rule(user: &str) -> Result<String> {
     ))
 }
 
-/// Write (`Some(user)`) or remove (`None`) the autostart rule.
+/// Write (`on`) or remove the autostart rule of `user`.
 ///
 /// # Errors
 /// The user name has characters a rule cannot hold, or the file cannot be written or removed.
-pub fn set_autostart_rule(root: &SysRoot, user: Option<&str>) -> Result<String> {
-    let path = root.path(AUTOSTART_RULE);
-    let Some(user) = user else {
-        match std::fs::remove_file(&path) {
-            Ok(()) => return Ok(format!("removed {AUTOSTART_RULE}")),
+pub fn set_autostart_rule(root: &SysRoot, user: &str, on: bool) -> Result<String> {
+    let file = autostart_file(user)?;
+    let path = root.path(&file);
+    if !on {
+        return match std::fs::remove_file(&path) {
+            Ok(()) => Ok(format!("removed {file}")),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok("no autostart rule".into());
+                Ok(format!("no autostart rule of {user}"))
             }
-            Err(e) => return Err(e).with_context(|| format!("removing {AUTOSTART_RULE}")),
-        }
-    };
+            Err(e) => Err(e).with_context(|| format!("removing {file}")),
+        };
+    }
     let rule = autostart_rule(user)?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(&path, rule).with_context(|| format!("writing {AUTOSTART_RULE}"))?;
+    std::fs::write(&path, rule).with_context(|| format!("writing {file}"))?;
     Ok(format!(
-        "wrote {AUTOSTART_RULE}: {user} starts the Windows VM without a prompt"
+        "wrote {file}: {user} starts the Windows VM without a prompt"
     ))
 }

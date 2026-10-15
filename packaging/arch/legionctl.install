@@ -16,6 +16,6 @@ pre_remove() {
   rm -rf /sys/fs/bpf/legionctl
   # GDM back in place of legionctl's greeter (legionctl greeter install), so the computer keeps a login screen
   /usr/lib/legionctl/legionctl-system --greeter-remove
-  # the Windows VM's autostart rule (legionctl windows vm autostart)
-  rm -f /etc/polkit-1/rules.d/49-legionctl-windows-vm.rules
+  # the Windows VM's autostart rules, one for each user (legionctl windows vm autostart)
+  rm -f /etc/polkit-1/rules.d/49-legionctl-windows-vm-*.rules
 }

@@ -133,6 +133,7 @@ install: ## install into DESTDIR; the PKGBUILD calls this (on this machine: `mak
 	install -Dm644 packaging/install/tmpfiles.conf "$(DESTDIR)$(PREFIX)/lib/tmpfiles.d/legionctl-build.conf"
 	install -Dm755 target/static/release/legionctl "$(DESTDIR)$(LIBDIR)/legionctl-static"
 	install -Dm644 packaging/libalpm/95-legionctl-uki.hook "$(DESTDIR)$(PREFIX)/share/libalpm/hooks/95-legionctl-uki.hook"
+	install -Dm644 packaging/libalpm/05-legionctl-remove.hook "$(DESTDIR)$(PREFIX)/share/libalpm/hooks/05-legionctl-remove.hook"
 	install -Dm644 $(PROFILE) "$(DESTDIR)$(DATADIR)/profiles/$(notdir $(PROFILE))"
 	install -Dm644 -t "$(DESTDIR)$(DATADIR)/configsets/$(basename $(notdir $(PROFILE)))" configsets/$(basename $(notdir $(PROFILE)))/*.jsonc
 	install -d "$(DESTDIR)$(DATADIR)" && cp -r integrations/agent-plugin "$(DESTDIR)$(DATADIR)/"

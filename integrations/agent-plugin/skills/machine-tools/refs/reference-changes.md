@@ -15,7 +15,8 @@ commands take `--dry-run`.
 | `gpu primary nvidia\|intel\|auto [--release-nvidia]` | The GPU that draws the desktop. | Next login |
 | `gpu give igpu\|nvidia linux\|windows\|none`, `vfio bind\|unbind <devices>` | A GPU or an IOMMU group to Linux, to the Windows VM, or to no one. Apps on that GPU lose it. | Now |
 | `display fix <id>\|all [--persistent]` (W) | Your own settings only: antialiasing, an app's flags file, a monitor's rate, the session environment. | Now; a mode until next login without `--persistent` |
-| `kernel default <name>`, `kernel cmdline set <name> "<line>"`, `kernel cmdline undo <name>` | The default kernel; one kernel's command line (only its image is made again, and its signature checked). Needs `boot install` first. | Next start |
+| `kernel default <name>` | The default kernel. Needs `boot install` first. | Next start |
+| `kernel cmdline set <name> "<line>"`, `kernel cmdline undo <name>` | One kernel's command line. The first call makes a signed trial image and sets the next start only to it; the same call after a good start through it makes it the kernel's image. Needs `boot install` first. | Next start (trial), then the second call |
 | `kernel try <name>` | Restarts into the kernel once. The default stays. | Restarts now |
 | `kernel bench <scenario> --all [--seconds <s>]`, `--cancel` | A job: each kernel starts once, the suite runs after login, then the default kernel starts again. It stops at a kernel that does not start. | Restarts now, once per kernel |
 | `kernel build <base> [--config-fragment <file>] [--name <suffix>]` | Builds `linux-cachyos-<suffix>` from the installed base's PKGBUILD in a container (a job, about an hour), then `pacman -U` through the daemon. | Next start (`kernel try`) |

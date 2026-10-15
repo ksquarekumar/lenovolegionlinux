@@ -98,8 +98,10 @@ and the initramfs, and the kernel's own command line: see "Kernels" below), `loa
 (the running kernel, from rEFInd's `initrd=`, as default; no menu: hold a key at start for it), and a firmware entry
 `legionctl` made with `--create-only` (not first in the order); then BootNext tries it once, so a failed start falls
 back to the old chain. `boot confirm` puts the entry first only when this start came through it; `boot rebuild` (also
-the pacman hook `95-legionctl-uki.hook`, after mkinitcpio's) makes the UKIs again and removes those of kernels that
-are gone; `boot remove` takes the entry, the folder, the UKIs and our `loader.conf` away. The daemon (D-Bus `Boot`,
+the pacman hook `95-legionctl-uki.hook`, after mkinitcpio's) makes the UKIs again, each kernel on its own (a kernel
+whose line fails its check keeps its old image, and the hook writes a warning to its output and to the journal, tag
+`legionctl-system`; `doctor` shows it until the line is correct), and removes those of kernels that are gone; when the
+default kernel is gone, `loader.conf` starts the running kernel, else the first kernel with an image; `boot remove` takes the entry, the folder, the UKIs and our `loader.conf` away. The daemon (D-Bus `Boot`,
 polkit `org.legionctl.boot`, no kept authorization) carries a plan out step by step and stops at the first failure,
 so no entry follows an unsigned loader. Windows stays reachable through `windows reboot` (BootNext into its entry) and
 the firmware menu: systemd-boot cannot start the boot manager on the other disk's ESP. e2e (real daemon, a fake ESP,
@@ -119,8 +121,8 @@ entries. There is no rEFInd path and no kexec.
 | `legionctl kernel list` | Each installed kernel (`/usr/lib/modules/<release>/` with `vmlinuz`): the package (`pkgbase`), the release, the scheduler (`bore` when `CONFIG_SCHED_BORE=y`, else `eevdf`) and `lto` (`CONFIG_LTO_CLANG_*`), from `build/.config` of the headers (the name is not enough: `linux-cachyos` is LTO too), legionctl's image, the command line, the DKMS state of `nvidia` and `legionctl-wmi` for that release (`dkms status`), and the marks `running` and `default`. |
 | `legionctl kernel default <name>` | legionctl's `loader.conf` starts `<name>` from the next start on. |
 | `legionctl kernel try <name>` | The next start only: the EFI variable `LoaderEntryOneShot` (systemd-boot's one-time entry) and `BootNext` to legionctl's firmware entry, then the restart. The default stays. |
-| `legionctl kernel cmdline set <name> "<line>"` | The command line of `<name>` only (see below). |
-| `legionctl kernel cmdline undo <name>` | The line of `<name>` before its last change. A second undo goes forward again. |
+| `legionctl kernel cmdline set <name> "<line>"` | The command line of `<name>` only, after one start through a trial image (see below). |
+| `legionctl kernel cmdline undo <name>` | The line of `<name>` before its last change, the same way. A second undo goes forward again. |
 | `legionctl kernel bench <suite> [--all [--seconds <s>] [--dry-run]] [--cancel]` | The newest run of a bench suite on each kernel, side by side; `--all` starts a series, `--cancel` stops it (see below). |
 | `legionctl kernel build <base> [--config-fragment <file>] [--name <suffix>] [--dry-run]` | A kernel package `linux-cachyos-<suffix>` built from the installed `<base>`, then installed (see below). |
 
@@ -144,21 +146,34 @@ When a kernel has no file yet (`boot install`, or a new kernel package), the pla
 (`/proc/cmdline` without `initrd=` and `BOOT_IMAGE=`) into it. rEFInd's `/boot/refind_linux.conf` stays as it is: it
 is the old chain's line.
 
-`kernel cmdline set` checks the line before it writes anything:
+`kernel cmdline set`, `boot install` and `boot rebuild` check the line before they write anything:
 
 - The line must have `root=`.
 - Each `<module>.<parameter>` must name a module that this kernel has: built in (`modules.builtin`,
   `modules.builtin.modinfo`) or loadable (`modules.dep`, with the DKMS modules). The kernel ignores a parameter of an
   unknown module without a word, so `zwsap.enabled=0` is refused. Names that the kernel gives to user space (`rd.`,
   `systemd.`, `udev.`, `luks.`, `plymouth.`, `vconsole.`, `locale.`) are not modules.
+- Some built-in modules are in none of these files (`rcupdate`, `rcutree`, `pcie_aspm`, `module`). A module that the
+  running kernel has in `/sys/module` is accepted. For the running kernel, this is the full rule. For another
+  kernel, the line is accepted with a warning: that kernel can be built in a different way, and only its files can
+  tell, which do not list the module.
 - The parameter names are not checked: `modules.builtin.modinfo` does not list each parameter. On 7.2.9 it lacks 15
   of 256 parameters of built-in modules that `/sys/module` shows, `zswap.enabled` of this machine's line among them.
   Parameters without a dot are not checked either: the kernel gives the ones it does not know to `init`.
 
-Then the daemon makes that kernel's image only: `ukify` writes `legionctl-<name>.efi.new`, `sbverify --cert` with
-the MOK certificate checks its signature, and `mv` puts it in place of the old image. Only after that, the old line
-goes to `<name>.cmdline.old` and the new line to `<name>.cmdline`. A failed step leaves the old image and the old
-line. `boot rebuild` uses the same checks and steps for each kernel.
+Then the daemon makes a trial image of that kernel only, `legionctl-<name>.trial.efi`: `ukify` writes it with `.new`
+at the end, `sbverify --cert` with the MOK certificate checks its signature, and `mv` gives it its name. The new line
+goes to `<name>.cmdline.trial`, and the next start only goes to the trial image (`LoaderEntryOneShot` and
+`BootNext`, as `kernel try`, but without the restart). The kernel's image and line stay. A bad line thus costs one
+start, and the start after it is the old image again.
+
+After a good start through the trial image, give the same command again. The daemon then sees that this start came
+through the trial image (`LoaderEntrySelected`) and that the one-time entry is used (systemd-boot removes
+`LoaderEntryOneShot` at that start). Only then `mv` puts the trial image in place of the kernel's image, the old line
+goes to `<name>.cmdline.old` and the new line to `<name>.cmdline`. Before that start, the same command makes the
+trial image again. A failed step leaves the old image and the old line. `boot rebuild` uses the same checks and the
+same image steps for each kernel, and removes a trial image (its line stays in `<name>.cmdline.trial` until the next
+`kernel cmdline set`).
 
 ### Boot entries for saved sets (todo-85)
 
@@ -230,13 +245,19 @@ folder is `~/.cache/legionctl/kernel-build/linux-cachyos-<suffix>/`.
 5. Build: `makepkg -s -C` in a container (image `legionctl-kernel-build` from `archlinux:base-devel`, a user with
    your uid), with the base's LTO mode (`_use_llvm_lto`: thin, full or none, from the base's `build/.config`). The
    log is `build.log` in the work folder.
-6. Install: the daemon (D-Bus `Kernel("install", <package>, <folder>)`, polkit `org.legionctl.boot`) refuses an
-   installed name again, then runs `pacman -U` with the kernel and its headers. pacman's hooks make the initramfs
-   (mkinitcpio), legionctl's signed image `legionctl-linux-cachyos-<suffix>.efi` with the running command line
-   (`95-legionctl-uki.hook`), and the DKMS modules.
+6. Install: the daemon (D-Bus `Kernel("install", <package>, <folder>)`, polkit `org.legionctl.boot`) takes only a
+   package `linux-cachyos-<name>` and refuses an installed name again. As root, it copies the kernel and its headers
+   into its own folder `/var/lib/legionctl/kernel-install` (0700), so the caller cannot change a file after the
+   check. There, each copy's `.PKGINFO` (`bsdtar`) must name the kernel or its headers (`pkgname`) and the kernel
+   (`pkgbase`), with one kernel package and one version. Then it runs `pacman -U` with the copies and removes them.
+   pacman's hooks make the initramfs (mkinitcpio), legionctl's signed image `legionctl-linux-cachyos-<suffix>.efi`
+   with the running command line (`95-legionctl-uki.hook`), and the DKMS modules.
 
 A restart of the operator cuts off the build. The operator resumes the job: it uses the clone, pins and names again,
-and skips makepkg when the package is there. The new kernel is then in `kernel list`, and `kernel try` starts it.
+and skips makepkg only when the package of the expected version is there and `legionctl.built` (written after makepkg
+passed) records this version and this fragment. Else it removes each package in the folder before makepkg, so a
+package of an earlier build (another version or fragment) never goes to pacman. The new kernel is then in `kernel
+list`, and `kernel try` starts it.
 
 ### Tests (e2e, `crates/legionctl/tests/machine.rs`)
 
@@ -247,9 +268,22 @@ with the real daemon, a stand-in ESP, a stand-in `efibootmgr` with its own state
 - `kernels_are_listed_and_start_through_the_boot_takeover_once_or_by_default`: the list (both kernels, flavour,
   DKMS, running, default); `default` and `try` refused with nothing changed before `boot install`; `default` changes
   `loader.conf` only; `try` sets `LoaderEntryOneShot` and `BootNext` and restarts, and the default stays.
-- `a_kernels_command_line_goes_into_its_image_only_and_undo_puts_the_old_one_back`: the line goes into that
-  kernel's image only; a line without `root=`, a parameter of an unknown module and an unsigned image are refused
-  with the old image and line left; `boot rebuild` keeps the line; undo puts the old line back.
+- `a_kernels_command_line_goes_into_its_image_only_and_undo_puts_the_old_one_back`: the line goes into a trial image
+  and the next start only; the same command before a start through it changes nothing of the kernel, after it the
+  trial image becomes that kernel's image only; a line without `root=`, a parameter of an unknown module and an
+  unsigned image are refused with the old image and line left; `boot rebuild` keeps the line; undo puts the old line
+  back the same way.
+- `a_built_in_module_that_the_running_kernel_has_is_accepted_on_each_kernels_line`: `rcupdate.` (in `/sys/module`,
+  not in the module files) is accepted on the running kernel's line, with a warning on the other kernel's line; a
+  module that `/sys/module` does not have either is refused.
+- `the_pacman_hook_makes_each_kernel_image_on_its_own_and_reports_the_one_it_cannot_make`: `legionctl-system
+  --boot-rebuild` with one kernel's line bad: the default kernel's image is made again, the other keeps its old image,
+  and the warning is in the hook's output, in the journal (stand-in `logger`) and in `doctor`.
+- `legionctl_boot_comes_beside_the_old_chain_and_is_tried_once_before_it_leads` (also): when the default kernel is
+  removed, rebuild makes the running kernel the default in `loader.conf`.
+- `kernel_install_takes_only_a_built_kernel_and_installs_roots_checked_copies`: through the daemon's `Kernel`
+  method: `glibc`, a file named as the kernel whose `.PKGINFO` names `glibc`, two kernel packages and two versions
+  are refused with nothing given to pacman; then pacman gets root's copies only, and the copies go.
 - `a_kernel_layer_applies_only_on_its_kernel`: a `kernel` layer applies only while its kernel runs; a layer for a
   kernel that is not installed is a `doctor` finding.
 - `a_bench_series_starts_each_kernel_once_and_goes_on_after_each_start`: the plan (one start for each kernel, then
@@ -264,7 +298,8 @@ with the real daemon, a stand-in ESP, a stand-in `efibootmgr` with its own state
 - `a_kernel_build_is_refused_or_planned_before_anything_runs`: an installed name, a bad fragment, a bad name and an
   unknown base are refused, and the dry run shows the plan; nothing runs.
 - `a_kernel_is_built_from_its_pinned_pkgbuild_and_installed_through_the_daemon`: a build cut off by an operator
-  restart goes on as the job with the same clone; the PKGBUILD of 7.2.9-2 (not the newer 7.2.10-1), the name, the
+  restart goes on as the job with the same clone, and removes the packages of an earlier build (an older version, the
+  same version with another fragment) that are in the folder; the PKGBUILD of 7.2.9-2 (not the newer 7.2.10-1), the name, the
   fragment merged and completed, the base's LTO, `pacman -U` of the kernel and its headers through the daemon
   (polkit); after pacman's hook, the new kernel's signed image, and its name refused as installed. Stand-ins: git (a
   local repository), docker (it runs the PKGBUILD's `prepare()` and writes the packages), `merge_config.sh`, make

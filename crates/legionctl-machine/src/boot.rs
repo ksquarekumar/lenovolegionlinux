@@ -207,11 +207,13 @@ pub fn saved_line(root: &SysRoot, name: &str) -> Option<String> {
 
 /// Refuse a command line that cannot start the kernel `name` or that the kernel would ignore in part: no `root=`, or
 /// a `<module>.<parameter>` for a module that this kernel does not have (built in or loadable, DKMS too). The kernel
-/// ignores such a parameter without a word.
+/// ignores such a parameter without a word. Some built-in modules have no entry in `modules.builtin` (`rcupdate`,
+/// `rcutree`, `pcie_aspm`, `module`): a module that the running kernel has in `/sys/module` is accepted; for another
+/// kernel, with a warning (the return value), because the other kernel can be built in a different way.
 ///
 /// # Errors
 /// The line, or the kernel's module tree, fails.
-pub fn check_line(root: &SysRoot, name: &str, line: &str) -> Result<()> {
+pub fn check_line(root: &SysRoot, name: &str, line: &str) -> Result<Vec<String>> {
     let words: Vec<&str> = line.split_whitespace().collect();
     anyhow::ensure!(
         words.iter().any(|w| w.starts_with("root=")),
@@ -220,18 +222,30 @@ pub fn check_line(root: &SysRoot, name: &str, line: &str) -> Result<()> {
     let release = crate::kernel::release_of(root, name)
         .with_context(|| format!("no module tree of {name} in /usr/lib/modules"))?;
     let modules = crate::kernel::modules(root, &release);
+    let running = crate::kernel::running_package(root);
+    let mut warnings = Vec::new();
     for word in words {
         let key = word.split('=').next().unwrap_or(word);
-        if let Some((module, _)) = key.split_once('.')
-            && !USER_SPACE.contains(&module)
-            && !modules.contains(&module.replace('-', "_"))
-        {
+        let Some((module, _)) = key.split_once('.') else {
+            continue;
+        };
+        let module_name = module.replace('-', "_");
+        if USER_SPACE.contains(&module) || modules.contains(&module_name) {
+            continue;
+        }
+        if !root.exists(format!("/sys/module/{module_name}")) {
             bail!(
                 "{word}: {name} ({release}) has no module {module}, built in or loadable; the kernel would ignore it"
             );
         }
+        if running.as_deref() != Some(name) {
+            warnings.push(format!(
+                "{word}: the running kernel has the module {module} (/sys/module), but the files of {name} \
+                 ({release}) do not list it; if {name} does not have it, {name} ignores this parameter"
+            ));
+        }
     }
-    Ok(())
+    Ok(warnings)
 }
 
 /// The running system's kernel line, without what the boot manager adds (`initrd=`, `BOOT_IMAGE=`).
@@ -284,15 +298,15 @@ fn boot_sets(root: &SysRoot) -> Vec<String> {
         .collect()
 }
 
-/// The image of the kernel `name` with `line`: made beside the old one, signed by `ukify` with the MOK key, its
+/// The image `file` (in `EFI/Linux`) of the kernel `name` with `line`: made beside the old one, signed by `ukify` with the MOK key, its
 /// signature checked, and only then put in place of the old one. Each saved set with boot entries is a profile of the
 /// image (a multi-profile UKI): its entry starts the kernel with `line` and `legionctl.set=<set>`; profile 0, the
 /// default entry, has the kernel's own line.
-fn build(root: &SysRoot, esp: &str, name: &str, line: &str) -> Vec<Step> {
+fn build(root: &SysRoot, esp: &str, name: &str, line: &str, file: &str) -> Vec<Step> {
     let ucode = ["/boot/intel-ucode.img", "/boot/amd-ucode.img"]
         .into_iter()
         .find(|u| root.exists(u));
-    let target = text(&root.path(Path::new(esp).join("EFI/Linux").join(image(name))));
+    let target = text(&root.path(Path::new(esp).join("EFI/Linux").join(file)));
     let new = format!("{target}.new");
     let profiles: Vec<(String, String)> = boot_sets(root)
         .into_iter()
@@ -361,31 +375,66 @@ fn build(root: &SysRoot, esp: &str, name: &str, line: &str) -> Vec<Step> {
     steps
 }
 
-/// The image steps of every kernel in `/boot`, each with its own command line. A kernel without one gets the running
-/// system's line, and the plan writes it down as that kernel's.
-fn uki_steps(root: &SysRoot, esp: &str) -> Result<Vec<Step>> {
-    let names = kernels(root);
-    anyhow::ensure!(!names.is_empty(), "no kernel with an initramfs in /boot");
-    let mut steps = vec![
+/// The folders of the images and of the command lines.
+fn image_dirs(root: &SysRoot, esp: &str) -> [Step; 2] {
+    [
         mkdir(root, Path::new(esp).join("EFI/Linux")),
         mkdir(root, LINES),
-    ];
-    for name in names {
-        let saved = saved_line(root, &name);
-        let line = if let Some(line) = saved {
-            line
-        } else {
-            let line = cmdline(root)?;
-            steps.push(Step::Create {
-                path: line_file(&name),
-                content: format!("{line}\n"),
-            });
-            line
-        };
-        check_line(root, &name, &line)?;
-        steps.extend(build(root, esp, &name, &line));
+    ]
+}
+
+/// The command line of the kernel `name`: its own, else the running system's line, which the steps write down as
+/// its own.
+fn line_of(root: &SysRoot, name: &str) -> Result<(String, Vec<Step>)> {
+    if let Some(line) = saved_line(root, name) {
+        return Ok((line, Vec::new()));
     }
-    Ok(steps)
+    let line = cmdline(root)?;
+    let step = Step::Create {
+        path: line_file(name),
+        content: format!("{line}\n"),
+    };
+    Ok((line, vec![step]))
+}
+
+/// Each kernel in `/boot` with its image steps, or why its line fails [`check_line`]. One kernel's failure does not
+/// touch the steps of another kernel.
+fn uki_steps(root: &SysRoot, esp: &str) -> Result<Vec<(String, Result<Vec<Step>>)>> {
+    let names = kernels(root);
+    anyhow::ensure!(!names.is_empty(), "no kernel with an initramfs in /boot");
+    Ok(names
+        .into_iter()
+        .map(|name| {
+            let steps = line_of(root, &name).and_then(|(line, mut steps)| {
+                let warnings = check_line(root, &name, &line)?;
+                steps.extend(warnings.into_iter().map(Step::Warn));
+                steps.extend(build(root, esp, &name, &line, &image(&name)));
+                Ok(steps)
+            });
+            (name, steps)
+        })
+        .collect())
+}
+
+/// The kernels whose image the boot takeover cannot make again, each with the reason (a `doctor` finding): their line
+/// fails [`check_line`], so `boot rebuild` (the pacman hook) leaves their old image.
+#[must_use]
+pub fn unbuilt(root: &SysRoot) -> Vec<String> {
+    if default_kernel(root).is_none() {
+        return Vec::new();
+    }
+    kernels(root)
+        .into_iter()
+        .filter_map(|name| {
+            let e = line_of(root, &name)
+                .and_then(|(line, _)| check_line(root, &name, &line))
+                .err()?;
+            Some(format!(
+                "boot rebuild (the pacman hook) does not make the signed image of {name} again, its old image \
+                 stays: {e:#}; correct its line with legionctl kernel cmdline set {name} \"<line>\""
+            ))
+        })
+        .collect()
 }
 
 /// legionctl's firmware entry and the ESP, or why the boot takeover is not there.
@@ -446,8 +495,38 @@ pub fn try_plan(state: &BootState, name: &str) -> Result<Vec<Step>> {
     ])
 }
 
-/// Plan `kernel cmdline set`: the image of `name` only, with `line` (checked first), then `line` as its command line
-/// and the line before it kept for `kernel cmdline undo`. A failed step leaves the old image and line.
+/// The image of the kernel `name` with a new command line, for one start before it replaces the kernel's image.
+fn trial_image(name: &str) -> String {
+    format!("{UKI_PREFIX}{name}.trial.efi")
+}
+
+fn trial_file(name: &str) -> String {
+    format!("{LINES}/{name}.cmdline.trial")
+}
+
+/// A systemd-boot variable from efivarfs (`LoaderEntrySelected`: the entry of this start; `LoaderEntryOneShot`: the
+/// entry of the next start only): the attributes, then UTF-16 with its end mark.
+fn loader_var(root: &SysRoot, name: &str) -> Option<String> {
+    let bytes = std::fs::read(root.path(format!(
+        "/sys/firmware/efi/efivars/{name}-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+    )))
+    .ok()?;
+    let text: Vec<u16> = bytes
+        .get(4..)?
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
+        .take_while(|c| *c != 0)
+        .collect();
+    String::from_utf16(&text).ok()
+}
+
+/// Plan `kernel cmdline set`, in two calls. The first call checks `line`, makes the trial image of `name` with it
+/// (beside the kernel's image, which stays) and sets the next start, only, to the trial image (`LoaderEntryOneShot`
+/// and `BootNext`, as `kernel try`, without the restart). The same call after a start through the trial image puts
+/// the trial image in place of the kernel's image, `line` as its command line, and the line before it in
+/// `<name>.cmdline.old` for `kernel cmdline undo`. A bad line thus costs one start, never the default.
 ///
 /// # Errors
 /// No boot takeover, no image of `name`, or the line fails [`check_line`].
@@ -457,30 +536,66 @@ pub fn cmdline_plan(
     name: &str,
     line: &str,
 ) -> Result<Vec<Step>> {
-    let (_, esp) = takeover(state)?;
+    let (id, esp) = takeover(state)?;
     startable(state, name)?;
     let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
-    check_line(root, name, &line)?;
+    let warnings = check_line(root, name, &line)?;
     let before = saved_line(root, name).with_context(|| {
         format!("no command line of {name} in {LINES} yet (legionctl boot rebuild writes it)")
     })?;
-    let mut steps = build(root, &esp, name, &line);
+    let trial = trial_image(name);
+    // systemd-boot removes the one-time entry at the start that uses it: no one-time entry left means that this start
+    // is that start, not one before the trial image was made
+    let tried = root.read(trial_file(name)).as_deref() == Some(line.as_str())
+        && state.ukis.contains(&trial)
+        && loader_var(root, "LoaderEntrySelected").as_deref() == Some(trial.as_str())
+        && loader_var(root, "LoaderEntryOneShot").is_none();
+    let linux = Path::new(&esp).join("EFI/Linux");
+    let mut steps: Vec<Step> = warnings.into_iter().map(Step::Warn).collect();
+    if tried {
+        steps.extend([
+            Step::Run(vec![
+                "mv".into(),
+                text(&root.path(linux.join(&trial))),
+                text(&root.path(linux.join(image(name)))),
+            ]),
+            mkdir(root, LINES),
+            Step::Create {
+                path: old_file(name),
+                content: format!("{before}\n"),
+            },
+            Step::Create {
+                path: line_file(name),
+                content: format!("{line}\n"),
+            },
+            Step::Remove {
+                path: trial_file(name),
+            },
+        ]);
+        return Ok(steps);
+    }
+    steps.extend(build(root, &esp, name, &line, &trial));
     steps.extend([
         mkdir(root, LINES),
         Step::Create {
-            path: old_file(name),
-            content: format!("{before}\n"),
-        },
-        Step::Create {
-            path: line_file(name),
+            path: trial_file(name),
             content: format!("{line}\n"),
         },
+        Step::LoaderVar {
+            name: "LoaderEntryOneShot".into(),
+            value: trial.clone(),
+        },
+        Step::Run(vec!["efibootmgr".into(), "--bootnext".into(), id]),
+        Step::Info(format!(
+            "the next start only uses the new line ({trial}); {name}'s image and line stay. After a good start \
+             through it, give the same command again: then the new line becomes {name}'s"
+        )),
     ]);
     Ok(steps)
 }
 
-/// Plan `kernel cmdline undo`: the line before the last change, as [`cmdline_plan`] (so a second undo goes forward
-/// again).
+/// Plan `kernel cmdline undo`: the line before the last change, as [`cmdline_plan`] (one start through its trial
+/// image, then the same command again; a second undo goes forward again).
 ///
 /// # Errors
 /// No line was changed, or [`cmdline_plan`] fails.
@@ -491,46 +606,129 @@ pub fn undo_plan(root: &SysRoot, state: &BootState, name: &str) -> Result<Vec<St
     cmdline_plan(root, state, name, &before)
 }
 
-/// Plan `kernel build`'s last step: install the built packages of the kernel `name` (the kernel and its headers,
-/// `<name>-<version>-<arch>.pkg.tar.zst` in `dir`) with `pacman -U`. pacman's hooks then make its initramfs, its
-/// signed image (`boot rebuild`) and its DKMS modules.
+/// The folder where the daemon copies the packages of `kernel install` before it reads and installs them: root's
+/// own (0700), so the caller cannot change a file after its check.
+const STAGE: &str = "/var/lib/legionctl/kernel-install";
+
+/// `pkgname`, `pkgbase` and `pkgver` (with `pkgrel`) from the `.PKGINFO` of the package `file`.
+fn package_info(file: &Path) -> Result<(String, String, String)> {
+    let out = std::process::Command::new("bsdtar")
+        .arg("-xOf")
+        .arg(file)
+        .arg(".PKGINFO")
+        .output()
+        .context("running bsdtar")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "{} is not a package: {}",
+        file.display(),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    let info = String::from_utf8_lossy(&out.stdout);
+    let field = |key: &str| {
+        info.lines()
+            .find_map(|l| l.strip_prefix(key)?.strip_prefix(" = "))
+            .map(String::from)
+            .with_context(|| format!("{} has no {key} in .PKGINFO", file.display()))
+    };
+    Ok((field("pkgname")?, field("pkgbase")?, field("pkgver")?))
+}
+
+/// Plan `kernel build`'s last step (the daemon, as root): install the built packages of the kernel `name` (the
+/// kernel and its headers, `<name>-<version>-<arch>.pkg.tar.zst` in `dir`) with `pacman -U`. Only a kernel that
+/// `kernel build` makes (`linux-cachyos-<name>`): the packages are copied into [`STAGE`] first, and their `.PKGINFO`
+/// there must name the kernel (`pkgname` the kernel or its headers, `pkgbase` the kernel), one kernel package and one
+/// version. pacman installs the copies. pacman's hooks then make its initramfs, its signed image (`boot rebuild`) and
+/// its DKMS modules.
 ///
 /// # Errors
-/// `name` is an installed kernel already, or `dir` has no package of it.
+/// `name` is not `linux-cachyos-<name>` or an installed kernel already, or the packages in `dir` fail the checks.
 pub fn package_plan(root: &SysRoot, name: &str, dir: &Path) -> Result<Vec<Step>> {
+    anyhow::ensure!(
+        name.strip_prefix("linux-cachyos-")
+            .is_some_and(|n| !n.is_empty()
+                && n.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')),
+        "kernel install takes only a kernel of kernel build (linux-cachyos-<name>), not {name}"
+    );
     anyhow::ensure!(
         !crate::kernel::installed_packages(root)
             .iter()
             .any(|p| p == name),
         "{name} is an installed kernel already: give the build another --name"
     );
-    let mut files: Vec<String> = std::fs::read_dir(dir)
+    let stage = root.path(STAGE);
+    match std::fs::remove_dir_all(&stage) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(e).with_context(|| format!("removing {}", stage.display()));
+        }
+        _ => {}
+    }
+    std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+        .create(&stage)
+        .with_context(|| format!("making {}", stage.display()))?;
+    let mut copies: Vec<(String, String)> = Vec::new();
+    for entry in std::fs::read_dir(dir)
         .with_context(|| format!("reading {}", dir.display()))?
         .flatten()
-        .filter_map(|e| {
-            let file = e.file_name().into_string().ok()?;
-            let rest = file.strip_prefix(name)?.strip_prefix('-')?;
-            // the kernel (`<name>-7.2.9-2-...`) and its headers, not the debug package
-            ((rest.starts_with(|c: char| c.is_ascii_digit()) || rest.starts_with("headers-"))
-                && file.ends_with(".pkg.tar.zst"))
-            .then(|| text(&dir.join(file)))
-        })
-        .collect();
-    files.sort();
+    {
+        let Ok(file) = entry.file_name().into_string() else {
+            continue;
+        };
+        let Some(rest) = file.strip_prefix(name).and_then(|r| r.strip_prefix('-')) else {
+            continue;
+        };
+        // the kernel (`<name>-7.2.9-2-...`) and its headers, not the debug package
+        if !(file.ends_with(".pkg.tar.zst")
+            && (rest.starts_with(|c: char| c.is_ascii_digit()) || rest.starts_with("headers-")))
+        {
+            continue;
+        }
+        anyhow::ensure!(
+            entry.file_type()?.is_file(),
+            "{} is not a plain file",
+            entry.path().display()
+        );
+        let copy = stage.join(&file);
+        std::fs::copy(entry.path(), &copy)
+            .with_context(|| format!("copying {}", entry.path().display()))?;
+        let (pkgname, pkgbase, version) = package_info(&copy)?;
+        anyhow::ensure!(
+            pkgbase == name && (pkgname == name || pkgname == format!("{name}-headers")),
+            "{file}: its .PKGINFO names {pkgname} of {pkgbase}, not {name}"
+        );
+        copies.push((pkgname, version));
+    }
+    let kernels = copies.iter().filter(|(p, _)| p == name).count();
     anyhow::ensure!(
-        files
-            .iter()
-            .any(|f| !f.contains(&format!("{name}-headers-"))),
-        "no package of {name} in {}",
+        kernels == 1,
+        "{kernels} packages of {name} in {} (one is needed): remove the old ones and run the build again",
         dir.display()
     );
-    Ok(vec![Step::Run(
-        ["pacman", "-U", "--noconfirm"]
-            .map(String::from)
-            .into_iter()
-            .chain(files)
-            .collect(),
-    )])
+    let mut versions: Vec<&str> = copies.iter().map(|(_, v)| v.as_str()).collect();
+    versions.sort_unstable();
+    versions.dedup();
+    anyhow::ensure!(
+        versions.len() == 1 && copies.len() <= 2,
+        "the packages of {name} in {} have more than one version ({})",
+        dir.display(),
+        versions.join(", ")
+    );
+    let mut files: Vec<String> = std::fs::read_dir(&stage)?
+        .flatten()
+        .map(|e| text(&e.path()))
+        .collect();
+    files.sort();
+    Ok(vec![
+        Step::Run(
+            ["pacman", "-U", "--noconfirm"]
+                .map(String::from)
+                .into_iter()
+                .chain(files)
+                .collect(),
+        ),
+        Step::Run(vec!["rm".into(), "-rf".into(), text(&stage)]),
+    ])
 }
 
 /// Plan `boot install`: our shim copy with systemd-boot as its signed second stage, the UKIs, `loader.conf` (the
@@ -582,7 +780,10 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
             text(&root.path(SYSTEMD_BOOT)),
         ]),
     ];
-    steps.extend(uki_steps(root, &esp)?);
+    steps.extend(image_dirs(root, &esp));
+    for (name, kernel) in uki_steps(root, &esp)? {
+        steps.extend(kernel.with_context(|| format!("the image of {name}"))?);
+    }
     steps.push(mkdir(root, Path::new(&esp).join("loader")));
     // the running kernel is the default at first
     steps.push(Step::Create {
@@ -659,19 +860,50 @@ pub fn confirm_plan(state: &BootState) -> Result<Vec<Step>> {
     ])])
 }
 
-/// Plan `boot rebuild` (the pacman hook): every kernel's UKI again, and the UKIs of kernels that are gone removed.
+/// Plan `boot rebuild` (the pacman hook): each kernel's UKI again, and the UKIs of kernels that are gone removed. A
+/// kernel whose line fails [`check_line`] keeps its old image and gets a warning; the other kernels are made again.
+/// When the default kernel is gone, `loader.conf` starts the running kernel, else the first kernel with an image.
 ///
 /// # Errors
 /// No ESP or no kernels.
 pub fn rebuild_plan(root: &SysRoot, state: &BootState) -> Result<Vec<Step>> {
     let esp = state.esp.clone().context("no ESP is mounted")?;
-    let mut steps = uki_steps(root, &esp)?;
+    let mut steps = image_dirs(root, &esp).to_vec();
+    let mut with_image = Vec::new();
+    for (name, kernel) in uki_steps(root, &esp)? {
+        match kernel {
+            Ok(kernel) => {
+                steps.extend(kernel);
+                with_image.push(name);
+            }
+            Err(e) => {
+                steps.push(Step::Warn(format!(
+                    "the image of {name} is not made again, its old image stays: {e:#}"
+                )));
+                if state.ukis.contains(&image(&name)) {
+                    with_image.push(name);
+                }
+            }
+        }
+    }
     for uki in &state.ukis {
         let kernel = uki.trim_start_matches(UKI_PREFIX).trim_end_matches(".efi");
         if !state.kernels.iter().any(|k| k == kernel) {
             steps.push(Step::Remove {
                 path: text(&Path::new(&esp).join("EFI/Linux").join(uki)),
             });
+        }
+    }
+    if let Some(gone) = default_kernel(root).filter(|d| !state.kernels.contains(d)) {
+        let running = crate::kernel::running_package(root).filter(|r| with_image.contains(r));
+        match running.or_else(|| with_image.first().cloned()) {
+            Some(next) => steps.push(Step::Create {
+                path: text(&Path::new(&esp).join(LOADER)),
+                content: loader_conf(&next),
+            }),
+            None => steps.push(Step::Warn(format!(
+                "the default kernel {gone} is gone and no other kernel has an image: loader.conf stays"
+            ))),
         }
     }
     Ok(steps)

@@ -30,7 +30,7 @@ How each action works:
 - **VM start needs autostart**: the VM's runner asks polkit as the user. Before login, no polkit agent can ask a person.
   Thus the daemon refuses a start when the user's autostart rule (note 05) does not exist.
 - **Autostart**: the same as `legionctl windows vm autostart`, for the user that you typed. The daemon writes or
-  removes the user's polkit rule and enables or disables the unit in the user's service manager. `At boot` also does
+  removes the user's own polkit rule (one file for each user, so one user's choice keeps another user's rule) and enables or disables the unit in the user's service manager. `At boot` also does
   `loginctl enable-linger`.
 - **Windows disk**: `Detach` stops the automount and mount units of the fstab entries on the Windows disk, as a VM
   start does. `Attach to Linux` starts the automounts again. The daemon refuses both while the Windows VM runs.
@@ -93,7 +93,11 @@ The change has an effect at the next start.
 - `legionctl greeter remove`: it puts the kept file back (or removes ours when there was no file), then
   `systemctl disable greetd.service` and `systemctl enable gdm.service`. It refuses when GDM is not installed.
 - When the package is removed, its `pre_remove` runs `legionctl-system --greeter-remove`: the same steps, so the
-  computer keeps a login screen.
+  computer keeps a login screen. pacman ignores a failed `pre_remove`, so before that, the hook
+  `05-legionctl-remove.hook` (`PreTransaction`, `AbortOnFail`) runs `legionctl-system --remove-check`. It stops the
+  removal when the greeter cannot be removed (GDM is not installed: greetd would start a deleted greeter) or when the
+  boot takeover is installed (no hook would make its images again after a kernel update). The message names the
+  command to run first: `legionctl greeter remove` or `legionctl boot remove`.
 - When the greeter does not start: switch to a text console (Ctrl+Alt+F2), log in, and run
   `sudo systemctl disable greetd.service && sudo systemctl enable gdm.service`, then restart.
 
@@ -107,6 +111,11 @@ The change has an effect at the next start.
 - Install and remove through the operator and the real daemon on the recorded machine: refused without cage (nothing
   changed); the old file kept byte for byte; GDM disabled before greetd is enabled; a second install refused; remove
   puts the old file and GDM back.
+- `the_package_removal_stops_while_the_boot_takeover_or_a_greeter_without_gdm_is_installed`: the hook's `Exec` line
+  on the recorded machine: it passes with nothing installed; it fails with the boot entry or with the greeter and no
+  GDM, and names the command to run first; it passes again with GDM.
+- `each_users_windows_vm_autostart_is_a_rule_of_its_own`: `GreeterAct` for two users: ben's autostart off keeps
+  anna's rule, and anna's VM start passes while ben's is refused.
 
 ## Live (the user's first run)
 

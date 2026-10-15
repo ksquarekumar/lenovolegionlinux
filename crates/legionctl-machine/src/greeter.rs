@@ -169,7 +169,7 @@ pub fn vm_plan(root: &SysRoot, user: &str, uid: u32, action: &str) -> Result<Vec
     Ok(match action {
         "vm-start" => {
             let rule = winvm::autostart_rule(user)?;
-            if root.read(winvm::AUTOSTART_RULE).as_deref() != Some(rule.trim()) {
+            if root.read(winvm::autostart_file(user)?).as_deref() != Some(rule.trim()) {
                 bail!(
                     "the Windows VM of {user} starts before login only with autostart on: its start asks polkit as \
                      {user}, and before login no one can answer"
@@ -180,7 +180,7 @@ pub fn vm_plan(root: &SysRoot, user: &str, uid: u32, action: &str) -> Result<Vec
         "vm-stop" => vec![user_systemctl(&["stop"])],
         "autostart-off" => vec![
             Step::Remove {
-                path: winvm::AUTOSTART_RULE.into(),
+                path: winvm::autostart_file(user)?,
             },
             manager,
             user_systemctl(&["disable"]),
@@ -188,7 +188,7 @@ pub fn vm_plan(root: &SysRoot, user: &str, uid: u32, action: &str) -> Result<Vec
         "autostart-login" | "autostart-boot" => {
             let mut steps = vec![
                 Step::Create {
-                    path: winvm::AUTOSTART_RULE.into(),
+                    path: winvm::autostart_file(user)?,
                     content: winvm::autostart_rule(user)?,
                 },
                 manager,

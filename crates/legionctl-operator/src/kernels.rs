@@ -152,19 +152,36 @@ fn patch(dir: &Path, build: &Build) -> Result<()> {
     Ok(())
 }
 
-/// The kernel package `package` (not its headers) is in `dir`.
-fn built(dir: &Path, package: &str) -> bool {
+/// The record of the packages in the PKGBUILD's folder: the version and the fragment they were built with.
+const BUILT: &str = "legionctl.built";
+
+/// What [`BUILT`] holds for `build`.
+fn record(build: &Build) -> String {
+    format!(
+        "{}\n{}",
+        build.version,
+        build.fragment.as_deref().unwrap_or_default()
+    )
+}
+
+/// The packages in `dir`.
+fn packages(dir: &Path) -> Vec<PathBuf> {
     std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
-        .any(|e| {
-            let file = e.file_name().to_string_lossy().into_owned();
-            file.ends_with(".pkg.tar.zst")
-                && file
-                    .strip_prefix(package)
-                    .and_then(|r| r.strip_prefix('-'))
-                    .is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()))
+        .map(|e| e.path())
+        .filter(|p| p.to_string_lossy().ends_with(".pkg.tar.zst"))
+        .collect()
+}
+
+/// The kernel package of `build` (not its headers) is in `dir`, of its version and its fragment.
+fn built(dir: &Path, build: &Build) -> bool {
+    let prefix = format!("{}-{}-", build.package, build.version);
+    std::fs::read_to_string(dir.join(BUILT)).is_ok_and(|r| r == record(build))
+        && packages(dir).iter().any(|p| {
+            p.file_name()
+                .is_some_and(|f| f.to_string_lossy().starts_with(&prefix))
         })
 }
 
@@ -491,7 +508,12 @@ impl Operator {
         run(git(&repo).args(["checkout", "--quiet", "--force", &commit]))?;
         let dir = repo.join(&build.folder);
         patch(&dir, build)?;
-        if !built(&dir, &build.package) {
+        if !built(&dir, build) {
+            // packages of an earlier build (another version or fragment) never reach pacman
+            for old in packages(&dir) {
+                std::fs::remove_file(&old)
+                    .with_context(|| format!("removing {}", old.display()))?;
+            }
             progress("image")?;
             let image = build.dir.join("image");
             std::fs::create_dir_all(&image)?;
@@ -516,9 +538,16 @@ impl Operator {
                 .status()
                 .context("running docker")?;
             anyhow::ensure!(
-                status.success() && built(&dir, &build.package),
-                "makepkg did not make {} ({status}): see {}",
+                status.success(),
+                "makepkg failed ({status}): see {}",
+                log_path.display()
+            );
+            std::fs::write(dir.join(BUILT), record(build))?;
+            anyhow::ensure!(
+                built(&dir, build),
+                "makepkg did not make {} {} ({status}): see {}",
                 build.package,
+                build.version,
                 log_path.display()
             );
         }

@@ -1,0 +1,13 @@
+# legionctl's removal stops while it would leave a bad state: the boot takeover first in the firmware with kernel
+# images that no hook makes again, or greetd with a greeter that the removal cannot take back (GDM gone). The message
+# names the command to run first. pacman ignores a failed pre_remove, so this check is a hook with AbortOnFail.
+[Trigger]
+Type = Package
+Operation = Remove
+Target = legionctl
+
+[Action]
+Description = legionctl: checking that the boot takeover and the greeter are removed...
+When = PreTransaction
+Exec = /usr/lib/legionctl/legionctl-system --remove-check
+AbortOnFail
