@@ -1697,4 +1697,6 @@ repositories; stand-ins only where a tool is not the subject.
    come from the built-in checks (`dossier check`, `code plan check`, the watch rules), not from added queries; E4's
    SQL views are not built.
 
-Open: the user's note "agents runs are like projects; unique" is not yet placed (asked 2026-10-15).
+7. Dossier names (the user, same day: "agents runs are like projects; unique" is for dossier names): a dossier name
+   is descriptive, unique and may be changed at any time, like a project name; the stable id in `dossier.jsonc`
+   keeps every reference (bindings, links, events) valid across renames. A rename to a name in use is refused.
