@@ -3088,9 +3088,7 @@ fn sessions_in_a_container_work_on_the_mounted_workspace_behind_the_git_gate() {
         "probe"
     );
     assert!(
-        workspace
-            .join("agentWorkspaces/talk/MEMORY/probe.md")
-            .exists(),
+        Path::is_file(&workspace.join("agentWorkspaces/talk/MEMORY/probe.md")),
         "the dossier is mounted"
     );
 
@@ -5501,7 +5499,8 @@ fn nothing_moves_before_the_user_runs_the_migration(op: &Operator, home: &Path, 
     let before = std::fs::read(old.join("workspace.db")).unwrap();
     let plan = op.ok(&["dossier", "migrate", "--dry-run"]);
     for line in [
-        "refused while session s-live holds dossier beta".to_string(),
+        "keep the live binding: session s-live holds dossier beta (it moves with its rows)"
+            .to_string(),
         format!("back up {}", old.join("workspace.db").display()),
         format!(
             "move {} to {} (a new id)",
@@ -5523,7 +5522,7 @@ fn nothing_moves_before_the_user_runs_the_migration(op: &Operator, home: &Path, 
     assert!(!homes.join("alpha").exists() && !repo.join("agentWorkspaces").exists());
 }
 
-/// Steps 2 to 5 of the migration (no live binding is left), each cut by an obstacle in its way, then the obstacle
+/// Steps 2 to 5 of the migration (the live binding of s-live stays), each cut by an obstacle in its way, then the obstacle
 /// removed and `dossier migrate` run again; returns the ids of alpha and beta.
 fn migrate_with_a_cut_at_each_step(op: &Operator, home: &Path, repo: &Path) -> (String, String) {
     let (old, homes) = (home.join(".agentworkspace"), home.join("agentWorkspaces"));
@@ -5644,14 +5643,13 @@ fn migrated_rows_links_and_lines(op: &Operator, home: &Path, repo: &Path, wt: &P
 /// The one-time move of a realistic old home (design 23, E1, decided 2026-10-15: only by `dossier migrate`): two
 /// dossiers (beta with an id), a v13 workspace.db (P5's threads, kills not keyed) with bindings, sessions, a live
 /// binding, kills, annotations and an accept, and alpha's worktree with the old link. An operator start moves nothing
-/// and the dossier operations refuse; the dry run changes nothing; the migration is refused for the live binding and
+/// and the dossier operations refuse; the dry run changes nothing; the migration (with the live binding there) is
 /// cut at the backup, the move, the split and the links (an obstacle in the way each time), and each call does the
 /// steps again. Then each row is in its place and counted once, the ids stay, the links and ignore lines are new, and
 /// `~/.agentworkspace` is in the backup; a later start and a later call do nothing.
 #[test]
 fn the_dossiers_move_to_their_homes_once_and_keep_their_ids_links_and_rows() {
-    let (op, home) = operator("migrate");
-    drop(op);
+    let home = home("migrate");
     let (repo, wt) = old_home(&home);
     let (old, homes, state) = (
         home.join(".agentworkspace"),
@@ -5660,14 +5658,7 @@ fn the_dossiers_move_to_their_homes_once_and_keep_their_ids_links_and_rows() {
     );
     let op = start_again(&home, 1);
     nothing_moves_before_the_user_runs_the_migration(&op, &home, &repo);
-    // 1. the live binding of s-live: refused, and nothing moved
-    migration_failed(&op, &home, "session s-live holds dossier beta");
-    assert!(old.join("alpha").is_dir() && !homes.join("alpha").exists());
-    // the binding goes stale; a start still moves nothing
-    rows(
-        &old.join("workspace.db"),
-        "UPDATE bindings SET updated = 0 WHERE session = 's-live'",
-    );
+    // a second start moves nothing either
     drop(op);
     let op = start_again(&home, 2);
     // the socket starts the operator at the first call
@@ -5747,10 +5738,60 @@ fn the_dossiers_move_to_their_homes_once_and_keep_their_ids_links_and_rows() {
         .iter()
         .filter(|j| j["kind"] == "dossier.migrate")
         .count();
+    assert_eq!(runs, 5, "four cut calls and the one that is done");
+}
+
+/// A live session in a home that is not migrated (design 23, E1; the session that runs the migration is one): its
+/// hooks never block it. Session start and prompt pass with one line that says to migrate, stop does not block, and a
+/// write is not denied. After `dossier migrate` its binding is the moved row: the session keeps its dossier, the write
+/// guard denies another dossier again, and a session without a dossier is held at the prompt as before.
+#[test]
+fn the_hooks_of_a_live_session_pass_before_the_migration_and_gate_after_it() {
+    let home = home("unmigrated");
+    let (repo, _) = old_home(&home);
+    let op = start_again(&home, 7);
+    let hook = |event: &str, fields: Value| {
+        let out = op.run(&repo, &[], &["hook", event], &claude_hook(event, &fields));
+        assert!(out.status.success(), "{event}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let write = |session: &str, path: PathBuf| {
+        hook(
+            "pre-tool",
+            json!({"session_id": session, "cwd": repo, "tool_name": "Write",
+                   "tool_input": {"file_path": path, "content": "x"}}),
+        )
+    };
+    let (old, homes) = (home.join(".agentworkspace"), home.join("agentWorkspaces"));
+
     assert_eq!(
-        runs, 6,
-        "the refused call, four cut calls and the one that is done"
+        hook("session-start", json!({"session_id": "s-new", "cwd": repo})),
+        NOT_MIGRATED
     );
+    assert_eq!(
+        hook(
+            "prompt",
+            json!({"session_id": "s-new", "cwd": repo, "prompt": "fix the bug"})
+        ),
+        NOT_MIGRATED
+    );
+    assert_eq!(
+        hook("stop", json!({"session_id": "s-new", "cwd": repo})),
+        ""
+    );
+    assert_eq!(write("s-live", old.join("alpha/plan.md")), "", "not denied");
+
+    op.ok(&["dossier", "migrate"]);
+    let (bound, active) = as_session(&op, &home, ("s-live", &repo), &["dossier", "active"]);
+    assert!(bound && active.contains("active dossier beta"), "{active}");
+    assert!(write("s-live", homes.join("alpha/plan.md")).contains("deny"));
+    assert_eq!(write("s-live", homes.join("beta/plan.md")), "");
+    let held: Value = serde_json::from_str(&hook(
+        "prompt",
+        json!({"session_id": "s-new", "cwd": repo, "prompt": "fix the bug"}),
+    ))
+    .unwrap();
+    assert_eq!(held["decision"], "block", "{held}");
 }
 
 /// The run of `args` as session `s` in `cwd`: whether it succeeded, and its stdout and stderr.

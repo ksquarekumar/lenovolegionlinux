@@ -242,6 +242,17 @@ pub(crate) fn end_job<T: serde::Serialize>(db: &Db, job: i64, out: &Result<T>) -
     db.job_end(job, &outcome)
 }
 
+/// Before the migration no dossier operation runs, and a session goes on: one line, never a block.
+fn unmigrated(event: Event) -> Option<HookReply> {
+    legionctl_core::migrate::pending().then(|| HookReply {
+        text: match event {
+            Event::SessionStart | Event::Prompt => legionctl_core::migrate::NOT_MIGRATED.into(),
+            Event::Stop => String::new(),
+        },
+        block: None,
+    })
+}
+
 /// The path of the knob `knob` (an id or a path) on this machine.
 fn knob_path(profile: Option<&ClientPath>, knob: &str) -> Result<String> {
     let plan = Plan::load(path(profile)?)?;
@@ -2201,6 +2212,9 @@ impl Engine for Operator {
     }
 
     fn hooks_run(&self, ctx: &Ctx, input: HookRunIn) -> Result<HookReply> {
+        if let Some(reply) = unmigrated(input.event.into()) {
+            return Ok(reply);
+        }
         let resolved = config(Some(&input.project))?;
         let store = Dossiers::open(&resolved.config.dossier)?;
         let session = input.session.as_ref().filter(|s| !s.0.is_empty());

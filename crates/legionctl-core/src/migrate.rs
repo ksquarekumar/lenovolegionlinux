@@ -1,8 +1,9 @@
 //! The one-time move of the dossiers to their homes (design 23, E1): operation and job `dossier.migrate`, only when
 //! the user runs `legionctl dossier migrate` (decided 2026-10-15: never at an operator start). Until it is done, the
-//! dossier operations refuse. Each step can run again, so a cut-off run does them all again at the next call:
+//! dossier operations refuse, so nothing writes a dossier while it runs, and a live binding moves as a row: its session
+//! goes on after the move. Each step can run again, so a cut-off run does them all again at the next call:
 //!
-//! 1. Refuse while a session holds a live binding (the error names each).
+//! 1. Nothing waits: a live binding moves as a row (the dry run lists each).
 //! 2. Back up `workspace.db` to `~/.local/state/legionctl/backup/workspace.db.<time>`, then take it to its last schema.
 //! 3. Give each dossier folder an id and move it to `<dossier.root>/<name>` (rename, else copy with a hash compare).
 //! 4. Copy the rows that span dossiers into the operator's database, and each dossier's rows into its `dossier.db`
@@ -105,7 +106,7 @@ pub fn plan(config: &DossierConfig) -> Result<Vec<String>> {
             let stale = i64::try_from(config.stale_hours.saturating_mul(3600)).unwrap_or(i64::MAX);
             for live in live_bindings(&copy, stale)? {
                 lines.push(format!(
-                    "refused while {live}: end it or wait until it goes stale"
+                    "keep the live binding: {live} (it moves with its rows)"
                 ));
             }
             lines.push(match backup_of() {
@@ -300,18 +301,10 @@ const LEGACY: &Schema = &Schema {
 /// Run the migration as job `job` of `ops`; returns the moved dossiers, the row counts and the link lines.
 ///
 /// # Errors
-/// A session holds a live binding, or a step fails; `~/.agentworkspace` stays, and the next call does the steps again.
+/// A step fails; `~/.agentworkspace` stays, and the next call does the steps again.
 pub fn run(config: &DossierConfig, ops: &Db) -> Result<Value> {
     let legacy = legacy_root()?;
     let old_db = legacy.join("workspace.db");
-    let stale = i64::try_from(config.stale_hours.saturating_mul(3600)).unwrap_or(i64::MAX);
-    // 1. no live binding
-    let live = live_bindings(&old_db, stale)?;
-    ensure!(
-        live.is_empty(),
-        "{}: end each of these sessions or wait until it goes stale, then run legionctl dossier migrate again",
-        live.join("; ")
-    );
     // 2. the backup (the first run's: the file as it was, before its schema steps), then the last schema
     let time = now();
     if old_db.exists() && backup_of().is_none() {
