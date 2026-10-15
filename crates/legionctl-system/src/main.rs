@@ -332,7 +332,8 @@ fn source(o: &Observed) -> Option<&'static str> {
 /// The state to announce, after the policy of its power source: when the source differs from the last one announced
 /// and the power source plan did not run just now (`source_planned`), it runs first. Without it, a look before the
 /// late (or lost) udev event, or a source change during another event's plan, announces the old source's mode with the
-/// new source. While a tune runs, no plan runs.
+/// new source. While a tune runs, no plan runs. A source that cannot be read now or was never announced is no change:
+/// a plan for it would clear the user's Fn+Q choice.
 async fn settled(
     root: &SysRoot,
     emitter: &SignalEmitter<'_>,
@@ -347,7 +348,8 @@ async fn settled(
             .unwrap_or_else(PoisonError::into_inner)
             .last,
     );
-    if source_planned || tuning.load(Ordering::SeqCst) || source(&now) == last {
+    let changed = matches!((source(&now), last), (Some(a), Some(b)) if a != b);
+    if source_planned || tuning.load(Ordering::SeqCst) || !changed {
         return now;
     }
     plan(root, emitter, Event::PowerSource).await;

@@ -5748,7 +5748,8 @@ fn start_again(home: &Path, n: u32) -> Operator {
 }
 
 /// The refusal of each dossier operation until the migration is done.
-const NOT_MIGRATED: &str = "the dossiers are not migrated yet: run legionctl dossier migrate";
+const NOT_MIGRATED: &str =
+    "the dossiers are not migrated yet: the user runs legionctl dossier migrate";
 
 /// `dossier migrate` failed at the step that `why` names, and the old root is still there.
 fn migration_failed(op: &Operator, home: &Path, why: &str) {
@@ -6073,7 +6074,8 @@ fn a_migration_into_the_old_root_through_a_link_refuses_and_keeps_each_dossier()
 /// A live session in a home that is not migrated (design 23, E1; the session that runs the migration is one): its
 /// hooks never block it. Session start and prompt pass with one line that says to migrate, stop does not block, and a
 /// write is not denied. After `dossier migrate` its binding is the moved row: the session keeps its dossier, the write
-/// guard denies another dossier again, and a session without a dossier is held at the prompt as before.
+/// guard denies another dossier again and a write to the old place, and a session without a dossier is held at the
+/// prompt as before.
 #[test]
 fn the_hooks_of_a_live_session_pass_before_the_migration_and_gate_after_it() {
     let home = home("unmigrated");
@@ -6115,6 +6117,12 @@ fn the_hooks_of_a_live_session_pass_before_the_migration_and_gate_after_it() {
     assert!(bound && active.contains("active dossier beta"), "{active}");
     assert!(write("s-live", homes.join("alpha/plan.md")).contains("deny"));
     assert_eq!(write("s-live", homes.join("beta/plan.md")), "");
+    // a write to the old place would make the old root again and refuse every dossier operation (R3-16)
+    let stale = write("s-live", old.join("beta/plan.md"));
+    assert!(
+        stale.contains("deny") && stale.contains("the dossier migration moved away"),
+        "{stale}"
+    );
     let held: Value = serde_json::from_str(&hook(
         "prompt",
         json!({"session_id": "s-new", "cwd": repo, "prompt": "fix the bug"}),

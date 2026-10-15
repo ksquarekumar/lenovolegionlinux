@@ -926,10 +926,11 @@ impl Dossiers {
         Ok(vec![format!("acked #{id} from {}", found.from)])
     }
 
-    /// The caller announces a state in each of its threads; members with pace on-declare or on-stop wake.
+    /// The caller announces a state in each of its threads; members with pace on-declare or on-stop wake. Only main0's
+    /// `ready` and `done` start the verification, and only its `done` passes the gate `declare:done` and ends the pool.
     ///
     /// # Errors
-    /// The session is in no thread, or the database write fails.
+    /// The session is in no thread, main0's `done` has open items of the gate, or the database write fails.
     pub fn thread_declare(
         &self,
         session: &str,
@@ -939,7 +940,7 @@ impl Dossiers {
         let mine = self.memberships(session)?;
         ensure!(!mine.is_empty(), "this session is in no thread");
         if word == Declared::Done {
-            for (thread, _) in &mine {
+            for (thread, _) in mine.iter().filter(|(_, name)| name == "main0") {
                 let open = self.gate_failures(*thread, "declare:done")?;
                 ensure!(
                     open.is_empty(),
@@ -965,10 +966,10 @@ impl Dossiers {
                 &[Pace::OnDeclare, Pace::OnStop],
                 &format!("declare {}", word.as_str()),
             )?;
-            if matches!(word, Declared::Done | Declared::Ready) {
+            if name == "main0" && matches!(word, Declared::Done | Declared::Ready) {
                 crate::pool::trigger(&tx, thread, &format!("declare {}", word.as_str()))?;
             }
-            if word == Declared::Done {
+            if name == "main0" && word == Declared::Done {
                 crate::pool::stop_at(&tx, thread, "declare:done")?;
             }
             out.push(format!(
@@ -1098,7 +1099,11 @@ impl Dossiers {
     /// # Errors
     /// The database fails.
     pub fn tool_used(&self, session: &str, used: &ToolUse) -> Result<()> {
-        let mine = self.memberships(session)?;
+        let mut mine = self.memberships(session)?;
+        // a subagent that is no member does the work of its session's agent: its calls count for that agent
+        if let (true, Some((lead, _))) = (mine.is_empty(), session.split_once('/')) {
+            mine = self.memberships(lead)?;
+        }
         if mine.is_empty() {
             return Ok(());
         }
@@ -1259,9 +1264,11 @@ impl Dossiers {
             crate::session::copy_transcript_to(session, info.account.as_deref(), account)?;
         }
         let tx = self.begin()?;
+        // each column but the id and the state: the team, its flow (gates, stops, restart), the workdir, the parent
         tx.execute(
-            "INSERT INTO threads (title, dossier, created) VALUES (?1, ?2, ?3)",
-            params![info.title, info.dossier, now()],
+            "INSERT INTO threads (title, dossier, created, team, flow, workdir, parent)
+             SELECT title, dossier, ?2, team, flow, workdir, parent FROM threads WHERE id = ?1",
+            params![thread, now()],
         )?;
         let copy = tx.last_insert_rowid();
         tx.execute(
@@ -1276,8 +1283,9 @@ impl Dossiers {
             params![copy, thread],
         )?;
         tx.execute(
-            "INSERT INTO watch_rules (thread, member, watched, tools, path, expect, every, kind, created, run, misses, done)
-             SELECT ?1, member, watched, tools, path, expect, every, kind, created, run, misses, done FROM watch_rules
+            "INSERT INTO watch_rules (thread, member, watched, tools, path, expect, every, kind, created, run, misses, done,
+                                      reply)
+             SELECT ?1, member, watched, tools, path, expect, every, kind, created, run, misses, done, reply FROM watch_rules
              WHERE thread = ?2 ORDER BY id",
             params![copy, thread],
         )?;
@@ -1288,10 +1296,13 @@ impl Dossiers {
             "thread.import",
             &json!({"from": thread, "account": account, "session": main}),
         )?;
-        // the members start at the import: the copied rows are their history
+        // the members start at the import: the copied rows are their history; each keeps its run, config and budget,
+        // with no session, ACP session or wake of the old account
         tx.execute(
-            "INSERT INTO members (thread, name, archetype, session, pace, cursor, state, joined)
-             SELECT ?1, name, archetype, NULL, pace, ?3, state, joined FROM members WHERE thread = ?2",
+            "INSERT INTO members (thread, name, archetype, session, pace, cursor, state, joined, config, run, agent,
+                                  fields)
+             SELECT ?1, name, archetype, NULL, pace, ?3, state, joined, config, run, agent, fields FROM members
+             WHERE thread = ?2",
             params![copy, thread, imported],
         )?;
         tx.execute(

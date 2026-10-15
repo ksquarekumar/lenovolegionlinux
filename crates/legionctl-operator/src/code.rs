@@ -161,6 +161,10 @@ pub fn changes(input: &GraphChangesIn) -> Result<Vec<ChangeSet>> {
         set.detail = input.detail;
         if let Some(kind) = &input.kind {
             set.entities.retain(|e| &e.kind == kind);
+            let kept: Vec<String> = set.entities.iter().map(|e| e.key.clone()).collect();
+            if let Some(both) = &mut set.both {
+                both.retain(|k| kept.contains(k));
+            }
         }
     }
     Ok(sets.into_wire())

@@ -94,18 +94,17 @@ struct Gateway {
     token: String,
 }
 
-/// The token a caller sends for accounts with keyring keys; made once, readable only by the user.
+/// The token a caller sends for accounts with keyring keys; made once, readable only by the user. A file without at
+/// least 32 hex characters (empty, cut short) gets a new token: any local user could send a short one.
 fn token() -> Result<String> {
     let path = legionctl_core::db::default_path().with_file_name("gateway-token");
-    if let Ok(token) = std::fs::read_to_string(&path) {
-        return Ok(token.trim().to_string());
+    if let Ok(token) = std::fs::read_to_string(&path).map(|t| t.trim().to_string())
+        && token.len() >= 32
+        && token.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return Ok(token);
     }
-    let mut bytes = [0u8; 16];
-    std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut bytes)?;
-    let token = bytes.iter().fold(String::new(), |mut hex, b| {
-        let _ = std::fmt::Write::write_fmt(&mut hex, format_args!("{b:02x}"));
-        hex
-    });
+    let token = legionctl_api::random_token()?;
     std::fs::create_dir_all(path.parent().context("no state folder")?)?;
     // 0600 from the first byte, and whole or absent for a reader: never readable by others, never half written
     let part = path.with_extension("part");

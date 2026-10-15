@@ -560,13 +560,13 @@ struct Who<'a> {
 fn team_role(
     mounts: &mut Vec<Mount>,
     env: &mut Vec<(String, String)>,
-    (runtime, id): (&Path, &str),
+    id: &str,
     (agent, member): (&str, Option<(&str, &Path)>),
 ) -> Result<()> {
     match member {
         Some((name, main)) => {
             env.push(("LEGIONCTL_MEMBER".into(), name.into()));
-            let layer = overlay_layer(runtime, id);
+            let layer = overlay_layer(id);
             crate::folder::clear(&layer)?;
             for part in ["upper", "work"] {
                 std::fs::create_dir_all(layer.join(part))?;
@@ -585,19 +585,18 @@ fn team_role(
     Ok(())
 }
 
-/// The upper layer of a member's overlay of the main agent's folder (`<runtime>/legionctl/overlay/<session>`).
-fn overlay_layer(runtime: &Path, id: &str) -> PathBuf {
-    runtime.join("legionctl/overlay").join(id)
+/// The upper layer of a member's overlay of the main agent's folder (`~/.local/state/legionctl/overlay/<session>`):
+/// on disk, since a member's build (`target/`) can be larger than the memory of the runtime folder.
+fn overlay_layer(id: &str) -> PathBuf {
+    crate::db::default_path().with_file_name("overlay").join(id)
 }
 
 /// Remove a member's overlay layer after its wake: the next wake sees main's folder as it is then.
 ///
 /// # Errors
-/// `XDG_RUNTIME_DIR` is not set, or the layer cannot be removed.
+/// The layer cannot be removed.
 pub fn drop_overlay(id: &str) -> Result<()> {
-    let runtime =
-        PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?);
-    let layer = overlay_layer(&runtime, id);
+    let layer = overlay_layer(id);
     crate::folder::clear(&layer)?;
     Ok(std::fs::remove_dir(&layer)?)
 }
@@ -1308,12 +1307,7 @@ impl Dossiers {
         if let Some(account) = who.account {
             account_mounts(&mut mounts, &mut env, account)?;
         }
-        team_role(
-            &mut mounts,
-            &mut env,
-            (&runtime, &id),
-            (who.agent, who.member),
-        )?;
+        team_role(&mut mounts, &mut env, &id, (who.agent, who.member))?;
         if let Some(skills) = skills {
             skill_mounts(&mut mounts, who.account, skills)?;
         }

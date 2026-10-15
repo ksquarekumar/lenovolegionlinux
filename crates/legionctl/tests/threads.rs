@@ -1329,6 +1329,82 @@ fn a_test_change_wakes_it_and_its_wake_stops_at_the_token_budget(lab: &Lab, main
     );
 }
 
+/// main0's subagent does main0's work (R3-26): its edit with no lint before main0's stop is main0's miss and wakes
+/// observer0. Before the fix a subagent's calls counted for no member.
+#[test]
+fn an_edit_of_mains_subagent_counts_for_main() {
+    let Pool { lab, main, ws } = pool("delegate", "fake");
+    lab.ok(
+        &main,
+        &ws,
+        &["thread", "start", "port the parser", "--team", "vanilla"],
+    );
+    lab.hook(&main, &ws, "prompt", json!({"prompt": "port the lexer"}));
+    let fields = json!({"tool_name": "Edit", "agent_id": "sub-1", "agent_type": "general-purpose",
+        "tool_input": {"file_path": ws.join("src/lexer.rs"), "old_string": "a", "new_string": "b"}});
+    assert_eq!(lab.hook(&main, &ws, "post-tool", fields), "");
+    assert_eq!(lab.stop(&main, false), None);
+    assert_eq!(lab.wakes("observer0"), 1, "the subagent's edit is main0's");
+}
+
+/// A wake that fails before its prompt (R3-20: main0's folder has a config that does not resolve) ends like any
+/// failed wake: within the restart limit, then the member fails. Before the fix the error skipped the end of the wake,
+/// so the request stayed due and the operator started the wake again at once, without end.
+#[test]
+fn a_wake_that_fails_before_its_prompt_counts_against_the_restart_limit() {
+    let Pool { lab, main, ws } = pool("unresolved", "fake");
+    lab.ok(
+        &main,
+        &ws,
+        &["thread", "start", "port the parser", "--team", "vanilla"],
+    );
+    write(
+        &ws.join(".legionctl/broken.jsonc"),
+        r#"{ "checks": { "keep_runs": "many" } }"#,
+    );
+    lab.edit(&main, &ws, &ws.join("tests/lexer.rs"));
+    until("observer0 failed", || {
+        Lab::member(&lab.show(&main, 1), "observer0")["state"] == "failed"
+    });
+    let fails: Vec<Value> = lab.show(&main, 1)["log"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["kind"] == "thread.fail")
+        .map(|r| r["payload"]["error"].clone())
+        .collect();
+    assert_eq!(fails.len(), 4, "one wake and 3 restarts: {fails:?}");
+    assert!(
+        fails[0]
+            .as_str()
+            .unwrap()
+            .contains("the merged config is not valid"),
+        "{fails:?}"
+    );
+}
+
+/// A team thread imported to another account (R3-18) keeps what makes it a team: each member's run and config, and
+/// the reply rule of the flow. Before the fix the copy had `run = self` members and a plain watch rule.
+#[test]
+fn an_imported_team_thread_keeps_the_runs_and_rules_of_its_members() {
+    let Pool { lab, main, ws } = pool("import-team", "fake");
+    lab.ok(
+        &main,
+        &ws,
+        &["thread", "start", "port the parser", "--team", "vanilla"],
+    );
+    lab.ok(&main, &ws, &["agents", "accounts", "add", "work"]);
+    lab.ok(&main, &ws, &["thread", "import", "1", "work"]);
+    let copy = lab.show(&main, 2);
+    let observer = Lab::member(&copy, "observer0");
+    assert_eq!(
+        [&observer["run"], &observer["config"], &observer["session"]],
+        [&json!("operator"), &json!("thread-observer"), &Value::Null],
+        "{observer}"
+    );
+    assert_eq!(copy["rules"][0]["reply"], true, "{copy:#}");
+}
+
 /// A backlog larger than the wake's token budget (R3-5): main0's messages fill the log past observer0's
 /// `wake_tokens` before a test change wakes it. Each wake gets only the events that fit (half the budget), ends within
 /// its budget, moves the cursor to the last event it got and wakes again for the rest, until the cursor passes the
@@ -1443,6 +1519,11 @@ fn the_observer_backfills_only_while_main_is_idle_and_the_flow_gates_done() {
         !lab.hook(&main, &ws, "prompt", json!({"prompt": "again"}))
             .contains("wrote for you")
     );
+    // a session outside the thread cannot undo it (R3-28)
+    assert!(
+        lab.refused("stranger", &["thread", "compensate", &id])
+            .contains("only its main0 or observer0 undoes it")
+    );
     lab.ok(&main, &ws, &["thread", "compensate", &id]);
     assert_eq!(std::fs::read_to_string(&plan).unwrap(), before);
     assert!(
@@ -1450,22 +1531,53 @@ fn the_observer_backfills_only_while_main_is_idle_and_the_flow_gates_done() {
             .contains("is undone already")
     );
 
-    let open = lab.refused(&main, &["thread", "declare", "done"]);
+    the_flow_gates_done_on_a_verification_of_mains_newest_work(&lab, &main, &ws);
+    a_branch_keeps_the_log_up_to_the_first_checkpoint(&lab, &main);
+}
+
+/// The flow's `declare:done` (R3-21, R3-22): observer0's own `declare done` neither passes the gate nor ends the pool;
+/// main0's waits for observer0's verification, a checkpoint after it makes the result old, and the verification of the
+/// newest work passes the gate and ends the pool.
+fn the_flow_gates_done_on_a_verification_of_mains_newest_work(lab: &Lab, main: &str, ws: &Path) {
+    // a member's declare done is its own: no gate, no verification, no stop of the pool (R3-21)
+    let observer = Lab::member(&lab.show(main, 1), "observer0")["session"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    lab.ok(&observer, ws, &["thread", "declare", "done"]);
+    assert_eq!(lab.show(main, 1)["thread"]["state"], "open");
+    let open = lab.refused(main, &["thread", "declare", "done"]);
     assert!(
         open.contains("observer0: result verification ok: no result from observer0 yet"),
         "{open}"
     );
-    lab.ok(&main, &ws, &["thread", "declare", "ready"]);
+    lab.ok(main, ws, &["thread", "declare", "ready"]);
     until("the verification wake", || {
-        cost(&lab.show(&main, 1), "observer0")["runs"] == 3
+        cost(&lab.show(main, 1), "observer0")["runs"] == 3
     });
-    lab.ok(&main, &ws, &["thread", "declare", "done"]);
-    let view = lab.show(&main, 1);
+    // a checkpoint after the verification makes its result old (R3-22)
+    write(&ws.join("src/late.rs"), "pub fn late() {}\n");
+    lab.ok(main, ws, &["workspace", "checkpoint", "late step"]);
+    let stale = lab.refused(main, &["thread", "declare", "done"]);
+    assert!(
+        stale.contains("its newest result is older than main0's last checkpoint or declare ready"),
+        "{stale}"
+    );
+    lab.ok(main, ws, &["thread", "declare", "ready"]);
+    until("the second verification", || {
+        let view = lab.show(main, 1);
+        let results = view["messages"].as_array().unwrap().iter();
+        results
+            .filter(|m| m["from"] == "observer0" && m["kind"] == "result")
+            .count()
+            == 2
+    });
+    lab.ok(main, ws, &["thread", "declare", "done"]);
+    let view = lab.show(main, 1);
     assert_eq!(view["thread"]["state"], "closed");
     for name in ["main0", "observer0", "ui0"] {
         assert_eq!(Lab::member(&view, name)["state"], "ended", "{name}");
     }
-    a_branch_keeps_the_log_up_to_the_first_checkpoint(&lab, &main);
 }
 
 /// A branch of the ended pool at the first checkpoint's row: the log up to it, the members (active again) and rules,

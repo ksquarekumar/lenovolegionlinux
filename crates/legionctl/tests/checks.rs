@@ -405,14 +405,16 @@ fn a_checkpoint_runs_its_gate_once_per_tree_and_a_failing_check_refuses_with_its
         "{shown}"
     );
 
-    // keep_runs 1: the failed run's folder went; an EVIDENCE that names a run keeps it past the limit
+    // keep_runs 1: the failed run's folder went; an EVIDENCE that names a run keeps it past the limit, also in a
+    // subfolder of EVIDENCE (R3-24)
     assert_eq!(
         std::fs::read_dir(&runs).unwrap().count(),
         1,
         "only {passed}"
     );
     write(
-        &lab.home.join("agentWorkspaces/ckpt/EVIDENCE/01-lint.md"),
+        &lab.home
+            .join("agentWorkspaces/ckpt/EVIDENCE/checks/01-lint.md"),
         &format!("---\nid: EVIDENCE-01\nruns: [{passed}]\n---\nlint passed\n"),
     );
     write(&ws.join("more.txt"), "more\n");
@@ -543,9 +545,10 @@ fn a_merge_gate_refuses_an_untracked_file_and_a_branch_that_sets_its_own_gate() 
     assert_eq!(lab.git(&repo, &["log", "-1", "--format=%s"]), "start");
 }
 
-/// A gate passes only on evidence (R3-3, R3-9): a syntax error in the repository's `checks.jsonc` refuses the
-/// checkpoint instead of dropping every gate, and a gate check that changes the files while it runs (a fixing
-/// formatter) refuses, since its pass is for other content than the commit. Nothing is committed either time.
+/// A gate passes only on evidence (R3-3, R3-8, R3-9): a syntax error in the repository's `checks.jsonc` refuses the
+/// checkpoint instead of dropping every gate, an install check as a gate is refused and does not run, and a gate check
+/// that changes the files while it runs (a fixing formatter) refuses, since its pass is for other content than the
+/// commit. Nothing is committed each time.
 #[test]
 fn a_broken_checks_file_and_a_check_that_changes_the_files_refuse_the_checkpoint() {
     let lab = Lab::new("closed");
@@ -576,6 +579,21 @@ fn a_broken_checks_file_and_a_check_that_changes_the_files_refuse_the_checkpoint
     );
     assert_eq!(commits(), "1");
 
+    // an install check as a gate would install at each checkpoint (R3-8)
+    write(
+        &ws.join(".legionctl/checks.jsonc"),
+        r#"{ "checks": { "install": { "kind": "install", "run": "touch installed", "gate": "checkpoint" } } }"#,
+    );
+    let refused = lab.run(&ws, &["workspace", "checkpoint", "install gate"]);
+    assert!(
+        !refused.status.success()
+            && text(&refused)
+                .1
+                .contains("check install (install) has a gate")
+            && !ws.join("installed").exists(),
+        "{refused:?}"
+    );
+
     write(
         &ws.join(".legionctl/checks.jsonc"),
         r#"{ "checks": { "fmt": { "kind": "format", "run": "echo formatted >> code.txt", "gate": "checkpoint" } } }"#,
@@ -591,9 +609,59 @@ fn a_broken_checks_file_and_a_check_that_changes_the_files_refuse_the_checkpoint
     assert_eq!(commits(), "1");
 }
 
+/// A gate check runs with the caller's PATH (R3-11): the linter is only in a folder on the agent's PATH, not on the
+/// operator's, and the checkpoint passes with it. Before the fix the check ran with the operator's PATH and failed
+/// with exit 127 ("check broken").
+#[test]
+fn a_gate_check_finds_a_tool_on_the_callers_path() {
+    let lab = Lab::new("callpath");
+    let repo = lab.repo(
+        "repo",
+        &[
+            (".gitignore", "/agentWorkspaces\n"),
+            (
+                ".legionctl/checks.jsonc",
+                r#"{ "checks": { "lint": { "kind": "lint", "run": "house-lint", "gate": "checkpoint" } } }"#,
+            ),
+        ],
+    );
+    let ws = lab.workspace(&repo, "callpath");
+    let tools = lab.home.join("tools");
+    write(
+        &tools.join("house-lint"),
+        "#!/bin/sh\necho house-lint clean\n",
+    );
+    std::fs::set_permissions(
+        tools.join("house-lint"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(tools).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    write(&ws.join("notes.txt"), "notes\n");
+    let out = lab.op.run(
+        &ws,
+        &[
+            ("HOME", lab.home.to_str().unwrap()),
+            ("LEGIONCTL_SESSION", "s1"),
+            ("PATH", path.to_str().unwrap()),
+        ],
+        &["workspace", "checkpoint", "add notes"],
+        "",
+    );
+    let (said, err) = text(&out);
+    assert!(
+        out.status.success() && said.contains("check lint: passed (run "),
+        "{said}\n{err}"
+    );
+}
+
 /// A repository without a required kind (`checks.required`) is a finding in `doctor` and `dossier check`, and the
 /// agent is told at session start; a check whose command is not found (exit 127) is a "check broken" finding. The
-/// checks are the branch's own: once the workspace's file has the kinds, the nudge and the finding go.
+/// checks are the branch's own: once the workspace's file has the kinds, the nudge and the finding go. A worktree
+/// that is gone is a finding of its workspace in `doctor`.
 #[test]
 fn a_missing_check_kind_is_a_finding_and_a_session_start_nudge() {
     let lab = Lab::new("missing");
@@ -657,5 +725,13 @@ fn a_missing_check_kind_is_a_finding_and_a_session_start_nudge() {
     assert!(
         !checked.contains("no checks of kind") && !checked.contains("broken"),
         "{checked}"
+    );
+
+    // a worktree that is gone is a finding of its workspace, not an error of the whole doctor (R3-12)
+    std::fs::remove_dir_all(&ws).unwrap();
+    let gone = doctor();
+    assert!(
+        gone.contains(&format!("the worktree {} is missing", ws.display())),
+        "{gone}"
     );
 }

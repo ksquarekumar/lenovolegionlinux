@@ -487,6 +487,58 @@ fn expected(m: &str, b: &str) -> BTreeSet<(String, String, String)> {
     .collect()
 }
 
+/// A conflict that only one side's functions show (R3-13): ours changes `helper` and the end of src/util.rs, theirs
+/// only the end of the file. The file stays a conflict candidate, since theirs has no narrower entity there; with
+/// `--kind function` the candidates are only the function rows that are left (none of theirs).
+#[test]
+fn a_three_way_compare_keeps_a_file_that_one_side_changed_outside_its_functions() {
+    let lab = Lab::new("three-file", &standin());
+    lab.ok(&lab.repo, &["dossier", "use", "port"]);
+    lab.ok(&lab.repo, &["workspace", "open"]);
+    let ws = lab.home.join("worktrees/repo/port");
+    let base = lab.git(&ws, &["rev-parse", "--short", "HEAD"]);
+    let side = |text: &str, name: &str| {
+        write(&ws.join("src/util.rs"), text);
+        lab.git(&ws, &["commit", "--quiet", "-am", name]);
+        let head = lab.git(&ws, &["rev-parse", "--short", "HEAD"]);
+        lab.git(&ws, &["checkout", "--quiet", "--detach", &base]);
+        head
+    };
+    let ours = side(
+        "pub fn helper(x: i32) -> i32 {\n    x * 3\n}\n// ours\n",
+        "ours",
+    );
+    let theirs = side(
+        "pub fn helper(x: i32) -> i32 {\n    x * 2\n}\n// theirs\n",
+        "theirs",
+    );
+    let args = [
+        "code",
+        "graph",
+        "changes",
+        "--three-way",
+        &base,
+        &ours,
+        &theirs,
+        "--build",
+    ];
+    let both = |sets: &Value| -> Vec<String> {
+        sets[1]["both"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k.as_str().unwrap().to_string())
+            .collect()
+    };
+    let candidates = both(&lab.json(&ws, &args));
+    assert!(
+        !candidates.is_empty() && candidates.iter().all(|k| k.contains("util")),
+        "{candidates:?}"
+    );
+    let functions = both(&lab.json(&ws, &[&args[..], &["--kind", "function"]].concat()));
+    assert!(functions.is_empty(), "{functions:?}");
+}
+
 /// A rebase (todo-119): `--three-way <base> <ours> <theirs>` gives base to ours and base to theirs, so theirs does
 /// not show the new work of ours as removed. Both sides change `two`, ours also `three`, theirs also `old_fn`, all in
 /// src/lib.rs: only `two` is changed on both sides (the file and its module are no candidates when a function of the

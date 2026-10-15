@@ -213,6 +213,9 @@ fn build_images(repo: &Path) -> Result<Lines> {
 }
 
 /// The stop signals of the headless runs in progress, by job: the session policy offloads a run with it.
+/// Held while `dossier migrate` runs: one run at a time, and no write into the old root meanwhile.
+static MIGRATING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 static STOPS: std::sync::Mutex<std::collections::BTreeMap<i64, tokio::sync::oneshot::Sender<()>>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
@@ -1108,7 +1111,7 @@ fn agent_findings() -> Result<Vec<String>> {
             w.extend(legionctl_core::home::finding(&store, dir));
         }
         if !ws.is_folder() {
-            w.extend(store.check_findings(&ws.path)?);
+            w.extend(store.check_findings(&ws.path));
         }
         let status = store.workspace_status(&ws)?;
         for drift in &status.drift {
@@ -1620,11 +1623,6 @@ impl Engine for Operator {
                 dry_run: true,
             });
         }
-        let event = Db::open_default()?.record(
-            &ctx.actor,
-            "firmware.change",
-            &serde_json::json!({"device": device.id, "name": device.name, "from": from, "to": to}),
-        )?;
         let out = Command::new(&argv[0]).args(&argv[1..]).output()?;
         let mut lines: Vec<String> = String::from_utf8_lossy(&out.stdout)
             .lines()
@@ -1636,6 +1634,12 @@ impl Engine for Operator {
                 String::from_utf8_lossy(&out.stderr).trim()
             ));
         }
+        // only a done update is a change
+        let event = Db::open_default()?.record(
+            &ctx.actor,
+            "firmware.change",
+            &serde_json::json!({"device": device.id, "name": device.name, "from": from, "to": to}),
+        )?;
         lines.push(format!(
             "updated {what} (event {event}; fwupd keeps the old version in fwupdmgr get-history)"
         ));
@@ -2068,7 +2072,11 @@ impl Engine for Operator {
         if let Some(held) = store.checkpoint_gate(session)? {
             anyhow::bail!(held);
         }
-        let lines = store.checkpoint(&ws, &input.message, session)?;
+        let caller = legionctl_core::checks::Caller {
+            session: Some(session),
+            path: input.search_path.as_deref(),
+        };
+        let lines = store.checkpoint(&ws, &input.message, caller)?;
         // the commit's patch id links it to this checkpoint, also after `workspace merge` rebased it; a folder
         // workspace has no commits
         let patch = if ws.is_folder() {
@@ -2100,7 +2108,8 @@ impl Engine for Operator {
             "code.tests.run",
             &serde_json::json!({"repo": repo, "filter": input.filter}),
         )?;
-        let out = dossiers()?.run_tests(repo, input.filter.as_deref(), job, |counts| {
+        let scope = (input.filter.as_deref(), input.search_path.as_deref());
+        let out = dossiers()?.run_tests(repo, scope, job, |counts| {
             let _ = db.job_step(
                 job,
                 &serde_json::json!({"repo": repo, "filter": input.filter, "results": counts}),
@@ -2124,8 +2133,11 @@ impl Engine for Operator {
     }
 
     fn code_checks_run(&self, _: &Ctx, input: ChecksRunIn) -> Result<Lines> {
-        let session = Some(input.session.0.as_str()).filter(|s| !s.is_empty());
-        let runs = dossiers()?.run_checks(input.repo.get()?, &input.checks, session)?;
+        let caller = legionctl_core::checks::Caller {
+            session: Some(input.session.0.as_str()).filter(|s| !s.is_empty()),
+            path: input.search_path.as_deref(),
+        };
+        let runs = dossiers()?.run_checks(input.repo.get()?, &input.checks, caller)?;
         Ok(Lines {
             lines: runs
                 .iter()
@@ -2227,7 +2239,11 @@ impl Engine for Operator {
         let store = dossiers()?;
         let session = session(&input.session)?;
         let ws = store.workspace_of(session, input.repo.get()?, input.topic.as_deref())?;
-        let lines = store.merge(&ws, session)?;
+        let caller = legionctl_core::checks::Caller {
+            session: Some(session),
+            path: input.search_path.as_deref(),
+        };
+        let lines = store.merge(&ws, caller)?;
         crate::code::trigger(&ws.repo);
         Ok(Lines { lines })
     }
@@ -2480,17 +2496,17 @@ impl Engine for Operator {
                 lines: migrate::plan(&config)?,
             });
         }
+        let _running = match MIGRATING.try_lock() {
+            Ok(held) => held,
+            Err(std::sync::TryLockError::Poisoned(held)) => held.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(coded(
+                    Code::Conflict,
+                    "a dossier migration runs already; see legionctl jobs list",
+                ));
+            }
+        };
         let db = Db::open_default()?;
-        if db
-            .jobs_in("running")?
-            .iter()
-            .any(|j| j.kind == migrate::JOB)
-        {
-            return Err(coded(
-                Code::Conflict,
-                "a dossier migration runs already; see legionctl jobs list",
-            ));
-        }
         let job = db.job_begin(migrate::JOB, &serde_json::json!({}))?;
         let out = migrate::run(&config, &db);
         end_job(&db, job, &out)?;
@@ -2620,6 +2636,22 @@ impl Engine for Operator {
     }
 
     fn dossier_guard(&self, _: &Ctx, input: GuardIn) -> Result<Guard> {
+        use legionctl_core::migrate;
+        // the old root takes writes only before the migration: not while it moves the dossiers, nor after it
+        let migrating = matches!(
+            MIGRATING.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        );
+        if migrate::in_legacy(Path::new(&input.path)) && (migrating || !migrate::pending()) {
+            return Ok(Guard {
+                refusal: Some(format!(
+                    "{} is in the old dossier root, which the dossier migration {}: write the dossier in its home \
+                     (legionctl dossier active)",
+                    input.path,
+                    if migrating { "moves now" } else { "moved away" }
+                )),
+            });
+        }
         Ok(Guard {
             refusal: dossiers()?.write_refusal(session(&input.session)?, Path::new(&input.path))?,
         })

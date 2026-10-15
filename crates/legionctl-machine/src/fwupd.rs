@@ -86,15 +86,24 @@ pub fn devices() -> Result<Vec<Device>> {
 /// The device `wanted` (its id or its name) and the command that updates it.
 ///
 /// # Errors
-/// No such device, or fwupd has no upgrade for it.
+/// No such device, more than one device has the name (two drives of one model), or fwupd has no upgrade for it.
 pub fn update_plan(wanted: &str) -> Result<(Device, Vec<String>)> {
     let devices = devices()?;
-    let Some(device) = devices
+    let found: Vec<&Device> = devices
         .iter()
-        .find(|d| d.id == wanted || d.name == wanted)
-        .cloned()
-    else {
-        bail!("fwupd has no device {wanted} (see legionctl firmware status)");
+        .filter(|d| d.id == wanted || d.name == wanted)
+        .collect();
+    let device = match found.as_slice() {
+        [device] => (*device).clone(),
+        [] => bail!("fwupd has no device {wanted} (see legionctl firmware status)"),
+        many => bail!(
+            "{} devices are named {wanted}: give the device id ({})",
+            many.len(),
+            many.iter()
+                .map(|d| d.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     };
     if device.update.is_none() {
         bail!(

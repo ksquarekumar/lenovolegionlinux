@@ -104,6 +104,11 @@ pub struct WorkspaceIn {
     pub topic: Option<String>,
     #[serde(default)]
     pub session: SessionId,
+    /// The caller's PATH (the client fills it from its environment): the repository's checks run with it, as the
+    /// agent would run them (the operator's own PATH lacks the user's tool folders).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-env" = "PATH"))]
+    pub search_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -124,6 +129,11 @@ pub struct CheckpointIn {
     pub reason: Option<String>,
     #[serde(default)]
     pub session: SessionId,
+    /// The caller's PATH (the client fills it from its environment): the repository's checks run with it, as the
+    /// agent would run them (the operator's own PATH lacks the user's tool folders).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-env" = "PATH"))]
+    pub search_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -134,6 +144,11 @@ pub struct TestsRunIn {
     /// A folder in the repository.
     #[serde(default = "here")]
     pub repo: ClientPath,
+    /// The caller's PATH (the client fills it from its environment): the repository's checks run with it, as the
+    /// agent would run them (the operator's own PATH lacks the user's tool folders).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-env" = "PATH"))]
+    pub search_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -146,6 +161,11 @@ pub struct ChecksRunIn {
     pub repo: ClientPath,
     #[serde(default)]
     pub session: SessionId,
+    /// The caller's PATH (the client fills it from its environment): the repository's checks run with it, as the
+    /// agent would run them (the operator's own PATH lacks the user's tool folders).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-env" = "PATH"))]
+    pub search_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

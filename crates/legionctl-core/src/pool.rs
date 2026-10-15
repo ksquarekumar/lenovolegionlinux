@@ -64,11 +64,9 @@ macro_rules! tables {
 }
 pub(crate) use tables;
 
-/// How a member runs.
+/// How a team member runs (a member of `thread join` has its own session: run `self` in the database).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Run {
-    /// Its own session runs it (`thread join`); a wake is a record.
-    SelfRun,
     /// An operator ACP session, one prompt per wake.
     Operator,
     /// A Claude Code teammate of the main agent (team mode).
@@ -81,7 +79,6 @@ impl Run {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
-            Run::SelfRun => "self",
             Run::Operator => "operator",
             Run::Teammate => "teammate",
             Run::Subagent => "subagent",
@@ -555,7 +552,7 @@ impl Dossiers {
                     m.name,
                     m.archetype.as_str()
                 ),
-                Run::Subagent | Run::SelfRun => format!(
+                Run::Subagent => format!(
                     "{}: a Codex subagent: start the agent {} (setup apply wrote it); it reads `legionctl thread inbox`",
                     m.name, m.config
                 ),
@@ -636,18 +633,27 @@ impl Dossiers {
                     );
                 }
                 Condition::Result(member, words) => {
-                    let newest: Option<String> = self
+                    // a result counts for main0's work up to it: not before main0's last checkpoint or `declare ready`
+                    let newest: Option<(String, bool)> = self
                         .db()
                         .query_row(
-                            "SELECT body FROM messages WHERE thread = ?1 AND sender = ?2 AND kind = 'result'
-                             ORDER BY id DESC LIMIT 1",
+                            "SELECT json_extract(payload, '$.text'), id > (SELECT coalesce(max(id), 0) FROM thread_log
+                                 WHERE thread = ?1 AND member = 'main0' AND (kind = 'thread.checkpoint'
+                                 OR (kind = 'thread.declare' AND json_extract(payload, '$.word') = 'ready')))
+                             FROM thread_log WHERE thread = ?1 AND member = ?2 AND kind = 'thread.message'
+                             AND json_extract(payload, '$.kind') = 'result' ORDER BY id DESC LIMIT 1",
                             params![thread, member],
-                            |r| r.get(0),
+                            |r| Ok((r.get(0)?, r.get(1)?)),
                         )
                         .optional()?;
                     match newest {
-                        Some(body) if body.starts_with(&words) => {}
-                        Some(body) => out.push(format!("{text}: its newest result is: {body}")),
+                        Some((body, true)) if body.starts_with(&words) => {}
+                        Some((body, true)) => {
+                            out.push(format!("{text}: its newest result is: {body}"));
+                        }
+                        Some((_, false)) => out.push(format!(
+                            "{text}: its newest result is older than main0's last checkpoint or declare ready"
+                        )),
                         None => out.push(format!("{text}: no result from {member} yet")),
                     }
                 }
@@ -986,11 +992,13 @@ impl Dossiers {
         Ok(vec![format!("backfilled {rel}: {line} (effect {id})")])
     }
 
-    /// Undo an effect: remove a backfill's line, retract a message.
+    /// Undo an effect: remove a backfill's line, retract a message. Only main0 of the effect's thread or the member
+    /// that made it may; the check and the undo are under one write lock, so an effect is undone once.
     ///
     /// # Errors
-    /// No such effect, it is undone already, or its line is gone.
+    /// No such effect, the caller may not undo it, it is undone already, or its line is gone.
     pub fn compensate(&self, session: &str, id: i64) -> Result<Vec<String>> {
+        let tx = self.begin()?;
         let (thread, member, kind, target, undo, state): (
             i64,
             String,
@@ -998,8 +1006,7 @@ impl Dossiers {
             String,
             String,
             String,
-        ) = self
-            .db()
+        ) = tx
             .query_row(
                 "SELECT thread, member, kind, target, undo, state FROM effects WHERE id = ?1",
                 [id],
@@ -1016,8 +1023,16 @@ impl Dossiers {
             )
             .optional()?
             .with_context(|| format!("no effect {id}"))?;
+        let allowed: bool = tx.query_row(
+            "SELECT count(*) > 0 FROM members WHERE thread = ?1 AND session = ?2 AND name IN ('main0', ?3)",
+            params![thread, session, member],
+            |r| r.get(0),
+        )?;
+        ensure!(
+            allowed,
+            "effect {id} is of thread {thread}: only its main0 or {member} undoes it"
+        );
         ensure!(state == "done", "effect {id} is {state} already");
-        let tx = self.begin()?;
         let what = match kind.as_str() {
             "backfill" => {
                 self.remove_line(session, &target, &undo)?;

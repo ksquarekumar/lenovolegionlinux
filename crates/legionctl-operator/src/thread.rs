@@ -198,33 +198,36 @@ fn wake(thread: i64, member: &str) -> Result<bool> {
     let Some(w) = store.wake_begin(thread, member)? else {
         return Ok(false);
     };
-    let resolved = resolve(&Dirs::from_env(), Some(&w.workdir))?;
-    let token = legionctl_api::random_token()?;
     let name = format!("{thread}/{member}");
-    let started = match &w.session {
-        None => store
-            .start_session(
-                &Start {
-                    agent: &w.agent,
-                    dossier: &w.dossier,
-                    steal: false,
-                    token: &token,
-                    dir: &w.workdir,
-                    headless: true,
-                    account: w.fields["account"].as_str(),
-                    inside: Inside::Host,
-                    gpu: false,
-                    member: Some((&name, &w.workdir)),
-                },
-                &resolved.config,
-            )
-            .and_then(|launch| {
-                store.member_session(&w, &launch.id)?;
-                Ok(launch)
-            }),
-        Some(id) => store.resume_session(id, &resolved.config, None, &token, true),
-    };
-    let ran = started.and_then(|launch| {
+    // from here each error ends the wake through wake_end: the restart limit applies, and the request does not stay due
+    let started = resolve(&Dirs::from_env(), Some(&w.workdir)).and_then(|resolved| {
+        let token = legionctl_api::random_token()?;
+        let launch = match &w.session {
+            None => store
+                .start_session(
+                    &Start {
+                        agent: &w.agent,
+                        dossier: &w.dossier,
+                        steal: false,
+                        token: &token,
+                        dir: &w.workdir,
+                        headless: true,
+                        account: w.fields["account"].as_str(),
+                        inside: Inside::Host,
+                        gpu: false,
+                        member: Some((&name, &w.workdir)),
+                    },
+                    &resolved.config,
+                )
+                .and_then(|launch| {
+                    store.member_session(&w, &launch.id)?;
+                    Ok(launch)
+                }),
+            Some(id) => store.resume_session(id, &resolved.config, None, &token, true),
+        }?;
+        Ok((launch, token))
+    });
+    let ran = started.and_then(|(launch, token)| {
         let id = launch.id.clone();
         let db = Db::open_default()?;
         db.issue_token(&launch.id, &token)?;

@@ -791,8 +791,9 @@ fn change_set(dir: &Path, from: &str, to: &str, build: bool) -> Result<ChangeSet
 }
 
 /// A three-way compare for a rebase or a merge: base to ours, and base to theirs with the keys that both sides
-/// changed. A file or module row is no candidate when a narrower entity of its file changed: that entity tells what
-/// changed, and other changes in the file are position only.
+/// changed. A file or module row is no candidate when each side changed a narrower entity of its file: those entities
+/// tell what changed, and other changes in the file are position only. When one side changed only the file's other
+/// lines, the row stays a candidate.
 ///
 /// # Errors
 /// A ref does not resolve, a ref has no graph (without `build`), or git fails.
@@ -804,13 +805,14 @@ pub fn three_way(
     let ours = change_set(dir, base, ours, build)?;
     let mut theirs = change_set(dir, base, theirs, build)?;
     let container = |e: &EntityChange| e.kind == "file" || e.kind == "module";
-    let narrower: BTreeSet<&str> = ours
-        .entities
-        .iter()
-        .chain(&theirs.entities)
-        .filter(|e| !container(e))
-        .map(|e| e.file.as_str())
-        .collect();
+    let narrower = |set: &ChangeSet| -> BTreeSet<String> {
+        set.entities
+            .iter()
+            .filter(|e| !container(e))
+            .map(|e| e.file.clone())
+            .collect()
+    };
+    let (ours_narrower, theirs_narrower) = (narrower(&ours), narrower(&theirs));
     let mine: BTreeSet<&str> = ours.entities.iter().map(|e| e.key.as_str()).collect();
     theirs.both = Some(
         theirs
@@ -818,7 +820,9 @@ pub fn three_way(
             .iter()
             .filter(|e| {
                 mine.contains(e.key.as_str())
-                    && !(container(e) && narrower.contains(e.file.as_str()))
+                    && !(container(e)
+                        && ours_narrower.contains(&e.file)
+                        && theirs_narrower.contains(&e.file))
             })
             .map(|e| e.key.clone())
             .collect(),

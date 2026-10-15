@@ -1260,13 +1260,7 @@ impl Dossiers {
                 self, dossier, &graph, &ws.path,
             ));
             // the checks of the repository (design 23, E2 rule 2), as the workspace's branch has them
-            match self.check_findings(&ws.path) {
-                Ok(found) => findings.extend(found),
-                Err(e) => findings.push(format!(
-                    "the checks of {} do not resolve: {e:#}",
-                    ws.path.display()
-                )),
-            }
+            findings.extend(self.check_findings(&ws.path));
         }
         findings
     }
@@ -1332,22 +1326,25 @@ fn names_entity(dir: &Path, repo: &str) -> bool {
     })
 }
 
-/// `path` with each link of its longest existing part resolved.
-fn real(path: &Path) -> PathBuf {
-    let mut rest = Vec::new();
-    let mut at = path;
-    loop {
-        if let Ok(found) = at.canonicalize() {
-            return rest.iter().rev().fold(found, |p, part| p.join(part));
-        }
-        match (at.parent(), at.file_name()) {
-            (Some(parent), Some(name)) => {
-                rest.push(name.to_os_string());
-                at = parent;
+/// `path` with its longest existing part resolved (links and `..`); the rest is not there, so it has no link, and its
+/// `.` and `..` apply by name.
+pub(crate) fn real(path: &Path) -> PathBuf {
+    let parts: Vec<std::path::Component> = path.components().collect();
+    for n in (1..=parts.len()).rev() {
+        if let Ok(mut found) = parts[..n].iter().collect::<PathBuf>().canonicalize() {
+            for part in &parts[n..] {
+                match part {
+                    std::path::Component::ParentDir => {
+                        found.pop();
+                    }
+                    std::path::Component::Normal(name) => found.push(name),
+                    _ => {}
+                }
             }
-            _ => return path.to_path_buf(),
+            return found;
         }
     }
+    path.to_path_buf()
 }
 
 /// Whether the session that holds a binding last refreshed at `updated` is still live: active within `stale_after`

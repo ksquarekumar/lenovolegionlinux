@@ -8008,9 +8008,10 @@ mod parity {
         );
     }
 
-    /// fwupd (`firmware status`, `firmware update`): a stand-in fwupdmgr with three devices; the status shows the
+    /// fwupd (`firmware status`, `firmware update`): a stand-in fwupdmgr with four devices; the status shows the
     /// upgrade of each, the dry run names the versions and the exact command and runs nothing, a device with no
-    /// upgrade is refused, and the update runs fwupdmgr without a restart and records the old version.
+    /// upgrade and a name of two devices are refused, and the update runs fwupdmgr without a restart and records the
+    /// old version.
     #[test]
     fn firmware_updates_come_from_fwupd_with_a_dry_run_first() {
         let m = Machine::new("fwupd");
@@ -8021,6 +8022,7 @@ mod parity {
           {"Name": "SK hynix PC801", "DeviceId": "aa11", "Version": "1.0", "Flags": ["internal", "updatable"],
            "Releases": [{"Version": "1.0", "Flags": []}, {"Version": "1.2", "Summary": "Fixes resume", "Flags": ["is-upgrade"]}]},
           {"Name": "Logi Bolt Receiver", "DeviceId": "bb22", "Version": "MBO04.00", "Flags": ["updatable"], "Releases": []},
+          {"Name": "Logi Bolt Receiver", "DeviceId": "dd44", "Version": "MBO04.00", "Flags": ["updatable"], "Releases": []},
           {"Name": "UEFI dbx", "DeviceId": "cc33", "Version": "371", "Flags": []}
         ]}"#;
         Machine::script(
@@ -8052,6 +8054,11 @@ mod parity {
         refused(
             &m.legion(&["firmware", "update", "zz99"]),
             "fwupd has no device zz99",
+        );
+        // two receivers of one model: the name is not enough (R3-31)
+        refused(
+            &m.legion(&["firmware", "update", "Logi Bolt Receiver", "--dry-run"]),
+            "2 devices are named Logi Bolt Receiver: give the device id (bb22, dd44)",
         );
         assert!(
             !std::fs::read_to_string(&log).unwrap().contains("update"),

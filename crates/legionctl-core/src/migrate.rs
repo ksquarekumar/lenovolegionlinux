@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 
 use crate::config::DossierConfig;
 use crate::db::{Db, Schema, now};
-use crate::dossier::{Dossiers, OWN, read_id, valid_name, write_id};
+use crate::dossier::{Dossiers, OWN, read_id, real, valid_name, write_id};
 use crate::home::{backup_root, copy_verified};
 
 /// The kind of the migration job.
@@ -52,12 +52,27 @@ pub fn legacy_root() -> Result<PathBuf> {
 }
 
 /// The refusal of each dossier operation until the migration is done.
-pub const NOT_MIGRATED: &str = "the dossiers are not migrated yet: run legionctl dossier migrate";
+pub const NOT_MIGRATED: &str =
+    "the dossiers are not migrated yet: the user runs legionctl dossier migrate";
 
-/// Whether the migration has work to do.
+/// Whether the migration has work to do: the old root has its database or a dossier folder (other files there
+/// alone do not refuse the dossier operations).
 #[must_use]
 pub fn pending() -> bool {
-    legacy_root().is_ok_and(|r| r.exists())
+    legacy_root().is_ok_and(|r| {
+        r.join("workspace.db").exists()
+            || std::fs::read_dir(&r)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .any(|e| e.path().is_dir() && valid_name(&e.file_name().to_string_lossy()))
+    })
+}
+
+/// Whether `path` is in the old root, also through a link.
+#[must_use]
+pub fn in_legacy(path: &Path) -> bool {
+    legacy_root().is_ok_and(|old| real(path).starts_with(real(&old)))
 }
 
 /// What `doctor` says while the migration is pending: its last run's failure, that it runs, or that it is not run.
@@ -97,8 +112,13 @@ pub fn plan(config: &DossierConfig) -> Result<Vec<String>> {
     apart(&root, &legacy)?;
     let old_db = legacy.join("workspace.db");
     let mut lines = Vec::new();
-    // a folder: the copy's schema step puts its backup beside it
-    let plan = std::env::temp_dir().join(format!("legionctl-migrate-plan-{}", std::process::id()));
+    // a folder per call (the copy's schema step puts its backup beside it): two dry runs of one operator run on two
+    // threads
+    let plan = std::env::temp_dir().join(format!(
+        "legionctl-migrate-plan-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
     let copy = plan.join("workspace.db");
     let _ = std::fs::remove_dir_all(&plan);
     if old_db.exists() {
@@ -171,16 +191,7 @@ pub fn plan(config: &DossierConfig) -> Result<Vec<String>> {
 /// Refuse a dossier root that is, holds or is inside the old root (also through a link): a move there replaces its own
 /// source.
 fn apart(root: &Path, legacy: &Path) -> Result<()> {
-    // the nearest folder that is there, resolved, with the rest of the path
-    let resolved = |path: &Path| {
-        path.ancestors()
-            .find_map(|a| {
-                let rest = path.strip_prefix(a).ok()?;
-                a.canonicalize().ok().map(|c| c.join(rest))
-            })
-            .unwrap_or_else(|| path.to_path_buf())
-    };
-    let (new, old) = (resolved(root), resolved(legacy));
+    let (new, old) = (real(root), real(legacy));
     ensure!(
         !new.starts_with(&old) && !old.starts_with(&new),
         "the dossier root {} is {} or near it: set dossier.root to a folder apart from the old root, then run \
@@ -366,9 +377,8 @@ pub fn run(config: &DossierConfig, ops: &Db) -> Result<Value> {
         compare(&store, &old_db, &moved, &dropped)?;
     }
     let rest = backup_root().join(format!("agentworkspace-{time}"));
-    std::fs::create_dir_all(backup_root())
-        .and_then(|()| std::fs::rename(&legacy, &rest))
-        .with_context(|| format!("moving {} to {}", legacy.display(), rest.display()))?;
+    std::fs::create_dir_all(backup_root())?;
+    move_tree(&legacy, &rest)?;
     let result = json!({"dossiers": moved, "rows": rows, "dropped": dropped, "lines": lines, "backup": rest});
     ops.record("operator", JOB, &result)?;
     Ok(result)
@@ -435,21 +445,7 @@ fn move_folders(store: &Dossiers, legacy: &Path) -> Result<Vec<String>> {
         );
         // registered before the move, so a cut after the move still knows the folder's origin
         store.register(&id, &name, Some(&from.to_string_lossy()))?;
-        match std::fs::rename(&from, &to) {
-            Err(e) if e.raw_os_error() == Some(rustix::io::Errno::XDEV.raw_os_error()) => {
-                // not a dossier name, so a cut-off copy is never taken for one
-                let part = store.root.join(format!(".{name}.partial"));
-                if part.exists() {
-                    std::fs::remove_dir_all(&part)?;
-                }
-                copy_verified(&from, &part)?;
-                std::fs::rename(&part, &to)?;
-                std::fs::remove_dir_all(&from)?;
-            }
-            other => {
-                other.with_context(|| format!("moving {} to {}", from.display(), to.display()))?;
-            }
-        }
+        move_tree(&from, &to)?;
     }
     let prefix = format!("{}/", legacy.display());
     let mut stmt = store.db().prepare(
@@ -459,6 +455,25 @@ fn move_folders(store: &Dossiers, legacy: &Path) -> Result<Vec<String>> {
         .query_map([&prefix], |r| r.get(0))?
         .collect::<rusqlite::Result<Vec<String>>>()?;
     Ok(moved)
+}
+
+/// Move the folder `from` to `to`: a rename, else (another file system) a copy with a hash compare to
+/// `.<name>.partial` beside `to` (not a dossier name), which gets the name `to` only when it is whole; then the source
+/// goes. A cut-off run finds either a whole `to` or a partial copy that it makes again.
+fn move_tree(from: &Path, to: &Path) -> Result<()> {
+    match std::fs::rename(from, to) {
+        Err(e) if e.raw_os_error() == Some(rustix::io::Errno::XDEV.raw_os_error()) => {
+            let name = to.file_name().context("the target has no name")?;
+            let part = to.with_file_name(format!(".{}.partial", name.to_string_lossy()));
+            if part.exists() {
+                std::fs::remove_dir_all(&part)?;
+            }
+            copy_verified(from, &part)?;
+            std::fs::rename(&part, to)?;
+            Ok(std::fs::remove_dir_all(from)?)
+        }
+        other => other.with_context(|| format!("moving {} to {}", from.display(), to.display())),
+    }
 }
 
 /// The column names of `table` in the database `schema` of `conn`.

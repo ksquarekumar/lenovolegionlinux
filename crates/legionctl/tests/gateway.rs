@@ -143,6 +143,10 @@ fn setup(tag: &str) -> Setup {
         std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
     )
     .unwrap();
+    // an empty token file of an earlier run (R3-30): the operator makes a new token, so an empty header gets no key
+    let state = home.join(".local/state/legionctl");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(state.join("gateway-token"), "").unwrap();
     let op = Operator::start(
         tag,
         &[("HOME", home.as_os_str().to_owned()), ("PATH", path)],
@@ -249,6 +253,9 @@ fn the_gateway_refuses_over_budget_without_token_and_across_apis() {
     );
     // a keyring account needs the gateway token; the other API needs a translation that is not built
     let (status, _, body) = messages(&ask("keyed/claude-x", "hi"));
+    assert!(status == 401 && body.contains("gateway token"), "{body}");
+    let empty = [CALLER[0], CALLER[1], ("x-legionctl-token", "")];
+    let (status, _, body) = post(s.port, "/v1/messages", &empty, &ask("keyed/claude-x", "hi"));
     assert!(status == 401 && body.contains("gateway token"), "{body}");
     let (status, _, body) = post(
         s.port,
