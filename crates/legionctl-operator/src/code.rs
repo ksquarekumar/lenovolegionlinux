@@ -1,5 +1,5 @@
-//! The `code` operations (design 23, Part A): code graph snapshots per tree, the change graph and annotations. The
-//! work is in `legionctl_core::codegraph`; here are the jobs and the triggers.
+//! The `code` operations (design 23, Part A): code graph snapshots per tree, the change graph, annotations and the
+//! plan. The work is in `legionctl_core::codegraph` and `legionctl_core::planning`; here are the jobs and the triggers.
 
 use std::path::{Path, PathBuf};
 
@@ -7,10 +7,10 @@ use anyhow::Result;
 use legionctl_api::{
     AnnotateIn, Annotation, AnnotationsIn, ChangeSet, CodeNodes, Ctx, GraphChangesIn, GraphHookIn,
     GraphImpactIn, GraphPruneIn, GraphQueryIn, GraphRefreshIn, GraphRefs, HookAction, IntoWire,
-    Lines, RepoIn,
+    Lines, PlanCheck, PlanCheckIn, PlanStatus, PlanStatusIn, RepoIn,
 };
-use legionctl_core::codegraph;
 use legionctl_core::db::Db;
+use legionctl_core::{codegraph, planning};
 use serde_json::{Value, json};
 
 use crate::engine::{dossiers, end_job};
@@ -130,4 +130,20 @@ pub fn hook(input: &GraphHookIn) -> Result<Lines> {
             input.action == HookAction::Install,
         )?,
     })
+}
+
+pub fn plan_check(input: &PlanCheckIn) -> Result<PlanCheck> {
+    Ok(planning::check(input.repo.get()?, &input.rev, input.build)?.into_wire())
+}
+
+pub fn plan_status(input: &PlanStatusIn) -> Result<PlanStatus> {
+    Ok(planning::status(
+        &dossiers()?,
+        input.repo.get()?,
+        input.feature.as_deref(),
+        &input.rev,
+        input.since.as_deref(),
+        input.build,
+    )?
+    .into_wire())
 }

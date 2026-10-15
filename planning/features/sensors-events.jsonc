@@ -1,0 +1,30 @@
+// todo-94 and todo-95: one sensors view, and system events for other tools.
+{
+  "$schema": "../feature.schema.json",
+  "id": "sensors-events",
+  "title": "Sensors view and system events",
+  "status": "done",
+  "plan_rows": ["legionctl#todo-94", "legionctl#todo-95"],
+  "objectives": [
+    { "id": "O1", "text": "One table shows every sensor with unit, source and history, and wakes no sleeping device." },
+    { "id": "O2", "text": "Other tools follow mode, power, workload, throttle and fan changes." }
+  ],
+  "stories": [
+    { "id": "S1", "text": "Sensors merge every source with units and ring history.", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/machine.rs::sensors_merge_every_source_with_units_and_ring_history_and_never_wake_a_sleeping_gpu"] },
+    { "id": "S2", "kind": "data-flow", "text": "Each change other tools follow is one D-Bus signal and one journal entry.", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/machine.rs::each_change_other_tools_follow_is_one_signal_and_one_journal_entry"] }
+  ],
+  "work_items": [
+    { "id": "W1", "text": "legionctl sensors", "status": "done", "stories": ["S1"], "units": [
+      { "key": "file:crates/legionctl-machine/src/sensors.rs", "change": "add", "loc": 400 },
+      { "key": "rust:crates/legionctl-machine:sensors::view", "change": "add" },
+      { "key": "op:sensors", "change": "add" }
+    ] },
+    { "id": "W2", "text": "D-Bus signals and journal entries", "status": "done", "stories": ["S2"], "units": [
+      { "key": "symbol:crates/legionctl-system/src/main.rs::impl System1.tell", "change": "add" },
+      { "key": "rust:crates/legionctl-system:journal", "change": "add", "loc": 60 },
+      { "key": "unit:legionctl-system", "change": "edit" }
+    ] }
+  ]
+}

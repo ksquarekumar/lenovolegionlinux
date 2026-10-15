@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Feature",
+  "description": "One feature: `planning/features/<id>.jsonc`.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "id": {
+      "description": "The file name without `.jsonc`.",
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/Status"
+    },
+    "plan_rows": {
+      "description": "Dossier plan rows as `<dossier>#<row>`, such as `legionctl#todo-90`.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "objectives": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Objective"
+      }
+    },
+    "stories": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Story"
+      }
+    },
+    "work_items": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/WorkItem"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "title",
+    "status",
+    "work_items"
+  ],
+  "$defs": {
+    "Status": {
+      "type": "string",
+      "enum": [
+        "planned",
+        "in-progress",
+        "done",
+        "abandoned"
+      ]
+    },
+    "Objective": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "text"
+      ]
+    },
+    "Story": {
+      "description": "A story, lifecycle, data flow, control flow, requirement or issue, with the tests that prove it.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/StoryKind"
+        },
+        "text": {
+          "type": "string"
+        },
+        "objectives": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "tests": {
+          "description": "`test:<file>::<fn>` keys.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "text"
+      ]
+    },
+    "StoryKind": {
+      "type": "string",
+      "enum": [
+        "story",
+        "lifecycle",
+        "data-flow",
+        "control-flow",
+        "requirement",
+        "issue"
+      ]
+    },
+    "WorkItem": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "stories": {
+          "description": "Its tests are the tests of these stories.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "depends_on": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "units": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlannedUnit"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "text",
+        "status",
+        "units"
+      ]
+    },
+    "PlannedUnit": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "description": "`file:<path>`, `rust:<crate dir>:<module path>::<name>`, `symbol:<file>::impl <type>.<method>`,\n`config:<dotted key>`, `op:<operation>`, `test:<file>::<fn>` or `unit:<name>`.",
+          "type": "string"
+        },
+        "change": {
+          "$ref": "#/$defs/Change"
+        },
+        "loc": {
+          "description": "Estimated lines of code when done.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "change"
+      ]
+    },
+    "Change": {
+      "type": "string",
+      "enum": [
+        "add",
+        "edit",
+        "remove"
+      ]
+    }
+  }
+}

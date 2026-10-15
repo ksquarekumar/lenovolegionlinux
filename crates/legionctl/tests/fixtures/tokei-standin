@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""A stand-in for tokei 15.0.0 in the plan tests (CI has no tokei). `tokei -o json <file>...` writes tokei's JSON
+shape: one object per language with blanks, code, comments, a report per file (name as given, stats) and children,
+and a Total. A line is blank, a comment (it starts with //, or #, ...), or code."""
+
+import json
+import os
+import sys
+
+LANGUAGES = {".rs": ("Rust", "//"), ".md": ("Markdown", None), ".toml": ("TOML", "#"), ".jsonc": ("JSON", "//")}
+
+
+def stats(path, comment):
+    out = {"blanks": 0, "code": 0, "comments": 0, "blobs": {}}
+    for line in open(path, encoding="utf-8").read().splitlines():
+        line = line.strip()
+        if not line:
+            out["blanks"] += 1
+        elif comment and line.startswith(comment):
+            out["comments"] += 1
+        else:
+            out["code"] += 1
+    return out
+
+
+def main(args):
+    if args[:2] != ["-o", "json"]:
+        sys.exit(f"tokei stand-in: {' '.join(args)} is not modelled")
+    languages = {}
+    for name in args[2:]:
+        language, comment = LANGUAGES.get(os.path.splitext(name)[1], ("Plain Text", None))
+        entry = languages.setdefault(language, {"blanks": 0, "code": 0, "comments": 0, "reports": [],
+                                                "children": {}, "inaccurate": False})
+        report = {"stats": stats(name, comment), "name": name}
+        entry["reports"].append(report)
+        for field in ("blanks", "code", "comments"):
+            entry[field] += report["stats"][field]
+    total = {"blanks": 0, "code": 0, "comments": 0, "reports": [], "inaccurate": False,
+             "children": {lang: [dict(r) for r in e["reports"]] for lang, e in languages.items()}}
+    for e in languages.values():
+        for field in ("blanks", "code", "comments"):
+            total[field] += e[field]
+    languages["Total"] = total
+    print(json.dumps(languages))
+
+
+main(sys.argv[1:])

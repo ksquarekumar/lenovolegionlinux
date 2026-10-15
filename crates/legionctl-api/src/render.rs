@@ -2039,3 +2039,77 @@ impl Render for TestReview {
             .all(|t| t.accepted.is_some() || t.refused.is_empty())
     }
 }
+
+impl Render for crate::PlanCheck {
+    fn text(&self) -> String {
+        let mut out = vec![format!(
+            "{} features at tree {}: {} problems",
+            self.features,
+            self.tree.get(..12).unwrap_or(&self.tree),
+            self.problems.len()
+        )];
+        out.extend(self.problems.iter().map(|p| format!("  {p}")));
+        out.join("\n")
+    }
+
+    fn success(&self) -> bool {
+        self.problems.is_empty()
+    }
+}
+
+impl Render for crate::PlanStatus {
+    fn text(&self) -> String {
+        let loc = |n: Option<u64>| n.map_or_else(|| "-".into(), |n| n.to_string());
+        let mut out = vec![format!(
+            "plan at {} (tree {})",
+            self.rev,
+            self.tree.get(..12).unwrap_or(&self.tree)
+        )];
+        for f in &self.features {
+            out.push(format!(
+                "{}  {}  {}  LOC {} of {} planned",
+                f.id, f.status, f.title, f.loc_actual, f.loc_planned
+            ));
+            for w in &f.work_items {
+                out.push(format!(
+                    "  {} {} {}  LOC {} of {}  {}",
+                    w.id,
+                    w.status,
+                    if w.complete { "complete" } else { "open" },
+                    w.loc_actual,
+                    w.loc_planned,
+                    w.text
+                ));
+                out.extend(w.units.iter().map(|u| {
+                    let by = u
+                        .loc_by
+                        .as_ref()
+                        .map(|b| format!(" ({b})"))
+                        .unwrap_or_default();
+                    format!(
+                        "    {:<11} {:<6} {}  LOC {}{by} of {}",
+                        u.state,
+                        u.change,
+                        u.key,
+                        loc(u.loc_actual),
+                        loc(u.loc_planned)
+                    )
+                }));
+                out.extend(w.tests.iter().map(|t| {
+                    let state = if t.present { "present" } else { "missing" };
+                    let run = t.result.as_deref().unwrap_or("not run");
+                    format!("    {state:<11} test   {}  {run}, kills {}", t.key, t.kills)
+                }));
+                if let Some(since) = &self.since {
+                    out.extend(
+                        w.changed
+                            .iter()
+                            .map(|c| format!("    changed since {since}: {c}")),
+                    );
+                }
+            }
+        }
+        out.extend(self.notes.iter().map(|n| format!("note: {n}")));
+        out.join("\n")
+    }
+}

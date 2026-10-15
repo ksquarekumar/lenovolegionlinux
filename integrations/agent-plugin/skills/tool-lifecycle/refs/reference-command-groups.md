@@ -20,6 +20,7 @@ W workspace, M machine (polkit). "client" runs in the client only, with no opera
 | `dossier`, `hooks`, `hook` (client) | R, S, W | operator | `dossier check`, `dossier nudges`, `hooks list` | dossier-practice |
 | `code graph` (`refresh`, `refs`, `query`, `impact`, `changes`, `annotate`, `annotations`, `prune`, `hook`) | R, S, W (`hook`) | operator, ctx | `code graph refs`, `code graph changes` | workspace-practice |
 | `code tests` (`run`, `list`, `show`, `review`, `mutant record`, `mutant run`) | R, S | operator, cargo, cargo-mutants; `run` and `mutant run` are jobs | `code tests review`, `jobs` | verify-and-ship |
+| `code plan` (`check`, `status`) | R | operator, ctx, tokei | `code plan status` | workspace-practice |
 | `workspace` | R, S, W | operator, git; `pack`: docker or QEMU, a job | `workspace status`, `workspace list` | workspace-practice |
 | `session`, `jobs`, `tools`, `agents`, `gateway` | R, W | systemd scope, bwrap, docker or QEMU; `session run` is a job | `session list`, `jobs`, `trace` | sessions-and-agents |
 | `mcp-proxy` | client | - | `tools calls` | sessions-and-agents |

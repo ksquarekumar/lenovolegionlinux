@@ -1774,6 +1774,38 @@ pub struct GraphHookIn {
     pub repo: ClientPath,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PlanCheckIn {
+    /// The ref whose plan and code graph to check; HEAD when not given.
+    #[serde(default = "head", rename = "ref")]
+    pub rev: String,
+    /// Make the graph of the ref when it has none.
+    #[serde(default)]
+    pub build: bool,
+    /// A folder in the repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PlanStatusIn {
+    /// One feature (its id); all when not given.
+    #[serde(default)]
+    pub feature: Option<String>,
+    /// The ref to measure; HEAD when not given.
+    #[serde(default = "head", rename = "ref")]
+    pub rev: String,
+    /// Also list the changes from this ref to `ref` that touch each work item.
+    #[serde(default)]
+    pub since: Option<String>,
+    /// Make the graphs of the refs that have none.
+    #[serde(default)]
+    pub build: bool,
+    /// A folder in the repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
 fn head() -> String {
     "HEAD".into()
 }

@@ -3538,6 +3538,22 @@ impl Engine for Operator {
         crate::code::hook(&input)
     }
 
+    fn code_plan_check(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::PlanCheckIn,
+    ) -> Result<legionctl_api::PlanCheck> {
+        crate::code::plan_check(&input)
+    }
+
+    fn code_plan_status(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::PlanStatusIn,
+    ) -> Result<legionctl_api::PlanStatus> {
+        crate::code::plan_status(&input)
+    }
+
     fn knobs_show(&self, _: &Ctx, input: InspectIn) -> Result<KnobDetail> {
         let plan = Plan::load(path(input.profile.as_ref())?)?;
         let knob = knobs::find(&plan.machine(), &input.knob).with_context(|| {

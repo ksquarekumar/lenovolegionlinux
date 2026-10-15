@@ -32,7 +32,7 @@ const IGNORE: &str = "/.graf/";
 const MARK: &str = "# legionctl code graph";
 const HOOKS: [&str; 4] = ["post-commit", "post-checkout", "post-merge", "post-rewrite"];
 
-fn run(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
+pub(crate) fn run(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -48,7 +48,7 @@ fn run(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 
-fn git(dir: &Path, args: &[&str]) -> Result<String> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&run(dir, args)?).trim().to_string())
 }
 
@@ -76,7 +76,7 @@ fn file(graf: &Path, tree: &str) -> PathBuf {
 }
 
 /// A ref resolved: the commit and its tree.
-fn resolve(dir: &Path, rev: &str) -> Result<(String, String)> {
+pub(crate) fn resolve(dir: &Path, rev: &str) -> Result<(String, String)> {
     ensure!(!rev.starts_with('-'), "a ref must not start with '-'");
     let commit = git(
         dir,
@@ -188,7 +188,7 @@ pub fn snapshot(dir: &Path, rev: &str) -> Result<(String, bool)> {
 }
 
 /// The snapshot of `rev` that a read uses: made when `build`, else a `NotFound` error that says how to make it.
-fn snapshot_for(dir: &Path, rev: &str, build: bool) -> Result<(String, PathBuf)> {
+pub(crate) fn snapshot_for(dir: &Path, rev: &str, build: bool) -> Result<(String, PathBuf)> {
     let tree = if build {
         snapshot(dir, rev)?.0
     } else {
@@ -425,13 +425,21 @@ pub struct CodeNodes {
 
 /// A node of a snapshot, as the diff needs it.
 #[derive(Debug, Clone)]
-struct Node {
+pub(crate) struct Node {
     id: String,
-    kind: String,
-    file: String,
+    pub(crate) label: String,
+    pub(crate) kind: String,
+    pub(crate) file: String,
     line: Option<i64>,
     end_line: Option<i64>,
     span: Option<(usize, usize)>,
+}
+
+impl Node {
+    /// Its lines from the first to the last (with blanks and comments).
+    pub(crate) fn span_lines(&self) -> i64 {
+        self.end_line.unwrap_or(0) - self.line.unwrap_or(0) + 1
+    }
 }
 
 /// `id` without its `@<byte offset>` parts.
@@ -468,10 +476,11 @@ fn base_key(id: &str, binding_key: Option<String>, metadata: &Value) -> String {
 }
 
 /// The nodes of a snapshot by stable key; a second node with the same key in file order gets `#2`, and so on.
-fn nodes(db: &Path) -> Result<BTreeMap<String, Node>> {
+pub(crate) fn nodes(db: &Path) -> Result<BTreeMap<String, Node>> {
     let conn = rusqlite::Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let mut stmt =
-        conn.prepare("SELECT id, kind, file, line, end_line, metadata, binding_key FROM nodes")?;
+    let mut stmt = conn.prepare(
+        "SELECT id, kind, file, line, end_line, metadata, binding_key, label FROM nodes",
+    )?;
     let mut rows: Vec<(String, Node)> = stmt
         .query_map([], |r| {
             let metadata: Value = serde_json::from_str(&r.get::<_, String>(5)?).unwrap_or_default();
@@ -484,6 +493,7 @@ fn nodes(db: &Path) -> Result<BTreeMap<String, Node>> {
                 base_key(&id, r.get(6)?, &metadata),
                 Node {
                     id,
+                    label: r.get(7)?,
                     kind: r.get(1)?,
                     file: r.get(2)?,
                     line: r.get(3)?,
@@ -697,7 +707,6 @@ fn change_set(dir: &Path, from: &str, to: &str, build: bool) -> Result<ChangeSet
         tree: &to_tree,
         read: HashMap::new(),
     };
-    let span = |n: &Node| n.end_line.unwrap_or(0) - n.line.unwrap_or(0) + 1;
     let mut entities = Vec::new();
     let keys: BTreeSet<&String> = before.keys().chain(after.keys()).collect();
     for key in keys {
@@ -717,9 +726,15 @@ fn change_set(dir: &Path, from: &str, to: &str, build: bool) -> Result<ChangeSet
             }
         };
         match (before.get(key), after.get(key)) {
-            (None, Some(b)) => entities.push(row(b, "added", lines_of(b, format!("+{}", span(b))))),
+            (None, Some(b)) => {
+                entities.push(row(b, "added", lines_of(b, format!("+{}", b.span_lines()))));
+            }
             (Some(a), None) => {
-                entities.push(row(a, "removed", lines_of(a, format!("-{}", span(a)))));
+                entities.push(row(
+                    a,
+                    "removed",
+                    lines_of(a, format!("-{}", a.span_lines())),
+                ));
             }
             (Some(a), Some(b)) => {
                 if a.file == b.file && !numstat.contains_key(&a.file) {
@@ -736,7 +751,7 @@ fn change_set(dir: &Path, from: &str, to: &str, build: bool) -> Result<ChangeSet
                 entities.push(row(
                     b,
                     change,
-                    lines_of(b, format!("{} -> {}", span(a), span(b))),
+                    lines_of(b, format!("{} -> {}", a.span_lines(), b.span_lines())),
                 ));
             }
             (None, None) => {}

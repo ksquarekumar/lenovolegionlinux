@@ -1,0 +1,40 @@
+// Design 23, Parts B and B+ (todo-91, todo-97, todo-98): the main agent and observers in one durable thread.
+{
+  "$schema": "../feature.schema.json",
+  "id": "agent-network",
+  "title": "Agent network, presence and pools",
+  "status": "planned",
+  "plan_rows": ["legionctl#todo-91", "legionctl#todo-97", "legionctl#todo-98"],
+  "objectives": [
+    { "id": "O1", "text": "Observers remind, nudge and block the main agent through a durable outbox." },
+    { "id": "O2", "text": "The main agent stays on the critical path; observers sleep until a trigger." }
+  ],
+  "stories": [
+    { "id": "S1", "text": "An observer reminds main with the count, and a hard block stops the tool.", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/e2e.rs::an_observer_reminds_main_with_the_count_and_a_hard_block_stops_the_tool",
+                "test:crates/legionctl/tests/e2e.rs::an_observer_survives_an_operator_restart_and_delivers_each_message_once"] },
+    { "id": "S2", "text": "Peers see each other on a dossier and a message reaches an idle peer once.", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/e2e.rs::peers_show_the_sessions_on_the_dossier_with_their_state_and_a_message_reaches_an_idle_peer_once"] },
+    { "id": "S3", "kind": "control-flow", "text": "vanilla wakes the observer on its events; a wake stops at its budget.", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/e2e.rs::vanilla_wakes_the_observer_on_its_events_and_the_gates_hold_checkpoint_and_done",
+                "test:crates/legionctl/tests/e2e.rs::the_observer_sleeps_until_a_rule_finds_work_and_a_wake_stops_at_its_budget"] },
+    { "id": "S4", "kind": "requirement", "text": "Each config field reaches the harness, or the config is refused.", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/e2e.rs::each_config_field_reaches_the_harness_or_the_config_is_refused"] }
+  ],
+  "work_items": [
+    { "id": "P5", "text": "Threads, members, outbox, hook delivery, watch rules, presence", "status": "planned", "stories": ["S1", "S2"], "units": [
+      { "key": "file:crates/legionctl-operator/src/thread.rs", "change": "add", "loc": 1300 },
+      { "key": "op:thread.start", "change": "add" },
+      { "key": "op:thread.send", "change": "add" },
+      { "key": "op:thread.peers", "change": "add" }
+    ] },
+    { "id": "P6a", "text": "Archetype files, agent configs, agents check", "status": "planned", "stories": ["S4"], "depends_on": ["P5"], "units": [
+      { "key": "file:integrations/agent-plugin/agents/thread-observer.md", "change": "add", "loc": 100 },
+      { "key": "op:agents.check", "change": "add", "loc": 600 }
+    ] },
+    { "id": "P6b", "text": "Members through ACP, pace, wake budgets, team vanilla", "status": "planned", "stories": ["S3"], "depends_on": ["P6a"], "units": [
+      { "key": "file:integrations/agent-plugin/teams/vanilla.jsonc", "change": "add", "loc": 100 },
+      { "key": "op:thread.pace", "change": "add", "loc": 1000 }
+    ] }
+  ]
+}

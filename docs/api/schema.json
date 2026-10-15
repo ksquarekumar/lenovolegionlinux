@@ -12993,5 +12993,309 @@
       "title": "Lines",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
+  },
+  "code.plan.check": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string",
+          "description": "The ref whose plan and code graph to check; HEAD when not given.",
+          "default": "HEAD"
+        },
+        "build": {
+          "type": "boolean",
+          "description": "Make the graph of the ref when it has none.",
+          "default": false
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in the repository.",
+          "default": "."
+        }
+      },
+      "title": "PlanCheckIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "tree": {
+          "type": "string"
+        },
+        "features": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "problems": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "tree",
+        "features",
+        "problems"
+      ],
+      "description": "The result of a plan check.",
+      "title": "PlanCheck",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "code.plan.status": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "feature": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "One feature (its id); all when not given.",
+          "default": null
+        },
+        "ref": {
+          "type": "string",
+          "description": "The ref to measure; HEAD when not given.",
+          "default": "HEAD"
+        },
+        "since": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Also list the changes from this ref to `ref` that touch each work item.",
+          "default": null
+        },
+        "build": {
+          "type": "boolean",
+          "description": "Make the graphs of the refs that have none.",
+          "default": false
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in the repository.",
+          "default": "."
+        }
+      },
+      "title": "PlanStatusIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string"
+        },
+        "tree": {
+          "type": "string"
+        },
+        "since": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "features": {
+          "type": "array",
+          "items": {
+            "description": "One feature at a tree.",
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "plan_rows": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "loc_planned": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "loc_actual": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "work_items": {
+                "type": "array",
+                "items": {
+                  "description": "One work item at a tree.",
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "complete": {
+                      "description": "Each unit done, and each linked test there and not failed at its last run.",
+                      "type": "boolean"
+                    },
+                    "loc_planned": {
+                      "type": "integer",
+                      "format": "uint64",
+                      "minimum": 0
+                    },
+                    "loc_actual": {
+                      "type": "integer",
+                      "format": "uint64",
+                      "minimum": 0
+                    },
+                    "units": {
+                      "type": "array",
+                      "items": {
+                        "description": "One planned unit at a tree.",
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string"
+                          },
+                          "change": {
+                            "description": "add, edit or remove.",
+                            "type": "string"
+                          },
+                          "state": {
+                            "description": "done (there after add or edit, gone after remove), missing, still there (to remove), unknown prefix.",
+                            "type": "string"
+                          },
+                          "loc_planned": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "format": "uint64",
+                            "minimum": 0
+                          },
+                          "loc_actual": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "format": "uint64",
+                            "minimum": 0
+                          },
+                          "loc_by": {
+                            "description": "tokei (code lines of files) or span (the lines of a symbol, with blanks and comments).",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "change",
+                          "state"
+                        ]
+                      }
+                    },
+                    "tests": {
+                      "type": "array",
+                      "items": {
+                        "description": "A test that a work item's stories link, and whether it is in the code graph.",
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string"
+                          },
+                          "present": {
+                            "type": "boolean"
+                          },
+                          "result": {
+                            "description": "Its last recorded run (`code tests run`): ok, failed or ignored.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "kills": {
+                            "description": "The recorded mutants it killed.",
+                            "type": "integer",
+                            "format": "uint32",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "present",
+                          "kills"
+                        ]
+                      }
+                    },
+                    "changed": {
+                      "description": "The changes since the `since` ref that touch its units: `<change> <key>`.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "text",
+                    "status",
+                    "complete",
+                    "loc_planned",
+                    "loc_actual",
+                    "units",
+                    "tests",
+                    "changed"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "status",
+              "plan_rows",
+              "loc_planned",
+              "loc_actual",
+              "work_items"
+            ]
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Plan files that do not parse, and LOC that could not be counted."
+        }
+      },
+      "required": [
+        "ref",
+        "tree",
+        "features",
+        "notes"
+      ],
+      "description": "The plan against the code of a ref.",
+      "title": "PlanStatus",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
   }
 }

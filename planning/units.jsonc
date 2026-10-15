@@ -1,0 +1,9 @@
+// Run, build and deploy units that ctx does not index (design 23, A4). A unit is present when each of its files is.
+{
+  "$schema": "units.schema.json",
+  "units": [
+    { "name": "legionctl-system", "kind": "systemd", "files": ["systemd/legionctl-system.service", "dbus/org.legionctl.System1.conf", "dbus/org.legionctl.System1.xml"] },
+    { "name": "agent-plugin", "kind": "plugin", "files": ["integrations/agent-plugin/hooks/hooks.json"] },
+    { "name": "arch-package", "kind": "package", "files": ["packaging/arch/PKGBUILD"] }
+  ]
+}

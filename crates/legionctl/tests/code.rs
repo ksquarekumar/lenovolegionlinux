@@ -28,6 +28,12 @@ fn path() -> OsString {
     .unwrap()
 }
 
+/// `PATH` with `first` before this build's binaries.
+fn path_with(first: &Path) -> OsString {
+    std::env::join_paths(std::iter::once(first.to_path_buf()).chain(std::env::split_paths(&path())))
+        .unwrap()
+}
+
 fn standin() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ctx-standin")
 }
@@ -46,6 +52,8 @@ impl Lab {
             Path::new("/var/tmp").join(format!("legionctl-code-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(home.join(".local/bin")).unwrap();
+        // stand-ins a test puts there (tokei, cargo) come before the user's own
+        std::fs::create_dir_all(home.join(".cargo/bin")).unwrap();
         std::os::unix::fs::symlink(ctx, home.join(".local/bin/ctx")).unwrap();
         write(
             &home.join(".gitconfig"),
@@ -65,7 +73,7 @@ impl Lab {
             &[
                 ("LEGIONCTL_SYSROOT", root.into()),
                 ("HOME", home.clone().into()),
-                ("PATH", path()),
+                ("PATH", path_with(&home.join(".cargo/bin"))),
             ],
         );
         let repo = home.join("repo");
@@ -661,4 +669,398 @@ fn the_real_ctx_gives_the_change_rows_of_the_stand_in() {
     assert_eq!(rows(&sets[0]), expected(&m, &b), "{:#}", sets[0]);
     let impact = lab.json(&ws, &["code", "graph", "impact", "rust:.:add", "--ref", &b]);
     assert!(impact.to_string().contains("rust:.:two"), "{impact}");
+}
+
+/// The plan of the fixture: W1 is done (a symbol, a config key, an operation and a unit), W2 is in progress (a file to
+/// edit, a function to add, a function to remove).
+const FEATURE: &str = r#"// one feature of the fixture
+{
+  "id": "fx",
+  "title": "Fixture feature",
+  "status": "in-progress",
+  "plan_rows": ["port#todo-1", "port#todo-9"],
+  "objectives": [{ "id": "O1", "text": "Numbers." }],
+  "stories": [
+    { "id": "S1", "text": "add adds.", "objectives": ["O1"], "tests": ["test:tests/e2e.rs::adds"] },
+    { "id": "S2", "kind": "requirement", "text": "triple triples.", "objectives": ["O1"],
+      "tests": ["test:tests/e2e.rs::triples"] }
+  ],
+  "work_items": [
+    { "id": "W1", "text": "add, its config and operation", "status": "done", "stories": ["S1"], "units": [
+      { "key": "rust:.:add", "change": "edit", "loc": 3 },
+      { "key": "config:graph.keep", "change": "edit" },
+      { "key": "op:code.plan.check", "change": "edit" },
+      { "key": "unit:fx-build", "change": "edit", "loc": 2 }
+    ] },
+    { "id": "W2", "text": "triple in util", "status": "in-progress", "stories": ["S2"], "depends_on": ["W1"],
+      "units": [
+      { "key": "file:src/util.rs", "change": "edit", "loc": 10 },
+      { "key": "rust:.:util::triple", "change": "add", "loc": 4 },
+      { "key": "rust:.:old_fn", "change": "remove" }
+    ] }
+  ]
+}
+"#;
+
+/// Two plan files with every kind of problem `code plan check` must refuse.
+const BAD: &str = r#"{
+  "id": "bad", "title": "Bad", "status": "planned",
+  "stories": [{ "id": "T1", "text": "x", "tests": ["test:tests/e2e.rs::adds"] }],
+  "work_items": [
+    { "id": "B1", "text": "x", "status": "planned", "stories": ["S9"], "units": [
+      { "key": "crate:fx", "change": "add" },
+      { "key": "rust:.:nothing", "change": "edit" }
+    ] },
+    { "id": "B1", "text": "y", "status": "planned", "units": [] },
+    { "id": "B2", "text": "z", "status": "done", "stories": ["T1"], "units": [
+      { "key": "rust:.:util::triple", "change": "add" }
+    ] }
+  ]
+}"#;
+const WORSE: &str =
+    r#"{ "id": "worse", "title": "W", "status": "planned", "owner": "me", "work_items": [] }"#;
+
+/// A work item of `code plan status --json`.
+fn item<'a>(status: &'a Value, id: &str) -> &'a Value {
+    status["features"][0]["work_items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["id"] == id)
+        .unwrap()
+}
+
+type UnitRow = (String, String, Value, Value);
+
+/// A unit row with LOC from ctx's span, from tokei, or none.
+fn row(key: &str, state: &str, (loc, by): (Value, Value)) -> UnitRow {
+    (key.to_string(), state.to_string(), loc, by)
+}
+
+fn span(n: u64) -> (Value, Value) {
+    (Value::from(n), Value::from("span"))
+}
+
+fn tokei(n: u64) -> (Value, Value) {
+    (Value::from(n), Value::from("tokei"))
+}
+
+fn none() -> (Value, Value) {
+    (Value::Null, Value::Null)
+}
+
+/// (key, state, `loc_actual`, `loc_by`) of a work item's units.
+fn units(item: &Value) -> Vec<UnitRow> {
+    item["units"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| {
+            (
+                u["key"].as_str().unwrap().into(),
+                u["state"].as_str().unwrap().into(),
+                u["loc_actual"].clone(),
+                u["loc_by"].clone(),
+            )
+        })
+        .collect()
+}
+
+/// The dossier check findings about the fixture feature.
+fn plan_findings(lab: &Lab, ws: &Path) -> Vec<String> {
+    let check = lab.run(ws, &["dossier", "check", "--json"]);
+    let found: Value = serde_json::from_slice(&check.stdout).unwrap();
+    found["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p.as_str().unwrap().to_string())
+        .filter(|p| p.contains("feature fx"))
+        .collect()
+}
+
+/// A repository with the fixture plan committed in the workspace of dossier `port`, and tokei's stand-in: the
+/// workspace and the plan's commit.
+fn plan_fixture(lab: &Lab) -> (PathBuf, String) {
+    let tokei = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tokei-standin");
+    std::os::unix::fs::symlink(tokei, lab.home.join(".cargo/bin/tokei")).unwrap();
+    let repo = lab.repo.clone();
+    lab.ok(&repo, &["dossier", "use", "port"]);
+    lab.ok(&repo, &["workspace", "open"]);
+    let ws = lab.home.join("worktrees/repo/port");
+
+    // tokei counts 3 code lines of util.rs (no comment, no blank); ctx's span of helper is 4 lines
+    write(
+        &ws.join("src/util.rs"),
+        "// helpers\npub fn helper(x: i32) -> i32 {\n\n    x * 2\n}\n",
+    );
+    write(
+        &ws.join("tests/e2e.rs"),
+        "#[test]\nfn adds() {\n    assert_eq!(fx::add(1, 2), 3);\n}\n",
+    );
+    write(
+        &ws.join("docs/api/schema.json"),
+        r#"{ "code.plan.check": {} }"#,
+    );
+    write(
+        &ws.join("config/defaults.jsonc"),
+        "// defaults\n{ \"graph\": { \"keep\": 20 } }\n",
+    );
+    write(
+        &ws.join("planning/units.jsonc"),
+        r#"{ "units": [{ "name": "fx-build", "kind": "package", "files": ["Cargo.toml"] }] }"#,
+    );
+    write(&ws.join("planning/features/fx.jsonc"), FEATURE);
+    // the checkpoint's test gate wants a kill for each new test
+    lab.ok(
+        &ws,
+        &[
+            "code",
+            "tests",
+            "mutant",
+            "record",
+            "src/lib.rs",
+            "4",
+            "a - b",
+            "adds",
+        ],
+    );
+    lab.ok(&ws, &["workspace", "checkpoint", "plan fx"]);
+    let planned = lab.git(&ws, &["rev-parse", "--short", "HEAD"]);
+
+    (ws, planned)
+}
+
+/// A commit with bad plan files, then gone from the branch: the check names each problem at that ref.
+fn a_bad_plan_fails_the_check_with_each_problem(lab: &Lab, ws: &Path) {
+    write(&ws.join("planning/features/bad.jsonc"), BAD);
+    write(&ws.join("planning/features/worse.jsonc"), WORSE);
+    lab.git(ws, &["add", "planning"]);
+    lab.git(ws, &["commit", "--quiet", "-m", "bad plan"]);
+    let bad = lab.git(ws, &["rev-parse", "--short", "HEAD"]);
+    lab.git(ws, &["reset", "--quiet", "--hard", "HEAD^"]);
+    let out = lab.run(ws, &["code", "plan", "check", "--ref", &bad, "--build"]);
+    assert!(
+        !out.status.success(),
+        "a plan with problems fails the check"
+    );
+    let check = lab.json(ws, &["code", "plan", "check", "--ref", &bad]);
+    let problems: Vec<&str> = check["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p.as_str().unwrap())
+        .collect();
+    let at = "planning/features/bad.jsonc";
+    let expected = [
+        "planning/features/worse.jsonc: unknown field `owner`".to_string(),
+        format!("{at}: id B1 twice"),
+        format!("{at}: B1 names S9, which does not exist"),
+        format!("{at}: B1: no tests (its stories link none)"),
+        format!("{at}: B1: crate:fx has no known prefix"),
+        format!("{at}: B1: rust:.:nothing resolves to nothing at {bad}"),
+        format!("{at}: B1: no tests (its stories link none)"),
+        format!("{at}: B2: rust:.:util::triple resolves to nothing at {bad}"),
+    ];
+    assert_eq!(problems.len(), expected.len(), "{problems:#?}");
+    for e in &expected {
+        assert!(
+            problems.iter().any(|p| p.starts_with(e.as_str())),
+            "{e} in {problems:#?}"
+        );
+    }
+}
+
+/// The status of the plan's commit: units, LOC from tokei and spans, tests.
+fn the_status_has_units_loc_and_tests(lab: &Lab, ws: &Path) {
+    let status = lab.json(ws, &["code", "plan", "status"]);
+    let (w1, w2) = (item(&status, "W1"), item(&status, "W2"));
+    assert_eq!(
+        units(w1),
+        [
+            row("rust:.:add", "done", span(3)),
+            row("config:graph.keep", "done", none()),
+            row("op:code.plan.check", "done", none()),
+            row("unit:fx-build", "done", tokei(4)),
+        ]
+    );
+    assert_eq!(
+        units(w2),
+        [
+            row("file:src/util.rs", "done", tokei(3)),
+            row("rust:.:util::triple", "missing", none()),
+            row("rust:.:old_fn", "still there", span(3)),
+        ]
+    );
+    assert_eq!(
+        (&w1["complete"], &w1["loc_actual"], &w1["loc_planned"]),
+        (&Value::Bool(true), &Value::from(7), &Value::from(5))
+    );
+    assert_eq!(
+        (&w2["complete"], &w2["loc_actual"], &w2["loc_planned"]),
+        (&Value::Bool(false), &Value::from(6), &Value::from(14))
+    );
+    assert_eq!(
+        w2["tests"],
+        serde_json::json!([{ "key": "test:tests/e2e.rs::triples", "present": false, "result": null, "kills": 0 }])
+    );
+    assert_eq!(
+        (
+            &status["features"][0]["loc_actual"],
+            &status["features"][0]["loc_planned"]
+        ),
+        (&Value::from(13), &Value::from(19))
+    );
+}
+
+/// The commit that adds triple and its test (with its recorded kill) and removes `old_fn`.
+fn triple(lab: &Lab, ws: &Path) {
+    let util = std::fs::read_to_string(ws.join("src/util.rs")).unwrap();
+    write(
+        &ws.join("src/util.rs"),
+        &format!("{util}\npub fn triple(x: i32) -> i32 {{\n    x * 3\n}}\n"),
+    );
+    let test = std::fs::read_to_string(ws.join("tests/e2e.rs")).unwrap();
+    write(
+        &ws.join("tests/e2e.rs"),
+        &format!("{test}\n#[test]\nfn triples() {{\n    assert_eq!(fx::util::triple(2), 6);\n}}\n"),
+    );
+    let lib = std::fs::read_to_string(ws.join("src/lib.rs")).unwrap();
+    write(
+        &ws.join("src/lib.rs"),
+        &lib.replace("\nfn old_fn() -> i32 {\n    0\n}\n", ""),
+    );
+    lab.ok(
+        ws,
+        &[
+            "code",
+            "tests",
+            "mutant",
+            "record",
+            "src/util.rs",
+            "9",
+            "x * 2",
+            "triples",
+        ],
+    );
+    lab.ok(ws, &["workspace", "checkpoint", "triple"]);
+}
+
+/// A recorded run where triples failed keeps W2 open; adds passed and has the kill recorded before its checkpoint.
+fn a_failed_run_keeps_its_item_open(lab: &Lab, ws: &Path) {
+    let cargo = lab.home.join(".cargo/bin/cargo");
+    write(
+        &cargo,
+        "#!/bin/sh\necho '     Running tests/e2e.rs (target/release/deps/e2e-1)' >&2\necho 'test adds ... ok'\n\
+         echo 'test triples ... FAILED'\nexit 101\n",
+    );
+    std::fs::set_permissions(&cargo, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    lab.ok(ws, &["code", "tests", "run"]);
+    let status = lab.json(ws, &["code", "plan", "status"]);
+    let (w1, w2) = (item(&status, "W1"), item(&status, "W2"));
+    assert_eq!(
+        (&w1["tests"], &w1["complete"]),
+        (
+            &serde_json::json!([{ "key": "test:tests/e2e.rs::adds", "present": true, "result": "ok", "kills": 1 }]),
+            &Value::Bool(true)
+        )
+    );
+    assert_eq!(
+        (&w2["tests"][0]["result"], &w2["complete"]),
+        (&Value::from("failed"), &Value::Bool(false)),
+        "{w2:#}"
+    );
+}
+
+/// The plan (`planning/`) against the code graph and tokei: `code plan check` passes a correct plan and names each
+/// problem of a bad one (unknown field, unknown key prefix, an edit unit and a done item's unit that resolve to
+/// nothing, duplicate id, unknown story, no tests); `code plan status` gives each unit done, missing or still there,
+/// LOC from tokei for files and units and from the span for symbols; `dossier check` reports a plan row that says done
+/// while its feature has open work items, and a row that does not exist; a commit that adds the planned function and
+/// test and removes the planned removal completes the work item, and the changes since the plan's commit list
+/// exactly the entities that touch it.
+#[test]
+fn a_plan_is_checked_against_the_code_graph_and_a_commit_that_adds_its_units_completes_it() {
+    let lab = Lab::new("plan", &standin());
+    let (ws, planned) = plan_fixture(&lab);
+    let refused = lab.run(&ws, &["code", "plan", "check"]);
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("no graph for HEAD"),
+        "{refused:?}"
+    );
+    let check = lab.json(&ws, &["code", "plan", "check", "--build"]);
+    assert_eq!(
+        (&check["features"], &check["problems"]),
+        (&Value::from(1), &serde_json::json!([])),
+        "{check:#}"
+    );
+
+    a_bad_plan_fails_the_check_with_each_problem(&lab, &ws);
+    the_status_has_units_loc_and_tests(&lab, &ws);
+
+    // the dossier's plan says todo-1 is built while W2 is open, and todo-9 does not exist
+    let dossier = lab.home.join(".agentworkspace/port");
+    let plan = std::fs::read_to_string(dossier.join("plan.md")).unwrap().replace(
+        "## ToDo\n",
+        "## ToDo\n| id | item | status |\n| --- | --- | --- |\n| todo-1 | fx | built abc123 |\n",
+    );
+    write(&dossier.join("plan.md"), &plan);
+    assert_eq!(
+        plan_findings(&lab, &ws),
+        [
+            "plan#todo-1 says done, but feature fx is not complete at HEAD: W2 (rust:.:util::triple, rust:.:old_fn, \
+             test:tests/e2e.rs::triples)",
+            "feature fx names plan#todo-9, which does not exist",
+        ]
+    );
+
+    // the commit that adds triple and its test and removes old_fn completes W2
+    triple(&lab, &ws);
+    let status = lab.json(
+        &ws,
+        &[
+            "code",
+            "plan",
+            "status",
+            "--feature",
+            "fx",
+            "--since",
+            &planned,
+            "--build",
+        ],
+    );
+    let (w1, w2) = (item(&status, "W1"), item(&status, "W2"));
+    assert_eq!(
+        units(w2),
+        [
+            row("file:src/util.rs", "done", tokei(6)),
+            row("rust:.:util::triple", "done", span(3)),
+            row("rust:.:old_fn", "done", none()),
+        ]
+    );
+    assert_eq!(w2["complete"], Value::Bool(true), "{w2:#}");
+    assert_eq!(
+        w2["changed"],
+        serde_json::json!([
+            "added rust:.:util::triple",
+            "modified file:src/util.rs",
+            "modified rust:module:.:util",
+            "removed rust:.:old_fn"
+        ])
+    );
+    assert_eq!(
+        w1["changed"],
+        serde_json::json!([]),
+        "lib.rs changed, add did not"
+    );
+    assert_eq!(
+        plan_findings(&lab, &ws),
+        ["feature fx names plan#todo-9, which does not exist"]
+    );
+    a_failed_run_keeps_its_item_open(&lab, &ws);
+    let refused = lab.run(&ws, &["code", "plan", "status", "--feature", "nope"]);
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("no feature nope"),
+        "{refused:?}"
+    );
 }

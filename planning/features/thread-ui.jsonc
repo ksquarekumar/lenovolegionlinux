@@ -1,0 +1,25 @@
+// Design 23, Part C (todo-92): the triple pane thread UI in the TUI and the app.
+{
+  "$schema": "../feature.schema.json",
+  "id": "thread-ui",
+  "title": "Thread UI",
+  "status": "planned",
+  "plan_rows": ["legionctl#todo-92"],
+  "objectives": [{ "id": "O1", "text": "Humans and agents see one thread in the same views." }],
+  "stories": [
+    { "id": "S1", "text": "The TUI folds panes and runs an agent's ACP command.", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/e2e.rs::the_thread_tui_folds_panes_and_runs_an_agent_command"] },
+    { "id": "S2", "text": "The app thread page updates from the event stream; a view cannot bind a change.", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/app.rs::the_app_thread_page_updates_from_the_event_stream",
+                "test:crates/legionctl/tests/e2e.rs::a_view_cannot_bind_a_change_operation"] }
+  ],
+  "work_items": [
+    { "id": "P7", "text": "TUI triple pane, chat bar, / commands", "status": "planned", "stories": ["S1"], "units": [
+      { "key": "file:crates/legionctl/src/tui.rs", "change": "edit", "loc": 1200 }
+    ] },
+    { "id": "P8", "text": "App thread page, views, ui-composer, import", "status": "planned", "stories": ["S2"], "depends_on": ["P7"], "units": [
+      { "key": "file:crates/legionctl-app/src/thread.rs", "change": "add", "loc": 1200 },
+      { "key": "op:views.render", "change": "add", "loc": 300 }
+    ] }
+  ]
+}

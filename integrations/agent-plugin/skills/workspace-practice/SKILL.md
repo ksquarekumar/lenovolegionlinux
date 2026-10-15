@@ -34,11 +34,15 @@ user-invocable: true
     `legionctl code graph refresh <ref>`.
 16. Resolve the conflict in the workspace path, run `git rebase --continue`, record the resolution in the dossier, and
     merge again.
-17. `workspace close [--force]` removes the worktree; the branch and the dossier stay. It refuses uncommitted changes;
+17. Plan code in `planning/` (refs/reference-planning.md). Before you work on a feature, read
+    `legionctl code plan status --feature <id> [--since <ref>]`; when you change its plan, `legionctl code plan check`
+    must pass.
+18. `workspace close [--force]` removes the worktree; the branch and the dossier stay. It refuses uncommitted changes;
     ask before `--force`.
-18. Do not push. See skill verify-and-ship.
+19. Do not push. See skill verify-and-ship.
 
 ## Refs
 
 - `refs/scenario-one-agent.md` - read for the full flow of one change.
 - `refs/scenario-lead-and-topics.md` - read when a lead gives topics to parallel agents.
+- `refs/reference-planning.md` - read when you plan a feature or change a file in `planning/`.

@@ -15,6 +15,7 @@ pub mod graph;
 pub mod hooks;
 pub mod images;
 pub mod packages;
+pub mod planning;
 pub mod qmp;
 pub mod reminders;
 pub mod session;

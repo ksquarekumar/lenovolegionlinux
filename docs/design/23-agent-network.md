@@ -2,7 +2,7 @@
 
 Status: approved (2026-10-15, "Decisions" at the end). Plan rows todo-90 (two code graphs), todo-91 (agent
 network), todo-92 (thread UI). Part B+ (todo-97 presence, todo-98 agent configs and pools) was added and approved on
-2026-10-15 ("Decisions on Part B+"). Built: P1 and P2 (section "Built: P1 and P2", after A11). The user's request (verbatim) and the decisions are in the
+2026-10-15 ("Decisions on Part B+"). Built: P1 and P2 (section "Built: P1 and P2", after A11), P3 (section "Built: P3"). The user's request (verbatim) and the decisions are in the
 dossier: `MEMORY/11-agent-network-and-code-graphs.md`.
 
 ## In short
@@ -465,6 +465,43 @@ scenario with the installed ctx and expects the same rows.
 | `a_graph_is_made_once_per_tree_shared_by_worktrees_and_pruned_to_heads_bases_and_the_newest` | No graph before the repository keeps graphs; a checkpoint and a plain `git commit` (the hook) make the graph of their tree in the main checkout's `.graf`; each checkout's link follows its HEAD (also after a checkout); two refreshes of one tree leave one file and no temporary files; a ref without a graph is reported and refused, and `--build` makes it; prune keeps a merge-base that is older than the removed graphs, and the newest 20 others. |
 | `changes_between_refs_are_the_changed_entities_by_stable_key_with_their_commits` | Exactly the changed entities with their commits; a function whose offsets moved and an unchanged closure are not changes; a function in a moved file of the same module is `moved`; checkpoint event, session and plan row of each commit; consecutive change sets; impact by stable key at a ref. |
 | `an_annotation_is_valid_while_its_symbol_is_the_same_stale_after_a_change_and_absent_after_removal` | `valid` with other offsets, `stale` after a body change, `absent` after removal, `no graph` at a ref without one. |
+
+### Built: P3 (2026-10-15)
+
+| Part | Where |
+| --- | --- |
+| Format, `code plan check`, `code plan status`, `dossier check` findings | `crates/legionctl-core/src/planning.rs` |
+| Schemas | `planning/feature.schema.json`, `planning/units.schema.json` (written by the wire-format test) |
+| Operations | `code.plan.check`, `code.plan.status` (CLI `code plan <name>`, MCP `code_plan_<name>`), class read |
+| The first plan of this repository | `planning/features/` (code-graphs, agent-network, thread-ui, sensors-events, kernels), `planning/units.jsonc` |
+| Skill text | workspace-practice (rule 17, `refs/reference-planning.md`), tool-lifecycle (group `code plan`), verify-and-ship (rule 11) |
+
+What is different from A4 and A5, and why:
+
+| Item | Built | Why |
+| --- | --- | --- |
+| Work item | Has `text`. Its tests are the tests of its stories. | A row without text says nothing in `plan status`. |
+| Unknown keys | Each planning type refuses an unknown field. | A typo in a field name must not pass as an empty list. |
+| Key prefix `symbol:` | Added. It resolves against the graph as `rust:` does. | ctx 2.2.8 gives a method no `rust:` key, only `symbol:<file>::impl <type>.<method>`. |
+| `config:` and `op:` | Resolved against `config/defaults.jsonc` and `docs/api/schema.json` at the tree. | The tree is the source; `legionctl validate` reads the installed config, not the tree. |
+| When a missing unit is a problem | `check` refuses an `edit` unit that is not there, and each unit or test of a work item or feature with status `done` that is not where its change puts it. An `add` unit of an open item may be missing. | The plan is written before the code. |
+| Complete | Each unit is where its change puts it, and each linked test is in the graph and did not fail at its last recorded run (`test_runs` of P4; a test with no run counts). Each test shows its last result and its recorded kills. | "Changed since the feature's start" (A5) is not built: a feature has no start ref yet. |
+| LOC | tokei 15 `-o json` (its `code` count) of the files of `file:` and `unit:` units, read from the blobs of the tree in a temporary folder; the span for `rust:`, `symbol:` and `test:` units. Without tokei, a note and no LOC. | tokei counts files only. The blobs make LOC of another ref correct. |
+| tokei | `~/.cargo/bin/tokei`, else `PATH`. | The operator's `PATH` does not have `~/.cargo/bin`. |
+| Changes since a ref | `--since <ref>`: the entities of `code graph changes <since> <ref>` whose key is a unit's key (also a removed one) or its symbol's key, and for `file:` and `unit:` units each entity in their files. | A work item must show the change of a symbol it removed. |
+| `dossier check` | Two findings: a feature that names a plan row of the dossier that does not exist, and a plan row whose status starts with `done` or `built` while a feature that names it has an open work item (with the units and tests that are missing). Read at the HEAD of the dossier's workspace, only when the repository keeps code graphs and HEAD has one. | "A plan row with no feature" (A5) is not built: the rows before P3 have no feature, so each would be a finding. |
+
+Not built yet: `planning/README.md` (the reference is in the skill), the feature's start ref and "changed" in
+`complete`. A recorded run names its file relative to its crate (`tests/code.rs`); a test key names it from the
+repository root, so a run matches a key whose file ends with the run's file; the e2e fixture is one crate at the root,
+so only the real repository has the other case.
+
+Tests (`crates/legionctl/tests/code.rs`; ctx and tokei are stand-ins, `tests/fixtures/ctx-standin` and
+`tests/fixtures/tokei-standin`, which writes tokei 15's JSON shape):
+
+| Test | It catches |
+| --- | --- |
+| `a_plan_is_checked_against_the_code_graph_and_a_commit_that_adds_its_units_completes_it` | A check without a graph; each problem of a bad plan at another ref (unknown field, unknown prefix, an `edit` unit and a done item's unit that resolve to nothing, a duplicate id, an unknown story, no tests); each unit `done`, `missing` or `still there` with LOC from tokei (code lines, not all lines) and from the span; the `dossier check` findings; the last run (failed keeps the item open) and the kills of each linked test; a commit that adds the function and the test and removes the old function completes the item; the changes since the plan's commit that touch each item, and none for an item whose file changed elsewhere. |
 
 ## Part B: agent network (todo-91)
 

@@ -929,9 +929,24 @@ fn trace_shows_each_change_as_it_happens() {
 
 /// The wire format is reviewed: `docs/api/schema.json` holds every operation's class, visibility, input and output
 /// schema, and the code must match it, so a change to a type on the wire shows up as a diff of that file
-/// (`LEGIONCTL_WRITE_SCHEMA=1` writes it after a deliberate change).
+/// (`LEGIONCTL_WRITE_SCHEMA=1` writes it after a deliberate change). The schemas of the planning files
+/// (`planning/*.schema.json`) are reviewed the same way.
 #[test]
 fn the_wire_format_matches_the_committed_schema() {
+    for (rel, schema) in legionctl_core::planning::schemas() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(rel);
+        let text = serde_json::to_string_pretty(&schema).unwrap() + "\n";
+        if std::env::var_os("LEGIONCTL_WRITE_SCHEMA").is_some() {
+            std::fs::write(&path, &text).unwrap();
+        }
+        assert!(
+            std::fs::read_to_string(&path).unwrap_or_default() == text,
+            "{rel} differs from the planning types; if the change is meant, run \
+             LEGIONCTL_WRITE_SCHEMA=1 cargo test -p legionctl --test e2e the_wire_format and commit the file"
+        );
+    }
     let schema: serde_json::Map<String, Value> = legionctl_api::OPS
         .iter()
         .map(|op| {

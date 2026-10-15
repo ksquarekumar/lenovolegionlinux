@@ -1,0 +1,59 @@
+// Design 23, Part A (todo-90): the actual-code graph per tree, the change graph, the plan, tests.
+{
+  "$schema": "../feature.schema.json",
+  "id": "code-graphs",
+  "title": "Two code graphs: actual and planned",
+  "status": "done",
+  "plan_rows": ["legionctl#todo-90"],
+  "objectives": [
+    { "id": "O1", "text": "An agent sees what changed between two refs, per symbol." },
+    { "id": "O2", "text": "An agent sees what is left of each planned work item." },
+    { "id": "O3", "text": "Only tests with diagnostic value pass the checkpoint." }
+  ],
+  "stories": [
+    { "id": "S1", "kind": "lifecycle", "text": "Each tree has one graph, shared by the worktrees, pruned to heads and bases.", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/code.rs::a_graph_is_made_once_per_tree_shared_by_worktrees_and_pruned_to_heads_bases_and_the_newest"] },
+    { "id": "S2", "text": "Changes between refs are entities by stable key with their commits; annotations follow their symbol.", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/code.rs::changes_between_refs_are_the_changed_entities_by_stable_key_with_their_commits",
+                "test:crates/legionctl/tests/code.rs::an_annotation_is_valid_while_its_symbol_is_the_same_stale_after_a_change_and_absent_after_removal"] },
+    { "id": "S3", "text": "The plan is checked against the graph of a ref and measured with tokei.", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/code.rs::a_plan_is_checked_against_the_code_graph_and_a_commit_that_adds_its_units_completes_it"] },
+    { "id": "S4", "kind": "requirement", "text": "A new test that kills no mutant is refused at checkpoint.", "objectives": ["O3"],
+      "tests": ["test:crates/legionctl/tests/e2e.rs::the_checkpoint_gate_refuses_tests_without_evidence_and_takes_recorded_kills_and_accepts",
+                "test:crates/legionctl/tests/e2e.rs::cargo_mutants_kills_count_for_the_gate_and_the_review_shows_duplicates",
+                "test:crates/legionctl/tests/e2e.rs::a_test_run_records_each_test_with_its_file_result_and_ref"] }
+  ],
+  "work_items": [
+    { "id": "P1", "text": "Snapshots per tree, triggers, git hook, prune", "status": "done", "stories": ["S1"], "units": [
+      { "key": "file:crates/legionctl-core/src/codegraph.rs", "change": "add", "loc": 600 },
+      { "key": "rust:crates/legionctl-core:codegraph::snapshot", "change": "add" },
+      { "key": "rust:crates/legionctl-core:codegraph::prune", "change": "add" },
+      { "key": "file:crates/legionctl-operator/src/code.rs", "change": "add", "loc": 120 },
+      { "key": "op:code.graph.refresh", "change": "add" },
+      { "key": "op:code.graph.hook", "change": "add" }
+    ] },
+    { "id": "P2", "text": "Change graph, stable keys, annotations", "status": "done", "stories": ["S2"], "depends_on": ["P1"], "units": [
+      { "key": "rust:crates/legionctl-core:codegraph::changes", "change": "add", "loc": 300 },
+      { "key": "rust:crates/legionctl-core:codegraph::annotations", "change": "add", "loc": 80 },
+      { "key": "op:code.graph.changes", "change": "add" },
+      { "key": "op:code.graph.annotations", "change": "add" }
+    ] },
+    { "id": "P3", "text": "planning/ format, code plan check and status, dossier check findings", "status": "done", "stories": ["S3"], "depends_on": ["P2"], "units": [
+      { "key": "file:crates/legionctl-core/src/planning.rs", "change": "add", "loc": 600 },
+      { "key": "rust:crates/legionctl-core:planning::check", "change": "add" },
+      { "key": "rust:crates/legionctl-core:planning::status", "change": "add" },
+      { "key": "rust:crates/legionctl-core:planning::row_findings", "change": "add" },
+      { "key": "op:code.plan.check", "change": "add" },
+      { "key": "op:code.plan.status", "change": "add" },
+      { "key": "file:planning/feature.schema.json", "change": "add" }
+    ] },
+    { "id": "P4", "text": "Test runs, mutant records, review signals, checkpoint gate", "status": "done", "stories": ["S4"], "units": [
+      { "key": "file:crates/legionctl-core/src/codetests.rs", "change": "add", "loc": 900 },
+      { "key": "op:code.tests.run", "change": "add" },
+      { "key": "op:code.tests.review", "change": "add" },
+      { "key": "op:code.tests.mutant.record", "change": "add" },
+      { "key": "op:code.tests.mutant.run", "change": "add" },
+      { "key": "file:scripts/test-gate.sh", "change": "add" }
+    ] }
+  ]
+}

@@ -1214,4 +1214,71 @@ wire! {
         created_at: i64 = created,
         at: Vec<AnnotationAt>,
     }
+
+    /// The result of a plan check.
+    struct PlanCheck from core::planning::PlanCheck {
+        tree: String,
+        features: usize,
+        problems: Vec<String>,
+    }
+
+    /// One planned unit at a tree.
+    struct PlanUnitState from core::planning::PlanUnitState {
+        key: String,
+        /// add, edit or remove.
+        change: String,
+        /// done (there after add or edit, gone after remove), missing, still there (to remove), unknown prefix.
+        state: String,
+        loc_planned: Option<u64>,
+        loc_actual: Option<u64>,
+        /// tokei (code lines of files) or span (the lines of a symbol, with blanks and comments).
+        loc_by: Option<String>,
+    }
+
+    /// A test that a work item's stories link, and whether it is in the code graph.
+    struct PlanTestState from core::planning::PlanTestState {
+        key: String,
+        present: bool,
+        /// Its last recorded run (`code tests run`): ok, failed or ignored.
+        result: Option<String>,
+        /// The recorded mutants it killed.
+        kills: u32,
+    }
+
+    /// One work item at a tree.
+    struct PlanItemState from core::planning::PlanItemState {
+        id: String,
+        text: String,
+        status: String,
+        /// Each unit done, and each linked test there and not failed at its last run.
+        complete: bool,
+        loc_planned: u64,
+        loc_actual: u64,
+        units: Vec<PlanUnitState>,
+        tests: Vec<PlanTestState>,
+        /// The changes since the `since` ref that touch its units: `<change> <key>`.
+        changed: Vec<String>,
+    }
+
+    /// One feature at a tree.
+    struct PlanFeatureState from core::planning::PlanFeatureState {
+        id: String,
+        title: String,
+        status: String,
+        plan_rows: Vec<String>,
+        loc_planned: u64,
+        loc_actual: u64,
+        work_items: Vec<PlanItemState>,
+    }
+
+    /// The plan against the code of a ref.
+    struct PlanStatus from core::planning::PlanStatus {
+        #[serde(rename = "ref")]
+        rev: String,
+        tree: String,
+        since: Option<String>,
+        features: Vec<PlanFeatureState>,
+        /// Plan files that do not parse, and LOC that could not be counted.
+        notes: Vec<String>,
+    }
 }

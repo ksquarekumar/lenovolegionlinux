@@ -899,11 +899,11 @@ impl Dossiers {
             .map(|s| format!("plan.md has no '## {s}' section"))
             .collect();
         // code paths of EVIDENCE are relative to the dossier's repository (its open workspace's main checkout)
-        let repo = self
+        let workspace = self
             .workspaces(Some(dossier))
             .ok()
-            .and_then(|w| w.into_iter().next())
-            .map(|w| w.repo);
+            .and_then(|w| w.into_iter().next());
+        let repo = workspace.as_ref().map(|w| w.repo.clone());
         let changed_after = |path: &str, written: std::time::SystemTime| {
             let Some(repo) = &repo else { return false };
             let last = std::process::Command::new("git")
@@ -924,7 +924,13 @@ impl Dossiers {
             last.is_some_and(|t| t > written)
         };
         let dir = self.root.join(dossier);
-        findings.extend(crate::graph::build(&dir).findings(&dir, &changed_after));
+        let graph = crate::graph::build(&dir);
+        findings.extend(graph.findings(&dir, &changed_after));
+        if let Some(ws) = workspace.filter(|w| !w.is_folder()) {
+            findings.extend(crate::planning::row_findings(
+                self, dossier, &graph, &ws.path,
+            ));
+        }
         findings
     }
 

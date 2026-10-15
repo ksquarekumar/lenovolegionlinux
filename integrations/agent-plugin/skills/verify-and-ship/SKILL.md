@@ -25,8 +25,8 @@ user-invocable: true
 10. Mutation-check each new test: break the behavior it guards with one small change, run only that test, see it fail,
     put the code back, see it pass. Do this for each behavior the test claims. Record each one with `code tests mutant
     record`: the checkpoint's test gate needs a kill for each new or changed test (`refs/reference-test-gate.md`).
-11. When an operation, its class or a wire type changes, write `docs/api/schema.json` again: `LEGIONCTL_WRITE_SCHEMA=1
-    cargo test -p legionctl --test e2e the_wire_format`.
+11. When an operation, its class, a wire type or a planning type changes, write `docs/api/schema.json` and
+    `planning/*.schema.json` again: `LEGIONCTL_WRITE_SCHEMA=1 cargo test -p legionctl --test e2e the_wire_format`.
 12. When a method or property of `legionctl-system` changes, write `dbus/org.legionctl.System1.xml` again:
     `LEGIONCTL_WRITE_DBUS=1 cargo test -p legionctl --test machine the_daemon_serves`.
 13. Read the diff of each generated file before you commit it. A change that you did not intend is a bug.

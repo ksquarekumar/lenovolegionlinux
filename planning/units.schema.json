@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Units",
+  "description": "`planning/units.jsonc`: the run, build and deploy units that ctx does not index.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "units": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Unit"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "units"
+  ],
+  "$defs": {
+    "Unit": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "The `unit:<name>` key.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "systemd, package, image, hook, polkit or another kind.",
+          "type": "string"
+        },
+        "files": {
+          "description": "The unit is present when each of its files is; its LOC is theirs.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "kind",
+        "files"
+      ]
+    }
+  }
+}

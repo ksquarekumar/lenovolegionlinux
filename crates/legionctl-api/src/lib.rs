@@ -779,4 +779,10 @@ operations! {
     code_graph_prune / CodeGraphPrune = "code.graph.prune", Session, GraphPruneIn => Lines;
     /// Add (or remove) the git hook lines that refresh the code graph after commit, checkout, merge and rewrite.
     code_graph_hook / CodeGraphHook = "code.graph.hook", Workspace, GraphHookIn => Lines;
+    /// Check the plan (`planning/`) of a ref against its code graph: files that do not parse or have unknown keys,
+    /// duplicate ids, unknown links and key prefixes, units not where their change puts them, work items with no tests.
+    code_plan_check / CodePlanCheck = "code.plan.check", Read, PlanCheckIn => PlanCheck;
+    /// Each feature and work item of the plan at a ref: units done or missing, LOC planned and actual (tokei, symbol
+    /// spans), linked tests, and the changes since a ref that touch each work item.
+    code_plan_status / CodePlanStatus = "code.plan.status", Read, PlanStatusIn => PlanStatus;
 }

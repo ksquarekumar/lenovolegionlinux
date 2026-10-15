@@ -47,17 +47,27 @@ fn home() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
 }
 
-/// ctx is usually not on the PATH of non-interactive shells (hooks, MCP servers); look in its install dir too.
-pub(crate) fn ctx_bin() -> Option<PathBuf> {
-    let local = home().join(".local/bin/ctx");
+/// A tool that is usually not on the PATH of non-interactive shells (hooks, MCP servers, the operator): its install
+/// dir under HOME first, then PATH.
+fn tool_bin(name: &str, install_dir: &str) -> Option<PathBuf> {
+    let local = home().join(install_dir).join(name);
     if local.is_file() {
         return Some(local);
     }
     std::env::var_os("PATH")?
         .to_str()?
         .split(':')
-        .map(|d| Path::new(d).join("ctx"))
+        .map(|d| Path::new(d).join(name))
         .find(|p| p.is_file())
+}
+
+pub(crate) fn ctx_bin() -> Option<PathBuf> {
+    tool_bin("ctx", ".local/bin")
+}
+
+/// tokei (`cargo install tokei`): LOC of planned units.
+pub(crate) fn tokei_bin() -> Option<PathBuf> {
+    tool_bin("tokei", ".cargo/bin")
 }
 
 fn ctx(args: &[&str]) -> Result<String> {
