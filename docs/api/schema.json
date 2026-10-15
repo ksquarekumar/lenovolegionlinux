@@ -2563,6 +2563,163 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "code.checks.detect": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "The repository.",
+          "default": "."
+        }
+      },
+      "title": "RepoIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "code.checks.list": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "The repository.",
+          "default": "."
+        }
+      },
+      "title": "RepoIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "code.checks.run": {
+    "class": "session",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The checks by name (`code checks list`); none: each check but deploy and install.",
+          "default": []
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in the workspace or repository.",
+          "default": "."
+        },
+        "session": {
+          "type": "string",
+          "format": "session",
+          "description": "Agent session id; the client fills it.",
+          "default": ""
+        }
+      },
+      "title": "ChecksRunIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "code.checks.show": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "type": "string",
+          "description": "The run's id (`<job>-<check>`)."
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in the repository.",
+          "default": "."
+        }
+      },
+      "required": [
+        "run"
+      ],
+      "title": "CheckShowIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "code.tests.list": {
     "class": "read",
     "internal": false,

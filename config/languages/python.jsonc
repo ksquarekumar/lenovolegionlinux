@@ -1,0 +1,23 @@
+// Python (design 23, E2; todo-113): astral.sh first (uv, ruff, ty). A new language is a new file in this folder.
+// Nothing runs on a file change unless a repository turns it on.
+{
+  "name": "python",
+  "manifests": ["pyproject.toml"],
+  "outputs": [".venv", "dist"],
+  "checks": {
+    "format": { "kind": "format", "run": "uvx ruff format --check .", "fix": "uvx ruff format ." },
+    "lint": { "kind": "lint", "run": "uvx ruff check .", "gate": "checkpoint" },
+    "types": { "kind": "types", "run": "uvx ty check" },
+    "build": { "kind": "build", "run": "uv build", "gate": "merge" },
+    "test": { "kind": "test", "run": "uv run pytest", "gate": "merge" }
+  },
+  "tools": {
+    "toolchain": "uv",
+    "lsp": "ty server",
+    "formatter": "ruff",
+    "linter": "ruff",
+    "analyzers": ["ty"],
+    "profiler": "py-spy",
+    "debugger": "debugpy"
+  }
+}

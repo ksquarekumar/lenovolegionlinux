@@ -4534,6 +4534,7 @@ dependencies = [
  "blake2",
  "json_comments",
  "legionctl-machine",
+ "libc",
  "proc-macro2",
  "quote",
  "rusqlite",

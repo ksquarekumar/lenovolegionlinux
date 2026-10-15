@@ -1265,6 +1265,11 @@ fn a_failed_run_keeps_its_item_open(lab: &Lab, ws: &Path) {
         ),
     );
     std::fs::set_permissions(&cargo, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    // `code tests run` runs the repository's test check (design 23, E2)
+    write(
+        &ws.join(".legionctl/checks.jsonc"),
+        r#"{ "checks": { "e2e": { "kind": "test", "run": "cargo test --message-format=json", "runner": { "format": "libtest" } } } }"#,
+    );
     lab.ok(ws, &["code", "tests", "run"]);
     let status = lab.json(ws, &["code", "plan", "status"]);
     let (w1, w2) = (item(&status, "W1"), item(&status, "W2"));

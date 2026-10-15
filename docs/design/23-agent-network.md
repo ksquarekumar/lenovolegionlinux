@@ -3,7 +3,7 @@
 Status: approved (2026-10-15, "Decisions" at the end). Plan rows todo-90 (two code graphs), todo-91 (agent
 network), todo-92 (thread UI). Part B+ (todo-97 presence, todo-98 agent configs and pools) was added and approved on
 2026-10-15 ("Decisions on Part B+"). Part E (todo-100..todo-104: project checks, test runners, graph schema, change
-watcher, dossier home, observer recovery) was added and approved on 2026-10-15 ("Decisions on Part E"), at the end. Built: P1 and P2 (section "Built: P1 and P2", after A11), P3 (section "Built: P3"), P5 (section "Built: P5", after B+7). The user's request (verbatim) and the decisions are in the
+watcher, dossier home, observer recovery) was added and approved on 2026-10-15 ("Decisions on Part E"), at the end. Built: P1 and P2 (section "Built: P1 and P2", after A11), P3 (section "Built: P3"), P5 (section "Built: P5", after B+7), P10 (section "Built: P10", after E2). The user's request (verbatim) and the decisions are in the
 dossier: `MEMORY/11-agent-network-and-code-graphs.md`.
 
 ## In short
@@ -1580,6 +1580,44 @@ Rules:
 API (group `code`): `code checks list` (each check, its layer, its last run per tree; read), `code checks detect`
 (read), `code checks run [<check>...] [--kind] [--changed]` (session; `--changed`: only checks whose `paths`, when
 set, match the change), `code checks show <run>` (read: the log tail and the profile).
+
+### Built: P10 (2026-10-15)
+
+| Part | Where |
+| --- | --- |
+| Checks config | Config key `checks` (`crates/legionctl-core/src/checks.rs`, `ChecksConfig`): `required`, `nudge`, `keep_runs` and each other key a check by name; this repository's own file is `.legionctl/checks.jsonc` (format, lint, static, types, build, build-static, e2e, package, install) |
+| Language files (todo-113) | `config/languages/{rust,node,python}.jsonc`, compiled in: manifests, build outputs, the checks that `detect` proposes, the tools (toolchain, LSP, formatter, linter, analyzers, profiler, debugger). Rust: rustup, rust-analyzer, rustfmt, clippy; Node: bun, Biome, tsc; Python: uv, ruff, ty. A new language is a new file and one line in `LANGUAGES` |
+| API | `code checks detect` (read), `code checks list` (read), `code checks run [<check>...]` (session), `code checks show <run>` (read) |
+| Runs | `run_check`: `sh -c <run>` in the top folder of the workspace; log, `profile.json` and the `profiles` files in `<writer dossier>/.state/runs/<job>-<check>/`; row in `check_runs` (`dossier.db` v2, the step from v1; a repository fact, read as the union of the attached dossiers) |
+| Gates | `workspace checkpoint` (after the test gate, before the commit) and `workspace merge` (after the rebase, before the fast-forward) call `Dossiers::gate`; a run counts when its repository, tree, check name and command match and its exit code is 0 |
+| Findings and nudge | `doctor` (each open workspace), `dossier check` (the dossier's workspace) and the session-start lines (the workspace's branch, else the main checkout) |
+| `code tests run` | Runs each `test` check; with `runner.format: libtest` it records each test as before. The fixed command of P4 is removed |
+
+What is different from E2, and why:
+
+| Item | Built | Why |
+| --- | --- | --- |
+| Profile | From `wait4` (the kernel's `rusage` of the command and each process it waited for): wall and CPU time, the largest resident set of one process, storage bytes read and written. No transient user unit. | The test operator and CI have no user systemd manager, and a second path for them would be a fallback. The memory value is the peak of the largest process, not of the cgroup. |
+| Tree | The git tree of the working tree (tracked and untracked files, not ignored ones), from an index file of its own (`tree()`), until E5 gives its hash. | It is the tree that the checkpoint commits and, after the rebase, the merged head; the repository's index does not change. |
+| Gate order | A gate runs its checks in name order and stops at the first failure. | One order that a person can see in `code checks list`; this repository names `build-static` so it runs before `e2e`. |
+| `deploy`, `install` | `code checks run` refuses them: the user runs the command. No `ask` field. | The approval flow for a check is not built; refusing is safe. |
+| Fields | `requires`, `ask`, `paths`, `runner.list`, `runner.one` and `code checks run --kind`, `--changed` are not built; a file with them is refused (unknown field). | They belong to E3 (P12) and E5 (P11). |
+| Folder workspaces | No gate (they have no tree). | A folder workspace has no git commit. |
+| Detect | Reads the language files only (their manifests in the top folder); Makefile targets, `package.json` scripts and `.pre-commit-config.yaml` are not read. With two languages each name gets the language first (`rust-lint`). | The user decision makes the languages data (todo-113); the agent reviews and edits the proposal. |
+| Tools on change | Nothing runs on a file change. | User decision: opt-in per repository and tool, with the watcher (P11). |
+
+Tests (`crates/legionctl/tests/checks.rs`, the CLI and the real operator on fixture repositories; changed in `e2e.rs`):
+
+| Test | It catches |
+| --- | --- |
+| `detect_proposes_the_checks_of_each_language_from_the_language_files` | A language file that does not parse or proposes other commands or tools; two languages with names that collide; a repository with no known manifest that is not refused; a proposal that is not a valid checks file; `detect` that writes a file. |
+| `a_checkpoint_runs_its_gate_once_per_tree_and_a_failing_check_refuses_with_its_output` | A checkpoint that commits past a failing check, or refuses without the exit code, the log path or the output; a passing run at the tree that runs again; a run at another tree that counts; a run without its log, profile or `profiles` files; `keep_runs` that keeps too many folders or removes one that an EVIDENCE names. |
+| `a_merge_refuses_without_passing_build_and_test_runs_at_the_rebased_head` | A merge that counts a run at the branch before the rebase; a merge past a failing check; a gate that goes on after a failure; a merge that does not run the checks at the new tree. |
+| `a_missing_check_kind_is_a_finding_and_a_session_start_nudge` | A missing kind not in `doctor`, `dossier check` or the session start; exit 127 not a "check broken" finding; a nudge or finding from the main checkout when the workspace's branch has the kinds. |
+| `a_test_run_records_each_test_with_its_file_result_and_ref`, `a_test_run_that_does_not_build_fails_with_the_compiler_error` (changed) | `code tests run` that does not run the repository's test check, puts the filter in without `--`, is not a check run, or runs without a test check. |
+
+Not built in P10: the observer's runs (B+3, rule 6), the verification job's runs at `declare done`, the tooling
+manifest with install sources and hashes (todo-114) and build-output size tracking (todo-111).
 
 ### E3. Test runners in the graph (todo-101)
 

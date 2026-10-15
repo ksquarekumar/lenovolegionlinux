@@ -105,8 +105,8 @@ pub(crate) use shared_tables;
 /// A dossier's own database, `<home>/.state/dossier.db` (design 23, E1): its writes, status history and nudges, and
 /// the repository facts (annotations, test runs, mutants, accepts) that its sessions wrote.
 const DOSSIER: &Schema = &Schema {
-    version: 1,
-    steps: &[],
+    version: 2,
+    steps: &[(1, crate::checks::table!())],
     sql: concat!(
         "CREATE TABLE writes (
         ts      INTEGER NOT NULL,
@@ -132,13 +132,20 @@ const DOSSIER: &Schema = &Schema {
      );",
         annotations!(),
         crate::codetests::tables!(),
-        crate::codetests::keyed!()
+        crate::codetests::keyed!(),
+        crate::checks::table!()
     ),
 };
 
 /// The tables of a dossier's database that hold repository facts: written into the writer's dossier, read as the
 /// union of the dossiers attached to the repository (E1 rule 4).
-pub(crate) const FACTS: [&str; 4] = ["annotations", "test_runs", "mutants", "test_accepts"];
+pub(crate) const FACTS: [&str; 5] = [
+    "annotations",
+    "test_runs",
+    "mutants",
+    "test_accepts",
+    "check_runs",
+];
 
 /// The tables of a dossier's database, for the migration's split and count.
 pub(crate) const OWN: [&str; 7] = [
@@ -329,6 +336,14 @@ impl Dossiers {
     /// # Errors
     /// `dir` is not in a git repository, or no dossier is attached to it.
     pub(crate) fn writer(&self, dir: &Path) -> Result<Db> {
+        self.home(&self.writer_name(dir)?)
+    }
+
+    /// The name of the dossier that [`Dossiers::writer`] opens.
+    ///
+    /// # Errors
+    /// `dir` is not in a git repository, or no dossier is attached to it.
+    pub(crate) fn writer_name(&self, dir: &Path) -> Result<String> {
         let here = std::fs::canonicalize(dir)?;
         let own = self
             .workspaces(None)?
@@ -346,7 +361,7 @@ impl Dossiers {
                 )
             })?
         };
-        self.home(&dossier)
+        Ok(dossier)
     }
 
     /// The repository facts of the repository of `dir` (E1 rule 4): the fact tables of each attached dossier, merged
@@ -1244,6 +1259,14 @@ impl Dossiers {
             findings.extend(crate::planning::row_findings(
                 self, dossier, &graph, &ws.path,
             ));
+            // the checks of the repository (design 23, E2 rule 2), as the workspace's branch has them
+            match self.check_findings(&ws.path) {
+                Ok(found) => findings.extend(found),
+                Err(e) => findings.push(format!(
+                    "the checks of {} do not resolve: {e:#}",
+                    ws.path.display()
+                )),
+            }
         }
         findings
     }

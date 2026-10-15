@@ -463,9 +463,19 @@ operations! {
     /// with no assertion or no recorded kill (`code tests review`); `--accept-test <test> --reason <why>` lets one
     /// through and records why.
     workspace_checkpoint / WorkspaceCheckpoint = "workspace.checkpoint", Session, CheckpointIn => Lines;
-    /// Run the test suite (`cargo test --profile test-fast --workspace --no-fail-fast -j8`) as a job and record each
-    /// test's result, file and the ref.
+    /// Run the repository's `test` checks (`.legionctl/checks.jsonc`) as a job; for a check with a libtest runner,
+    /// record each test's result, file and the ref.
     code_tests_run / CodeTestsRun = "code.tests.run", Session, TestsRunIn => Lines;
+    /// Propose a `.legionctl/checks.jsonc` for the repository from the language files (Rust, Node with bun, Python
+    /// with uv) whose manifest is in its top folder, with each language's tools. It writes nothing.
+    code_checks_detect / CodeChecksDetect = "code.checks.detect", Read, RepoIn => Lines;
+    /// The repository's checks: kind, gate, command, the file that set it, and its last run.
+    code_checks_list / CodeChecksList = "code.checks.list", Read, RepoIn => Lines;
+    /// Run checks (none named: each but deploy and install) as a job in the workspace; each run keeps its log and
+    /// profile (wall and CPU time, memory peak, IO) in the dossier home, `.state/runs/<run>/`.
+    code_checks_run / CodeChecksRun = "code.checks.run", Session, ChecksRunIn => Lines;
+    /// One check run: its command, exit code, tree and profile, and the last lines of its log.
+    code_checks_show / CodeChecksShow = "code.checks.show", Read, CheckShowIn => Lines;
     /// The tests of the repository with their last run and their kills.
     code_tests_list / CodeTestsList = "code.tests.list", Read, RepoIn => Vec<TestRow>;
     /// One test: its runs, the mutants it killed, and its accepts.

@@ -1,0 +1,42 @@
+// Design 23, Part E, E2 (todo-100) with the language files of todo-113: each repository declares its checks, the
+// checkpoint and merge gates run them, each run keeps its log and profile in the dossier home, and a missing kind is a
+// finding and a nudge.
+{
+  "$schema": "../feature.schema.json",
+  "id": "project-checks",
+  "title": "Project checks, language files and the gates",
+  "status": "done",
+  "plan_rows": ["legionctl#todo-100", "legionctl#todo-113"],
+  "objectives": [
+    { "id": "O1", "text": "Agents, gates and the observer run the repository's own checks, not a guess or a fixed command." },
+    { "id": "O2", "text": "A language is data: one file gives its manifests, outputs, default checks and tools." }
+  ],
+  "stories": [
+    { "id": "S1", "text": "detect proposes the checks and tools of Rust, Node (bun) and Python (uv) from the language files.", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/checks.rs::detect_proposes_the_checks_of_each_language_from_the_language_files"] },
+    { "id": "S2", "kind": "control-flow", "text": "A checkpoint runs its gate checks once per tree and a failing one refuses with its output.", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/checks.rs::a_checkpoint_runs_its_gate_once_per_tree_and_a_failing_check_refuses_with_its_output"] },
+    { "id": "S3", "kind": "control-flow", "text": "A merge needs passing build and test runs at the rebased head.", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/checks.rs::a_merge_refuses_without_passing_build_and_test_runs_at_the_rebased_head"] },
+    { "id": "S4", "kind": "requirement", "text": "A missing check kind is a finding in doctor and dossier check, and a session-start nudge.", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/checks.rs::a_missing_check_kind_is_a_finding_and_a_session_start_nudge"] },
+    { "id": "S5", "text": "code tests run runs the repository's test checks and records each libtest result.", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/e2e.rs::a_test_run_records_each_test_with_its_file_result_and_ref",
+                "test:crates/legionctl/tests/e2e.rs::a_test_run_that_does_not_build_fails_with_the_compiler_error"] }
+  ],
+  "work_items": [
+    { "id": "P10", "text": "Checks config, language files, detect, runs with profiles, gates, findings and nudge; code tests run uses the test checks", "status": "done", "stories": ["S1", "S2", "S3", "S4", "S5"], "units": [
+      { "key": "file:crates/legionctl-core/src/checks.rs", "change": "add", "loc": 800 },
+      { "key": "file:config/languages/rust.jsonc", "change": "add" },
+      { "key": "file:config/languages/node.jsonc", "change": "add" },
+      { "key": "file:config/languages/python.jsonc", "change": "add" },
+      { "key": "file:.legionctl/checks.jsonc", "change": "add" },
+      { "key": "file:crates/legionctl-core/src/workspace.rs", "change": "edit" },
+      { "key": "file:crates/legionctl-core/src/codetests.rs", "change": "edit" },
+      { "key": "op:code.checks.detect", "change": "add" },
+      { "key": "op:code.checks.list", "change": "add" },
+      { "key": "op:code.checks.run", "change": "add" },
+      { "key": "op:code.checks.show", "change": "add" }
+    ] }
+  ]
+}

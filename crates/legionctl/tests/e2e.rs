@@ -1998,14 +1998,19 @@ fn cargo_of_two_crates(home: &Path, repo: &Path) {
     );
 }
 
-/// `code tests run` runs the suite as a job and records each test with the source of its test binary (relative to
-/// the repository: two crates' `tests/e2e.rs` are two files), its result and the ref; the filter reaches libtest;
-/// `code tests list` and `show` give them back.
+/// The repository's test check (`.legionctl/checks.jsonc`, design 23 E2) for `code tests run`.
+const TEST_CHECK: &str = r#"{ "checks": { "e2e": { "kind": "test", "runner": { "format": "libtest" },
+    "run": "cargo test --workspace --no-fail-fast --message-format=json" } } }"#;
+
+/// `code tests run` runs the repository's `test` check as a job and records each test with the source of its test
+/// binary (relative to the repository: two crates' `tests/e2e.rs` are two files), its result and the ref; the filter
+/// reaches libtest after the check's command; the run is a check run too; `code tests list` and `show` give them back.
 #[test]
 fn a_test_run_records_each_test_with_its_file_result_and_ref() {
     let (op, home) = operator("testruns");
     let repo = repository(&home);
     cargo_of_two_crates(&home, &repo);
+    write(&repo.join(".legionctl/checks.jsonc"), TEST_CHECK);
     // the runs go into the dossier attached to the repository
     let bound = op.run(
         &repo,
@@ -2028,14 +2033,32 @@ fn a_test_run_records_each_test_with_its_file_result_and_ref() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(String::from_utf8_lossy(&out.stdout).contains("2 failed, 1 ignored, 1 ok"));
     assert!(
+        String::from_utf8_lossy(&out.stdout)
+            .contains("e2e: 2 failed, 1 ignored, 1 ok (exit 101, run ")
+    );
+    assert_eq!(
         std::fs::read_to_string(home.join("cargo-argv"))
             .unwrap()
-            .trim()
-            .ends_with("-j8 -- flow")
+            .trim(),
+        "test --workspace --no-fail-fast --message-format=json -- flow"
     );
-    let head = git(&home, &repo, &["rev-parse", "HEAD"]);
+    let checks = op.run(
+        &repo,
+        &[("HOME", home.to_str().unwrap())],
+        &["code", "checks", "list"],
+        "",
+    );
+    assert!(
+        String::from_utf8_lossy(&checks.stdout).contains("exit 101 at tree"),
+        "the test run is a run of the check: {checks:?}"
+    );
+    recorded_tests_and_the_job(&op, &home, &repo);
+}
+
+/// `code tests list` and `show` give back each recorded test, and the job shows its progress.
+fn recorded_tests_and_the_job(op: &Operator, home: &Path, repo: &Path) {
+    let head = git(home, repo, &["rev-parse", "HEAD"]);
     let list: Value = serde_json::from_str(&op.ok(&[
         "code",
         "tests",
@@ -2116,6 +2139,20 @@ fn a_test_run_that_does_not_build_fails_with_the_compiler_error() {
         "cargo",
         &format!("#!/bin/sh\necho '{error}'\necho 'error: could not compile `fx`' >&2\nexit 101\n"),
     );
+    // without a test check there is nothing to run, and the agent is told how to get one
+    let none = op.run(
+        &repo,
+        &[("HOME", home.to_str().unwrap())],
+        &["code", "tests", "run"],
+        "",
+    );
+    assert!(
+        String::from_utf8_lossy(&none.stderr).contains(
+            "this repository has no checks of kind test: run `legionctl code checks detect`"
+        ),
+        "{none:?}"
+    );
+    write(&repo.join(".legionctl/checks.jsonc"), TEST_CHECK);
     // the runs go into the dossier attached to the repository
     let bound = op.run(
         &repo,
@@ -3742,7 +3779,13 @@ fn dossier_check_finds_dangling_links_unverified_acceptance_and_stale_evidence()
         json!([
             "MEMORY/01-note supports plan#acceptance-9, which does not exist",
             "plan#acceptance-3 has no EVIDENCE that supports it",
-            "EV-01 is stale: README.md changed after it was written"
+            "EV-01 is stale: README.md changed after it was written",
+            // the repository declares no checks (design 23, E2 rule 2)
+            format!(
+                "{}: this repository has no checks of kind format, lint, build, test: run `legionctl code checks \
+                 detect` and write .legionctl/checks.jsonc",
+                home.join("worktrees/repo/port").display()
+            )
         ])
     );
     let around: Value = serde_json::from_str(&ok(&[

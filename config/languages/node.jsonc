@@ -1,0 +1,23 @@
+// Node.js and TypeScript (design 23, E2; todo-113): bun first, Biome for format and lint. A new language is a new
+// file in this folder. Nothing runs on a file change unless a repository turns it on.
+{
+  "name": "node",
+  "manifests": ["package.json"],
+  "outputs": ["node_modules", "dist"],
+  "checks": {
+    "format": { "kind": "format", "run": "bunx biome format .", "fix": "bunx biome format --write ." },
+    "lint": { "kind": "lint", "run": "bunx biome lint .", "gate": "checkpoint" },
+    "types": { "kind": "types", "run": "bunx tsc --noEmit" },
+    "build": { "kind": "build", "run": "bun run build", "gate": "merge" },
+    "test": { "kind": "test", "run": "bun test", "gate": "merge" }
+  },
+  "tools": {
+    "toolchain": "bun",
+    "lsp": "typescript-language-server",
+    "formatter": "biome",
+    "linter": "biome",
+    "analyzers": ["tsc"],
+    "profiler": "bun --cpu-prof",
+    "debugger": "bun --inspect"
+  }
+}

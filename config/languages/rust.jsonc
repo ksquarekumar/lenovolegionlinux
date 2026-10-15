@@ -1,0 +1,31 @@
+// Rust (design 23, E2; todo-113): what `legionctl code checks detect` reads. A new language is a new file in this
+// folder. Tools come from the rustup toolchain; nothing runs on a file change unless a repository turns it on.
+{
+  "name": "rust",
+  // A repository is in this language when its top folder has one of these files.
+  "manifests": ["Cargo.toml"],
+  // Folders that builds write (not versioned).
+  "outputs": ["target"],
+  // The checks that detect proposes; the fields are those of a check in <repo>/.legionctl/checks.jsonc.
+  "checks": {
+    "format": { "kind": "format", "run": "cargo fmt --all --check", "fix": "cargo fmt --all" },
+    "lint": { "kind": "lint", "run": "cargo clippy --workspace --all-targets --locked -- -D warnings", "gate": "checkpoint" },
+    "build": { "kind": "build", "run": "cargo build --workspace --locked", "gate": "merge" },
+    // --message-format=json gives each test binary's source file to the libtest runner
+    "test": {
+      "kind": "test",
+      "run": "cargo test --workspace --locked --no-fail-fast --message-format=json",
+      "gate": "merge",
+      "runner": { "format": "libtest" }
+    }
+  },
+  "tools": {
+    "toolchain": "rustup",
+    "lsp": "rust-analyzer",
+    "formatter": "rustfmt",
+    "linter": "clippy",
+    "analyzers": ["cargo-deny", "cargo-machete", "cargo-mutants"],
+    "profiler": "perf",
+    "debugger": "rust-gdb"
+  }
+}

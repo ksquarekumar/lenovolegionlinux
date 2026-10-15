@@ -8,7 +8,10 @@ user-invocable: true
 
 1. A change is complete when the checks pass in the workspace, each new test caught a broken version of the code, the
    dossier has the EVIDENCE, and the commit message says what was checked.
-2. Run each check in the workspace path (skill workspace-practice), never in the main checkout.
+2. Run each check in the workspace path (skill workspace-practice), never in the main checkout. The repository declares
+   its checks in `.legionctl/checks.jsonc`: `code checks list` shows them, `code checks run [<check>...]` runs them as
+   a job and keeps each log and profile (`code checks show <run>`), and checkpoint and merge run their gates. A
+   repository without the file: `code checks detect` proposes one; review it, then write it.
 3. Build first: `cargo build --profile test-fast --workspace --bins --locked`. `cargo test -p legionctl` does not build
    the operator and daemon again, so without this the tests run old binaries. Each test command uses the profile
    `test-fast` (`Cargo.toml`): it compiles fast after an edit and runs the suite as fast as release. The package and

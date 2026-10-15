@@ -137,6 +137,27 @@ pub struct TestsRunIn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChecksRunIn {
+    /// The checks by name (`code checks list`); none: each check but deploy and install.
+    #[serde(default)]
+    pub checks: Vec<String>,
+    /// A folder in the workspace or repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CheckShowIn {
+    /// The run's id (`<job>-<check>`).
+    pub run: String,
+    /// A folder in the repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TestShowIn {
     /// The test function's name (or libtest's, with its module path).
     pub name: String,

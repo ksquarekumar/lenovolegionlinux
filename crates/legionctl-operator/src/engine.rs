@@ -33,7 +33,8 @@ use legionctl_api::{
     SessionActivityIn,
 };
 use legionctl_api::{
-    MutantRecordIn, TestDetail, TestReview, TestReviewIn, TestRow, TestShowIn, TestsRunIn,
+    CheckShowIn, ChecksRunIn, MutantRecordIn, TestDetail, TestReview, TestReviewIn, TestRow,
+    TestShowIn, TestsRunIn,
 };
 use legionctl_core::archetypes::Sources;
 use legionctl_core::cache::Cache;
@@ -1105,6 +1106,9 @@ fn agent_findings() -> Result<Vec<String>> {
         for dir in [&ws.repo, &ws.path] {
             w.extend(legionctl_core::home::finding(&store, dir));
         }
+        if !ws.is_folder() {
+            w.extend(store.check_findings(&ws.path)?);
+        }
         let status = store.workspace_status(&ws)?;
         for drift in &status.drift {
             w.push(format!("workspace {}: {drift}", ws.path.display()));
@@ -1295,6 +1299,22 @@ fn start_lines(
             p.repo.display()
         )),
         _ => {}
+    }
+    // the checks of the branch where the agent works (its workspace), else of the main checkout
+    if let Some(dir) = place.map(|p| p.workspace.as_ref().map_or(&p.repo, |w| &w.path))
+        && resolved.config.checks.nudge
+    {
+        match legionctl_core::checks::missing_kinds(dir) {
+            Ok(missing) if missing.is_empty() => {}
+            Ok(missing) => lines.push(format!(
+                "legionctl: {}.",
+                legionctl_core::checks::missing_line(&missing)
+            )),
+            Err(e) => lines.push(format!(
+                "legionctl: the checks of {} do not resolve: {e:#}",
+                dir.display()
+            )),
+        }
     }
     lines
 }
@@ -2047,7 +2067,7 @@ impl Engine for Operator {
         if let Some(held) = store.checkpoint_gate(session)? {
             anyhow::bail!(held);
         }
-        let line = store.checkpoint(&ws, &input.message)?;
+        let lines = store.checkpoint(&ws, &input.message, session)?;
         // the commit's patch id links it to this checkpoint, also after `workspace merge` rebased it; a folder
         // workspace has no commits
         let patch = if ws.is_folder() {
@@ -2069,7 +2089,7 @@ impl Engine for Operator {
             &input.message,
         )?;
         crate::thread::wake_due();
-        Ok(Lines { lines: vec![line] })
+        Ok(Lines { lines })
     }
 
     fn code_tests_run(&self, _: &Ctx, input: TestsRunIn) -> Result<Lines> {
@@ -2088,6 +2108,64 @@ impl Engine for Operator {
         let out = out.map(|lines| Lines { lines });
         end_job(&db, job, &out)?;
         out
+    }
+
+    fn code_checks_detect(&self, _: &Ctx, input: RepoIn) -> Result<Lines> {
+        Ok(Lines {
+            lines: legionctl_core::checks::detect(input.repo.get()?)?,
+        })
+    }
+
+    fn code_checks_list(&self, _: &Ctx, input: RepoIn) -> Result<Lines> {
+        Ok(Lines {
+            lines: dossiers()?.checks_list(input.repo.get()?)?,
+        })
+    }
+
+    fn code_checks_run(&self, _: &Ctx, input: ChecksRunIn) -> Result<Lines> {
+        let session = Some(input.session.0.as_str()).filter(|s| !s.is_empty());
+        let runs = dossiers()?.run_checks(input.repo.get()?, &input.checks, session)?;
+        Ok(Lines {
+            lines: runs
+                .iter()
+                .map(|r| {
+                    format!(
+                        "{}: exit {} in {} ms (run {}; log {})",
+                        r.check,
+                        r.exit,
+                        r.profile.wall_ms,
+                        r.id,
+                        r.log().display()
+                    )
+                })
+                .collect(),
+        })
+    }
+
+    fn code_checks_show(&self, _: &Ctx, input: CheckShowIn) -> Result<Lines> {
+        let (run, tail) = dossiers()?.check_run(input.repo.get()?, &input.run)?;
+        let p = run.profile;
+        Ok(Lines {
+            lines: [
+                format!(
+                    "run {}: check {} ({}), exit {}, tree {}",
+                    run.id,
+                    run.check,
+                    run.kind.name(),
+                    run.exit,
+                    run.tree
+                ),
+                format!("command: {}", run.command),
+                format!(
+                    "profile: wall {} ms, cpu {} ms, max rss {} KiB, read {} B, written {} B",
+                    p.wall_ms, p.cpu_ms, p.max_rss_kib, p.read_bytes, p.write_bytes
+                ),
+                format!("folder: {}", run.folder.display()),
+            ]
+            .into_iter()
+            .chain(tail.lines().map(String::from))
+            .collect(),
+        })
     }
 
     fn code_tests_list(&self, _: &Ctx, input: RepoIn) -> Result<Vec<TestRow>> {
@@ -2146,12 +2224,9 @@ impl Engine for Operator {
 
     fn workspace_merge(&self, _: &Ctx, input: WorkspaceIn) -> Result<Lines> {
         let store = dossiers()?;
-        let ws = store.workspace_of(
-            session(&input.session)?,
-            input.repo.get()?,
-            input.topic.as_deref(),
-        )?;
-        let lines = store.merge(&ws)?;
+        let session = session(&input.session)?;
+        let ws = store.workspace_of(session, input.repo.get()?, input.topic.as_deref())?;
+        let lines = store.merge(&ws, session)?;
         crate::code::trigger(&ws.repo);
         Ok(Lines { lines })
     }

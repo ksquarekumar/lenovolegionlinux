@@ -235,6 +235,21 @@
     }
   },
 
+  // Project checks (design 23, E2): each repository declares its checks in <repo>/.legionctl/checks.jsonc as
+  // "checks": { "<name>": { "kind": format|lint|static|types|build|test|deploy|install, "run": "<command>",
+  // "fix": "<command>", "gate": checkpoint|merge, "profiles": [files the run writes], "runner": {"format": "libtest"} } }.
+  // `workspace checkpoint` runs the gate: checkpoint checks and `workspace merge` the gate: merge checks when no
+  // passing run exists at the tree; `legionctl code checks detect` proposes a file from the language files.
+  "checks": {
+    // The kinds each repository must have: a missing kind is a finding in doctor and dossier check.
+    "required": ["format", "lint", "build", "test"],
+    // At session start, tell the agent which required kinds the repository lacks.
+    "nudge": true,
+    // Run folders (<dossier>/.state/runs/<run>/) kept per check; a run that an EVIDENCE front matter names
+    // (runs: [<run>]) stays.
+    "keep_runs": 20
+  },
+
   "gates": {
     "git": {
       // Refused: a subcommand and the flags that make it unsafe. Merge goes through workspace_merge; pushes and

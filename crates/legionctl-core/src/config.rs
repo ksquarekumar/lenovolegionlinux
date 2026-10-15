@@ -42,6 +42,8 @@ pub struct Config {
     pub cache: BTreeMap<String, CacheLimit>,
     pub windows: WindowsConfig,
     pub agents: AgentsConfig,
+    /// The repository's checks (design 23, E2): `<repo>/.legionctl/checks.jsonc`.
+    pub checks: crate::checks::ChecksConfig,
 }
 
 /// Agent configs (design 23, B+2): each one is an archetype file plus the fields that it changes.

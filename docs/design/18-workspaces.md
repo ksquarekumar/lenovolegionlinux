@@ -112,8 +112,8 @@ For a git source, legionctl does the git work around the agent; the agent edits 
 | Operation | What legionctl does |
 | --- | --- |
 | open | A worktree from a recorded base ref on the dossier's branch `legionctl/<dossier>` (created on first open, reused after). If the session started inside the source checkout, the agent is moved to the worktree path. With `--topic <t>`: a separate topic workspace (below). |
-| checkpoint | Stage and commit the change set's files with a message from the plan entry; update the code graph. |
-| merge | With approval: rebase the workspace's branch onto the base ref, then fast-forward the base in the main checkout; conflicts become git state (14) that the agent resolves in the worktree. |
+| checkpoint | Stage and commit the change set's files with a message from the plan entry, after the test gate and the `gate: checkpoint` checks of `.legionctl/checks.jsonc` (a passing run at the tree, else a run now; note 23, E2); update the code graph. |
+| merge | With approval: rebase the workspace's branch onto the base ref, run the `gate: merge` checks at the rebased head (note 23, E2), then fast-forward the base in the main checkout; conflicts become git state (14) that the agent resolves in the worktree. |
 | close | Remove the worktree; the dossier stays. Delete a topic branch that is merged into its base (`git branch -d`, never `-D`); keep an unmerged topic branch (close says so) and the branch `legionctl/<dossier>`. Uncommitted changes stop it without `--force`. |
 
 Topic workspaces (decided 2026-10-14): parallel agents of one dossier each get their own worktree.

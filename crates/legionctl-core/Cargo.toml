@@ -15,6 +15,8 @@ schemars.workspace = true
 toml.workspace = true
 json_comments = "0.2.2"
 blake2 = "0.10.6"
+# wait4: the CPU, memory and IO profile of a check run (design 23, E2 rule 5)
+libc = "0.2.190"
 rustix = { version = "1.1.5", features = ["fs"] }
 rusqlite.workspace = true
 toml_edit = "0.25.15"

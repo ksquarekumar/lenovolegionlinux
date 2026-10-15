@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use anyhow::{Context, Result, bail, ensure};
 use blake2::{Blake2b, Digest as _, digest::consts::U16};
@@ -69,10 +69,6 @@ macro_rules! keyed {
     };
 }
 pub(crate) use keyed;
-
-/// The command of `code tests run`; the filter goes after `--`. The JSON messages give each test binary's source.
-const TEST_COMMAND: &str =
-    "cargo test --profile test-fast --workspace --no-fail-fast --message-format=json -j8";
 
 /// A test that failed with a mutation, as it was then: it counts for the test while the test has the same hash.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
@@ -397,7 +393,7 @@ fn names(recorded: &str, name: &str) -> bool {
 }
 
 /// git in `dir`, with `index` as its index file when given (the `GIT_INDEX_FILE` of a running `git commit`).
-fn git_with(dir: &Path, index: Option<&Path>, args: &[&str]) -> Result<String> {
+pub(crate) fn git_with(dir: &Path, index: Option<&Path>, args: &[&str]) -> Result<String> {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(dir).args(args);
     if let Some(index) = index {
@@ -764,12 +760,13 @@ impl Dossiers {
         ))
     }
 
-    /// Run the test suite in `dir` (`cargo test`, with `filter` after `--`) and record each test's result with the
-    /// source of its test binary (relative to the repository); `progress` gets the counts of results so far.
+    /// Run each `test` check of the repository of `dir` (design 23, E2; with `filter` after `--`) as check runs of
+    /// job `job`. For a check with a libtest runner, record each test's result with the source of its test binary
+    /// (relative to the repository); `progress` gets the counts of results so far.
     ///
     /// # Errors
-    /// The command cannot start, it fails and no test ran (a build error: the error has the end of its output), or
-    /// a database write fails.
+    /// The repository has no `test` check, `filter` is given for a check without a libtest runner, a check fails and
+    /// no test ran (a build error: the error has the end of its output), or a database write fails.
     pub fn run_tests(
         &self,
         dir: &Path,
@@ -777,24 +774,75 @@ impl Dossiers {
         job: i64,
         mut progress: impl FnMut(&BTreeMap<String, u32>),
     ) -> Result<Vec<String>> {
+        let checks = crate::checks::config_at(dir)?;
+        let tests: Vec<_> = checks
+            .defs
+            .iter()
+            .filter(|(_, c)| c.kind == crate::checks::Kind::Test)
+            .collect();
+        if tests.is_empty() {
+            return Err(crate::error::coded(
+                crate::error::Code::NotFound,
+                crate::checks::missing_line(&[crate::checks::Kind::Test]),
+            ));
+        }
+        let mut lines = Vec::new();
+        for (name, check) in tests {
+            ensure!(
+                filter.is_none() || check.runner.is_some(),
+                "--filter needs a libtest runner, and the test check {name} has none"
+            );
+            // the filter goes after the command's own `--`, or after a new one
+            let args: Vec<&str> = match filter {
+                Some(f) if check.run.split_whitespace().any(|w| w == "--") => vec![f],
+                Some(f) => vec!["--", f],
+                None => Vec::new(),
+            };
+            let run = self.run_check(dir, (name, check), &args, job, None)?;
+            if check.runner.is_none() {
+                lines.push(format!("{name}: exit {} (run {})", run.exit, run.id));
+                continue;
+            }
+            let (counts, tail) = self.record_libtest(dir, &run.log(), job, &mut progress)?;
+            if run.exit != 0 && counts.is_empty() {
+                bail!(
+                    "check {name} failed (exit {}) and no test ran; log {}:\n{tail}",
+                    run.exit,
+                    run.log().display()
+                );
+            }
+            let summary: Vec<String> = counts.iter().map(|(r, n)| format!("{n} {r}")).collect();
+            lines.push(format!(
+                "{name}: {} (exit {}, run {})",
+                if summary.is_empty() {
+                    "no test ran".into()
+                } else {
+                    summary.join(", ")
+                },
+                run.exit,
+                run.id
+            ));
+        }
+        Ok(lines)
+    }
+
+    /// Record each libtest result of a run's log (cargo's JSON messages name each test binary's source), and return
+    /// the counts of results and the log's last lines that are not results (compiler errors).
+    fn record_libtest(
+        &self,
+        dir: &Path,
+        log: &Path,
+        job: i64,
+        progress: &mut impl FnMut(&BTreeMap<String, u32>),
+    ) -> Result<(BTreeMap<String, u32>, String)> {
         let (repo, head, top) = (repo_key(dir)?, git(dir, &["rev-parse", "HEAD"])?, top(dir)?);
         let writer = self.writer(dir)?;
-        // cargo writes `Running <file>` to stderr and the results to stdout: one stream keeps their order
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg(format!("{TEST_COMMAND} -- \"$@\" 2>&1"))
-            .arg("sh")
-            .args(filter)
-            .current_dir(dir)
-            .stdout(Stdio::piped())
-            .spawn()
-            .context("starting cargo test")?;
         let mut counts: BTreeMap<String, u32> = BTreeMap::new();
         // each test binary's file name -> its source; the last lines of text and compiler errors, for a failure
         let mut sources: BTreeMap<String, String> = BTreeMap::new();
         let mut tail: std::collections::VecDeque<String> = std::collections::VecDeque::new();
         let mut file = String::new();
-        for line in BufReader::new(child.stdout.take().context("no output")?).lines() {
+        for line in BufReader::new(std::fs::File::open(log)?).lines() {
             let line = line?;
             if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
                 if let (Some(exe), Some(src)) = (
@@ -826,11 +874,11 @@ impl Dossiers {
                     .file_name()
                     .unwrap_or_default()
                     .to_string_lossy();
-                file.clone_from(
-                    sources.get(name.as_ref()).with_context(|| {
-                        format!("cargo named no source for the test binary {exe}")
-                    })?,
-                );
+                file.clone_from(sources.get(name.as_ref()).with_context(|| {
+                    format!(
+                        "cargo named no source for the test binary {exe}: the test check needs --message-format=json"
+                    )
+                })?);
             } else if let Some((name, result)) = line
                 .strip_prefix("test ")
                 .and_then(|l| l.rsplit_once(" ... "))
@@ -850,22 +898,7 @@ impl Dossiers {
                 tail.pop_front();
             }
         }
-        let status = child.wait()?;
-        if !status.success() && counts.is_empty() {
-            bail!(
-                "{TEST_COMMAND} failed ({status}) and no test ran:\n{}",
-                Vec::from(tail).join("\n")
-            );
-        }
-        let summary: Vec<String> = counts.iter().map(|(r, n)| format!("{n} {r}")).collect();
-        Ok(vec![format!(
-            "{TEST_COMMAND}: {} ({status})",
-            if summary.is_empty() {
-                "no test ran".into()
-            } else {
-                summary.join(", ")
-            }
-        )])
+        Ok((counts, Vec::from(tail).join("\n")))
     }
 
     /// Run `cargo-mutants` on the Rust source files that the branch of `dir` changed since `base` and record each

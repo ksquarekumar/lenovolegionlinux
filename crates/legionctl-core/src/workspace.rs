@@ -35,6 +35,11 @@ pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// A gate's refusal with what it refused first; the error keeps its code.
+fn refused(what: &str, e: &anyhow::Error) -> anyhow::Error {
+    crate::error::coded(crate::error::code_of(e), format!("{what}: {e:#}"))
+}
+
 /// The content of a workspace as one hash: for a repository its HEAD, `git status`, the diff against HEAD and the
 /// size and change time of each untracked file; for a plain folder its changes. Equal hashes mean nothing changed.
 ///
@@ -458,22 +463,30 @@ impl Dossiers {
         Ok(status)
     }
 
-    /// Stage everything in the workspace and commit it, when the test gate lets the new and changed tests through.
+    /// Stage everything in the workspace and commit it, when the test gate lets the new and changed tests through and
+    /// each `gate: checkpoint` check has a passing run at the tree (one without runs now, design 23 E2 rule 4).
     ///
     /// # Errors
-    /// The workspace is not open, there are conflicts, the test gate refuses (nothing is committed), or git refuses.
-    pub fn checkpoint(&self, ws: &Workspace, message: &str) -> Result<String> {
+    /// The workspace is not open, there are conflicts, the test gate or a check refuses (nothing is committed), or git
+    /// refuses.
+    pub fn checkpoint(&self, ws: &Workspace, message: &str, session: &str) -> Result<Vec<String>> {
         ensure!(!message.trim().is_empty(), "a checkpoint needs a message");
         if ws.is_folder() {
-            return crate::folder::checkpoint(&ws.path, &ws.repo, message);
+            return Ok(vec![crate::folder::checkpoint(
+                &ws.path, &ws.repo, message,
+            )?]);
         }
         git(&ws.path, &["add", "--all"])?;
         if git(&ws.path, &["diff", "--cached", "--quiet"]).is_ok() {
-            return Ok("nothing to checkpoint".into());
+            return Ok(vec!["nothing to checkpoint".into()]);
         }
         self.test_gate(&ws.path)?;
+        let mut lines = self
+            .gate(&ws.path, crate::checks::Gate::Checkpoint, Some(session))
+            .map_err(|e| refused("checkpoint refused, nothing committed", &e))?;
         git(&ws.path, &["commit", "--quiet", "-m", message])?;
-        git(&ws.path, &["log", "-1", "--format=%h %s"])
+        lines.push(git(&ws.path, &["log", "-1", "--format=%h %s"])?);
+        Ok(lines)
     }
 
     /// Rebase the branch onto the base, then fast-forward the base in the main checkout. Conflicts stop the rebase in
@@ -482,7 +495,7 @@ impl Dossiers {
     /// # Errors
     /// The workspace has uncommitted changes, the rebase stops on conflicts, or the main checkout is not clean or not
     /// on the base branch.
-    pub fn merge(&self, ws: &Workspace) -> Result<Vec<String>> {
+    pub fn merge(&self, ws: &Workspace, session: &str) -> Result<Vec<String>> {
         if ws.is_folder() {
             return crate::folder::merge(&ws.path, &ws.repo);
         }
@@ -498,6 +511,17 @@ impl Dossiers {
                 ws.path.display()
             );
         }
+        let mut lines = self
+            .gate(&ws.path, crate::checks::Gate::Merge, Some(session))
+            .map_err(|e| {
+                refused(
+                    &format!(
+                        "merge refused at the rebased head of {} (the branch stays rebased onto {})",
+                        ws.branch, ws.base
+                    ),
+                    &e,
+                )
+            })?;
         let main_head =
             git(&ws.repo, &["symbolic-ref", "--quiet", "--short", "HEAD"]).unwrap_or_default();
         ensure!(
@@ -513,14 +537,15 @@ impl Dossiers {
             ws.repo.display()
         );
         git(&ws.repo, &["merge", "--quiet", "--ff-only", &ws.branch])?;
-        Ok(vec![
+        lines.extend([
             format!("rebased {} onto {}", ws.branch, ws.base),
             format!(
                 "{} is now {}",
                 ws.base,
                 git(&ws.repo, &["log", "-1", "--format=%h %s"])?
             ),
-        ])
+        ]);
+        Ok(lines)
     }
 
     /// Remove the worktree; the branch stays until it is merged, and the dossier stays.
