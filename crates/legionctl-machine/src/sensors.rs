@@ -14,7 +14,8 @@ use crate::{battery, configset};
 /// One row: a number with its unit, or a state as text.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Reading {
-    /// Where it comes from: `hwmon4 coretemp`, `RAPL`, `nvidia-smi`, `firmware acpi_call`, `eBPF runq`, ...
+    /// Where it comes from: a hwmon device by what it is (`CPU`, `NVMe <model>`, `memory DIMM 0`, `battery`), `RAPL`,
+    /// `nvidia-smi`, `firmware acpi_call`, `eBPF runq`, ...
     pub source: String,
     pub name: String,
     pub value: Option<f64>,
@@ -155,7 +156,48 @@ pub fn view(
         })
         .collect();
     rows.extend(states(root, now, fan, ac_adapter));
+    for r in &mut rows {
+        r.source = device_name(root, &r.source);
+    }
     rows
+}
+
+/// A hwmon device (`hwmon2 nvme`) by what it is: CPU, `NVMe` and its model, memory and its DIMM slot, battery, ...;
+/// another source as it is.
+fn device_name(root: &SysRoot, source: &str) -> String {
+    let Some((id, name)) = source
+        .split_once(' ')
+        .filter(|(id, _)| id.starts_with("hwmon"))
+    else {
+        return source.into();
+    };
+    let dir = std::path::Path::new("/sys/class/hwmon").join(id);
+    // the device's own name in sysfs: nvme1, 15-0052
+    let node = root
+        .link(dir.join("device"))
+        .and_then(|l| Some(l.file_name()?.to_string_lossy().into_owned()));
+    match name {
+        "coretemp" | "k10temp" | "zenpower" => "CPU".into(),
+        // shortcut: two drives of one model get one name; add the slot when a machine has that
+        "nvme" => match root.read(dir.join("device/model")) {
+            Some(model) => format!("NVMe {}", model.replace('_', " ")),
+            None => format!("NVMe {}", node.as_deref().unwrap_or(id)),
+        },
+        // SPD hub addresses 0x50-0x57 are the DIMM slots 0-7
+        "spd5118" | "jc42" => node
+            .as_deref()
+            .and_then(|n| u8::from_str_radix(n.rsplit_once('-')?.1, 16).ok())
+            .and_then(|addr| addr.checked_sub(0x50))
+            .map_or_else(|| "memory".into(), |slot| format!("memory DIMM {slot}")),
+        "legionctl_wmi" => "fans".into(),
+        "nouveau" | "nvidia" | "amdgpu" | "i915" | "xe" => format!("GPU ({name})"),
+        "acpitz" => "ACPI thermal zone".into(),
+        _ if name.starts_with("BAT") => "battery".into(),
+        _ if name.starts_with("ADP") || name.starts_with("AC") => "AC adapter".into(),
+        _ if name.starts_with("iwlwifi") => "Wi-Fi".into(),
+        _ if name.starts_with("ucsi_source_psy") => "USB-C".into(),
+        _ => source.into(),
+    }
 }
 
 /// The states that go with the numbers: sleeping devices, the GPU's power state, the root-only readings, the fan

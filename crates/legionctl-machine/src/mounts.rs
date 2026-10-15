@@ -25,7 +25,8 @@ fn unescape(field: &str) -> String {
         .replace("\\134", "\\")
 }
 
-/// The mounted block devices (sources in `/dev`), then the fstab entries that are not mounted; swap is not a mount.
+/// The mounted block devices (sources in `/dev`), then the other fstab entries, mounted when the mount table has their
+/// target; swap is not a mount.
 #[must_use]
 pub fn list(root: &SysRoot) -> Vec<Mount> {
     let table = |file: &str| -> Vec<(String, PathBuf, String)> {
@@ -45,9 +46,15 @@ pub fn list(root: &SysRoot) -> Vec<Mount> {
             })
             .collect()
     };
-    let mounted: Vec<(String, PathBuf, String)> = table("/proc/self/mounts")
+    // an automount point is no mount: its file system mounts at the first access
+    let table_now: Vec<(String, PathBuf, String)> = table("/proc/self/mounts")
         .into_iter()
+        .filter(|(_, _, fstype)| fstype != "autofs")
+        .collect();
+    let mounted: Vec<(String, PathBuf, String)> = table_now
+        .iter()
         .filter(|(source, _, _)| source.starts_with("/dev/"))
+        .cloned()
         .collect();
     let mut mounts: Vec<Mount> = mounted
         .iter()
@@ -64,10 +71,11 @@ pub fn list(root: &SysRoot) -> Vec<Mount> {
             .into_iter()
             .filter(|(_, target, _)| !mounted.iter().any(|(_, t, _)| t == target))
             .map(|(source, target, fstype)| Mount {
+                // a file system without a device (tmpfs, a network share) is mounted when the mount table has it
+                mounted: table_now.iter().any(|(_, t, _)| *t == target),
                 target,
                 source,
                 fstype,
-                mounted: false,
                 users: Vec::new(),
             }),
     );

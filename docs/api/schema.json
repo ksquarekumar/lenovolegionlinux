@@ -5067,7 +5067,7 @@
         "type": "object",
         "properties": {
           "source": {
-            "description": "Where it comes from: `hwmon4 coretemp`, `RAPL`, `nvidia-smi`, `firmware acpi_call`, `eBPF runq`, ...",
+            "description": "Where it comes from: a hwmon device by what it is (`CPU`, `NVMe <model>`, `memory DIMM 0`, `battery`),\n`RAPL`, `nvidia-smi`, `firmware acpi_call`, `eBPF runq`, ...",
             "type": "string"
           },
           "name": {
@@ -7938,6 +7938,7 @@
                 "type": "string"
               },
               "state": {
+                "description": "A container's Docker state (running, paused, exited) or a VM's virsh state (running, paused, shut off).",
                 "type": "string"
               },
               "consumer": {

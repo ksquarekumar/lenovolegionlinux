@@ -1055,7 +1055,8 @@ wire! {
 
     /// One row of `legionctl sensors`: a number with its unit, or a state as text.
     struct Reading from machine::sensors::Reading {
-        /// Where it comes from: `hwmon4 coretemp`, `RAPL`, `nvidia-smi`, `firmware acpi_call`, `eBPF runq`, ...
+        /// Where it comes from: a hwmon device by what it is (`CPU`, `NVMe <model>`, `memory DIMM 0`, `battery`),
+        /// `RAPL`, `nvidia-smi`, `firmware acpi_call`, `eBPF runq`, ...
         source: String,
         name: String,
         value: Option<f64>,

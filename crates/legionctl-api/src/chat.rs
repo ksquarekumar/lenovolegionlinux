@@ -126,8 +126,29 @@ pub fn action(line: &str, commands: &[AgentCommand], screen: &[&str]) -> Action 
 /// A row of a thread's log for pane 2: time (UTC), member, kind and what it says.
 #[must_use]
 pub fn log_line(row: &ThreadLogRow) -> String {
+    format!(
+        "{:02}:{:02} {} {} {}",
+        row.at / 3600 % 24,
+        row.at / 60 % 60,
+        if row.member.is_empty() {
+            "-"
+        } else {
+            &row.member
+        },
+        row.kind.trim_start_matches("thread."),
+        log_detail(row)
+    )
+}
+
+/// What a row of a thread's log says, in words: a message with its addressee, a watch rule as a sentence, else the
+/// payload's main field.
+#[must_use]
+pub fn log_detail(row: &ThreadLogRow) -> String {
     let p = &row.payload;
-    let detail = match (p["to"].as_str(), p["text"].as_str()) {
+    if row.kind == "thread.rule" {
+        return rule_sentence(p);
+    }
+    match (p["to"].as_str(), p["text"].as_str()) {
         (Some(to), Some(text)) => format!("→ {to}: {text}"),
         _ => [
             "title",
@@ -141,16 +162,33 @@ pub fn log_line(row: &ThreadLogRow) -> String {
         .iter()
         .find_map(|k| p[k].as_str())
         .map_or_else(|| p.to_string(), String::from),
+    }
+}
+
+/// A watch rule of the log (`thread.rule`): "reminder: after 4 Edit/Write/MultiEdit in crates/, expect make lint".
+fn rule_sentence(p: &Value) -> String {
+    let tools = p["tools"]
+        .as_str()
+        .unwrap_or_default()
+        .split([',', '|'])
+        .collect::<Vec<_>>()
+        .join("/");
+    let path = match p["path"].as_str().unwrap_or_default() {
+        "" => String::new(),
+        path => format!(" in {path}"),
+    };
+    let when = if p["reply"].as_bool() == Some(true) {
+        format!("before a reply with {tools}{path} ends")
+    } else {
+        format!("after {} {tools}{path}", p["every"].as_u64().unwrap_or(1))
+    };
+    let watched = match p["watched"].as_str() {
+        Some("main0") | None => String::new(),
+        Some(other) => format!(" (watches {other})"),
     };
     format!(
-        "{:02}:{:02} {} {} {detail}",
-        row.at / 3600 % 24,
-        row.at / 60 % 60,
-        if row.member.is_empty() {
-            "-"
-        } else {
-            &row.member
-        },
-        row.kind.trim_start_matches("thread."),
+        "{}: {when}, expect {}{watched}",
+        p["kind"].as_str().unwrap_or("reminder"),
+        p["expect"].as_str().unwrap_or_default()
     )
 }

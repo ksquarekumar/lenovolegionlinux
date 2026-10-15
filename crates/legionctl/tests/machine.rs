@@ -688,9 +688,9 @@ fn virt_status_reads_docker_libvirt_and_the_kernel() {
     assert_eq!(
         status["instances"],
         serde_json::json!([
-            {"kind": "container", "name": "WinBoat", "image": "ghcr.io/dockur/windows:6.05", "state": "Up 8 hours",
+            {"kind": "container", "name": "WinBoat", "image": "ghcr.io/dockur/windows:6.05", "state": "running",
              "consumer": "WinBoat", "memory_bytes": 16_u64 << 30},
-            {"kind": "container", "name": "db", "image": "postgres:17", "state": "Exited (0) 2 days ago",
+            {"kind": "container", "name": "db", "image": "postgres:17", "state": "exited",
              "consumer": null, "memory_bytes": null},
             {"kind": "vm", "name": "win11", "image": "", "state": "shut off", "consumer": null, "memory_bytes": null},
             {"kind": "vm", "name": "lab", "image": "", "state": "running", "consumer": null, "memory_bytes": 2_u64 << 30}
@@ -704,6 +704,47 @@ fn virt_status_reads_docker_libvirt_and_the_kernel() {
             "libvirtd and the modular virtqemud both run; use one of them"
         ])
     );
+}
+
+/// `resources list` on the recorded machine with the stand-in Docker (todo-127, A1 and A2): a file system without a
+/// device that fstab names and the mount table has (tmpfs on /tmp) is mounted, an automount point whose share is not
+/// mounted is not; a running container offers pause and stop and an exited one start, because its state is Docker's
+/// state word and not its text for people ("Up 8 hours").
+#[test]
+fn resources_show_a_mounted_tmpfs_and_give_a_running_container_no_start() {
+    let (m, _docker, op) = virt_machine("resstate", 20);
+    m.set(
+        "/proc/self/mounts",
+        "/dev/nvme1n1p2 / ext4 rw 0 0\ntmpfs /tmp tmpfs rw 0 0\nsystemd-1 /mnt/share autofs rw 0 0\n",
+    );
+    m.set(
+        "/etc/fstab",
+        "tmpfs /tmp tmpfs defaults 0 0\n//nas/git /mnt/share cifs noauto,x-systemd.automount 0 0\n",
+    );
+    let list: serde_json::Value =
+        serde_json::from_str(&op.ok(&["resources", "list", "--json"])).unwrap();
+    let shown = |id: &str| {
+        let r = list["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap_or_else(|| panic!("no {id} in {list}"));
+        let actions: Vec<&str> = r["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["name"].as_str().unwrap())
+            .collect();
+        (r["state"].as_str().unwrap().to_string(), actions)
+    };
+    assert_eq!(shown("mount:/tmp"), ("mounted".into(), vec![]));
+    assert_eq!(shown("mount:/mnt/share"), ("not mounted".into(), vec![]));
+    assert_eq!(
+        shown("virt:WinBoat"),
+        ("running".into(), vec!["pause", "stop"])
+    );
+    assert_eq!(shown("virt:db"), ("exited".into(), vec!["start"]));
 }
 
 /// Tune: the plan alone with dry run; then a container gets its CPU set and memory limit through the Engine API, a
@@ -6962,7 +7003,7 @@ mod sensors_and_events {
         }
     }
 
-    /// The sensors of machine `m`: coretemp, the battery and an `NVMe` drive on hwmon; the NVIDIA GPU asleep with a
+    /// The sensors of machine `m`: coretemp, the battery, two `NVMe` drives and a DIMM on hwmon; the NVIDIA GPU asleep with a
     /// hwmon device on it whose reads are recorded, a `nvidia-smi` that logs each query, and the MSR's thermal bits.
     /// Returns the reads of the sleeping device's files and the `nvidia-smi` log.
     fn sensor_machine(m: &Machine) -> (Arc<Mutex<Vec<PathBuf>>>, PathBuf) {
@@ -6992,8 +7033,26 @@ mod sensors_and_events {
                 ("temp1_label", "Composite"),
                 ("curr1_input", "1500"),
                 ("temp1_max", "84850"),
+                ("device/model", "SKHynix_HFS001TEJ9X115N                 "),
             ],
         );
+        // a second drive and a DIMM's SPD hub (I2C address 0x52: slot 2)
+        hwmon(
+            m,
+            5,
+            "nvme",
+            &[
+                ("temp1_input", "49850"),
+                ("temp1_label", "Composite"),
+                ("device/model", "CT4000P3PSSD8"),
+            ],
+        );
+        hwmon(m, 6, "spd5118", &[("temp1_input", "56000")]);
+        std::os::unix::fs::symlink(
+            "../../../15-0052",
+            m.dir.join("root/sys/class/hwmon/hwmon6/device"),
+        )
+        .unwrap();
         // the NVIDIA GPU sleeps; a hwmon device on it (nouveau's) must not be read, and nvidia-smi must not query it
         // (the AC policy's persistence mode call is not a query)
         let gpu = "/sys/bus/pci/devices/0000:01:00.0";
@@ -7051,7 +7110,7 @@ mod sensors_and_events {
         json(&["monitor", "--interval-ms", "100"]);
         m.set("/sys/class/hwmon/hwmon0/temp1_input", "70000");
         let rows = json(&["sensors"]);
-        let package = row(&rows, "hwmon0 coretemp", "Package id 0");
+        let package = row(&rows, "CPU", "Package id 0");
         assert_eq!(
             (&package["value"], &package["unit"], &package["history"]),
             (
@@ -7062,11 +7121,13 @@ mod sensors_and_events {
             "{rows:#}"
         );
         for (source, name, value, unit) in [
-            ("hwmon0 coretemp", "temp2", 51.0, "°C"),
-            ("hwmon1 BAT0", "power1", 12.5, "W"),
-            ("hwmon1 BAT0", "in0", 16.8, "V"),
-            ("hwmon2 nvme", "Composite", 38.85, "°C"),
-            ("hwmon2 nvme", "curr1", 1.5, "A"),
+            ("CPU", "temp2", 51.0, "°C"),
+            ("battery", "power1", 12.5, "W"),
+            ("battery", "in0", 16.8, "V"),
+            ("NVMe SKHynix HFS001TEJ9X115N", "Composite", 38.85, "°C"),
+            ("NVMe CT4000P3PSSD8", "Composite", 49.85, "°C"),
+            ("memory DIMM 2", "temp1", 56.0, "°C"),
+            ("NVMe SKHynix HFS001TEJ9X115N", "curr1", 1.5, "A"),
             // the firmware's fan RPM through the daemon's acpi_call (the stand-in answers 0)
             ("firmware acpi_call", "fan1", 0.0, "RPM"),
             ("firmware acpi_call", "fan2", 0.0, "RPM"),
@@ -7092,13 +7153,19 @@ mod sensors_and_events {
                 .filter(|r| r["source"] == device)
                 .count()
         };
-        assert_eq!(hwmon_rows(&rows, "hwmon2 nvme"), 2, "{rows:#}");
-        assert_eq!(hwmon_rows(&rows, "hwmon0 coretemp"), 2, "{rows:#}");
+        // each drive by its model: two drives are two sources
+        assert_eq!(
+            hwmon_rows(&rows, "NVMe SKHynix HFS001TEJ9X115N"),
+            2,
+            "{rows:#}"
+        );
+        assert_eq!(hwmon_rows(&rows, "NVMe CT4000P3PSSD8"), 1, "{rows:#}");
+        assert_eq!(hwmon_rows(&rows, "CPU"), 2, "{rows:#}");
         // the sleeping GPU: its state only; the MSR through the daemon, the fan controls, the power source
         for (source, name, text) in [
             ("PCI runtime PM", "NVIDIA GPU", "suspended"),
             (
-                "hwmon3 nouveau",
+                "GPU (nouveau)",
                 "device",
                 "asleep, not read (a read wakes it)",
             ),
@@ -7123,7 +7190,7 @@ mod sensors_and_events {
 
         // the text groups by source, with the range of the history
         let text = op.ok(&["sensors"]);
-        assert!(text.contains("hwmon0 coretemp:\n  Package id 0"), "{text}");
+        assert!(text.contains("CPU:\n  Package id 0"), "{text}");
         assert!(text.contains("(40.0-70.0 in 5 samples)"), "{text}");
 
         // --watch: a view each second, each with one more sample of history
@@ -7172,8 +7239,8 @@ mod sensors_and_events {
             &[("fan1_input", "2200"), ("fan2_input", "2400")],
         );
         let rows = json(&["sensors"]);
-        assert_eq!(row(&rows, "hwmon4 legionctl_wmi", "fan1")["value"], 2200.0);
-        assert_eq!(row(&rows, "hwmon4 legionctl_wmi", "fan2")["unit"], "RPM");
+        assert_eq!(row(&rows, "fans", "fan1")["value"], 2200.0);
+        assert_eq!(row(&rows, "fans", "fan2")["unit"], "RPM");
         assert_eq!(hwmon_rows(&rows, "firmware acpi_call"), 0, "{rows:#}");
         assert_eq!(rpm_calls(), before, "{:?}", acpi.calls());
         let monitor = json(&["monitor", "--interval-ms", "100"]);
@@ -7196,7 +7263,7 @@ mod sensors_and_events {
             std::io::BufRead::lines(std::io::BufReader::new(watch.stdout.take().unwrap()));
         let mut history = || {
             let view: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
-            row(&view, "hwmon0 coretemp", "Package id 0")["history"]
+            row(&view, "CPU", "Package id 0")["history"]
                 .as_array()
                 .unwrap()
                 .len()

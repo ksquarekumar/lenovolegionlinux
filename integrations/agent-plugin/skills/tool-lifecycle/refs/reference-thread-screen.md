@@ -42,11 +42,12 @@ then the screen's, then the registry's with their class.
 
 | Part | What is different from the TUI |
 | --- | --- |
-| Pane 1 | The pages (Now, Apps & GPU, Health, Bench, Resources) as icons, and the thread's view when it has one. Click an icon. |
-| Pane 2 | The newest open thread, with its account. It reads the thread again at each event of the event stream, not on a timer. |
-| Pane 3 | The page, or the view (`views place`, `/view <name> [name=value...]`); the output of a command shows below it. |
-| Fold | `Ctrl+1`, `Ctrl+2` (or `Alt`), the `«` button of a pane, `/fold 1`, `/fold 2`. A folded pane is a 24 px rail; click it to open it. |
+| Pane 1 | The pages (Now, Apps & GPU, Health, Bench, Resources) as icons, and the thread's view when it has one. Click an icon; the page that shows has the accent bar. |
+| Pane 2 | The newest open thread: title, state, account and members at the top, then the log as a timeline (member, kind, time; a watch rule as a sentence). It reads the thread again at each event of the event stream, not on a timer. |
+| Pane 3 | The page, or the view (`views place`, `/view <name> [name=value...]`); the plan of a change shows above it, the output of a command below it. |
+| Fold | `Ctrl+1`, `Ctrl+2` (or `Alt`), the fold button at the top of a pane, `/fold 1`, `/fold 2`. A folded pane is a 24 px rail; click it to open it. |
 | Chat bar | Click it to type. `Shift+Enter` adds a line. |
+| Look | Dark or light as GNOME is set; the colours, sizes and type scale are in `crates/legionctl-app/src/theme.rs`. `make app-shots` takes a screenshot of each page (`scripts/app-shots.sh`). |
 
 ## Views
 

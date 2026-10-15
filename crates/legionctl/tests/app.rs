@@ -614,6 +614,57 @@ fn the_app_thread_screen_sizes_its_panes_folds_them_and_grows_the_chat_bar(
     drop(runtime);
 }
 
+/// Pane 2 says what each row of the thread's log means (todo-127, A3): a watch rule that a member adds reaches the
+/// app through the event stream and reads as a sentence, in the app and in the TUI's line; no row is raw JSON.
+#[gpui_kit::test]
+fn the_app_thread_pane_shows_a_watch_rule_as_a_sentence(cx: &mut TestAppContext) {
+    let (op, home, repo) = thread_lab("rule");
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1000., None);
+    let cx = &mut vcx;
+    wait(cx, &app, "the thread", |a| a.screen.thread.is_some());
+    lab_cli(
+        &op,
+        &home,
+        &repo,
+        &[
+            "thread",
+            "rules",
+            "add",
+            "1",
+            "observer0",
+            "make lint",
+            "--path",
+            "crates/",
+        ],
+        "",
+    );
+    wait(cx, &app, "the rule's row", |a| {
+        a.screen
+            .thread
+            .as_ref()
+            .is_some_and(|t| t.log.iter().any(|r| r.kind == "thread.rule"))
+    });
+    app.read_with(cx, |a, _| {
+        let log = &a.screen.thread.as_ref().unwrap().log;
+        let rule = log.iter().find(|r| r.kind == "thread.rule").unwrap();
+        assert_eq!(
+            legionctl_api::chat::log_detail(rule),
+            "reminder: after 4 Edit/Write/MultiEdit/NotebookEdit in crates/, expect make lint"
+        );
+        assert!(
+            legionctl_api::chat::log_line(rule)
+                .ends_with("observer0 rule reminder: after 4 Edit/Write/MultiEdit/NotebookEdit in crates/, expect make lint"),
+            "{}",
+            legionctl_api::chat::log_line(rule)
+        );
+        for row in log {
+            let detail = legionctl_api::chat::log_detail(row);
+            assert!(!detail.contains('{'), "{}: {detail}", row.kind);
+        }
+    });
+    drop(runtime);
+}
+
 /// The chat bar with the stand-in ACP agent: a prompt runs it once (a headless run); its commands then come first
 /// in the `/` completion, marked (agent), with the input hint; `/agent:plan x` reaches it as `/plan x`, and a registry
 /// line runs with the CLI's words. Pane 2 lists both runs.

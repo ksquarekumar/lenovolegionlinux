@@ -1431,6 +1431,7 @@ pub struct VirtInstance {
     pub kind: VirtKind,
     pub name: String,
     pub image: String,
+    /// A container's Docker state (running, paused, exited) or a VM's virsh state (running, paused, shut off).
     pub state: String,
     /// The app it belongs to, when legionctl recognizes it (`WinBoat` by its image).
     pub consumer: Option<String>,

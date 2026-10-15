@@ -16,6 +16,8 @@ KMOD_VERSION = $(shell sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' $(KMOD)/dkms.co
 KMOD_SOURCES = legionctl-wmi.c firmware_attributes_class.h Kbuild Makefile
 KDIR ?= /usr/lib/modules/$(shell uname -r)/build
 CHECKPATCH ?= $(KDIR)/scripts/checkpatch.pl
+# the folder of `make app-shots`
+SHOTS ?= target/app-shots
 
 .PHONY: help
 help: ## list targets
@@ -63,6 +65,11 @@ build: static ## build legionctl, legionctl-system, legionctl-operator and legio
 
 # the toolchain of the static client: the same rustc as the host's, from a mirror that needs no Docker Hub login
 RUST_IMAGE := public.ecr.aws/docker/library/rust:1.99-alpine
+
+.PHONY: app-shots
+app-shots: ## screenshots of legionctl-app's pages (now gpu health bench resources) in a private headless GNOME Shell, into SHOTS
+	cargo build --release --locked -p legionctl-app -p legionctl-operator
+	scripts/app-shots.sh $(SHOTS) $(CARGO_TARGET_DIR)/release/legionctl-app
 
 .PHONY: static
 static: ## build the static legionctl (musl) that `workspace pack` puts into agent images, in rust:alpine (docker)

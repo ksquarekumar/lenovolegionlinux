@@ -257,7 +257,8 @@ async fn containers(root: &SysRoot, status: &mut VirtStatus) {
                 .starts_with("ghcr.io/dockur/windows")
                 .then(|| "WinBoat".into()),
             image,
-            state: c["Status"].as_str().unwrap_or("").into(),
+            // Docker's state word (running, paused, exited), not its text for people ("Up 2 days")
+            state: c["State"].as_str().unwrap_or("").into(),
         });
     }
 }
