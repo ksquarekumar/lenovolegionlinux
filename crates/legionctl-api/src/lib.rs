@@ -870,7 +870,7 @@ operations! {
     thread_observe / ThreadObserve = "thread.observe", Read, ObserveIn => Observed;
     /// Record one tool call of an agent (the post-tool hook): the thread log takes each `SendMessage`, and the watch
     /// rules count the call.
-    agent_tool / AgentTool = "internal.agent.tool", Session, AgentToolIn => Empty;
+    agent_tool / AgentTool = "internal.agent.tool", Session, AgentToolIn => HookReply;
     /// Why an open hard-block refuses this tool call of the session (the pre-tool hook).
     thread_gate / ThreadGate = "internal.thread.gate", Read, ThreadGateIn => Guard;
 }

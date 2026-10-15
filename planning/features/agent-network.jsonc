@@ -4,7 +4,7 @@
   "id": "agent-network",
   "title": "Agent network, presence and pools",
   "status": "in-progress",
-  "plan_rows": ["legionctl#todo-91", "legionctl#todo-97", "legionctl#todo-98"],
+  "plan_rows": ["legionctl#todo-91", "legionctl#todo-97", "legionctl#todo-98", "legionctl#todo-120"],
   "objectives": [
     { "id": "O1", "text": "Observers remind, nudge and block the main agent through a durable outbox." },
     { "id": "O2", "text": "The main agent stays on the critical path; observers sleep until a trigger." }
@@ -16,6 +16,8 @@
                 "test:crates/legionctl/tests/threads.rs::a_send_message_call_of_main_lands_in_the_thread_log"] },
     { "id": "S2", "text": "Peers see each other on a dossier and a message reaches an idle peer once.", "objectives": ["O1"],
       "tests": ["test:crates/legionctl/tests/threads.rs::the_outbox_survives_a_restart_and_peers_on_one_dossier_see_each_other_with_their_state"] },
+    { "id": "S5", "text": "Each subagent of a session is a peer of its own, with its workspace, tool calls and messages.", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/threads.rs::the_subagents_of_one_session_are_peers_with_their_own_workspace_tool_calls_and_messages"] },
     { "id": "S3", "kind": "control-flow", "text": "vanilla wakes the observer on its events; a wake stops at its budget.", "objectives": ["O2"],
       "tests": ["test:crates/legionctl/tests/e2e.rs::vanilla_wakes_the_observer_on_its_events_and_the_gates_hold_checkpoint_and_done",
                 "test:crates/legionctl/tests/e2e.rs::the_observer_sleeps_until_a_rule_finds_work_and_a_wake_stops_at_its_budget"] },
@@ -35,6 +37,11 @@
       { "key": "op:thread.rules.add", "change": "add" },
       { "key": "op:thread.peers", "change": "add" },
       { "key": "op:thread.observe", "change": "add" }
+    ] },
+    { "id": "P5b", "text": "Subagents as peers: the peer id <session>/<agent id> (todo-120)", "status": "done", "stories": ["S5"], "depends_on": ["P5"], "units": [
+      { "key": "rust:crates/legionctl-core:thread::peer_key", "change": "add" },
+      { "key": "rust:crates/legionctl-core:db::Db::events_of_peer", "change": "add" },
+      { "key": "file:crates/legionctl/src/hook.rs", "change": "edit" }
     ] },
     { "id": "P6a", "text": "Archetype files, agent configs, agents check, team vanilla, Codex agents", "status": "done", "stories": ["S4"], "depends_on": ["P5"], "units": [
       { "key": "file:integrations/agent-plugin/agents/main-agent.md", "change": "add" },

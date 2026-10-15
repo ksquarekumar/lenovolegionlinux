@@ -2041,7 +2041,7 @@ const CODE_KINDS: [&str; 7] = [
 impl Render for Vec<crate::ChangeSet> {
     fn text(&self) -> String {
         let mut out = Vec::new();
-        for set in self {
+        for (at, set) in self.iter().enumerate() {
             out.push(format!(
                 "{} -> {} (change set {})",
                 set.from, set.to, set.id
@@ -2110,6 +2110,28 @@ impl Render for Vec<crate::ChangeSet> {
                     c.commit, c.author, c.subject
                 )
             }));
+            if let (Some(both), Some(ours)) = (&set.both, at.checked_sub(1).map(|i| &self[i])) {
+                out.push(format!(
+                    "changed on both sides (conflict candidates): {}",
+                    both.len()
+                ));
+                let side = |set: &crate::ChangeSet, key: &str| {
+                    set.entities
+                        .iter()
+                        .find(|e| e.key == key)
+                        .map(|e| format!("{} [{}]", e.change, e.commits.join(" ")))
+                        .unwrap_or_default()
+                };
+                out.extend(both.iter().map(|key| {
+                    format!(
+                        "  {key}  {}: {}  {}: {}",
+                        ours.to,
+                        side(ours, key),
+                        set.to,
+                        side(set, key)
+                    )
+                }));
+            }
         }
         out.join("\n")
     }
@@ -2410,10 +2432,13 @@ fn peer_line(p: &crate::Peer) -> String {
         .as_deref()
         .map(|d| format!("  declared {d}"))
         .unwrap_or_default();
+    let agent = match &p.subagent {
+        Some(kind) => format!("{}/{kind}", p.agent),
+        None => p.agent.clone(),
+    };
     format!(
-        "{:<38} {:<7} {:<8} {place}  pending {}  via {}  ({}){last}{declared}",
+        "{:<38} {agent:<7} {:<8} {place}  pending {}  via {}  ({}){last}{declared}",
         p.session,
-        p.agent,
         p.state,
         p.pending,
         p.channels.join("+"),

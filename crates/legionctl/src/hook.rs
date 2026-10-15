@@ -7,7 +7,7 @@
 //! | session-start | `internal.hooks.run` | stdout: added to the context |
 //! | prompt | `internal.hooks.run` | stdout, or `{"decision":"block","reason":...}` from the dossier gate |
 //! | pre-tool | `internal.thread.gate`, `internal.dossier.guard` | `permissionDecision: deny` for a tool that a thread hard-block holds, or a write into another dossier |
-//! | post-tool | `internal.agent.tool` | nothing: the call is recorded (thread log, watch rules, presence) |
+//! | post-tool | `internal.agent.tool` | the call is recorded (thread log, watch rules, presence) per peer: a subagent (`agent_id`) is a peer of its own and gets its messages as `additionalContext` |
 //! | stop | `internal.hooks.run` | `{"decision":"block","reason":...}` to the agent when the session is not set up (once per reply), or for a thread block |
 //! | session-end | `dossier.release` | nothing |
 //!
@@ -97,26 +97,10 @@ async fn answer(event: &str, input: &Value) -> Result<Option<String>> {
                 .to_string()
             })
         }
-        "post-tool" => {
-            let Some(session) = session else {
-                return Ok(None);
-            };
-            let text = |key: &str| tool[key].as_str().map(String::from);
-            client
-                .call::<op::AgentTool>(&AgentToolIn {
-                    session,
-                    project: project.clone(),
-                    tool: input["tool_name"].as_str().unwrap_or_default().to_string(),
-                    path,
-                    command: text("command"),
-                    to: text("to"),
-                    message: text("message"),
-                    // a tool that reports its result has `success: false` when it failed (SendMessage)
-                    ok: input["tool_response"]["success"] != false,
-                })
-                .await?;
-            None
-        }
+        "post-tool" => match session {
+            Some(session) => post_tool(&client, session, project, input, path).await?,
+            None => None,
+        },
         "stop" => client
             .call::<op::HooksRun>(&run(Event::Stop))
             .await?
@@ -132,6 +116,41 @@ async fn answer(event: &str, input: &Value) -> Result<Option<String>> {
         }
         other => anyhow::bail!("unknown hook event {other}"),
     })
+}
+
+/// Record a tool call; a subagent's call (`agent_id`) is a peer of its own and gets its messages back, as it has no
+/// prompt hook.
+async fn post_tool(
+    client: &Client,
+    session: SessionId,
+    project: ClientPath,
+    input: &Value,
+    path: Option<String>,
+) -> Result<Option<String>> {
+    let text = |key: &str| input["tool_input"][key].as_str().map(String::from);
+    let told = client
+        .call::<op::AgentTool>(&AgentToolIn {
+            session,
+            agent: input["agent_id"].as_str().map(String::from),
+            agent_type: input["agent_type"].as_str().map(String::from),
+            project,
+            tool: input["tool_name"].as_str().unwrap_or_default().to_string(),
+            path,
+            command: text("command"),
+            to: text("to"),
+            message: text("message"),
+            // a tool that reports its result has `success: false` when it failed (SendMessage)
+            ok: input["tool_response"]["success"] != false,
+        })
+        .await?
+        .text;
+    Ok((!told.is_empty()).then(|| {
+        json!({"hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": told,
+        }})
+        .to_string()
+    }))
 }
 
 pub fn run(event: &str) -> Result<()> {

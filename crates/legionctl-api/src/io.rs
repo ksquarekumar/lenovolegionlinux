@@ -1820,9 +1820,12 @@ pub struct GraphImpactIn {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GraphChangesIn {
     /// Two or more refs: the changes from each to the next. One ref: from its first parent. None: HEAD's last
-    /// commit. For a rebase or a conflict, give the merge-base first.
+    /// commit. With --three-way: `<base> <ours> <theirs>`.
     #[serde(default)]
     pub refs: Vec<String>,
+    /// For a rebase or a conflict: base to ours, base to theirs, and the entities that both sides changed.
+    #[serde(default)]
+    pub three_way: bool,
     /// Make the graphs of the refs that have none.
     #[serde(default)]
     pub build: bool,
@@ -1999,7 +2002,7 @@ pub struct ThreadMemberIn {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ThreadSendIn {
-    /// A member name of the thread, or a peer's session id (`thread peers`).
+    /// A member name of the thread, or a peer's id (`thread peers`).
     pub to: String,
     pub kind: crate::MessageKind,
     /// The message: the fact you verified and how the receiver clears it.
@@ -2094,7 +2097,8 @@ pub struct PeersIn {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ObserveIn {
-    /// A peer's session id, or a member name in one of the caller's threads.
+    /// A peer's id (`thread peers`: a session id, or `<session>/<agent id>` for a subagent), or a member name in one
+    /// of the caller's threads.
     pub peer: String,
     /// Where the caller works.
     #[serde(default = "here")]
@@ -2108,6 +2112,12 @@ pub struct ObserveIn {
 pub struct AgentToolIn {
     #[serde(default)]
     pub session: SessionId,
+    /// The subagent that called the tool (Claude Code's `agent_id`); none for the session's main agent.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// The subagent's type (Claude Code's `agent_type`, for example `Explore`).
+    #[serde(default)]
+    pub agent_type: Option<String>,
     /// The agent's working directory.
     #[serde(default = "here")]
     pub project: ClientPath,

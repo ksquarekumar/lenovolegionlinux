@@ -4,7 +4,7 @@
   "id": "code-graphs",
   "title": "Two code graphs: actual and planned",
   "status": "done",
-  "plan_rows": ["legionctl#todo-90"],
+  "plan_rows": ["legionctl#todo-90", "legionctl#todo-119"],
   "objectives": [
     { "id": "O1", "text": "An agent sees what changed between two refs, per symbol." },
     { "id": "O2", "text": "An agent sees what is left of each planned work item." },
@@ -16,6 +16,8 @@
     { "id": "S2", "text": "Changes between refs are entities by stable key with their commits; annotations follow their symbol.", "objectives": ["O1"],
       "tests": ["test:crates/legionctl/tests/code.rs::changes_between_refs_are_the_changed_entities_by_stable_key_with_their_commits",
                 "test:crates/legionctl/tests/code.rs::an_annotation_is_valid_while_its_symbol_is_the_same_stale_after_a_change_and_absent_after_removal"] },
+    { "id": "S5", "text": "A three-way compare lists the entities that both sides of a rebase changed.", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/code.rs::a_three_way_compare_lists_only_the_entities_that_both_sides_changed"] },
     { "id": "S3", "text": "The plan is checked against the graph of a ref and measured with tokei.", "objectives": ["O2"],
       "tests": ["test:crates/legionctl/tests/code.rs::a_plan_is_checked_against_the_code_graph_and_a_commit_that_adds_its_units_completes_it"] },
     { "id": "S4", "kind": "requirement", "text": "A new test that kills no mutant is refused at checkpoint.", "objectives": ["O3"],
@@ -37,6 +39,9 @@
       { "key": "rust:crates/legionctl-core:codegraph::annotations", "change": "add", "loc": 80 },
       { "key": "op:code.graph.changes", "change": "add" },
       { "key": "op:code.graph.annotations", "change": "add" }
+    ] },
+    { "id": "P2b", "text": "code graph changes --three-way for rebases (todo-119)", "status": "done", "stories": ["S5"], "depends_on": ["P2"], "units": [
+      { "key": "rust:crates/legionctl-core:codegraph::three_way", "change": "add" }
     ] },
     { "id": "P3", "text": "planning/ format, code plan check and status, dossier check findings", "status": "done", "stories": ["S3"], "depends_on": ["P2"], "units": [
       { "key": "file:crates/legionctl-core/src/planning.rs", "change": "add", "loc": 600 },

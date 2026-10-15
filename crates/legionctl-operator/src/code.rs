@@ -148,7 +148,15 @@ pub fn impact(input: &GraphImpactIn) -> Result<CodeNodes> {
 }
 
 pub fn changes(input: &GraphChangesIn) -> Result<Vec<ChangeSet>> {
-    let mut sets = codegraph::changes(input.repo.get()?, &input.refs, input.build)?;
+    let dir = input.repo.get()?;
+    let mut sets = if input.three_way {
+        let [base, ours, theirs] = input.refs.as_slice() else {
+            anyhow::bail!("--three-way takes three refs: <base> <ours> <theirs>");
+        };
+        codegraph::three_way(dir, [base, ours, theirs], input.build)?
+    } else {
+        codegraph::changes(dir, &input.refs, input.build)?
+    };
     for set in &mut sets {
         set.detail = input.detail;
         if let Some(kind) = &input.kind {

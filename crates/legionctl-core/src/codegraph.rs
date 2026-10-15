@@ -672,6 +672,8 @@ pub struct ChangeSet {
     pub commits: Vec<CommitRow>,
     /// The text lists every entity; else it folds the entities that are not code into counts per file.
     pub detail: bool,
+    /// Three-way, in the set base to theirs: the keys that base to ours changed too (the conflict candidates).
+    pub both: Option<Vec<String>>,
 }
 
 /// The change sets between consecutive refs (`a b c`: a to b, b to c); one ref: from its first parent.
@@ -784,7 +786,44 @@ fn change_set(dir: &Path, from: &str, to: &str, build: bool) -> Result<ChangeSet
         to_tree,
         entities,
         detail: false,
+        both: None,
     })
+}
+
+/// A three-way compare for a rebase or a merge: base to ours, and base to theirs with the keys that both sides
+/// changed. A file or module row is no candidate when a narrower entity of its file changed: that entity tells what
+/// changed, and other changes in the file are position only.
+///
+/// # Errors
+/// A ref does not resolve, a ref has no graph (without `build`), or git fails.
+pub fn three_way(
+    dir: &Path,
+    [base, ours, theirs]: [&str; 3],
+    build: bool,
+) -> Result<Vec<ChangeSet>> {
+    let ours = change_set(dir, base, ours, build)?;
+    let mut theirs = change_set(dir, base, theirs, build)?;
+    let container = |e: &EntityChange| e.kind == "file" || e.kind == "module";
+    let narrower: BTreeSet<&str> = ours
+        .entities
+        .iter()
+        .chain(&theirs.entities)
+        .filter(|e| !container(e))
+        .map(|e| e.file.as_str())
+        .collect();
+    let mine: BTreeSet<&str> = ours.entities.iter().map(|e| e.key.as_str()).collect();
+    theirs.both = Some(
+        theirs
+            .entities
+            .iter()
+            .filter(|e| {
+                mine.contains(e.key.as_str())
+                    && !(container(e) && narrower.contains(e.file.as_str()))
+            })
+            .map(|e| e.key.clone())
+            .collect(),
+    );
+    Ok(vec![ours, theirs])
 }
 
 /// A row for each changed file that is not a node of either snapshot (ctx parses no symbols in it).

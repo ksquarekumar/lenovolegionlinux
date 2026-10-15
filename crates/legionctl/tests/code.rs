@@ -487,6 +487,109 @@ fn expected(m: &str, b: &str) -> BTreeSet<(String, String, String)> {
     .collect()
 }
 
+/// A rebase (todo-119): `--three-way <base> <ours> <theirs>` gives base to ours and base to theirs, so theirs does
+/// not show the new work of ours as removed. Both sides change `two`, ours also `three`, theirs also `old_fn`, all in
+/// src/lib.rs: only `two` is changed on both sides (the file and its module are no candidates when a function of the
+/// file says what changed), with the commit of each side.
+#[test]
+fn a_three_way_compare_lists_only_the_entities_that_both_sides_changed() {
+    let lab = Lab::new("three", &standin());
+    lab.ok(&lab.repo, &["dossier", "use", "port"]);
+    lab.ok(&lab.repo, &["workspace", "open"]);
+    let ws = lab.home.join("worktrees/repo/port");
+    let base = lab.git(&ws, &["rev-parse", "--short", "HEAD"]);
+    let side = |from: &str, to: &[(&str, &str)], name: &str| {
+        let mut lib = std::fs::read_to_string(ws.join("src/lib.rs")).unwrap();
+        for (a, b) in to {
+            lib = lib.replace(a, b);
+        }
+        write(&ws.join("src/lib.rs"), &lib);
+        lab.git(&ws, &["commit", "--quiet", "-am", name]);
+        let head = lab.git(&ws, &["rev-parse", "--short", "HEAD"]);
+        lab.git(&ws, &["checkout", "--quiet", "--detach", from]);
+        head
+    };
+    let ours = side(
+        &base,
+        &[("add(1, 1)", "add(2, 0)"), ("inc(2)", "inc(3)")],
+        "ours",
+    );
+    let theirs = side(
+        &base,
+        &[
+            ("add(1, 1)", "add(1, 2)"),
+            ("fn old_fn() -> i32 {\n    0", "fn old_fn() -> i32 {\n    1"),
+        ],
+        "theirs",
+    );
+
+    let refused = lab.run(
+        &ws,
+        &[
+            "code",
+            "graph",
+            "changes",
+            "--three-way",
+            &base,
+            &ours,
+            "--build",
+        ],
+    );
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("--three-way takes three refs"),
+        "{refused:?}"
+    );
+    let args = [
+        "code",
+        "graph",
+        "changes",
+        "--three-way",
+        &base,
+        &ours,
+        &theirs,
+        "--build",
+    ];
+    let sets = lab.json(&ws, &args);
+    let functions = |set: &Value| -> Vec<(String, String, String)> {
+        rows(set)
+            .into_iter()
+            .filter(|r| r.1.starts_with("rust:.:"))
+            .collect()
+    };
+    let row = |c: &str, k: &str, s: &str| (c.to_string(), k.to_string(), s.to_string());
+    assert_eq!(
+        (functions(&sets[0]), functions(&sets[1])),
+        (
+            vec![
+                row("modified", "rust:.:three", &ours),
+                row("modified", "rust:.:two", &ours)
+            ],
+            vec![
+                row("modified", "rust:.:old_fn", &theirs),
+                row("modified", "rust:.:two", &theirs)
+            ],
+        ),
+        "theirs is from the base, not from ours: {sets:#}"
+    );
+    assert_eq!(
+        [&sets[0]["both"], &sets[1]["both"]],
+        [&Value::Null, &serde_json::json!(["rust:.:two"])]
+    );
+    let text = lab.ok(&ws, &args[..args.len() - 1]);
+    let section: Vec<&str> = text
+        .lines()
+        .skip_while(|l| !l.starts_with("changed on both sides"))
+        .collect();
+    assert_eq!(
+        section,
+        [
+            "changed on both sides (conflict candidates): 1".to_string(),
+            format!("  rust:.:two  {ours}: modified [{ours}]  {theirs}: modified [{theirs}]"),
+        ],
+        "{text}"
+    );
+}
+
 /// The change graph by stable keys: exactly the changed entities with the commits that touched them; `add`, whose
 /// byte offsets moved, keeps its key and is not a change; a function in a moved file of the same module is moved; the
 /// commits carry their checkpoint event, session and plan rows; refs in a row give consecutive change sets; impact

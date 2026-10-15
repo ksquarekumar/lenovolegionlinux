@@ -659,6 +659,158 @@ fn the_outbox_survives_a_restart_and_peers_on_one_dossier_see_each_other_with_th
     );
 }
 
+/// Session `lead` on dossier port with the topic workspaces a and b, and thread 1 where the member `worker-b` is its
+/// subagent `sub-b` and `observer0` watches worker-b: a reminder after 2 edits without `make lint`.
+fn subagents_lab() -> (Lab, PathBuf, PathBuf) {
+    let lab = Lab::new("subagents");
+    lab.ok("lead", &lab.repo, &["dossier", "use", "port"]);
+    lab.ok("lead", &lab.repo, &["workspace", "open", "--topic", "a"]);
+    lab.ok("lead", &lab.repo, &["workspace", "open", "--topic", "b"]);
+    lab.thread("lead", &["start", "port the parser"]);
+    for (name, archetype, session) in [
+        ("worker-b", "main-agent", "lead/sub-b"),
+        ("observer0", "thread-observer", "obs"),
+    ] {
+        let join = ["join", "1", name, archetype, "--member-session", session];
+        lab.thread("lead", &join);
+    }
+    let rule = [
+        "rules",
+        "add",
+        "1",
+        "observer0",
+        "make lint",
+        "--watched",
+        "worker-b",
+        "--every",
+        "2",
+    ];
+    lab.thread("lead", &rule);
+    let ws = |t: &str| lab.home.join(format!("worktrees/repo/port--{t}"));
+    let (a, b) = (ws("a"), ws("b"));
+    (lab, a, b)
+}
+
+/// The `additionalContext` of a post-tool hook's answer.
+fn added_context(out: &str) -> String {
+    let v: Value = serde_json::from_str(out).unwrap();
+    let hook = &v["hookSpecificOutput"];
+    assert_eq!(hook["hookEventName"], "PostToolUse", "{v}");
+    hook["additionalContext"].as_str().unwrap().to_string()
+}
+
+/// Subagents (todo-120): Claude Code's hook payload of a subagent's tool call has the lead's `session_id` and the
+/// subagent's `agent_id` and `agent_type` (the documented common fields; the recorded fixtures are of a lead). Two
+/// subagents of session `lead` edit in the topic workspaces a and b: each is a peer of its own with its workspace,
+/// type and last tool call, and the lead's own last call stays its own. A note to `lead/sub-a` and a watch rule on the
+/// member `worker-b` (session `lead/sub-b`) reach each subagent at its next tool call, not the other and not the
+/// lead. `thread observe` of one subagent gives only its events.
+#[test]
+fn the_subagents_of_one_session_are_peers_with_their_own_workspace_tool_calls_and_messages() {
+    let (lab, ws_a, ws_b) = subagents_lab();
+    // the post-tool hook of an Edit by sub-a (Explore, in a) or sub-b (general-purpose, in b): what it gives back
+    let sub = |agent: &str| -> String {
+        let (kind, ws, file) = match agent {
+            "sub-a" => ("Explore", &ws_a, "src/a.rs"),
+            _ => ("general-purpose", &ws_b, "src/b.rs"),
+        };
+        let fields = json!({"agent_id": agent, "agent_type": kind, "tool_name": "Edit",
+            "tool_input": {"file_path": ws.join(file), "old_string": "a", "new_string": "b"}});
+        lab.hook("lead", ws, "post-tool", fields)
+    };
+    lab.hook("lead", &lab.repo, "prompt", json!({"prompt": "go on"}));
+    assert_eq!(sub("sub-a"), "");
+    assert_eq!(sub("sub-b"), "");
+    lab.edit("lead", &lab.repo, &lab.repo.join("README.md"));
+    assert_eq!(sub("sub-a"), "", "sub-a's edits do not count for worker-b");
+
+    let peers = |session: &str| -> Value {
+        serde_json::from_str(&lab.ok(
+            session,
+            &lab.repo,
+            &["thread", "peers", "--json", "--dossier", "port"],
+        ))
+        .unwrap()
+    };
+    // session, subagent, topic, state, last path, members
+    let rows = |v: &Value| -> Vec<String> {
+        let row = |p: &Value| {
+            let f = [
+                "session",
+                "subagent",
+                "topic",
+                "state",
+                "last_path",
+                "members",
+            ];
+            f.map(|k| p[k].to_string()).join(" ")
+        };
+        v.as_array().unwrap().iter().map(row).collect()
+    };
+    let (a, b) = (ws_a.join("src/a.rs"), ws_b.join("src/b.rs"));
+    assert_eq!(
+        rows(&peers("lead")),
+        [
+            format!(
+                r#""lead/sub-a" "Explore" "a" "running" "{}" []"#,
+                a.display()
+            ),
+            format!(
+                r#""lead/sub-b" "general-purpose" "b" "running" "{}" ["1/worker-b"]"#,
+                b.display()
+            ),
+        ]
+    );
+    let of_obs = peers("obs");
+    let lead = of_obs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["session"] == "lead")
+        .unwrap();
+    assert_eq!(
+        [&lead["subagent"], &lead["last_path"]],
+        [&json!(null), &json!(lab.repo.join("README.md"))],
+        "the subagents' calls are not the lead's: {of_obs}"
+    );
+
+    // a note to sub-a; sub-b's second edit fires the rule on worker-b
+    lab.thread("lead", &["send", "lead/sub-a", "note", "rebase on b first"]);
+    assert_eq!(peers("lead")[0]["pending"], 1);
+    let to_b = added_context(&sub("sub-b"));
+    assert!(
+        to_b.contains(
+            "reminder from observer0 (thread 1): observer0: no `make lint` after 2 edits"
+        ),
+        "{to_b}"
+    );
+    assert!(!to_b.contains("rebase"), "{to_b}");
+    let to_a = added_context(&sub("sub-a"));
+    assert!(
+        to_a.contains("note from main0 (thread 1): rebase on b first"),
+        "{to_a}"
+    );
+    assert!(!to_a.contains("reminder"), "{to_a}");
+    assert_eq!(sub("sub-a"), "", "delivered once");
+    let told = lab.hook("lead", &lab.repo, "prompt", json!({"prompt": "go on"}));
+    assert!(
+        !told.contains("rebase") && !told.contains("reminder"),
+        "not to the lead: {told}"
+    );
+
+    // observe one subagent: only its tool calls
+    let observed = lab.json("lead", &["thread", "observe", "lead/sub-a"]);
+    let agents: Vec<&Value> = observed["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| &e["payload"]["input"]["agent"])
+        .collect();
+    assert_eq!(agents, [&json!("sub-a"); 4], "{observed}");
+    let by_name = lab.json("lead", &["thread", "observe", "worker-b"]);
+    assert_eq!(by_name["peer"]["session"], "lead/sub-b");
+}
+
 /// The fields `fields` of each item of the array `key` of `v`.
 fn picked(v: &Value, key: &str, fields: [&str; 3]) -> Vec<[Value; 3]> {
     v[key]

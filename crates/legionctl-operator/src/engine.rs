@@ -3927,7 +3927,7 @@ impl Engine for Operator {
         crate::thread::observe(&input)
     }
 
-    fn agent_tool(&self, _: &Ctx, input: legionctl_api::AgentToolIn) -> Result<Empty> {
+    fn agent_tool(&self, _: &Ctx, input: legionctl_api::AgentToolIn) -> Result<HookReply> {
         crate::thread::tool(&input)
     }
 

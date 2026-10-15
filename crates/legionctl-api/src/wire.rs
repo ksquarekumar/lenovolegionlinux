@@ -1277,6 +1277,8 @@ wire! {
         /// The text lists every entity; else it folds the entities that are not code (`config_key` and others) into
         /// counts per file. The JSON has every entity.
         detail: bool,
+        /// `--three-way`, in the set base to theirs: the keys that base to ours changed too (the conflict candidates).
+        both: Option<Vec<String>>,
     }
 
     /// The state of an annotation at one ref.
@@ -1553,9 +1555,12 @@ wire! {
 
     /// A session that shares a dossier, a workspace or a thread with the caller.
     struct Peer from core::thread::Peer {
+        /// Its id: the session id, or `<session>/<agent id>` for a subagent of that session.
         session: String,
         /// claude or codex.
         agent: String,
+        /// A subagent's type (`Explore`, `legionctl:test-reviewer`).
+        subagent: Option<String>,
         account: Option<String>,
         dossier: Option<String>,
         /// The topic of its workspace ("" for the dossier's own workspace).

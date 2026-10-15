@@ -31,9 +31,11 @@ user-invocable: true
     merge.
 14. Merge topics one at a time. Each later merge rebases onto the new base, so the history stays linear.
 15. Before you resolve a conflict, read each side's changes against the merge base by entity:
-    `legionctl code graph changes <merge-base> <ours> <theirs>`. The text gives one line per file with counts per
-    kind and the code entities under it; `--detail` lists the config keys too, `--kind <kind>` filters. A ref without
-    a graph gets one with `legionctl code graph refresh <ref>`.
+    `legionctl code graph changes --three-way <merge-base> <ours> <theirs>`. It gives base to ours, base to theirs,
+    and "changed on both sides": the entities that both sides changed, with the commits of each side. These are the
+    real conflicts; other hunks are position only. The text gives one line per file with counts per kind and the code
+    entities under it; `--detail` lists the config keys too, `--kind <kind>` filters. A ref without a graph gets one
+    with `legionctl code graph refresh <ref>`.
 16. Resolve the conflict in the workspace path, run `git rebase --continue`, record the resolution in the dossier, and
     merge again.
 17. Plan code in `planning/` (refs/reference-planning.md). Before you work on a feature, read

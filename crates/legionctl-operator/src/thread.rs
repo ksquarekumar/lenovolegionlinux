@@ -3,13 +3,13 @@
 
 use anyhow::{Context, Result};
 use legionctl_api::{
-    AgentToolIn, Empty, Guard, IntoWire, Lines, ObserveIn, Observed, Peer, PeersIn, RuleAddIn,
+    AgentToolIn, Guard, HookReply, IntoWire, Lines, ObserveIn, Observed, Peer, PeersIn, RuleAddIn,
     RuleRmIn, SessionIn, ThreadAckIn, ThreadDeclareIn, ThreadGateIn, ThreadIdIn, ThreadInfo,
     ThreadJoinIn, ThreadMemberIn, ThreadMessage, ThreadPaceIn, ThreadSendIn, ThreadStartIn,
     ThreadView, WatchRule,
 };
 use legionctl_core::db::Db;
-use legionctl_core::thread::{NewRule, Scope, ToolUse};
+use legionctl_core::thread::{NewRule, Scope, ToolUse, peer_key};
 
 use crate::engine::{dossiers, session};
 
@@ -152,21 +152,32 @@ pub fn observe(input: &ObserveIn) -> Result<Observed> {
         .into_wire())
 }
 
-pub fn tool(input: &AgentToolIn) -> Result<Empty> {
-    if !input.session.0.is_empty() {
-        dossiers()?.tool_used(
-            &input.session.0,
-            &ToolUse {
-                tool: &input.tool,
-                path: input.path.as_deref(),
-                command: input.command.as_deref(),
-                to: input.to.as_deref(),
-                message: input.message.as_deref(),
-                ok: input.ok,
-            },
-        )?;
+/// Record a tool call of a session's agent or subagent (a peer of its own, `peer_key`). A subagent has no prompt
+/// hook, so the messages to it come back here, for its post-tool hook.
+pub fn tool(input: &AgentToolIn) -> Result<HookReply> {
+    if input.session.0.is_empty() {
+        return Ok(HookReply::default());
     }
-    Ok(Empty {})
+    let store = dossiers()?;
+    let peer = peer_key(&input.session.0, input.agent.as_deref());
+    store.tool_used(
+        &peer,
+        &ToolUse {
+            tool: &input.tool,
+            path: input.path.as_deref(),
+            command: input.command.as_deref(),
+            to: input.to.as_deref(),
+            message: input.message.as_deref(),
+            ok: input.ok,
+        },
+    )?;
+    Ok(HookReply {
+        text: match input.agent {
+            Some(_) => store.thread_prompt(&peer)?.unwrap_or_default(),
+            None => String::new(),
+        },
+        block: None,
+    })
 }
 
 pub fn gate(input: &ThreadGateIn) -> Result<Guard> {

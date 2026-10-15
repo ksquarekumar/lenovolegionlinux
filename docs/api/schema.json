@@ -13373,8 +13373,13 @@
           "items": {
             "type": "string"
           },
-          "description": "Two or more refs: the changes from each to the next. One ref: from its first parent. None: HEAD's last\ncommit. For a rebase or a conflict, give the merge-base first.",
+          "description": "Two or more refs: the changes from each to the next. One ref: from its first parent. None: HEAD's last\ncommit. With --three-way: `<base> <ours> <theirs>`.",
           "default": []
+        },
+        "three_way": {
+          "type": "boolean",
+          "description": "For a rebase or a conflict: base to ours, base to theirs, and the entities that both sides changed.",
+          "default": false
         },
         "build": {
           "type": "boolean",
@@ -13525,6 +13530,16 @@
           "detail": {
             "description": "The text lists every entity; else it folds the entities that are not code (`config_key` and others) into\ncounts per file. The JSON has every entity.",
             "type": "boolean"
+          },
+          "both": {
+            "description": "`--three-way`, in the set base to theirs: the keys that base to ours changed too (the conflict candidates).",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -14707,7 +14722,7 @@
       "properties": {
         "to": {
           "type": "string",
-          "description": "A member name of the thread, or a peer's session id (`thread peers`)."
+          "description": "A member name of the thread, or a peer's id (`thread peers`)."
         },
         "kind": {
           "type": "string",
@@ -15685,11 +15700,19 @@
         "type": "object",
         "properties": {
           "session": {
+            "description": "Its id: the session id, or `<session>/<agent id>` for a subagent of that session.",
             "type": "string"
           },
           "agent": {
             "description": "claude or codex.",
             "type": "string"
+          },
+          "subagent": {
+            "description": "A subagent's type (`Explore`, `legionctl:test-reviewer`).",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "account": {
             "type": [
@@ -15796,7 +15819,7 @@
       "properties": {
         "peer": {
           "type": "string",
-          "description": "A peer's session id, or a member name in one of the caller's threads."
+          "description": "A peer's id (`thread peers`: a session id, or `<session>/<agent id>` for a subagent), or a member name in one\nof the caller's threads."
         },
         "repo": {
           "type": "string",
@@ -15824,11 +15847,19 @@
           "type": "object",
           "properties": {
             "session": {
-              "type": "string"
+              "type": "string",
+              "description": "Its id: the session id, or `<session>/<agent id>` for a subagent of that session."
             },
             "agent": {
               "type": "string",
               "description": "claude or codex."
+            },
+            "subagent": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "A subagent's type (`Explore`, `legionctl:test-reviewer`)."
             },
             "account": {
               "type": [
@@ -15978,6 +16009,22 @@
           "description": "Agent session id; the client fills it.",
           "default": ""
         },
+        "agent": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The subagent that called the tool (Claude Code's `agent_id`); none for the session's main agent.",
+          "default": null
+        },
+        "agent_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The subagent's type (Claude Code's `agent_type`, for example `Explore`).",
+          "default": null
+        },
         "project": {
           "type": "string",
           "format": "path",
@@ -16034,7 +16081,22 @@
     },
     "output": {
       "type": "object",
-      "title": "Empty",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "block": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Set when the prompt is blocked: the reason the user sees."
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "HookReply",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },

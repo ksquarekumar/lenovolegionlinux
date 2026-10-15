@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail, ensure};
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::{Value, json};
 
-use crate::db::{Db, EventFilter, EventRow, now};
+use crate::db::{Db, EventRow, now};
 use crate::dossier::Dossiers;
 use crate::workspace::Workspace;
 
@@ -252,8 +252,11 @@ pub struct Scope {
 }
 
 pub struct Peer {
+    /// Its id (`peer_key`).
     pub session: String,
     pub agent: String,
+    /// A subagent's type.
+    pub subagent: Option<String>,
     pub account: Option<String>,
     pub dossier: Option<String>,
     /// The topic of the workspace it works in ("" for the dossier's own workspace).
@@ -448,9 +451,23 @@ fn triggers(rule: &Rule, used: &ToolUse) -> bool {
         })
 }
 
-/// The sessions that `thread peers` reads, by session id.
+/// A peer's id: its session id, and `/<agent id>` for a subagent of that session (the text of `db::PEER`).
+#[must_use]
+pub fn peer_key(session: &str, agent: Option<&str>) -> String {
+    match agent {
+        Some(agent) => format!("{session}/{agent}"),
+        None => session.to_string(),
+    }
+}
+
+/// The session of a peer id: a subagent works in its session's binding.
+fn session_of(peer: &str) -> &str {
+    peer.split_once('/').map_or(peer, |(session, _)| session)
+}
+
+/// The sessions and their subagents that `thread peers` reads, by peer id (`peer_key`).
 struct Presence {
-    /// The newest hook call, tool call or release of each session.
+    /// The newest hook call, tool call or release of each peer.
     seen: BTreeMap<String, EventRow>,
     tools: BTreeMap<String, EventRow>,
     workspaces: Vec<Workspace>,
@@ -471,10 +488,10 @@ impl Presence {
     }
 
     /// The dossier a session writes (its binding), else the dossier of the workspace it works in.
-    fn dossier_of(&self, session: &str, project: Option<&Path>) -> Option<String> {
+    fn dossier_of(&self, peer: &str, project: Option<&Path>) -> Option<String> {
         self.bound
             .iter()
-            .find(|(s, _)| s == session)
+            .find(|(s, _)| s == session_of(peer))
             .map(|(_, d)| d.clone())
             .or_else(|| {
                 project
@@ -1303,17 +1320,21 @@ impl Dossiers {
     /// tool call of each within the dossier stale time, the open bindings, thread members and started sessions.
     fn presence(&self, events: &Db) -> Result<Presence> {
         let since = now() - self.stale_after();
-        let by_session = |rows: Vec<EventRow>| -> BTreeMap<String, EventRow> {
+        let by_peer = |rows: Vec<EventRow>| -> BTreeMap<String, EventRow> {
             rows.into_iter()
-                .filter_map(|e| Some((e.payload["input"]["session"].as_str()?.to_string(), e)))
+                .filter_map(|e| {
+                    let input = &e.payload["input"];
+                    let key = peer_key(input["session"].as_str()?, input["agent"].as_str());
+                    Some((key, e))
+                })
                 .collect()
         };
         Ok(Presence {
-            seen: by_session(events.newest_per_session(
+            seen: by_peer(events.newest_per_peer(
                 &["internal.hooks.run", "internal.agent.tool", "dossier.release"],
                 since,
             )?),
-            tools: by_session(events.newest_per_session(&["internal.agent.tool"], since)?),
+            tools: by_peer(events.newest_per_peer(&["internal.agent.tool"], since)?),
             workspaces: self.workspaces(None)?,
             bound: self
                 .db()
@@ -1411,7 +1432,7 @@ impl Dossiers {
         Ok(peers)
     }
 
-    /// One session as a peer, before the scope it shares is known.
+    /// One session or subagent as a peer, before the scope it shares is known.
     fn peer(&self, p: &Presence, session: &str) -> Result<Peer> {
         let project = p
             .seen
@@ -1447,7 +1468,7 @@ impl Dossiers {
             .optional()?;
         let (agent, account) = p
             .started
-            .get(session)
+            .get(session_of(session))
             .cloned()
             .unwrap_or_else(|| ("claude".into(), None));
         let mut channels = vec!["outbox".to_string()];
@@ -1457,6 +1478,11 @@ impl Dossiers {
         Ok(Peer {
             session: session.to_string(),
             agent,
+            subagent: p
+                .seen
+                .get(session)
+                .and_then(|e| e.payload["input"]["agent_type"].as_str())
+                .map(String::from),
             account,
             dossier: p.dossier_of(session, project.as_deref()),
             topic: workspace.as_ref().map(|w| w.topic.clone()),
@@ -1478,7 +1504,7 @@ impl Dossiers {
         })
     }
 
-    /// One peer (a session id, or a member name in one of the caller's threads): its state and its newest events,
+    /// One peer (a peer id, or a member name in one of the caller's threads): its state and its newest events,
     /// the same rows as `trace`.
     ///
     /// # Errors
@@ -1498,14 +1524,7 @@ impl Dossiers {
             .with_context(|| {
                 format!("{peer} is not a peer of this session (see `legionctl thread peers`)")
             })?;
-        let events = events.events_newest(
-            &EventFilter {
-                kinds: &[],
-                field: Some(("$.input.session", &session)),
-                naming: None,
-            },
-            50,
-        )?;
+        let events = events.events_of_peer(&session, 50)?;
         Ok(Observed { peer, events })
     }
 }

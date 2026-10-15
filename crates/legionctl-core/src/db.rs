@@ -274,6 +274,10 @@ fn cut<T>(mut rows: Vec<T>, limit: u32, id: impl Fn(&T) -> i64) -> (Vec<T>, Opti
     }
 }
 
+/// The peer of a call's audit: its session (`$.input.session`), and `/<agent id>` for a subagent's call
+/// (`$.input.agent`); `thread::peer_key` gives the same text.
+const PEER: &str = "json_extract(payload, '$.input.session') || coalesce('/' || json_extract(payload, '$.input.agent'), '')";
+
 pub(crate) fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -510,15 +514,15 @@ impl Db {
         Ok(rows)
     }
 
-    /// For each session (`$.input.session` of a call's audit), its newest event of these kinds since `ts`.
+    /// For each peer (`PEER` of a call's audit), its newest event of these kinds since `ts`.
     ///
     /// # Errors
     /// The database read fails.
-    pub fn newest_per_session(&self, kinds: &[&str], ts: i64) -> Result<Vec<EventRow>> {
+    pub fn newest_per_peer(&self, kinds: &[&str], ts: i64) -> Result<Vec<EventRow>> {
         let marks = vec!["?"; kinds.len()].join(", ");
         let sql = format!(
             "SELECT id, ts, actor, kind, payload FROM events WHERE id IN (SELECT max(id) FROM events
-             WHERE kind IN ({marks}) AND ts >= ? GROUP BY json_extract(payload, '$.input.session')) ORDER BY id"
+             WHERE kind IN ({marks}) AND ts >= ? GROUP BY {PEER}) ORDER BY id"
         );
         let mut args: Vec<Box<dyn rusqlite::ToSql>> = kinds
             .iter()
@@ -529,6 +533,21 @@ impl Db {
             &sql,
             rusqlite::params_from_iter(args.iter().map(AsRef::as_ref)),
         )
+    }
+
+    /// The newest `limit` events of one peer (`PEER`), oldest first.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn events_of_peer(&self, peer: &str, limit: u32) -> Result<Vec<EventRow>> {
+        let mut rows = self.query_events(
+            &format!(
+                "SELECT id, ts, actor, kind, payload FROM events WHERE {PEER} = ?1 ORDER BY id DESC LIMIT ?2"
+            ),
+            params![peer, limit],
+        )?;
+        rows.reverse();
+        Ok(rows)
     }
 
     /// The event with this id.
