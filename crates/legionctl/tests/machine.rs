@@ -2402,12 +2402,18 @@ mod operator_and_daemon {
             ((dev >> 32) & 0xffff_f000) | ((dev >> 8) & 0xfff),
             ((dev >> 12) & 0xffff_ff00) | (dev & 0xff),
         );
-        let link = std::fs::read_link(format!("/sys/dev/block/{major}:{minor}")).unwrap();
-        let parts: Vec<String> = link
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .collect();
-        let disk = parts[parts.iter().position(|c| c == "block").unwrap() + 1].clone();
+        // a partition's sysfs folder is inside its disk's (NVMe paths have no "block" part: CI run 38740561227)
+        let node = std::fs::canonicalize(format!("/sys/dev/block/{major}:{minor}")).unwrap();
+        let disk_node = if node.join("partition").exists() {
+            node.parent().unwrap()
+        } else {
+            node.as_path()
+        };
+        let disk = disk_node
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         // writes all through the sample window (the window starts when the operator has started)
         let dd = Kill(
             std::process::Command::new("/bin/sh")
