@@ -19,7 +19,8 @@ Replaces the "plan workspaces" section of 12-operator. Sessions (14) and sandbox
 - `legionctl-core::dossier` follows `safecoder dossier` (studied in the source repo): rows `<line>:<hash>|<text>`
   with a BLAKE2b 2-byte hash of the line text (same anchors as safecoder), `replace`, `insert-after` and `delete`
   edits that refuse an outdated anchor, `NN-<slug>.md` numbering per class folder with exclusive create, atomic
-  writes, SQLite bindings in `workspace.db` (one open binding per dossier and per session, `steal`), and the 18
+  writes, SQLite bindings (one open binding per dossier and per session, `steal`; in the operator's database since
+  design 23 P9), and the 18
   ledger sections in `plan.md`. Search is literal text (no regular expressions).
 - Liveness of a binding: each hook call (session start, prompt, stop) and each dossier write refreshes it. A binding
   not refreshed for `dossier.stale_hours` (12) is stale. A session that legionctl started in a scope is stale as
@@ -52,8 +53,8 @@ Replaces the "plan workspaces" section of 12-operator. Sessions (14) and sandbox
   dossier is the agent's job; the nudges and the gate step in only when there is none.
 - Milestone 2 (built 2026-10-13): `workspace` replaces `worktree` (15). A workspace is one git worktree per
   dossier and repository at `<workspace.root>/<repo>/<dossier>` on `legionctl/<dossier>`, from a recorded base
-  ref, registered in `workspace.db`; `workspace.open` links the dossier as `.agentworkspace` and commits the
-  `/.agentworkspace` ignore line on the dossier branch when it is missing. `status` reports ahead/behind, staged,
+  ref, registered in the operator's database; `workspace.open` links the dossier home as `agentWorkspaces` (design
+  23 P9 replaced the old per-dossier link and its committed ignore line). `status` reports ahead/behind, staged,
   unstaged, untracked, conflicts and drift (a branch switched outside legionctl, a missing worktree);
   `checkpoint` commits everything; `merge` rebases onto the base
   and fast-forwards the base in a clean main checkout (decided 2026-10-13); `close` removes the worktree, keeps
@@ -67,7 +68,7 @@ Replaces the "plan workspaces" section of 12-operator. Sessions (14) and sandbox
 | Declared | Default | What legionctl does with it |
 | --- | --- | --- |
 | **Operating directory** | the shell's working directory when the agent started | Resolves its source (a repo or a plain folder), makes or reuses the copy-on-write copy, pins the agent there, and reads and reconciles its git state |
-| **Dossier name** | none; must be chosen or created | Makes `~/.agentworkspace/<dossier>/` this session's one writable dossier and links it into the operating directory |
+| **Dossier name** | none; must be chosen or created | Makes `~/agentWorkspaces/<dossier>/` this session's one writable dossier and links the home into the operating directory |
 
 ## Gate: no dossier, no work
 
@@ -90,11 +91,15 @@ harness enforces it at session launch (14): it starts the agent only with a bind
 | Concept | What it is | Where |
 | --- | --- | --- |
 | **Operating directory** | The agent's pinned working directory: a copy-on-write copy of the source. The agent changes only this copy. | git worktree or overlay (14-sessions) |
-| **Dossier** | The agent's own space for one scope: plan, memory, design, evidence, spikes. Never part of the product. | `~/.agentworkspace/<dossier>/` |
+| **Dossier** | The agent's own space for one scope: plan, memory, design, evidence, spikes. Never part of the product. | `~/agentWorkspaces/<dossier>/` |
 
-The dossier appears in the operating directory's root as the symlink `.agentworkspace → ~/.agentworkspace/<dossier>`.
-In a git operating directory, `/.agentworkspace` is a committed line in the repo's `.gitignore` (decided
-2026-10-12). Workspace open adds the line if it is missing, as its own commit on the base branch, after approval.
+The dossier home appears in the root of each directory where a dossier is used (`dossier use`, `workspace open`,
+`session start`) as the symlink `agentWorkspaces → ~/agentWorkspaces`; the bound dossier is
+`agentWorkspaces/<dossier>` (design 23, E1a, built in P9). A real `agentWorkspaces/` folder there is imported first:
+each first-level subfolder becomes a registered dossier (`<name>-imported-<n>` on a clash), and the folder goes to
+`~/.local/state/legionctl/backup/`. In a git repository, the main checkout's `.gitignore` gets `/agentWorkspaces` (no
+trailing `/`: git sees a link as a file), staged, not committed; a worktree uses `<common dir>/info/exclude` until
+the line is on its branch; `git check-ignore` must pass. A plain folder gets the link only.
 
 ## Git: legionctl owns the copy and its state
 
@@ -109,14 +114,14 @@ For a git source, legionctl does the git work around the agent; the agent edits 
 
 Topic workspaces (decided 2026-10-14): parallel agents of one dossier each get their own worktree.
 `workspace open --topic <t>` makes the worktree `<workspace.root>/<repo>/<dossier>--<t>` on the branch
-`legionctl/<dossier>--<t>` (from the base ref the first time; a reopen uses the branch again), with the dossier linked
-as `.agentworkspace`. `status`, `checkpoint`, `merge` and `close` act on the workspace that contains the working
+`legionctl/<dossier>--<t>` (from the base ref the first time; a reopen uses the branch again), with the dossier home
+linked as `agentWorkspaces`. `status`, `checkpoint`, `merge` and `close` act on the workspace that contains the working
 directory, else on the dossier's own workspace in that repository; `--topic <t>` selects a topic workspace from
 anywhere in the repository. `workspace list` shows all workspaces, topic workspaces too. An agent that shares its
 session's MCP server with other agents gives `topic` (or `repo` as its workspace path) to each workspace tool,
 because the server's working directory is the main checkout. The topic workspaces replaced `workspace branch`, which
-switched the branch inside the one worktree. `workspace.db` v10 adds the `topic` column (`''` for the dossier's own
-workspace); a v9 file goes to v10 at its first open.
+switched the branch inside the one worktree. The `workspaces` rows have a `topic` column (`''` for the dossier's own
+workspace); a rename of the dossier keeps the topic, the branch and the path.
 
 Reconciliation runs on every hook call and after every operation. It reads the git state (branch, base ref,
 merge-base, ahead/behind, staged, unstaged, untracked, conflicted, resolved-but-not-committed; 14), compares it with
@@ -127,8 +132,8 @@ A plain-folder source gets an overlay copy; checkpoint snapshots the upper layer
 back after a diff and approval.
 
 Built (2026-10-13, W3): `workspace open` (and `session start`) in a folder that is not in a git repository records a
-folder workspace (no branch): a layer at `<workspace.root>/<folder>/<dossier>/{upper,work}`, with the dossier link
-in the layer. The session sandbox mounts the folder at its own path with `--overlay-src <folder> --overlay upper
+folder workspace (no branch): a layer at `<workspace.root>/<folder>/<dossier>/{upper,work}`; the folder itself
+gets the `agentWorkspaces` link (P9), so the agent sees it through the overlay. The session sandbox mounts the folder at its own path with `--overlay-src <folder> --overlay upper
 work <folder>` (bwrap >= 0.8, no root), so the source does not change. `workspace status` lists the changes from
 the upper layer (`A`/`M` files, `D` whiteouts, `R` folders marked `user.overlay.opaque`); `checkpoint` copies them
 to `checkpoints/<time>/` with `DELETED` and `MESSAGE`; `merge` applies them to the folder and empties the layer;
@@ -136,13 +141,14 @@ to `checkpoints/<time>/` with `DELETED` and `MESSAGE`; `merge` applies them to t
 session works on the folder directly; the layer exists only inside sessions. The e2e test covers an edit, a new
 file, a deletion and a replaced folder.
 
-## `~/.agentworkspace`
+## `~/agentWorkspaces`
 
 ```
-~/.agentworkspace/
-  workspace.db                 SQLite (WAL): bindings, locks, artifact index, work graph (graph tables, 13), events
-  <dossier>/
-    dossier.jsonc              this dossier only: title, entities, objectives
+~/agentWorkspaces/
+  <dossier>/                   a descriptive name, unique; `dossier rename` changes it, the id stays
+    dossier.jsonc              this dossier only: id (dsr-<ulid>), title, entities, objectives
+    .state/dossier.db          SQLite (WAL): writes, status changes, nudges, and the repository facts (annotations,
+                               test runs, mutants, accepts) that its sessions wrote; read-only in a session sandbox
     plan.md                    PLAN: the ledger
     MEMORY/NN-<topic>.md       working memory, numbered in creation order
     DESIGN/                    PRD.md, HLD.md, LLD.md or scope-appropriate names
@@ -151,7 +157,10 @@ file, a deletion and a replaced folder.
     <class>/.../NN-<scope>.md  any other class the dossier declares
 ```
 
-- Code graphs are not in `~/.agentworkspace`: they are one ctx graph per git tree in the main checkout's
+- The rows that span dossiers (bindings, workspaces, sessions, threads, the id registry with old names) are in the
+  operator's `~/.local/state/legionctl/operator.db`. Repository facts are read as the union of the dossiers attached
+  to the repository (a workspace there, or its path in `entities`).
+- Code graphs are not in `~/agentWorkspaces`: they are one ctx graph per git tree in the main checkout's
   `.graf/refs/<tree>.db`, shared by all worktrees, and each checkout's `.graf/index.db` links to the graph of its
   HEAD (decision 1 of note 23; built 2026-10-15). `workspace checkpoint` and `workspace merge` start a refresh job
   when the repository keeps graphs.
@@ -202,7 +211,7 @@ supersedes: [EV-validation-01]
 are lists or maps (`Acceptance Criteria`, `Requirement-to-Change Map`, `ToDo`, `Done`, decisions) are written as
 tables whose first column is a row id (`acceptance-2`, `rcm-4`), so each row is addressable.
 
-legionctl indexes the front matter and the ledger rows into the work graph (graph tables in `workspace.db`):
+legionctl indexes the front matter and the ledger rows into the work graph (built from the files on each read):
 
 - Nodes: objectives, plan rows, artifacts, change sets, commits, packages, entrypoints, runtimes.
 - Edges: `supports`, `supersedes`, `implements` (plan row → change set → commits), `touches` (change set →
@@ -219,7 +228,7 @@ repository after the file was written. Not yet: code-graph symbols (`touches`), 
 
 Built (2026-10-13, W4 part 2): status history. Each write through legionctl (`dossier write`, `append`, `edit`,
 `add`) compares the statuses of the nodes in the file before and after (the plan rows' `status` column, an
-artifact's front-matter `status`) and stores each change in `workspace.db` (`status_changes`: time, session, node,
+artifact's front-matter `status`) and stores each change in the dossier's `.state/dossier.db` (`status_changes`: time, session, node,
 from, to; null when the node did not exist). `dossier graph --node <id>` returns the node's history, oldest first. A
 change made outside legionctl (an editor, a script) is not seen: agents write through the dossier tools. Code-graph
 symbols (`touches`) are not linked yet; the code graphs and the change graph are built (note 23, "Built: P1 and P2").
@@ -234,7 +243,8 @@ contradicts an approved decision, and EVIDENCE whose linked symbols changed afte
 | --- | --- |
 | `legionctl dossier use <name> [--steal]` | Bind this session to the dossier; a new name makes it from the global pattern. The previous one is released. |
 | `legionctl dossier active`, `release`, `locks` | Show the binding; give it up; show which session holds which dossier and stale locks. |
-| `legionctl dossier list`, `read <path>`, `search <pattern>` | Read any dossier; lines print as `<line>:<hash>\|<text>`. |
+| `legionctl dossier list`, `read <path>`, `search <pattern>` | Read any dossier; lines print as `<line>:<hash>\|<text>`. `list` shows each id. |
+| `legionctl dossier rename <name> <to>` | Rename the folder; the id, bindings, workspaces, sessions and threads follow. A name in use is refused. |
 | `legionctl dossier add <class> <slug>` | Create the next numbered artifact from stdin (`MEMORY/03-<slug>.md`); safe for parallel agents. |
 | `legionctl dossier edit <path> replace\|insert-after\|delete <line:hash>` | Change anchored lines; an anchor from an outdated read is refused. |
 | `legionctl dossier check`, `graph` | Routing and ledger findings; the work graph around a node. |
@@ -242,7 +252,7 @@ contradicts an approved decision, and EVIDENCE whose linked symbols changed afte
 - Writes go only to the session's active dossier; reads work on every dossier. Every write is atomic.
 - A dossier held by another live session is refused with that session's name; `--steal` takes it with the user's
   agreement. A lock idle for 12 hours is stale and taken over with a notice. Session end releases the lock.
-- Paths outside `~/.agentworkspace` are refused.
+- Paths outside `~/agentWorkspaces` are refused; a path through an `agentWorkspaces` link counts as the path it leads to.
 - The same operations are MCP tools, so Codex and other agents use them without the shell.
 
 ## Living work graph
@@ -278,10 +288,11 @@ The pattern is config; a repository can add a class in `<repo>/.legionctl/dossie
 }
 ```
 
-`~/.agentworkspace/legion-port/dossier.jsonc` (one dossier's data):
+`~/agentWorkspaces/legion-port/dossier.jsonc` (one dossier's data):
 
 ```jsonc
 {
+  "id": "dsr-01JA2Q7Z5E8M4K3N6P9R0S1T2V",
   "title": "Port the Python machine tooling to Rust",
   "entities": [
     { "id": "lenovolegionlinux", "type": "repo", "path": "/data/git/lenovolegionlinux", "base_ref": "main" }
@@ -296,8 +307,9 @@ The pattern is config; a repository can add a class in `<repo>/.legionctl/dossie
 ## Sandboxed instances
 
 Processes (bwrap), containers and VMs (17) get the same layout: the operating directory mounted read-write as the
-working directory, the dossier mounted at `<operating directory>/.agentworkspace`, nothing else writable. A
-container or VM for a dossier is recorded in `workspace.db` and reused when the dossier is opened again.
+working directory, the dossier mounted read-write at its own path (`agentWorkspaces/<dossier>` through the link; its
+`.state` read-only), nothing else writable. A container or VM for a dossier is recorded in the operator's database
+and reused when the dossier is opened again.
 
 ### W5: containers and VMs (decided 2026-10-13/14: D5 and round 5)
 

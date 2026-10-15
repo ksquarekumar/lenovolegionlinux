@@ -1,6 +1,6 @@
 //! Workspaces (note 18): the operating directory of a dossier in one repository. A workspace is a `git worktree` at
 //! `<workspace.root>/<repo>/<dossier>` on the dossier's branch `legionctl/<dossier>`, made from a recorded base ref,
-//! with the dossier linked in as `.agentworkspace`. A topic workspace (for agents of one dossier that work in
+//! with the dossier home linked in as `agentWorkspaces` (design 23, E1a). A topic workspace (for agents of one dossier that work in
 //! parallel) is a separate worktree at `<workspace.root>/<repo>/<dossier>--<topic>` on `legionctl/<dossier>--<topic>`.
 //! legionctl does the git work around the agent: open, checkpoint, merge (rebase onto the base, then fast-forward the
 //! base) and close; `status` reports git state and drift (a branch switched outside legionctl, a missing worktree, a
@@ -18,10 +18,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::dossier::Dossiers;
-
-/// The line that keeps the dossier link out of the product (decided 2026-10-12: a committed `.gitignore` line).
-const IGNORE_LINE: &str = "/.agentworkspace";
-pub(crate) const LINK: &str = ".agentworkspace";
 
 pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String> {
     let out = Command::new("git")
@@ -84,32 +80,6 @@ pub fn git_state(dir: &Path) -> Result<String> {
     Ok(format!("{:x}", hash.finalize()))
 }
 
-/// Commit the `/.agentworkspace` ignore line on the worktree's branch when it is missing.
-fn ignore_link(path: &Path) -> Result<()> {
-    let ignore = path.join(".gitignore");
-    let text = std::fs::read_to_string(&ignore).unwrap_or_default();
-    if text.lines().any(|l| l.trim() == IGNORE_LINE) {
-        return Ok(());
-    }
-    let sep = if text.is_empty() || text.ends_with('\n') {
-        ""
-    } else {
-        "\n"
-    };
-    std::fs::write(&ignore, format!("{text}{sep}{IGNORE_LINE}\n"))?;
-    git(path, &["add", ".gitignore"])?;
-    git(
-        path,
-        &[
-            "commit",
-            "--quiet",
-            "-m",
-            "legionctl: ignore the dossier link (/.agentworkspace)",
-        ],
-    )?;
-    Ok(())
-}
-
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -128,6 +98,8 @@ pub struct Workspace {
     pub branch: String,
     /// The ref the branch started from and merges into.
     pub base: String,
+    /// The topic of a topic workspace; empty for the dossier's own.
+    pub topic: String,
 }
 
 /// Git state of a workspace and what drifted from the record.
@@ -236,6 +208,7 @@ impl Dossiers {
                         path: PathBuf::from(r.get::<_, String>(0)?),
                         branch: r.get(1)?,
                         base: r.get(2)?,
+                        topic: topic.to_string(),
                     })
                 },
             )
@@ -248,7 +221,7 @@ impl Dossiers {
     /// The database read fails.
     pub fn workspaces(&self, dossier: Option<&str>) -> Result<Vec<Workspace>> {
         let mut stmt = self.db().prepare(
-            "SELECT dossier, repo, path, branch, base FROM workspaces
+            "SELECT dossier, repo, path, branch, base, topic FROM workspaces
              WHERE closed IS NULL AND (?1 IS NULL OR dossier = ?1) ORDER BY dossier, repo",
         )?;
         let rows = stmt.query_map([dossier], |r| {
@@ -258,6 +231,7 @@ impl Dossiers {
                 path: PathBuf::from(r.get::<_, String>(2)?),
                 branch: r.get(3)?,
                 base: r.get(4)?,
+                topic: r.get(5)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -366,14 +340,8 @@ impl Dossiers {
         } else {
             git(&repo, &["worktree", "add", "-b", &branch, path_str, &base])?;
         }
-        std::os::unix::fs::symlink(self.root.join(&dossier), path.join(LINK)).or_else(|e| {
-            if e.kind() == std::io::ErrorKind::AlreadyExists {
-                Ok(())
-            } else {
-                Err(e)
-            }
-        })?;
-        ignore_link(&path)?;
+        // each worktree gets its own link: a session works there (E1a rule 5)
+        crate::home::link(self, &path)?;
         self.db().execute(
             "UPDATE workspaces SET closed = ?1 WHERE dossier = ?2 AND repo = ?3 AND topic = ?4 AND closed IS NULL",
             params![now(), dossier, repo.to_string_lossy(), topic],
@@ -397,6 +365,7 @@ impl Dossiers {
             path,
             branch,
             base,
+            topic: topic.to_string(),
         })
     }
 
@@ -411,17 +380,8 @@ impl Dossiers {
         for dir in [crate::folder::upper(&path), crate::folder::work(&path)] {
             std::fs::create_dir_all(dir)?;
         }
-        std::os::unix::fs::symlink(
-            self.root.join(&dossier),
-            crate::folder::upper(&path).join(LINK),
-        )
-        .or_else(|e| {
-            if e.kind() == std::io::ErrorKind::AlreadyExists {
-                Ok(())
-            } else {
-                Err(e)
-            }
-        })?;
+        // the folder itself gets the link, so the agent sees it through the overlay
+        crate::home::link(self, &source)?;
         self.db().execute(
             "INSERT INTO workspaces (dossier, repo, path, branch, base, opened) VALUES (?1, ?2, ?3, '', '', ?4)",
             params![dossier, source.to_string_lossy(), path.to_string_lossy(), now()],
@@ -432,6 +392,7 @@ impl Dossiers {
             path,
             branch: String::new(),
             base: String::new(),
+            topic: String::new(),
         })
     }
 
@@ -596,7 +557,7 @@ impl Dossiers {
             ));
         }
         let closed = format!("closed {}", ws.path.display());
-        if ws.branch == format!("legionctl/{}", ws.dossier) {
+        if ws.topic.is_empty() {
             return Ok(format!("{closed} (branch {} kept)", ws.branch));
         }
         // A topic branch goes when the base has all its commits; `branch -d` refuses it otherwise.

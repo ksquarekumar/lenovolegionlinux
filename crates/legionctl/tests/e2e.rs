@@ -616,7 +616,7 @@ fn dossier_write_guard_and_takeover_work_through_the_claude_code_hooks() {
     );
 
     // the write guard: only the holder writes into the dossier; other paths are not legionctl's business
-    let plan = home.join(".agentworkspace/port/plan.md");
+    let plan = home.join("agentWorkspaces/port/plan.md");
     let denied: Value = serde_json::from_str(&hook(
         "pre-tool",
         json!({"session_id": "s2", "tool_name": "Write", "tool_input": {"file_path": plan, "content": "x"}}),
@@ -1090,14 +1090,14 @@ fn get(op: &Operator, path: &str) -> String {
     response.split_once("\r\n\r\n").unwrap().1.to_string()
 }
 
-/// Run one statement on the dossier database of the test's home (to age a binding; nothing else changes it).
+/// Run one statement on the operator's database of the test's home (to age a binding; nothing else changes it).
 fn sql(home: &Path, statement: &str) {
     let out = Command::new("python3")
         .args([
             "-c",
             "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.execute(sys.argv[2]); c.commit()",
         ])
-        .arg(home.join(".agentworkspace/workspace.db"))
+        .arg(home.join(".local/state/legionctl/operator.db"))
         .arg(statement)
         .output()
         .unwrap();
@@ -1125,7 +1125,8 @@ fn git(home: &Path, dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// A repository with one commit on main, and workspaces configured under `home/worktrees`.
+/// A repository with one commit on main that ignores the dossier home's link (as legionctl's own), and workspaces
+/// configured under `home/worktrees`.
 fn repository(home: &Path) -> PathBuf {
     write(
         &home.join(".gitconfig"),
@@ -1142,6 +1143,7 @@ fn repository(home: &Path) -> PathBuf {
     std::fs::create_dir_all(&repo).unwrap();
     git(home, &repo, &["init", "--quiet"]);
     write(&repo.join("README.md"), "repo\n");
+    write(&repo.join(".gitignore"), "/agentWorkspaces\n");
     git(home, &repo, &["add", "."]);
     git(home, &repo, &["commit", "--quiet", "-m", "start"]);
     repo
@@ -1194,11 +1196,11 @@ fn workspace_opens_checkpoints_reports_drift_merges_and_closes_in_a_real_reposit
     );
     run_git(&repo, &["checkout", "--quiet", "README.md"]);
 
-    // open: a worktree on legionctl/port with the dossier linked in and its ignore line committed on the branch
+    // open: a worktree on legionctl/port with the dossier home linked in (the repository already ignores the link)
     let ws = home.join("worktrees/repo/port");
     assert!(ok(&repo, &["workspace", "open"]).contains(&ws.display().to_string()));
     assert!(
-        ws.join(".agentworkspace/plan.md").is_file(),
+        ws.join("agentWorkspaces/port/plan.md").is_file(),
         "the dossier is linked into the workspace"
     );
     assert_eq!(
@@ -1218,7 +1220,7 @@ fn workspace_opens_checkpoints_reports_drift_merges_and_closes_in_a_real_reposit
         serde_json::from_str(&ok(&repo, &["workspace", "status", "--json"])).unwrap();
     assert_eq!(
         (status["ahead"].as_u64(), status["behind"].as_u64()),
-        (Some(2), Some(0)),
+        (Some(1), Some(0)),
         "{status}"
     );
     run_git(&ws, &["switch", "--quiet", "-c", "elsewhere"]);
@@ -1243,8 +1245,8 @@ fn workspace_opens_checkpoints_reports_drift_merges_and_closes_in_a_real_reposit
     );
     assert_eq!(
         run_git(&repo, &["rev-list", "--count", "HEAD"]),
-        "4",
-        "linear: start, main moved, ignore line, feature"
+        "3",
+        "linear: start, main moved, feature"
     );
     assert!(ok(&repo, &["workspace", "close"]).contains("branch legionctl/port kept"));
     assert!(!ws.exists());
@@ -1295,7 +1297,7 @@ fn topic_workspaces_of_one_dossier_work_in_parallel_and_merge_one_by_one() {
     );
     ok(&repo, &["workspace", "open", "--topic", "b"]);
     assert!(
-        b.join(".agentworkspace/plan.md").is_file(),
+        b.join("agentWorkspaces/port/plan.md").is_file(),
         "each topic has the dossier linked"
     );
     let list = ok(&repo, &["workspace", "list"]);
@@ -1353,8 +1355,8 @@ fn topic_workspaces_of_one_dossier_work_in_parallel_and_merge_one_by_one() {
     assert_eq!(subject("main"), "work b");
     assert_eq!(
         git(&home, &repo, &["rev-list", "--count", "HEAD"]),
-        "4",
-        "linear: start, ignore line, work a, work b (b's own ignore line is the same patch)"
+        "3",
+        "linear: start, work a, work b"
     );
     close_deletes_merged_topic_branches(&home, &repo, ok);
 }
@@ -2003,6 +2005,17 @@ fn a_test_run_records_each_test_with_its_file_result_and_ref() {
     let (op, home) = operator("testruns");
     let repo = repository(&home);
     cargo_of_two_crates(&home, &repo);
+    // the runs go into the dossier attached to the repository
+    let bound = op.run(
+        &repo,
+        &[
+            ("HOME", home.to_str().unwrap()),
+            ("LEGIONCTL_SESSION", "s1"),
+        ],
+        &["dossier", "use", "tests"],
+        "",
+    );
+    assert!(bound.status.success(), "{bound:?}");
     let out = op.run(
         &repo,
         &[("HOME", home.to_str().unwrap())],
@@ -2102,6 +2115,17 @@ fn a_test_run_that_does_not_build_fails_with_the_compiler_error() {
         "cargo",
         &format!("#!/bin/sh\necho '{error}'\necho 'error: could not compile `fx`' >&2\nexit 101\n"),
     );
+    // the runs go into the dossier attached to the repository
+    let bound = op.run(
+        &repo,
+        &[
+            ("HOME", home.to_str().unwrap()),
+            ("LEGIONCTL_SESSION", "s1"),
+        ],
+        &["dossier", "use", "tests"],
+        "",
+    );
+    assert!(bound.status.success(), "{bound:?}");
     let out = op.run(
         &repo,
         &[("HOME", home.to_str().unwrap())],
@@ -2894,7 +2918,7 @@ fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
 fn container_repository(home: &Path, (gateway, provider): (u16, u16)) -> PathBuf {
     let probe = "echo x > note.txt && git add note.txt && git commit -qm probe && echo COMMIT_OK; \
                  git push origin main 2>&1 | grep -q gates.git.deny && echo PUSH_REFUSED; \
-                 touch \"$HOME/outside\" && touch .agentworkspace/MEMORY/probe.md && echo WROTE; \
+                 touch \"$HOME/outside\" && touch agentWorkspaces/talk/MEMORY/probe.md && echo WROTE; \
                  [ -f /.dockerenv ] && echo IN_CONTAINER; echo \"SESSION=$LEGIONCTL_SESSION\"; \
                  grep -q logged-in \"$HOME/.agent-state.json\" && echo STATE_READ; python3 ask-gateway.py";
     let client =
@@ -3064,7 +3088,9 @@ fn sessions_in_a_container_work_on_the_mounted_workspace_behind_the_git_gate() {
         "probe"
     );
     assert!(
-        workspace.join(".agentworkspace/MEMORY/probe.md").exists(),
+        workspace
+            .join("agentWorkspaces/talk/MEMORY/probe.md")
+            .exists(),
         "the dossier is mounted"
     );
 
@@ -3203,7 +3229,7 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
     let talk = home.join("worktrees/repo/talk");
     assert_eq!(git(&home, &talk, &["log", "-1", "--format=%s"]), "probe");
     assert!(
-        talk.join(".agentworkspace/MEMORY/probe.md").exists(),
+        talk.join("agentWorkspaces/talk/MEMORY/probe.md").exists(),
         "the dossier is shared"
     );
     let left = Command::new("pgrep")
@@ -3516,7 +3542,13 @@ fn an_ended_session_resumes_with_its_id_dossier_and_workspace() {
     // the start says the dossier is new, and where the session works
     let lines = |l: &Value| -> Vec<String> { serde_json::from_value(l["lines"].clone()).unwrap() };
     let said = lines(&first);
-    assert!(said[0].starts_with("created "), "{said:?}");
+    assert!(
+        said[0].starts_with(&format!(
+            "linked {}",
+            repo.join("agentWorkspaces").display()
+        )) && said[1].starts_with("created "),
+        "{said:?}"
+    );
     assert!(
         said.iter().any(|l| l.starts_with(&format!(
             "workspace: {} on legionctl/port (base main), ",
@@ -3667,7 +3699,7 @@ fn dossier_check_finds_dangling_links_unverified_acceptance_and_stale_evidence()
     };
     ok(&["dossier", "use", "port"]);
     ok(&["workspace", "open"]);
-    let dossier = home.join(".agentworkspace/port");
+    let dossier = home.join("agentWorkspaces/port");
     let plan = std::fs::read_to_string(dossier.join("plan.md")).unwrap().replace(
         "## Acceptance Criteria\n",
         "## Acceptance Criteria\n| id | criterion | status |\n| --- | --- | --- |\n\
@@ -4421,7 +4453,8 @@ fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_h
                  git push origin main 2>&1 | grep -q gates.git.deny && echo PUSH_REFUSED; \
                  git reset --hard HEAD 2>&1 | grep -q gates.git.deny && echo RESET_REFUSED; \
                  touch \"$HOME/outside\" 2>/dev/null || echo HOME_READONLY; \
-                 touch .agentworkspace/MEMORY/probe.md && echo DOSSIER_WRITABLE; echo \"SESSION=$LEGIONCTL_SESSION\"; \
+                 touch agentWorkspaces/port/MEMORY/probe.md && echo DOSSIER_WRITABLE; echo \"SESSION=$LEGIONCTL_SESSION\"; \
+                 touch agentWorkspaces/port/.state/dossier.db 2>/dev/null || echo EVIDENCE_READONLY; \
                  echo \"SETTINGS=$(cat \"$1\")\"; \
                  [ -e \"$XDG_RUNTIME_DIR/bus\" ] || echo BUS_HIDDEN; [ -S \"$HOME/decoy.sock\" ] || echo SOCKET_HIDDEN; \
                  [ -e /dev/nvidiactl ] && echo NVIDIA_NODES || echo NO_GPU";
@@ -4457,6 +4490,7 @@ fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_h
         "RESET_REFUSED",
         "HOME_READONLY",
         "DOSSIER_WRITABLE",
+        "EVIDENCE_READONLY",
         "BUS_HIDDEN",
         "SOCKET_HIDDEN",
         "NO_GPU",
@@ -5297,4 +5331,677 @@ fn test_folders_go_with_their_owner_and_a_failed_test_keeps_them_only_when_asked
         ["legionctl-e2e-panicked", "lc-panicked"],
         "only the folders of the failed part are kept, the HOME then the runtime: {stderr}"
     );
+}
+
+/// The rows of `query` on the SQLite file `db` as JSON arrays (python3's sqlite3: what is on disk).
+fn rows(db: &Path, query: &str) -> Value {
+    let out = Command::new("python3")
+        .args([
+            "-c",
+            "import json, sqlite3, sys; c = sqlite3.connect(sys.argv[1]); r = c.execute(sys.argv[2]).fetchall(); \
+             c.commit(); print(json.dumps(r))",
+        ])
+        .arg(db)
+        .arg(query)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{query}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+/// The newest job of `kind` once `until` holds for it.
+fn job_when(op: &Operator, kind: &str, until: impl Fn(&Value) -> bool) -> Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let out = op.cli(&["jobs", "list", "--json", "--limit", "1000"]);
+        let page: Value = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
+        let job = page["items"]
+            .as_array()
+            .and_then(|jobs| jobs.iter().rev().find(|j| j["kind"] == kind));
+        if let Some(job) = job.filter(|j| until(j)) {
+            return job.clone();
+        }
+        assert!(std::time::Instant::now() < deadline, "job {kind}: {page:#}");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// The id in a dossier's `dossier.jsonc` (its comment lines left out).
+fn dossier_id(dir: &Path) -> String {
+    let text: String = std::fs::read_to_string(dir.join("dossier.jsonc"))
+        .unwrap()
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect();
+    let value: Value = serde_json::from_str(&text).unwrap();
+    value["id"].as_str().unwrap().to_string()
+}
+
+/// The old home of the migration test in `home`: alpha (with a commented dossier.jsonc) and beta (with an id), an
+/// old backup file, the workspace.db of `tests/fixtures/workspace-v13.sql`, a main checkout that ignores the old link
+/// by a committed line, and alpha's worktree with the old link. Returns the repository and the worktree.
+/// The id that beta has before the migration.
+const BETA: &str = "dsr-01JAAAAAAAAAAAAAAAAAAAAAAA";
+
+fn old_home(home: &Path) -> (PathBuf, PathBuf) {
+    let repo = repository(home);
+    let old = home.join(".agentworkspace");
+    write(&old.join("alpha/plan.md"), "# alpha\n");
+    write(&old.join("alpha/MEMORY/01-x.md"), "# x\n");
+    write(
+        &old.join("alpha/dossier.jsonc"),
+        "// alpha's data\n{\n  \"title\": \"alpha\",\n  \"entities\": []\n}\n",
+    );
+    write(&old.join("beta/plan.md"), "# beta\n");
+    write(
+        &old.join("beta/dossier.jsonc"),
+        &format!("{{\"id\": \"{BETA}\"}}\n"),
+    );
+    write(&old.join("workspace.db.v6.bak"), "an old backup");
+    write(&repo.join(".gitignore"), "target/\n/.agentworkspace\n");
+    git(home, &repo, &["add", ".gitignore"]);
+    git(
+        home,
+        &repo,
+        &["commit", "--quiet", "-m", "ignore the old link"],
+    );
+    let wt = home.join("worktrees/repo/alpha");
+    git(
+        home,
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "legionctl/alpha",
+            wt.to_str().unwrap(),
+            "main",
+        ],
+    );
+    std::os::unix::fs::symlink(old.join("alpha"), wt.join(".agentworkspace")).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let fixture = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/workspace-v13.sql"),
+    )
+    .unwrap()
+    .replace("@HOME@", home.to_str().unwrap())
+    .replace("@NOW@", &now.to_string());
+    let made = Command::new("python3")
+        .args([
+            "-c",
+            "import sqlite3, sys; sqlite3.connect(sys.argv[1]).executescript(sys.argv[2])",
+        ])
+        .arg(old.join("workspace.db"))
+        .arg(&fixture)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    (repo, wt)
+}
+
+/// The operator of `home` again: the migration runs at each start.
+fn start_again(home: &Path, n: u32) -> Operator {
+    operator_in(&format!("migrate{n}"), home)
+}
+
+/// The migration job failed at the step that `why` names, and the old root is still there.
+fn migration_failed(op: &Operator, home: &Path, why: &str) {
+    let job = job_when(op, "dossier.migrate", |j| j["state"] != "running");
+    assert_eq!(job["state"], "failed", "{job:#}");
+    assert!(job["error"].as_str().unwrap().contains(why), "{job:#}");
+    assert!(
+        home.join(".agentworkspace").exists(),
+        "the old root stays until the counts match"
+    );
+}
+
+/// Steps 1 to 5 of the migration, each cut by an obstacle in its way, then the obstacle removed; returns the ids of
+/// alpha and beta.
+fn migrate_with_a_cut_at_each_step(home: &Path, repo: &Path) -> (String, String) {
+    let (old, homes) = (home.join(".agentworkspace"), home.join("agentWorkspaces"));
+    let state = home.join(".local/state/legionctl");
+    // 1. the live binding of s-live: the job waits, and the dossier tools refuse and say why (as doctor does)
+    write(&state.join("backup"), "a file where the backup folder goes");
+    let op = start_again(home, 1);
+    let waiting = job_when(&op, "dossier.migrate", |j| j["input"]["waiting"].is_array());
+    assert_eq!(
+        waiting["input"]["waiting"],
+        json!(["session s-live holds dossier beta"])
+    );
+    let refused = op.cli(&["dossier", "list"]);
+    assert!(
+        !refused.status.success()
+            && String::from_utf8_lossy(&refused.stderr).contains(
+                "waits until these sessions end or go stale: session s-live holds dossier beta"
+            ),
+        "{refused:?}"
+    );
+    // 2. the binding goes stale; the backup fails on the file in its place
+    rows(
+        &old.join("workspace.db"),
+        "UPDATE bindings SET updated = 0 WHERE session = 's-live'",
+    );
+    migration_failed(&op, home, "backing up");
+    assert!(old.join("alpha").is_dir() && !homes.join("alpha").exists());
+    drop(op);
+    std::fs::remove_file(state.join("backup")).unwrap();
+
+    // 3. the move: a file holds beta's place, so alpha moves and beta stays
+    write(&homes.join("beta"), "in the way");
+    let op = start_again(home, 2);
+    migration_failed(&op, home, "agentWorkspaces/beta exists");
+    assert!(homes.join("alpha/MEMORY/01-x.md").is_file() && !old.join("alpha").exists());
+    assert!(old.join("beta/plan.md").is_file());
+    let alpha = dossier_id(&homes.join("alpha"));
+    assert!(alpha.starts_with("dsr-") && alpha.len() == 30, "{alpha}");
+    assert!(
+        std::fs::read_to_string(homes.join("alpha/dossier.jsonc"))
+            .unwrap()
+            .starts_with("// alpha's data\n{\n  \"id\": "),
+        "the id goes in, the comment stays"
+    );
+    drop(op);
+    std::fs::remove_file(homes.join("beta")).unwrap();
+
+    // 4. the split: alpha's .state is a file
+    write(&homes.join("alpha/.state"), "in the way");
+    let op = start_again(home, 3);
+    migration_failed(&op, home, "alpha/.state");
+    let beta = dossier_id(&homes.join("beta"));
+    assert_eq!(beta, BETA, "an id that the dossier has stays");
+    drop(op);
+    std::fs::remove_file(homes.join("alpha/.state")).unwrap();
+
+    // 5. the links: the repository's info/exclude is a folder
+    let exclude = repo.join(".git/info/exclude");
+    let _ = std::fs::remove_file(&exclude);
+    std::fs::create_dir_all(&exclude).unwrap();
+    let op = start_again(home, 4);
+    migration_failed(&op, home, "info/exclude");
+    drop(op);
+    std::fs::remove_dir(&exclude).unwrap();
+    (alpha, beta)
+}
+
+/// After the migration: each row in its dossier or the operator's database, and the new links and ignore lines.
+fn migrated_rows_links_and_lines(op: &Operator, home: &Path, repo: &Path, wt: &Path) {
+    let (homes, state) = (
+        home.join("agentWorkspaces"),
+        home.join(".local/state/legionctl"),
+    );
+    // each row in its place, once: a session's rows by its binding, the rest of the repository's by the oldest
+    // dossier there; the kills are keyed (without a key they ask for evidence again)
+    let in_db =
+        |dossier: &str, query: &str| rows(&homes.join(dossier).join(".state/dossier.db"), query);
+    let counts = "SELECT (SELECT count(*) FROM writes), (SELECT count(*) FROM status_changes), \
+                  (SELECT count(*) FROM nudges), (SELECT count(*) FROM test_runs), (SELECT count(*) FROM mutants), \
+                  (SELECT count(*) FROM test_accepts)";
+    assert_eq!(in_db("alpha", counts), json!([[2, 2, 1, 3, 2, 0]]));
+    assert_eq!(in_db("beta", counts), json!([[1, 1, 1, 0, 0, 1]]));
+    assert_eq!(
+        in_db("alpha", "SELECT key FROM annotations"),
+        json!([["rust:.:g"]])
+    );
+    assert_eq!(
+        in_db("beta", "SELECT key FROM annotations"),
+        json!([["rust:.:f"]])
+    );
+    assert_eq!(
+        in_db("alpha", "SELECT killed FROM mutants ORDER BY id"),
+        json!([[r#"[{"test":"a","file":null,"hash":null}]"#], ["[]"]])
+    );
+    let operator_db = state.join("operator.db");
+    assert_eq!(
+        rows(
+            &operator_db,
+            "SELECT (SELECT count(*) FROM bindings), (SELECT count(*) FROM workspaces), \
+             (SELECT count(*) FROM sessions), (SELECT count(*) FROM threads), (SELECT count(*) FROM thread_log), \
+             (SELECT count(*) FROM members), (SELECT count(*) FROM messages), (SELECT count(*) FROM watch_rules)"
+        ),
+        json!([[3, 2, 2, 1, 2, 2, 1, 1]])
+    );
+    assert!(
+        op.ok(&["workspace", "list"])
+            .contains(&wt.display().to_string()),
+        "the workspace rows are the operator's now"
+    );
+
+    // the links: in the main checkout and the worktree, the old link and line are gone and staged, the new link
+    // is ignored (the main checkout's .gitignore, the worktree's info/exclude)
+    for dir in [repo, wt] {
+        assert!(std::fs::symlink_metadata(dir.join(".agentworkspace")).is_err());
+        assert_eq!(
+            std::fs::read_link(dir.join("agentWorkspaces")).unwrap(),
+            homes
+        );
+        git(home, dir, &["check-ignore", "-q", "agentWorkspaces"]);
+        assert_eq!(
+            git(home, dir, &["diff", "--cached", "--name-only"]),
+            ".gitignore"
+        );
+        assert_eq!(
+            git(home, dir, &["log", "-1", "--format=%s"]),
+            "ignore the old link"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(repo.join(".gitignore")).unwrap(),
+        "target/\n/agentWorkspaces\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(wt.join(".gitignore")).unwrap(),
+        "target/\n"
+    );
+    assert!(
+        std::fs::read_to_string(repo.join(".git/info/exclude"))
+            .unwrap()
+            .lines()
+            .any(|l| l == "/agentWorkspaces")
+    );
+}
+
+/// The one-time move of a realistic old home (design 23, E1): two dossiers (beta without a dossier.jsonc), a v13
+/// workspace.db (P5's threads, kills not keyed) with bindings, sessions, a live binding, kills, annotations and an
+/// accept, and alpha's worktree with the old link. The job waits for the live binding, is cut at the backup, the move,
+/// the split and the links (an obstacle in the way each time), and runs again at each operator start. Then each row
+/// is in its place and counted once, the ids stay, the links and ignore lines are new, and `~/.agentworkspace` is in
+/// the backup; a later start does nothing.
+#[test]
+fn the_dossiers_move_to_their_homes_once_and_keep_their_ids_links_and_rows() {
+    let (op, home) = operator("migrate");
+    drop(op);
+    let (repo, wt) = old_home(&home);
+    let (alpha, beta) = migrate_with_a_cut_at_each_step(&home, &repo);
+    let (old, homes, state) = (
+        home.join(".agentworkspace"),
+        home.join("agentWorkspaces"),
+        home.join(".local/state/legionctl"),
+    );
+    // 6. the counts match, and the old root goes to the backup
+    let op = start_again(&home, 5);
+    let done = job_when(&op, "dossier.migrate", |j| j["state"] != "running");
+    assert_eq!(done["state"], "done", "{done:#}");
+    assert_eq!(done["result"]["dossiers"], json!(["alpha", "beta"]));
+    assert_eq!(
+        done["result"]["dropped"],
+        json!({"status_changes": 1}),
+        "the row of the dossier that is gone"
+    );
+    assert!(!old.exists());
+    let backups: Vec<String> = std::fs::read_dir(state.join("backup"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(backups.len(), 2, "{backups:?}");
+    let rest = backups
+        .iter()
+        .find(|b| b.starts_with("agentworkspace-"))
+        .unwrap();
+    assert!(
+        state
+            .join("backup")
+            .join(rest)
+            .join("workspace.db.v6.bak")
+            .is_file()
+    );
+    assert!(backups.iter().any(|b| b.starts_with("workspace.db.")));
+    assert_eq!(
+        (
+            dossier_id(&homes.join("alpha")),
+            dossier_id(&homes.join("beta"))
+        ),
+        (alpha.clone(), beta.clone()),
+        "each id stays across the restarts"
+    );
+    let listed: Value = serde_json::from_str(&op.ok(&["dossier", "list", "--json"])).unwrap();
+    let mut ids: Vec<(String, String)> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            (
+                d["name"].as_str().unwrap().into(),
+                d["id"].as_str().unwrap().into(),
+            )
+        })
+        .collect();
+    ids.sort();
+    assert_eq!(ids, [("alpha".into(), alpha), ("beta".into(), beta)]);
+    migrated_rows_links_and_lines(&op, &home, &repo, &wt);
+    drop(op);
+
+    // a later start has nothing to move
+    let op = start_again(&home, 6);
+    let page: Value = serde_json::from_str(&op.ok(&["jobs", "list", "--json"])).unwrap();
+    let runs = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|j| j["kind"] == "dossier.migrate")
+        .count();
+    assert_eq!(runs, 5);
+}
+
+/// The run of `args` as session `s` in `cwd`: whether it succeeded, and its stdout and stderr.
+fn as_session(
+    op: &Operator,
+    home: &Path,
+    (s, cwd): (&str, &Path),
+    args: &[&str],
+) -> (bool, String) {
+    let o = op.run(
+        cwd,
+        &[("HOME", home.to_str().unwrap()), ("LEGIONCTL_SESSION", s)],
+        args,
+        "",
+    );
+    (
+        o.status.success(),
+        String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr),
+    )
+}
+
+/// The output of `args` as session `s` in `cwd`, which must succeed.
+fn session_ok(op: &Operator, home: &Path, (s, cwd): (&str, &Path), args: &[&str]) -> String {
+    let (success, out) = as_session(op, home, (s, cwd), args);
+    assert!(success, "{args:?}: {out}");
+    out
+}
+
+/// The first dossier use in a directory (design 23, E1a): a real `agentWorkspaces` folder with two dossiers (one
+/// name in use in the home) and a file is imported (copies compared, the clash renamed, the folder kept while the
+/// file is there), a cut-off import finishes without a second copy, and the folder goes to the backup and becomes
+/// the link. git ignores the link by a staged `.gitignore` line in the main checkout and by info/exclude in a
+/// worktree; a plain folder gets the link only; a link that the user made stays; the home itself is not imported.
+#[test]
+fn the_first_use_in_a_repository_imports_its_agentworkspaces_folder_and_links_the_home() {
+    let (op, home) = operator("home-link");
+    let repo = repository(&home);
+    git(&home, &repo, &["rm", "--quiet", ".gitignore"]);
+    git(&home, &repo, &["commit", "--quiet", "-m", "no ignore line"]);
+    let homes = home.join("agentWorkspaces");
+    let backup = home.join(".local/state/legionctl/backup");
+    write(&homes.join("notes/plan.md"), "# my notes\n");
+    let theirs = repo.join("agentWorkspaces");
+    write(&theirs.join("notes/plan.md"), "# their notes\n");
+    write(&theirs.join("notes/MEMORY/01-a.md"), "# a\n");
+    write(&theirs.join("draft/plan.md"), "# draft\n");
+    write(&theirs.join("README.txt"), "not a dossier\n");
+    let use_port = |cwd: &Path| as_session(&op, &home, ("s1", cwd), &["dossier", "use", "port"]);
+
+    // both dossiers come in, the clash as notes-imported-1; the file keeps the folder there
+    let (_, first) = use_port(&repo);
+    assert!(
+        first.contains(&format!(
+            "imported {} as dossier notes-imported-1 (the name notes is in use)",
+            theirs.join("notes").display()
+        )) && first.contains("keeps README.txt"),
+        "{first}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(homes.join("notes-imported-1/MEMORY/01-a.md")).unwrap(),
+        "# a\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(homes.join("notes/plan.md")).unwrap(),
+        "# my notes\n"
+    );
+    assert!(dossier_id(&homes.join("draft")).starts_with("dsr-"));
+    assert!(theirs.join("notes/plan.md").is_file() && !theirs.is_symlink());
+
+    // the file goes; an import cut off before the folder moves (a file where the backup goes) leaves the source
+    std::fs::remove_file(theirs.join("README.txt")).unwrap();
+    write(&backup, "in the way");
+    let (cut, why) = use_port(&repo);
+    assert!(!cut && why.contains("moving"), "{why}");
+    assert!(theirs.join("draft/plan.md").is_file());
+    std::fs::remove_file(&backup).unwrap();
+
+    // the next use finishes: nothing copied twice, the source in the backup, the link in its place
+    let (done, second) = use_port(&repo);
+    assert!(
+        done && second.contains("is dossier notes-imported-1 (imported before)"),
+        "{second}"
+    );
+    let mut names: Vec<String> = std::fs::read_dir(&homes)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["draft", "notes", "notes-imported-1", "port"]);
+    assert_eq!(std::fs::read_link(&theirs).unwrap(), homes);
+    let saved = std::fs::read_dir(&backup)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert!(
+        saved.join("notes/MEMORY/01-a.md").is_file(),
+        "{}",
+        saved.display()
+    );
+
+    // git ignores the link: the line without a trailing slash, staged and not committed
+    assert_eq!(
+        std::fs::read_to_string(repo.join(".gitignore")).unwrap(),
+        "/agentWorkspaces\n"
+    );
+    assert_eq!(
+        git(&home, &repo, &["diff", "--cached", "--name-only"]),
+        ".gitignore"
+    );
+    assert_eq!(
+        git(&home, &repo, &["log", "-1", "--format=%s"]),
+        "no ignore line"
+    );
+    assert_eq!(
+        git(&home, &repo, &["check-ignore", "agentWorkspaces"]),
+        "agentWorkspaces"
+    );
+    links_beyond_the_main_checkout(&op, &home, &repo);
+}
+
+/// The link in a worktree whose branch has no line yet (info/exclude), in a plain folder (no .gitignore), beside a
+/// link that the user made (kept and named), and in the home itself (nothing to import or link).
+fn links_beyond_the_main_checkout(op: &Operator, home: &Path, repo: &Path) {
+    let homes = home.join("agentWorkspaces");
+    let use_port = |cwd: &Path| session_ok(op, home, ("s1", cwd), &["dossier", "use", "port"]);
+    session_ok(op, home, ("s1", repo), &["workspace", "open"]);
+    let ws = home.join("worktrees/repo/port");
+    assert_eq!(
+        std::fs::read_link(ws.join("agentWorkspaces")).unwrap(),
+        homes
+    );
+    assert!(ws.join("agentWorkspaces/port/plan.md").is_file());
+    assert_eq!(git(home, &ws, &["status", "--porcelain"]), "");
+    assert!(
+        std::fs::read_to_string(repo.join(".git/info/exclude"))
+            .unwrap()
+            .lines()
+            .any(|l| l == "/agentWorkspaces")
+    );
+
+    let plain = home.join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    use_port(&plain);
+    assert_eq!(
+        std::fs::read_link(plain.join("agentWorkspaces")).unwrap(),
+        homes
+    );
+    assert!(!plain.join(".gitignore").exists());
+
+    let other = home.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    std::os::unix::fs::symlink(home.join("elsewhere"), other.join("agentWorkspaces")).unwrap();
+    let kept = use_port(&other);
+    assert!(
+        kept.contains("links to") && kept.contains("does not replace it"),
+        "{kept}"
+    );
+    assert_eq!(
+        std::fs::read_link(other.join("agentWorkspaces")).unwrap(),
+        home.join("elsewhere")
+    );
+
+    use_port(home);
+    assert!(std::fs::symlink_metadata(&homes).unwrap().is_dir());
+    assert!(homes.join("notes-imported-1").is_dir() && !homes.join("notes-imported-2").exists());
+}
+
+/// The descriptions of the mutants in `dossier`'s own database.
+fn mutants_of(home: &Path, dossier: &str) -> Value {
+    rows(
+        &home
+            .join("agentWorkspaces")
+            .join(dossier)
+            .join(".state/dossier.db"),
+        "SELECT description FROM mutants ORDER BY id",
+    )
+}
+
+/// The mutant `description` killed by `adds`, recorded by session `s` in `ws`.
+fn record_mutant(op: &Operator, home: &Path, (s, ws): (&str, &Path), description: &str) {
+    session_ok(
+        op,
+        home,
+        (s, ws),
+        &[
+            "code",
+            "tests",
+            "mutant",
+            "record",
+            "src/lib.rs",
+            "1",
+            description,
+            "adds",
+        ],
+    );
+}
+
+/// The mutants that `code tests show adds` gives in `ws`.
+fn shown_mutants(op: &Operator, home: &Path, (s, ws): (&str, &Path)) -> Vec<String> {
+    let shown: Value = serde_json::from_str(&session_ok(
+        op,
+        home,
+        (s, ws),
+        &["code", "tests", "show", "adds", "--json"],
+    ))
+    .unwrap();
+    shown["mutants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["description"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// Repository facts (design 23, E1 rule 4) and renames (decision 7): a kill recorded in alpha's workspace is in
+/// alpha's dossier.db only, and beta's workspace in the same repository reads it. A rename to a name in use is
+/// refused; a rename keeps the id, the binding, the workspace row, the facts and the link, and the next fact goes
+/// into the renamed dossier. The write guard sees through the link: beta's session may not write alpha's files.
+#[test]
+fn facts_written_from_one_dossier_are_read_from_another_and_a_rename_keeps_rows_and_links() {
+    let (op, home) = operator("facts");
+    let repo = repository(&home);
+    write(
+        &repo.join("tests/e2e.rs"),
+        "#[test]\nfn adds() {\n    assert_eq!(1 + 1, 2);\n}\n",
+    );
+    write(&repo.join("src/lib.rs"), "pub fn f() {}\n");
+    git(&home, &repo, &["add", "."]);
+    git(&home, &repo, &["commit", "--quiet", "-m", "a test"]);
+    for (s, dossier) in [("s-a", "alpha"), ("s-b", "beta")] {
+        session_ok(&op, &home, (s, &repo), &["dossier", "use", dossier]);
+        session_ok(&op, &home, (s, &repo), &["workspace", "open"]);
+    }
+    let (ws_a, ws_b) = (
+        home.join("worktrees/repo/alpha"),
+        home.join("worktrees/repo/beta"),
+    );
+    let homes = home.join("agentWorkspaces");
+
+    record_mutant(&op, &home, ("s-a", &ws_a), "m1");
+    assert_eq!(
+        (mutants_of(&home, "alpha"), mutants_of(&home, "beta")),
+        (json!([["m1"]]), json!([]))
+    );
+    assert_eq!(shown_mutants(&op, &home, ("s-b", &ws_b)), ["m1"]);
+
+    // a name in use is refused; a rename keeps the id and moves every row
+    let id = dossier_id(&homes.join("alpha"));
+    let (renamed, why) = as_session(
+        &op,
+        &home,
+        ("s-a", &repo),
+        &["dossier", "rename", "alpha", "beta"],
+    );
+    assert!(
+        !renamed && why.contains("the dossier name beta is in use"),
+        "{why}"
+    );
+    session_ok(
+        &op,
+        &home,
+        ("s-a", &repo),
+        &["dossier", "rename", "alpha", "gamma"],
+    );
+    assert_eq!(dossier_id(&homes.join("gamma")), id);
+    assert!(!homes.join("alpha").exists());
+    assert!(
+        session_ok(&op, &home, ("s-a", &repo), &["dossier", "active"])
+            .contains("active dossier gamma")
+    );
+    let list: Value = serde_json::from_str(&session_ok(
+        &op,
+        &home,
+        ("s-a", &repo),
+        &["workspace", "list", "--json"],
+    ))
+    .unwrap();
+    assert!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["dossier"] == "gamma" && w["path"] == ws_a.to_str().unwrap()),
+        "{list:#}"
+    );
+    assert!(
+        ws_a.join("agentWorkspaces/gamma/plan.md").is_file(),
+        "the link stays valid"
+    );
+    record_mutant(&op, &home, ("s-a", &ws_a), "m2");
+    assert_eq!(mutants_of(&home, "gamma"), json!([["m1"], ["m2"]]));
+    assert_eq!(shown_mutants(&op, &home, ("s-b", &ws_b)), ["m1", "m2"]);
+    // beta's workspace writes into beta, not into the oldest dossier of the repository
+    record_mutant(&op, &home, ("s-b", &ws_b), "m3");
+    assert_eq!(mutants_of(&home, "beta"), json!([["m3"]]));
+    let mut shown = shown_mutants(&op, &home, ("s-a", &ws_a));
+    shown.sort();
+    assert_eq!(shown, ["m1", "m2", "m3"]);
+
+    // beta's session writes its own dossier through the link, not gamma's
+    let guard = |path: PathBuf| {
+        let out = op.run(
+            &ws_b,
+            &[("HOME", home.to_str().unwrap())],
+            &["hook", "pre-tool"],
+            &claude_hook(
+                "pre-tool",
+                &json!({"session_id": "s-b", "cwd": ws_b, "tool_name": "Write",
+                        "tool_input": {"file_path": path, "content": "x"}}),
+            ),
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    assert!(guard(ws_b.join("agentWorkspaces/gamma/plan.md")).contains("deny"));
+    assert!(!guard(ws_b.join("agentWorkspaces/beta/plan.md")).contains("deny"));
 }

@@ -220,6 +220,8 @@ wire_enum! {
 wire! {
     struct DossierInfo from core::dossier::DossierInfo {
         name: String,
+        /// The stable id in its `dossier.jsonc`; it stays when the dossier is renamed.
+        id: Option<String>,
         has_plan: bool,
     }
 
@@ -593,6 +595,8 @@ wire! {
         branch: String,
         /// The ref the branch started from and merges into.
         base: String,
+        /// The topic of a topic workspace; empty for the dossier's own.
+        topic: String,
     }
 
     /// A test that failed with a mutation, as it was then: it counts while the test has the same token hash.

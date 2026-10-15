@@ -3,4 +3,4 @@ pkg/
 *.pkg.tar.*
 target/
 node_modules/
-/.agentworkspace
+/agentWorkspaces

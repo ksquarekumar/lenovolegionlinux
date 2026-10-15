@@ -7,12 +7,12 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use legionctl_api::{
     Account, BenchCompare, BenchCompareIn, BenchIn, BenchRun, Code, DossierAddIn, DossierAppendIn,
-    DossierCheckIn, DossierEditIn, DossierFindings, DossierList, DossierReadIn, DossierSearchIn,
-    DossierUseIn, DossierWriteIn, DryRunIn, Events, EventsIn, GateIn, Guard, GuardIn, HookReply,
-    HookRunIn, InspectIn, IntoWire, KnobDetail, Knobs, Launch, Lines, Locks, MonitorIn, Readings,
-    RecordIn, Recording, ReplayIn, Samples, SensorsIn, SessionExec, SessionId, SessionIdIn,
-    SessionIn, SessionResumeIn, SessionStartIn, SessionState, Sessions, ToolCall, ToolCallRow,
-    ToolCallsIn, TuneIn, TuneReport, WindowsState, coded,
+    DossierCheckIn, DossierEditIn, DossierFindings, DossierList, DossierReadIn, DossierRenameIn,
+    DossierSearchIn, DossierUseIn, DossierWriteIn, DryRunIn, Events, EventsIn, GateIn, Guard,
+    GuardIn, HookReply, HookRunIn, InspectIn, IntoWire, KnobDetail, Knobs, Launch, Lines, Locks,
+    MonitorIn, Readings, RecordIn, Recording, ReplayIn, Samples, SensorsIn, SessionExec, SessionId,
+    SessionIdIn, SessionIn, SessionResumeIn, SessionStartIn, SessionState, Sessions, ToolCall,
+    ToolCallRow, ToolCallsIn, TuneIn, TuneReport, WindowsState, coded,
 };
 use legionctl_api::{
     AccountAddIn, AgentCheck, AgentsCheckIn, CapabilityList, Changes, CheckpointIn, CleanupIn,
@@ -234,6 +234,12 @@ pub fn stop_run(job: i64) -> bool {
 }
 
 /// Record how a job ended.
+/// Run the dossier migration as job `job` and record how it ended.
+fn migrate(db: &Db, job: i64) -> Result<()> {
+    let out = config(None).and_then(|r| legionctl_core::migrate::run(&r.config.dossier, db, job));
+    end_job(db, job, &out)
+}
+
 pub(crate) fn end_job<T: serde::Serialize>(db: &Db, job: i64, out: &Result<T>) -> Result<()> {
     let outcome = match out {
         Ok(value) => Ok(serde_json::to_value(value)?),
@@ -1054,7 +1060,12 @@ fn agent_findings() -> Result<Vec<String>> {
             )
         })
         .collect();
+    if legionctl_core::migrate::pending() {
+        w.push(legionctl_core::migrate::state(&Db::open_default()?));
+        return Ok(w);
+    }
     let store = dossiers()?;
+    w.extend(store.sync_registry()?);
     for lock in store.locks()?.iter().filter(|l| l.stale) {
         w.push(format!(
             "dossier {} is bound to session {}, idle past dossier.stale_hours; the next session that uses it takes it over",
@@ -1062,6 +1073,10 @@ fn agent_findings() -> Result<Vec<String>> {
         ));
     }
     for ws in store.workspaces(None)? {
+        // the link of the home (design 23, E1a), where the main checkout and the workspace have one
+        for dir in [&ws.repo, &ws.path] {
+            w.extend(legionctl_core::home::finding(&store, dir));
+        }
         let status = store.workspace_status(&ws)?;
         for drift in &status.drift {
             w.push(format!("workspace {}: {drift}", ws.path.display()));
@@ -1181,8 +1196,12 @@ fn dossier_nudge(
         return Ok(None);
     };
     let (turns, told) = match event {
-        Event::Stop => store.turn(session, &legionctl_core::workspace::work_state(store, ws)?)?,
-        Event::Prompt => store.nudge_state(session)?,
+        Event::Stop => store.turn(
+            session,
+            dossier,
+            &legionctl_core::workspace::work_state(store, ws)?,
+        )?,
+        Event::Prompt => store.nudge_state(session, dossier)?,
         Event::SessionStart => return Ok(None),
     };
     let level = match turns / every {
@@ -1198,7 +1217,7 @@ fn dossier_nudge(
             None => db.record(&ctx.actor, "dossier.ack", &payload)?,
             Some(_) => db.record(&ctx.actor, "dossier.nudge", &payload)?,
         };
-        store.told(session, level)?;
+        store.told(session, dossier, level)?;
     }
     let text = format!(
         "legionctl: {turns} replies changed the workspace since this session last wrote dossier {dossier}. Record \
@@ -1390,6 +1409,7 @@ impl Operator {
                             .and_then(|r| pack_job(&job.input, &r.config.session));
                         end_job(&db, job.id, &out)
                     }
+                    legionctl_core::migrate::JOB => migrate(&db, job.id),
                     crate::code::REFRESH => crate::code::queue(job.id, job.input.clone())
                         .or_else(|e| end_job(&db, job.id, &Err::<Lines, _>(e))),
                     other => db.job_end(job.id, &Err(format!("no way to resume a {other} job"))),
@@ -1399,6 +1419,30 @@ impl Operator {
                 }
             });
         }
+        Ok(())
+    }
+
+    /// Start the dossier migration (design 23, E1) while `~/.agentworkspace` exists and no migration job runs; it
+    /// runs in the background, and the dossier operations refuse until it is done.
+    ///
+    /// # Errors
+    /// The operator's database cannot be read or written.
+    pub fn migrate_dossiers() -> Result<()> {
+        let db = Db::open_default()?;
+        let running = db
+            .jobs_in("running")?
+            .iter()
+            .any(|j| j.kind == legionctl_core::migrate::JOB);
+        if !legionctl_core::migrate::pending() || running {
+            return Ok(());
+        }
+        let job = db.job_begin(legionctl_core::migrate::JOB, &serde_json::json!({}))?;
+        std::thread::spawn(move || {
+            let outcome = Db::open_default().and_then(|db| migrate(&db, job));
+            if let Err(e) = outcome {
+                eprintln!("operator: job {job} not recorded: {e:#}");
+            }
+        });
         Ok(())
     }
 
@@ -2318,6 +2362,16 @@ impl Engine for Operator {
 
     fn dossier_list(&self, _: &Ctx, _: Empty) -> Result<DossierList> {
         Ok(dossiers()?.list().into_wire())
+    }
+
+    fn dossier_rename(&self, ctx: &Ctx, input: DossierRenameIn) -> Result<Lines> {
+        let lines = dossiers()?.rename(&input.name, &input.to)?;
+        Db::open_default()?.record(
+            &ctx.actor,
+            "dossier.rename",
+            &serde_json::json!({"from": input.name, "to": input.to}),
+        )?;
+        Ok(Lines { lines })
     }
 
     fn dossier_read(&self, _: &Ctx, input: DossierReadIn) -> Result<Lines> {

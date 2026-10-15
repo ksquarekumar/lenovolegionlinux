@@ -127,7 +127,7 @@ clients needing boundaries should apply operating-system sandboxing. So:
 
 ## Workspaces
 
-Operating directory, named workspace in `~/.agentworkspace`, dossier and change sets: 18-workspaces.
+Operating directory, dossier home `~/agentWorkspaces`, dossier and change sets: 18-workspaces.
 
 ## Code graph and work ordering
 
@@ -206,7 +206,7 @@ its own helper agents, such as the work-ordering planner or the intent-log summa
 | 1a (done) | legionctl-core, client CLI/TUI/stdio MCP, Claude Code plugin, Codex MCP snippet |
 | 1b (done 2026-10-13) | legionctl-operator with the operation registry on a unix socket; CLI, TUI and MCP as clients; audit log |
 | 2 | Sandboxed ACP sessions (bwrap), session registry and resume, overlay build caches; detail in 14-sessions |
-| 3 (milestone 1 done 2026-10-13: dossier, binding, gate) | Workspaces: `~/.agentworkspace`, dossier, change sets, gate (18-workspaces) |
+| 3 (milestone 1 done 2026-10-13: dossier, binding, gate) | Workspaces: the dossier home (`~/agentWorkspaces` since design 23 P9), dossier, change sets, gate (18-workspaces) |
 | 4 | Code graph mapping and dependency ordering of work items |
 | 5 | Settings editing, plugin/MCP/skill management, accounts and usage |
 | 6 | AI gateway with exact and semantic cache |

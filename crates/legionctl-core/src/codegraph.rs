@@ -1031,7 +1031,8 @@ pub fn annotate(
         read: HashMap::new(),
     }
     .content_hash(&node)?;
-    dossiers.db().execute(
+    let writer = dossiers.writer(dir)?;
+    writer.conn().execute(
         "INSERT INTO annotations (repo, key, kind, value, tree, content_hash, session, agent, created)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
@@ -1046,7 +1047,7 @@ pub fn annotate(
             now()
         ],
     )?;
-    Ok(dossiers.db().last_insert_rowid())
+    Ok(writer.conn().last_insert_rowid())
 }
 
 /// The annotations of the repository (or of one key), each with its state at each ref (default HEAD).
@@ -1069,7 +1070,8 @@ pub fn annotations(
         let graph = if db.exists() { Some(nodes(&db)?) } else { None };
         at.push((rev, tree, graph));
     }
-    let mut stmt = dossiers.db().prepare(
+    let facts = dossiers.facts(dir)?;
+    let mut stmt = facts.prepare(
         "SELECT id, key, kind, value, tree, content_hash, session, agent, created FROM annotations
          WHERE repo = ?1 AND (?2 IS NULL OR key = ?2) ORDER BY id",
     )?;

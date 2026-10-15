@@ -665,6 +665,14 @@ pub struct DossierUseIn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DossierRenameIn {
+    /// The dossier's name now.
+    pub name: String,
+    /// The new name: a-z, 0-9 and '-', not in use. The dossier's id, bindings, workspaces and sessions stay.
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DossierReadIn {
     /// <dossier>/<file>, relative to the dossier root.
     pub path: String,

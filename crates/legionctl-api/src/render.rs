@@ -893,10 +893,11 @@ impl Render for Vec<DossierInfo> {
     fn text(&self) -> String {
         self.iter()
             .map(|d| {
+                let id = d.id.as_deref().unwrap_or("(no id)");
                 if d.has_plan {
-                    d.name.clone()
+                    format!("{}  {id}", d.name)
                 } else {
-                    format!("{}  (no plan.md)", d.name)
+                    format!("{}  {id}  (no plan.md)", d.name)
                 }
             })
             .collect::<Vec<_>>()

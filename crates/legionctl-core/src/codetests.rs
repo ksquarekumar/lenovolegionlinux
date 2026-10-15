@@ -1,6 +1,7 @@
 //! Tests as evidence (design 23, A7): test runs per test, mutant records (from `cargo-mutants` on the files of the
 //! change set, and from the agents' own mutation checks), the review signals of the new and changed tests of a change
-//! set, and the gate that `workspace checkpoint` runs before it commits. The records are in `workspace.db`, keyed by
+//! set, and the gate that `workspace checkpoint` runs before it commits. The records are in the writer's
+//! `dossier.db` and are read as the union of the dossiers attached to the repository (design 23, E1 rule 4), keyed by
 //! the repository (its git common folder, so that every worktree of one repository shares them).
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,7 +19,7 @@ use crate::db::now;
 use crate::dossier::Dossiers;
 use crate::workspace::{git, git_common_dir};
 
-/// The tables of the test records at workspace.db v12 (the step from v11).
+/// The tables of the test records (workspace.db v12, the step from v11; in each dossier.db now).
 macro_rules! tables {
     () => {
         "-- one row per test per run of `code tests run` (A7): file is the source of the test binary
@@ -528,60 +529,60 @@ fn tool_mutants(
     Ok((found, unknown))
 }
 
-impl Dossiers {
-    fn mutants(&self, repo: &str) -> Result<Vec<Mutant>> {
-        let mut stmt = self.db().prepare(
+fn mutants(facts: &rusqlite::Connection, repo: &str) -> Result<Vec<Mutant>> {
+    let mut stmt = facts.prepare(
             "SELECT file, line, description, killed, source, ref, ts FROM mutants WHERE repo = ?1 ORDER BY id",
         )?;
-        let rows = stmt.query_map([repo], |r| {
-            Ok(Mutant {
-                file: r.get(0)?,
-                line: r.get(1)?,
-                description: r.get(2)?,
-                killed_by: serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or_default(),
-                source: r.get(4)?,
-                git_ref: r.get(5)?,
-                at: r.get(6)?,
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
+    let rows = stmt.query_map([repo], |r| {
+        Ok(Mutant {
+            file: r.get(0)?,
+            line: r.get(1)?,
+            description: r.get(2)?,
+            killed_by: serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or_default(),
+            source: r.get(4)?,
+            git_ref: r.get(5)?,
+            at: r.get(6)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
 
-    fn accepts(&self, repo: &str) -> Result<Vec<Accept>> {
-        let mut stmt = self.db().prepare(
+fn accepts(facts: &rusqlite::Connection, repo: &str) -> Result<Vec<Accept>> {
+    let mut stmt = facts.prepare(
             "SELECT test, file, hash, reason, session, ts FROM test_accepts WHERE repo = ?1 ORDER BY ts, rowid",
         )?;
-        let rows = stmt.query_map([repo], |r| {
-            Ok(Accept {
-                test: r.get(0)?,
-                file: r.get(1)?,
-                hash: r.get(2)?,
-                reason: r.get(3)?,
-                session: r.get(4)?,
-                at: r.get(5)?,
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
+    let rows = stmt.query_map([repo], |r| {
+        Ok(Accept {
+            test: r.get(0)?,
+            file: r.get(1)?,
+            hash: r.get(2)?,
+            reason: r.get(3)?,
+            session: r.get(4)?,
+            at: r.get(5)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
 
-    fn insert_mutant(&self, repo: &str, git_ref: &str, m: &Mutant) -> Result<()> {
-        self.db().execute(
-            "INSERT INTO mutants (repo, ref, file, line, description, killed, source, ts)
+fn insert_mutant(db: &rusqlite::Connection, repo: &str, git_ref: &str, m: &Mutant) -> Result<()> {
+    db.execute(
+        "INSERT INTO mutants (repo, ref, file, line, description, killed, source, ts)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                repo,
-                git_ref,
-                m.file,
-                m.line,
-                m.description,
-                serde_json::to_string(&m.killed_by)?,
-                m.source,
-                now()
-            ],
-        )?;
-        Ok(())
-    }
+        params![
+            repo,
+            git_ref,
+            m.file,
+            m.line,
+            m.description,
+            serde_json::to_string(&m.killed_by)?,
+            m.source,
+            now()
+        ],
+    )?;
+    Ok(())
+}
 
+impl Dossiers {
     /// Record a mutation an agent made by hand and the tests that failed with it, each as it is in the working tree
     /// now (`<file>::<name>`, a libtest name, or a function name).
     ///
@@ -613,7 +614,12 @@ impl Dossiers {
             git_ref: String::new(),
             at: 0,
         };
-        self.insert_mutant(&repo_key(dir)?, &git(dir, &["rev-parse", "HEAD"])?, &m)?;
+        insert_mutant(
+            self.writer(dir)?.conn(),
+            &repo_key(dir)?,
+            &git(dir, &["rev-parse", "HEAD"])?,
+            &m,
+        )?;
         Ok(if m.killed_by.is_empty() {
             format!("recorded a mutant that no test killed: {file}:{line} {description}")
         } else {
@@ -647,7 +653,7 @@ impl Dossiers {
         );
         let found = worktree_tests(&top(dir)?)?;
         let t = resolve(&found.0, &found.1, test)?;
-        self.db().execute(
+        self.writer(dir)?.conn().execute(
             "INSERT INTO test_accepts (repo, test, file, hash, reason, session, ts) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![repo_key(dir)?, t.name, t.file, t.hash, reason, session, now()],
         )?;
@@ -662,8 +668,9 @@ impl Dossiers {
     /// git fails in `dir`, a changed Rust file does not parse, or the database read fails.
     pub fn review_tests(&self, dir: &Path, side: Side) -> Result<TestReview> {
         let (repo, top) = (repo_key(dir)?, top(dir)?);
-        let mutants = self.mutants(&repo)?;
-        let accepts = self.accepts(&repo)?;
+        let facts = self.facts(dir)?;
+        let mutants = mutants(&facts, &repo)?;
+        let accepts = accepts(&facts, &repo)?;
         // every killer's set of mutants, for the kills and the duplicates
         let mut killed: BTreeMap<&Kill, BTreeSet<usize>> = BTreeMap::new();
         for (i, m) in mutants.iter().enumerate() {
@@ -771,6 +778,7 @@ impl Dossiers {
         mut progress: impl FnMut(&BTreeMap<String, u32>),
     ) -> Result<Vec<String>> {
         let (repo, head, top) = (repo_key(dir)?, git(dir, &["rev-parse", "HEAD"])?, top(dir)?);
+        let writer = self.writer(dir)?;
         // cargo writes `Running <file>` to stderr and the results to stdout: one stream keeps their order
         let mut child = Command::new("sh")
             .arg("-c")
@@ -829,7 +837,7 @@ impl Dossiers {
                 .filter(|(_, r)| ["ok", "FAILED", "ignored"].contains(r))
             {
                 let result = result.to_lowercase();
-                self.db().execute(
+                writer.conn().execute(
                     "INSERT INTO test_runs (repo, ref, file, test, result, job, ts) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                     params![repo, head, file, name, result, job, now()],
                 )?;
@@ -872,6 +880,7 @@ impl Dossiers {
         mut progress: impl FnMut(u64, u64),
     ) -> Result<Vec<String>> {
         let (repo, head) = (repo_key(dir)?, git(dir, &["rev-parse", "HEAD"])?);
+        let writer = self.writer(dir)?;
         let from = git(dir, &["merge-base", "HEAD", base])?;
         let top = top(dir)?;
         let files: Vec<String> = change_set(&top, &from, Side::WorkTree)?
@@ -942,7 +951,7 @@ impl Dossiers {
             if m.killed_by.is_empty() {
                 missed.push(format!("  missed: {}", m.description));
             }
-            self.insert_mutant(&repo, &head, m)?;
+            insert_mutant(writer.conn(), &repo, &head, m)?;
         }
         let caught = mutants.len() - missed.len();
         let mut lines = vec![format!(
@@ -961,8 +970,9 @@ impl Dossiers {
     /// `dir` is not in a git repository, or the database read fails.
     pub fn tests_list(&self, dir: &Path) -> Result<Vec<TestRow>> {
         let repo = repo_key(dir)?;
-        let mutants = self.mutants(&repo)?;
-        let mut stmt = self.db().prepare(
+        let facts = self.facts(dir)?;
+        let mutants = mutants(&facts, &repo)?;
+        let mut stmt = facts.prepare(
             "SELECT test, file, result, ref, MAX(ts) FROM test_runs WHERE repo = ?1 GROUP BY file, test ORDER BY file, test",
         )?;
         let rows = stmt.query_map([&repo], |r| {
@@ -992,7 +1002,8 @@ impl Dossiers {
     /// Nothing is recorded for the test, or the database read fails.
     pub fn test_show(&self, dir: &Path, name: &str) -> Result<TestDetail> {
         let repo = repo_key(dir)?;
-        let mut stmt = self.db().prepare(
+        let facts = self.facts(dir)?;
+        let mut stmt = facts.prepare(
             "SELECT test, file, result, ref, job, ts FROM test_runs WHERE repo = ?1 ORDER BY ts DESC, rowid DESC",
         )?;
         let runs = stmt.query_map([&repo], |r| {
@@ -1010,13 +1021,11 @@ impl Dossiers {
         let mut detail = TestDetail {
             name: name.into(),
             runs: Vec::new(),
-            mutants: self
-                .mutants(&repo)?
+            mutants: mutants(&facts, &repo)?
                 .into_iter()
                 .filter(|m| m.killed_by.iter().any(|k| names(&k.test, name)))
                 .collect(),
-            accepts: self
-                .accepts(&repo)?
+            accepts: accepts(&facts, &repo)?
                 .into_iter()
                 .filter(|a| names(&a.test, name))
                 .collect(),

@@ -60,6 +60,8 @@ impl Lab {
         );
         let repo = home.join("repo");
         write(&repo.join("README.md"), "repo\n");
+        // the repository ignores the dossier home's link already, as legionctl's own
+        write(&repo.join(".gitignore"), "/agentWorkspaces\n");
         for args in [
             &["init", "--quiet"][..],
             &["add", "."],

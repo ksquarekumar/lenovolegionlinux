@@ -1,6 +1,7 @@
 //! Dossiers (note 18): an agent's own space for one scope, outside the product's git tree, in
-//! `<dossier.root>/<dossier>/`. A session binds to one dossier at a time and writes only there; reads work on every
-//! dossier. The pattern follows the scope-dossier practice of `safecoder dossier`: hash-anchored line edits, numbered
+//! `<dossier.root>/<dossier>/` (default `~/agentWorkspaces`; design 23, E1). Each dossier has a stable id in its
+//! `dossier.jsonc` and its own database in `.state/dossier.db`; the rows that span dossiers are in the operator's
+//! database. A session binds to one dossier at a time and writes only there; reads work on every dossier. The pattern follows the scope-dossier practice of `safecoder dossier`: hash-anchored line edits, numbered
 //! artifacts per class folder, SQLite bindings with a stale rule, and a plan ledger with fixed sections.
 
 use std::fmt::Write as _;
@@ -38,26 +39,15 @@ macro_rules! annotations {
      CREATE INDEX annotations_key ON annotations (repo, key);"
     };
 }
+pub(crate) use annotations;
 
-/// The workspace database at v14: the steps of v1-v9 merged into one (todo-68), then the topic workspaces, then
-/// the code graph annotations, then the test records (design 23, A7), then the threads (design 23, B2, v13), then the kills
-/// and accepts keyed by the test's token hash.
-const SCHEMA: &Schema = &Schema {
-    version: 14,
-    steps: &[
-        (
-            9,
-            "ALTER TABLE workspaces ADD COLUMN topic TEXT NOT NULL DEFAULT '';
-             DROP INDEX open_workspace;
-             CREATE UNIQUE INDEX open_workspace ON workspaces (dossier, repo, topic) WHERE closed IS NULL;",
-        ),
-        (10, annotations!()),
-        (11, crate::codetests::tables!()),
-        (12, crate::thread::tables!()),
-        (13, crate::codetests::keyed!()),
-    ],
-    sql: concat!(
-        "-- one open binding per dossier and per session; released rows stay as history; place: where the session worked
+/// The rows that span dossiers (design 23, E1, decision 1), in the operator's database: the bindings, the workspaces,
+/// the sessions and the dossier registry. Rows name a dossier by its current name; a rename changes them in one
+/// transaction, and `dossier_names` keeps each old name for the references outside (planning links, events).
+macro_rules! shared_tables {
+    () => {
+        "
+     -- one open binding per dossier and per session; released rows stay as history; place: where the session worked
      -- (repository root, else its folder), for binding the next session there
      CREATE TABLE bindings (
         session  TEXT NOT NULL,
@@ -70,12 +60,6 @@ const SCHEMA: &Schema = &Schema {
      );
      CREATE UNIQUE INDEX open_dossier ON bindings (dossier) WHERE released IS NULL;
      CREATE UNIQUE INDEX open_session ON bindings (session) WHERE released IS NULL;
-     CREATE TABLE writes (
-        ts      INTEGER NOT NULL,
-        session TEXT NOT NULL,
-        kind    TEXT NOT NULL,
-        path    TEXT NOT NULL
-     );
      -- workspaces, the operating directories of dossiers (one open per dossier, repository and topic; '' is the
      -- dossier's own workspace)
      CREATE TABLE workspaces (
@@ -101,17 +85,45 @@ const SCHEMA: &Schema = &Schema {
         scoped  INTEGER NOT NULL DEFAULT 0,
         inside  TEXT NOT NULL DEFAULT 'host'
      );
+     -- the dossier registry (E1): the stable id of each dossier and its folder name in dossier.root; origin: the
+     -- folder that the migration or an import moved it from
+     CREATE TABLE dossiers (
+        id     TEXT PRIMARY KEY,
+        name   TEXT NOT NULL UNIQUE,
+        origin TEXT
+     );
+     -- the names a dossier had before a rename, so that old references still find it
+     CREATE TABLE dossier_names (
+        id    TEXT NOT NULL,
+        name  TEXT NOT NULL,
+        until INTEGER NOT NULL
+     );"
+    };
+}
+pub(crate) use shared_tables;
+
+/// A dossier's own database, `<home>/.state/dossier.db` (design 23, E1): its writes, status history and nudges, and
+/// the repository facts (annotations, test runs, mutants, accepts) that its sessions wrote.
+const DOSSIER: &Schema = &Schema {
+    version: 1,
+    steps: &[],
+    sql: concat!(
+        "CREATE TABLE writes (
+        ts      INTEGER NOT NULL,
+        session TEXT NOT NULL,
+        kind    TEXT NOT NULL,
+        path    TEXT NOT NULL
+     );
      -- status history of the work graph's nodes, from writes through legionctl (W4)
      CREATE TABLE status_changes (
         ts          INTEGER NOT NULL,
         session     TEXT NOT NULL,
-        dossier     TEXT NOT NULL,
         node        TEXT NOT NULL,
         from_status TEXT,
         to_status   TEXT
      );
      -- dossier nudges: per session, the workspace content at the last reply, the replies that changed it since the
-     -- session last wrote its dossier, and the nudge level the agent was last told
+     -- session last wrote this dossier, and the nudge level the agent was last told
      CREATE TABLE nudges (
         session TEXT PRIMARY KEY,
         work    TEXT,
@@ -120,10 +132,24 @@ const SCHEMA: &Schema = &Schema {
      );",
         annotations!(),
         crate::codetests::tables!(),
-        crate::thread::tables!(),
         crate::codetests::keyed!()
     ),
 };
+
+/// The tables of a dossier's database that hold repository facts: written into the writer's dossier, read as the
+/// union of the dossiers attached to the repository (E1 rule 4).
+pub(crate) const FACTS: [&str; 4] = ["annotations", "test_runs", "mutants", "test_accepts"];
+
+/// The tables of a dossier's database, for the migration's split and count.
+pub(crate) const OWN: [&str; 7] = [
+    "writes",
+    "status_changes",
+    "nudges",
+    "annotations",
+    "test_runs",
+    "mutants",
+    "test_accepts",
+];
 
 /// Where a session works, for binding the next session there: the repository that contains `dir`, else `dir`.
 #[must_use]
@@ -131,7 +157,8 @@ pub fn place_of(dir: &Path) -> PathBuf {
     // a worktree's place is its repository's main checkout, so a session in a workspace finds the same dossier
     crate::workspace::main_checkout(dir).unwrap_or_else(|_| dir.to_path_buf())
 }
-const DB_FILE: &str = "workspace.db";
+/// A dossier's database, in its home.
+const DB_FILE: &str = ".state/dossier.db";
 
 fn now() -> i64 {
     SystemTime::now()
@@ -208,25 +235,53 @@ pub struct Lock {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DossierInfo {
     pub name: String,
+    /// The stable id in its `dossier.jsonc`; it stays when the folder is renamed.
+    pub id: Option<String>,
     pub has_plan: bool,
 }
 
 pub struct Dossiers {
     pub root: PathBuf,
+    /// The operator's database: the rows that span dossiers.
     db: Db,
     config: DossierConfig,
 }
 
 impl Dossiers {
-    /// The workspace of `config.root` (`~/` is the home folder).
+    /// The dossiers in `config.root` (`~/` is the home folder), with the rows that span them in the operator's
+    /// database.
     ///
     /// # Errors
-    /// The root or its database cannot be created.
+    /// The dossiers of `~/.agentworkspace` are not moved yet (job `dossier.migrate`), or the root or the operator's
+    /// database cannot be created.
     pub fn open(config: &DossierConfig) -> Result<Dossiers> {
+        let legacy = crate::migrate::legacy_root()?;
+        if legacy.exists() {
+            return Err(crate::error::coded(
+                crate::error::Code::Conflict,
+                format!(
+                    "the dossiers move from {} to {}: {}",
+                    legacy.display(),
+                    config.root,
+                    crate::migrate::state(&Db::open(
+                        &crate::db::default_path(),
+                        crate::db::OPERATOR
+                    )?)
+                ),
+            ));
+        }
+        Self::at(config, &crate::db::default_path())
+    }
+
+    /// The dossiers in `config.root` with the operator's database at `operator`.
+    ///
+    /// # Errors
+    /// The root or the database cannot be created.
+    pub fn at(config: &DossierConfig, operator: &Path) -> Result<Dossiers> {
         let root = crate::config::expand_home(&config.root)?;
         std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
         Ok(Dossiers {
-            db: Db::open(&root.join(DB_FILE), SCHEMA)?,
+            db: Db::open(operator, crate::db::OPERATOR)?,
             root,
             config: config.clone(),
         })
@@ -234,6 +289,102 @@ impl Dossiers {
 
     pub(crate) fn db(&self) -> &rusqlite::Connection {
         self.db.conn()
+    }
+
+    /// The operator's database (its event log and jobs too).
+    pub(crate) fn operator(&self) -> &Db {
+        &self.db
+    }
+
+    /// The database of dossier `name`, made when it has none.
+    ///
+    /// # Errors
+    /// The name is not valid, or the database cannot be opened.
+    pub(crate) fn home(&self, name: &str) -> Result<Db> {
+        ensure!(valid_name(name), "'{name}' is not a dossier name");
+        Db::open(&self.root.join(name).join(DB_FILE), DOSSIER)
+    }
+
+    /// The dossiers attached to the repository with the main checkout `checkout`, oldest first: those bound there or
+    /// with a workspace there (by their first use), then those whose `entities` name it.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub(crate) fn attached(&self, checkout: &Path) -> Result<Vec<String>> {
+        let repo = checkout.to_string_lossy();
+        let mut stmt = self.db.conn().prepare(
+            "SELECT dossier FROM (SELECT dossier, opened AS since FROM workspaces WHERE repo = ?1
+                                  UNION ALL SELECT dossier, acquired FROM bindings WHERE place = ?1)
+             GROUP BY dossier ORDER BY min(since), dossier",
+        )?;
+        let mut out = stmt
+            .query_map([&repo], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        let mut named: Vec<String> = self
+            .list()
+            .into_iter()
+            .map(|d| d.name)
+            .filter(|d| !out.contains(d) && names_entity(&self.root.join(d), &repo))
+            .collect();
+        named.sort();
+        out.extend(named);
+        out.retain(|d| self.root.join(d).is_dir());
+        Ok(out)
+    }
+
+    /// The database that takes the repository facts written in `dir` (E1 rule 4): the dossier of the open workspace
+    /// that holds `dir`, else the oldest dossier attached to its repository.
+    ///
+    /// # Errors
+    /// `dir` is not in a git repository, or no dossier is attached to it.
+    pub(crate) fn writer(&self, dir: &Path) -> Result<Db> {
+        let here = std::fs::canonicalize(dir)?;
+        let own = self
+            .workspaces(None)?
+            .into_iter()
+            .find(|w| std::fs::canonicalize(&w.path).is_ok_and(|p| here.starts_with(p)));
+        let dossier = if let Some(w) = own {
+            w.dossier
+        } else {
+            let checkout = crate::workspace::main_checkout(dir)?;
+            self.attached(&checkout)?.into_iter().next().with_context(|| {
+                format!(
+                    "no dossier is attached to {}: use a dossier there (legionctl dossier use), or name the \
+                     repository in a dossier's entities",
+                    checkout.display()
+                )
+            })?
+        };
+        self.home(&dossier)
+    }
+
+    /// The repository facts of the repository of `dir` (E1 rule 4): the fact tables of each attached dossier, merged
+    /// into one database in memory. One dossier is attached at a time, so their count has no limit.
+    ///
+    /// # Errors
+    /// `dir` is not in a git repository, or a dossier's database cannot be read.
+    pub(crate) fn facts(&self, dir: &Path) -> Result<rusqlite::Connection> {
+        let conn = rusqlite::Connection::open_in_memory()?;
+        let attached = self.attached(&crate::workspace::main_checkout(dir)?)?;
+        if attached.is_empty() {
+            conn.execute_batch(DOSSIER.sql)?;
+        }
+        for (i, dossier) in attached.iter().enumerate() {
+            drop(self.home(dossier)?);
+            conn.execute(
+                "ATTACH DATABASE ?1 AS d",
+                [self.root.join(dossier).join(DB_FILE).to_string_lossy()],
+            )?;
+            for table in FACTS {
+                conn.execute_batch(&if i == 0 {
+                    format!("CREATE TABLE main.{table} AS SELECT * FROM d.{table}")
+                } else {
+                    format!("INSERT INTO main.{table} SELECT * FROM d.{table}")
+                })?;
+            }
+            conn.execute_batch("DETACH DATABASE d")?;
+        }
+        Ok(conn)
     }
 
     pub(crate) fn stale_after(&self) -> i64 {
@@ -273,7 +424,11 @@ impl Dossiers {
             valid_name(name),
             "dossier name must be a-z, 0-9 and '-', starting with a letter or digit"
         );
-        let mut out = Vec::new();
+        // the first use in a directory links the dossier home there (E1a); a failed import binds nothing
+        let mut out = match place {
+            Some(place) => crate::home::link(self, place)?,
+            None => Vec::new(),
+        };
         let dir = self.root.join(name);
         if !dir.is_dir() {
             out.extend(self.create(name)?);
@@ -405,13 +560,7 @@ impl Dossiers {
         Ok(locks)
     }
 
-    /// Whether the session that holds a binding last refreshed at `updated` is still live: active within
-    /// `stale_hours` (each hook call and dossier write refreshes it), and for a session legionctl started in a scope,
-    /// that scope still runs. A minute of grace covers the time between the bind and the client's `systemd-run`.
     fn live(&self, session: &str, updated: i64, now: i64) -> bool {
-        if now - updated > self.stale_after() {
-            return false;
-        }
         let scoped: Option<(bool, String)> = self
             .db
             .conn()
@@ -423,37 +572,31 @@ impl Dossiers {
             .optional()
             .ok()
             .flatten();
-        match scoped {
-            Some((true, inside)) => {
-                now - updated <= 60
-                    || crate::session::active(session, crate::session::Inside::from_db(&inside))
-            }
-            _ => true,
-        }
+        live(self.stale_after(), (session, updated, scoped), now)
     }
 
-    /// Count a reply of `session` that ended with the workspace content `work`: the reply counts when the content
-    /// changed since the last reply. Returns the replies counted since the session last wrote its dossier, and the
-    /// nudge level it was last told.
+    /// Count a reply of `session` on `dossier` that ended with the workspace content `work`: the reply counts when
+    /// the content changed since the last reply. Returns the replies counted since the session last wrote its
+    /// dossier, and the nudge level it was last told.
     ///
     /// # Errors
     /// The database write fails.
-    pub fn turn(&self, session: &str, work: &str) -> Result<(u32, Option<String>)> {
-        self.db.conn().execute(
+    pub fn turn(&self, session: &str, dossier: &str, work: &str) -> Result<(u32, Option<String>)> {
+        self.home(dossier)?.conn().execute(
             "INSERT INTO nudges (session, work) VALUES (?1, ?2)
              ON CONFLICT (session) DO UPDATE SET turns = turns + (work IS NOT excluded.work), work = excluded.work",
             params![session, work],
         )?;
-        self.nudge_state(session)
+        self.nudge_state(session, dossier)
     }
 
-    /// The replies counted since `session` last wrote its dossier, and the nudge level it was last told.
+    /// The replies counted since `session` last wrote `dossier`, and the nudge level it was last told.
     ///
     /// # Errors
     /// The database read fails.
-    pub fn nudge_state(&self, session: &str) -> Result<(u32, Option<String>)> {
+    pub fn nudge_state(&self, session: &str, dossier: &str) -> Result<(u32, Option<String>)> {
         Ok(self
-            .db
+            .home(dossier)?
             .conn()
             .query_row(
                 "SELECT turns, level FROM nudges WHERE session = ?1",
@@ -464,12 +607,12 @@ impl Dossiers {
             .unwrap_or((0, None)))
     }
 
-    /// Remember the nudge level `session` was told (none after its answer).
+    /// Remember the nudge level `session` was told on `dossier` (none after its answer).
     ///
     /// # Errors
     /// The database write fails.
-    pub fn told(&self, session: &str, level: Option<&str>) -> Result<()> {
-        self.db.conn().execute(
+    pub fn told(&self, session: &str, dossier: &str, level: Option<&str>) -> Result<()> {
+        self.home(dossier)?.conn().execute(
             "INSERT INTO nudges (session, level) VALUES (?1, ?2)
              ON CONFLICT (session) DO UPDATE SET level = excluded.level",
             params![session, level],
@@ -489,7 +632,8 @@ impl Dossiers {
         Ok(())
     }
 
-    /// The class folders, `plan.md` with every ledger section, and `dossier.jsonc` with the title.
+    /// The class folders, `plan.md` with every ledger section, `dossier.jsonc` with a new id and the title, and the
+    /// dossier's database; the id goes into the registry.
     fn create(&self, name: &str) -> Result<Vec<String>> {
         let dir = self.root.join(name);
         let mut made = vec![format!("created {}", dir.display())];
@@ -501,17 +645,151 @@ impl Dossiers {
             let _ = write!(plan, "\n## {section}\n");
         }
         atomic_write(&dir.join("plan.md"), &plan)?;
-        atomic_write(
-            &dir.join("dossier.jsonc"),
-            &format!(
-                "// This dossier's data: title, entities (repos, folders) and objectives (Y1, Y2, ...).\n{}\n",
-                serde_json::to_string_pretty(
-                    &serde_json::json!({"title": name, "entities": [], "objectives": []})
-                )?
-            ),
-        )?;
+        let id = new_id()?;
+        atomic_write(&dir.join("dossier.jsonc"), &jsonc(&id, name)?)?;
+        self.home(name)?;
+        self.register(&id, name, None)?;
         made.push("plan.md, dossier.jsonc and the class folders".into());
         Ok(made)
+    }
+
+    /// Put dossier `id` into the registry as `name` (a known id keeps its row).
+    pub(crate) fn register(&self, id: &str, name: &str, origin: Option<&str>) -> Result<()> {
+        self.db.conn().execute(
+            "INSERT INTO dossiers (id, name, origin) VALUES (?1, ?2, ?3) ON CONFLICT (id) DO NOTHING",
+            params![id, name, origin],
+        )?;
+        Ok(())
+    }
+
+    /// The registered id and name of the dossier that `origin` was moved or imported from.
+    pub(crate) fn by_origin(&self, origin: &Path) -> Result<Option<(String, String)>> {
+        Ok(self
+            .db
+            .conn()
+            .query_row(
+                "SELECT id, name FROM dossiers WHERE origin = ?1",
+                [origin.to_string_lossy()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    /// Whether a dossier has the name `name`: a folder in the root or a registered one.
+    pub(crate) fn name_used(&self, name: &str) -> Result<bool> {
+        let registered: bool = self.db.conn().query_row(
+            "SELECT count(*) > 0 FROM dossiers WHERE name = ?1",
+            [name],
+            |r| r.get(0),
+        )?;
+        Ok(registered || std::fs::symlink_metadata(self.root.join(name)).is_ok())
+    }
+
+    /// Read the registry from the folders (E1 rule 1): a folder without an id gets one, a folder that another name
+    /// had (renamed by hand) takes over its rows. Returns a finding for each folder with the id of another.
+    ///
+    /// # Errors
+    /// A `dossier.jsonc` cannot be read or written, or the database write fails.
+    pub fn sync_registry(&self) -> Result<Vec<String>> {
+        let mut seen: Vec<(String, String)> = Vec::new();
+        let mut findings = Vec::new();
+        let mut names: Vec<String> = self.list().into_iter().map(|d| d.name).collect();
+        names.sort();
+        for name in names {
+            let dir = self.root.join(&name);
+            let id = if let Some(id) = read_id(&dir)? {
+                id
+            } else {
+                let id = new_id()?;
+                write_id(&dir, &id, &name)?;
+                id
+            };
+            if let Some((_, first)) = seen.iter().find(|(i, _)| *i == id) {
+                findings.push(format!(
+                    "dossier {name} has the id {id} of dossier {first}, so legionctl does not use it: remove \"id\" \
+                     from {name}/dossier.jsonc to give it a new one"
+                ));
+                continue;
+            }
+            seen.push((id, name));
+        }
+        let tx = Transaction::new_unchecked(self.db.conn(), TransactionBehavior::Immediate)?;
+        for (id, name) in &seen {
+            let registered: Option<String> = tx
+                .query_row("SELECT name FROM dossiers WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            if registered.as_ref() == Some(name) {
+                continue;
+            }
+            // the dossier that had this name is gone or renamed: its row gives way
+            tx.execute(
+                "DELETE FROM dossiers WHERE name = ?1 AND id != ?2",
+                params![name, id],
+            )?;
+            match registered {
+                Some(old) => rename_rows(&tx, id, &old, name)?,
+                None => {
+                    tx.execute(
+                        "INSERT INTO dossiers (id, name) VALUES (?1, ?2)",
+                        params![id, name],
+                    )?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(findings)
+    }
+
+    /// Rename dossier `name` to `to`: its folder, the registry, and its bindings, workspaces, sessions and threads;
+    /// the id stays. A name in use is refused.
+    ///
+    /// # Errors
+    /// `to` is not valid or in use, `name` does not exist, or the rename fails.
+    pub fn rename(&self, name: &str, to: &str) -> Result<Vec<String>> {
+        ensure!(
+            valid_name(to),
+            "dossier name must be a-z, 0-9 and '-', starting with a letter or digit"
+        );
+        let from = self.root.join(name);
+        if !valid_name(name) || !from.is_dir() {
+            return Err(crate::error::coded(
+                crate::error::Code::NotFound,
+                format!("no dossier {name}; see legionctl dossier list"),
+            ));
+        }
+        self.sync_registry()?;
+        if self.name_used(to)? {
+            return Err(crate::error::coded(
+                crate::error::Code::Conflict,
+                format!("the dossier name {to} is in use; choose another name"),
+            ));
+        }
+        let id = read_id(&from)?.context("the dossier has no id")?;
+        std::fs::rename(&from, self.root.join(to))?;
+        let tx = Transaction::new_unchecked(self.db.conn(), TransactionBehavior::Immediate)?;
+        rename_rows(&tx, &id, name, to)?;
+        tx.commit()?;
+        Ok(vec![format!(
+            "renamed dossier {name} to {to} (id {id}); its bindings, workspaces, sessions and threads follow"
+        )])
+    }
+
+    /// The names of `dossier`: its name now and each name it had before.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn names_of(&self, dossier: &str) -> Result<Vec<String>> {
+        let mut stmt = self.db.conn().prepare(
+            "SELECT n.name FROM dossier_names n JOIN dossiers d ON d.id = n.id WHERE d.name = ?1 ORDER BY n.until",
+        )?;
+        let mut names = vec![dossier.to_string()];
+        names.extend(
+            stmt.query_map([dossier], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?,
+        );
+        Ok(names)
     }
 
     /// Dossiers, most recently changed first.
@@ -529,6 +807,7 @@ impl Dossiers {
                     .unwrap_or(UNIX_EPOCH);
                 let info = DossierInfo {
                     name: e.file_name().to_string_lossy().into_owned(),
+                    id: read_id(&e.path()).ok().flatten(),
                     has_plan: e.path().join("plan.md").is_file(),
                 };
                 (modified, info)
@@ -621,28 +900,28 @@ impl Dossiers {
         }
         self.touch(session)?;
         // a write into its own dossier is the answer to a nudge
-        self.db
+        self.home(&dossier)?
             .conn()
             .execute("UPDATE nudges SET turns = 0 WHERE session = ?1", [session])?;
         Ok(full)
     }
 
-    /// Record a write of `rel` (`<dossier>/<file>`) from `old` to `new`, and each node status it changed.
+    /// Record a write of `rel` (`<dossier>/<file>`) from `old` to `new`, and each node status it changed, in the
+    /// dossier's database.
     fn log(&self, session: &str, kind: &str, rel: &str, (old, new): (&str, &str)) -> Result<()> {
-        let conn = self.db.conn();
+        let (dossier, file) = rel.split_once('/').context("not a dossier file")?;
+        let db = self.home(dossier)?;
+        let conn = db.conn();
         let ts = now();
         conn.execute(
             "INSERT INTO writes (ts, session, kind, path) VALUES (?1, ?2, ?3, ?4)",
             params![ts, session, kind, rel],
         )?;
-        if let Some((dossier, file)) = rel.split_once('/') {
-            for (node, from, to) in crate::graph::status_changes(file, old, new) {
-                conn.execute(
-                    "INSERT INTO status_changes (ts, session, dossier, node, from_status, to_status)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![ts, session, dossier, node, from, to],
-                )?;
-            }
+        for (node, from, to) in crate::graph::status_changes(file, old, new) {
+            conn.execute(
+                "INSERT INTO status_changes (ts, session, node, from_status, to_status) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![ts, session, node, from, to],
+            )?;
         }
         Ok(())
     }
@@ -653,7 +932,9 @@ impl Dossiers {
     /// # Errors
     /// The database read fails.
     pub fn write_refusal(&self, session: &str, path: &Path) -> Result<Option<String>> {
-        let Ok(rel) = path.strip_prefix(&self.root) else {
+        // through the links: `<repo>/agentWorkspaces/<other dossier>/...` is in the root too
+        let (path, root) = (real(path), real(&self.root));
+        let Ok(rel) = path.strip_prefix(&root) else {
             return Ok(None);
         };
         let rel = rel.to_string_lossy();
@@ -949,12 +1230,12 @@ impl Dossiers {
             return Ok(graph);
         };
         let mut around = graph.around(id);
-        let mut stmt = self.db.conn().prepare(
-            "SELECT ts, session, node, from_status, to_status FROM status_changes
-             WHERE dossier = ?1 AND node = ?2 ORDER BY ts, rowid",
+        let db = self.home(dossier)?;
+        let mut stmt = db.conn().prepare(
+            "SELECT ts, session, node, from_status, to_status FROM status_changes WHERE node = ?1 ORDER BY ts, rowid",
         )?;
         around.history = stmt
-            .query_map(params![dossier, id], |r| {
+            .query_map([id], |r| {
                 Ok(crate::graph::StatusChange {
                     ts: r.get(0)?,
                     session: r.get(1)?,
@@ -984,6 +1265,155 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
             out.push(path);
         }
     }
+}
+
+/// Whether the `entities` of the dossier in `dir` name the folder `repo` (a text, or an object with that `path`).
+fn names_entity(dir: &Path, repo: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(dir.join("dossier.jsonc")) else {
+        return false;
+    };
+    let value: serde_json::Value =
+        serde_json::from_reader(json_comments::StripComments::new(text.as_bytes()))
+            .unwrap_or_default();
+    value["entities"].as_array().is_some_and(|list| {
+        list.iter()
+            .any(|e| e.as_str() == Some(repo) || e["path"].as_str() == Some(repo))
+    })
+}
+
+/// `path` with each link of its longest existing part resolved.
+fn real(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut at = path;
+    loop {
+        if let Ok(found) = at.canonicalize() {
+            return rest.iter().rev().fold(found, |p, part| p.join(part));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                at = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
+/// Whether the session that holds a binding last refreshed at `updated` is still live: active within `stale_after`
+/// seconds (each hook call and dossier write refreshes it), and for a session legionctl started in a scope
+/// (`scoped`: the session row's scoped and inside), that scope still runs. A minute of grace covers the time between
+/// the bind and the client's `systemd-run`.
+pub(crate) fn live(
+    stale_after: i64,
+    (session, updated, scoped): (&str, i64, Option<(bool, String)>),
+    now: i64,
+) -> bool {
+    if now - updated > stale_after {
+        return false;
+    }
+    match scoped {
+        Some((true, inside)) => {
+            now - updated <= 60
+                || crate::session::active(session, crate::session::Inside::from_db(&inside))
+        }
+        _ => true,
+    }
+}
+
+/// A new dossier id: `dsr-` and a ULID (48 bits of milliseconds, 80 random bits, Crockford base32), so ids sort by
+/// their time.
+pub(crate) fn new_id() -> Result<String> {
+    use std::io::Read as _;
+    const DIGITS: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    let millis = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
+    let mut random = [0u8; 16];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut random[6..])?;
+    let value = ((millis & ((1 << 48) - 1)) << 80) | u128::from_be_bytes(random);
+    let ulid: String = (0..26)
+        .map(|i| char::from(DIGITS[usize::try_from((value >> (125 - 5 * i)) & 31).unwrap_or(0)]))
+        .collect();
+    Ok(format!("dsr-{ulid}"))
+}
+
+/// The id in `<dir>/dossier.jsonc`, if it has one.
+///
+/// # Errors
+/// The file exists and is not JSON with comments.
+pub(crate) fn read_id(dir: &Path) -> Result<Option<String>> {
+    let path = dir.join("dossier.jsonc");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(None);
+    };
+    let value: serde_json::Value =
+        serde_json::from_reader(json_comments::StripComments::new(text.as_bytes()))
+            .with_context(|| format!("reading {}", path.display()))?;
+    Ok(value["id"].as_str().map(String::from))
+}
+
+/// A new `dossier.jsonc` with `id` and the title `name`.
+fn jsonc(id: &str, name: &str) -> Result<String> {
+    Ok(format!(
+        "// This dossier's data: its id (stays when the folder is renamed), title, entities (repos, folders) and\n\
+         // objectives (Y1, Y2, ...).\n{}\n",
+        serde_json::to_string_pretty(
+            &serde_json::json!({"id": id, "title": name, "entities": [], "objectives": []})
+        )?
+    ))
+}
+
+/// Put `id` into `<dir>/dossier.jsonc` as its first key, keeping the rest of the text; a missing file is made with
+/// the title `name`.
+///
+/// # Errors
+/// The file is not a JSON object, or it cannot be written.
+pub(crate) fn write_id(dir: &Path, id: &str, name: &str) -> Result<()> {
+    let path = dir.join("dossier.jsonc");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return atomic_write(&path, &jsonc(id, name)?);
+    };
+    // the comments become spaces of the same length, so a position in the stripped text is one in the file
+    let mut stripped = String::new();
+    std::io::Read::read_to_string(
+        &mut json_comments::StripComments::new(text.as_bytes()),
+        &mut stripped,
+    )?;
+    let value: serde_json::Value =
+        serde_json::from_str(&stripped).with_context(|| format!("reading {}", path.display()))?;
+    let open = stripped
+        .find('{')
+        .filter(|_| value.is_object())
+        .with_context(|| format!("{} is not a JSON object", path.display()))?;
+    let comma = if value.as_object().is_some_and(serde_json::Map::is_empty) {
+        ""
+    } else {
+        ","
+    };
+    let id = serde_json::to_string(id)?;
+    let text = format!(
+        "{}\n  \"id\": {id}{comma}{}",
+        &text[..=open],
+        &text[open + 1..]
+    );
+    atomic_write(&path, &text)
+}
+
+/// Point every row that names dossier `old` at `new`, and keep `old` as a former name of `id`.
+fn rename_rows(tx: &Transaction, id: &str, old: &str, new: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE dossiers SET name = ?2 WHERE id = ?1",
+        params![id, new],
+    )?;
+    tx.execute(
+        "INSERT INTO dossier_names (id, name, until) VALUES (?1, ?2, ?3)",
+        params![id, old, now()],
+    )?;
+    for table in ["bindings", "workspaces", "sessions", "threads"] {
+        tx.execute(
+            &format!("UPDATE {table} SET dossier = ?2 WHERE dossier = ?1"),
+            params![old, new],
+        )?;
+    }
+    Ok(())
 }
 
 fn with_newline(text: &str) -> String {
@@ -1033,7 +1463,7 @@ mod tests {
         .config;
         let mut dossier = config.dossier;
         dossier.root = dir.join("ws").display().to_string();
-        let ws = Dossiers::open(&dossier).unwrap();
+        let ws = Dossiers::at(&dossier, &dir.join("operator.db")).unwrap();
         ws.bind("s1", "test", "port", false, None).unwrap();
         ws.write("s1", "port/MEMORY/01-a.md", "alpha\nbeta\ngamma", false)
             .unwrap();
@@ -1076,152 +1506,5 @@ mod tests {
             ws.check("port").is_empty(),
             "a new dossier has every ledger section"
         );
-    }
-
-    /// A v12 file (before P5's threads) and a v13 file (with them) reach v14: the threads table is there, and the
-    /// kills and accepts stay as history without a file and a hash, so no test has them and the gate asks for
-    /// evidence again; the kills keep their test names.
-    #[test]
-    fn v12_and_v13_kills_and_accepts_stay_without_a_key() {
-        let dir = crate::scratch::Scratch::new(
-            std::env::temp_dir().join(format!("legionctl-ws-v13-{}", std::process::id())),
-        );
-        std::fs::create_dir_all(&dir).unwrap();
-        for version in [12, 13] {
-            let path = dir.join(format!("v{version}.db"));
-            let old = rusqlite::Connection::open(&path).unwrap();
-            old.execute_batch(
-                "CREATE TABLE workspaces (dossier TEXT NOT NULL, repo TEXT NOT NULL, path TEXT NOT NULL,
-                    branch TEXT NOT NULL, base TEXT NOT NULL, opened INTEGER NOT NULL, closed INTEGER);
-                 CREATE UNIQUE INDEX open_workspace ON workspaces (dossier, repo) WHERE closed IS NULL;",
-            )
-            .unwrap();
-            for (_, sql) in SCHEMA.steps.iter().filter(|(from, _)| *from < version) {
-                old.execute_batch(sql).unwrap();
-            }
-            old.execute_batch(&format!(
-                "INSERT INTO mutants (repo, ref, file, line, description, killed, source, ts)
-                     VALUES ('/r', 'h', 'src/lib.rs', 2, 'm', '[\"a\",\"t::b\"]', 'agent', 1),
-                            ('/r', 'h', 'src/lib.rs', 3, 'missed', '[]', 'tool', 1);
-                 INSERT INTO test_accepts (repo, test, reason, session, ts) VALUES ('/r', 'a', 'why', 's1', 1);
-                 PRAGMA user_version = {version};"
-            ))
-            .unwrap();
-            drop(old);
-            let db = Db::open(&path, SCHEMA).unwrap();
-            assert_eq!(db.schema_version().unwrap(), 14);
-            let threads: i64 = db
-                .conn()
-                .query_row("SELECT count(*) FROM threads", [], |r| r.get(0))
-                .unwrap();
-            assert_eq!(threads, 0, "v{version}: P5's tables are there");
-            let killed: Vec<String> = db
-                .conn()
-                .prepare("SELECT killed FROM mutants ORDER BY id")
-                .unwrap()
-                .query_map([], |r| r.get(0))
-                .unwrap()
-                .collect::<rusqlite::Result<_>>()
-                .unwrap();
-            assert_eq!(
-                killed,
-                [
-                    r#"[{"test":"a","file":null,"hash":null},{"test":"t::b","file":null,"hash":null}]"#,
-                    "[]"
-                ],
-                "v{version}"
-            );
-            let accept: (String, Option<String>, Option<String>) = db
-                .conn()
-                .query_row("SELECT test, file, hash FROM test_accepts", [], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-                })
-                .unwrap();
-            assert_eq!(accept, ("a".into(), None, None), "v{version}");
-        }
-    }
-
-    /// The user's v9 file (one open workspace per dossier and repository) becomes the current version in place: its
-    /// rows stay as the dossiers' own workspaces, a topic workspace can open beside one, and the table and index equal
-    /// a new file's.
-    #[test]
-    fn a_v9_workspace_database_takes_topic_workspaces_and_keeps_its_rows() {
-        let dir = crate::scratch::Scratch::new(
-            std::env::temp_dir().join(format!("legionctl-ws-v9-{}", std::process::id())),
-        );
-        std::fs::create_dir_all(&dir).unwrap();
-        let (old, new) = (dir.join("old.db"), dir.join("new.db"));
-        let v9 = rusqlite::Connection::open(&old).unwrap();
-        v9.execute_batch(
-            "CREATE TABLE workspaces (
-                dossier TEXT NOT NULL,
-                repo    TEXT NOT NULL,
-                path    TEXT NOT NULL,
-                branch  TEXT NOT NULL,
-                base    TEXT NOT NULL,
-                opened  INTEGER NOT NULL,
-                closed  INTEGER
-             );
-             CREATE UNIQUE INDEX open_workspace ON workspaces (dossier, repo) WHERE closed IS NULL;
-             INSERT INTO workspaces VALUES ('port', '/r', '/w/r/port', 'legionctl/port', 'main', 1, NULL);
-             PRAGMA user_version = 9;",
-        )
-        .unwrap();
-        drop(v9);
-        let db = Db::open(&old, SCHEMA).unwrap();
-        assert_eq!(db.schema_version().unwrap(), SCHEMA.version);
-        let conn = db.conn();
-        assert_eq!(
-            conn.query_row(
-                "SELECT topic FROM workspaces WHERE path = '/w/r/port'",
-                [],
-                |r| { r.get::<_, String>(0) }
-            )
-            .unwrap(),
-            ""
-        );
-        let open = |path: &str, topic: &str| {
-            conn.execute(
-                "INSERT INTO workspaces (dossier, repo, path, branch, base, opened, topic)
-                 VALUES ('port', '/r', ?1, '', 'main', 2, ?2)",
-                [path, topic],
-            )
-        };
-        open("/w/r/port--a", "a").unwrap();
-        assert!(
-            open("/w/r/port-again", "").is_err(),
-            "one own workspace per repository"
-        );
-        assert!(
-            open("/w/r/port--a2", "a").is_err(),
-            "one workspace per topic"
-        );
-        let shape = |conn: &rusqlite::Connection| {
-            let mut columns: Vec<String> = conn
-                .prepare("SELECT name, type, \"notnull\", dflt_value FROM pragma_table_info('workspaces')")
-                .unwrap()
-                .query_map([], |r| {
-                    Ok(format!(
-                        "{} {} {} {:?}",
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, i64>(2)?,
-                        r.get::<_, Option<String>>(3)?
-                    ))
-                })
-                .unwrap()
-                .collect::<Result<_, _>>()
-                .unwrap();
-            columns.push(
-                conn.query_row(
-                    "SELECT sql FROM sqlite_master WHERE name = 'open_workspace'",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap(),
-            );
-            columns
-        };
-        assert_eq!(shape(conn), shape(Db::open(&new, SCHEMA).unwrap().conn()));
     }
 }

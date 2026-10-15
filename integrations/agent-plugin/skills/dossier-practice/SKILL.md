@@ -1,12 +1,14 @@
 ---
 name: dossier-practice
-description: How to keep this session's legionctl dossier (~/.agentworkspace/<dossier>) - binding, the plan.md ledger, numbered MEMORY, DESIGN, EVIDENCE and SPIKE artifacts, anchored edits, and the hooks that gate and nudge. Use whenever a session has a dossier bound, and before you bind one.
+description: How to keep this session's legionctl dossier (~/agentWorkspaces/<dossier>) - binding, the plan.md ledger, numbered MEMORY, DESIGN, EVIDENCE and SPIKE artifacts, anchored edits, and the hooks that gate and nudge. Use whenever a session has a dossier bound, and before you bind one.
 user-invocable: false
 ---
 
 # Dossier practice
 
-1. A dossier is your own space for one scope, outside the product's git tree: `~/.agentworkspace/<dossier>/`.
+1. A dossier is your own space for one scope, outside the product's git tree: `~/agentWorkspaces/<dossier>/`. In
+   each directory where a dossier is used, `agentWorkspaces` links to that home: your files are in
+   `agentWorkspaces/<dossier>/`.
 2. Bind it with `dossier use <name>` (class session). A new name makes a new dossier.
 3. A dossier that another live session holds is refused. `--steal` takes it; ask the user first.
 4. Your session writes only to its own dossier. You can read every dossier. `dossier locks` shows who holds which.
@@ -29,6 +31,12 @@ user-invocable: false
 19. The `stop` hook counts replies that changed the workspace without a dossier write. Each `dossier.nudge_turns` (5)
     replies it raises a level: info, then warn (one reply stopped), then block (each reply stopped).
 20. A write into your dossier resets the count. `dossier nudges [--of <session>]` shows the levels and answers.
+21. Each dossier has a stable id in `dossier.jsonc`. `dossier rename <name> <to>` changes its name (class workspace:
+    ask the user first). The id, the bindings, the workspaces and the `planning/` links stay valid.
+22. A rename to a name in use is refused. Choose a descriptive name that is not in `dossier list`.
+23. The first dossier use in a directory links the home there as `agentWorkspaces`, and imports a real
+    `agentWorkspaces/` folder first. In a main checkout, `/agentWorkspaces` goes into `.gitignore`, staged and not
+    committed: tell the user to commit it.
 
 ## Refs
 

@@ -1293,7 +1293,7 @@ result and a nudge for the record or the checkpoint.
 
 ## Part E: project checks, test runners, graph schema, change watcher, dossier home, observer recovery (todo-100..todo-104)
 
-Status: proposed (2026-10-15), an addition to the approved design. The user's words, the breakdown and the four
+Status: approved (2026-10-15), an addition to the design; P9 built. The user's words, the breakdown and the four
 user decisions are in the dossier: `MEMORY/13-project-checks-watcher-dossier-home.md`. The decisions of Parts A, B
 and B+ stay binding, except B+ decision 5, which E0 decision 3 replaces. Part B and B+ internals (threads, outbox,
 watch rules, presence; P5, built now) are used only through the behaviour that B2-B6 and B+1-B+4 state.
@@ -1397,6 +1397,46 @@ Import of a real `<root>/agentWorkspaces/` (data is never lost):
 5. A failure at any step leaves the source folder as it is; the copies of that run stay in `.import-<time>/` and the
    next start finishes them (a registered copy is not copied again). The import is a job (`dossier.import`) with
    one event per dossier.
+
+### Built: P9 (2026-10-15)
+
+| Part | Where |
+| --- | --- |
+| Home, ids, registry, rename | `dossier.root` `~/agentWorkspaces`; `dsr-<ulid>` in `dossier.jsonc` (a new dossier, a folder without one, each import); tables `dossiers` and `dossier_names` in `operator.db`; `dossier rename <name> <to>` (class workspace) and `sync_registry` at each operator start and in `doctor` (`crates/legionctl-core/src/dossier.rs`) |
+| SQLite split | `operator.db` v11: `bindings`, `workspaces`, `sessions`, the thread tables, the registry; `<home>/.state/dossier.db` v1: `writes`, `status_changes`, `nudges`, `annotations`, `test_runs`, `mutants`, `test_accepts` |
+| Repository facts | Written into the dossier of the workspace that holds the folder, else the oldest dossier attached to the repository; read as the union of the attached dossiers, one `ATTACH` at a time into one database in memory (no limit of 10) |
+| Migration | Job `dossier.migrate` (`crates/legionctl-core/src/migrate.rs`), started by the operator at each start while `~/.agentworkspace` exists; the dossier operations refuse until it is done and say why |
+| Link and import | `crates/legionctl-core/src/home.rs`: `dossier use`, the session-start rebind, `session start`, `workspace open` (each worktree, and a plain folder's source) |
+| Text | 18-workspaces, 12, 13, 14, README, skills dossier-practice (rules 1, 21-23), workspace-practice (rule 4), the threads reference, the plugin command `/legionctl:dossier` |
+
+What is different from E1, E1a and E7, and why:
+
+| Item | Built | Why |
+| --- | --- | --- |
+| Thread tables | In `operator.db`, not in the thread's `dossier.db`. | A thread's members come from several dossiers (B4: each observer has its own dossier), so its rows span dossiers: decision 1 puts those in `operator.db`. Thread, message and rule ids stay unique without a second id scheme. |
+| Rows that name a dossier | `bindings`, `workspaces`, `sessions` and `threads` keep the name; a rename (or a folder renamed by hand, found by its id) changes them in one transaction and records the old name. | The same result as rows keyed by id, without a lookup in each query; old names still resolve (`planning/` plan rows in `dossier check`). |
+| Attached dossiers | A dossier is attached to a repository when it has a binding or a workspace there, or its `entities` name it. | No dossier has `entities` yet; the bindings and workspaces have the paths. |
+| Writer | The dossier of the open workspace that holds the folder, else the oldest attached dossier; none: refused. | `code tests run`, `mutant record` and the pre-commit gate have no session; the folder names the workspace. |
+| Live binding | The job waits (2 s steps) and the dossier operations answer with the wait and the sessions; `doctor` says the same. | The operator serves during the wait; nothing writes the old file. |
+| Step 2 | The first run backs up `workspace.db` as it was (`VACUUM INTO`); a run after a cut keeps that backup. | The file changes to v14 after the backup. |
+| Step 3 | The registry gets the id and the old folder before the move; a copy across file systems that a cut left (same id) is made again. | A cut after the move still finds the dossier's rows by its origin. |
+| Step 6 | What is left of `~/.agentworkspace` (old backups, the empty folder) moves to `~/.local/state/legionctl/backup/agentworkspace-<time>`, not deleted. | Data is never lost; the old `.bak` files of the user stay. |
+| Rows without a dossier | Rows of a dossier whose folder is gone, and nudges of sessions without a binding, are counted as dropped in the job result; the count compare includes them. | They have no home; the backup keeps them. |
+| Import | Synchronous in the call (one `dossier.import` job row and one event per dossier). The copies go to `.import-<source hash>/`; a cut-off import is finished by the next use there, which copies again each dossier that is not in place (the source stays until the end). | The first use needs the link. One staging folder per source, so no copy of a cut-off run stays behind. |
+| Write guard | A path through an `agentWorkspaces` link counts as the path it leads to; `.state` is read-only in a session sandbox. | The link shows every dossier: without this, a session could write another dossier or its own test evidence. |
+
+Tests (`crates/legionctl/tests/e2e.rs`, the CLI and the real operator, temporary homes; the old home from
+`tests/fixtures/workspace-v13.sql`):
+
+| Test | It catches |
+| --- | --- |
+| `the_dossiers_move_to_their_homes_once_and_keep_their_ids_links_and_rows` | A job that does not wait for a live binding; an id that a dossier has before the move and does not keep; a cut at the backup, the move, the split or the links that loses or doubles rows on the next start; an id that changes; a row in the wrong `dossier.db` (session binding before repository); kills not keyed; a count compare that does not hold; the old link or line left; the line committed; a worktree not ignored; a second migration. |
+| `the_first_use_in_a_repository_imports_its_agentworkspaces_folder_and_links_the_home` | A first-level file taken as a dossier or the folder replaced while it is there; a name in use overwritten (must be `-imported-1`); a cut-off import that copies again; the source not in the backup; `agentWorkspaces/` with a slash, committed, or not staged; a worktree where `git check-ignore` fails; a plain folder with a `.gitignore`; a user's link replaced; the home imported into itself. |
+| `facts_written_from_one_dossier_are_read_from_another_and_a_rename_keeps_rows_and_links` | A kill in the reader's dossier or not read from the writer's; a write from a workspace that goes into the oldest dossier, not the workspace's; a rename to a used name; a rename that loses the id, the binding, the workspace row, the facts or the link; the next fact in the old dossier; a write into another dossier through the link. |
+| `a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_hold` (changed) | A session sandbox that can write its dossier's `.state/dossier.db` (the test gate's evidence). |
+
+Not built in P9: the watcher events on `~/agentWorkspaces` (P11; the registry reads the folders at each operator
+start and in `doctor`), `code plan check` against the registry (it checks only the `<dossier>#<row>` form).
 
 ### E2. Project checks (todo-100)
 

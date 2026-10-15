@@ -23,8 +23,9 @@ system down.
 ## State: one database per scope, one writer
 
 - System: `/var/lib/legionctl/system.db` (the Fn+Q ledger). User: `~/.local/state/legionctl/operator.db` (the event
-  log; schema v2 dropped the hook tables, which are config now) and `~/.agentworkspace/workspace.db` (dossier
-  bindings and writes, 18).
+  log, jobs, and since design 23 P9 the rows that span dossiers: bindings, workspaces, sessions, threads and the
+  dossier registry) and each dossier's `~/agentWorkspaces/<dossier>/.state/dossier.db` (its writes, nudges and
+  repository facts, 18).
 - The owning daemon is the only writer (`legionctl-system` for `system.db`, `legionctl-operator` for the user
   databases); WAL mode lets the bootstrap and tools read concurrently.
 - All legionctl state is in SQLite (decided 2026-10-12): the remaining Phase 1a stores (worktree registry JSON,
@@ -74,8 +75,9 @@ system down.
    safe mode (read-only API, firmware defaults), with a desktop notification that says what failed.
 
 Built (2026-10-13, part 1), without a separate `legionctl-bootstrap` binary:
-- One schema per database (todo-68, 2026-10-14, after the first full release install): `operator.db` v10,
-  `workspace.db` v9, `cache.db` v1. `Db::open` makes a new database whole in a private file (WAL mode, schema,
+- One schema per database (todo-68, 2026-10-14, after the first full release install): `operator.db` v10 (v11 with
+  design 23 P9), `workspace.db` v9 (the migration of P9 reads it up to v14, then moves it to the backup),
+  `dossier.db` v1, `cache.db` v1. `Db::open` makes a new database whole in a private file (WAL mode, schema,
   version) and links it into place, so no opener sees it half made; a file at that version opens; a file of another
   version (from before the merge, or from a newer legionctl) is refused with its version and left as it is.
   The steps up to the merge are gone. The next schema change adds steps after these versions again, with a backup

@@ -24,11 +24,19 @@ pub struct Schema {
     pub steps: &'static [(i64, &'static str)],
 }
 
-/// The operator database at v10 (the steps of v1-v10 merged into one; todo-68, after the first full release install).
-const OPERATOR: &Schema = &Schema {
-    version: 10,
-    steps: &[],
-    sql: "CREATE TABLE events (
+/// The operator database at v11: the steps of v1-v10 merged into one (todo-68, after the first full release install),
+/// then the rows that span dossiers and the threads (design 23, E1 decision 1; they were in `workspace.db`).
+pub(crate) const OPERATOR: &Schema = &Schema {
+    version: 11,
+    steps: &[(
+        10,
+        concat!(
+            crate::dossier::shared_tables!(),
+            crate::thread::tables!()
+        ),
+    )],
+    sql: concat!(
+        "CREATE TABLE events (
         id      INTEGER PRIMARY KEY,
         ts      INTEGER NOT NULL,
         actor   TEXT NOT NULL,
@@ -69,6 +77,9 @@ const OPERATOR: &Schema = &Schema {
         result   TEXT,
         error    TEXT
      );",
+        crate::dossier::shared_tables!(),
+        crate::thread::tables!()
+    ),
 };
 
 pub struct Db {
@@ -676,7 +687,8 @@ mod tests {
             "kept"
         );
         drop(reopened);
-        for version in [OPERATOR.version - 1, OPERATOR.version + 1] {
+        // older than the first step, or newer than this release
+        for version in [OPERATOR.steps[0].0 - 1, OPERATOR.version + 1] {
             Connection::open(&path)
                 .unwrap()
                 .pragma_update(None, "user_version", version)

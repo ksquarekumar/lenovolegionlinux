@@ -1,7 +1,7 @@
 # Threads
 
 A thread is one task: `main0` owns it, and members (observers) watch it. The log, the outbox, the members and the
-watch rules are in `workspace.db`; they survive restarts and compactions.
+watch rules are in the operator's database; they survive restarts and compactions.
 
 | Command | What it does |
 | --- | --- |

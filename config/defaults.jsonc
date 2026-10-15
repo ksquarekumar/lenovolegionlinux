@@ -62,9 +62,10 @@
     }
   },
 
-  // Dossiers (note 18): one writable dossier per agent session, in <root>/<dossier>/.
+  // Dossiers (note 18): one writable dossier per agent session, in <root>/<dossier>/. Each directory where a
+  // dossier is used gets the link agentWorkspaces -> <root> (design 23, E1a).
   "dossier": {
-    "root": "~/.agentworkspace",
+    "root": "~/agentWorkspaces",
     // Block every prompt of a session that has no dossier; prompts that run /legionctl:dossier pass.
     "gate": true,
     // At session start (new or resumed), bind the session to the last dossier used in the same repository (or

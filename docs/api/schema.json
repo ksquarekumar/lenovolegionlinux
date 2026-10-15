@@ -2256,6 +2256,10 @@
         "base": {
           "type": "string",
           "description": "The ref the branch started from and merges into."
+        },
+        "topic": {
+          "type": "string",
+          "description": "The topic of a topic workspace; empty for the dossier's own."
         }
       },
       "required": [
@@ -2263,7 +2267,8 @@
         "repo",
         "path",
         "branch",
-        "base"
+        "base",
+        "topic"
       ],
       "description": "One open workspace.",
       "title": "Workspace",
@@ -2323,6 +2328,10 @@
           "type": "string",
           "description": "The ref the branch started from and merges into."
         },
+        "topic": {
+          "type": "string",
+          "description": "The topic of a topic workspace; empty for the dossier's own."
+        },
         "ahead": {
           "type": "integer",
           "format": "uint32",
@@ -2375,6 +2384,7 @@
         "path",
         "branch",
         "base",
+        "topic",
         "ahead",
         "behind",
         "staged",
@@ -2421,6 +2431,10 @@
           "base": {
             "description": "The ref the branch started from and merges into.",
             "type": "string"
+          },
+          "topic": {
+            "description": "The topic of a topic workspace; empty for the dossier's own.",
+            "type": "string"
           }
         },
         "required": [
@@ -2428,7 +2442,8 @@
           "repo",
           "path",
           "branch",
-          "base"
+          "base",
+          "topic"
         ]
       },
       "title": "Array_of_Workspace",
@@ -11186,6 +11201,13 @@
           "name": {
             "type": "string"
           },
+          "id": {
+            "description": "The stable id in its `dossier.jsonc`; it stays when the dossier is renamed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "has_plan": {
             "type": "boolean"
           }
@@ -11196,6 +11218,46 @@
         ]
       },
       "title": "Array_of_DossierInfo",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "dossier.rename": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The dossier's name now."
+        },
+        "to": {
+          "type": "string",
+          "description": "The new name: a-z, 0-9 and '-', not in use. The dossier's id, bindings, workspaces and sessions stay."
+        }
+      },
+      "required": [
+        "name",
+        "to"
+      ],
+      "title": "DossierRenameIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },

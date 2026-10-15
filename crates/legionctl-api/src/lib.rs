@@ -447,7 +447,7 @@ operations! {
     /// Tokens per agent, day and model from Claude Code's and Codex's own transcripts, and Codex's rate-limit use.
     agents_usage / AgentsUsage = "agents.usage", Read, AgentUsageIn => UsageReport;
     /// Open (or reopen) this session's dossier workspace in a repository: a worktree on legionctl/<dossier> with the
-    /// dossier linked as .agentworkspace. Change code there, not in the main checkout. With `--topic`, a separate
+    /// dossier home linked as agentWorkspaces. Change code there, not in the main checkout. With `--topic`, a separate
     /// worktree on legionctl/<dossier>--<topic>, so that agents of one dossier work in parallel.
     workspace_open / WorkspaceOpen = "workspace.open", Session, WorkspaceOpenIn => Workspace;
     /// Git state of the workspace where you are (or of `--topic`): ahead/behind the base, staged, unstaged,
@@ -724,6 +724,9 @@ operations! {
     dossier_locks / DossierLocks = "dossier.locks", Read, Empty => Locks;
     /// Dossiers, most recently changed first.
     dossier_list / DossierListOp = "dossier.list", Read, Empty => DossierList;
+    /// Rename a dossier: its folder in ~/agentWorkspaces gets the new name; its id, bindings, workspaces, sessions
+    /// and threads stay with it. A name in use is refused.
+    dossier_rename / DossierRename = "dossier.rename", Workspace, DossierRenameIn => Lines;
     /// Read a dossier file; each line prints as <line>:<hash>|<text>, the anchors that edit takes.
     dossier_read / DossierRead = "dossier.read", Read, DossierReadIn => Lines;
     /// Search every dossier (or one) for a text; rows are <path>:<line>:<hash>|<text>.

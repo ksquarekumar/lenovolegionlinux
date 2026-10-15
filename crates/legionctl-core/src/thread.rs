@@ -1,6 +1,7 @@
 //! Threads (design 23, Part B, P5): one task with its members (`main0` and observers), an append-only thread log,
 //! a durable outbox that the main agent's hooks deliver, deterministic watch rules with counts, pace, and presence
-//! (the peers of a session and what they do). The tables are in `workspace.db`; the log is the source, and each
+//! (the peers of a session and what they do). The tables are in the operator's database (a thread's members come
+//! from several dossiers, so its rows span dossiers: design 23, E1 decision 1); the log is the source, and each
 //! projection (members, messages, rule counts) changes in the same transaction as its log row.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,7 +15,7 @@ use crate::db::{Db, EventFilter, EventRow, now};
 use crate::dossier::Dossiers;
 use crate::workspace::Workspace;
 
-/// The thread tables (workspace.db v13).
+/// The thread tables (operator.db v11; workspace.db v13 before the dossier homes).
 macro_rules! tables {
     () => {
         "
@@ -479,13 +480,6 @@ impl Presence {
                     .map(|w| w.dossier)
             })
     }
-}
-
-/// The topic of a workspace from its branch `legionctl/<dossier>--<topic>` ("" for the dossier's own).
-fn topic_of(w: &Workspace) -> Option<String> {
-    w.branch
-        .strip_prefix(&format!("legionctl/{}", w.dossier))
-        .map(|t| t.trim_start_matches("--").to_string())
 }
 
 impl Dossiers {
@@ -1217,7 +1211,7 @@ impl Dossiers {
                 Some(
                     p.workspaces
                         .iter()
-                        .find(|w| w.dossier == d && topic_of(w).as_deref() == Some(t.as_str()))
+                        .find(|w| w.dossier == d && w.topic == *t)
                         .cloned()
                         .with_context(|| {
                             format!("dossier {d} has no open workspace with topic {t}")
@@ -1319,7 +1313,7 @@ impl Dossiers {
             agent,
             account,
             dossier: p.dossier_of(session, project.as_deref()),
-            topic: workspace.as_ref().and_then(topic_of),
+            topic: workspace.as_ref().map(|w| w.topic.clone()),
             workspace: workspace.map(|w| w.path),
             members: p
                 .members

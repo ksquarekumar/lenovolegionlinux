@@ -10,7 +10,8 @@ user-invocable: true
 2. If you changed the main checkout, tell the user and move the change to the workspace.
 3. Bind a dossier first (skill dossier-practice). A workspace belongs to one dossier.
 4. `workspace open [--repo <dir>] [--base <ref>]` makes or reopens the workspace: a worktree at
-   `<workspace.root>/<repo>/<dossier>` on branch `legionctl/<dossier>`, with the dossier linked in as `.agentworkspace`.
+   `<workspace.root>/<repo>/<dossier>` on branch `legionctl/<dossier>`, with the dossier home linked in as
+   `agentWorkspaces` (git ignores it through `info/exclude`).
    The default base is the main checkout's branch.
 5. Work in the `path` that `workspace open` returns.
 6. A topic workspace is one more worktree of the same dossier for one parallel agent: `workspace open --topic <t>` makes

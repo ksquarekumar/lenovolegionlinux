@@ -22,7 +22,8 @@ This repository is for one machine only. It does not guess safe behavior for oth
 | `legionctl-osd@legionctl` | GNOME Shell extension | the animated OSD: thermal mode, panel refresh rate, Fn lock |
 
 State: `/var/lib/legionctl/system.db` (machine: the Fn+Q ledger), `~/.local/state/legionctl/operator.db` (event log),
-`~/.agentworkspace/workspace.db` (dossier bindings). Configuration is files only (see Agents).
+`~/agentWorkspaces/<dossier>/` (agent dossiers, each with its own `.state/dossier.db`). Configuration is files only
+(see Agents).
 Machine policy: `profiles/lenovo-82wq-legion-pro-7-16irx8h.json` (JSONC).
 
 ## Install
@@ -70,7 +71,7 @@ legionctl power apply             # through the daemon; polkit asks you
 legionctl gpu primary nvidia             # applies at the next login
 legionctl validate                # profile structure, no hardware access
 legionctl config layers           # config files in merge order; `config explain <key>` says which file set a value
-legionctl dossier list            # agent dossiers in ~/.agentworkspace (agents bind them; see Agents)
+legionctl dossier list            # agent dossiers in ~/agentWorkspaces (agents bind them; see Agents)
 legionctl workspace list          # each dossier's git worktree: path, branch, base
 legionctl session start claude    # Claude Code in a sandbox on the dossier's workspace: home read-only, git gated
 legionctl tui                     # live dashboard

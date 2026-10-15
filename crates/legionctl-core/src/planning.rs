@@ -748,13 +748,17 @@ pub fn row_findings(
     let Ok(state) = status(dossiers, dir, None, "HEAD", None, false) else {
         return Vec::new();
     };
+    // a link keeps the name the dossier had when it was written (the registry keeps old names)
+    let names = dossiers
+        .names_of(dossier)
+        .unwrap_or_else(|_| vec![dossier.to_string()]);
     let mut out = Vec::new();
     for f in &state.features {
-        for row in f
-            .plan_rows
-            .iter()
-            .filter_map(|r| r.strip_prefix(&format!("{dossier}#")))
-        {
+        for row in f.plan_rows.iter().filter_map(|r| {
+            r.split_once('#')
+                .filter(|(d, _)| names.iter().any(|n| n == d))
+                .map(|(_, row)| row)
+        }) {
             let Some(node) = graph.nodes.iter().find(|n| n.id == format!("plan#{row}")) else {
                 out.push(format!(
                     "feature {} names plan#{row}, which does not exist",

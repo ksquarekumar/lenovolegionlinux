@@ -1,0 +1,30 @@
+// Design 23, Part E, E1 and E1a (todo-103, first part): each dossier in its home with a stable id and its own SQLite,
+// the rows that span dossiers in the operator's database, the one-time migration, and the link in each directory.
+{
+  "$schema": "../feature.schema.json",
+  "id": "dossier-home",
+  "title": "Dossier homes, ids and the SQLite split",
+  "status": "done",
+  "plan_rows": ["legionctl#todo-103"],
+  "objectives": [
+    { "id": "O1", "text": "Each dossier is one folder in ~/agentWorkspaces with a stable id and its own SQLite; a rename keeps every reference." },
+    { "id": "O2", "text": "Each directory where a dossier is used links the home; git ignores the link; a real folder there is imported first." }
+  ],
+  "stories": [
+    { "id": "S1", "kind": "data-flow", "text": "The old home moves once: each row in its place and counted, the ids kept, a cut step done again at the next start.", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/e2e.rs::the_dossiers_move_to_their_homes_once_and_keep_their_ids_links_and_rows"] },
+    { "id": "S2", "text": "The first use in a directory imports its agentWorkspaces folder, links the home and makes git ignore the link.", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/e2e.rs::the_first_use_in_a_repository_imports_its_agentworkspaces_folder_and_links_the_home"] },
+    { "id": "S3", "kind": "requirement", "text": "Repository facts written from one dossier are read from each dossier attached to the repository; a rename keeps rows and links.", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/e2e.rs::facts_written_from_one_dossier_are_read_from_another_and_a_rename_keeps_rows_and_links"] }
+  ],
+  "work_items": [
+    { "id": "P9", "text": "Dossier home, ids, registry, SQLite split, migration, the directory link and the import", "status": "done", "stories": ["S1", "S2", "S3"], "units": [
+      { "key": "file:crates/legionctl-core/src/home.rs", "change": "add", "loc": 300 },
+      { "key": "file:crates/legionctl-core/src/migrate.rs", "change": "add", "loc": 650 },
+      { "key": "file:crates/legionctl-core/src/dossier.rs", "change": "edit" },
+      { "key": "file:crates/legionctl-core/src/workspace.rs", "change": "edit" },
+      { "key": "op:dossier.rename", "change": "add" }
+    ] }
+  ]
+}

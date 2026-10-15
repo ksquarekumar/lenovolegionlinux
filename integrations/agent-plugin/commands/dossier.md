@@ -1,6 +1,6 @@
 ---
 description: Bind this session to a dossier (legionctl:dossier), create one, or show and release the binding
-argument-hint: use <name> [--steal] | active | release | list | check
+argument-hint: use <name> [--steal] | active | release | list | check | rename <name> <to>
 ---
 legionctl:dossier request: $ARGUMENTS
 
@@ -11,4 +11,5 @@ Use the legionctl MCP tools; the client fills in the session id. Follow skill `l
 2. After a bind, read `<name>/plan.md` and the newest MEMORY files with `dossier_read`.
 3. `active`, `release`, `list`, `check`: call `dossier_active`, `dossier_release`, `dossier_list` or `dossier_check` and
    show the result.
-4. No arguments: call `dossier_active` and `dossier_list`, then ask which dossier to use or what name to create.
+4. `rename <name> <to>`: call `dossier_rename`; the operator asks the user. A name in use is refused.
+5. No arguments: call `dossier_active` and `dossier_list`, then ask which dossier to use or what name to create.

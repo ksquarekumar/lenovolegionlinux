@@ -1191,10 +1191,15 @@ impl Dossiers {
         );
         let [real_git, settings, mcp] = session_files(&runtime, &id, config, &mcp_json)?;
         let workdir = agent_dir(ws);
+        // its `.state` must be there for the read-only mount
+        self.home(dossier)?;
+        let state = self.root.join(dossier).join(".state");
 
         let mut mounts = vec![
             Mount::Writable(runtime.join("legionctl")),
             Mount::Writable(self.root.join(dossier)),
+            // the dossier's database holds the test gate's evidence: only legionctl writes it
+            Mount::ReadOnly(state.clone(), state),
         ];
         if ws.is_folder() {
             mounts.push(Mount::Overlay {

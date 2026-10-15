@@ -9,8 +9,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
 
-use crate::workspace::LINK;
-
 /// One change in the upper layer, relative to the source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
@@ -63,9 +61,6 @@ pub fn changes(path: &Path, source: &Path) -> Result<Vec<Change>> {
         entries.sort_by_key(std::fs::DirEntry::file_name);
         for entry in entries {
             let rel = rel.join(entry.file_name());
-            if rel == Path::new(LINK) {
-                continue;
-            }
             let meta = std::fs::symlink_metadata(entry.path())?;
             if whiteout(&meta) {
                 out.push(Change::Deleted(rel));

@@ -109,14 +109,21 @@ async fn main() -> Result<()> {
             Ok(rows) => eprintln!("operator: {rows} old log rows removed (events.keep_days)"),
             Err(e) => eprintln!("operator: old log rows not removed: {e:#}"),
         }
-        // account logins left in profiles (a new login, a session that ended) go into the keyring
-        let settled =
-            legionctl_core::config::resolve(&legionctl_core::config::Dirs::from_env(), None)
-                .and_then(|r| {
-                    legionctl_core::dossier::Dossiers::open(&r.config.dossier)?.settle_logins()
-                });
-        if let Err(e) = settled {
-            eprintln!("operator: account logins not moved to the keyring: {e:#}");
+        // account logins left in profiles (a new login, a session that ended) go into the keyring; the dossier
+        // registry reads the folders (a folder renamed by hand keeps its rows); both wait for the dossier migration
+        if !legionctl_core::migrate::pending() {
+            let settled =
+                legionctl_core::config::resolve(&legionctl_core::config::Dirs::from_env(), None)
+                    .and_then(|r| {
+                        let store = legionctl_core::dossier::Dossiers::open(&r.config.dossier)?;
+                        for finding in store.sync_registry()? {
+                            eprintln!("operator: {finding}");
+                        }
+                        store.settle_logins()
+                    });
+            if let Err(e) = settled {
+                eprintln!("operator: dossier registry or account logins not done: {e:#}");
+            }
         }
     })
     .await;
@@ -126,6 +133,10 @@ async fn main() -> Result<()> {
     // the long operations a restart cut off go on in the background
     if let Err(e) = operator.resume_jobs("running") {
         eprintln!("operator: jobs not resumed: {e:#}");
+    }
+    // the dossiers of ~/.agentworkspace move to their homes (design 23, E1), once
+    if let Err(e) = engine::Operator::migrate_dossiers() {
+        eprintln!("operator: the dossier migration did not start: {e:#}");
     }
     let modules = vec![
         module("the machine event recorder", recorder::run),

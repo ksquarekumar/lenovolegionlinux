@@ -696,8 +696,8 @@ fn each_commit_links_its_own_checkpoint_also_after_a_rebase(lab: &Lab, ws: &Path
             )
         })
         .collect();
-    // the oldest: the workspace's own ignore line, a plain commit
-    let [(_, git), (_, second), (_, first), (_, b), (_, m), (_, None)] = &links[..] else {
+    // a plain commit, then the checkpoints, newest first
+    let [(_, git), (_, second), (_, first), (_, b), (_, m)] = &links[..] else {
         panic!("{links:?}");
     };
     assert_eq!(*git, None, "{links:?}");
@@ -1206,7 +1206,7 @@ fn a_plan_is_checked_against_the_code_graph_and_a_commit_that_adds_its_units_com
     the_status_has_units_loc_and_tests(&lab, &ws);
 
     // the dossier's plan says todo-1 is built while W2 is open, and todo-9 does not exist
-    let dossier = lab.home.join(".agentworkspace/port");
+    let dossier = lab.home.join("agentWorkspaces/port");
     let plan = std::fs::read_to_string(dossier.join("plan.md")).unwrap().replace(
         "## ToDo\n",
         "## ToDo\n| id | item | status |\n| --- | --- | --- |\n| todo-1 | fx | built abc123 |\n",
