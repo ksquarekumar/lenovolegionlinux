@@ -463,8 +463,8 @@ operations! {
     /// with no assertion or no recorded kill (`code tests review`); `--accept-test <test> --reason <why>` lets one
     /// through and records why.
     workspace_checkpoint / WorkspaceCheckpoint = "workspace.checkpoint", Session, CheckpointIn => Lines;
-    /// Run the test suite (`cargo test --release --workspace --no-fail-fast -j8`) as a job and record each test's result,
-    /// file and the ref.
+    /// Run the test suite (`cargo test --profile test-fast --workspace --no-fail-fast -j8`) as a job and record each
+    /// test's result, file and the ref.
     code_tests_run / CodeTestsRun = "code.tests.run", Session, TestsRunIn => Lines;
     /// The tests of the repository with their last run and their kills.
     code_tests_list / CodeTestsList = "code.tests.list", Read, RepoIn => Vec<TestRow>;

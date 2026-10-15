@@ -318,7 +318,7 @@ The user's rule: tests are e2e and of high diagnostic value only; obvious tests 
 evidence today.
 
 Runs: `code tests run [--filter]` runs `tests.command` as a job. The default command is
-`cargo test --release --workspace --no-fail-fast -j8`. The job reads the libtest lines
+`cargo test --profile test-fast --workspace --no-fail-fast -j8`. The job reads the libtest lines
 (`test <name> ... ok|FAILED|ignored`) and stores each result in `test_runs` (tree, test key, result, ms, job, time).
 Tests that need root or a VM keep `#[ignore]` and show as `ignored`, not as `failed`.
 
@@ -356,7 +356,7 @@ What exists (`crates/legionctl-core/src/codetests.rs`, operations `code.tests.*`
 
 | Part | Built | Different from the design, and why |
 | --- | --- | --- |
-| Runs | `code tests run [--filter]`: a job (`code.tests.run`, the counts so far are its progress). Each test is a row in `test_runs`: repository, ref, file (the source of the test binary, from cargo's `Running` line), test, result, job, time. | No time per test: stable libtest does not print it. The command is fixed (`cargo test --release --workspace --no-fail-fast -j8`), not a `tests.command` setting. |
+| Runs | `code tests run [--filter]`: a job (`code.tests.run`, the counts so far are its progress). Each test is a row in `test_runs`: repository, ref, file (the source of the test binary, from cargo's `Running` line), test, result, job, time. | No time per test: stable libtest does not print it. The command is fixed (`cargo test --profile test-fast --workspace --no-fail-fast -j8`), not a `tests.command` setting. |
 | Mutants | Table `mutants` (repository, ref, file, line, description, killed = the tests that failed, source `tool` or `agent`). `code tests mutant record <file> <line> <description> [<test>...]` and `code tests mutant run` (cargo-mutants on the `.rs` files outside `tests/` that the branch changed since its base; a job with `done`/`total` progress; the tests that failed come from each mutant's log). | Records count for the repository (git common folder), not for one tree: a test name with a kill is evidence until the test changes again. |
 | Review | `code tests review [--staged]`: the `#[test]` functions that the diff against HEAD touches. Hard: no assertion, no kill. Soft: duplicate (another test kills each of its mutants), outside `tests/`. | The spans and the boundary come from the text, not from the code graph: a snapshot exists only for a committed tree and needs ctx, and the gate reviews the index or the working tree (CI has no ctx). Braces in strings can cut a span; "boundary" is "in a `tests/` folder", not the callees. No "constant only" signal (the test-reviewer observer, P6). |
 | Gate | `workspace checkpoint` stages, reviews the index and refuses with each test and reason; nothing is committed. `--accept-test <test> --reason <why>` keeps the reason in `test_accepts` and writes the event `code.tests.accept`. | One test per accept; an accept stays, so the pre-commit hook and later checkpoints see it. The annotation of the reason waits for A6 (P2). |
@@ -1492,12 +1492,13 @@ so a branch can change its checks and `config explain checks.lint` names the fil
   "format":  { "kind": "format", "run": "cargo fmt --all --check", "fix": "cargo fmt --all" },
   "lint":    { "kind": "lint",   "run": "make lint", "gate": "checkpoint" },
   "static":  { "kind": "static", "run": "cargo clippy --workspace --all-targets -- -D warnings" },
-  "build":   { "kind": "build",  "run": "cargo build --release --workspace --bins --locked", "gate": "merge",
+  "build":   { "kind": "build",  "run": "cargo build --profile test-fast --workspace --bins --locked", "gate": "merge",
                "profiles": ["target/cargo-timings/cargo-timing.html"] },
-  "e2e":     { "kind": "test",   "run": "cargo test --release --workspace --no-fail-fast -j8", "gate": "merge",
-               "runner": { "format": "libtest", "list": "cargo test --release --workspace -- --list --format terse",
-                           "one": "cargo test --release -p {crate} --test {file} -- --exact {fn}" } },
-  "e2e-root": { "kind": "test",  "run": "cargo test --release --workspace -- --ignored",
+  "e2e":     { "kind": "test",   "run": "cargo test --profile test-fast --workspace --no-fail-fast -j8", "gate": "merge",
+               "runner": { "format": "libtest",
+                           "list": "cargo test --profile test-fast --workspace -- --list --format terse",
+                           "one": "cargo test --profile test-fast -p {crate} --test {file} -- --exact {fn}" } },
+  "e2e-root": { "kind": "test",  "run": "cargo test --profile test-fast --workspace -- --ignored",
                "runner": { "format": "libtest", "requires": ["root", "kvm"] } },
   "package": { "kind": "deploy", "run": "make package" },
   "install": { "kind": "install", "run": "make install-package", "ask": true }

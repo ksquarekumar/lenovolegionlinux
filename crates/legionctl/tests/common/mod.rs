@@ -21,7 +21,7 @@ pub fn sibling(name: &str) -> PathBuf {
 /// `bin`, when no source in its dep-info (`<bin>.d`, which cargo writes with each build) is newer than it.
 pub fn fresh(bin: &Path) -> PathBuf {
     let missing = format!(
-        "{} is missing: run cargo build --release first",
+        "{} is missing: run cargo build --profile test-fast first",
         bin.display()
     );
     let built = std::fs::metadata(bin)
@@ -39,7 +39,7 @@ pub fn fresh(bin: &Path) -> PathBuf {
         if let Ok(changed) = std::fs::metadata(source).and_then(|m| m.modified()) {
             assert!(
                 changed <= built,
-                "{} is older than this build: run cargo build --release first ({source} changed)",
+                "{} is older than this build: run cargo build --profile test-fast first ({source} changed)",
                 bin.display()
             );
         }

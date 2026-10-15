@@ -38,7 +38,7 @@ Notes do not refuse: a duplicate (another test kills each mutant this test kills
 | Command | What it shows |
 | --- | --- |
 | `code tests review [--staged [--index <file>]]` (`--index`: the client's `GIT_INDEX_FILE` when not given) | The new and changed tests against HEAD (the working tree, or the index): assertions, kills, duplicates, refusals. It fails when the gate refuses a test. |
-| `code tests run [--filter <text>]` | Runs `cargo test --release --workspace --no-fail-fast --message-format=json -j8` as a job and records each test's binary source (relative to the repository), result and ref. When cargo fails and no test ran, the job fails with the compiler's errors. |
+| `code tests run [--filter <text>]` | Runs `cargo test --profile test-fast --workspace --no-fail-fast --message-format=json -j8` as a job and records each test's binary source (relative to the repository), result and ref. When cargo fails and no test ran, the job fails with the compiler's errors. |
 | `code tests list`, `code tests show <test>` | The tests with their last result and kills; the runs, kills and accepts of one test. |
 
 The pre-commit hook `legionctl-test-gate` (`scripts/test-gate.sh`) runs `code tests review --staged` for commits made

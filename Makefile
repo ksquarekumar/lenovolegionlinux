@@ -73,13 +73,13 @@ static: ## build the static legionctl (musl) that `workspace pack` puts into age
 
 .PHONY: validate
 validate: ## check every profile and its shipped configset layers (knobs, values, the ac/battery rule) through the operator (no hardware access)
-	cargo build -q --workspace --bins --locked
-	cargo test -q --locked -p legionctl --test machine repo_profiles_are_valid
+	cargo build -q --profile test-fast --workspace --bins --locked
+	cargo test -q --profile test-fast --locked -p legionctl --test machine repo_profiles_are_valid
 
 .PHONY: test
 test: static ## end-to-end and behavior tests (no hardware access); the CLI tests start the real operator
-	cargo build --workspace --bins --locked
-	cargo test --workspace --locked
+	cargo build --profile test-fast --workspace --bins --locked
+	cargo test --profile test-fast --workspace --locked
 
 .PHONY: ci
 ci: lint rust-lint js-lint validate test ## what CI runs

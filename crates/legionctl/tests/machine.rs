@@ -876,7 +876,7 @@ fn a_daemon_older_than_a_source_it_was_built_from_is_refused() {
     let refused = refused.downcast_ref::<String>().unwrap();
     assert!(
         refused.starts_with(&format!(
-            "{} is older than this build: run cargo build --release first (",
+            "{} is older than this build: run cargo build --profile test-fast first (",
             bin.display()
         )),
         "{refused}"

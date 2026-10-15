@@ -45,8 +45,9 @@ pkgver() {
 # its own cargo folder: makepkg's RUSTFLAGS (target-cpu, mold) differ from a dev build's, which then keeps its cache
 export CARGO_TARGET_DIR="${startdir}/../../target/package"
 
+# all cores: the environment variable wins over `[build] jobs` of the user's ~/.cargo/config.toml (a limit for agents)
 build() {
-  make -C "${startdir}/../.." build
+  CARGO_BUILD_JOBS="$(nproc)" make -C "${startdir}/../.." build
 }
 
 package() {

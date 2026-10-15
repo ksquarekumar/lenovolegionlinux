@@ -1,6 +1,6 @@
 ---
 name: verify-and-ship
-description: The checks before a legionctl change is committed and merged - release build, static client, lint, tests, mutation checks, regenerated schema and D-Bus XML, EVIDENCE, commit message, and CI in batches. Use before each checkpoint that changes code, before a merge, and when CI fails.
+description: The checks before a legionctl change is committed and merged - test build (profile test-fast), static client, lint, tests, mutation checks, regenerated schema and D-Bus XML, EVIDENCE, commit message, and CI in batches. Use before each checkpoint that changes code, before a merge, and when CI fails.
 user-invocable: true
 ---
 
@@ -9,15 +9,17 @@ user-invocable: true
 1. A change is complete when the checks pass in the workspace, each new test caught a broken version of the code, the
    dossier has the EVIDENCE, and the commit message says what was checked.
 2. Run each check in the workspace path (skill workspace-practice), never in the main checkout.
-3. Build first: `cargo build --release --workspace --bins --locked`. `cargo test -p legionctl` does not build the
-   operator and daemon again, so without this the tests run old binaries.
+3. Build first: `cargo build --profile test-fast --workspace --bins --locked`. `cargo test -p legionctl` does not build
+   the operator and daemon again, so without this the tests run old binaries. Each test command uses the profile
+   `test-fast` (`Cargo.toml`): it compiles fast after an edit and runs the suite as fast as release. The package and
+   the static client use release.
 4. Run `make static` before the container tests. They put `target/static/release/legionctl` into the agent image.
 5. Run `make lint`, then `make rust-lint` (and `make js-lint` when JS changed, `make validate` when a profile or layer
    changed).
 6. Do not suppress a lint (`#[allow]`, `noqa`, a skipped hook). If a rule fights the design, tell the user which rule,
    where and why, and let the user decide.
-7. Run the tests with `cargo test --release --workspace --locked --no-fail-fast` when the machine is not busy (skill
-   tool-lifecycle, load).
+7. Run the tests with `cargo test --profile test-fast --workspace --locked --no-fail-fast` when the machine is not busy
+   (skill tool-lifecycle, load).
 8. Tests are end to end, from a boundary that a user or agent uses, with high diagnostic value. Do not write a test that
    checks the obvious.
 9. The `#[ignore]` tests (root eBPF and VM tests) run only in their own CI steps (`.github/workflows/ci.yml`). Do not
@@ -26,9 +28,10 @@ user-invocable: true
     put the code back, see it pass. Do this for each behavior the test claims. Record each one with `code tests mutant
     record`: the checkpoint's test gate needs a kill for each new or changed test (`refs/reference-test-gate.md`).
 11. When an operation, its class, a wire type or a planning type changes, write `docs/api/schema.json` and
-    `planning/*.schema.json` again: `LEGIONCTL_WRITE_SCHEMA=1 cargo test -p legionctl --test e2e the_wire_format`.
+    `planning/*.schema.json` again:
+    `LEGIONCTL_WRITE_SCHEMA=1 cargo test --profile test-fast -p legionctl --test e2e the_wire_format`.
 12. When a method or property of `legionctl-system` changes, write `dbus/org.legionctl.System1.xml` again:
-    `LEGIONCTL_WRITE_DBUS=1 cargo test -p legionctl --test machine the_daemon_serves`.
+    `LEGIONCTL_WRITE_DBUS=1 cargo test --profile test-fast -p legionctl --test machine the_daemon_serves`.
 13. Read the diff of each generated file before you commit it. A change that you did not intend is a bug.
 14. Write the EVIDENCE from the real output when the check runs: `dossier add EVIDENCE/validation <slug>` with the
     commands, the counts (passed, failed, ignored), the mutations and the commit SHA, and front matter `id`, `class`,

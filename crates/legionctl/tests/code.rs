@@ -955,7 +955,7 @@ fn an_annotation_is_valid_while_its_symbol_is_the_same_stale_after_a_change_and_
 }
 
 /// The change scenario with the installed ctx (`~/.local/bin/ctx`, 2.2.8): the same entity rows as the stand-in.
-/// Run it by hand: `cargo test --release -p legionctl --test code -- --ignored`.
+/// Run it by hand: `cargo test --profile test-fast -p legionctl --test code -- --ignored`.
 #[test]
 #[ignore = "needs the real ctx; CI has the stand-in only"]
 fn the_real_ctx_gives_the_change_rows_of_the_stand_in() {

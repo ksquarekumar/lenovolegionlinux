@@ -72,7 +72,7 @@ pub(crate) use keyed;
 
 /// The command of `code tests run`; the filter goes after `--`. The JSON messages give each test binary's source.
 const TEST_COMMAND: &str =
-    "cargo test --release --workspace --no-fail-fast --message-format=json -j8";
+    "cargo test --profile test-fast --workspace --no-fail-fast --message-format=json -j8";
 
 /// A test that failed with a mutation, as it was then: it counts for the test while the test has the same hash.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
@@ -817,7 +817,7 @@ impl Dossiers {
                     tail.push_back(text.trim_end().into());
                 }
             } else if let Some(rest) = line.trim().strip_prefix("Running ") {
-                // `Running tests/e2e.rs (target/release/deps/e2e-1f2e)`: the binary in parentheses
+                // `Running tests/e2e.rs (target/test-fast/deps/e2e-1f2e)`: the binary in parentheses
                 let exe = rest
                     .rsplit_once(" (")
                     .map_or(rest, |(_, e)| e)
