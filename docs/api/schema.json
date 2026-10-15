@@ -14184,8 +14184,23 @@
             "format": "int64"
           },
           "state": {
-            "description": "open or closed.",
+            "description": "open, or imported (read-only: `thread import` copied it to another account).",
             "type": "string"
+          },
+          "account": {
+            "description": "The account profile it runs on: its import's, else its main session's; none for the home's.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "imported_from": {
+            "description": "The thread it is a copy of (`thread import`).",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
           }
         },
         "required": [
@@ -14240,7 +14255,22 @@
             },
             "state": {
               "type": "string",
-              "description": "open or closed."
+              "description": "open, or imported (read-only: `thread import` copied it to another account)."
+            },
+            "account": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The account profile it runs on: its import's, else its main session's; none for the home's."
+            },
+            "imported_from": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "description": "The thread it is a copy of (`thread import`)."
             }
           },
           "required": [
@@ -15214,6 +15244,373 @@
         "id"
       ],
       "title": "RuleRmIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "thread.import": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The thread's id (`thread list`)."
+        },
+        "account": {
+          "type": "string",
+          "description": "The account profile of the copy (`agents accounts list`)."
+        }
+      },
+      "required": [
+        "thread",
+        "account"
+      ],
+      "title": "ThreadImportIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "views.list": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in a repository: its layer comes first.",
+          "default": "."
+        }
+      },
+      "title": "ViewsListIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "description": "A view file of a layer.",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "layer": {
+            "description": "repository or user.",
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "widget": {
+            "description": "The widget; none when the file is not a view.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "table",
+              "tree",
+              "gauge",
+              "sparkline",
+              "markdown",
+              "diff",
+              "list",
+              "stack",
+              null
+            ]
+          },
+          "error": {
+            "description": "Why the file is not a view.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "layer",
+          "file"
+        ]
+      },
+      "title": "Array_of_ViewInfo",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "views.check": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string",
+          "format": "stdin",
+          "description": "The view file's JSONC text (stdin when not given)."
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "title": "ViewTextIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "views.save": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string",
+          "format": "stdin",
+          "description": "The view file's JSONC text (stdin when not given)."
+        },
+        "repo": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "path",
+          "description": "Save into this repository's layer (`.legionctl/views/`), shared with the code; default: the user's layer.",
+          "default": null
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "title": "ViewSaveIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "views.render": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The view's name (`views list`)."
+        },
+        "params": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The view's parameters as `name=value`.",
+          "default": []
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in a repository: its layer comes first.",
+          "default": "."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "ViewRenderIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "widget": {
+          "type": "string",
+          "enum": [
+            "table",
+            "tree",
+            "gauge",
+            "sparkline",
+            "markdown",
+            "diff",
+            "list",
+            "stack"
+          ],
+          "description": "A widget of the closed set of a view (design 23, C4)."
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": "table: cells; list and tree: one cell per row."
+        },
+        "numbers": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "format": "double"
+          },
+          "description": "gauge: the value; sparkline: the values."
+        },
+        "max": {
+          "type": "number",
+          "format": "double",
+          "description": "gauge: the value of a full gauge."
+        },
+        "text": {
+          "type": "string",
+          "description": "markdown and diff."
+        },
+        "parts": {
+          "type": "array",
+          "items": {
+            "$ref": "#"
+          },
+          "description": "stack: its views."
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The source failed, or its answer does not fit the widget."
+        },
+        "refresh": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The event kinds after which the view reads again (`*` at the end matches any rest)."
+        }
+      },
+      "required": [
+        "name",
+        "widget",
+        "columns",
+        "rows",
+        "numbers",
+        "max",
+        "text",
+        "parts",
+        "refresh"
+      ],
+      "description": "A view with its data in the shape of its widget.",
+      "title": "ViewData",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "views.place": {
+    "class": "session",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The thread's id (`thread list`)."
+        },
+        "name": {
+          "type": "string",
+          "description": "The view's name (`views list`)."
+        },
+        "params": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The view's parameters as `name=value`.",
+          "default": []
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in a repository: its layer comes first.",
+          "default": "."
+        }
+      },
+      "required": [
+        "thread",
+        "name"
+      ],
+      "title": "ViewPlaceIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {

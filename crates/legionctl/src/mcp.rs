@@ -13,7 +13,7 @@ use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use serde_json::Value;
 
-use crate::cli::fill_client_fields;
+use legionctl_api::cli::fill_client_fields;
 use legionctl_api::client::Client;
 
 fn tool_name(op: &OpInfo) -> String {

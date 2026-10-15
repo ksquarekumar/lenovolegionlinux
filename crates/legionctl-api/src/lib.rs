@@ -6,6 +6,10 @@
 //!   compile), and [`dispatch`], which routes a call by name;
 //! - one marker type per operation in [`op`], for typed client calls, and [`render`] for the text a CLI prints.
 
+#[cfg(feature = "cli")]
+pub mod chat;
+#[cfg(feature = "cli")]
+pub mod cli;
 #[cfg(feature = "client")]
 pub mod client;
 mod io;
@@ -23,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use io::*;
-pub use render::Render;
+pub use render::{Render, sparkline};
 pub use wire::*;
 
 /// Socket path relative to `$XDG_RUNTIME_DIR`.
@@ -845,6 +849,20 @@ operations! {
     thread_rules_add / ThreadRulesAdd = "thread.rules.add", Session, RuleAddIn => Lines;
     /// Remove a watch rule.
     thread_rules_rm / ThreadRulesRm = "thread.rules.rm", Session, RuleRmIn => Lines;
+    /// Copy a thread to another account profile: its log, members, messages, watch rules and layout, and its main
+    /// session's transcript. The copy records the thread it came from; the original stays and is read-only.
+    thread_import / ThreadImport = "thread.import", Workspace, ThreadImportIn => Lines;
+    /// The view files of the repository's layer and the user's (design 23, C4); a higher layer hides the same name.
+    views_list / ViewsList = "views.list", Read, ViewsListIn => Vec<ViewInfo>;
+    /// Check a view file: the format, a widget of the closed set, a read operation as its source, its parameters.
+    views_check / ViewsCheck = "views.check", Read, ViewTextIn => Lines;
+    /// Check a view file and save it into the user's layer, or the repository's (`--repo`); a saved view replaces the
+    /// view of the same name, and the screens that show it read it again.
+    views_save / ViewsSave = "views.save", Workspace, ViewSaveIn => Lines;
+    /// A view with its data in the shape of its widget; the text is for agents and terminals.
+    views_render / ViewsRender = "views.render", Read, ViewRenderIn => ViewData;
+    /// Show a view in pane 3 of a thread's screens: the thread's layout, kept in its log.
+    views_place / ViewsPlace = "views.place", Session, ViewPlaceIn => Lines;
     /// The sessions that share the caller's dossier, workspace or threads (or the scope given), with their state,
     /// last tool call, declared state and messages they did not ack.
     thread_peers / ThreadPeers = "thread.peers", Read, PeersIn => Vec<Peer>;

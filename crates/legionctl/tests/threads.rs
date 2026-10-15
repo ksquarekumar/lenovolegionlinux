@@ -658,3 +658,234 @@ fn the_outbox_survives_a_restart_and_peers_on_one_dossier_see_each_other_with_th
         "{refused}"
     );
 }
+
+/// The fields `fields` of each item of the array `key` of `v`.
+fn picked(v: &Value, key: &str, fields: [&str; 3]) -> Vec<[Value; 3]> {
+    v[key]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| fields.map(|f| item[f].clone()))
+        .collect()
+}
+
+/// `thread import` (design 23, C5): thread 1 runs on the home's account; its import to the account profile `work`
+/// makes thread 2 with the same log rows, members (without their sessions, which run on the old account), messages
+/// and watch rules, then a `thread.import` row; it copies main0's Claude transcript into the account's folders. Thread
+/// 1 is read-only after it: a second import (the copy exists), a message and a layout are refused. The copy refuses
+/// an import to its own account and to an account profile that does not exist.
+#[test]
+fn a_thread_imported_to_another_account_copies_its_log_and_members_and_imports_once() {
+    let lab = thread_lab("import");
+    lab.thread("main", &["send", "observer0", "note", "check the lint"]);
+    lab.thread("main", &["rules", "add", "1", "observer0", "make lint"]);
+    let transcript = lab.home.join(".claude/projects/-repo/main.jsonl");
+    write(
+        &transcript,
+        "{\"type\":\"user\",\"message\":\"port the parser\"}\n",
+    );
+    lab.ok("main", &lab.repo, &["agents", "accounts", "add", "work"]);
+    let before = lab.json("main", &["thread", "show", "1"]);
+
+    let out = lab.thread("main", &["import", "1", "work"]);
+    assert_eq!(
+        out,
+        "thread 1 imported to account work as thread 2; thread 1 is read-only now"
+    );
+    let copy = lab.json("main", &["thread", "show", "2"]);
+    let (old, new) = (
+        picked(&before, "log", ["member", "kind", "payload"]),
+        picked(&copy, "log", ["member", "kind", "payload"]),
+    );
+    assert_eq!(new[..old.len()], old[..], "the log rows in order");
+    assert_eq!(new.len(), old.len() + 1);
+    assert_eq!(
+        new[old.len()],
+        [
+            json!(""),
+            json!("thread.import"),
+            json!({"from": 1, "account": "work", "session": "main"})
+        ]
+    );
+    assert_eq!(
+        picked(&copy, "members", ["name", "archetype", "session"]),
+        [
+            [json!("main0"), json!("main-agent"), Value::Null],
+            [json!("observer0"), json!("thread-observer"), Value::Null]
+        ]
+    );
+    assert_eq!(
+        picked(&before, "members", ["name", "archetype", "session"])[0][2],
+        json!("main")
+    );
+    assert_eq!(copy["messages"][0]["body"], "check the lint");
+    assert_eq!(copy["messages"][0]["thread"], 2);
+    assert_eq!(copy["rules"][0]["expect"], "make lint");
+    let copied = lab
+        .home
+        .join(".local/share/legionctl/accounts/work/claude/projects/-repo/main.jsonl");
+    assert_eq!(
+        std::fs::read_to_string(&copied).unwrap(),
+        std::fs::read_to_string(&transcript).unwrap(),
+        "main0's transcript in the account's folders"
+    );
+    let list = lab.json("main", &["thread", "list"]);
+    let info = |id: i64| {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(
+        (
+            info(2)["state"].clone(),
+            info(2)["account"].clone(),
+            info(2)["imported_from"].clone()
+        ),
+        (json!("open"), json!("work"), json!(1))
+    );
+    assert_eq!(
+        (info(1)["state"].clone(), info(1)["account"].clone()),
+        (json!("imported"), Value::Null)
+    );
+
+    let again = lab.refused("main", &["thread", "import", "1", "work"]);
+    assert!(
+        again.contains("thread 1 was imported to thread 2 already"),
+        "{again}"
+    );
+    let send = lab.refused(
+        "main",
+        &["thread", "send", "observer0", "note", "x", "--thread", "1"],
+    );
+    assert!(send.contains("thread 1 is imported: read-only"), "{send}");
+    let same = lab.refused("main", &["thread", "import", "2", "work"]);
+    assert!(
+        same.contains("thread 2 runs on account work already"),
+        "{same}"
+    );
+    let missing = lab.refused("main", &["thread", "import", "2", "nope"]);
+    assert!(missing.contains("no account profile nope"), "{missing}");
+    assert_eq!(
+        lab.json("main", &["thread", "list"])
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "a refused import makes no thread"
+    );
+}
+
+/// Views (design 23, C4) from the CLI: a view of a widget outside the closed set, and a view whose source changes
+/// the machine (`power.apply`), are refused by `views check` and `views save` and not written; a valid view saves
+/// into the user's layer, renders the thread's members as rows for agents (`views render`), and a view placed on the
+/// thread is a `views.place` row of its log. A view in the repository's layer hides the user's view of that name.
+#[test]
+fn a_view_cannot_bind_a_change_operation_or_a_widget_outside_the_set() {
+    let lab = thread_lab("views");
+    let run = |args: &[&str], stdin: &str| {
+        lab.op.run(
+            &lab.repo,
+            &[
+                ("HOME", lab.home.to_str().unwrap()),
+                ("LEGIONCTL_SESSION", "main"),
+            ],
+            args,
+            stdin,
+        )
+    };
+    let chart = r#"{"name": "load", "widget": "chart", "source": {"op": "status"}}"#;
+    let change = r#"{"name": "power", "widget": "tree", "source": {"op": "power.apply", "input": {"source": "auto"}}}"#;
+    for (view, why) in [
+        (
+            chart,
+            "unknown variant `chart`, expected one of `table`, `tree`, `gauge`, `sparkline`, `markdown`, `diff`, `list`, `stack`",
+        ),
+        (
+            change,
+            "power.apply is a machine operation: a view reads only",
+        ),
+    ] {
+        for op in ["check", "save"] {
+            let out = run(&["views", op], view);
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                !out.status.success() && err.contains(why),
+                "views {op}: {err}"
+            );
+        }
+    }
+    let views = lab.home.join(".config/legionctl/views");
+    assert!(!views.exists(), "a refused view is not written");
+
+    let members = r#"{
+  "name": "members",
+  "params": { "thread": "integer" },
+  "widget": "table",
+  // the members of the thread
+  "source": { "op": "thread.show", "input": { "thread": "{thread}" }, "path": "$.members" },
+  "columns": ["name", "archetype"]
+}"#;
+    let out = run(&["views", "save"], members);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(views.join("members.jsonc")).unwrap(),
+        members,
+        "the file as written, with its comment"
+    );
+    let text = lab.ok(
+        "main",
+        &lab.repo,
+        &["views", "render", "members", "thread=1"],
+    );
+    assert_eq!(
+        text,
+        "members (table)\nname | archetype\nmain0 | main-agent\nobserver0 | thread-observer"
+    );
+    let missing = run(&["views", "render", "members"], "");
+    assert_eq!(
+        (
+            missing.status.success(),
+            String::from_utf8_lossy(&missing.stdout).trim()
+        ),
+        (
+            false,
+            "members (table): cannot read: view members needs the parameter thread"
+        )
+    );
+
+    lab.ok(
+        "main",
+        &lab.repo,
+        &["views", "place", "1", "members", "thread=1"],
+    );
+    let log = lab.json("main", &["thread", "show", "1"])["log"].clone();
+    let placed = log.as_array().unwrap().last().unwrap().clone();
+    assert_eq!(placed["kind"], "views.place");
+    assert_eq!(placed["payload"]["view"], "members");
+    assert_eq!(placed["payload"]["params"], json!({"thread": "1"}));
+
+    // the repository's layer comes first
+    let shared = members.replace(r#"["name", "archetype"]"#, r#"["name"]"#);
+    let out = run(&["views", "save", "--repo", "."], &shared);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = lab.ok(
+        "main",
+        &lab.repo,
+        &["views", "render", "members", "thread=1"],
+    );
+    assert_eq!(text, "members (table)\nname\nmain0\nobserver0");
+    let listed = lab.json("main", &["views", "list"]);
+    assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
+    assert_eq!(listed[0]["layer"], "repository");
+}

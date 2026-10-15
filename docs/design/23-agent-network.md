@@ -1192,6 +1192,41 @@ cell; the real operator, a real thread and the stand-in ACP agent):
 | `the_thread_tui_sizes_its_panes_folds_them_and_grows_the_chat_bar` | Pane widths other than 7%, 30% and the rest; a fold that does not give pane 3 the width or has no folded column; a thread's log not in pane 2, or not read again; a chat bar not at 60% centred, not taller with three lines, or not wider after `Ctrl+Right`. |
 | `the_thread_tui_runs_an_agent_command_and_a_registry_operation` | The agent's commands not kept or not offered, or offered after the registry; `/agent:plan x` not sent as `/plan x`, or in a new ACP session; a registry command not run with the CLI's words; runs not in pane 2; `session commands` of a session that does not exist answered. |
 
+### Built: P8 (2026-10-15)
+
+| Part | Where |
+| --- | --- |
+| App thread screen | `legionctl-app [<page>] [--agent <name> [--dossier <name>]]` (`crates/legionctl-app/src/thread.rs`) |
+| Chat bar, shared | `legionctl_api::chat` (the `/` entries, what a line does, the log rows of pane 2) and `legionctl_api::cli` (the CLI's words), for the TUI and the app |
+| Views | Format, checks, files: `crates/legionctl-core/src/views.rs`; schema `docs/api/view.schema.json`; operations `views.list`, `views.check`, `views.save`, `views.render`, `views.place` (`crates/legionctl-operator/src/views.rs`) |
+| Import | `thread import <thread> <account>` (`thread.import`) |
+| Keys and fields | `integrations/agent-plugin/skills/tool-lifecycle/refs/reference-thread-screen.md` |
+
+What is different from C2 to C5, and why:
+
+| Item | Built | Why |
+| --- | --- | --- |
+| App page | The whole window is the thread screen: pane 1 holds the old pages (Now, Apps & GPU, Health, Bench, Resources) as icons, and the thread's view. Not a page "Threads" next to them. | The same screen as the TUI (C1); the old tab bar and pane 1 did the same job. |
+| Pane 2 | The newest open thread, read again at each event of `GET /v1/events`. The stream runs on the app's tokio runtime; the screen takes its events each 100 ms. | GPUI's test scheduler refuses a wake from a tokio thread. A timer that takes events is not a poll of the operator. |
+| Chat bar | Click to type; `Shift+Enter` adds a line; `Ctrl+Left` and `Ctrl+Right` (30% to 100%). No drag. | The keys are the TUI's; a drag handle was not asked for in P7 and is not built. |
+| The chat bar's agent | As in P7 (`--agent`, a headless run), on the thread's account. | P6b is not built. |
+| Layout | `views place` writes the row `views.place` (view, parameters, repository) into the thread's log; the screens show the newest one. No `layout` column. | The log is the source (B2); an import copies it. |
+| View operations | `views.show` is not built: `views list` gives each file, layer and widget, and `views render` gives the data. | One operation less with the same facts. |
+| View class | `views.save` is class workspace (it writes the user's or the repository's files); `views.place` is class session; the others read. A view's source runs as the caller, with the same input checks as a call from outside. | A view cannot run a change, and a session's view cannot read as another session. |
+| Thread account | No column: the account is the newest `thread.import` row's, else the main session's account. The original's state becomes `imported` (read-only: join, send, rules, pace and place are refused). | The thread tables were in move (P9 put them in `operator.db`, with `sessions`); rows in the log need no schema step, and an import copies them. |
+| Import | Copies the log, the members (without their sessions, which run on the old account; their cursor is the import row), the messages, the rules and main0's Claude transcript (the code of `session resume --account`). A second import of a thread is refused: the copy exists. | C5. A member session on the new account starts with P6b. |
+| ui-composer | The format, the files, the checks and `views save`/`views place` are there for the model and for a person; the model's wake is P6b. | P6b is not built. |
+
+Tests:
+
+| Test | It catches |
+| --- | --- |
+| `app.rs::the_app_thread_screen_sizes_its_panes_folds_them_and_grows_the_chat_bar` | Pane widths other than 7%, 30% and the rest at 1000 px; a fold that is not a 24 px rail or does not give pane 3 the width; a rail that does not open; a chat bar not at 60% centred, not taller with three lines, taller than 40%, or not wider after `Ctrl+Right`. |
+| `app.rs::the_app_chat_bar_offers_the_agents_commands_first_and_runs_a_registry_line` | The agent's commands not offered first or without the hint; `/agent:plan x` not sent as `/plan x` or not in the same ACP session; a registry line not run with the CLI's words; runs not listed. |
+| `app.rs::the_app_thread_page_updates_from_the_event_stream` | A placed view not shown with its table; a new member or a changed view file not shown without a poll. |
+| `threads.rs::a_view_cannot_bind_a_change_operation_or_a_widget_outside_the_set` | A widget outside the set or a change operation accepted or written; a view file not kept as written; `views render` rows other than the members; a missing parameter not refused; the repository layer not first. |
+| `threads.rs::a_thread_imported_to_another_account_copies_its_log_and_members_and_imports_once` | Log rows, members, messages, rules or the transcript not copied; the copy without its account or origin; a second import, a send to the original, an import to the same account or to a missing account accepted. |
+
 ## Part D: answers to the user's two questions
 
 ### D1. Does ACP support user-invoked commands?

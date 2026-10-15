@@ -15,6 +15,7 @@ watch rules are in the operator's database; they survive restarts and compaction
 | `thread pace <thread> <member> <pace>` | `on-trigger` (default: wakes only when its rules find work), `on-stop`, `on-declare`. |
 | `thread show <id>`, `thread list` | Members with pace and wakes, messages, rules with counts, the log. |
 | `thread peers [--dossier] [--topic] [--thread]`, `thread observe <peer>` | Who shares your dossier, workspace or thread, with state, last tool and open messages; one peer's events. |
+| `thread import <thread> <account>` | Copy the thread to another account profile: the log, members (without sessions), messages, rules, layout and main0's transcript. The original is read-only after it; a thread is imported once. |
 
 | Kind | Who sends it | The receiver gets it |
 | --- | --- | --- |

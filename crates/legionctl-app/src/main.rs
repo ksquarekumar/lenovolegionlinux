@@ -4,12 +4,19 @@ use legionctl_api::client::Client;
 use legionctl_app::{LegionApp, Page};
 
 fn main() -> anyhow::Result<()> {
-    let page = match std::env::args().nth(1) {
-        Some(word) => Page::named(&word).ok_or_else(|| {
-            anyhow::anyhow!("usage: legionctl-app [now|gpu|health|bench|resources]")
-        })?,
-        None => Page::Now,
-    };
+    let usage =
+        "usage: legionctl-app [now|gpu|health|bench|resources] [--agent <name> [--dossier <name>]]";
+    let mut page = Page::Now;
+    let (mut agent, mut dossier) = (None, None);
+    let mut args = std::env::args().skip(1);
+    while let Some(word) = args.next() {
+        match word.as_str() {
+            "--agent" => agent = Some(args.next().ok_or_else(|| anyhow::anyhow!(usage))?),
+            "--dossier" => dossier = Some(args.next().ok_or_else(|| anyhow::anyhow!(usage))?),
+            _ => page = Page::named(&word).ok_or_else(|| anyhow::anyhow!(usage))?,
+        }
+    }
+    let repo = std::env::current_dir()?;
     let client = Client::new("app")?;
     // operator calls run here; the GPUI executor awaits them
     let runtime = tokio::runtime::Runtime::new()?;
@@ -21,7 +28,7 @@ fn main() -> anyhow::Result<()> {
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                     None,
-                    size(px(900.), px(640.)),
+                    size(px(1280.), px(800.)),
                     cx,
                 ))),
                 app_id: Some("legionctl".into()),
@@ -35,7 +42,13 @@ fn main() -> anyhow::Result<()> {
                         Theme::sync_system_appearance(Some(window), cx);
                     })
                     .detach();
-                cx.new(|cx| LegionApp::new(client, handle, page, cx))
+                cx.new(|cx| {
+                    let app = LegionApp::new(client, handle, page, cx);
+                    match agent {
+                        Some(agent) => app.with_agent(agent, dossier, repo),
+                        None => app,
+                    }
+                })
             })
             .expect("opening the window");
         });

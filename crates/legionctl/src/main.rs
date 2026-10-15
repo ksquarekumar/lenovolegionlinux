@@ -2,7 +2,6 @@
 //! (see `legionctl-api`); only `mcp`, `tui` and `run` are local, because they are surfaces or must run in this
 //! process.
 
-mod cli;
 mod hook;
 mod mcp;
 mod proxy;
@@ -14,7 +13,7 @@ use std::os::unix::process::CommandExt;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use legionctl_api::{ClientPath, Cores, GateIn, Launch, RunEnvIn, RunGpu, op};
+use legionctl_api::{ClientPath, Cores, GateIn, Launch, RunEnvIn, RunGpu, cli, op};
 
 use legionctl_api::client::Client;
 

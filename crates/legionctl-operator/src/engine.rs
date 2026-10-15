@@ -3829,6 +3829,44 @@ impl Engine for Operator {
         crate::thread::show(&input)
     }
 
+    fn thread_import(&self, _: &Ctx, input: legionctl_api::ThreadImportIn) -> Result<Lines> {
+        let copy = dossiers()?.thread_import(input.thread, &input.account)?;
+        Ok(Lines {
+            lines: vec![format!(
+                "thread {} imported to account {} as thread {copy}; thread {} is read-only now",
+                input.thread, input.account, input.thread
+            )],
+        })
+    }
+
+    fn views_list(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::ViewsListIn,
+    ) -> Result<Vec<legionctl_api::ViewInfo>> {
+        crate::views::list(&input)
+    }
+
+    fn views_check(&self, _: &Ctx, input: legionctl_api::ViewTextIn) -> Result<Lines> {
+        crate::views::check_text(&input)
+    }
+
+    fn views_save(&self, _: &Ctx, input: legionctl_api::ViewSaveIn) -> Result<Lines> {
+        crate::views::save(&input)
+    }
+
+    fn views_render(
+        &self,
+        ctx: &Ctx,
+        input: legionctl_api::ViewRenderIn,
+    ) -> Result<legionctl_api::ViewData> {
+        crate::views::render(self, ctx, &input)
+    }
+
+    fn views_place(&self, _: &Ctx, input: legionctl_api::ViewPlaceIn) -> Result<Lines> {
+        crate::views::place(&input)
+    }
+
     fn thread_join(&self, _: &Ctx, input: legionctl_api::ThreadJoinIn) -> Result<Lines> {
         crate::thread::join(&input)
     }

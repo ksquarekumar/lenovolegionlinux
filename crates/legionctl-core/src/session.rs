@@ -501,6 +501,13 @@ fn copy_transcript(from: &Path, to: &Path, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Copy the transcript of session `id` from the folders of account `from` (none: the home's) to account `to`'s.
+pub(crate) fn copy_transcript_to(id: &str, from: Option<&str>, to: &str) -> Result<()> {
+    let [from, _] = agent_homes(from)?;
+    let [to, _] = agent_homes(Some(to))?;
+    copy_transcript(&from, &to, id)
+}
+
 /// The skills folders of Claude Code and Codex (the account's, or the home's) as exactly `skills`, read-only.
 fn skill_mounts(
     mounts: &mut Vec<Mount>,
@@ -1150,9 +1157,7 @@ impl Dossiers {
         // after the bind: a refused resume leaves the session on its account
         if let Some(new) = account.filter(|a| record.account.as_deref() != Some(*a)) {
             account_dir(new)?;
-            let [from, _] = agent_homes(record.account.as_deref())?;
-            let [to, _] = agent_homes(Some(new))?;
-            copy_transcript(&from, &to, id)?;
+            copy_transcript_to(id, record.account.as_deref(), new)?;
             self.db().execute(
                 "UPDATE sessions SET account = ?1 WHERE id = ?2",
                 params![new, id],

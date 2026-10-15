@@ -2292,7 +2292,19 @@ impl Render for Vec<crate::ThreadInfo> {
             return "no thread".into();
         }
         self.iter()
-            .map(|t| format!("{:>4} {:<7} {:<20} {}", t.id, t.state, t.dossier, t.title))
+            .map(|t| {
+                let from = t
+                    .imported_from
+                    .map_or_else(String::new, |f| format!(" (from thread {f})"));
+                format!(
+                    "{:>4} {:<7} {:<20} {:<12} {}{from}",
+                    t.id,
+                    t.state,
+                    t.dossier,
+                    t.account.as_deref().unwrap_or("-"),
+                    t.title
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -2421,5 +2433,92 @@ impl Render for Vec<crate::Peer> {
 impl Render for crate::Observed {
     fn text(&self) -> String {
         format!("{}\n{}", peer_line(&self.peer), self.events.text())
+    }
+}
+
+/// Unicode bars, low to high, for a sparkline.
+const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// The values of a sparkline as bars between their minimum and maximum.
+#[must_use]
+pub fn sparkline(values: &[f64]) -> String {
+    let low = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let high = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    values
+        .iter()
+        .map(|v| {
+            let ratio = if high > low {
+                (v - low) / (high - low)
+            } else {
+                0.0
+            };
+            BARS[(1..8u32)
+                .filter(|i| f64::from(*i) <= ratio * 7.0 + 0.5)
+                .count()]
+        })
+        .collect()
+}
+
+impl Render for crate::ViewData {
+    fn text(&self) -> String {
+        let head = format!("{} ({})", self.name, self.widget);
+        if let Some(error) = &self.error {
+            return format!("{head}: cannot read: {error}");
+        }
+        let body = match self.widget {
+            crate::ViewWidget::Table => std::iter::once(self.columns.join(" | "))
+                .chain(self.rows.iter().map(|r| r.join(" | ")))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            crate::ViewWidget::List | crate::ViewWidget::Tree => self
+                .rows
+                .iter()
+                .map(|r| r.join(" "))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            crate::ViewWidget::Gauge => format!(
+                "{} / {}",
+                self.numbers.first().copied().unwrap_or_default(),
+                self.max
+            ),
+            crate::ViewWidget::Sparkline => sparkline(&self.numbers),
+            crate::ViewWidget::Markdown | crate::ViewWidget::Diff => self.text.clone(),
+            crate::ViewWidget::Stack => self
+                .parts
+                .iter()
+                .map(Render::text)
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        };
+        format!("{head}\n{body}")
+    }
+
+    /// A view, or a view of its stack, that cannot read.
+    fn success(&self) -> bool {
+        self.error.is_none() && self.parts.iter().all(Render::success)
+    }
+}
+
+impl Render for Vec<crate::ViewInfo> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no view".into();
+        }
+        self.iter()
+            .map(|v| {
+                let what = match (&v.widget, &v.error) {
+                    (Some(w), _) => w.to_string(),
+                    (None, Some(e)) => format!("not a view: {e}"),
+                    (None, None) => String::new(),
+                };
+                format!(
+                    "{:<24} {:<10} {what}  {}",
+                    v.name,
+                    v.layer,
+                    v.file.display()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }

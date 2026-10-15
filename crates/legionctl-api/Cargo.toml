@@ -17,10 +17,14 @@ hyper = { version = "1.12.0", features = ["client", "http1"], optional = true }
 hyper-util = { version = "0.1.21", features = ["tokio"], optional = true }
 http-body-util = { version = "0.1.5", optional = true }
 tokio = { version = "1.53.2", features = ["net", "rt"], optional = true }
+clap = { version = "4.6.7", features = ["string"], optional = true }
+shlex = { version = "2.0.1", optional = true }
 
 [features]
 # the operator client, for the CLI and the app
 client = ["dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio"]
+# the CLI words of each operation and the thread screen's chat bar, for the CLI, the TUI and the app
+cli = ["dep:clap", "dep:shlex"]
 
 [lints]
 workspace = true

@@ -7,7 +7,7 @@ use crate::wire::{
     Action, Battery, BenchResult, Binding, Capability, ConfigFile, ConfigLayer, DesktopGpu,
     DossierInfo, EditMode, Event, EventRow, FirmwareDevice, GpuMode, Harness, Inside, Knob, Lock,
     NvidiaPower, Output, PackageState, Reading, Reminder, RuleLayer, Sample, Scenario,
-    SessionRecord, SkillInfo, VfioDevice, Workspace,
+    SessionRecord, SkillInfo, VfioDevice, ViewWidget, Workspace,
 };
 use crate::{ClientPath, SessionId, StdinText};
 
@@ -2135,4 +2135,73 @@ pub struct ThreadGateIn {
     pub session: SessionId,
     /// The tool that the agent is about to call.
     pub tool: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThreadImportIn {
+    /// The thread's id (`thread list`).
+    pub thread: i64,
+    /// The account profile of the copy (`agents accounts list`).
+    pub account: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ViewTextIn {
+    /// The view file's JSONC text (stdin when not given).
+    pub content: StdinText,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ViewSaveIn {
+    /// The view file's JSONC text (stdin when not given).
+    pub content: StdinText,
+    /// Save into this repository's layer (`.legionctl/views/`), shared with the code; default: the user's layer.
+    #[serde(default)]
+    pub repo: Option<ClientPath>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ViewsListIn {
+    /// A folder in a repository: its layer comes first.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ViewRenderIn {
+    /// The view's name (`views list`).
+    pub name: String,
+    /// The view's parameters as `name=value`.
+    #[serde(default)]
+    pub params: Vec<String>,
+    /// A folder in a repository: its layer comes first.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ViewPlaceIn {
+    /// The thread's id (`thread list`).
+    pub thread: i64,
+    /// The view's name (`views list`).
+    pub name: String,
+    /// The view's parameters as `name=value`.
+    #[serde(default)]
+    pub params: Vec<String>,
+    /// A folder in a repository: its layer comes first.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+/// A view file of a layer.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ViewInfo {
+    pub name: String,
+    /// repository or user.
+    pub layer: String,
+    pub file: std::path::PathBuf,
+    /// The widget; none when the file is not a view.
+    pub widget: Option<ViewWidget>,
+    /// Why the file is not a view.
+    pub error: Option<String>,
 }

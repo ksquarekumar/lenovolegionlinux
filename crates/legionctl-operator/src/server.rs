@@ -72,7 +72,7 @@ fn principal(headers: &HeaderMap) -> Result<Principal, ApiError> {
 
 /// Only the fields the operation's input has: a misspelled field would otherwise be dropped, and the operation would
 /// run with that field's default (an edit with `lines` for `content` deleted the lines it was to change).
-fn known_fields(op: &OpInfo, input: &Value) -> Result<(), ApiError> {
+pub(crate) fn known_fields(op: &OpInfo, input: &Value) -> Result<(), ApiError> {
     let schema = (op.input)();
     let known = schema["properties"].as_object();
     let unknown: Vec<&String> = input
@@ -98,7 +98,7 @@ fn known_fields(op: &OpInfo, input: &Value) -> Result<(), ApiError> {
 }
 
 /// For a session's call, its own id in every session field of the input: a sandbox cannot act as another session.
-fn own_session(op: &OpInfo, principal: &Principal, input: &mut Value) {
+pub(crate) fn own_session(op: &OpInfo, principal: &Principal, input: &mut Value) {
     let (Principal::Session(id), Some(map)) = (principal, input.as_object_mut()) else {
         return;
     };

@@ -1411,6 +1411,57 @@ wire_enum! {
     }
 }
 
+wire_enum! {
+    /// A widget of the closed set of a view (design 23, C4).
+    enum ViewWidget from core::views::Widget as "lowercase" {
+        Table,
+        Tree,
+        Gauge,
+        Sparkline,
+        Markdown,
+        Diff,
+        List,
+        Stack,
+    }
+}
+
+wire! {
+    /// A view with its data in the shape of its widget.
+    struct ViewData from core::views::Rendered {
+        name: String,
+        widget: ViewWidget,
+        columns: Vec<String>,
+        /// table: cells; list and tree: one cell per row.
+        rows: Vec<Vec<String>>,
+        /// gauge: the value; sparkline: the values.
+        numbers: Vec<f64>,
+        /// gauge: the value of a full gauge.
+        max: f64,
+        /// markdown and diff.
+        text: String,
+        /// stack: its views.
+        parts: Vec<ViewData>,
+        /// The source failed, or its answer does not fit the widget.
+        error: Option<String>,
+        /// The event kinds after which the view reads again (`*` at the end matches any rest).
+        refresh: Vec<String>,
+    }
+}
+
+impl ViewData {
+    /// Whether the event kind `kind` makes this view (or a view of its stack) read again: a `views.save`, or a
+    /// kind of its `refresh` events.
+    #[must_use]
+    pub fn refreshes_on(&self, kind: &str) -> bool {
+        kind == "views.save"
+            || self.refresh.iter().any(|p| match p.strip_suffix('*') {
+                Some(prefix) => kind.starts_with(prefix),
+                None => kind == p,
+            })
+            || self.parts.iter().any(|v| v.refreshes_on(kind))
+    }
+}
+
 wire! {
     /// A thread: one task with its members.
     struct ThreadInfo from core::thread::ThreadInfo {
@@ -1418,8 +1469,12 @@ wire! {
         title: String,
         dossier: String,
         created_at: i64 = created,
-        /// open or closed.
+        /// open, or imported (read-only: `thread import` copied it to another account).
         state: String,
+        /// The account profile it runs on: its import's, else its main session's; none for the home's.
+        account: Option<String>,
+        /// The thread it is a copy of (`thread import`).
+        imported_from: Option<i64>,
     }
 
     /// A member of a thread.

@@ -941,13 +941,14 @@ fn trace_shows_each_change_as_it_happens() {
 /// The wire format is reviewed: `docs/api/schema.json` holds every operation's class, visibility, input and output
 /// schema, and the code must match it, so a change to a type on the wire shows up as a diff of that file
 /// (`LEGIONCTL_WRITE_SCHEMA=1` writes it after a deliberate change). The schemas of the planning files
-/// (`planning/*.schema.json`) and of team files (`teams/team.schema.json`) are reviewed the same way.
+/// (`planning/*.schema.json`), of team files (`teams/team.schema.json`) and of view files (`docs/api/view.schema.json`)
+/// are reviewed the same way.
 #[test]
 fn the_wire_format_matches_the_committed_schema() {
-    for (rel, schema) in legionctl_core::planning::schemas()
-        .into_iter()
-        .chain([legionctl_core::archetypes::team_schema()])
-    {
+    for (rel, schema) in legionctl_core::planning::schemas().into_iter().chain([
+        legionctl_core::archetypes::team_schema(),
+        legionctl_core::views::schema(),
+    ]) {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join(rel);

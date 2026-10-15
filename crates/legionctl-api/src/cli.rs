@@ -4,9 +4,9 @@
 
 use std::io::IsTerminal;
 
+use crate::{OPS, OpInfo};
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use legionctl_api::{OPS, OpInfo};
 use serde_json::{Map, Value};
 
 /// The schema of one input field, reduced to what an argument needs.
@@ -245,6 +245,7 @@ impl Node {
 }
 
 /// Every operation, plus the commands only a local process can do (`client_only`).
+#[must_use]
 pub fn command(client_only: Vec<Command>) -> Command {
     let root = Command::new("legionctl")
         .version(env!("CARGO_PKG_VERSION"))

@@ -3,16 +3,20 @@
   "$schema": "../feature.schema.json",
   "id": "thread-ui",
   "title": "Thread UI",
-  "status": "in-progress",
+  "status": "done",
   "plan_rows": ["legionctl#todo-92"],
   "objectives": [{ "id": "O1", "text": "Humans and agents see one thread in the same views." }],
   "stories": [
     { "id": "S1", "text": "The TUI folds panes and runs an agent's ACP command.", "objectives": ["O1"],
       "tests": ["test:crates/legionctl/tests/tui.rs::the_thread_tui_sizes_its_panes_folds_them_and_grows_the_chat_bar",
                 "test:crates/legionctl/tests/tui.rs::the_thread_tui_runs_an_agent_command_and_a_registry_operation"] },
-    { "id": "S2", "text": "The app thread page updates from the event stream; a view cannot bind a change.", "objectives": ["O1"],
-      "tests": ["test:crates/legionctl/tests/app.rs::the_app_thread_page_updates_from_the_event_stream",
-                "test:crates/legionctl/tests/e2e.rs::a_view_cannot_bind_a_change_operation"] }
+    { "id": "S2", "text": "The app shows the thread screen: panes, folds, chat bar, the agent's commands, views from the event stream.", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/app.rs::the_app_thread_screen_sizes_its_panes_folds_them_and_grows_the_chat_bar",
+                "test:crates/legionctl/tests/app.rs::the_app_chat_bar_offers_the_agents_commands_first_and_runs_a_registry_line",
+                "test:crates/legionctl/tests/app.rs::the_app_thread_page_updates_from_the_event_stream"] },
+    { "id": "S3", "text": "A view cannot bind a change or a widget outside the set; a thread is imported to another account once.", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/threads.rs::a_view_cannot_bind_a_change_operation_or_a_widget_outside_the_set",
+                "test:crates/legionctl/tests/threads.rs::a_thread_imported_to_another_account_copies_its_log_and_members_and_imports_once"] }
   ],
   "work_items": [
     { "id": "P7", "text": "TUI triple pane, chat bar, / commands", "status": "done", "stories": ["S1"], "units": [
@@ -21,9 +25,15 @@
       { "key": "op:session.commands", "change": "add" },
       { "key": "file:crates/legionctl/tests/tui.rs", "change": "add" }
     ] },
-    { "id": "P8", "text": "App thread page, views, ui-composer, import", "status": "planned", "stories": ["S2"], "depends_on": ["P7"], "units": [
-      { "key": "file:crates/legionctl-app/src/thread.rs", "change": "add", "loc": 1200 },
-      { "key": "op:views.render", "change": "add", "loc": 300 }
+    { "id": "P8", "text": "App thread screen, views (format, files, operations), import; the ui-composer's model loop comes with P6b", "status": "done", "stories": ["S2", "S3"], "depends_on": ["P7"], "units": [
+      { "key": "file:crates/legionctl-app/src/thread.rs", "change": "add", "loc": 800 },
+      { "key": "file:crates/legionctl-api/src/chat.rs", "change": "add" },
+      { "key": "file:crates/legionctl-core/src/views.rs", "change": "add", "loc": 450 },
+      { "key": "file:crates/legionctl-operator/src/views.rs", "change": "add" },
+      { "key": "op:views.render", "change": "add" },
+      { "key": "op:views.save", "change": "add" },
+      { "key": "op:views.place", "change": "add" },
+      { "key": "op:thread.import", "change": "add" }
     ] }
   ]
 }

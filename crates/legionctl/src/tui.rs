@@ -12,10 +12,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use clap::ArgMatches;
+use legionctl_api::chat::{self, Action, Entry};
 use legionctl_api::{
-    AgentCommand, Class, ClientPath, ConfigFile, Empty, OPS, ProjectIn, Reading, Render as _,
-    ResourceActIn, ResourceList, RunOutput, SensorsIn, SessionIdIn, Snapshot, StatusIn, ThreadIdIn,
-    ThreadLogRow, ThreadView, Workspace, op,
+    AgentCommand, ClientPath, ConfigFile, Empty, ProjectIn, Reading, Render as _, ResourceActIn,
+    ResourceList, RunOutput, SensorsIn, SessionIdIn, Snapshot, StatusIn, ThreadIdIn, ThreadView,
+    Workspace, op,
 };
 use legionctl_api::{Level, Pressure};
 use ratatui::Frame;
@@ -302,13 +303,6 @@ struct Running {
     task: tokio::task::JoinHandle<Result<Value>>,
 }
 
-/// One `/` command that completion offers.
-struct Entry {
-    text: String,
-    about: String,
-    agent: bool,
-}
-
 #[derive(PartialEq)]
 enum Focus {
     View,
@@ -340,29 +334,6 @@ struct Screen {
     commands: Vec<AgentCommand>,
 }
 
-/// The rows of a thread's log for pane 2: time (UTC), member, kind and what it says.
-fn log_line(row: &ThreadLogRow) -> String {
-    let p = &row.payload;
-    let detail = match (p["to"].as_str(), p["text"].as_str()) {
-        (Some(to), Some(text)) => format!("→ {to}: {text}"),
-        _ => ["title", "reason", "word", "archetype", "pace"]
-            .iter()
-            .find_map(|k| p[k].as_str())
-            .map_or_else(|| p.to_string(), String::from),
-    };
-    format!(
-        "{:02}:{:02} {} {} {detail}",
-        row.at / 3600 % 24,
-        row.at / 60 % 60,
-        if row.member.is_empty() {
-            "-"
-        } else {
-            &row.member
-        },
-        row.kind.trim_start_matches("thread."),
-    )
-}
-
 /// Text cut into rows of `width` characters: the chat bar's rows, so its height is exact.
 fn rows_of(text: &str, width: u16) -> Vec<String> {
     let width = usize::from(width.max(1));
@@ -381,56 +352,20 @@ fn rows_of(text: &str, width: u16) -> Vec<String> {
 }
 
 impl Screen {
-    fn entries(&self) -> Vec<Entry> {
-        let agent = self.commands.iter().map(|c| Entry {
-            text: format!("/agent:{}", c.name),
-            about: match &c.hint {
-                Some(hint) => format!("{} <{hint}> (agent)", c.description),
-                None => format!("{} (agent)", c.description),
-            },
-            agent: true,
-        });
-        let local =
+    /// The `/` commands that match the chat bar's text.
+    fn completions(&self) -> Vec<Entry> {
+        if self.focus != Focus::Chat {
+            return Vec::new();
+        }
+        let screen =
             ["1", "2"]
                 .iter()
                 .map(|n| (format!("/fold {n}"), format!("Fold or open pane {n}")))
                 .chain(VIEWS.iter().map(|(_, _, _, name)| {
                     (format!("/view {name}"), format!("Show {name} in pane 3"))
                 }))
-                .map(|(text, about)| Entry {
-                    text,
-                    about,
-                    agent: false,
-                });
-        // an agent's call of a workspace operation waits for the user's approval
-        let asks = crate::cli::session_from_env().is_some();
-        let registry = OPS.iter().filter(|op| !op.internal()).map(|op| {
-            let class = format!("{:?}", op.class).to_lowercase();
-            let ask = if asks && op.class == Class::Workspace {
-                ", asks the user"
-            } else {
-                ""
-            };
-            Entry {
-                text: format!("/{}", op.name.replace('.', " ")),
-                about: format!("{} [{class}{ask}]", op.summary()),
-                agent: false,
-            }
-        });
-        agent.chain(local).chain(registry).collect()
-    }
-
-    /// The entries that match the chat bar's text.
-    fn completions(&self) -> Vec<Entry> {
-        if self.focus != Focus::Chat || !self.chat.starts_with('/') || self.chat.contains('\n') {
-            return Vec::new();
-        }
-        self.entries()
-            .into_iter()
-            .filter(|e| {
-                e.text.starts_with(&self.chat) || self.chat.starts_with(&format!("{} ", e.text))
-            })
-            .collect()
+                .collect();
+        chat::completions(&self.chat, chat::entries(&self.commands, screen))
     }
 
     fn refresh(&mut self, runtime: &tokio::runtime::Runtime) {
@@ -570,65 +505,29 @@ impl Screen {
         if line.is_empty() {
             return;
         }
-        let Some(command) = line.strip_prefix('/') else {
-            return self.prompt(runtime, &line, &line);
-        };
-        let words: Vec<&str> = command.split_whitespace().collect();
-        match words.as_slice() {
-            ["fold", n @ ("1" | "2")] => {
-                let i = usize::from(*n == "2");
-                self.folded[i] = !self.folded[i];
-            }
-            ["view", name] => match VIEWS.iter().find(|v| v.3 == *name) {
-                Some(v) => {
-                    self.view = v.0;
-                    self.refreshed = None;
+        match chat::action(&line, &self.commands, &["fold", "view"]) {
+            Action::Prompt(prompt) => self.prompt(runtime, &prompt, &line),
+            Action::Operation(op, input) => self.start(runtime, op.name, input, &line),
+            Action::Screen(words) => match words.iter().map(String::as_str).collect::<Vec<_>>()[..]
+            {
+                ["fold", n @ ("1" | "2")] => {
+                    let i = usize::from(n == "2");
+                    self.folded[i] = !self.folded[i];
                 }
-                None => self.output = format!("no view {name}"),
-            },
-            [first, ..] if first.starts_with("agent:") => {
-                let name = &first["agent:".len()..];
-                if self.commands.iter().any(|c| c.name == name) {
-                    // ACP: a prompt that starts with `/<name>` runs the agent's command
-                    self.prompt(runtime, &format!("/{}", &command["agent:".len()..]), &line);
-                } else {
-                    let known: Vec<String> = self
-                        .commands
-                        .iter()
-                        .map(|c| format!("/agent:{}", c.name))
-                        .collect();
-                    self.output = if known.is_empty() {
-                        format!(
-                            "the agent offers no command {name}: it gives its commands in its first run, so send it a prompt first"
-                        )
-                    } else {
-                        format!(
-                            "the agent offers no command {name}; it offers {}",
-                            known.join(", ")
-                        )
-                    };
+                ["view", name] => match VIEWS.iter().find(|v| v.3 == name) {
+                    Some(v) => {
+                        self.view = v.0;
+                        self.refreshed = None;
+                    }
+                    None => self.output = format!("no view {name}"),
+                },
+                _ => {
+                    self.output = "/fold 1, /fold 2 or /view <name>".into();
                     self.view = ViewKind::Output;
                 }
-            }
-            _ => self.operation(runtime, command, &line),
-        }
-    }
-
-    /// An operation of the registry, with the CLI's words.
-    fn operation(&mut self, runtime: &tokio::runtime::Runtime, command: &str, line: &str) {
-        let parsed = shlex::split(command)
-            .ok_or_else(|| anyhow::anyhow!("a quote is not closed"))
-            .and_then(|words| {
-                let matches = crate::cli::command(Vec::new())
-                    .try_get_matches_from(std::iter::once("legionctl".to_string()).chain(words))
-                    .map_err(|e| anyhow::anyhow!("{}", e.render()))?;
-                crate::cli::operation(&matches, false)?
-                    .ok_or_else(|| anyhow::anyhow!("not an operation: {command}"))
-            });
-        match parsed {
-            Ok((op, input)) => self.start(runtime, op.name, input, line),
-            Err(e) => {
-                self.output = format!("{e:#}");
+            },
+            Action::Refused(why) => {
+                self.output = why;
                 self.view = ViewKind::Output;
             }
         }
@@ -791,7 +690,7 @@ fn draw_events(f: &mut Frame, area: Rect, s: &Screen) {
     let (title, mut lines) = match &s.thread {
         Ok(Some(t)) => (
             format!(" 2 thread {}: {} ", t.thread.id, t.thread.title),
-            t.log.iter().map(log_line).collect(),
+            t.log.iter().map(chat::log_line).collect(),
         ),
         Ok(None) => (" 2 events ".to_string(), vec!["no open thread".to_string()]),
         Err(e) => (" 2 events ".to_string(), vec![format!("the thread: {e}")]),

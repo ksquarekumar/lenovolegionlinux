@@ -4,18 +4,18 @@
 //! daemon asks polkit when it is applied.
 
 pub mod greeter;
+pub mod thread;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::component::TitleBar;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{ActiveTheme, Disableable, Selectable, StyledExt};
 use gpui_kit::{
-    App, AppContext, AsyncApp, Context, Div, InteractiveElement, IntoElement, ParentElement,
-    Render, StatefulInteractiveElement, Styled, Task, WeakEntity, Window, div, px,
+    App, AppContext, AsyncApp, Context, Div, FocusHandle, InteractiveElement, IntoElement,
+    ParentElement, Render, Styled, Task, WeakEntity, Window, div, px,
 };
 use legionctl_api::client::Client;
 use legionctl_api::{
@@ -26,6 +26,8 @@ use legionctl_api::{
 
 /// How often the glance values refresh.
 const REFRESH: Duration = Duration::from_secs(2);
+/// How often the thread screen takes the events that the stream gave.
+const EVENTS: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
@@ -53,7 +55,7 @@ impl Page {
             .find(|p| format!("{p:?}").eq_ignore_ascii_case(word))
     }
 
-    fn title(self) -> &'static str {
+    pub(crate) fn title(self) -> &'static str {
         match self {
             Page::Now => "Now",
             Page::Gpu => "Apps & GPU",
@@ -98,7 +100,21 @@ pub struct LegionApp {
     runtime: tokio::runtime::Handle,
     pub page: Page,
     pub state: State,
+    /// The thread screen: panes, chat bar, thread and view.
+    pub screen: thread::Screen,
+    chat_focus: FocusHandle,
     _refresh: Task<()>,
+    _events: Task<()>,
+    _follower: Follower,
+}
+
+/// The task that follows the event stream; it stops with the app.
+struct Follower(tokio::task::JoinHandle<()>);
+
+impl Drop for Follower {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 impl LegionApp {
@@ -118,13 +134,85 @@ impl LegionApp {
                 }
             },
         );
-        LegionApp {
-            client: Arc::new(client),
+        let client = Arc::new(client);
+        let (events, follower) = LegionApp::follow(client.clone(), &runtime, cx);
+        let mut app = LegionApp {
+            client,
             runtime,
             page,
             state: State::default(),
+            screen: thread::Screen::new(std::env::current_dir().unwrap_or_else(|_| "/".into())),
+            chat_focus: cx.focus_handle(),
             _refresh: refresh,
-        }
+            _events: events,
+            _follower: follower,
+        };
+        app.read_thread(cx);
+        app
+    }
+
+    /// The chat bar's agent (`session.acp`), the dossier of its runs and their repository.
+    #[must_use]
+    pub fn with_agent(
+        mut self,
+        agent: String,
+        dossier: Option<String>,
+        repo: std::path::PathBuf,
+    ) -> Self {
+        self.screen.agent = Some(agent);
+        self.screen.dossier = dossier;
+        self.screen.repo = repo;
+        self
+    }
+
+    /// Follow the operator's event stream from now on the app's tokio runtime; the kinds of the events go to
+    /// [`LegionApp::events`]. A broken stream opens again after its last event (C6).
+    fn follow(
+        client: Arc<Client>,
+        runtime: &tokio::runtime::Handle,
+        cx: &mut Context<Self>,
+    ) -> (Task<()>, Follower) {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let follower = runtime.spawn(async move {
+            let mut offset = "now".to_string();
+            loop {
+                if let Ok(events) = client.follow(&offset).await {
+                    let _ = events
+                        .each(|e| {
+                            if let Some(id) = e["id"].as_i64() {
+                                offset = id.to_string();
+                            }
+                            let _ = tx.send(e["kind"].as_str().unwrap_or_default().to_string());
+                        })
+                        .await;
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        });
+        // shortcut: the screen takes the events each 100 ms, because GPUI's test scheduler refuses a wake from a
+        // tokio thread; wake it from the stream if GPUI gets a thread-safe test waker
+        let task = cx.spawn(
+            async move |this: WeakEntity<LegionApp>, cx: &mut AsyncApp| {
+                loop {
+                    cx.background_executor().timer(EVENTS).await;
+                    let mut kinds = Vec::new();
+                    while let Ok(kind) = rx.try_recv() {
+                        kinds.push(kind);
+                    }
+                    if this
+                        .update(cx, |app, cx| {
+                            if !kinds.is_empty() {
+                                app.events(&kinds, cx);
+                            }
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            },
+        );
+        (task, Follower(follower))
     }
 
     /// The glance values, and the data of the open page.
@@ -264,6 +352,7 @@ impl LegionApp {
 
     pub fn open(&mut self, page: Page, cx: &mut Context<Self>) {
         self.page = page;
+        self.screen.view = None;
         self.load_page(cx);
         cx.notify();
     }
@@ -679,14 +768,7 @@ impl LegionApp {
 impl Render for LegionApp {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = TitleBar::new().child(div().font_semibold().child("legionctl"));
-        // the page scrolls: a small window must still reach Apply
-        let mut body = div()
-            .id("body")
-            .flex_1()
-            .overflow_y_scroll()
-            .v_flex()
-            .gap_3()
-            .p_4();
+        let mut body = div().v_flex().gap_3();
         if let Some(why) = &self.state.offline {
             body = body
                 .child(
@@ -701,24 +783,20 @@ impl Render for LegionApp {
                         .child("Start it: systemctl --user enable --now legionctl-operator.socket"),
                 );
         } else {
-            let selected = Page::ALL.iter().position(|p| *p == self.page).unwrap_or(0);
             body = body
-                .child(
-                    TabBar::new("pages")
-                        .selected_index(selected)
-                        .children(Page::ALL.map(|p| Tab::new().label(p.title())))
-                        .on_click(
-                            cx.listener(|app, ix: &usize, _, cx| app.open(Page::ALL[*ix], cx)),
-                        ),
-                )
-                .child(self.page(cx))
+                .child(if self.screen.view.is_some() {
+                    self.view(cx)
+                } else {
+                    self.page(cx)
+                })
                 .children(self.pending(cx));
             if let Some(message) = &self.state.message {
                 body = body.child(
                     div()
+                        .v_flex()
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
-                        .child(message.clone()),
+                        .children(message.lines().map(|l| div().child(l.to_string()))),
                 );
             }
         }
@@ -726,7 +804,8 @@ impl Render for LegionApp {
             .size_full()
             .v_flex()
             .bg(cx.theme().background)
+            .on_key_down(cx.listener(LegionApp::key))
             .child(title)
-            .child(body)
+            .child(self.panes(body, cx))
     }
 }

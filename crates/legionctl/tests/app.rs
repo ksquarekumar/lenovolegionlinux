@@ -4,14 +4,15 @@
 
 mod common;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use common::Operator;
 use common::scratch::Scratch;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    AppContext, Entity, TestAppContext, VisualTestContext, WindowHandle, WindowOptions,
+    AppContext, Bounds, Entity, TestAppContext, VisualTestContext, WindowBounds, WindowHandle,
+    WindowOptions, point, px, size,
 };
 use legionctl_api::client::Client;
 use legionctl_app::{LegionApp, Page, Pending};
@@ -48,22 +49,20 @@ fn wait(
         if app.read_with(cx, |a, _| ready(a)) {
             return;
         }
-        let state = app.read_with(cx, |a, _| format!("{:?}", a.state));
+        let state = app.read_with(cx, |a, _| format!("{:?}\n{:?}", a.state, a.screen));
         assert!(
             Instant::now() < deadline,
             "timed out waiting for {what}: {state}"
         );
+        // the thread screen takes the stream's events on a timer of the test clock
+        cx.executor().advance_clock(Duration::from_millis(100));
         std::thread::sleep(Duration::from_millis(20));
     }
 }
 
-/// The operator on a copy of the recorded machine, unplugged with the AC policy still applied, without a daemon; `tag`
-/// keeps the folders of tests that run at the same time apart.
-fn unplugged_machine(tag: &'static str) -> Operator {
-    let dir =
-        Scratch::new(std::env::temp_dir().join(format!("legionctl-{tag}-{}", std::process::id())));
-    let root = dir.join("root");
-    copy_tree(&Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE), &root);
+/// A copy of the recorded machine at `root`, with its installed profile and configset.
+fn recorded_machine(root: &Path) {
+    copy_tree(&Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE), root);
     let installed = root.join("usr/share/legionctl/profiles/lenovo-82wq-legion-pro-7-16irx8h.json");
     std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
     std::fs::copy(
@@ -75,6 +74,15 @@ fn unplugged_machine(tag: &'static str) -> Operator {
         &Path::new(env!("CARGO_MANIFEST_DIR")).join(LAYERS),
         &root.join("usr/share/legionctl/configsets/lenovo-82wq-legion-pro-7-16irx8h"),
     );
+}
+
+/// The operator on a copy of the recorded machine, unplugged with the AC policy still applied, without a daemon; `tag`
+/// keeps the folders of tests that run at the same time apart.
+fn unplugged_machine(tag: &'static str) -> Operator {
+    let dir =
+        Scratch::new(std::env::temp_dir().join(format!("legionctl-{tag}-{}", std::process::id())));
+    let root = dir.join("root");
+    recorded_machine(&root);
     std::fs::write(root.join("sys/class/power_supply/ADP0/online"), "0\n").unwrap();
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -344,4 +352,437 @@ sys.stdout.write(seen)
             .any(|l| l.contains(" tui ") && l.contains("rules.disable")),
         "rules.disable by the TUI: {events}"
     );
+}
+
+fn write(path: &Path, text: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+/// The operator on the recorded machine with its own HOME (the stand-in ACP agent as `fake` of config session.acp),
+/// a repository, and
+/// thread 1 on dossier port: main0 (session `main`) and observer0 (session `obs`). Returns the operator, HOME and
+/// the repository.
+fn thread_lab(tag: &str) -> (Operator, PathBuf, PathBuf) {
+    let home = Scratch::new(format!(
+        "/var/tmp/legionctl-app-{tag}-{}",
+        std::process::id()
+    ));
+    write(
+        &home.join(".gitconfig"),
+        "[user]\n  name = Test\n  email = test@example.com\n[init]\n  defaultBranch = main\n",
+    );
+    let agent =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-acp-agent.py");
+    write(
+        &home.join(".config/legionctl/app.jsonc"),
+        &serde_json::json!({
+            "workspace": {"root": home.join("worktrees")},
+            "session": {"acp": {"fake": ["python3", agent]}, "scope": false, "writable": []}
+        })
+        .to_string(),
+    );
+    let repo = home.join("repo");
+    write(&repo.join("README.md"), "repo\n");
+    for args in [
+        &["init", "--quiet"][..],
+        &["add", "."],
+        &["commit", "--quiet", "-m", "start"],
+    ] {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(args)
+            .env("HOME", &home)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let bin = Path::new(env!("CARGO_BIN_EXE_legionctl"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    recorded_machine(&home.join("root"));
+    let mut op = Operator::start(
+        &format!("ap-{tag}"),
+        &[
+            ("LEGIONCTL_SYSROOT", home.join("root").into()),
+            ("HOME", home.as_os_str().to_owned()),
+            ("PATH", path),
+        ],
+    );
+    for args in [
+        &["dossier", "use", "port"][..],
+        &["thread", "start", "port the parser"],
+        &[
+            "thread",
+            "join",
+            "1",
+            "observer0",
+            "thread-observer",
+            "--member-session",
+            "obs",
+        ],
+    ] {
+        lab_cli(&op, &home, &repo, args, "");
+    }
+    let path = home.to_path_buf();
+    op.held.push(home);
+    (op, path, repo)
+}
+
+/// stdout of `legionctl <args>` of the session `main` in the repository, with `stdin`; it must succeed.
+fn lab_cli(op: &Operator, home: &Path, repo: &Path, args: &[&str], stdin: &str) -> String {
+    let out = op.run(
+        repo,
+        &[
+            ("HOME", home.to_str().unwrap()),
+            ("LEGIONCTL_SESSION", "main"),
+        ],
+        args,
+        stdin,
+    );
+    assert!(
+        out.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// The app in a headless window of `width` x 700 against `op`, and its entity.
+fn open_app(
+    cx: &mut TestAppContext,
+    op: &Operator,
+    width: f32,
+    agent: Option<(&Path, &Path)>,
+) -> (
+    Entity<LegionApp>,
+    VisualTestContext,
+    tokio::runtime::Runtime,
+) {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let client = Client::at("app", &op.runtime);
+    let handle = runtime.handle().clone();
+    let agent = agent.map(|(home, repo)| (home.to_path_buf(), repo.to_path_buf()));
+    cx.update(gpui_kit::init);
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds {
+            origin: point(px(0.), px(0.)),
+            size: size(px(width), px(700.)),
+        })),
+        ..WindowOptions::default()
+    };
+    let window: WindowHandle<gpui_kit::base::Root> = cx.update(|cx| {
+        let (window, _) = gpui_kit::open_window(options, cx, |_, cx| {
+            cx.new(|cx| {
+                let app = LegionApp::new(client, handle, Page::Now, cx);
+                match agent {
+                    Some((_, repo)) => app.with_agent("fake".into(), Some("chat".into()), repo),
+                    None => app,
+                }
+            })
+        })
+        .unwrap();
+        window.downcast().unwrap()
+    });
+    let app: Entity<LegionApp> = window
+        .update(cx, |root, _, _| root.view().clone().downcast().unwrap())
+        .unwrap();
+    (
+        app,
+        VisualTestContext::from_window(window.into(), cx),
+        runtime,
+    )
+}
+
+/// The bounds of the element `id` in the last frame: (x, width, height).
+fn place(cx: &mut VisualTestContext, id: &'static str) -> (f32, f32, f32) {
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        let b = window.find(id).bounds();
+        (
+            f32::from(b.origin.x),
+            f32::from(b.size.width),
+            f32::from(b.size.height),
+        )
+    })
+}
+
+fn near(got: f32, want: f32, what: &str) {
+    assert!((got - want).abs() <= 1.0, "{what}: {got}, not {want}");
+}
+
+/// The thread screen of the app at 1000 px: pane 1 is 7% (70 px), pane 2 30% (300 px), pane 3 the rest (630 px).
+/// Ctrl+1 folds pane 1 to its 24 px rail and pane 3 takes the space; a click on the rail opens it; the fold button
+/// of pane 2 folds it. The chat bar is at the bottom centre of pane 3, 60% of its width; three lines make it taller,
+/// many lines stop at 40% of the pane; Ctrl+Right makes it 70% wide. Pane 2 shows the thread's log.
+#[gpui_kit::test]
+fn the_app_thread_screen_sizes_its_panes_folds_them_and_grows_the_chat_bar(
+    cx: &mut TestAppContext,
+) {
+    let (op, _home, _repo) = thread_lab("panes");
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1000., None);
+    let cx = &mut vcx;
+    wait(cx, &app, "the thread", |a| a.screen.thread.is_some());
+    app.read_with(cx, |a, _| {
+        let t = a.screen.thread.as_ref().unwrap();
+        assert_eq!(t.thread.title, "port the parser");
+        let lines: Vec<String> = t.log.iter().map(legionctl_api::chat::log_line).collect();
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("observer0 join thread-observer")),
+            "{lines:?}"
+        );
+    });
+
+    let (x1, w1, _) = place(cx, "pane-1");
+    let (x2, w2, _) = place(cx, "pane-2");
+    let (x3, w3, h3) = place(cx, "pane-3");
+    near(x1, 0., "pane 1 starts at the left");
+    near(w1, 70., "pane 1 is 7%");
+    near(x2, 70., "pane 2 follows pane 1");
+    near(w2, 300., "pane 2 is 30%");
+    near(x3, 370., "pane 3 follows pane 2");
+    near(w3, 630., "pane 3 is the rest");
+
+    // the chat bar: 60% of pane 3, centred, one line
+    cx.update(|window, cx| window.click("chat", cx));
+    let (xc, wc, hc1) = place(cx, "chat");
+    near(wc, 378., "the chat bar is 60% of pane 3");
+    near(
+        xc,
+        370. + (630. - 378.) / 2.,
+        "the chat bar is centred in pane 3",
+    );
+    cx.update(|window, cx| {
+        window.input("one", cx);
+        window.press("shift-enter", cx);
+        window.input("two", cx);
+        window.press("shift-enter", cx);
+        window.input("three", cx);
+    });
+    app.read_with(cx, |a, _| assert_eq!(a.screen.chat, "one\ntwo\nthree"));
+    let (_, _, hc3) = place(cx, "chat");
+    assert!(
+        hc3 > hc1 + 20.,
+        "three lines make the chat bar taller: {hc1} then {hc3}"
+    );
+    cx.update(|window, cx| {
+        for _ in 0..60 {
+            window.press("shift-enter", cx);
+        }
+    });
+    let (_, _, hc_most) = place(cx, "chat");
+    assert!(
+        hc_most <= h3 * 0.4 + 1. && hc_most > hc3,
+        "the chat bar stops at 40% of pane 3 ({h3}): {hc_most}"
+    );
+    cx.update(|window, cx| window.press("ctrl-right", cx));
+    let (_, wc_wide, _) = place(cx, "chat");
+    near(wc_wide, 441., "Ctrl+Right makes the chat bar 70% of pane 3");
+
+    // fold pane 1 with Ctrl+1: a 24 px rail, and pane 3 takes the space
+    cx.update(|window, cx| window.press("ctrl-1", cx));
+    let (_, w1, _) = place(cx, "pane-1");
+    let (x3, w3, _) = place(cx, "pane-3");
+    near(w1, 24., "folded pane 1 is a 24 px rail");
+    near(x3, 324., "pane 3 starts after the rail and pane 2");
+    near(w3, 676., "pane 3 takes the width of pane 1");
+    cx.update(|window, cx| window.click("pane-1", cx));
+    near(
+        place(cx, "pane-1").1,
+        70.,
+        "a click on the rail opens pane 1",
+    );
+    cx.update(|window, cx| window.click("fold-2", cx));
+    near(place(cx, "pane-2").1, 24., "the fold button folds pane 2");
+    near(
+        place(cx, "pane-3").1,
+        906.,
+        "pane 3 takes the width of pane 2",
+    );
+    drop(runtime);
+}
+
+/// The chat bar with the stand-in ACP agent: a prompt runs it once (a headless run); its commands then come first
+/// in the `/` completion, marked (agent), with the input hint; `/agent:plan x` reaches it as `/plan x`, and a registry
+/// line runs with the CLI's words. Pane 2 lists both runs.
+#[gpui_kit::test]
+fn the_app_chat_bar_offers_the_agents_commands_first_and_runs_a_registry_line(
+    cx: &mut TestAppContext,
+) {
+    let (op, home, repo) = thread_lab("chat");
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
+    let cx = &mut vcx;
+    cx.update(|window, cx| {
+        window.click("chat", cx);
+        window.input("hello", cx);
+        window.press("enter", cx);
+    });
+    wait(cx, &app, "the first run and the agent's commands", |a| {
+        !a.screen.commands.is_empty()
+    });
+    cx.update(|window, cx| window.input("/", cx));
+    app.read_with(cx, |a, _| {
+        let entries = a.screen.completions();
+        assert_eq!(entries[0].text, "/agent:plan", "the agent's commands first");
+        assert_eq!(entries[0].about, "Plan a change <what to plan> (agent)");
+        assert!(entries[0].agent && entries[1].agent && !entries[2].agent);
+    });
+    assert!(cx.update(|window, _| window.find("completion-0").visible()));
+    cx.update(|window, cx| {
+        window.input("agent:plan x", cx);
+        window.press("enter", cx);
+    });
+    wait(cx, &app, "the agent command's run", |a| {
+        a.screen.runs.len() == 2 && a.screen.runs[1].1.is_some()
+    });
+    app.read_with(cx, |a, _| {
+        let answer = a.state.message.clone().unwrap_or_default();
+        assert!(answer.contains("prompt: /plan x"), "{answer}");
+        assert!(
+            answer.contains("acp: loaded"),
+            "the same ACP session: {answer}"
+        );
+    });
+    cx.update(|window, cx| {
+        window.input("/thread show 1", cx);
+        window.press("enter", cx);
+    });
+    wait(cx, &app, "the registry line", |a| {
+        a.screen.runs.len() == 3 && a.screen.runs[2].1.is_some()
+    });
+    app.read_with(cx, |a, _| {
+        let runs: Vec<_> = a
+            .screen
+            .runs
+            .iter()
+            .map(|(l, ok)| (l.as_str(), *ok))
+            .collect();
+        assert_eq!(
+            runs,
+            [
+                ("hello", Some(true)),
+                ("/agent:plan x", Some(true)),
+                ("/thread show 1", Some(true))
+            ]
+        );
+        let shown = a.state.message.clone().unwrap_or_default();
+        assert!(
+            shown.contains("thread 1 (open, dossier port): port the parser"),
+            "{shown}"
+        );
+    });
+    let events: serde_json::Value =
+        serde_json::from_str(&op.ok(&["events", "--limit", "1000", "--json"])).unwrap();
+    assert!(
+        events["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["kind"] == "session.run"
+                && e["actor"] == "app"
+                && e["payload"]["input"]["prompt"] == "/plan x"),
+        "the run by the app: {events}"
+    );
+    drop(runtime);
+}
+
+/// A view saved through `views save` and placed on the thread with `views place` shows in pane 3 with its widget:
+/// a table of the thread's members. The screen follows the event stream: a new member (the view refreshes on
+/// thread.*) and a changed view file (views.save) show without a poll.
+#[gpui_kit::test]
+fn the_app_thread_page_updates_from_the_event_stream(cx: &mut TestAppContext) {
+    let (op, home, repo) = thread_lab("views");
+    let view = r#"// the members of a thread
+{
+  "name": "members",
+  "params": { "thread": "integer" },
+  "widget": "table",
+  "source": { "op": "thread.show", "input": { "thread": "{thread}" }, "path": "$.members" },
+  "columns": ["name", "archetype", "pace"],
+  "refresh": { "events": ["thread.*"] }
+}"#;
+    lab_cli(&op, &home, &repo, &["views", "save"], view);
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., None);
+    let cx = &mut vcx;
+    wait(cx, &app, "the thread", |a| a.screen.thread.is_some());
+    lab_cli(
+        &op,
+        &home,
+        &repo,
+        &["views", "place", "1", "members", "thread=1"],
+        "",
+    );
+    wait(cx, &app, "the placed view", |a| {
+        a.screen
+            .view_data
+            .as_ref()
+            .is_some_and(|v| v.rows.len() == 2)
+    });
+    app.read_with(cx, |a, _| {
+        let v = a.screen.view_data.as_ref().unwrap();
+        assert_eq!(v.columns, ["name", "archetype", "pace"]);
+        assert_eq!(v.rows[0], ["main0", "main-agent", "on-trigger"]);
+        assert_eq!(v.rows[1], ["observer0", "thread-observer", "on-trigger"]);
+    });
+    assert!(cx.update(|window, _| window.find("view-members-row-1").visible()));
+
+    // a member joins: the event refreshes the view
+    lab_cli(
+        &op,
+        &home,
+        &repo,
+        &[
+            "thread",
+            "join",
+            "1",
+            "observer1",
+            "thread-observer",
+            "--pace",
+            "on-stop",
+        ],
+        "",
+    );
+    wait(cx, &app, "the new member", |a| {
+        a.screen
+            .view_data
+            .as_ref()
+            .is_some_and(|v| v.rows.len() == 3)
+    });
+    app.read_with(cx, |a, _| {
+        let v = a.screen.view_data.as_ref().unwrap();
+        assert_eq!(v.rows[2], ["observer1", "thread-observer", "on-stop"]);
+    });
+
+    // the view changes: its new columns show
+    lab_cli(
+        &op,
+        &home,
+        &repo,
+        &["views", "save"],
+        &view.replace(r#"["name", "archetype", "pace"]"#, r#"["name"]"#),
+    );
+    wait(cx, &app, "the changed view", |a| {
+        a.screen
+            .view_data
+            .as_ref()
+            .is_some_and(|v| v.columns == ["name"])
+    });
+    app.read_with(cx, |a, _| {
+        let v = a.screen.view_data.as_ref().unwrap();
+        assert_eq!(v.rows, [["main0"], ["observer0"], ["observer1"]]);
+        assert!(a.screen.events >= 2, "{}", a.screen.events);
+    });
+    drop(runtime);
 }

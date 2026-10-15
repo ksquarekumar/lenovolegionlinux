@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "View",
+  "description": "One view file: `<layer>/views/<name>.jsonc`.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "name": {
+      "description": "a-z, 0-9 and '-': the file is `<name>.jsonc`.",
+      "type": "string"
+    },
+    "params": {
+      "description": "The parameters and their types.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Param"
+      },
+      "default": {}
+    },
+    "widget": {
+      "$ref": "#/$defs/Widget"
+    },
+    "source": {
+      "description": "Every widget but `stack` has one.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Source"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "columns": {
+      "description": "table: the field of each cell (required); list: the fields of an object item.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "max": {
+      "description": "gauge: the value of a full gauge (default 100).",
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double",
+      "default": null
+    },
+    "views": {
+      "description": "stack: the views it holds.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Placed"
+      },
+      "default": []
+    },
+    "refresh": {
+      "$ref": "#/$defs/Refresh",
+      "default": {
+        "events": []
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "widget"
+  ],
+  "$defs": {
+    "Param": {
+      "description": "The type of a parameter.",
+      "type": "string",
+      "enum": [
+        "string",
+        "integer"
+      ]
+    },
+    "Widget": {
+      "description": "The closed set of widgets.",
+      "oneOf": [
+        {
+          "description": "An array of objects: one row each, one cell for each of `columns`.",
+          "type": "string",
+          "const": "table"
+        },
+        {
+          "description": "Any JSON value as indented rows.",
+          "type": "string",
+          "const": "tree"
+        },
+        {
+          "description": "A number against `max`.",
+          "type": "string",
+          "const": "gauge"
+        },
+        {
+          "description": "An array of numbers.",
+          "type": "string",
+          "const": "sparkline"
+        },
+        {
+          "description": "A string of Markdown.",
+          "type": "string",
+          "const": "markdown"
+        },
+        {
+          "description": "A string of unified diff.",
+          "type": "string",
+          "const": "diff"
+        },
+        {
+          "description": "An array: one row each (the fields of `columns` for an object).",
+          "type": "string",
+          "const": "list"
+        },
+        {
+          "description": "Other views by name, top to bottom.",
+          "type": "string",
+          "const": "stack"
+        }
+      ]
+    },
+    "Source": {
+      "description": "Where a view reads its data.",
+      "type": "object",
+      "properties": {
+        "op": {
+          "description": "A read operation, by its dotted name (`thread.show`).",
+          "type": "string"
+        },
+        "input": {
+          "description": "The operation's input; `{param}` in a string is the parameter's value (a whole `\"{param}\"` of an integer\nparameter is the number).",
+          "default": null
+        },
+        "path": {
+          "description": "The part of the answer to show: `$`, or `$.field.0.field` (a number is an array index).",
+          "type": "string",
+          "default": "$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "op"
+      ]
+    },
+    "Placed": {
+      "description": "A view in a stack, or on a thread: its name and its parameters.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
+    "Refresh": {
+      "type": "object",
+      "properties": {
+        "events": {
+          "description": "Event kinds after which the view reads its source again; `*` at the end matches any rest\n(`code.tests.*`). A view reads again after each `views.save` too.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

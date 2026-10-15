@@ -161,6 +161,8 @@ pub struct ThreadInfo {
     pub dossier: String,
     pub created: i64,
     pub state: String,
+    pub account: Option<String>,
+    pub imported_from: Option<i64>,
 }
 
 pub struct Member {
@@ -519,6 +521,21 @@ impl Dossiers {
             .transpose()
     }
 
+    /// A thread that takes writes: it exists and is open (an imported thread is read-only).
+    fn writable(&self, thread: i64) -> Result<()> {
+        let state: Option<String> = self
+            .db()
+            .query_row("SELECT state FROM threads WHERE id = ?1", [thread], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        match state.as_deref() {
+            Some("open") => Ok(()),
+            Some(state) => bail!("thread {thread} is {state}: read-only"),
+            None => bail!("no thread {thread}"),
+        }
+    }
+
     /// A new thread on `dossier`, with `session` as its main agent `main0`.
     ///
     /// # Errors
@@ -564,16 +581,8 @@ impl Dossiers {
             crate::dossier::valid_name(name),
             "a member name must be a-z, 0-9 and '-'"
         );
+        self.writable(thread)?;
         let tx = self.begin()?;
-        let open: Option<String> = tx
-            .query_row("SELECT state FROM threads WHERE id = ?1", [thread], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        ensure!(
-            open.as_deref() == Some("open"),
-            "thread {thread} is not open"
-        );
         tx.execute(
             "INSERT INTO members (thread, name, archetype, session, pace, state, joined) VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6)",
             params![thread, name, archetype.as_str(), session, pace.as_str(), now()],
@@ -645,6 +654,7 @@ impl Dossiers {
             (None, []) => bail!("this session is in no thread; give --thread"),
             (None, _) => bail!("this session is in more than one thread; give --thread"),
         };
+        self.writable(thread)?;
         let from_archetype = match &from {
             Some(name) => self.member(thread, name)?.map(|(a, _, _)| a),
             None => None,
@@ -881,6 +891,7 @@ impl Dossiers {
     /// # Errors
     /// No such member, or the database write fails.
     pub fn thread_pace(&self, thread: i64, name: &str, pace: Pace) -> Result<()> {
+        self.writable(thread)?;
         let tx = self.begin()?;
         let changed = tx.execute(
             "UPDATE members SET pace = ?3 WHERE thread = ?1 AND name = ?2",
@@ -904,6 +915,7 @@ impl Dossiers {
     /// A member is missing, `every` is 0, or the database write fails.
     pub fn rule_add(&self, thread: i64, rule: &NewRule) -> Result<i64> {
         ensure!(rule.every > 0, "--every must be 1 or more");
+        self.writable(thread)?;
         for name in [rule.member, rule.watched] {
             ensure!(
                 self.member(thread, name)?.is_some(),
@@ -1077,7 +1089,18 @@ impl Dossiers {
     pub fn threads(&self) -> Result<Vec<ThreadInfo>> {
         Ok(self
             .db()
-            .prepare("SELECT id, title, dossier, created, state FROM threads ORDER BY id DESC")?
+            .prepare(
+                // the account: the newest import's (a copy keeps the rows of the imports before it), else the main
+                // session's
+                "SELECT id, title, dossier, created, state,
+                 coalesce((SELECT json_extract(payload, '$.account') FROM thread_log l
+                           WHERE l.thread = t.id AND l.kind = 'thread.import' ORDER BY l.id DESC LIMIT 1),
+                          (SELECT s.account FROM members m JOIN sessions s ON s.id = m.session
+                           WHERE m.thread = t.id AND m.name = 'main0')),
+                 (SELECT json_extract(payload, '$.from') FROM thread_log l
+                  WHERE l.thread = t.id AND l.kind = 'thread.import' ORDER BY l.id DESC LIMIT 1)
+                 FROM threads t ORDER BY id DESC",
+            )?
             .query_map([], |r| {
                 Ok(ThreadInfo {
                     id: r.get(0)?,
@@ -1085,9 +1108,132 @@ impl Dossiers {
                     dossier: r.get(2)?,
                     created: r.get(3)?,
                     state: r.get(4)?,
+                    account: r.get(5)?,
+                    imported_from: r.get(6)?,
                 })
             })?
             .collect::<Result<_, _>>()?)
+    }
+
+    /// Copy `thread` to the account profile `account` (design 23, C5): a new thread with its log, members (without
+    /// their sessions, which run on the old account), messages and watch rules, and the main session's transcript in
+    /// the account's folders. The copy's log ends with `thread.import`; the original becomes `imported`, read-only.
+    ///
+    /// # Errors
+    /// No such thread, it was imported already (the copy exists), it runs on `account`, no such account profile, or
+    /// a copy or the database write fails.
+    pub fn thread_import(&self, thread: i64, account: &str) -> Result<i64> {
+        let info = self
+            .threads()?
+            .into_iter()
+            .find(|t| t.id == thread)
+            .with_context(|| format!("no thread {thread}"))?;
+        if info.state == "imported" {
+            let copy: Option<i64> = self
+                .db()
+                .query_row(
+                    "SELECT thread FROM thread_log WHERE kind = 'thread.import' AND json_extract(payload, '$.from') = ?1
+                     ORDER BY id DESC LIMIT 1",
+                    [thread],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            bail!(
+                "thread {thread} was imported to thread {} already: a thread is imported once",
+                copy.map_or_else(|| "?".into(), |c| c.to_string())
+            );
+        }
+        self.writable(thread)?;
+        ensure!(
+            info.account.as_deref() != Some(account),
+            "thread {thread} runs on account {account} already"
+        );
+        crate::session::account_dir(account)?;
+        let main: Option<String> = self
+            .db()
+            .query_row(
+                "SELECT session FROM members WHERE thread = ?1 AND name = 'main0'",
+                [thread],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        if let Some(session) = &main {
+            crate::session::copy_transcript_to(session, info.account.as_deref(), account)?;
+        }
+        let tx = self.begin()?;
+        tx.execute(
+            "INSERT INTO threads (title, dossier, created) VALUES (?1, ?2, ?3)",
+            params![info.title, info.dossier, now()],
+        )?;
+        let copy = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO thread_log (thread, ts, member, kind, payload)
+             SELECT ?1, ts, member, kind, payload FROM thread_log WHERE thread = ?2 ORDER BY id",
+            params![copy, thread],
+        )?;
+        tx.execute(
+            "INSERT INTO messages (thread, sender, recipient, kind, body, tool, state, created, delivered, acked)
+             SELECT ?1, sender, recipient, kind, body, tool, state, created, delivered, acked FROM messages
+             WHERE thread = ?2 ORDER BY id",
+            params![copy, thread],
+        )?;
+        tx.execute(
+            "INSERT INTO watch_rules (thread, member, watched, tools, path, expect, every, kind, created, run, misses, done)
+             SELECT ?1, member, watched, tools, path, expect, every, kind, created, run, misses, done FROM watch_rules
+             WHERE thread = ?2 ORDER BY id",
+            params![copy, thread],
+        )?;
+        let imported = log(
+            &tx,
+            copy,
+            "",
+            "thread.import",
+            &json!({"from": thread, "account": account, "session": main}),
+        )?;
+        // the members start at the import: the copied rows are their history
+        tx.execute(
+            "INSERT INTO members (thread, name, archetype, session, pace, cursor, state, joined)
+             SELECT ?1, name, archetype, NULL, pace, ?3, state, joined FROM members WHERE thread = ?2",
+            params![copy, thread, imported],
+        )?;
+        tx.execute(
+            "UPDATE threads SET state = 'imported' WHERE id = ?1",
+            [thread],
+        )?;
+        log(
+            &tx,
+            thread,
+            "",
+            "thread.imported",
+            &json!({"to": copy, "account": account}),
+        )?;
+        tx.commit()?;
+        Ok(copy)
+    }
+
+    /// Show the view `view` (with its `params` and the repository `repo` of its layers) in pane 3 of the thread's
+    /// screens: a `views.place` row of the log, so the layout goes with the thread (and its imports).
+    ///
+    /// # Errors
+    /// The thread is not open, or the database write fails.
+    pub fn thread_place(
+        &self,
+        thread: i64,
+        view: &crate::views::Placed,
+        repo: &Path,
+    ) -> Result<()> {
+        self.writable(thread)?;
+        let tx = self.begin()?;
+        log(
+            &tx,
+            thread,
+            "",
+            "views.place",
+            &json!({"view": view.name, "params": view.params, "repo": repo}),
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// One thread: its members, messages, rules and log.

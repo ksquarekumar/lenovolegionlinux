@@ -25,6 +25,7 @@ pub mod session;
 pub mod setup;
 pub mod skills;
 pub mod thread;
+pub mod views;
 pub mod workspace;
 
 /// The test folder guard that the integration tests use too.

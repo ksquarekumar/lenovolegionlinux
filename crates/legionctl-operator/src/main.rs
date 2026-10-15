@@ -19,6 +19,7 @@ mod session;
 mod system1;
 mod thread;
 mod translate;
+mod views;
 mod virt;
 
 use std::sync::Arc;
