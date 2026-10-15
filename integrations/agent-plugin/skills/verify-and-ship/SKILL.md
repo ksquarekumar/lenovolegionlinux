@@ -44,9 +44,13 @@ user-invocable: true
 20. A failed step stops the steps after it. When `make ci` fails, the eBPF and VM steps did not run; do not report them
     as passed.
 21. Fix the cause locally, run the local checks again, and push the fix with the next batch.
+22. Install legionctl on this machine only with `make install-package`. It installs the newest commit of `origin/main`
+    when its CI run passed, with no password (`refs/reference-install.md`). Do not run `sudo pacman -U`.
 
 ## Refs
 
 - `refs/reference-make-targets.md` - read to know what each make target runs.
 - `refs/scenario-new-cli-operation.md` - read when you add a CLI operation.
+- `refs/reference-install.md` - read before you install legionctl on this machine, or when `make install-package`
+  refuses.
 - `refs/reference-test-gate.md` - read before a checkpoint that adds or changes a test, or when the gate refuses one.

@@ -1,0 +1,3 @@
+# legionctl-install with no password: the command is fixed and takes no arguments ("" refuses each argument).
+# wheel can run each command as root with its password; this line adds only this one command without it.
+%wheel ALL=(root) NOPASSWD: /usr/lib/legionctl/legionctl-install ""

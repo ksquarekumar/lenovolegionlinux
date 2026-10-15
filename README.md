@@ -30,11 +30,20 @@ Machine policy: `profiles/lenovo-82wq-legion-pro-7-16irx8h.json` (JSONC).
 Install with the Arch package, so pacman tracks every file:
 
 ```bash
-make package install-package    # build, then install with sudo and restart your operator
+make install-package    # the first time: build this checkout's package, install it with sudo (password)
 sudo systemctl enable --now legionctl-system.service scx_loader.service
 systemctl --user enable --now legionctl-operator.socket legionctl-operator.service
 gnome-extensions enable legionctl-osd@legionctl    # takes effect at the next login
 ```
+
+After the first install, `make install-package` runs `sudo -n /usr/lib/legionctl/legionctl-install` with no password
+(`/etc/sudoers.d/legionctl-install`, group `wheel`, no arguments). The wrapper installs only the newest commit of
+`origin/main` on GitHub when its CI run passed: the user `legionctl-build` clones and builds it in
+`/var/lib/legionctl-build`, root installs that file and restarts your operator. Journal: `journalctl -t legionctl-install`.
+Limits: code on `main` is written by agents; the wrapper refuses only a commit that is not on `main` or that has no
+passed CI run. `legionctl-build` is in the group `docker` (the static client builds in a container), which is equal to
+root for that user. The sudo timestamp of this machine (`timestamp_type=global`, 20 minutes) does not change. Details:
+the skill verify-and-ship, `refs/reference-install.md`.
 
 ## Commands
 
@@ -106,7 +115,7 @@ make rust-lint  # rustfmt check, clippy (pedantic) with warnings as errors, carg
 make js-lint    # Biome and tsc for the GNOME Shell extension
 make test       # end-to-end tests: the CLI and MCP against the real operator, the daemon against a recorded copy of this machine
 make ci         # what CI runs
-make package    # build the Arch package; `make install-package` installs it (sudo)
+make package    # build the Arch package of this checkout (`make install-package` installs origin/main, see Install)
 ```
 
 `scripts/capture-capabilities.sh` records hotkey, WMI, display, fan and power evidence (until `legionctl record`

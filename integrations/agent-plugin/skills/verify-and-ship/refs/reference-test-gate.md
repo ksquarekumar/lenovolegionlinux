@@ -37,4 +37,4 @@ Notes do not refuse: a duplicate (another test kills each mutant this test kills
 
 The pre-commit hook `legionctl-test-gate` (`scripts/test-gate.sh`) runs `code tests review --staged` for commits made
 with plain `git commit`. With nothing staged (`make lint`, CI) it has nothing to review. When the `legionctl` on
-`PATH` has no `code tests review`, it refuses the commit: install the new package (`make package install-package`).
+`PATH` has no `code tests review`, it refuses the commit: install the new package (`make install-package`).

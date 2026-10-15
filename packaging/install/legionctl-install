@@ -1,0 +1,74 @@
+#!/bin/sh
+# legionctl-install: build and install the legionctl package of the newest commit of origin/main, only when the CI
+# run of that commit passed. sudo runs it with no password (/etc/sudoers.d/legionctl-install), so it takes no
+# arguments and reads nothing from the caller: the GitHub repository is fixed, the checks read GitHub itself, and the
+# user legionctl-build clones, builds and keeps the package in its own home (/var/lib/legionctl-build, mode 0700).
+# Each step goes to the journal with the tag legionctl-install.
+set -eu
+
+slug=ksquarekumar/lenovolegionlinux
+if [ "$(id -u)" -eq 0 ]; then
+  root=
+  origin=https://github.com/$slug.git
+  PATH=/usr/bin
+else
+  # a caller that is not root (the e2e test) moves the paths and the origin; root always gets the fixed values
+  root=${LEGIONCTL_INSTALL_ROOT:?legionctl-install: run it with sudo}
+  origin=${LEGIONCTL_INSTALL_ORIGIN:?legionctl-install: run it with sudo}
+fi
+home=$root/var/lib/legionctl-build
+src=$home/src
+
+say() {
+  logger -t legionctl-install "$*"
+  echo "legionctl-install: $*" >&2
+}
+refuse() {
+  say "refused: $*"
+  exit 1
+}
+as_build() { runuser -u legionctl-build -- env HOME="$home" "$@"; }
+
+[ $# -eq 0 ] || refuse "this command takes no arguments"
+user=${SUDO_USER:-}
+[ -n "$user" ] && [ "$user" != root ] || refuse "run it as your user with sudo, so that it can restart your operator"
+cd "$home"
+exec 9>"$home/lock"
+flock -n 9 || refuse "an other legionctl-install runs"
+
+sha=$(as_build git ls-remote "$origin" refs/heads/main | cut -f1)
+[ -n "$sha" ] || refuse "$origin has no branch main"
+say "origin/main is $sha"
+
+runs=$(as_build curl -fsS "https://api.github.com/repos/$slug/actions/workflows/ci.yml/runs?head_sha=$sha&branch=main&event=push") ||
+  refuse "cannot read the CI runs of $sha from GitHub"
+ci=$(printf '%s' "$runs" | jq -r --arg sha "$sha" '[.workflow_runs[] | select(.head_sha == $sha)]
+  | if any(.conclusion == "success") then "success"
+    elif length == 0 then "no CI run"
+    else "CI run \(.[0].status) \(.[0].conclusion // "")" end')
+[ "$ci" = success ] || refuse "$sha: $ci"
+say "the CI run of $sha passed"
+
+[ -d "$src/.git" ] || as_build git clone --quiet --no-checkout "$origin" "$src"
+as_build git -C "$src" fetch --quiet "$origin" main
+as_build git -C "$src" checkout --quiet --force --detach "$sha"
+# old packages and makepkg folders go; the cargo target folder stays as the cache
+as_build git -C "$src" clean -fdxq -e /target
+head=$(as_build git -C "$src" rev-parse HEAD)
+[ "$head" = "$sha" ] || refuse "the checkout is at $head, not $sha"
+say "building $sha in $src"
+
+# rustup's cargo needs a toolchain in the home of legionctl-build
+if command -v rustup >/dev/null; then as_build rustup default stable; fi
+# BUILDDIR and PKGDEST in the build home: makepkg.conf can put them in a folder that the user can write (/tmp/makepkg)
+rm -rf "$home/pkg"
+(cd "$src/packaging/arch" && as_build BUILDDIR="$home/build" PKGDEST="$home/pkg" makepkg -f --noconfirm)
+pkg=$(cd "$src/packaging/arch" && as_build PKGDEST="$home/pkg" makepkg --packagelist | grep '/legionctl-[0-9]') ||
+  refuse "makepkg lists no legionctl package"
+[ -f "$pkg" ] || refuse "makepkg built no package at $pkg"
+
+say "installing $pkg"
+pacman -U --noconfirm "$pkg"
+systemctl --user -M "$user@" daemon-reload
+systemctl --user -M "$user@" restart legionctl-operator.service
+say "installed $sha and restarted the operator of $user"

@@ -98,18 +98,27 @@ package: ## build the Arch package (makepkg writes the version into the PKGBUILD
 	cd packaging/arch && makepkg -sf --noconfirm
 	git checkout -- packaging/arch/PKGBUILD
 
+# the checked install (packaging/install/legionctl-install): sudo with no password, origin/main with a passed CI run.
+# Before the first package with the wrapper is installed, this installs this checkout's package once (sudo password).
+LEGIONCTL_INSTALL := /usr/lib/legionctl/legionctl-install
+
 .PHONY: install-package
-install-package: ## install the newest built package (sudo) and restart your operator
+ifneq ($(wildcard $(LEGIONCTL_INSTALL)),)
+install-package: ## install origin/main's package when its CI passed (legionctl-install, no password); restarts your operator
+	sudo -n $(LEGIONCTL_INSTALL)
+else
+install-package: package
 	sudo pacman -U --noconfirm "$$(ls -t packaging/arch/legionctl-*.pkg.tar.zst | head -1)"
 	systemctl --user daemon-reload
 	systemctl --user restart legionctl-operator.service
+endif
 
 .PHONY: lint-pkg
 lint-pkg: ## namcap the PKGBUILD (Arch only)
 	namcap packaging/arch/PKGBUILD
 
 .PHONY: install
-install: ## install into DESTDIR; the PKGBUILD calls this (on this machine: `make package install-package`)
+install: ## install into DESTDIR; the PKGBUILD calls this (on this machine: `make install-package`)
 	@test -x $(CARGO_TARGET_DIR)/release/legionctl || { echo "$(CARGO_TARGET_DIR)/release/legionctl missing: run 'make build' first"; exit 1; }
 	install -Dm755 $(CARGO_TARGET_DIR)/release/legionctl "$(DESTDIR)$(BINDIR)/legionctl"
 	install -Dm755 $(CARGO_TARGET_DIR)/release/legionctl-app "$(DESTDIR)$(BINDIR)/legionctl-app"
@@ -117,6 +126,11 @@ install: ## install into DESTDIR; the PKGBUILD calls this (on this machine: `mak
 	install -Dm644 desktop/legionctl.desktop "$(DESTDIR)$(PREFIX)/share/applications/legionctl.desktop"
 	install -Dm755 $(CARGO_TARGET_DIR)/release/legionctl-system "$(DESTDIR)$(LIBDIR)/legionctl-system"
 	install -Dm755 $(CARGO_TARGET_DIR)/release/legionctl-operator "$(DESTDIR)$(LIBDIR)/legionctl-operator"
+	install -Dm755 packaging/install/legionctl-install "$(DESTDIR)$(LIBDIR)/legionctl-install"
+	install -dm750 "$(DESTDIR)$(SYSCONFDIR)/sudoers.d"
+	install -m440 packaging/install/sudoers "$(DESTDIR)$(SYSCONFDIR)/sudoers.d/legionctl-install"
+	install -Dm644 packaging/install/sysusers.conf "$(DESTDIR)$(PREFIX)/lib/sysusers.d/legionctl-build.conf"
+	install -Dm644 packaging/install/tmpfiles.conf "$(DESTDIR)$(PREFIX)/lib/tmpfiles.d/legionctl-build.conf"
 	install -Dm755 target/static/release/legionctl "$(DESTDIR)$(LIBDIR)/legionctl-static"
 	install -Dm644 packaging/libalpm/95-legionctl-uki.hook "$(DESTDIR)$(PREFIX)/share/libalpm/hooks/95-legionctl-uki.hook"
 	install -Dm644 $(PROFILE) "$(DESTDIR)$(DATADIR)/profiles/$(notdir $(PROFILE))"
