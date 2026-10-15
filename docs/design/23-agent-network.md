@@ -1680,3 +1680,21 @@ repositories; stand-ins only where a tool is not the subject.
    operator; the daemon never opens user content. No inotify path.
 6. Query language for watched queries? Recommendation: one read-only SQL `SELECT` over versioned views, with
    actions from a closed set (finding, message, a named check or test run); no free commands.
+
+## Decisions on Part E (user, 2026-10-15)
+
+1. Rows that span dossiers (bindings, sessions, workspaces, the id registry) live in the operator's own database,
+   `~/.local/state/legionctl/operator.db`; each dossier home holds only its own rows.
+2. Repository facts (kills, runs, annotations) are written into the writer's dossier and read as the union of the
+   dossiers that attach the repository.
+3. A repository declares its checks in `<repo>/.legionctl/checks.jsonc` (config key `checks`, repository layer).
+4. Gates: `workspace checkpoint` runs the `gate: checkpoint` checks (format, lint) when no passing run exists at that
+   tree; `workspace merge` refuses without passing `gate: merge` checks (build, test) at the rebased head.
+5. The root daemon watches with fanotify (writer's pid, only roots the caller owns, events queued in `system.db`, read
+   by the user's operator; the daemon never opens user content). A live check of FID support on this machine's file
+   systems comes first in its phase.
+6. Watched queries use ctx's graph query form, over the code graph only. Diagnostics over the plan, runs and tests
+   come from the built-in checks (`dossier check`, `code plan check`, the watch rules), not from added queries; E4's
+   SQL views are not built.
+
+Open: the user's note "agents runs are like projects; unique" is not yet placed (asked 2026-10-15).
