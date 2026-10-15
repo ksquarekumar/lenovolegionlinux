@@ -87,7 +87,13 @@ Built (2026-10-13, part 1), without a separate `legionctl-bootstrap` binary:
   old operator does not know says the same (after a package upgrade the running operator is the old build).
 - Safe mode for the machine daemon: `legionctl-system.service` stops after 3 failures in 5 minutes and runs
   `legionctl-safe.service` (`legionctl-system --safe`): the firmware's balanced mode, and the reason in
-  `/run/legionctl/safe-mode`, which `doctor` shows first; the next successful start removes it.
+  `/run/legionctl/safe-mode`, which `doctor` shows first; the next successful start removes it. With
+  `RestartMode=direct` a failure that restarts does not trigger `OnFailure`; `--safe` acts only on systemd's result
+  `start-limit-hit` (`MONITOR_SERVICE_RESULT`), so a stop that failed (the upgrade of 2026-10-16) is no safe mode.
+- Stop (todo-125): SIGTERM drops the daemon's event loop at its next wait (an event's plan runs beside it) and the
+  runtime does not wait for blocking work; the operator stops at once without waiting for open requests, event
+  streams or jobs (a restart resumes cut-off jobs). The policy starts the NVIDIA services with `systemctl start
+  --no-block`: a start job queues behind the daemon's own stop, and a wait for it lasted until SIGKILL.
 - The desktop notification (part 2): the operator's session module reads `/run/legionctl/safe-mode` at its start,
   every 30 s and whenever the daemon's bus name changes owner; a new reason becomes one critical notification
   (`org.freedesktop.Notifications.Notify`: "legionctl: safe mode", the reason and what to run), once per reason.

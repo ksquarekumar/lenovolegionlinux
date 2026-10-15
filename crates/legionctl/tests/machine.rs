@@ -926,18 +926,27 @@ fn a_daemon_older_than_a_source_it_was_built_from_is_refused() {
 }
 
 /// Safe mode: after repeated failures systemd runs `legionctl-system --safe`, which hands the machine to the
-/// firmware's balanced mode and leaves the reason, which `doctor` shows first.
+/// firmware's balanced mode and leaves the reason, which `doctor` shows first. A stop that timed out (the upgrade of
+/// 2026-10-16, todo-125) is no repeated failure: systemd's result for it changes nothing.
 #[test]
 fn safe_mode_hands_the_machine_to_the_firmware_and_doctor_says_why() {
     let m = Machine::new("safe");
     assert_eq!(m.file(PROFILE_PATH), "max-power");
     let daemon = crate::common::sibling("legionctl-system");
-    let out = std::process::Command::new(daemon)
-        .arg("--safe")
-        .env_clear()
-        .env("LEGIONCTL_SYSROOT", m.dir.join("root"))
-        .output()
-        .unwrap();
+    let safe = |result: &str| {
+        std::process::Command::new(&daemon)
+            .arg("--safe")
+            .env_clear()
+            .env("LEGIONCTL_SYSROOT", m.dir.join("root"))
+            .env("MONITOR_SERVICE_RESULT", result)
+            .output()
+            .unwrap()
+    };
+    let out = safe("timeout");
+    assert!(out.status.success());
+    assert_eq!(m.file(PROFILE_PATH), "max-power");
+    assert_eq!(m.file("/run/legionctl/safe-mode"), "<missing>");
+    let out = safe("start-limit-hit");
     assert!(
         out.status.success(),
         "{}",
@@ -1828,6 +1837,104 @@ mod daemon_process {
                 ),
             ]
         );
+    }
+
+    /// The incident of 2026-10-16 (todo-125): a package upgrade changed the layer files while systemd stopped the
+    /// daemon. systemd's stop sends SIGTERM to the unit's processes and kills them after `TimeoutStopSec=10`. The
+    /// reload's first step (`cpupower`) is slow and gets the SIGTERM; a start job that the daemon then waits for
+    /// queues behind its own stop, so the systemctl stand-in waits as systemd would while the stop is queued (the file
+    /// `stopping`). The daemon ends within half of the stop time.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_during_a_reload_ends_the_daemon_within_the_stop_time() {
+        let m = Machine::new("stop");
+        let calls = m.dir.join("calls.log");
+        let stopping = m.dir.join("stopping");
+        for (name, waits) in [
+            ("cpupower", "true"),
+            (
+                "systemctl",
+                "case \" $* \" in *\" --no-block \"*) false;; *) true;; esac",
+            ),
+        ] {
+            Machine::script(
+                &m.dir.join("bin"),
+                name,
+                &format!(
+                    "echo \"{name} $*\" >> {calls}; if [ -e {stopping} ] && {waits}; then exec /usr/bin/sleep 60; fi",
+                    calls = calls.display(),
+                    stopping = stopping.display()
+                ),
+            );
+        }
+        let (_stand_ins, _asked, (_bus, mut daemon)) = start(&m).await;
+        let log = || std::fs::read_to_string(&calls).unwrap_or_default();
+        wait_for("the start's systemctl call", || log().contains("systemctl"));
+        let before = log().lines().count();
+
+        std::fs::write(&stopping, "").unwrap();
+        m.set("/etc/legionctl/configsets/30-upgrade.jsonc", "{}");
+        wait_for("the reload's cpupower call", || {
+            log()
+                .lines()
+                .skip(before)
+                .any(|l| l.starts_with("cpupower"))
+        });
+        let pid = rustix::process::Pid::from_child(&daemon);
+        rustix::process::kill_process_group(pid, rustix::process::Signal::TERM).unwrap();
+        let stopped = Instant::now();
+        while daemon.try_wait().unwrap().is_none() {
+            assert!(
+                stopped.elapsed() < Duration::from_secs(5),
+                "the daemon still runs 5 s after SIGTERM; calls:\n{}",
+                log()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// A package upgrade replaces a shipped layer file: it is gone for a moment (todo-125). The daemon applies the
+    /// layers once they settled, so the moment without the file changes nothing on the machine.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_layer_file_that_is_gone_for_a_moment_changes_nothing() {
+        let m = Machine::new("upgrade");
+        let (stand_ins, _asked, _processes) = start(&m).await;
+        wait_for("the AC policy at start", || {
+            m.file(PROFILE_PATH) == "max-power"
+        });
+        let system = zbus::Proxy::new(
+            &stand_ins,
+            "org.legionctl.System1",
+            "/org/legionctl/System1",
+            "org.legionctl.System1",
+        )
+        .await
+        .unwrap();
+        let mut signals = system.receive_signal("Changed").await.unwrap();
+        let layer = m
+            .dir
+            .join("root")
+            .join(INSTALLED_LAYERS)
+            .join("20-ac.jsonc");
+        let aside = m.dir.join("20-ac.jsonc");
+        std::fs::rename(&layer, &aside).unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        std::fs::rename(&aside, &layer).unwrap();
+        // the daemon owns its name before it handles Start, so a Start signal may come first
+        let reloads = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let (cause, lines): (String, Vec<String>) =
+                    signals.next().await.unwrap().body().deserialize().unwrap();
+                if cause == "Reload" {
+                    return lines;
+                }
+            }
+        })
+        .await;
+        assert!(
+            reloads.is_err(),
+            "the reload changed the machine: {reloads:?}"
+        );
+        assert_eq!(m.file(PROFILE_PATH), "max-power");
     }
 }
 
@@ -6992,7 +7099,10 @@ mod sensors_and_events {
         std::fs::create_dir_all(msr.parent().unwrap()).unwrap();
         let mut bytes = vec![0u8; 0x1B1 + 8];
         bytes[0x1B1] = bits;
-        std::fs::write(&msr, bytes).unwrap();
+        // in one step: the daemon looks each second, and a half-written file reads as no MSR
+        let new = msr.with_extension("new");
+        std::fs::write(&new, bytes).unwrap();
+        std::fs::rename(new, msr).unwrap();
     }
 
     /// hwmon device `n` of machine `m`: its name and files.
@@ -7337,7 +7447,8 @@ mod sensors_and_events {
         signals
     }
 
-    /// One journal entry per signal, in the same order, with the fields of each event.
+    /// One journal entry per signal, in the same order, with the fields of each event; the end of throttling comes
+    /// after it held (todo-126).
     fn assert_journal(entries: &[BTreeMap<String, String>]) {
         let event = |e: &BTreeMap<String, String>, keys: &[&str]| -> Vec<String> {
             keys.iter()
@@ -7359,9 +7470,17 @@ mod sensors_and_events {
                 ],
                 ["legionctl-system", "power-source", "power source battery"],
                 ["legionctl-system", "mode", "mode performance (Fn+Q choice)"],
-                ["legionctl-system", "throttle", "throttling: thermal"],
-                ["legionctl-system", "throttle", "throttling stopped"],
+                [
+                    "legionctl-system",
+                    "throttle",
+                    "throttling: thermal (changes since the last entry: 1)"
+                ],
                 ["legionctl-system", "fan-mode", "fan max mode on"],
+                [
+                    "legionctl-system",
+                    "throttle",
+                    "throttling stopped (changes since the last entry: 1)"
+                ],
             ],
             "{entries:#?}"
         );
@@ -7382,7 +7501,7 @@ mod sensors_and_events {
             event(&entries[4], &["LEGIONCTL_REASONS", "LEGIONCTL_WORKLOAD"]),
             ["thermal", "build"]
         );
-        assert_eq!(event(&entries[6], &["LEGIONCTL_FAN_MAX"]), ["on"]);
+        assert_eq!(event(&entries[5], &["LEGIONCTL_FAN_MAX"]), ["on"]);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -7457,6 +7576,10 @@ mod sensors_and_events {
         // one more resume changes nothing that other tools follow: nothing more is announced
         resume().await;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        wait_for("the end of throttling in the journal", || {
+            entries.lock().unwrap().len() >= 7
+        });
 
         let signals = signals.lock().unwrap().clone();
         let shown: Vec<(&str, &Value)> = signals.iter().map(|(m, b)| (m.as_str(), b)).collect();
@@ -7537,6 +7660,81 @@ mod sensors_and_events {
                 .get("MESSAGE")
                 .map(String::as_str),
             Some("mode balanced (default on battery)")
+        );
+    }
+
+    /// Throttling that starts and stops at each look (a build that keeps the CPU at its thermal limit, todo-126): each
+    /// change is still a signal and an episode, but the journal gets the start and, once it held, the end, with the
+    /// number of changes between them.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn throttling_that_flaps_gives_two_journal_entries_and_every_signal() {
+        let m = Machine::new("throttle-flaps");
+        let _acpi = AcpiCall::start(&m, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        msr(&m, 0b00);
+        let entries = journal(&m);
+        let (stand_ins, _asked, _processes) = start(&m).await;
+        let system = zbus::Proxy::new(
+            &stand_ins,
+            "org.legionctl.System1",
+            "/org/legionctl/System1",
+            "org.legionctl.System1",
+        )
+        .await
+        .unwrap();
+        let signals = collect(&system).await;
+        for n in 1..=24 {
+            msr(&m, if n % 2 == 1 { 0b11 } else { 0b10 });
+            stand_ins
+                .emit_signal(
+                    None::<()>,
+                    "/org/freedesktop/login1",
+                    "org.freedesktop.login1.Manager",
+                    "PrepareForSleep",
+                    &(false,),
+                )
+                .await
+                .unwrap();
+            wait_for(&format!("throttle change {n}"), || {
+                signals.lock().unwrap().len() == n
+            });
+        }
+        let throttle = || -> Vec<(String, String)> {
+            entries
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|e| e["LEGIONCTL_EVENT"] == "throttle")
+                .map(|e| {
+                    let field = |k: &str| e.get(k).cloned().unwrap_or_default();
+                    (field("MESSAGE"), field("LEGIONCTL_CHANGES"))
+                })
+                .collect()
+        };
+        wait_for("the end of throttling in the journal", || {
+            throttle().len() >= 2
+        });
+        // nothing more comes after the end held
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let throttle = throttle();
+        assert_eq!(
+            throttle,
+            [
+                (
+                    "throttling: thermal (changes since the last entry: 1)".into(),
+                    "1".into()
+                ),
+                (
+                    "throttling stopped (changes since the last entry: 23)".into(),
+                    "23".into()
+                ),
+            ]
+        );
+        assert_eq!(signals.lock().unwrap().len(), 24);
+        let sample: String = system.call("Sample", &()).await.unwrap();
+        let sample: Value = serde_json::from_str(&sample).unwrap();
+        assert_eq!(
+            sample["throttle_episodes"],
+            serde_json::json!({"thermal": {"none": 12}})
         );
     }
 }

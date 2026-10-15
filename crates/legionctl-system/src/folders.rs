@@ -23,6 +23,8 @@ pub struct Folders {
     look: tokio::time::Interval,
     /// The folder of the user in front, while it exists.
     user: Option<(PathBuf, WatchDescriptor)>,
+    /// A change came and the folders have not settled yet.
+    pending: bool,
 }
 
 impl Folders {
@@ -55,6 +57,7 @@ impl Folders {
             fd: AsyncFd::new(inotify)?,
             look: tokio::time::interval(std::time::Duration::from_secs(30)),
             user: None,
+            pending: false,
         };
         folders.follow_user();
         Ok(folders)
@@ -80,35 +83,45 @@ impl Folders {
         }
     }
 
-    /// Wait until a watched folder changed; the events that came together count once. Meanwhile, and after each
-    /// change, it follows the user in front ([`Folders::follow_user`]).
+    /// Wait until a watched folder changed and then stayed as it is for [`SETTLE`]: the events until then count once,
+    /// so a package upgrade that replaces the files one by one applies once, with all of them (todo-125). Meanwhile,
+    /// and after each change, it follows the user in front ([`Folders::follow_user`]).
     ///
     /// # Errors
     /// The inotify descriptor fails.
     pub async fn changed(&mut self) -> Result<()> {
-        let mut buffer = [0u8; 4096];
-        loop {
+        // the main loop drops this future when another event comes first: `pending` keeps a change seen until then
+        while !self.pending {
             let seen = tokio::select! {
-                ready = self.fd.readable_mut() => {
-                    let mut guard = ready?;
-                    // everything there now (an editor's write and rename) is one change
-                    let mut seen = 0;
-                    loop {
-                        match guard.get_inner_mut().read_events(&mut buffer) {
-                            Ok(events) => seen += events.count(),
-                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                            Err(e) => return Err(e).context("reading inotify events"),
-                        }
-                    }
-                    guard.clear_ready();
-                    seen
-                }
+                ready = self.fd.readable_mut() => drain(ready?)?,
                 _ = self.look.tick() => 0,
             };
             self.follow_user();
-            if seen > 0 {
-                return Ok(());
-            }
+            self.pending = seen > 0;
+        }
+        while let Ok(ready) = tokio::time::timeout(SETTLE, self.fd.readable_mut()).await {
+            drain(ready?)?;
+        }
+        self.follow_user();
+        self.pending = false;
+        Ok(())
+    }
+}
+
+/// How long the folders stay unchanged before a change applies.
+const SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The number of inotify events there now (an editor's write and rename are one change).
+fn drain(mut guard: tokio::io::unix::AsyncFdReadyMutGuard<'_, Inotify>) -> Result<usize> {
+    let mut buffer = [0u8; 4096];
+    let mut seen = 0;
+    loop {
+        match guard.get_inner_mut().read_events(&mut buffer) {
+            Ok(events) => seen += events.count(),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) => return Err(e).context("reading inotify events"),
         }
     }
+    guard.clear_ready();
+    Ok(seen)
 }

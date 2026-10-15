@@ -58,8 +58,18 @@ const TICK: Duration = Duration::from_secs(30);
 const SAFE_MODE: &str = "/run/legionctl/safe-mode";
 
 /// Safe mode (note 13): the daemon failed again and again, so nothing enforces the policy. Hand the machine to the
-/// firmware's balanced mode and leave the reason where `doctor` reads it.
+/// firmware's balanced mode and leave the reason where `doctor` reads it. systemd gives the daemon's result
+/// (`MONITOR_SERVICE_RESULT`): with `RestartMode=direct` only a result that is no restart reaches this unit, and only
+/// `start-limit-hit` is repeated failure; another one (a stop that timed out during an upgrade) is not (todo-125).
 fn safe(root: &SysRoot) -> Result<()> {
+    if let Ok(result) = std::env::var("MONITOR_SERVICE_RESULT")
+        && result != "start-limit-hit"
+    {
+        eprintln!(
+            "safe mode: not entered: legionctl-system ended with result {result}, not repeated failures"
+        );
+        return Ok(());
+    }
     let (profile, _) = profile::load(None)?;
     let choices = root
         .read(&profile.paths.platform_profile_choices)
@@ -220,17 +230,27 @@ fn observe(root: &SysRoot) -> Observed {
 }
 
 /// What other tools heard last, and each throttle reason's starts per workload kind active then (reason -> kind ->
-/// starts; `none`: no kind).
+/// starts; `none`: no kind). The journal hears a throttle change only after it held (todo-126): `journaled` is the
+/// throttle of its last entry, `changes` the throttle changes since then, `changed` the time of the last one.
 struct Announced {
     last: Observed,
     episodes: BTreeMap<String, BTreeMap<String, u64>>,
+    journaled: Option<Vec<String>>,
+    changes: u64,
+    changed: Instant,
 }
+
+/// How long a throttle change holds before the journal hears it; a start after no throttling is written at once.
+const THROTTLE_HOLD: Duration = Duration::from_secs(5);
 
 impl Announced {
     fn new(last: Observed) -> Announced {
         Announced {
+            journaled: last.throttle.clone(),
             last,
             episodes: BTreeMap::new(),
+            changes: 0,
+            changed: Instant::now(),
         }
     }
 
@@ -238,6 +258,10 @@ impl Announced {
     /// kind active now.
     fn update(&mut self, now: &Observed) -> Observed {
         let before = std::mem::replace(&mut self.last, now.clone());
+        if now.throttle != before.throttle {
+            self.changes += 1;
+            self.changed = Instant::now();
+        }
         let was = before.throttle.clone().unwrap_or_default();
         for reason in now.throttle.iter().flatten().filter(|r| !was.contains(r)) {
             for kind in now.kinds() {
@@ -252,10 +276,26 @@ impl Announced {
         before
     }
 
-    /// A throttle reason is active now (as last announced).
-    fn throttled(announced: &Mutex<Announced>) -> bool {
+    /// The throttle reasons for a journal entry, and the changes since the last entry: when the throttle differs from
+    /// the last entry and starts after none, or held for [`THROTTLE_HOLD`].
+    fn throttle_entry(&mut self) -> Option<(Vec<String>, u64)> {
+        let reasons = self.last.throttle.clone()?;
+        if self.journaled.as_ref() == Some(&reasons) {
+            return None;
+        }
+        let start = !reasons.is_empty() && self.journaled.as_ref().is_none_or(Vec::is_empty);
+        if !start && self.changed.elapsed() < THROTTLE_HOLD {
+            return None;
+        }
+        self.journaled = Some(reasons.clone());
+        Some((reasons, std::mem::take(&mut self.changes)))
+    }
+
+    /// Look again each second: a throttle reason is active now (as last announced), or a journal entry waits for its
+    /// change to hold.
+    fn watching(announced: &Mutex<Announced>) -> bool {
         let a = announced.lock().unwrap_or_else(PoisonError::into_inner);
-        a.last.throttle.as_ref().is_some_and(|r| !r.is_empty())
+        a.last.throttle.as_ref().is_some_and(|r| !r.is_empty()) || a.journaled != a.last.throttle
     }
 }
 
@@ -324,10 +364,10 @@ async fn announce(
     source_planned: bool,
 ) {
     let now = settled(root, emitter, announced, tuning, source_planned).await;
-    let before = announced
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .update(&now);
+    let (before, throttle_entry) = {
+        let mut a = announced.lock().unwrap_or_else(PoisonError::into_inner);
+        (a.update(&now), a.throttle_entry())
+    };
     if now.mode != before.mode
         && let Some(m) = &now.mode
     {
@@ -381,9 +421,7 @@ async fn announce(
             System1::workload_changed(emitter, &kinds).await,
         );
     }
-    if now.throttle != before.throttle
-        && let Some(reasons) = &now.throttle
-    {
+    if let Some((reasons, changes)) = throttle_entry {
         let message = if reasons.is_empty() {
             "throttling stopped".to_string()
         } else {
@@ -392,12 +430,17 @@ async fn announce(
         journal(
             root,
             "throttle",
-            &message,
+            &format!("{message} (changes since the last entry: {changes})"),
             &[
                 ("REASONS", reasons.join(",")),
                 ("WORKLOAD", now.kinds().join(",")),
+                ("CHANGES", changes.to_string()),
             ],
         );
+    }
+    if now.throttle != before.throttle
+        && let Some(reasons) = &now.throttle
+    {
         sent(
             "ThrottleChanged",
             System1::throttle_changed(emitter, reasons).await,
@@ -438,9 +481,14 @@ async fn handle(
 }
 
 /// Carry out the plan of `event`: log what happened (every event but the tick leaves a line) and tell the session if
-/// anything changed.
+/// anything changed. The plan runs beside the event loop, so a SIGTERM during a slow step ends the daemon without a wait
+/// for the step or the steps after it (todo-125).
 async fn plan(root: &SysRoot, emitter: &SignalEmitter<'_>, event: Event) {
-    match carry_out(root, |m| react(m, event)) {
+    let owned = root.clone();
+    let done = tokio::task::spawn_blocking(move || carry_out(&owned, |m| react(m, event)))
+        .await
+        .unwrap_or_else(|e| Err(e.into()));
+    match done {
         Ok(lines) if lines.is_empty() => {
             if event != Event::Tick {
                 eprintln!("{event:?}: no changes");
@@ -2005,12 +2053,33 @@ async fn serve(system: System1) -> Result<zbus::Connection> {
         .with_context(|| format!("owning {BUS_NAME} on the system bus"))
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let root = SysRoot::from_env();
     if let Some(done) = one_shot(&root) {
         return done;
     }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let ended = runtime.block_on(async {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            ended = run(root.clone()) => ended,
+            _ = term.recv() => {
+                notify(sd_notify::NotifyState::Stopping);
+                // a stop ends the sensors; a failure keeps them for the next start (D7)
+                pins::unpin(&root)
+            }
+        }
+    });
+    // a stop waits for no step that runs (an event's plan, a method's tune step or package unit): systemd sent its
+    // processes the same SIGTERM, and no step starts after it (todo-125)
+    runtime.shutdown_background();
+    ended
+}
+
+/// The daemon until an event source fails; SIGTERM drops it at its next wait ([`main`]).
+async fn run(root: SysRoot) -> Result<()> {
     let tuning = Arc::new(AtomicBool::new(false));
     let (meters, execs, mut triggers) = sensors(&root);
     let watchers = Arc::new(Mutex::new(BTreeMap::new()));
@@ -2039,7 +2108,6 @@ async fn main() -> Result<()> {
     watch_fn_keys(root.clone(), press_tx);
     let mut tick = tokio::time::interval(TICK);
     tick.tick().await;
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut folders = folders::Folders::watch(&root)?;
     let mut workloads = workload::Sensor::start(&root)?;
 
@@ -2100,17 +2168,12 @@ async fn main() -> Result<()> {
                     handle(&root, &emitter, Event::Reload, &announced, &tuning).await;
                 }
             }
-            () = triggers.next(Announced::throttled(&announced)) => announce(&root, &emitter, &announced, &tuning, false).await,
+            () = triggers.next(Announced::watching(&announced)) => announce(&root, &emitter, &announced, &tuning, false).await,
             changed = workloads.changed(&root) => {
                 changed?;
                 if !tuning.load(Ordering::SeqCst) {
                     handle(&root, &emitter, Event::Workload, &announced, &tuning).await;
                 }
-            }
-            _ = term.recv() => {
-                notify(sd_notify::NotifyState::Stopping);
-                // a stop ends the sensors; a failure keeps them for the next start (D7)
-                return pins::unpin(&root);
             }
         }
     }

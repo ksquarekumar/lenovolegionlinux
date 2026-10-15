@@ -333,11 +333,18 @@ impl Machine<'_> {
 
     fn nvidia(&self, steps: &mut Vec<Step>, wanted: &Merged) {
         if wanted.text("nvidia.services").as_deref() == Some("start") {
+            // no wait for the start job: a stop of the daemon queued before it (an upgrade) waits for the daemon,
+            // and the daemon would wait for the job until SIGKILL (todo-125)
             self.run(
                 steps,
-                &["systemctl", "start", "nvidia-persistenced.service"],
+                &[
+                    "systemctl",
+                    "start",
+                    "--no-block",
+                    "nvidia-persistenced.service",
+                    "nvidia-powerd.service",
+                ],
             );
-            self.run(steps, &["systemctl", "start", "nvidia-powerd.service"]);
             self.run(steps, &["nvidia-smi", "-i", "0", "-pm", "1"]);
         }
     }

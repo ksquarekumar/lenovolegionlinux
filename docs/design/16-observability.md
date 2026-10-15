@@ -76,10 +76,12 @@ structured journal entry (through the journal's native socket, `/run/systemd/jou
 | Firmware mode (platform profile, Fn+Q) | `ModeChanged(mode s, fn_q_choice b, source s)` | `mode` | `LEGIONCTL_MODE`, `LEGIONCTL_FN_Q_CHOICE` (1 or 0), `LEGIONCTL_SOURCE` |
 | Power source | `PowerSourceChanged(source s)` | `power-source` | `LEGIONCTL_SOURCE` (`ac`, `battery`) |
 | Workloads that run (eBPF) | `WorkloadChanged(kinds as)` | `workload` | `LEGIONCTL_WORKLOAD` (`build,game`, or `none`) |
-| Throttling starts, changes or stops (MSR) | `ThrottleChanged(reasons as)`; empty: stopped | `throttle` | `LEGIONCTL_REASONS` (empty: stopped), `LEGIONCTL_WORKLOAD` (the kinds active then, or `none`) |
+| Throttling starts, changes or stops (MSR) | `ThrottleChanged(reasons as)`; empty: stopped | `throttle` | `LEGIONCTL_REASONS` (empty: stopped), `LEGIONCTL_WORKLOAD` (the kinds active then, or `none`), `LEGIONCTL_CHANGES` (the throttle changes since the last entry) |
 | Fan max mode | `FanModeChanged(max b)` | `fan-mode` | `LEGIONCTL_FAN_MAX` (`on`, `off`) |
 
-Each entry has `SYSLOG_IDENTIFIER=legionctl-system`, `PRIORITY=6` and a `MESSAGE` (for example `power source
+The throttle entry has hysteresis (todo-126): a start after no throttling is written at once, and another change only
+after it held for 5 s; the signal and `throttle_episodes` still have each change. Each entry has
+`SYSLOG_IDENTIFIER=legionctl-system`, `PRIORITY=6` and a `MESSAGE` (for example `power source
 battery`). To follow them:
 
 ```sh

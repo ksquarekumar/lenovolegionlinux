@@ -2943,6 +2943,84 @@ fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
     );
 }
 
+/// SIGTERM ends the operator within the stop time (todo-125: on 2026-10-16 systemd killed it after
+/// `TimeoutStopSec=10`): while a headless run holds its ACP agent (a running job) and `trace` follows the event
+/// stream, a stop as systemd makes it (SIGTERM to the unit's processes) ends the operator and its agent within half of
+/// it. A stop waited for each open request and stream before, and then for each blocking task.
+#[test]
+fn a_stop_ends_the_operator_with_a_running_job_and_an_open_event_stream() {
+    let (mut op, home) = operator("stop");
+    let repo = repository(&home);
+    let agent =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-acp-agent.py");
+    write(
+        &home.join(".config/legionctl/run.jsonc"),
+        &json!({"session": {"acp": {"fake": ["python3", agent]}, "scope": false, "writable": []}})
+            .to_string(),
+    );
+    let client = |args: &[&str]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_legionctl"));
+        cmd.args(args)
+            .current_dir(&repo)
+            .env_clear()
+            .env("XDG_RUNTIME_DIR", &op.runtime)
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("HOME", &home)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        cmd
+    };
+    let _trace = Kill::spawn(&mut client(&["trace"]));
+    let mut run = Kill::spawn(&mut client(&[
+        "session",
+        "run",
+        "fake",
+        "WAIT hold",
+        "--dossier",
+        "port",
+    ]));
+    let mut first = String::new();
+    BufReader::new(run.stdout.take().unwrap())
+        .read_line(&mut first)
+        .unwrap();
+    assert_eq!(
+        first.trim(),
+        "prompt: WAIT hold",
+        "the agent holds its answer"
+    );
+    let jobs: Value = serde_json::from_str(&op.ok(&["jobs", "list", "--json"])).unwrap();
+    assert!(
+        jobs.to_string().contains("\"running\""),
+        "a job runs: {jobs}"
+    );
+
+    let pid = rustix::process::Pid::from_child(&op.child);
+    rustix::process::kill_process_group(pid, rustix::process::Signal::TERM).unwrap();
+    let stopped = std::time::Instant::now();
+    let in_group = || -> Vec<String> {
+        std::fs::read_dir("/proc")
+            .unwrap()
+            .flatten()
+            .filter_map(|e| std::fs::read_to_string(e.path().join("stat")).ok())
+            .filter(|stat| {
+                // pid (comm) state ppid pgrp ...: the comm may hold spaces, so count from its end
+                let rest = &stat[stat.rfind(')').unwrap_or(0) + 2..];
+                let fields: Vec<&str> = rest.split_whitespace().collect();
+                fields.get(2) == Some(&pid.as_raw_nonzero().to_string().as_str())
+                    && fields[0] != "Z"
+            })
+            .collect()
+    };
+    while op.child.try_wait().unwrap().is_none() || !in_group().is_empty() {
+        assert!(
+            stopped.elapsed() < std::time::Duration::from_secs(5),
+            "5 s after SIGTERM these still run: {:?}",
+            in_group()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 /// A repository whose own image (its Dockerfile) has Python, with the stand-in ACP agent in it (a container sees only
 /// the mounted folders), and a config for sessions in a container with the static client of `make static` and the
 /// gateway on `gateway` in front of the stand-in provider on `provider`; the interactive agent `probe` tries what an

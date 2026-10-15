@@ -2,22 +2,19 @@
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q none: PowerSource
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q none: Resume
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q none: Tick
 Record { key: Written, value: Some("max-power") }
@@ -25,8 +22,7 @@ Record { key: Written, value: Some("max-power") }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q none: apply battery
 Warn
@@ -71,8 +67,7 @@ Record { key: Override, value: None }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q performance: PowerSource
 Info
@@ -80,14 +75,12 @@ Record { key: Override, value: None }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q performance: Resume
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q performance: Tick
 ## recorded, ADP0 online 1, Fn+Q performance: apply ac
@@ -96,8 +89,7 @@ Record { key: Override, value: None }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q performance: apply battery
 Warn
@@ -144,8 +136,7 @@ Record { key: Override, value: None }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q balanced: PowerSource
 Info
@@ -153,16 +144,14 @@ Record { key: Override, value: None }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q balanced: Resume
 Run(["powerprofilesctl", "set", "balanced"])
 Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q balanced: Tick
 Run(["powerprofilesctl", "set", "balanced"])
@@ -173,8 +162,7 @@ Record { key: Override, value: None }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q balanced: apply battery
 Warn
@@ -221,8 +209,7 @@ Record { key: Override, value: None }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q custom: PowerSource
 Info
@@ -230,14 +217,12 @@ Record { key: Override, value: None }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q custom: Resume
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q custom: Tick
 ## recorded, ADP0 online 1, Fn+Q custom: apply ac
@@ -246,8 +231,7 @@ Record { key: Override, value: None }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q custom: apply battery
 Warn
@@ -294,8 +278,7 @@ Record { key: Override, value: None }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q low-power: PowerSource
 Info
@@ -303,16 +286,14 @@ Record { key: Override, value: None }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q low-power: Resume
 Run(["powerprofilesctl", "set", "power-saver"])
 Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "powersave" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q low-power: Tick
 Run(["powerprofilesctl", "set", "power-saver"])
@@ -323,8 +304,7 @@ Record { key: Override, value: None }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q low-power: apply battery
 Warn
@@ -371,8 +351,7 @@ Record { key: Override, value: None }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q no-such-mode: PowerSource
 Info
@@ -380,15 +359,13 @@ Record { key: Override, value: None }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q no-such-mode: Resume
 Warn
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q no-such-mode: Tick
 Warn
@@ -398,8 +375,7 @@ Record { key: Override, value: None }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 1, Fn+Q no-such-mode: apply battery
 Warn
@@ -479,8 +455,7 @@ Warn
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 0, Fn+Q none: apply battery
 Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
@@ -557,8 +532,7 @@ Record { key: Override, value: None }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 0, Fn+Q performance: apply battery
 Info
@@ -639,8 +613,7 @@ Record { key: Override, value: None }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 0, Fn+Q balanced: apply battery
 Info
@@ -719,8 +692,7 @@ Record { key: Override, value: None }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 0, Fn+Q custom: apply battery
 Info
@@ -801,8 +773,7 @@ Record { key: Override, value: None }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 0, Fn+Q low-power: apply battery
 Info
@@ -882,8 +853,7 @@ Record { key: Override, value: None }
 Record { key: Written, value: Some("max-power") }
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## recorded, ADP0 online 0, Fn+Q no-such-mode: apply battery
 Info
@@ -938,8 +908,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q none: PowerSource
 Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
@@ -956,8 +925,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q none: Resume
 Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
@@ -974,8 +942,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q none: Tick
 Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "max-power" }
@@ -997,8 +964,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q none: apply battery
 Warn
@@ -1059,8 +1025,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q performance: PowerSource
 Info
@@ -1079,8 +1044,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q performance: Resume
 Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
@@ -1093,8 +1057,7 @@ Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" 
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q performance: Tick
 Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
@@ -1115,8 +1078,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q performance: apply battery
 Warn
@@ -1179,8 +1141,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q balanced: PowerSource
 Info
@@ -1199,8 +1160,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q balanced: Resume
 Run(["powerprofilesctl", "set", "balanced"])
@@ -1214,8 +1174,7 @@ Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" 
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q balanced: Tick
 Run(["powerprofilesctl", "set", "balanced"])
@@ -1237,8 +1196,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q balanced: apply battery
 Warn
@@ -1301,8 +1259,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q custom: PowerSource
 Info
@@ -1321,8 +1278,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q custom: Resume
 Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
@@ -1335,8 +1291,7 @@ Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" 
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q custom: Tick
 Write { path: "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor", value: "performance" } ×32
@@ -1357,8 +1312,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q custom: apply battery
 Warn
@@ -1421,8 +1375,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q low-power: PowerSource
 Info
@@ -1441,8 +1394,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q low-power: Resume
 Run(["powerprofilesctl", "set", "power-saver"])
@@ -1456,8 +1408,7 @@ Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" 
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q low-power: Tick
 Run(["powerprofilesctl", "set", "power-saver"])
@@ -1479,8 +1430,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q low-power: apply battery
 Warn
@@ -1543,8 +1493,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q no-such-mode: PowerSource
 Info
@@ -1563,8 +1512,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q no-such-mode: Resume
 Warn
@@ -1577,8 +1525,7 @@ Write { path: "/sys/devices/system/cpu/intel_pstate/max_perf_pct", value: "100" 
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q no-such-mode: Tick
 Warn
@@ -1599,8 +1546,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 1, Fn+Q no-such-mode: apply battery
 Warn
@@ -1711,8 +1657,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 0, Fn+Q none: apply battery
 Write { path: "/sys/class/platform-profile/platform-profile-0/profile", value: "balanced" }
@@ -1821,8 +1766,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 0, Fn+Q performance: apply battery
 Info
@@ -1934,8 +1878,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 0, Fn+Q balanced: apply battery
 Info
@@ -2046,8 +1989,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 0, Fn+Q custom: apply battery
 Info
@@ -2159,8 +2101,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 0, Fn+Q low-power: apply battery
 Info
@@ -2271,8 +2212,7 @@ Write { path: "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_prefer
 Write { path: "/sys/devices/system/cpu/cpu*/power/energy_perf_bias", value: "0" } ×32
 Run(["cpupower", "set", "--perf-bias", "0"])
 Run(["cpupower", "idle-set", "-E"])
-Run(["systemctl", "start", "nvidia-persistenced.service"])
-Run(["systemctl", "start", "nvidia-powerd.service"])
+Run(["systemctl", "start", "--no-block", "nvidia-persistenced.service", "nvidia-powerd.service"])
 Run(["nvidia-smi", "-i", "0", "-pm", "1"])
 ## scrambled, ADP0 online 0, Fn+Q no-such-mode: apply battery
 Info

@@ -92,8 +92,16 @@ async fn gateway(ready: Ready) -> Result<()> {
     gateway::serve(port, ready).await
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    let ended = runtime.block_on(run());
+    // a stop waits for no blocking work (a job, an ACP run, a wake): a restart resumes what it cut off (todo-125)
+    runtime.shutdown_background();
+    ended
+}
+
+/// The operator until SIGTERM, or until a module fails.
+async fn run() -> Result<()> {
     // while it runs: no process of another build steps the schema of a database it reads (todo-122)
     let _holder = legionctl_core::db::hold(&legionctl_core::db::default_path())?;
     let listener = server::activated_listener()?;
@@ -153,11 +161,10 @@ async fn main() -> Result<()> {
         }),
     ];
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let api = axum::serve(listener, server::router(operator)).with_graceful_shutdown(async move {
-        term.recv().await;
-    });
+    // a stop waits for no open request or event stream: their clients see the connection end (todo-125)
     tokio::select! {
-        served = api => Ok(served?),
+        served = axum::serve(listener, server::router(operator)) => Ok(served?),
         failed = supervise(modules) => failed,
+        _ = term.recv() => Ok(()),
     }
 }

@@ -91,7 +91,8 @@ now. `legionctl rules list|show` show the layers, their state and which apply no
 
 inotify watches the shipped folder, the generated folder, `/etc` (the daemon makes the last two when they are not
 there), the user's folder (looked up again every 30 s and after each change, because the user and the folder can
-change) and `/run/systemd/seats` (another user in front). A change runs `Event::Reload`. `Event::Workload` comes from
+change) and `/run/systemd/seats` (another user in front). A change runs `Event::Reload` once the folders stayed
+unchanged for 1 s (todo-125: a package upgrade replaces the files one by one). `Event::Workload` comes from
 the sensor. Both run the same apply as after resume: the full policy, and the Fn+Q choice stays (a layer edit or a
 build is no reason to drop the user's choice; the approved text said "the same apply as a power change", which
 clears the choice).

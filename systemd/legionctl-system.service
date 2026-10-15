@@ -10,6 +10,9 @@ OnFailure=legionctl-safe.service
 Type=notify
 ExecStart=/usr/lib/legionctl/legionctl-system
 Restart=on-failure
+# a failure restarts without the failed state, so OnFailure runs only when no restart follows: the start limit, or a
+# stop that failed (legionctl-system --safe tells them apart)
+RestartMode=direct
 RestartSec=2
 StateDirectory=legionctl
 RuntimeDirectory=legionctl
