@@ -144,6 +144,8 @@ install: ## install into DESTDIR; the PKGBUILD calls this (on this machine: `mak
 	install -Dm644 dbus/org.legionctl.System1.conf "$(DESTDIR)$(PREFIX)/share/dbus-1/system.d/org.legionctl.System1.conf"
 	install -Dm644 polkit/org.legionctl.policy "$(DESTDIR)$(PREFIX)/share/polkit-1/actions/org.legionctl.policy"
 	install -Dm644 polkit/50-legionctl-greeter.rules "$(DESTDIR)$(PREFIX)/share/polkit-1/rules.d/50-legionctl-greeter.rules"
+# the daemon writes the greeter's config.toml there (its unit's ReadWritePaths): the folder is there before greetd
+	install -dm755 "$(DESTDIR)$(SYSCONFDIR)/greetd"
 	install -d "$(DESTDIR)$(PREFIX)/share/gnome-shell/extensions/$(EXTENSION)"
 	install -m644 gnome-extension/$(EXTENSION)/* "$(DESTDIR)$(PREFIX)/share/gnome-shell/extensions/$(EXTENSION)/"
 	install -Dm644 tuning/scx_loader.toml "$(DESTDIR)$(SYSCONFDIR)/scx_loader.toml"

@@ -14,8 +14,11 @@ RestartSec=2
 StateDirectory=legionctl
 RuntimeDirectory=legionctl
 RuntimeDirectoryPreserve=yes
+# read-only except the files that the features write; pacman, ukify, sbsign and efibootmgr changes run as transient units
+# (docs/design/13-daemon.md, Sandbox). The ESP is at /efi (may not exist), /boot or /boot/efi (under /boot).
 ProtectSystem=strict
-ReadWritePaths=/etc/udev/rules.d
+ConfigurationDirectory=legionctl
+ReadWritePaths=/etc/udev/rules.d /etc/polkit-1/rules.d /etc/greetd -/efi /boot
 
 [Install]
 WantedBy=multi-user.target

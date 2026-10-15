@@ -4817,11 +4817,12 @@ fn a_vm_disk_packed_with_the_gpu_has_the_nvidia_module() {
 }
 
 /// Run QEMU on `disk` with the read-only `iso` until the guest powers off (it may restart before); the serial console
-/// goes to `log`. `test` adds a raw results disk and an ACPI table.
+/// goes to `log`. `results` adds a raw results disk, `table` an ACPI table.
 fn boot_until_poweroff(
     disk: &Path,
     iso: &Path,
-    test: Option<(&Path, &Path)>,
+    results: Option<&Path>,
+    table: Option<&Path>,
     log: &Path,
     minutes: u64,
 ) {
@@ -4861,10 +4862,12 @@ fn boot_until_poweroff(
         "virtio-net-pci,netdev=net",
     ])
     .stdin(Stdio::null());
-    if let Some((results, table)) = test {
+    if let Some(table) = table {
         qemu.arg("-acpitable")
-            .arg(format!("file={}", table.display()))
-            .arg("-drive")
+            .arg(format!("file={}", table.display()));
+    }
+    if let Some(results) = results {
+        qemu.arg("-drive")
             .arg(format!(
                 "file={},if=none,id=results,format=raw",
                 results.display()
@@ -4901,12 +4904,13 @@ fn iso(dir: &Path, label: &str, out: &Path) {
     assert!(made.success(), "xorriso");
 }
 
-/// The disk of the legionctl-wmi test, made once over the cloud image and kept in the test cache: Debian's generic
-/// kernel from trixie-backports (the cloud kernel has no WMI, and the module needs the WMI API of 7.x) with its
-/// headers, DKMS, python3 and the unit that runs the test from the disk labelled LWMITEST, then powers off.
-fn legionctl_wmi_base(image: &Path) -> PathBuf {
+/// The disk of the VM tests (legionctl-wmi, the daemon's unit), made once over the cloud image and kept in the test
+/// cache: Debian's generic kernel from trixie-backports (the cloud kernel has no WMI, and the module needs the WMI API
+/// of 7.x) with its headers, DKMS, python3, polkit, sfdisk, mkfs.vfat and the unit that runs the test from the disk
+/// labelled LWMITEST, then powers off.
+fn vm_test_base(image: &Path) -> PathBuf {
     // a new name when the preparation changes
-    let base = image.with_file_name("legionctl-wmi-base-v1.qcow2");
+    let base = image.with_file_name("legionctl-vm-base-v2.qcow2");
     if base.exists() {
         return base;
     }
@@ -4928,7 +4932,7 @@ fn legionctl_wmi_base(image: &Path) -> PathBuf {
         "#cloud-config\nruncmd:\n  - [sh, -ec, 'export DEBIAN_FRONTEND=noninteractive; \
          echo \"deb http://deb.debian.org/debian trixie-backports main\" > /etc/apt/sources.list.d/backports.list; \
          apt-get update; apt-get install -y -t trixie-backports linux-image-amd64 linux-headers-amd64; \
-         apt-get install -y dkms python3; \
+         apt-get install -y dkms python3 polkitd fdisk dosfstools; \
          apt-get purge -y \"linux-image-*-cloud-amd64\" linux-image-cloud-amd64; update-grub; \
          mount -o ro LABEL=cidata /mnt; install -m 644 /mnt/lwmi-test.service /etc/systemd/system/; umount /mnt; \
          systemctl enable lwmi-test.service; touch /etc/cloud/cloud-init.disabled; \
@@ -4946,7 +4950,7 @@ fn legionctl_wmi_base(image: &Path) -> PathBuf {
         .unwrap();
     assert!(made.success(), "qemu-img create");
     let log = dir.join("base.log");
-    boot_until_poweroff(&part, &seed_iso, None, &log, 25);
+    boot_until_poweroff(&part, &seed_iso, None, None, &log, 25);
     let console = std::fs::read_to_string(&log).unwrap_or_default();
     assert!(
         console.contains("lwmi-base-ok"),
@@ -5017,7 +5021,7 @@ const LEGIONCTL_WMI_CHECKS: [&str; 46] = [
 #[test]
 #[ignore = "boots VMs (KVM, QEMU, a cloud image) and builds a kernel module: CI runs it in the VM step"]
 fn the_legionctl_wmi_module_gives_the_legion_wmi_through_sysfs() {
-    let base = legionctl_wmi_base(&debian_cloud_image());
+    let base = vm_test_base(&debian_cloud_image());
     let dir = Path::new("/var/tmp").join(format!("lc-kmod-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let test = dir.join("test");
@@ -5076,7 +5080,8 @@ fn the_legionctl_wmi_module_gives_the_legion_wmi_through_sysfs() {
     boot_until_poweroff(
         &disk,
         &test_iso,
-        Some((&results, &dir.join("ssdt.aml"))),
+        Some(&results),
+        Some(&dir.join("ssdt.aml")),
         &log,
         10,
     );
@@ -5091,6 +5096,107 @@ fn the_legionctl_wmi_module_gives_the_legion_wmi_through_sysfs() {
     let console = std::fs::read_to_string(&log).unwrap_or_default();
     assert!(
         passed == LEGIONCTL_WMI_CHECKS && report.contains("\ndone"),
+        "results:\n{report}\nconsole:\n{}",
+        &console[console.len().saturating_sub(3000)..]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The checks of fixtures/daemon-sandbox/run.sh, in their order: each must report ok.
+const DAEMON_SANDBOX_CHECKS: [&str; 14] = [
+    "unit-active",
+    "usr-read-only",
+    "greeter-install",
+    "greeter-config",
+    "greeter-display-manager",
+    "boot-install",
+    "boot-loader",
+    "boot-image",
+    "boot-line",
+    "boot-loader-conf",
+    "boot-entry",
+    "autostart-rule",
+    "autostart-rule-file",
+    "primary-gpu-rule",
+];
+
+/// The daemon's sandbox (docs/design/13-daemon.md, Sandbox): `legionctl-system` under the package's own unit
+/// (`ProtectSystem=strict`, its `ReadWritePaths`) in a Debian 13 VM, and root's calls over the system bus through
+/// polkit. Greeter install writes `/etc/greetd` and changes the display manager; boot install writes the ESP (a vfat
+/// partition at `/boot/efi`) and `/etc/legionctl`, and its signers and `efibootmgr` run as `legionctl-step-*`
+/// transient units; the Windows VM autostart writes `/etc/polkit-1/rules.d`, the desktop GPU `/etc/udev/rules.d`; the
+/// daemon cannot write `/usr`. A path that the unit does not allow fails its check.
+#[test]
+#[ignore = "boots a VM (KVM, QEMU, a cloud image) and runs the daemon under systemd: CI runs it in the VM step"]
+fn under_its_own_unit_the_daemon_writes_the_greeter_the_esp_and_the_rules() {
+    let base = vm_test_base(&debian_cloud_image());
+    let dir = Path::new("/var/tmp").join(format!("lc-sandbox-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let test = dir.join("test");
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let profile = "lenovo-82wq-legion-pro-7-16irx8h";
+    std::fs::create_dir_all(test.join("profiles")).unwrap();
+    for (from, to) in [
+        (
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/daemon-sandbox/run.sh"),
+            "run.sh",
+        ),
+        (
+            Path::new(env!("CARGO_BIN_EXE_legionctl")).with_file_name("legionctl-system"),
+            "legionctl-system",
+        ),
+        (
+            repo.join("systemd/legionctl-system.service"),
+            "legionctl-system.service",
+        ),
+        (
+            repo.join("dbus/org.legionctl.System1.conf"),
+            "org.legionctl.System1.conf",
+        ),
+        (
+            repo.join("polkit/org.legionctl.policy"),
+            "org.legionctl.policy",
+        ),
+        (
+            repo.join(format!("profiles/{profile}.json")),
+            &format!("profiles/{profile}.json"),
+        ),
+    ] {
+        std::fs::copy(&from, test.join(to)).unwrap_or_else(|e| panic!("{}: {e}", from.display()));
+    }
+    let layers = test.join("configsets").join(profile);
+    std::fs::create_dir_all(&layers).unwrap();
+    for entry in std::fs::read_dir(repo.join("configsets").join(profile))
+        .unwrap()
+        .flatten()
+    {
+        std::fs::copy(entry.path(), layers.join(entry.file_name())).unwrap();
+    }
+    let test_iso = dir.join("test.iso");
+    iso(&test, "LWMITEST", &test_iso);
+    let disk = dir.join("disk.qcow2");
+    let made = Command::new("qemu-img")
+        .args(["create", "-q", "-f", "qcow2", "-F", "qcow2", "-b"])
+        .arg(&base)
+        .arg(&disk)
+        .status()
+        .unwrap();
+    assert!(made.success(), "qemu-img create");
+    let results = dir.join("results.img");
+    std::fs::write(&results, vec![0u8; 1 << 20]).unwrap();
+    let log = dir.join("console.log");
+    boot_until_poweroff(&disk, &test_iso, Some(&results), None, &log, 10);
+
+    let report = String::from_utf8_lossy(&std::fs::read(&results).unwrap())
+        .trim_end_matches('\0')
+        .to_string();
+    let passed: Vec<&str> = report
+        .lines()
+        .filter_map(|l| l.strip_prefix("ok "))
+        .collect();
+    let console = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        passed == DAEMON_SANDBOX_CHECKS && report.contains("\ndone"),
         "results:\n{report}\nconsole:\n{}",
         &console[console.len().saturating_sub(3000)..]
     );

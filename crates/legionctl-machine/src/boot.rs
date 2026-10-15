@@ -315,7 +315,7 @@ fn build(root: &SysRoot, esp: &str, name: &str, line: &str, file: &str) -> Vec<S
     let mut steps: Vec<Step> = profiles
         .iter()
         .map(|(file, set)| {
-            Step::Run(vec![
+            Step::Unit(vec![
                 "ukify".into(),
                 "build".into(),
                 "--profile".into(),
@@ -355,7 +355,7 @@ fn build(root: &SysRoot, esp: &str, name: &str, line: &str, file: &str) -> Vec<S
         }
     }
     steps.extend([
-        Step::Run(argv),
+        Step::Unit(argv),
         Step::Run(vec![
             "sbverify".into(),
             "--cert".into(),
@@ -490,7 +490,7 @@ pub fn try_plan(state: &BootState, name: &str) -> Result<Vec<Step>> {
             name: "LoaderEntryOneShot".into(),
             value: image(name),
         },
-        Step::Run(vec!["efibootmgr".into(), "--bootnext".into(), id]),
+        Step::Unit(vec!["efibootmgr".into(), "--bootnext".into(), id]),
         Step::Run(vec!["systemctl".into(), "reboot".into()]),
     ])
 }
@@ -585,7 +585,7 @@ pub fn cmdline_plan(
             name: "LoaderEntryOneShot".into(),
             value: trial.clone(),
         },
-        Step::Run(vec!["efibootmgr".into(), "--bootnext".into(), id]),
+        Step::Unit(vec!["efibootmgr".into(), "--bootnext".into(), id]),
         Step::Info(format!(
             "the next start only uses the new line ({trial}); {name}'s image and line stay. After a good start \
              through it, give the same command again: then the new line becomes {name}'s"
@@ -720,7 +720,7 @@ pub fn package_plan(root: &SysRoot, name: &str, dir: &Path) -> Result<Vec<Step>>
         .collect();
     files.sort();
     Ok(vec![
-        Step::Run(
+        Step::Unit(
             ["pacman", "-U", "--noconfirm"]
                 .map(String::from)
                 .into_iter()
@@ -769,7 +769,7 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
             text(&root.path(ours.join("mmx64.efi"))),
         ]),
         // shim starts grubx64.efi from its own folder: systemd-boot, signed with the key MOK trusts
-        Step::Run(vec![
+        Step::Unit(vec![
             "sbsign".into(),
             "--key".into(),
             text(&root.path(KEY)),
@@ -803,7 +803,7 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
                 .map(|n| n.to_string_lossy().into_owned())
         })
         .context("the ESP's disk")?;
-    steps.push(Step::Run(vec![
+    steps.push(Step::Unit(vec![
         "efibootmgr".into(),
         "--create-only".into(),
         "--disk".into(),
@@ -827,7 +827,7 @@ pub fn try_once(state: &BootState) -> Result<Step> {
         .ours
         .clone()
         .context("no legionctl boot entry (legionctl boot install)")?;
-    Ok(Step::Run(vec![
+    Ok(Step::Unit(vec![
         "efibootmgr".into(),
         "--bootnext".into(),
         id,
@@ -853,7 +853,7 @@ pub fn confirm_plan(state: &BootState) -> Result<Vec<Step>> {
     let order: Vec<String> = std::iter::once(id.clone())
         .chain(state.order.iter().filter(|e| **e != id).cloned())
         .collect();
-    Ok(vec![Step::Run(vec![
+    Ok(vec![Step::Unit(vec![
         "efibootmgr".into(),
         "--bootorder".into(),
         order.join(","),
@@ -917,7 +917,7 @@ pub fn remove_plan(root: &SysRoot, state: &BootState) -> Result<Vec<Step>> {
     let esp = state.esp.clone().context("no ESP is mounted")?;
     let mut steps = Vec::new();
     if let Some(id) = &state.ours {
-        steps.push(Step::Run(vec![
+        steps.push(Step::Unit(vec![
             "efibootmgr".into(),
             "--delete-bootnum".into(),
             "--bootnum".into(),

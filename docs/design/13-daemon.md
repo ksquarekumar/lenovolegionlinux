@@ -109,7 +109,7 @@ API and the database; no shared mutable state between processes outside SQLite.
 ## Failure isolation and graceful exit
 
 - Every runnable is its own unit: `Restart=on-failure`, backoff, `WatchdogSec` with `sd_notify`, memory and CPU
-  limits (`MemoryMax=`, `CPUWeight=`), `ProtectSystem=strict` with explicit `ReadWritePaths=`.
+  limits (`MemoryMax=`, `CPUWeight=`), `ProtectSystem=strict` with explicit `ReadWritePaths=` (Sandbox, below).
 - Nothing in the boot path depends on legion: units are ordered after `basic.target`, never required by
   `sysinit.target` or `graphical.target`; a legion failure never blocks boot or login.
 - Repeated failure triggers `OnFailure=legionctl-safe.service`: firmware defaults, then a desktop notification ("legion
@@ -117,6 +117,44 @@ API and the database; no shared mutable state between processes outside SQLite.
 - SIGTERM: stop taking requests, bring running sagas to their next checkpoint, flush the outbox state, close the
   database, notify `STOPPING=1`. Clients see the socket close and reconnect with backoff.
 - Hook dispatcher and MCP server already isolate failures per action and per tool (Phase 1a).
+
+## Sandbox (built 2026-10-15, user decision)
+
+`legionctl-system.service` keeps `ProtectSystem=strict`: the daemon can write only the paths in the table. pacman,
+ukify, sbsign and the `efibootmgr` changes need more, so their plans give them as `Step::Unit`, and the step executor
+(`policy::execute`, one path for all of them) runs each as a transient unit with no sandbox: `systemd-run --wait --pipe
+--collect --quiet --unit=legionctl-step-<pid>-<n> -- <argv>`. The argv goes as it is (no shell). The output and the
+exit status come back as for `Step::Run`. The calling method's polkit check comes first, as for each step.
+
+| Path or program | Feature | How it is allowed |
+| --- | --- | --- |
+| `/sys` (platform_profile, firmware attributes, cpufreq, hwmon, battery, vfio bind, `/sys/fs/bpf/legionctl`), `/sys/firmware/efi/efivars` (`LoaderEntryOneShot`, `chattr -i`) | power, fan, battery, GPU, VFIO, eBPF pins, `kernel try`, `kernel cmdline` | `ProtectSystem=strict` keeps `/sys`, `/proc` and `/dev` writable; the unit has no `ProtectKernelTunables=` and no `PrivateDevices=` |
+| `/proc/acpi/call`, `/dev/port`, `/dev/vfio/*` | firmware calls, EC byte, VFIO | as above |
+| `/run/legionctl` (safe-mode, workload) | safe mode, workload sensor | `RuntimeDirectory=legionctl` |
+| `/var/lib/legionctl` (`system.db`, generated configsets, tune reports, `kernel-install`) | ledger, sets, tune, `kernel install` | `StateDirectory=legionctl` |
+| `/etc/legionctl` (`configsets`, `kernel/<kernel>.cmdline`, `.old`, `.trial`) | `rules`, boot and kernel lines | `ConfigurationDirectory=legionctl` |
+| `/etc/udev/rules.d/61-legionctl-mutter-primary.rules` | `gpu primary` | `ReadWritePaths` |
+| `/etc/polkit-1/rules.d/49-legionctl-windows-vm-<user>.rules` | Windows VM autostart | `ReadWritePaths` (polkit, a dependency, makes the folder) |
+| `/etc/greetd/config.toml`, `config.toml.before` | `greeter install`, `remove` | `ReadWritePaths`; the package has the folder, so it is there before greetd and before the daemon starts |
+| The ESP: `EFI/legionctl`, `EFI/Linux`, `loader/loader.conf` (`mkdir`, `install`, `mv`, `rm` in the daemon) | `boot`, `kernel default`, `kernel cmdline`, sets with boot entries | `ReadWritePaths=-/efi /boot`: the ESP is at `/efi`, `/boot` or `/boot/efi` (under `/boot`); `-` because `/efi` may not exist. Shortcut: with the ESP at `/boot/efi`, the kernel files in `/boot` are writable too |
+| `pacman -U` | `kernel install` | `Step::Unit`: a package changes the system, and its hooks run mkinitcpio, DKMS and `--boot-rebuild` |
+| `ukify`, `sbsign` | `boot install`, `rebuild`, `kernel cmdline`, sets | `Step::Unit`: ukify reads the kernel and initramfs and writes temporary files, which the daemon's `/tmp` (read-only) does not allow |
+| `efibootmgr` (changes) | `boot`, `kernel try`, `kernel cmdline`, `windows reboot` | `Step::Unit` (user decision). A read (`efibootmgr` with no argument) runs in the daemon |
+| `systemctl`, `loginctl`, `udevadm`, `powerprofilesctl`, `logger` | greeter, Windows VM and disk, cleanup, GPU, reboot, journal | in the daemon: they ask a manager over a socket, and the manager writes its own files |
+| `modprobe`, `cpupower`, `chattr`, `sbverify`, `bsdtar`, `modinfo`, `dkms status`, `nvidia-smi` | VFIO, power, boot checks, telemetry | in the daemon: they read, or write `/sys` |
+
+Not under the unit: the one-shot modes that pacman hooks run (`--boot-rebuild`, `--remove-check`, `--greeter-remove`)
+and `--safe` (`legionctl-safe.service`); they run as root without a sandbox, and their pacman, ukify, sbsign and
+efibootmgr steps also run as transient units. Open: in a chroot (no running systemd) `systemd-run` fails, so the
+`--boot-rebuild` hook cannot make the images there. Open: a `tune` workload runs as the caller inside the daemon's
+sandbox, so it cannot write `/home` or `/tmp`.
+
+Tests: the machine tests give the daemon a stand-in `systemd-run` that refuses other options and logs each program
+(`legionctl_boot_comes_beside_the_old_chain_and_is_tried_once_before_it_leads`,
+`kernel_install_takes_only_a_built_kernel_and_installs_roots_checked_copies`). The VM test
+`under_its_own_unit_the_daemon_writes_the_greeter_the_esp_and_the_rules` installs the unit in Debian 13, starts the
+daemon with systemd and calls Greeter install, Boot install, SetWindowsAutostart and SetPrimaryGpu over the system
+bus; a path that the unit does not allow fails it.
 
 ## Phase 1b work list
 

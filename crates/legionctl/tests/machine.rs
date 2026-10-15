@@ -79,6 +79,17 @@ impl Machine {
             "powerprofilesctl",
             "if [ \"$1\" = get ]; then echo performance; fi",
         );
+        // a transient unit runs here: units.log gets its program; other options than the daemon's fail it
+        Self::script(
+            &bin,
+            "systemd-run",
+            &format!(
+                "[ \"$1 $2 $3 $4\" = '--wait --pipe --collect --quiet' ] || exit 90; \
+                 case $5 in --unit=legionctl-step-[0-9]*-[0-9]*) ;; *) exit 91;; esac; [ \"$6\" = -- ] || exit 92; \
+                 shift 6; echo \"$1\" >> {}; exec \"$@\"",
+                dir.join("units.log").display()
+            ),
+        );
         Machine { tag, dir }
     }
 
@@ -3519,6 +3530,14 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         );
 
         op.ok(&["boot", "install"]);
+        let units = std::fs::read_to_string(m.dir.join("units.log")).unwrap();
+        let mut units: Vec<&str> = units.lines().collect();
+        units.sort_unstable();
+        assert_eq!(
+            units,
+            ["efibootmgr", "efibootmgr", "sbsign", "ukify", "ukify"],
+            "the signers and the efibootmgr changes run as transient units outside the daemon's sandbox"
+        );
         let loader = std::fs::read_to_string(esp.join("EFI/legionctl/grubx64.efi")).unwrap();
         assert!(
             loader.contains("sbsign")
@@ -4892,6 +4911,11 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
                 s = stage.display()
             ),
             "root's copies, never the caller's files"
+        );
+        assert_eq!(
+            log(&m, "units.log"),
+            "pacman\n",
+            "pacman writes the system: a transient unit with no sandbox"
         );
         assert!(!stage.exists(), "the copies go after pacman");
     }

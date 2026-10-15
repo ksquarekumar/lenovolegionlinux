@@ -32,6 +32,9 @@ pub enum Step {
         value: String,
     },
     Run(Vec<String>),
+    /// Run as a transient unit outside the daemon's sandbox (docs/design/13-daemon.md, Sandbox): pacman, ukify, sbsign
+    /// and the `efibootmgr` changes.
+    Unit(Vec<String>),
     /// Run and ignore failure (for example `systemctl reset-failed` of a unit that may not exist).
     Try(Vec<String>),
     /// Create or replace a whole file (configuration we own, such as a udev rule).
@@ -545,7 +548,9 @@ fn per_cpu(line: &str) -> String {
 pub fn describe(step: &Step) -> Option<String> {
     match step {
         Step::Write { path, value } => Some(format!("would write {path}: {value}")),
-        Step::Run(argv) | Step::Try(argv) => Some(format!("would run: {}", argv.join(" "))),
+        Step::Run(argv) | Step::Unit(argv) | Step::Try(argv) => {
+            Some(format!("would run: {}", argv.join(" ")))
+        }
         Step::Create { path, content } => Some(format!("would write {path}:\n{content}")),
         Step::Remove { path } => Some(format!("would remove {path}")),
         Step::Info(text) => Some(text.clone()),
@@ -621,22 +626,8 @@ pub fn execute(root: &SysRoot, ledger: &Ledger, steps: &[Step]) -> Vec<String> {
                     ));
                 }
             }
-            Step::Run(argv) => match Command::new(&argv[0]).args(&argv[1..]).output() {
-                Ok(o) if o.status.success() => {}
-                Ok(o) => {
-                    let detail = if o.stderr.is_empty() {
-                        o.stdout
-                    } else {
-                        o.stderr
-                    };
-                    out.push(format!(
-                        "warning: command failed: {}: {}",
-                        argv.join(" "),
-                        String::from_utf8_lossy(&detail).trim()
-                    ));
-                }
-                Err(e) => out.push(format!("warning: command failed: {}: {e}", argv.join(" "))),
-            },
+            Step::Run(argv) => out.extend(run(Command::new(&argv[0]).args(&argv[1..]), argv)),
+            Step::Unit(argv) => out.extend(run(&mut unit(argv), argv)),
             Step::Create { path, content } => match std::fs::write(root.path(path), content) {
                 Ok(()) => out.push(format!("wrote {path}")),
                 Err(e) => out.push(format!("warning: could not write {path}: {e}")),
@@ -684,6 +675,41 @@ pub fn execute(root: &SysRoot, ledger: &Ledger, steps: &[Step]) -> Vec<String> {
         }
     }
     out
+}
+
+/// Run `c` (the program `argv`): a warning with its error output when it fails.
+fn run(c: &mut Command, argv: &[String]) -> Option<String> {
+    match c.output() {
+        Ok(o) if o.status.success() => None,
+        Ok(o) => {
+            let detail = if o.stderr.is_empty() {
+                o.stdout
+            } else {
+                o.stderr
+            };
+            Some(format!(
+                "warning: command failed: {}: {}",
+                argv.join(" "),
+                String::from_utf8_lossy(&detail).trim()
+            ))
+        }
+        Err(e) => Some(format!("warning: command failed: {}: {e}", argv.join(" "))),
+    }
+}
+
+/// `argv` as a transient unit with no sandbox: `--pipe` and `--wait` give back its output and exit status.
+fn unit(argv: &[String]) -> Command {
+    static STEPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let mut c = Command::new("systemd-run");
+    c.args(["--wait", "--pipe", "--collect", "--quiet"])
+        .arg(format!(
+            "--unit=legionctl-step-{}-{}",
+            std::process::id(),
+            STEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ))
+        .arg("--")
+        .args(argv);
+    c
 }
 
 /// Write a systemd-boot variable (vendor GUID of the Boot Loader Interface) to efivarfs: the attributes (non-volatile,

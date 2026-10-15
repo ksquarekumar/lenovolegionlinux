@@ -185,7 +185,7 @@ pub fn reboot_plan(state: &WindowsState) -> Result<Vec<Step>> {
         .clone()
         .context("no firmware boot entry starts Windows Boot Manager")?;
     Ok(vec![
-        Step::Run(vec!["efibootmgr".into(), "--bootnext".into(), id]),
+        Step::Unit(vec!["efibootmgr".into(), "--bootnext".into(), id]),
         Step::Run(vec!["systemctl".into(), "reboot".into()]),
     ])
 }
