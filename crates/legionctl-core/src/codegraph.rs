@@ -31,6 +31,18 @@ const IGNORE: &str = "/.graf/";
 /// Marks the lines that `hook install` adds to a git hook.
 const MARK: &str = "# legionctl code graph";
 const HOOKS: [&str; 4] = ["post-commit", "post-checkout", "post-merge", "post-rewrite"];
+/// The event that links a commit (its patch id) to the checkpoint that made it.
+pub const COMMIT_EVENT: &str = "workspace.checkpoint.commit";
+
+/// A name part that no other build of this process or of another process has: the process, the time and a count.
+fn unique() -> String {
+    static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{}.{nanos}.{n}", std::process::id())
+}
 
 pub(crate) fn run(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let out = Command::new("git")
@@ -136,10 +148,7 @@ pub fn snapshot(dir: &Path, rev: &str) -> Result<(String, bool)> {
         .context("ctx is not installed; run `legionctl setup apply --install-ctx`")?;
     std::fs::create_dir_all(graf.join("refs"))?;
     exclude(dir)?;
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.subsec_nanos());
-    let suffix = format!("{}.{nanos}", std::process::id());
+    let suffix = unique();
     let source = graf.join(format!("src.{tree}.{suffix}"));
     let tmp = graf.join("refs").join(format!("{tree}.db.tmp.{suffix}"));
     let built = (|| {
@@ -211,8 +220,7 @@ fn link(dir: &Path, tree: &str) -> Result<()> {
     let top = PathBuf::from(git(dir, &["rev-parse", "--show-toplevel"])?);
     let own = top.join(".graf");
     std::fs::create_dir_all(&own)?;
-    let tmp = own.join(format!("index.db.{}", std::process::id()));
-    let _ = std::fs::remove_file(&tmp);
+    let tmp = own.join(format!("index.db.{}", unique()));
     std::os::unix::fs::symlink(file(&graf(dir)?, tree), &tmp)?;
     std::fs::rename(&tmp, own.join("index.db"))?;
     Ok(())
@@ -879,22 +887,61 @@ fn pickaxe(dir: &Path, range: &str, text: &[u8], files: &[&str]) -> Result<Strin
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// The commits of a range, newest first, with their checkpoint event and provenance.
+/// The stable patch id (`git patch-id --stable`) of each commit of `range` that changes a file: (patch id, commit).
+/// A rebase without conflicts keeps a commit's patch id.
+///
+/// # Errors
+/// git fails in `dir`.
+pub fn patch_ids(dir: &Path, range: &str) -> Result<Vec<(String, String)>> {
+    let log = run(dir, &["log", "-p", "--no-color", "--no-ext-diff", range])?;
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["patch-id", "--stable"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("running git patch-id")?;
+    let mut stdin = child.stdin.take().context("no stdin")?;
+    let writer = std::thread::spawn(move || stdin.write_all(&log));
+    let out = child.wait_with_output()?;
+    writer
+        .join()
+        .map_err(|_| anyhow::anyhow!("git patch-id input"))??;
+    ensure!(out.status.success(), "git patch-id failed");
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.split_once(' '))
+        .map(|(p, c)| (p.into(), c.into()))
+        .collect())
+}
+
+/// The commits of a range, newest first, with their checkpoint event (by patch id) and provenance.
 fn commits(dir: &Path, range: &str) -> Result<Vec<CommitRow>> {
     let db = Db::open_default()?;
-    let log = git(dir, &["log", "--format=%h%x1f%ct%x1f%an%x1f%B%x1e", range])?;
+    let patches: HashMap<String, String> = patch_ids(dir, range)?
+        .into_iter()
+        .map(|(patch, commit)| (commit, patch))
+        .collect();
+    let log = git(
+        dir,
+        &["log", "--format=%H%x1f%h%x1f%ct%x1f%an%x1f%B%x1e", range],
+    )?;
     let mut rows = Vec::new();
     for entry in log.split('\x1e').map(str::trim).filter(|e| !e.is_empty()) {
-        let fields: Vec<&str> = entry.splitn(4, '\x1f').collect();
-        let [commit, time, author, message] = fields[..] else {
+        let fields: Vec<&str> = entry.splitn(5, '\x1f').collect();
+        let [full, commit, time, author, message] = fields[..] else {
             bail!("git log gave '{entry}'");
         };
         let message = message.trim();
-        let event = db.last_event(&EventFilter {
-            kinds: &["workspace.checkpoint"],
-            field: Some(("$.input.message", message)),
-            naming: None,
-        })?;
+        let event = match patches.get(full) {
+            Some(patch) => db.last_event(&EventFilter {
+                kinds: &[COMMIT_EVENT],
+                field: Some(("$.patch_id", patch)),
+                naming: None,
+            })?,
+            None => None,
+        };
         let provenance = crate::setup::ctx_bin().map_or(Value::Null, |bin| {
             Command::new(bin)
                 .current_dir(dir)
@@ -926,7 +973,7 @@ fn commits(dir: &Path, range: &str) -> Result<Vec<CommitRow>> {
             plan_rows,
             checkpoint: event.as_ref().map(|e| e.id),
             session: event.and_then(|e| {
-                e.payload["input"]["session"]
+                e.payload["session"]
                     .as_str()
                     .filter(|s| !s.is_empty())
                     .map(String::from)

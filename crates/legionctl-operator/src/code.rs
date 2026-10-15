@@ -1,7 +1,9 @@
 //! The `code` operations (design 23, Part A): code graph snapshots per tree, the change graph, annotations and the
 //! plan. The work is in `legionctl_core::codegraph` and `legionctl_core::planning`; here are the jobs and the triggers.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 
 use anyhow::Result;
 use legionctl_api::{
@@ -10,6 +12,7 @@ use legionctl_api::{
     Lines, PlanCheck, PlanCheckIn, PlanStatus, PlanStatusIn, RepoIn,
 };
 use legionctl_core::db::Db;
+use legionctl_core::workspace::git_common_dir;
 use legionctl_core::{codegraph, planning};
 use serde_json::{Value, json};
 
@@ -26,16 +29,73 @@ pub fn run_refresh(input: &Value) -> Result<Lines> {
     })
 }
 
-/// Start a refresh job in the background; its id.
-fn spawn(dir: &Path, rev: &str) -> Result<i64> {
-    let input = json!({"repo": dir, "ref": rev});
-    let job = Db::open_default()?.job_begin(REFRESH, &input)?;
-    std::thread::spawn(move || {
+/// The refresh jobs of one repository that wait, oldest first, and whether its worker runs.
+#[derive(Default)]
+struct Queue {
+    pending: Vec<(i64, Value)>,
+    busy: bool,
+}
+
+/// One queue per repository (its git common folder): a rebase or a burst of hooks starts one build at a time, not a
+/// thread per commit.
+static QUEUES: LazyLock<Mutex<HashMap<PathBuf, Queue>>> = LazyLock::new(Mutex::default);
+
+fn queues() -> std::sync::MutexGuard<'static, HashMap<PathBuf, Queue>> {
+    QUEUES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Put the refresh job `job` into its repository's queue. A waiting job of the same checkout and ref ends: the new
+/// one replaces it. The repository's worker starts when it does not run.
+///
+/// # Errors
+/// The job's checkout is not in a git repository.
+pub fn queue(job: i64, input: Value) -> Result<()> {
+    let key = git_common_dir(Path::new(input["repo"].as_str().unwrap_or_default()))?;
+    let mut all = queues();
+    let q = all.entry(key.clone()).or_default();
+    if let Some(at) = q.pending.iter().position(|(_, waiting)| *waiting == input) {
+        let (old, _) = q.pending.remove(at);
+        let replaced = Ok(Lines {
+            lines: vec![format!("replaced by job {job}")],
+        });
+        if let Err(e) = Db::open_default().and_then(|db| end_job(&db, old, &replaced)) {
+            eprintln!("operator: job {old} not recorded: {e:#}");
+        }
+    }
+    q.pending.push((job, input));
+    if !q.busy {
+        q.busy = true;
+        std::thread::spawn(move || work(&key));
+    }
+    Ok(())
+}
+
+/// The worker of one repository: its waiting jobs, one at a time, until none waits.
+fn work(key: &Path) {
+    loop {
+        let (job, input) = {
+            let mut all = queues();
+            let Some(q) = all.get_mut(key).filter(|q| !q.pending.is_empty()) else {
+                all.remove(key);
+                return;
+            };
+            q.pending.remove(0)
+        };
         let out = run_refresh(&input);
         if let Err(e) = Db::open_default().and_then(|db| end_job(&db, job, &out)) {
             eprintln!("operator: job {job} not recorded: {e:#}");
         }
-    });
+    }
+}
+
+/// Start a refresh job in the background (in its repository's queue); its id.
+fn spawn(dir: &Path, rev: &str) -> Result<i64> {
+    let input = json!({"repo": dir, "ref": rev});
+    git_common_dir(dir)?;
+    let job = Db::open_default()?.job_begin(REFRESH, &input)?;
+    queue(job, input)?;
     Ok(job)
 }
 

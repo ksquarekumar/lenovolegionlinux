@@ -1511,7 +1511,65 @@ impl GateAgent {
     fn last_commit(&self) -> String {
         git(&self.home, &self.ws, &["log", "-1", "--format=%s"])
     }
+
+    /// git as the user runs it in the workspace: its hooks find this build's `legionctl` and this test's operator.
+    fn git_user(&self, args: &[&str]) -> std::process::Output {
+        let bin = Path::new(env!("CARGO_BIN_EXE_legionctl")).parent().unwrap();
+        let path = std::env::join_paths(
+            std::iter::once(bin.to_path_buf())
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(&self.ws)
+            .args(args)
+            .env_clear()
+            .env("HOME", &self.home)
+            .env("PATH", path)
+            .env("XDG_RUNTIME_DIR", &self.op.runtime)
+            .output()
+            .unwrap()
+    }
+
+    /// The review of the working tree: each reviewed test's name and its assertions.
+    fn reviewed(&self) -> Vec<(String, u64)> {
+        let review: Value =
+            serde_json::from_str(&self.ok(&["code", "tests", "review", "--json"])).unwrap();
+        review["tests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| {
+                (
+                    t["name"].as_str().unwrap().to_string(),
+                    t["assertions"].as_u64().unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    /// Record a hand mutation of `double` that `tests` caught.
+    fn kill(&self, tests: &[&str]) -> String {
+        self.ok(&[
+            &[
+                "code",
+                "tests",
+                "mutant",
+                "record",
+                "src/lib.rs",
+                "2",
+                "x * 2 -> x + 2",
+            ],
+            tests,
+        ]
+        .concat())
+    }
 }
+
+/// One test of each form that the review must find (the file need not compile: the review parses it).
+// a .txt file: the test gate of the installed legionctl (a line parser) would read its tests as tests of e2e.rs
+const FORMS: &str = include_str!("fixtures/test-forms.txt");
 
 const GATE_TESTS: &str =
     "use fx::double;\n\n#[test]\nfn doubles_three() {\n    assert_eq!(double(3), 6);\n}\n";
@@ -1602,6 +1660,196 @@ fn the_checkpoint_gate_refuses_tests_without_evidence_and_takes_recorded_kills_a
         serde_json::from_str(&agent.ok(&["code", "tests", "show", "only_calls", "--json"]))
             .unwrap();
     assert_eq!(shown["accepts"][0]["reason"], reason);
+}
+
+/// The pre-commit hook (`scripts/test-gate.sh`) through a real `git commit -a` and `git commit <path>`: both commit a
+/// temporary index of their own (`GIT_INDEX_FILE`), not the repository's index. The hook reviews that index: a new
+/// test without a kill is refused and nothing is committed; with its kill both forms commit.
+#[test]
+fn the_pre_commit_hook_reviews_the_index_of_git_commit_a_and_git_commit_path() {
+    let agent = GateAgent::start("hookgate");
+    write(&agent.ws.join("tests/t.rs"), GATE_TESTS);
+    agent.kill(&["doubles_three"]);
+    agent.ok(&["workspace", "checkpoint", "double"]);
+    let hooks = git(
+        &agent.home,
+        &agent.ws,
+        &["rev-parse", "--path-format=absolute", "--git-path", "hooks"],
+    );
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-gate.sh");
+    std::fs::create_dir_all(&hooks).unwrap();
+    std::fs::copy(script, Path::new(&hooks).join("pre-commit")).unwrap();
+
+    // a tracked test file changed in the working tree only: the repository's index has nothing
+    let more =
+        format!("{GATE_TESTS}\n#[test]\nfn zero_stays() {{\n    assert_eq!(double(0), 0);\n}}\n");
+    write(&agent.ws.join("tests/t.rs"), &more);
+    for args in [
+        &["commit", "-a", "-m", "all"][..],
+        &["commit", "-m", "path", "tests/t.rs"][..],
+    ] {
+        let out = agent.git_user(args);
+        let text = String::from_utf8_lossy(&out.stdout).to_string()
+            + &String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success(),
+            "git {args:?} must be refused: {text}"
+        );
+        assert!(text.contains("REFUSED  zero_stays (tests/t.rs)"), "{text}");
+        assert_eq!(
+            agent.last_commit(),
+            "double",
+            "git {args:?} committed nothing"
+        );
+    }
+
+    agent.kill(&["zero_stays"]);
+    let out = agent.git_user(&["commit", "-m", "path", "tests/t.rs"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(agent.last_commit(), "path");
+    write(
+        &agent.ws.join("tests/t.rs"),
+        &format!("{more}\n#[test]\nfn four() {{\n    assert_eq!(double(2), 4);\n}}\n"),
+    );
+    agent.kill(&["four"]);
+    let out = agent.git_user(&["commit", "-a", "-m", "all"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(agent.last_commit(), "all");
+}
+
+/// The forms of a test function (`#[test]` on the line of the `fn`, `#[rstest]`, `#[test_case(..)]`,
+/// `#[tokio::test]`, `#[sqlx::test]`, a comment after the attribute, a test in a module) are each found, by libtest
+/// name; assertions are the assert macros, `unwrap_err` and `#[should_panic]`, not a comment, a string or
+/// `my_assert!`; a `"}"` in a string does not end a test, so a change after it is a change of that test.
+#[test]
+fn the_review_finds_each_test_form_and_counts_assertions_in_code_only() {
+    let agent = GateAgent::start("testforms");
+    write(&agent.ws.join("tests/forms.rs"), FORMS);
+    let mut found = agent.reviewed();
+    found.sort();
+    let expected: Vec<(String, u64)> = [
+        ("case", 1),
+        ("commented", 0),
+        ("inner::nested", 1),
+        ("one_line", 1),
+        ("panics", 1),
+        ("rs_test", 1),
+        ("sqlx_form", 1),
+        ("tokio_form", 1),
+    ]
+    .iter()
+    .map(|(n, a)| ((*n).to_string(), *a))
+    .collect();
+    assert_eq!(found, expected);
+
+    git(&agent.home, &agent.ws, &["add", "tests/forms.rs"]);
+    git(
+        &agent.home,
+        &agent.ws,
+        &["commit", "--quiet", "-m", "forms"],
+    );
+    write(
+        &agent.ws.join("tests/forms.rs"),
+        &FORMS.replace("assert!(!open.is_empty());", "assert!(open.len() == 1);"),
+    );
+    assert_eq!(
+        agent.reviewed(),
+        [("inner::nested".to_string(), 1)],
+        "the line after the string is in the test"
+    );
+}
+
+/// A test removed from below another test (a diff hunk `+c,0` at the other test's last line) changes no test.
+#[test]
+fn removing_a_test_does_not_mark_the_test_above_it_as_changed() {
+    let agent = GateAgent::start("testremoved");
+    write(&agent.ws.join("tests/forms.rs"), FORMS);
+    git(&agent.home, &agent.ws, &["add", "tests/forms.rs"]);
+    git(
+        &agent.home,
+        &agent.ws,
+        &["commit", "--quiet", "-m", "forms"],
+    );
+    let without = FORMS.replace(
+        "#[test]\n#[should_panic]\nfn panics() {\n    double(i32::MAX);\n}\n",
+        "",
+    );
+    assert_ne!(without, FORMS);
+    write(&agent.ws.join("tests/forms.rs"), &without);
+    assert_eq!(agent.reviewed(), [], "no new or changed test");
+}
+
+/// A kill and an accept count for the test as it was when they were recorded: a test with the same name in another
+/// file has no evidence; a name that names two tests is refused; a change of the test's body makes the gate ask again.
+#[test]
+fn evidence_counts_only_for_the_test_version_it_was_recorded_for() {
+    let agent = GateAgent::start("stale");
+    write(&agent.ws.join("tests/t.rs"), GATE_TESTS);
+    agent.kill(&["doubles_three"]);
+    agent.ok(&["workspace", "checkpoint", "double"]);
+
+    // the same name and body in another file
+    write(&agent.ws.join("tests/u.rs"), GATE_TESTS);
+    let why = agent.refused(&["workspace", "checkpoint", "copy"]);
+    assert!(
+        why.contains("doubles_three (tests/u.rs): kills no mutant"),
+        "{why}"
+    );
+    let ambiguous = agent.run(&[
+        "code",
+        "tests",
+        "mutant",
+        "record",
+        "src/lib.rs",
+        "2",
+        "x",
+        "doubles_three",
+    ]);
+    let text = String::from_utf8_lossy(&ambiguous.stderr);
+    assert!(
+        !ambiguous.status.success() && text.contains("names 2 tests"),
+        "{text}"
+    );
+    agent.kill(&["tests/u.rs::doubles_three"]);
+    agent.ok(&["workspace", "checkpoint", "copy"]);
+
+    // a changed body: the kill was for the old one
+    let changed = GATE_TESTS.replace("assert_eq!(double(3), 6);", "assert!(double(3) > 0);");
+    write(&agent.ws.join("tests/t.rs"), &changed);
+    let why = agent.refused(&["workspace", "checkpoint", "weaker"]);
+    assert!(
+        why.contains("doubles_three (tests/t.rs): kills no mutant"),
+        "{why}"
+    );
+    agent.ok(&[
+        "workspace",
+        "checkpoint",
+        "weaker",
+        "--accept-test",
+        "tests/t.rs::doubles_three",
+        "--reason",
+        "a smoke check",
+    ]);
+    assert_eq!(agent.last_commit(), "weaker");
+
+    // the accept was for that body too
+    write(
+        &agent.ws.join("tests/t.rs"),
+        &changed.replace("assert!(double(3) > 0);", "assert!(double(3) > 1);"),
+    );
+    let why = agent.refused(&["workspace", "checkpoint", "again"]);
+    assert!(
+        why.contains("doubles_three (tests/t.rs): kills no mutant"),
+        "{why}"
+    );
 }
 
 /// cargo-mutants (a stand-in that writes its real output) runs as a job on the branch's source files only and its
@@ -1707,20 +1955,39 @@ fn cargo_mutants_kills_count_for_the_gate_and_the_review_shows_duplicates() {
     assert!(String::from_utf8_lossy(&staged.stdout).contains("REFUSED  zero_stays (tests/t.rs)"));
 }
 
-/// `code tests run` runs the suite as a job and records each test with the source of its test binary, its result and
-/// the ref; the filter reaches libtest; `code tests list` and `show` give them back.
+/// A stand-in `cargo` that logs its arguments to `home/cargo-argv` and gives the JSON messages and results of two
+/// crates' `tests/e2e.rs` (the same names) and a unit test.
+fn cargo_of_two_crates(home: &Path, repo: &Path) {
+    let artifact = |src: &str, exe: &str| {
+        json!({"reason": "compiler-artifact", "target": {"name": "t", "src_path": repo.join(src)},
+            "profile": {"test": true}, "executable": format!("/build/target/release/deps/{exe}"), "fresh": true})
+        .to_string()
+    };
+    stand_in(
+        home,
+        "cargo",
+        &format!(
+            "#!/bin/sh\necho \"$@\" > {argv}\necho '{a}'\necho '{b}'\necho '{x}'\n\
+             echo '     Running tests/e2e.rs (target/release/deps/e2e-1)' >&2\necho 'test a_flow_works ... ok'\necho 'test b_flow_breaks ... FAILED'\n\
+             echo '     Running tests/e2e.rs (target/release/deps/e2e-3)' >&2\necho 'test a_flow_works ... FAILED'\n\
+             echo '     Running unittests src/lib.rs (target/release/deps/x-2)' >&2\necho 'test db::tests::c_needs_root ... ignored'\n\
+             echo 'test result: FAILED. 1 passed; 1 failed; 1 ignored'\nexit 101\n",
+            argv = home.join("cargo-argv").display(),
+            a = artifact("crates/a/tests/e2e.rs", "e2e-1"),
+            b = artifact("crates/b/tests/e2e.rs", "e2e-3"),
+            x = artifact("crates/a/src/lib.rs", "x-2"),
+        ),
+    );
+}
+
+/// `code tests run` runs the suite as a job and records each test with the source of its test binary (relative to
+/// the repository: two crates' `tests/e2e.rs` are two files), its result and the ref; the filter reaches libtest;
+/// `code tests list` and `show` give them back.
 #[test]
 fn a_test_run_records_each_test_with_its_file_result_and_ref() {
     let (op, home) = operator("testruns");
     let repo = repository(&home);
-    stand_in(
-        &home,
-        "cargo",
-        &format!(
-            "#!/bin/sh\necho \"$@\" > {argv}\necho '     Running tests/e2e.rs (target/release/deps/e2e-1)' >&2\necho 'test a_flow_works ... ok'\necho 'test b_flow_breaks ... FAILED'\necho '     Running unittests src/lib.rs (target/release/deps/x-2)' >&2\necho 'test db::tests::c_needs_root ... ignored'\necho 'test result: FAILED. 1 passed; 1 failed; 1 ignored'\nexit 101\n",
-            argv = home.join("cargo-argv").display()
-        ),
-    );
+    cargo_of_two_crates(&home, &repo);
     let out = op.run(
         &repo,
         &[("HOME", home.to_str().unwrap())],
@@ -1732,7 +1999,7 @@ fn a_test_run_records_each_test_with_its_file_result_and_ref() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(String::from_utf8_lossy(&out.stdout).contains("1 failed, 1 ignored, 1 ok"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("2 failed, 1 ignored, 1 ok"));
     assert!(
         std::fs::read_to_string(home.join("cargo-argv"))
             .unwrap()
@@ -1767,12 +2034,23 @@ fn a_test_run_records_each_test_with_its_file_result_and_ref() {
         [
             (
                 "db::tests::c_needs_root",
-                "src/lib.rs",
+                "crates/a/src/lib.rs",
                 "ignored",
                 head.as_str()
             ),
-            ("a_flow_works", "tests/e2e.rs", "ok", head.as_str()),
-            ("b_flow_breaks", "tests/e2e.rs", "failed", head.as_str()),
+            ("a_flow_works", "crates/a/tests/e2e.rs", "ok", head.as_str()),
+            (
+                "b_flow_breaks",
+                "crates/a/tests/e2e.rs",
+                "failed",
+                head.as_str()
+            ),
+            (
+                "a_flow_works",
+                "crates/b/tests/e2e.rs",
+                "failed",
+                head.as_str()
+            ),
         ]
     );
     let shown: Value = serde_json::from_str(&op.ok(&[
@@ -1792,9 +2070,41 @@ fn a_test_run_records_each_test_with_its_file_result_and_ref() {
     let jobs: Value = serde_json::from_str(&op.ok(&["jobs", "list", "--json"])).unwrap();
     assert_eq!(jobs["items"][0]["kind"], "code.tests.run");
     assert_eq!(
-        jobs["items"][0]["input"]["results"]["failed"], 1,
+        jobs["items"][0]["input"]["results"]["failed"], 2,
         "the job shows its progress: {jobs}"
     );
+}
+
+/// A test run that builds nothing (cargo exits with a compile error and no test ran) fails its job with the
+/// compiler's error, and records no test.
+#[test]
+fn a_test_run_that_does_not_build_fails_with_the_compiler_error() {
+    let (op, home) = operator("testbuild");
+    let repo = repository(&home);
+    let error = json!({"reason": "compiler-message", "message": {"rendered": "error[E0425]: cannot find value `y` in this scope"}});
+    stand_in(
+        &home,
+        "cargo",
+        &format!("#!/bin/sh\necho '{error}'\necho 'error: could not compile `fx`' >&2\nexit 101\n"),
+    );
+    let out = op.run(
+        &repo,
+        &[("HOME", home.to_str().unwrap())],
+        &["code", "tests", "run"],
+        "",
+    );
+    let text = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        text.contains("no test ran") && text.contains("error[E0425]: cannot find value `y`"),
+        "{text}"
+    );
+    let jobs: Value = serde_json::from_str(&op.ok(&["jobs", "list", "--json"])).unwrap();
+    assert_eq!(jobs["items"][0]["state"], "failed", "{jobs}");
 }
 
 /// The real cargo-mutants (not in CI; run it here with `cargo install cargo-mutants --locked`) on a fixture crate in a

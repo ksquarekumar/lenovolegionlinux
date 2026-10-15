@@ -39,10 +39,11 @@ macro_rules! annotations {
     };
 }
 
-/// The workspace database at v13: the steps of v1-v9 merged into one (todo-68), then the topic workspaces, then
-/// the code graph annotations, then the test records (design 23, A7), then the threads (design 23, B2).
+/// The workspace database at v14: the steps of v1-v9 merged into one (todo-68), then the topic workspaces, then
+/// the code graph annotations, then the test records (design 23, A7), then the threads (design 23, B2, v13), then the kills
+/// and accepts keyed by the test's token hash.
 const SCHEMA: &Schema = &Schema {
-    version: 13,
+    version: 14,
     steps: &[
         (
             9,
@@ -53,6 +54,7 @@ const SCHEMA: &Schema = &Schema {
         (10, annotations!()),
         (11, crate::codetests::tables!()),
         (12, crate::thread::tables!()),
+        (13, crate::codetests::keyed!()),
     ],
     sql: concat!(
         "-- one open binding per dossier and per session; released rows stay as history; place: where the session worked
@@ -118,7 +120,8 @@ const SCHEMA: &Schema = &Schema {
      );",
         annotations!(),
         crate::codetests::tables!(),
-        crate::thread::tables!()
+        crate::thread::tables!(),
+        crate::codetests::keyed!()
     ),
 };
 
@@ -1072,6 +1075,59 @@ mod tests {
             ws.check("port").is_empty(),
             "a new dossier has every ledger section"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A v12 file's kills and accepts stay as history, without a file and a hash: no test has them, so the gate asks
+    /// for evidence again; the kills keep their test names.
+    #[test]
+    fn v12_kills_and_accepts_stay_without_a_key() {
+        let dir = std::env::temp_dir().join(format!("legionctl-ws-v12-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("v12.db");
+        let v12 = rusqlite::Connection::open(&path).unwrap();
+        v12.execute_batch(
+            "CREATE TABLE workspaces (dossier TEXT NOT NULL, repo TEXT NOT NULL, path TEXT NOT NULL,
+                branch TEXT NOT NULL, base TEXT NOT NULL, opened INTEGER NOT NULL, closed INTEGER);
+             CREATE UNIQUE INDEX open_workspace ON workspaces (dossier, repo) WHERE closed IS NULL;",
+        )
+        .unwrap();
+        for (_, sql) in SCHEMA.steps.iter().filter(|(from, _)| *from < 12) {
+            v12.execute_batch(sql).unwrap();
+        }
+        v12.execute_batch(
+            "INSERT INTO mutants (repo, ref, file, line, description, killed, source, ts)
+                 VALUES ('/r', 'h', 'src/lib.rs', 2, 'm', '[\"a\",\"t::b\"]', 'agent', 1),
+                        ('/r', 'h', 'src/lib.rs', 3, 'missed', '[]', 'tool', 1);
+             INSERT INTO test_accepts (repo, test, reason, session, ts) VALUES ('/r', 'a', 'why', 's1', 1);
+             PRAGMA user_version = 12;",
+        )
+        .unwrap();
+        drop(v12);
+        let db = Db::open(&path, SCHEMA).unwrap();
+        let killed: Vec<String> = db
+            .conn()
+            .prepare("SELECT killed FROM mutants ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            killed,
+            [
+                r#"[{"test":"a","file":null,"hash":null},{"test":"t::b","file":null,"hash":null}]"#,
+                "[]"
+            ]
+        );
+        let accept: (String, Option<String>, Option<String>) = db
+            .conn()
+            .query_row("SELECT test, file, hash FROM test_accepts", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(accept, ("a".into(), None, None));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

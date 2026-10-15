@@ -16,6 +16,8 @@ struct Field<'a> {
     kind: Kind,
     required: bool,
     default: Option<String>,
+    /// `x-env`: the client's environment variable that gives a path field when the caller does not.
+    env: Option<&'a str>,
 }
 
 #[derive(PartialEq)]
@@ -123,6 +125,7 @@ fn fields(input: &Value) -> Vec<Field<'_>> {
                     Value::Number(n) => Some(n.to_string()),
                     _ => None,
                 },
+                env: prop["x-env"].as_str(),
             }
         })
         .collect()
@@ -323,7 +326,8 @@ pub fn session_from_env() -> Option<String> {
 }
 
 /// Fill what only the calling process knows: path fields become absolute against its working directory (with path
-/// defaults such as `.`), session fields come from its environment, and with `stdin` a missing text field is read
+/// defaults such as `.`, and a path field with `x-env` from that environment variable when not given), session fields
+/// come from its environment, and with `stdin` a missing text field is read
 /// from stdin (always when the field is required; when optional, only from a pipe).
 ///
 /// # Errors
@@ -351,7 +355,11 @@ pub fn fill_client_fields(op: &OpInfo, input: &mut Value, stdin: bool) -> Result
         }
     }
     for field in fields(&schema).into_iter().filter(|f| f.kind == Kind::Path) {
-        let given = map.get(field.key).and_then(Value::as_str).map(String::from);
+        let given = map
+            .get(field.key)
+            .and_then(Value::as_str)
+            .map(String::from)
+            .or_else(|| std::env::var(field.env?).ok().filter(|v| !v.is_empty()));
         if let Some(path) = given.or(field.default) {
             let absolute =
                 std::path::absolute(&path).with_context(|| format!("resolving {path}"))?;

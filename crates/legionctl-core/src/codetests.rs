@@ -5,10 +5,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail, ensure};
+use blake2::{Blake2b, Digest as _, digest::consts::U16};
 use rusqlite::params;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -17,7 +18,7 @@ use crate::db::now;
 use crate::dossier::Dossiers;
 use crate::workspace::{git, git_common_dir};
 
-/// The tables of the test records (workspace.db v12).
+/// The tables of the test records at workspace.db v12 (the step from v11).
 macro_rules! tables {
     () => {
         "-- one row per test per run of `code tests run` (A7): file is the source of the test binary
@@ -55,8 +56,33 @@ macro_rules! tables {
 }
 pub(crate) use tables;
 
-/// The command of `code tests run`; the filter goes after `--`.
-const TEST_COMMAND: &str = "cargo test --release --workspace --no-fail-fast -j8";
+/// The step from workspace.db v13 to v14: each kill and each accept is keyed by the test's file, libtest name and
+/// token hash. The records before have no file and no hash: they do not count, and the gate asks for evidence again.
+macro_rules! keyed {
+    () => {
+        "-- killed: the JSON list of {test, file, hash}; a kill counts while the test has the same hash
+     UPDATE mutants SET killed = (SELECT json_group_array(json_object('test', value, 'file', NULL, 'hash', NULL))
+                                  FROM json_each(mutants.killed));
+     ALTER TABLE test_accepts ADD COLUMN file TEXT;
+     ALTER TABLE test_accepts ADD COLUMN hash TEXT;"
+    };
+}
+pub(crate) use keyed;
+
+/// The command of `code tests run`; the filter goes after `--`. The JSON messages give each test binary's source.
+const TEST_COMMAND: &str =
+    "cargo test --release --workspace --no-fail-fast --message-format=json -j8";
+
+/// A test that failed with a mutation, as it was then: it counts for the test while the test has the same hash.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+pub struct Kill {
+    /// libtest's name: the module path and the function name.
+    pub test: String,
+    /// The test's file, relative to the repository (none: recorded before v14).
+    pub file: Option<String>,
+    /// The hash of the test function's tokens (none: recorded before v14).
+    pub hash: Option<String>,
+}
 
 /// One mutation and the tests that failed with it (none: the mutant survived).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -64,7 +90,7 @@ pub struct Mutant {
     pub file: String,
     pub line: u32,
     pub description: String,
-    pub killed_by: Vec<String>,
+    pub killed_by: Vec<Kill>,
     /// `tool` (cargo-mutants) or `agent` (a hand-made mutation).
     pub source: String,
     pub git_ref: String,
@@ -84,6 +110,10 @@ pub struct TestRun {
 /// A test that `workspace checkpoint --accept-test` let through, and why.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Accept {
+    /// The test's libtest name, file and token hash: the accept counts while the test has the same hash.
+    pub test: String,
+    pub file: Option<String>,
+    pub hash: Option<String>,
     pub reason: String,
     pub session: String,
     pub at: i64,
@@ -112,6 +142,7 @@ pub struct TestDetail {
 /// The review of one new or changed test.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReviewedTest {
+    /// libtest's name: the module path and the function name.
     pub name: String,
     pub file: String,
     pub assertions: u32,
@@ -151,78 +182,212 @@ fn repo_key(dir: &Path) -> Result<String> {
     Ok(git_common_dir(dir)?.to_string_lossy().into_owned())
 }
 
-/// A test function: its name and the lines from its attribute to its closing brace (1-based).
+/// A test function: its file, its libtest name (module path and function name), the lines from its first attribute
+/// to its closing brace (1-based), the hash of its tokens and its assertions.
 struct TestFn {
+    file: String,
     name: String,
     start: usize,
     end: usize,
-    body: String,
+    hash: String,
+    assertions: u32,
 }
 
-/// The `#[test]` functions of a Rust file.
-// shortcut: braces are counted without reading strings or char literals; an unbalanced `'{'` in a test body ends the
-// span early. The code graph has spans for committed trees only (ctx); upgrade when it indexes the index.
-fn tests_in(text: &str) -> Vec<TestFn> {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut found = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        let attr = lines[i].trim();
-        if attr != "#[test]" && !attr.starts_with("#[tokio::test") {
-            i += 1;
-            continue;
+impl TestFn {
+    /// A record of this test as it is now: a kill counts only while the test has these tokens.
+    fn kill(&self) -> Kill {
+        Kill {
+            test: self.name.clone(),
+            file: Some(self.file.clone()),
+            hash: Some(self.hash.clone()),
         }
-        let Some(head) = (i..lines.len()).find(|&j| lines[j].contains("fn ")) else {
-            break;
-        };
-        let name: String = lines[head]
-            .split("fn ")
-            .nth(1)
-            .unwrap_or_default()
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '_')
-            .collect();
-        let (mut depth, mut opened, mut end) = (0i32, false, head);
-        for (j, line) in lines.iter().enumerate().skip(head) {
-            for c in line.chars() {
-                match c {
-                    '{' => (depth, opened) = (depth + 1, true),
-                    '}' => depth -= 1,
-                    _ => {}
+    }
+}
+
+/// The module path of a Rust file in its crate: `src/a/b.rs` is `a::b`, a crate root (`src/lib.rs`, `src/main.rs`,
+/// `src/bin/x.rs`, `tests/x.rs`) has none.
+// shortcut: `#[path]` attributes are not read; read them when a repository uses them for test modules.
+fn module_of(file: &str) -> Vec<String> {
+    let parts: Vec<&str> = file
+        .strip_suffix(".rs")
+        .unwrap_or(file)
+        .split('/')
+        .collect();
+    let dirs = &parts[..parts.len() - 1];
+    let Some(root) = dirs.iter().rposition(|p| *p == "src").or_else(|| {
+        dirs.iter()
+            .rposition(|p| ["tests", "benches", "examples"].contains(p))
+    }) else {
+        return Vec::new();
+    };
+    let mut module = parts[root + 1..].to_vec();
+    let crate_root = match module[..] {
+        [one] => parts[root] != "src" || one == "lib" || one == "main",
+        ["bin", _] => parts[root] == "src",
+        _ => false,
+    };
+    if crate_root {
+        return Vec::new();
+    }
+    if module.last() == Some(&"mod") {
+        module.pop();
+    }
+    module.into_iter().map(String::from).collect()
+}
+
+/// An attribute that makes a function a test: its path ends in `test` (`test`, `tokio::test`, `sqlx::test`,
+/// `rstest`) or is `test_case`.
+fn is_test(attr: &syn::Attribute) -> bool {
+    attr.path().segments.last().is_some_and(|s| {
+        let name = s.ident.to_string();
+        name.ends_with("test") || name == "test_case"
+    })
+}
+
+/// The assertions in a test: the `assert*!` and `debug_assert*!` macro calls and `.unwrap_err()` calls of its code
+/// (not of its comments or strings).
+struct Assertions(u32);
+
+impl<'a> syn::visit::Visit<'a> for Assertions {
+    fn visit_macro(&mut self, m: &'a syn::Macro) {
+        if m.path.segments.last().is_some_and(|s| {
+            let name = s.ident.to_string();
+            ["assert", "assert_eq", "assert_ne", "assert_matches"].contains(&name.as_str())
+                || name.starts_with("debug_assert")
+        }) {
+            self.0 += 1;
+        }
+        syn::visit::visit_macro(self, m);
+    }
+
+    fn visit_expr_method_call(&mut self, call: &'a syn::ExprMethodCall) {
+        if call.method == "unwrap_err" {
+            self.0 += 1;
+        }
+        syn::visit::visit_expr_method_call(self, call);
+    }
+}
+
+fn walk(file: &str, items: &[syn::Item], module: &mut Vec<String>, found: &mut Vec<TestFn>) {
+    use quote::ToTokens as _;
+    use syn::spanned::Spanned as _;
+    use syn::visit::Visit as _;
+    for item in items {
+        match item {
+            syn::Item::Fn(f) if f.attrs.iter().any(is_test) => {
+                let mut count = Assertions(0);
+                count.visit_block(&f.block);
+                let should_panic = f.attrs.iter().any(|a| a.path().is_ident("should_panic"));
+                // line numbers outside a proc macro: the span-locations feature of proc-macro2
+                let span: proc_macro2::Span = f.span();
+                let tokens = f.to_token_stream().to_string();
+                let name = module
+                    .iter()
+                    .cloned()
+                    .chain([f.sig.ident.to_string()])
+                    .collect::<Vec<_>>()
+                    .join("::");
+                found.push(TestFn {
+                    file: file.into(),
+                    name,
+                    start: span.start().line,
+                    end: span.end().line,
+                    hash: format!("{:x}", Blake2b::<U16>::digest(tokens.as_bytes())),
+                    assertions: count.0 + u32::from(should_panic),
+                });
+            }
+            syn::Item::Mod(m) => {
+                if let Some((_, inner)) = &m.content {
+                    module.push(m.ident.to_string());
+                    walk(file, inner, module, found);
+                    module.pop();
                 }
             }
-            end = j;
-            if opened && depth == 0 {
-                break;
-            }
+            _ => {}
         }
-        found.push(TestFn {
-            name,
-            start: i + 1,
-            end: end + 1,
-            body: lines[head..=end].join("\n"),
-        });
-        i = end + 1;
     }
-    found
 }
 
-/// The assertions in a test body: `assert*!`, `panic!`, `unwrap_err`, `expect_err`.
-fn assertions(body: &str) -> u32 {
-    let macros = body
-        .match_indices("assert")
-        .filter(|(at, _)| {
-            body[at + "assert".len()..]
-                .chars()
-                .find(|c| !(c.is_alphanumeric() || *c == '_'))
-                == Some('!')
-        })
-        .count();
-    let others: usize = ["panic!", "unwrap_err", "expect_err"]
+/// The test functions of the Rust file `file` (relative to the repository) with the text `text`.
+fn tests_in(file: &str, text: &str) -> Result<Vec<TestFn>> {
+    let parsed = syn::parse_file(text).with_context(|| format!("parsing {file}"))?;
+    let mut found = Vec::new();
+    walk(file, &parsed.items, &mut module_of(file), &mut found);
+    Ok(found)
+}
+
+/// Every test function in the working tree of the repository at `top` (its tracked and untracked Rust files), and
+/// the files that do not parse.
+fn worktree_tests(top: &Path) -> Result<(Vec<TestFn>, Vec<String>)> {
+    let (mut tests, mut broken) = (Vec::new(), Vec::new());
+    let files = git(
+        top,
+        &[
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            "*.rs",
+        ],
+    )?;
+    for file in files.lines().collect::<BTreeSet<_>>() {
+        // a tracked file that the working tree deleted has no tests
+        let Ok(text) = std::fs::read_to_string(top.join(file)) else {
+            continue;
+        };
+        match tests_in(file, &text) {
+            Ok(found) => tests.extend(found),
+            Err(_) => broken.push(file.to_string()),
+        }
+    }
+    Ok((tests, broken))
+}
+
+/// The one test that `name` names: `<file>::<libtest name>`, a libtest name, or its end (a function name); an exact
+/// libtest name comes before an end.
+fn resolve<'a>(tests: &'a [TestFn], broken: &[String], name: &str) -> Result<&'a TestFn> {
+    let (file, path) = match name.split_once(".rs::") {
+        Some((file, path)) => (Some(format!("{file}.rs")), path),
+        None => (None, name),
+    };
+    let of_file = |t: &&TestFn| file.as_ref().is_none_or(|f| &t.file == f);
+    let mut found: Vec<&TestFn> = tests
         .iter()
-        .map(|w| body.matches(w).count())
-        .sum();
-    u32::try_from(macros + others).unwrap_or(u32::MAX)
+        .filter(of_file)
+        .filter(|t| t.name == path)
+        .collect();
+    if found.is_empty() {
+        let end = format!("::{path}");
+        found = tests
+            .iter()
+            .filter(of_file)
+            .filter(|t| t.name.ends_with(&end))
+            .collect();
+    }
+    match found[..] {
+        [one] => Ok(one),
+        [] => Err(crate::error::coded(
+            crate::error::Code::NotFound,
+            format!(
+                "no test function {name} in the working tree{}",
+                if broken.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (these files do not parse: {})", broken.join(", "))
+                }
+            ),
+        )),
+        _ => bail!(
+            "{name} names {} tests: {}; give <file>::<name>",
+            found.len(),
+            found
+                .iter()
+                .map(|t| format!("{}::{}", t.file, t.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 /// A recorded test name (libtest's, with its module path) is the test function `name`.
@@ -230,42 +395,68 @@ fn names(recorded: &str, name: &str) -> bool {
     recorded == name || recorded.ends_with(&format!("::{name}"))
 }
 
-/// The changed Rust files against `base` (in the index with `staged`, else in the working tree with the untracked
-/// files) and the new-side lines each change touches.
-fn change_set(
-    dir: &Path,
-    base: &str,
-    staged: bool,
-) -> Result<BTreeMap<String, Vec<(usize, usize)>>> {
-    let mut args = vec!["diff", "-U0", "--no-color", "--no-ext-diff"];
-    if staged {
-        args.push("--cached");
+/// git in `dir`, with `index` as its index file when given (the `GIT_INDEX_FILE` of a running `git commit`).
+fn git_with(dir: &Path, index: Option<&Path>, args: &[&str]) -> Result<String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(dir).args(args);
+    if let Some(index) = index {
+        cmd.env("GIT_INDEX_FILE", index);
     }
+    let out = cmd.output().context("running git")?;
+    ensure!(
+        out.status.success(),
+        "git {}: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Where a change set is: the working tree, or an index (the repository's own, or a `git commit`'s other file).
+#[derive(Clone, Copy)]
+pub enum Side<'a> {
+    WorkTree,
+    Index(Option<&'a Path>),
+}
+
+/// The changed Rust files of the repository at `top` against `base` (with the untracked files in the working tree)
+/// and the new-side lines each change touches.
+fn change_set(top: &Path, base: &str, side: Side) -> Result<BTreeMap<String, Vec<(usize, usize)>>> {
+    let mut args = vec!["diff", "-U0", "--no-color", "--no-ext-diff"];
+    let index = match side {
+        Side::Index(index) => {
+            args.push("--cached");
+            index
+        }
+        Side::WorkTree => None,
+    };
     args.extend([base, "--", "*.rs"]);
     let mut files: BTreeMap<String, Vec<(usize, usize)>> = BTreeMap::new();
     let mut file = None;
-    for line in git(dir, &args)?.lines() {
+    for line in git_with(top, index, &args)?.lines() {
         if let Some(path) = line.strip_prefix("+++ ") {
             file = path.strip_prefix("b/").map(String::from);
         } else if let (Some(hunk), Some(f)) = (line.strip_prefix("@@ "), &file) {
-            // `@@ -a,b +c,d @@`: new lines c..c+d; d = 0 is a removal after line c
+            // `@@ -a,b +c,d @@`: new lines c..c+d; d = 0 is a removal after line c, and touches no new line
             let new = hunk
                 .split(' ')
                 .nth(1)
                 .unwrap_or_default()
                 .trim_start_matches('+');
             let (start, count) = new.split_once(',').unwrap_or((new, "1"));
-            let start: usize = start.parse().unwrap_or(0);
-            let count: usize = count.parse().unwrap_or(1);
-            files
-                .entry(f.clone())
-                .or_default()
-                .push((start.max(1), start + count.max(1) - 1));
+            let start: usize = start.parse()?;
+            let count: usize = count.parse()?;
+            if count > 0 {
+                files
+                    .entry(f.clone())
+                    .or_default()
+                    .push((start, start + count - 1));
+            }
         }
     }
-    if !staged {
+    if matches!(side, Side::WorkTree) {
         for path in git(
-            dir,
+            top,
             &["ls-files", "--others", "--exclude-standard", "--", "*.rs"],
         )?
         .lines()
@@ -276,31 +467,31 @@ fn change_set(
     Ok(files)
 }
 
-/// The text of `path` in the change set: the index with `staged`, else the working tree.
-fn content(dir: &Path, path: &str, staged: bool) -> Result<String> {
-    if !staged {
-        return std::fs::read_to_string(dir.join(path)).with_context(|| format!("reading {path}"));
+/// The text of `path` (relative to the repository at `top`) in the change set.
+fn content(top: &Path, path: &str, side: Side) -> Result<String> {
+    match side {
+        Side::WorkTree => {
+            std::fs::read_to_string(top.join(path)).with_context(|| format!("reading {path}"))
+        }
+        Side::Index(index) => git_with(top, index, &["show", &format!(":{path}")]),
     }
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["show", &format!(":{path}")])
-        .output()
-        .context("running git")?;
-    ensure!(
-        out.status.success(),
-        "git show :{path}: {}",
-        String::from_utf8_lossy(&out.stderr).trim()
-    );
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The mutants of a cargo-mutants run in `results` (its `mutants.out`), each with the tests that failed in its log.
-fn tool_mutants(results: &Path) -> Result<Vec<Mutant>> {
+/// The top folder of the repository or worktree that contains `dir`.
+fn top(dir: &Path) -> Result<PathBuf> {
+    Ok(PathBuf::from(git(dir, &["rev-parse", "--show-toplevel"])?))
+}
+
+/// The mutants of a cargo-mutants run in `results` (its `mutants.out`), each with the tests of `tests` that failed in
+/// its log; and a line for each failed test name that names no one test.
+fn tool_mutants(
+    results: &Path,
+    (tests, broken): &(Vec<TestFn>, Vec<String>),
+) -> Result<(Vec<Mutant>, Vec<String>)> {
     let path = results.join("outcomes.json");
     let o: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)
         .with_context(|| format!("reading {}", path.display()))?;
-    let mut found = Vec::new();
+    let (mut found, mut unknown) = (Vec::new(), Vec::new());
     for outcome in o["outcomes"].as_array().into_iter().flatten() {
         let mutant = &outcome["scenario"]["Mutant"];
         let summary = outcome["summary"].as_str().unwrap_or_default();
@@ -311,23 +502,30 @@ fn tool_mutants(results: &Path) -> Result<Vec<Mutant>> {
         let log =
             std::fs::read_to_string(results.join(outcome["log_path"].as_str().unwrap_or_default()))
                 .unwrap_or_default();
+        let mut killed_by = Vec::new();
+        for name in log
+            .lines()
+            .filter_map(|l| l.strip_prefix("test ")?.strip_suffix(" ... FAILED"))
+        {
+            match resolve(tests, broken, name) {
+                Ok(t) => killed_by.push(t.kill()),
+                Err(e) => unknown.push(format!("  not recorded: {e:#}")),
+            }
+        }
         found.push(Mutant {
             file: mutant["file"].as_str().unwrap_or_default().into(),
             line: mutant["span"]["start"]["line"]
                 .as_u64()
                 .map_or(0, |l| u32::try_from(l).unwrap_or(0)),
             description: mutant["name"].as_str().unwrap_or_default().into(),
-            killed_by: log
-                .lines()
-                .filter_map(|l| l.strip_prefix("test ")?.strip_suffix(" ... FAILED"))
-                .map(String::from)
-                .collect(),
+            killed_by,
             source: "tool".into(),
             git_ref: String::new(),
             at: 0,
         });
     }
-    Ok(found)
+    unknown.dedup();
+    Ok((found, unknown))
 }
 
 impl Dossiers {
@@ -349,15 +547,18 @@ impl Dossiers {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    fn accepts(&self, repo: &str, test: &str) -> Result<Vec<Accept>> {
-        let mut stmt = self
-            .db()
-            .prepare("SELECT reason, session, ts FROM test_accepts WHERE repo = ?1 AND test = ?2 ORDER BY ts")?;
-        let rows = stmt.query_map([repo, test], |r| {
+    fn accepts(&self, repo: &str) -> Result<Vec<Accept>> {
+        let mut stmt = self.db().prepare(
+            "SELECT test, file, hash, reason, session, ts FROM test_accepts WHERE repo = ?1 ORDER BY ts, rowid",
+        )?;
+        let rows = stmt.query_map([repo], |r| {
             Ok(Accept {
-                reason: r.get(0)?,
-                session: r.get(1)?,
-                at: r.get(2)?,
+                test: r.get(0)?,
+                file: r.get(1)?,
+                hash: r.get(2)?,
+                reason: r.get(3)?,
+                session: r.get(4)?,
+                at: r.get(5)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -381,22 +582,28 @@ impl Dossiers {
         Ok(())
     }
 
-    /// Record a mutation an agent made by hand and the tests that failed with it.
+    /// Record a mutation an agent made by hand and the tests that failed with it, each as it is in the working tree
+    /// now (`<file>::<name>`, a libtest name, or a function name).
     ///
     /// # Errors
-    /// `dir` is not in a git repository, or the database write fails.
+    /// `dir` is not in a git repository, a name names no one test, or the database write fails.
     pub fn record_mutant(
         &self,
         dir: &Path,
         file: &str,
         line: u32,
         description: &str,
-        killed_by: Vec<String>,
+        killed_by: &[String],
     ) -> Result<String> {
         ensure!(
             !description.trim().is_empty(),
             "a mutant needs a description of the mutation"
         );
+        let found = worktree_tests(&top(dir)?)?;
+        let killed_by = killed_by
+            .iter()
+            .map(|name| Ok(resolve(&found.0, &found.1, name)?.kill()))
+            .collect::<Result<Vec<_>>>()?;
         let m = Mutant {
             file: file.into(),
             line,
@@ -410,77 +617,92 @@ impl Dossiers {
         Ok(if m.killed_by.is_empty() {
             format!("recorded a mutant that no test killed: {file}:{line} {description}")
         } else {
+            let killers: Vec<String> = m
+                .killed_by
+                .iter()
+                .map(|k| format!("{}::{}", k.file.as_deref().unwrap_or_default(), k.test))
+                .collect();
             format!(
                 "recorded {file}:{line} {description}, killed by {}",
-                m.killed_by.join(", ")
+                killers.join(", ")
             )
         })
     }
 
-    /// Let `test` through the gate without evidence, for `reason`.
+    /// Let `test` (as it is in the working tree now) through the gate without evidence, for `reason`; the test's
+    /// `<file>::<libtest name>`.
     ///
     /// # Errors
-    /// The reason is empty, `dir` is not in a git repository, or the database write fails.
-    pub fn accept_test(&self, dir: &Path, test: &str, reason: &str, session: &str) -> Result<()> {
+    /// The reason is empty, `dir` is not in a git repository, `test` names no one test, or the database write fails.
+    pub fn accept_test(
+        &self,
+        dir: &Path,
+        test: &str,
+        reason: &str,
+        session: &str,
+    ) -> Result<String> {
         ensure!(
             !reason.trim().is_empty(),
             "--accept-test needs --reason <why the test has value>"
         );
+        let found = worktree_tests(&top(dir)?)?;
+        let t = resolve(&found.0, &found.1, test)?;
         self.db().execute(
-            "INSERT INTO test_accepts (repo, test, reason, session, ts) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![repo_key(dir)?, test, reason, session, now()],
+            "INSERT INTO test_accepts (repo, test, file, hash, reason, session, ts) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![repo_key(dir)?, t.name, t.file, t.hash, reason, session, now()],
         )?;
-        Ok(())
+        Ok(format!("{}::{}", t.file, t.name))
     }
 
-    /// The review of the new and changed tests of the change set against HEAD (`staged`: the index, else the working
-    /// tree): assertions, kills, duplicates, place, and the hard signals the gate refuses.
+    /// The review of the new and changed tests of the change set against HEAD on `side`: assertions, kills,
+    /// duplicates, place, and the hard signals the gate refuses. A kill or an accept counts only for the test with
+    /// the file, name and token hash it was recorded with.
     ///
     /// # Errors
-    /// git fails in `dir`, or the database read fails.
-    pub fn review_tests(&self, dir: &Path, staged: bool) -> Result<TestReview> {
-        let repo = repo_key(dir)?;
+    /// git fails in `dir`, a changed Rust file does not parse, or the database read fails.
+    pub fn review_tests(&self, dir: &Path, side: Side) -> Result<TestReview> {
+        let (repo, top) = (repo_key(dir)?, top(dir)?);
         let mutants = self.mutants(&repo)?;
+        let accepts = self.accepts(&repo)?;
         // every killer's set of mutants, for the kills and the duplicates
-        let mut killed: BTreeMap<&str, BTreeSet<usize>> = BTreeMap::new();
+        let mut killed: BTreeMap<&Kill, BTreeSet<usize>> = BTreeMap::new();
         for (i, m) in mutants.iter().enumerate() {
-            for t in &m.killed_by {
-                killed.entry(t).or_default().insert(i);
+            for k in &m.killed_by {
+                killed.entry(k).or_default().insert(i);
             }
         }
         let mut tests = Vec::new();
-        for (file, hunks) in change_set(dir, "HEAD", staged)? {
-            let text = content(dir, &file, staged)?;
-            for t in tests_in(&text) {
+        for (file, hunks) in change_set(&top, "HEAD", side)? {
+            let text = content(&top, &file, side)?;
+            for t in tests_in(&file, &text)? {
                 if !hunks.iter().any(|&(a, b)| a <= t.end && t.start <= b) {
                     continue;
                 }
-                let own: BTreeSet<usize> = killed
-                    .iter()
-                    .filter(|(k, _)| names(k, &t.name))
-                    .flat_map(|(_, s)| s.iter().copied())
-                    .collect();
+                let key = t.kill();
+                let own = killed.get(&key).cloned().unwrap_or_default();
                 let duplicate_of = (!own.is_empty())
                     .then(|| {
                         killed
                             .iter()
-                            .find(|(k, s)| !names(k, &t.name) && own.is_subset(s))
-                            .map(|(k, _)| (*k).to_string())
+                            .find(|(k, s)| {
+                                (&k.test, &k.file) != (&key.test, &key.file) && own.is_subset(s)
+                            })
+                            .map(|(k, _)| k.test.clone())
                     })
                     .flatten();
                 let boundary = Path::new(&file)
                     .components()
                     .any(|c| c.as_os_str() == "tests");
-                let count = assertions(&t.body);
                 let mut refused = Vec::new();
-                if count == 0 {
+                if t.assertions == 0 {
                     refused.push(
-                        "no assertion (assert!, assert_eq!, assert_ne!, panic!, unwrap_err)".into(),
+                        "no assertion (assert*!, debug_assert*!, unwrap_err, #[should_panic])"
+                            .into(),
                     );
                 }
                 if own.is_empty() {
                     refused.push(
-                        "kills no mutant: record a mutation it catches (code tests mutant record) or run code tests mutant run"
+                        "kills no mutant in this version: record a mutation it catches (code tests mutant record) or run code tests mutant run"
                             .into(),
                     );
                 }
@@ -494,12 +716,16 @@ impl Dossiers {
                 if let Some(d) = &duplicate_of {
                     notes.push(format!("duplicate: {d} kills each mutant this test kills"));
                 }
-                let accepted = self.accepts(&repo, &t.name)?.pop().map(|a| a.reason);
+                let accepted = accepts
+                    .iter()
+                    .rev()
+                    .find(|a| (&a.test, &a.file, &a.hash) == (&key.test, &key.file, &key.hash))
+                    .map(|a| a.reason.clone());
                 tests.push(ReviewedTest {
                     kills: u32::try_from(own.len()).unwrap_or(u32::MAX),
                     name: t.name,
                     file: file.clone(),
-                    assertions: count,
+                    assertions: t.assertions,
                     boundary,
                     duplicate_of,
                     refused,
@@ -517,7 +743,7 @@ impl Dossiers {
     /// # Errors
     /// A test is refused (the error names each test and its reasons), or the review fails.
     pub fn test_gate(&self, dir: &Path) -> Result<()> {
-        let refusals = self.review_tests(dir, true)?.refusals();
+        let refusals = self.review_tests(dir, Side::Index(None))?.refusals();
         if refusals.is_empty() {
             return Ok(());
         }
@@ -531,11 +757,12 @@ impl Dossiers {
         ))
     }
 
-    /// Run the test suite in `dir` (`cargo test`, with `filter` after `--`) and record each test's result;
-    /// `progress` gets the counts of results so far.
+    /// Run the test suite in `dir` (`cargo test`, with `filter` after `--`) and record each test's result with the
+    /// source of its test binary (relative to the repository); `progress` gets the counts of results so far.
     ///
     /// # Errors
-    /// The command cannot start, or a database write fails.
+    /// The command cannot start, it fails and no test ran (a build error: the error has the end of its output), or
+    /// a database write fails.
     pub fn run_tests(
         &self,
         dir: &Path,
@@ -543,7 +770,7 @@ impl Dossiers {
         job: i64,
         mut progress: impl FnMut(&BTreeMap<String, u32>),
     ) -> Result<Vec<String>> {
-        let (repo, head) = (repo_key(dir)?, git(dir, &["rev-parse", "HEAD"])?);
+        let (repo, head, top) = (repo_key(dir)?, git(dir, &["rev-parse", "HEAD"])?, top(dir)?);
         // cargo writes `Running <file>` to stderr and the results to stdout: one stream keeps their order
         let mut child = Command::new("sh")
             .arg("-c")
@@ -555,13 +782,47 @@ impl Dossiers {
             .spawn()
             .context("starting cargo test")?;
         let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+        // each test binary's file name -> its source; the last lines of text and compiler errors, for a failure
+        let mut sources: BTreeMap<String, String> = BTreeMap::new();
+        let mut tail: std::collections::VecDeque<String> = std::collections::VecDeque::new();
         let mut file = String::new();
         for line in BufReader::new(child.stdout.take().context("no output")?).lines() {
             let line = line?;
-            if let Some(rest) = line.trim().strip_prefix("Running ") {
-                // `Running tests/e2e.rs (target/...)`, `Running unittests src/lib.rs (target/...)`
-                let rest = rest.strip_prefix("unittests ").unwrap_or(rest);
-                file = rest.split(" (").next().unwrap_or(rest).to_string();
+            if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
+                if let (Some(exe), Some(src)) = (
+                    msg["executable"].as_str(),
+                    msg["target"]["src_path"].as_str(),
+                ) {
+                    let src = Path::new(src);
+                    sources.insert(
+                        Path::new(exe)
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into(),
+                        src.strip_prefix(&top)
+                            .unwrap_or(src)
+                            .to_string_lossy()
+                            .into(),
+                    );
+                } else if let Some(text) = msg["message"]["rendered"].as_str() {
+                    tail.push_back(text.trim_end().into());
+                }
+            } else if let Some(rest) = line.trim().strip_prefix("Running ") {
+                // `Running tests/e2e.rs (target/release/deps/e2e-1f2e)`: the binary in parentheses
+                let exe = rest
+                    .rsplit_once(" (")
+                    .map_or(rest, |(_, e)| e)
+                    .trim_end_matches(')');
+                let name = Path::new(exe)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy();
+                file.clone_from(
+                    sources.get(name.as_ref()).with_context(|| {
+                        format!("cargo named no source for the test binary {exe}")
+                    })?,
+                );
             } else if let Some((name, result)) = line
                 .strip_prefix("test ")
                 .and_then(|l| l.rsplit_once(" ... "))
@@ -574,9 +835,20 @@ impl Dossiers {
                 )?;
                 *counts.entry(result).or_default() += 1;
                 progress(&counts);
+            } else {
+                tail.push_back(line);
+            }
+            while tail.len() > 40 {
+                tail.pop_front();
             }
         }
         let status = child.wait()?;
+        if !status.success() && counts.is_empty() {
+            bail!(
+                "{TEST_COMMAND} failed ({status}) and no test ran:\n{}",
+                Vec::from(tail).join("\n")
+            );
+        }
         let summary: Vec<String> = counts.iter().map(|(r, n)| format!("{n} {r}")).collect();
         Ok(vec![format!(
             "{TEST_COMMAND}: {} ({status})",
@@ -601,10 +873,11 @@ impl Dossiers {
     ) -> Result<Vec<String>> {
         let (repo, head) = (repo_key(dir)?, git(dir, &["rev-parse", "HEAD"])?);
         let from = git(dir, &["merge-base", "HEAD", base])?;
-        let files: Vec<String> = change_set(dir, &from, false)?
+        let top = top(dir)?;
+        let files: Vec<String> = change_set(&top, &from, Side::WorkTree)?
             .into_keys()
             .filter(|f| !Path::new(f).components().any(|c| c.as_os_str() == "tests"))
-            .filter(|f| dir.join(f).is_file())
+            .filter(|f| top.join(f).is_file())
             .collect();
         ensure!(
             !files.is_empty(),
@@ -663,7 +936,7 @@ impl Dossiers {
                 tail.into_iter().rev().collect::<Vec<_>>().join("\n")
             );
         }
-        let mutants = tool_mutants(&results)?;
+        let (mutants, unknown) = tool_mutants(&results, &worktree_tests(&top)?)?;
         let mut missed = Vec::new();
         for m in &mutants {
             if m.killed_by.is_empty() {
@@ -678,6 +951,7 @@ impl Dossiers {
             missed.len()
         )];
         lines.extend(missed);
+        lines.extend(unknown);
         Ok(lines)
     }
 
@@ -689,7 +963,7 @@ impl Dossiers {
         let repo = repo_key(dir)?;
         let mutants = self.mutants(&repo)?;
         let mut stmt = self.db().prepare(
-            "SELECT test, file, result, ref, MAX(ts) FROM test_runs WHERE repo = ?1 GROUP BY test ORDER BY file, test",
+            "SELECT test, file, result, ref, MAX(ts) FROM test_runs WHERE repo = ?1 GROUP BY file, test ORDER BY file, test",
         )?;
         let rows = stmt.query_map([&repo], |r| {
             Ok(TestRow {
@@ -705,7 +979,7 @@ impl Dossiers {
         for row in &mut rows {
             let kills = mutants
                 .iter()
-                .filter(|m| m.killed_by.contains(&row.name))
+                .filter(|m| m.killed_by.iter().any(|k| k.test == row.name))
                 .count();
             row.kills = u32::try_from(kills).unwrap_or(u32::MAX);
         }
@@ -739,9 +1013,13 @@ impl Dossiers {
             mutants: self
                 .mutants(&repo)?
                 .into_iter()
-                .filter(|m| m.killed_by.iter().any(|k| names(k, name)))
+                .filter(|m| m.killed_by.iter().any(|k| names(&k.test, name)))
                 .collect(),
-            accepts: self.accepts(&repo, name)?,
+            accepts: self
+                .accepts(&repo)?
+                .into_iter()
+                .filter(|a| names(&a.test, name))
+                .collect(),
         };
         for run in runs {
             let (test, run) = run?;

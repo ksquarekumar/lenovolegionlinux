@@ -1,0 +1,43 @@
+use fx::double;
+
+#[test] fn one_line() { assert_eq!(double(1), 2); }
+
+#[rstest]
+fn rs_test() {
+    assert!(double(2) == 4);
+}
+
+#[test_case(3)]
+fn case(x: i32) {
+    debug_assert_eq!(double(x), 6);
+}
+
+#[tokio::test]
+async fn tokio_form() {
+    assert_ne!(double(0), 1);
+}
+
+#[sqlx::test]
+async fn sqlx_form() {
+    let _ = double(0).checked_div(0).ok_or(()).unwrap_err();
+}
+
+#[test] // a comment after the attribute
+fn commented() {
+    // assert!(double(1) == 2);
+    let text = "assert_eq!(1, 1)";
+    my_assert!(text.is_empty());
+}
+#[test]
+#[should_panic]
+fn panics() {
+    double(i32::MAX);
+}
+
+mod inner {
+    #[test]
+    fn nested() {
+        let open = "}";
+        assert!(!open.is_empty());
+    }
+}

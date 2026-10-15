@@ -2291,7 +2291,31 @@
                 "description": "None: the mutant survived.",
                 "type": "array",
                 "items": {
-                  "type": "string"
+                  "description": "A test that failed with a mutation, as it was then: it counts while the test has the same token hash.",
+                  "type": "object",
+                  "properties": {
+                    "test": {
+                      "description": "libtest's name: the module path and the function name.",
+                      "type": "string"
+                    },
+                    "file": {
+                      "description": "The test's file; none: recorded before the kills had keys (it does not count).",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "hash": {
+                      "description": "The hash of the test function's tokens; none: recorded before the kills had keys.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "test"
+                  ]
                 }
               },
               "source": {
@@ -2324,6 +2348,22 @@
             "description": "A test that the gate let through without evidence.",
             "type": "object",
             "properties": {
+              "test": {
+                "description": "libtest's name, file and token hash of the test: the accept counts while the test has the same hash.",
+                "type": "string"
+              },
+              "file": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "hash": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "reason": {
                 "type": "string"
               },
@@ -2336,6 +2376,7 @@
               }
             },
             "required": [
+              "test",
               "reason",
               "session",
               "accepted_at"
@@ -2364,6 +2405,16 @@
           "type": "boolean",
           "description": "Review the index (what `git commit` takes), not the working tree.",
           "default": false
+        },
+        "index": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "path",
+          "description": "With `--staged`: the index file of a running `git commit` (`commit -a` and `commit <path>` use a file of their\nown). The client fills it from its `GIT_INDEX_FILE`, which git sets for the pre-commit hook.",
+          "default": null,
+          "x-env": "GIT_INDEX_FILE"
         },
         "repo": {
           "type": "string",

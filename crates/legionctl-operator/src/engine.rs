@@ -35,6 +35,7 @@ use legionctl_api::{
     MutantRecordIn, TestDetail, TestReview, TestReviewIn, TestRow, TestShowIn, TestsRunIn,
 };
 use legionctl_core::cache::Cache;
+use legionctl_core::codetests::Side;
 use legionctl_core::config::{Dirs, Resolved, resolve};
 
 use crate::rules;
@@ -1356,9 +1357,8 @@ impl Operator {
                             .and_then(|r| pack_job(&job.input, &r.config.session));
                         end_job(&db, job.id, &out)
                     }
-                    crate::code::REFRESH => {
-                        end_job(&db, job.id, &crate::code::run_refresh(&job.input))
-                    }
+                    crate::code::REFRESH => crate::code::queue(job.id, job.input.clone())
+                        .or_else(|e| end_job(&db, job.id, &Err::<Lines, _>(e))),
                     other => db.job_end(job.id, &Err(format!("no way to resume a {other} job"))),
                 };
                 if let Err(e) = outcome {
@@ -1814,14 +1814,28 @@ impl Engine for Operator {
         let ws = store.workspace_of(session, input.repo.get()?, input.topic.as_deref())?;
         if let Some(test) = &input.accept_test {
             let reason = input.reason.as_deref().unwrap_or_default();
-            store.accept_test(&ws.path, test, reason, session)?;
+            let accepted = store.accept_test(&ws.path, test, reason, session)?;
             Db::open_default()?.record(
                 &ctx.actor,
                 "code.tests.accept",
-                &serde_json::json!({"test": test, "reason": reason, "workspace": ws.path, "session": session}),
+                &serde_json::json!({"test": test, "accepted": accepted, "reason": reason, "workspace": ws.path, "session": session}),
             )?;
         }
         let line = store.checkpoint(&ws, &input.message)?;
+        // the commit's patch id links it to this checkpoint, also after `workspace merge` rebased it; a folder
+        // workspace has no commits
+        let patch = if ws.is_folder() {
+            None
+        } else {
+            legionctl_core::codegraph::patch_ids(&ws.path, "HEAD^!")?.pop()
+        };
+        if let Some(patch) = patch {
+            Db::open_default()?.record(
+                &ctx.actor,
+                legionctl_core::codegraph::COMMIT_EVENT,
+                &serde_json::json!({"patch_id": patch.0, "commit": patch.1, "session": session, "workspace": ws.path}),
+            )?;
+        }
         crate::code::trigger(&ws.path);
         Ok(Lines { lines: vec![line] })
     }
@@ -1855,8 +1869,13 @@ impl Engine for Operator {
     }
 
     fn code_tests_review(&self, _: &Ctx, input: TestReviewIn) -> Result<TestReview> {
+        let side = if input.staged {
+            Side::Index(input.index.as_ref().map(ClientPath::get).transpose()?)
+        } else {
+            Side::WorkTree
+        };
         Ok(dossiers()?
-            .review_tests(input.repo.get()?, input.staged)?
+            .review_tests(input.repo.get()?, side)?
             .into_wire())
     }
 
@@ -1867,7 +1886,7 @@ impl Engine for Operator {
                 &input.file,
                 input.line,
                 &input.description,
-                input.killed_by,
+                &input.killed_by,
             )?],
         })
     }

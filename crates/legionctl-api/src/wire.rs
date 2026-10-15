@@ -567,13 +567,23 @@ wire! {
         base: String,
     }
 
+    /// A test that failed with a mutation, as it was then: it counts while the test has the same token hash.
+    struct TestKill from core::codetests::Kill {
+        /// libtest's name: the module path and the function name.
+        test: String,
+        /// The test's file; none: recorded before the kills had keys (it does not count).
+        file: Option<String>,
+        /// The hash of the test function's tokens; none: recorded before the kills had keys.
+        hash: Option<String>,
+    }
+
     /// One mutation and the tests that failed with it.
     struct Mutant from core::codetests::Mutant {
         file: String,
         line: u32,
         description: String,
         /// None: the mutant survived.
-        killed_by: Vec<String>,
+        killed_by: Vec<TestKill>,
         /// `tool` (cargo-mutants) or `agent` (a hand-made mutation).
         source: String,
         /// HEAD when it was recorded.
@@ -594,6 +604,10 @@ wire! {
 
     /// A test that the gate let through without evidence.
     struct TestAccept from core::codetests::Accept {
+        /// libtest's name, file and token hash of the test: the accept counts while the test has the same hash.
+        test: String,
+        file: Option<String>,
+        hash: Option<String>,
         reason: String,
         session: String,
         accepted_at: i64 = at,

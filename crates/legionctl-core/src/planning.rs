@@ -301,13 +301,13 @@ fn reached(found: &Found, change: Change) -> bool {
     found.present != (change == Change::Remove)
 }
 
-/// Whether a recorded run (its file relative to its crate, its libtest name) is of the test `test:<file>::<fn>`.
+/// Whether a recorded run (the source of its test binary relative to the repository, its libtest name) is of the
+/// test `test:<file>::<fn>`.
 fn ran(run: &TestRow, key: &str) -> bool {
     key.strip_prefix("test:")
         .and_then(|k| k.rsplit_once("::"))
         .is_some_and(|(file, name)| {
-            (file == run.file || file.ends_with(&format!("/{}", run.file)))
-                && (run.name == name || run.name.ends_with(&format!("::{name}")))
+            file == run.file && (run.name == name || run.name.ends_with(&format!("::{name}")))
         })
 }
 

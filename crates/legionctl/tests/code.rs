@@ -526,6 +526,7 @@ fn changes_between_refs_are_the_changed_entities_by_stable_key_with_their_commit
         );
     }
     assert_eq!(commits[1]["plan_rows"], serde_json::json!(["todo-90"]));
+    each_commit_links_its_own_checkpoint_also_after_a_rebase(&lab, &ws);
 
     // the same symbol, other byte offsets, one key
     let node = |rev: &str| {
@@ -669,6 +670,112 @@ fn the_change_text_is_one_line_per_file_with_counts_and_schema_keys_folded() {
         !text.contains("schema.json") && text.contains("rust:.:zero"),
         "{text}"
     );
+}
+
+/// Two checkpoints with one message and a plain `git commit` with it: each checkpoint's commit links its own
+/// checkpoint event, the plain commit none; a rebase onto a moved base keeps the links (the patch id).
+fn each_commit_links_its_own_checkpoint_also_after_a_rebase(lab: &Lab, ws: &Path) {
+    for (i, by) in ["checkpoint", "checkpoint", "git"].iter().enumerate() {
+        write(&ws.join(format!("wip{i}.txt")), "w");
+        if *by == "checkpoint" {
+            lab.ok(ws, &["workspace", "checkpoint", "wip"]);
+        } else {
+            lab.git(ws, &["add", "."]);
+            lab.git(ws, &["commit", "--quiet", "-m", "wip"]);
+        }
+    }
+    write(&lab.repo.join("base.txt"), "moved");
+    lab.git(&lab.repo, &["add", "base.txt"]);
+    lab.git(&lab.repo, &["commit", "--quiet", "-m", "base moves"]);
+    lab.git(ws, &["rebase", "--quiet", "main"]);
+    let sets = lab.json(ws, &["code", "graph", "changes", "main", "HEAD", "--build"]);
+    let links: Vec<(String, Option<i64>)> = sets[0]["commits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["subject"].as_str().unwrap().to_string(),
+                c["checkpoint"].as_i64(),
+            )
+        })
+        .collect();
+    // the oldest: the workspace's own ignore line, a plain commit
+    let [(_, git), (_, second), (_, first), (_, b), (_, m), (_, None)] = &links[..] else {
+        panic!("{links:?}");
+    };
+    assert_eq!(*git, None, "{links:?}");
+    assert!(
+        [second, first, b, m].iter().all(|l| l.is_some()) && second > first && first > b && b > m,
+        "each checkpoint its own event: {links:?}"
+    );
+}
+
+/// A burst of background refreshes (a rebase runs the hooks once per commit) of two refs: one build at a time in the
+/// repository, each tree built once, a waiting request of the same checkout and ref replaced by the newer one, and no
+/// job fails.
+#[test]
+fn a_burst_of_background_refreshes_builds_one_at_a_time_and_each_tree_once() {
+    let home =
+        Path::new("/var/tmp").join(format!("legionctl-code-burstctx-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let (ctx, log) = (home.join("ctx"), home.join("builds"));
+    write(
+        &ctx,
+        &format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *'graph index'*) echo + >> {log}; sleep 1; {standin} \"$@\"; s=$?; echo - >> {log}; exit $s;;\n  *) exec {standin} \"$@\";;\nesac\n",
+            log = log.display(),
+            standin = standin().display()
+        ),
+    );
+    std::fs::set_permissions(&ctx, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let lab = Lab::new("burst", &ctx);
+    let repo = lab.repo.clone();
+    let mut commits = Vec::new();
+    for name in ["one", "two"] {
+        write(&repo.join(format!("{name}.txt")), name);
+        lab.git(&repo, &["add", "."]);
+        lab.git(&repo, &["commit", "--quiet", "-m", name]);
+        commits.push(lab.git(&repo, &["rev-parse", "HEAD"]));
+    }
+    for _ in 0..4 {
+        for c in &commits {
+            lab.ok(
+                &repo,
+                &["code", "graph", "refresh", "--background", "--ref", c],
+            );
+        }
+    }
+    let jobs = || -> Vec<Value> {
+        lab.json(&repo, &["jobs", "list"])["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|j| j["kind"] == "code.graph.refresh")
+            .cloned()
+            .collect()
+    };
+    wait_for("the refresh jobs", || {
+        let all = jobs();
+        all.len() == 8 && all.iter().all(|j| j["state"] != "running")
+    });
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap(),
+        "+\n-\n+\n-\n",
+        "two builds, one after the other"
+    );
+    let all = jobs();
+    assert!(all.iter().all(|j| j["state"] == "done"), "{all:#?}");
+    let replaced = all
+        .iter()
+        .filter(|j| j["result"].to_string().contains("replaced by job"))
+        .count();
+    assert!(replaced >= 4, "{all:#?}");
+    for c in &commits {
+        assert!(lab.graph(&lab.tree(&repo, c)).exists());
+    }
+    drop(lab);
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 /// Annotations follow their symbol: valid where its content is the same (also with other byte offsets), stale after a
@@ -1039,13 +1146,25 @@ fn triple(lab: &Lab, ws: &Path) {
     lab.ok(ws, &["workspace", "checkpoint", "triple"]);
 }
 
-/// A recorded run where triples failed keeps W2 open; adds passed and has the kill recorded before its checkpoint.
+/// A recorded run where triples failed keeps W2 open; adds passed and has the kill recorded before its checkpoint; a
+/// failed `adds` of another crate's `tests/e2e.rs` is not this plan's test.
 fn a_failed_run_keeps_its_item_open(lab: &Lab, ws: &Path) {
     let cargo = lab.home.join(".cargo/bin/cargo");
+    let artifact = |src: &str, exe: &str| {
+        serde_json::json!({"reason": "compiler-artifact", "target": {"src_path": ws.join(src)},
+            "executable": format!("/build/target/release/deps/{exe}")})
+        .to_string()
+    };
     write(
         &cargo,
-        "#!/bin/sh\necho '     Running tests/e2e.rs (target/release/deps/e2e-1)' >&2\necho 'test adds ... ok'\n\
-         echo 'test triples ... FAILED'\nexit 101\n",
+        &format!(
+            "#!/bin/sh\necho '{}'\necho '{}'\n\
+             echo '     Running tests/e2e.rs (target/release/deps/e2e-1)' >&2\necho 'test adds ... ok'\n\
+             echo 'test triples ... FAILED'\n\
+             echo '     Running tests/e2e.rs (target/release/deps/e2e-2)' >&2\necho 'test adds ... FAILED'\nexit 101\n",
+            artifact("tests/e2e.rs", "e2e-1"),
+            artifact("other/tests/e2e.rs", "e2e-2"),
+        ),
     );
     std::fs::set_permissions(&cargo, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     lab.ok(ws, &["code", "tests", "run"]);

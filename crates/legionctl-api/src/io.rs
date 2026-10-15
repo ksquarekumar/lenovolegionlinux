@@ -150,6 +150,11 @@ pub struct TestReviewIn {
     /// Review the index (what `git commit` takes), not the working tree.
     #[serde(default)]
     pub staged: bool,
+    /// With `--staged`: the index file of a running `git commit` (`commit -a` and `commit <path>` use a file of their
+    /// own). The client fills it from its `GIT_INDEX_FILE`, which git sets for the pre-commit hook.
+    #[serde(default)]
+    #[schemars(extend("x-env" = "GIT_INDEX_FILE"))]
+    pub index: Option<ClientPath>,
     /// A folder in the repository or workspace.
     #[serde(default = "here")]
     pub repo: ClientPath,
