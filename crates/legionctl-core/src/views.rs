@@ -637,6 +637,32 @@ impl View {
     pub fn title(&self) -> String {
         self.title.clone().unwrap_or_else(|| self.name.clone())
     }
+
+    /// The navigator's space: its own, else the space of its first source's group (code, plan, dossier and
+    /// workspace: work; agents, sessions, threads, the catalog, views and facts: agents; the rest: machine).
+    #[must_use]
+    pub fn space(&self) -> String {
+        if let Some(space) = &self.space {
+            return space.clone();
+        }
+        let op = self.source.as_ref().map(|s| s.op.clone()).or_else(|| {
+            self.views.iter().find_map(|p| match p {
+                Part::Inline(v) => v.source.as_ref().map(|s| s.op.clone()),
+                Part::Placed(_) => None,
+            })
+        });
+        let group = op
+            .as_deref()
+            .and_then(|o| o.split('.').next())
+            .unwrap_or("");
+        match group {
+            "code" | "plan" | "dossier" | "workspace" => "work",
+            "agents" | "session" | "thread" | "ops" | "views" | "facts" | "skills" | "hooks"
+            | "tools" => "agents",
+            _ => "machine",
+        }
+        .into()
+    }
 }
 
 /// The view folders, highest layer first: the repository's (when `repo` is in one), then the user's.
@@ -945,12 +971,15 @@ fn shown(value: &Value, format: Option<&str>) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
     match (format, value) {
-        (_, Value::Null) => "–".into(),
+        // an empty value says what it is, never a bare dash
+        (_, Value::Null) => "no value".into(),
         (Some("ago"), v) => v.as_i64().map_or_else(|| cell(v), |at| ago(now - at)),
         (Some("time"), v) => v.as_i64().map_or_else(|| cell(v), utc),
         (Some("int"), v) => v.as_f64().map_or_else(|| cell(v), |n| format!("{n:.0}")),
         (Some("1dp"), v) => v.as_f64().map_or_else(|| cell(v), |n| format!("{n:.1}")),
         (Some("count"), Value::Array(items)) => items.len().to_string(),
+        (_, Value::Array(items)) if items.is_empty() => "none".into(),
+        (_, Value::String(text)) if text.is_empty() => "none".into(),
         (Some("join"), Value::Array(items)) => {
             items.iter().map(cell).collect::<Vec<_>>().join(" / ")
         }
@@ -1216,6 +1245,28 @@ impl Rendered {
         }
         if let Some(group) = &view.group {
             self.group(group, items);
+            // a table grouped by a column whose cells only say their group: the group's head says it, not each row
+            let column = group
+                .field
+                .as_ref()
+                .filter(|_| view.widget == Widget::Table)
+                .and_then(|f| view.columns.iter().position(|c| c == f))
+                .filter(|k| {
+                    group.rules.is_empty()
+                        || self
+                            .rows
+                            .iter()
+                            .zip(&self.groups)
+                            .all(|(r, g)| r[*k].eq_ignore_ascii_case(g))
+                });
+            if let Some(k) = column {
+                self.columns.remove(k);
+                for cells in self.rows.iter_mut().chain(self.marks.iter_mut()) {
+                    if k < cells.len() {
+                        cells.remove(k);
+                    }
+                }
+            }
         }
     }
 

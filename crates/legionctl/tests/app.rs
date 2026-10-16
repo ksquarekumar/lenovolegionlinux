@@ -694,8 +694,8 @@ fn an_intent_opens_a_stored_view_with_no_model_and_a_new_one_gets_the_composers_
 }
 
 /// `/change <words>` (DESIGN-09 G5): the composer's answer is the next version of the tab's view (version 2, the same
-/// name); Undo goes back to version 1. A composed view that fails its check is shown as an error with its reason, and
-/// nothing is saved.
+/// name); Undo goes back to version 1. A composed view that fails its check, or has a part with no title, is shown as an
+/// error with its reason, and nothing is saved. A composed view's space follows its source, not the model's word.
 #[gpui_kit::test]
 fn a_change_is_the_next_version_of_the_tabs_view_and_a_bad_view_shows_its_error(
     cx: &mut TestAppContext,
@@ -713,6 +713,18 @@ fn a_change_is_the_next_version_of_the_tabs_view_and_a_bad_view_shows_its_error(
     write(
         &views.join("bad.jsonc"),
         r#"{"name": "x", "widget": "piechart", "source": {"op": "sensors"}}"#,
+    );
+    // a part without a title would show its id as the card's heading
+    write(
+        &views.join("untitled.jsonc"),
+        r#"{"name": "y", "title": "Heat", "widget": "stack", "views": [
+            {"name": "temp-stat", "widget": "table", "source": {"op": "sensors"}, "columns": ["name"]}]}"#,
+    );
+    // the model says machine; the source is the code graph, so the view is Work's
+    write(
+        &views.join("what.jsonc"),
+        r#"{"name": "branch-changes", "title": "Branch changes", "space": "machine", "widget": "table",
+            "source": {"op": "code.graph.changes", "input": {"base": "main"}}, "columns": ["key"]}"#,
     );
     let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
     let cx = &mut vcx;
@@ -764,6 +776,24 @@ fn a_change_is_the_next_version_of_the_tabs_view_and_a_bad_view_shows_its_error(
         let said = a.state.message.clone().unwrap();
         assert!(said.contains("piechart"), "{said}");
         assert_eq!(a.screen.view().unwrap().versions, [1, 2], "nothing saved");
+    });
+    say(cx, "/change untitled part");
+    wait(cx, &app, "the title's error", |a| {
+        a.state.message.as_deref().is_some_and(|m| {
+            m.contains("each view and each part needs a title in the user's words: temp-stat")
+        })
+    });
+    app.read_with(cx, |a, _| {
+        assert_eq!(a.screen.view().unwrap().versions, [1, 2], "nothing saved");
+    });
+
+    say(cx, "what changed on this branch");
+    wait(cx, &app, "the composed code view in the list", |a| {
+        a.screen.views.iter().any(|v| v.name == "branch-changes")
+    });
+    app.read_with(cx, |a, _| {
+        let listed = a.screen.views.iter().find(|v| v.name == "branch-changes");
+        assert_eq!(listed.and_then(|v| v.space.as_deref()), Some("work"));
     });
     drop(runtime);
 }

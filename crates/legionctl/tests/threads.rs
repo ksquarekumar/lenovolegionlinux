@@ -1106,14 +1106,58 @@ fn a_timeline_and_a_form_view_render_their_terminal_form() {
     // a list of one object: a row per column, "field: value" (a model's view of status or load reads one object)
     let info = r#"{"name": "info", "params": {"thread": "integer"}, "widget": "list",
         "source": {"op": "thread.show", "input": {"thread": "{thread}"}, "path": "$.thread"},
-        "columns": ["title", "state"], "labels": {"title": "Task"}}"#;
+        "columns": ["title", "state", "account"], "labels": {"title": "Task"}}"#;
     assert!(save(info).status.success());
     let text = lab.ok("main", &lab.repo, &["views", "render", "info", "thread=1"]);
     assert_eq!(
         text.lines().skip(1).collect::<Vec<_>>(),
-        ["2 rows", "Task: port the parser", "state: open"],
+        [
+            "3 rows",
+            "Task: port the parser",
+            "state: open",
+            "account: no value"
+        ],
         "{text}"
     );
+    // an empty value says what it is, never a bare dash
+    let empty = r#"{"name": "rules", "params": {"thread": "integer"}, "widget": "list",
+        "source": {"op": "thread.show", "input": {"thread": "{thread}"}}, "columns": ["rules"]}"#;
+    assert!(save(empty).status.success());
+    let text = lab.ok("main", &lab.repo, &["views", "render", "rules", "thread=1"]);
+    assert_eq!(text.lines().last(), Some("rules: none"), "{text}");
+    // a table grouped by a column: the group's head says it, the rows do not repeat it
+    let grouped = r#"{"name": "by-member", "params": {"thread": "integer"}, "widget": "table",
+        "source": {"op": "thread.show", "input": {"thread": "{thread}"}, "path": "$.log"},
+        "columns": ["member", "kind"], "group": {"field": "member"}}"#;
+    assert!(save(grouped).status.success());
+    let data = lab.json("main", &["views", "render", "by-member", "thread=1"]);
+    assert_eq!(data["columns"], json!(["kind"]), "{data}");
+    assert_eq!(
+        data["groups"],
+        json!(["main0", "main0", "observer0"]),
+        "{data}"
+    );
+    assert_eq!(data["rows"][2], json!(["thread.join"]), "{data}");
+    // with rules: dropped only while each cell says its group (the live branch-changes view), kept when a rule
+    // puts other values under one head
+    for (rules, columns) in [
+        (
+            r#"[{"group": "main0", "prefix": "main"}, {"group": "observer0", "prefix": "obs"}]"#,
+            json!(["kind"]),
+        ),
+        (
+            r#"[{"group": "main0", "prefix": "main"}], "rest": "others""#,
+            json!(["member", "kind"]),
+        ),
+    ] {
+        let ruled = grouped.replace(
+            r#"{"field": "member"}"#,
+            &format!(r#"{{"field": "member", "rules": {rules}}}"#),
+        );
+        assert!(save(&ruled).status.success());
+        let data = lab.json("main", &["views", "render", "by-member", "thread=1"]);
+        assert_eq!(data["columns"], columns, "{rules}: {data}");
+    }
     // a model's jq habits are refused at save with what a path is, not read as no data at render
     let refused = save(&info.replace("$.thread", "$.log[] | .member"));
     assert!(

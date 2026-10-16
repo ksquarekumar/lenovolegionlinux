@@ -454,8 +454,8 @@ fn framed(data: &ViewData, top: bool, t: &Tokens, body: AnyElement) -> AnyElemen
 /// The width of a table's buttons column: the same on each row, so that the cells line up (U7).
 const BUTTONS: f32 = 240.;
 
-/// One row of cells: the first wider, the rest even; in a table a long value truncates and its tooltip has it whole
-/// (U12); a list's row wraps.
+/// One row of cells: the first wider, the rest even; in a table a long value truncates (a path in its middle) and its
+/// tooltip has it whole (U12); a list's row wraps.
 fn row(base: Div, id: &str, cells: &[String], marks: &[String], wrap: bool, t: &Tokens) -> Div {
     base.h_flex()
         .items_center()
@@ -468,6 +468,8 @@ fn row(base: Div, id: &str, cells: &[String], marks: &[String], wrap: bool, t: &
         .children(cells.iter().enumerate().map(|(i, c)| {
             let color = marks.get(i).filter(|m| !m.is_empty()).map(|m| mark(m, t));
             let whole = c.clone();
+            // a path keeps its file name in sight: the cut is in the middle
+            let path = c.contains('/') && !c.contains(' ');
             div()
                 .id(SharedString::from(format!("{id}-cell-{i}")))
                 .when(i == 0, |d| d.flex_grow(2.).flex_basis(px(0.)))
@@ -475,6 +477,7 @@ fn row(base: Div, id: &str, cells: &[String], marks: &[String], wrap: bool, t: &
                 .min_w_0()
                 .when(!wrap, |d| {
                     d.truncate()
+                        .when(path, Styled::text_ellipsis_middle)
                         .tooltip(move |window, cx| Tooltip::new(whole.clone()).build(window, cx))
                 })
                 .when_some(color, Styled::text_color)

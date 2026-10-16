@@ -970,8 +970,8 @@ pub struct SessionRunIn {
     /// The run fails when the agent cannot load sessions.
     #[serde(default)]
     pub acp: Option<String>,
-    /// The agent's model for this run (ACP `session/set_model`: `haiku`, `gpt-6-luna`); the run fails when the
-    /// agent does not take it.
+    /// The agent's model for this run (ACP `session/set_model`: `haiku`); none: the account's default; the run
+    /// fails when the agent does not take it.
     #[serde(default)]
     pub model: Option<String>,
 }

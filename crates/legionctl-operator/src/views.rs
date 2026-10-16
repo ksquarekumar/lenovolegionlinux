@@ -131,8 +131,8 @@ pub fn list(input: &ViewsListIn) -> Result<Vec<ViewInfo>> {
                 Ok(v) => (
                     Some(v.widget.into_wire()),
                     Some(v.title()),
-                    v.intent,
-                    v.space,
+                    v.intent.clone(),
+                    Some(v.space()),
                     None,
                 ),
                 Err(e) => (None, None, None, None, Some(format!("{e:#}"))),
@@ -774,7 +774,8 @@ fn composer_prompt(
          that legionctl draws in its app, TUI and CLI. Answer with one short sentence for the user, then the view as \
          one ```json block. Use only the widgets and fields below; a source is a read operation of the list; a \
          button may name an operation of either list (it runs with its own approval). Keep the view small: the \
-         point first, the detail on demand."
+         point first, the detail on demand. The view and each part have a title in the user's words (a card's \
+         heading; a name is an id). A table's first column names the row (its name, key or id)."
             .to_string(),
         format!("Intent: {intent}"),
     ];
@@ -804,7 +805,7 @@ fn composer_prompt(
             "- {}({}) -> {}: {}",
             op.name,
             fields.join(", "),
-            shape(&output, &output, 1),
+            shape(&output, &output, 2),
             op.summary()
         )
     }));
@@ -854,6 +855,27 @@ fn resolve_paths(op: &legionctl_api::OpInfo, input: &mut Value, repo: &Path) {
             }
         }
     }
+}
+
+/// A composed view has a title, and so has each part of a stack: a card's heading is words, not an id.
+fn titled(view: View) -> Result<View> {
+    let mut untitled: Vec<&str> = view
+        .views
+        .iter()
+        .filter_map(|p| match p {
+            Part::Inline(v) if v.title.is_none() => Some(v.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    if view.title.is_none() {
+        untitled.insert(0, &view.name);
+    }
+    ensure!(
+        untitled.is_empty(),
+        "each view and each part needs a title in the user's words: {}",
+        untitled.join(", ")
+    );
+    Ok(view)
 }
 
 /// The answer's words, and the spec of its last fenced `json` block.
@@ -915,6 +937,8 @@ fn keep(
         None => (unique(&view.name, repo), None),
     };
     view.name.clone_from(&name);
+    // its space follows its sources (View::space), not the model's word
+    view.space = None;
     if view.intent.is_none() && current.is_none() {
         view.intent = Some(intent.to_string());
     }
@@ -1081,7 +1105,7 @@ pub fn ask(
     let Some(spec) = spec else {
         return Ok(answer);
     };
-    let mut view = match parsed(&spec, Some(repo)) {
+    let mut view = match parsed(&spec, Some(repo)).and_then(titled) {
         Ok(v) => v,
         Err(e) => {
             answer.error = Some(format!("{e:#}"));
