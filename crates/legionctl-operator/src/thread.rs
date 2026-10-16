@@ -190,14 +190,48 @@ pub fn wake_due() {
     }
 }
 
-/// One wake of an operator member: its session (made at its first wake), one ACP prompt with its instructions and
-/// the events since its cursor, within its budget. Returns true when it must wake again now (a failed wake within
-/// the restart limit).
+/// One wake of an operator member, through its route (todo-138; none: `acp`): each configured step in order. An
+/// rlcd step that escalates gives the next step its brief; an rlcd step that ignores, notes or fails ends the wake
+/// (a failed step is reported, and the next step does not run in its place). Returns true when it must wake again
+/// now.
 fn wake(thread: i64, member: &str) -> Result<bool> {
     let store = dossiers()?;
     let Some(w) = store.wake_begin(thread, member)? else {
         return Ok(false);
     };
+    let runtime = RUNTIME
+        .get()
+        .context("the operator has no runtime for wakes")?;
+    let route: Vec<String> = match w.fields.get("route") {
+        Some(route) => serde_json::from_value(route.clone()).context("the member's route")?,
+        None => vec!["acp".into()],
+    };
+    let mut escalated = None;
+    for (i, step) in route.iter().enumerate() {
+        match step.as_str() {
+            "rlcd" if w.fields.get("rlcd").is_none() => {}
+            "rlcd" => match crate::rlcd::observe(runtime, &store, &w, i + 1 < route.len())? {
+                crate::rlcd::Step::Ended { again } => return Ok(again),
+                crate::rlcd::Step::Escalate { decision, brief } => {
+                    escalated = Some((decision, brief));
+                }
+            },
+            "acp" => return acp_wake(&store, &w, escalated.as_ref()),
+            other => anyhow::bail!("route step {other} is not rlcd or acp"),
+        }
+    }
+    anyhow::bail!("the route {route:?} has no configured step")
+}
+
+/// The acp step of a wake: the member's session (made at its first wake), one ACP prompt with its instructions, the
+/// rlcd brief of an escalate, and the events since its cursor, within its budget. The answer is the outcome of the
+/// escalating decision. Returns true when it must wake again now (a failed wake within the restart limit).
+fn acp_wake(
+    store: &legionctl_core::dossier::Dossiers,
+    w: &legionctl_core::pool::Wake,
+    escalated: Option<&(i64, String)>,
+) -> Result<bool> {
+    let (thread, member) = (w.thread, w.member.as_str());
     let name = format!("{thread}/{member}");
     // from here each error ends the wake through wake_end: the restart limit applies, and the request does not stay due
     let started = resolve(&Dirs::from_env(), Some(&w.workdir)).and_then(|resolved| {
@@ -220,7 +254,7 @@ fn wake(thread: i64, member: &str) -> Result<bool> {
                     &resolved.config,
                 )
                 .and_then(|launch| {
-                    store.member_session(&w, &launch.id)?;
+                    store.member_session(w, &launch.id)?;
                     Ok(launch)
                 }),
             Some(id) => store.resume_session(id, &resolved.config, None, &token, true),
@@ -235,7 +269,10 @@ fn wake(thread: i64, member: &str) -> Result<bool> {
             serde_json::from_value(w.fields["instructions"].clone()).unwrap_or_default();
         let instructions = Sources::resolve(&Dirs::from_env(), Some(&w.workdir))?
             .instructions(w.archetype.as_str(), &extra)?;
-        let prompt = format!("{instructions}\n\n{}", w.prompt);
+        let prompt = match escalated {
+            Some((_, brief)) => format!("{instructions}\n\n{brief}\n\n{}", w.prompt),
+            None => format!("{instructions}\n\n{}", w.prompt),
+        };
         let input = serde_json::json!({"thread": thread, "member": member, "session": launch.id,
             "tag": format!("thread-{name}"), "acp": w.acp, "load": false});
         let job = db.job_begin(WAKE, &input)?;
@@ -253,7 +290,7 @@ fn wake(thread: i64, member: &str) -> Result<bool> {
             &prompt,
             (job, &input),
             (stop, budget),
-            &store,
+            store,
         ));
         end_job(
             &db,
@@ -265,7 +302,14 @@ fn wake(thread: i64, member: &str) -> Result<bool> {
         legionctl_core::session::drop_overlay(&id)?;
         Ok(out.map(|(o, over)| (o, over, tokens(&prompt))))
     });
-    let end = match ran.and_then(|r| r) {
+    let ran = ran.and_then(|r| r);
+    let outcome = match &ran {
+        Ok((out, over, _)) => {
+            serde_json::json!({"ok": true, "over": over, "text": out.text.chars().take(2000).collect::<String>()})
+        }
+        Err(e) => serde_json::json!({"error": format!("{e:#}")}),
+    };
+    let end = match ran {
         Ok((out, over, asked)) => WakeEnd {
             tokens: asked + tokens(&out.text),
             ms: out.ms,
@@ -281,7 +325,11 @@ fn wake(thread: i64, member: &str) -> Result<bool> {
             acp: None,
         },
     };
-    store.wake_end(&w, &end)
+    let again = store.wake_end(w, &end)?;
+    if let Some((decision, _)) = escalated {
+        store.decision_acp(*decision, &outcome)?;
+    }
+    Ok(again)
 }
 
 pub fn list() -> Result<Vec<ThreadInfo>> {

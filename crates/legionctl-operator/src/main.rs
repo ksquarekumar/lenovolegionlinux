@@ -12,6 +12,7 @@ mod kernels;
 mod policy;
 mod recorder;
 mod resources;
+mod rlcd;
 mod rules;
 mod semantic;
 mod server;

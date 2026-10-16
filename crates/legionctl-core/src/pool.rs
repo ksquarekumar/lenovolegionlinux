@@ -119,15 +119,19 @@ pub struct TeamStart<'a> {
     pub members: Vec<NewMember<'a>>,
 }
 
-/// The cost of one member, summed over the thread.
+/// The cost of one member and kind, summed over the thread.
 pub struct Cost {
     pub member: String,
-    /// Wakes that ran (an operator member), or prompts that got thread context (the main agent).
+    /// wake (an ACP wake), rlcd (an rlcd step of a wake) or inject (the context its hooks gave the main agent).
+    pub kind: String,
+    /// Wakes or rlcd steps that ran, or prompts that got thread context.
     pub runs: u32,
     pub tokens: i64,
     pub ms: i64,
     /// Wakes stopped at their budget.
     pub over: u32,
+    /// Runs that failed.
+    pub failed: u32,
 }
 
 pub struct Effect {
@@ -162,6 +166,17 @@ pub struct Wake {
     more: bool,
     /// The prompt without the instruction text.
     pub prompt: String,
+}
+
+/// How the rlcd step of a wake ended (todo-138): its cost, its thread event (`thread.rlcd`), and whether the wake
+/// ends with it (ignore, note, a failure, or an escalate with no next step). A failed step clears the wake request:
+/// the member goes on (no restart, its blocks stay) and its events stay after the cursor.
+pub struct RlcdEnd {
+    pub tokens: u64,
+    pub ms: u64,
+    pub error: Option<String>,
+    pub event: Value,
+    pub ends: bool,
 }
 
 /// How a wake ended.
@@ -291,10 +306,10 @@ fn cost(
     tx: &Transaction,
     (thread, member): (i64, &str),
     kind: &str,
-    (tokens, ms, over): (u64, u64, Option<&str>),
+    (tokens, ms, over, error): (u64, u64, Option<&str>, Option<&str>),
 ) -> Result<()> {
     tx.execute(
-        "INSERT INTO costs (thread, member, ts, kind, tokens, ms, over) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO costs (thread, member, ts, kind, tokens, ms, over, error) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             thread,
             member,
@@ -302,7 +317,8 @@ fn cost(
             kind,
             i64::try_from(tokens)?,
             i64::try_from(ms)?,
-            over
+            over,
+            error
         ],
     )?;
     Ok(())
@@ -319,7 +335,7 @@ pub(crate) fn injected(
     let mut threads: Vec<(i64, &str)> = list.iter().map(|m| (m.thread, m.to.as_str())).collect();
     threads.dedup();
     for (thread, to) in threads {
-        cost(tx, (thread, to), "inject", (tokens(text), ms, None))?;
+        cost(tx, (thread, to), "inject", (tokens(text), ms, None, None))?;
     }
     Ok(())
 }
@@ -375,6 +391,29 @@ pub(crate) fn stop_at(tx: &Transaction, thread: i64, why: &str) -> Result<()> {
         "",
         "thread.stop",
         &json!({"why": why, "members": members}),
+    )?;
+    Ok(())
+}
+
+/// A wake saw its events: the cursor moves past them; the rows that did not fit wake it again now, for the same
+/// request (true), else the request is answered.
+fn seen(tx: &Transaction, w: &Wake) -> Result<bool> {
+    tx.execute(
+        "UPDATE members SET cursor = ?3 WHERE thread = ?1 AND name = ?2",
+        params![w.thread, w.member, w.to],
+    )?;
+    if w.more {
+        return Ok(true);
+    }
+    answered(tx, w)?;
+    Ok(false)
+}
+
+/// The wake request is answered; a trigger during the wake keeps its own request.
+fn answered(tx: &Transaction, w: &Wake) -> Result<()> {
+    tx.execute(
+        "UPDATE members SET due = NULL WHERE thread = ?1 AND name = ?2 AND due = ?3",
+        params![w.thread, w.member, w.due],
     )?;
     Ok(())
 }
@@ -609,13 +648,15 @@ impl Dossiers {
         Ok(())
     }
 
-    /// Why `gate` of `thread` does not pass: one line per open item.
+    /// Why `gate` of `thread` does not pass: one line per open item. The result is the outcome of the thread's rlcd
+    /// decisions that have none yet (todo-138).
     ///
     /// # Errors
-    /// The database read fails.
+    /// The database fails.
     pub fn gate_failures(&self, thread: i64, gate: &str) -> Result<Vec<String>> {
         let flow = flow_of(self.db(), thread)?;
         let mut out = Vec::new();
+        let gated = flow.gates.contains_key(gate);
         for text in flow.gates.get(gate).into_iter().flatten() {
             match condition(text)? {
                 Condition::NoHardBlock(member) => {
@@ -658,6 +699,9 @@ impl Dossiers {
                     }
                 }
             }
+        }
+        if gated {
+            crate::rlcd::gate_outcome(self.db(), thread, gate, &out)?;
         }
         Ok(out)
     }
@@ -843,7 +887,7 @@ impl Dossiers {
             &tx,
             (w.thread, &w.member),
             "wake",
-            (end.tokens, end.ms, end.over),
+            (end.tokens, end.ms, end.over, end.error.as_deref()),
         )?;
         let mut again = false;
         if let Some(error) = &end.error {
@@ -883,24 +927,38 @@ impl Dossiers {
             } else {
                 again = true;
             }
+        } else if end.over.is_none() {
+            again = seen(&tx, w)?;
         } else {
-            if end.over.is_none() {
-                tx.execute(
-                    "UPDATE members SET cursor = ?3 WHERE thread = ?1 AND name = ?2",
-                    params![w.thread, w.member, w.to],
-                )?;
-            }
-            if end.over.is_none() && w.more {
-                // the rows that did not fit: the next wake now, for the same request
-                again = true;
-            } else {
-                // a trigger during the wake keeps its own request
-                tx.execute(
-                    "UPDATE members SET due = NULL WHERE thread = ?1 AND name = ?2 AND due = ?3",
-                    params![w.thread, w.member, w.due],
-                )?;
-            }
+            answered(&tx, w)?;
         }
+        tx.commit()?;
+        Ok(again)
+    }
+
+    /// The end of the rlcd step of a wake (todo-138). It never touches a message: rlcd can raise a gate only through
+    /// the step it escalates to, and never clears one. Returns true when the member must wake again now (its events
+    /// did not all fit).
+    ///
+    /// # Errors
+    /// The database fails.
+    pub fn rlcd_end(&self, w: &Wake, end: &RlcdEnd) -> Result<bool> {
+        let tx = self.begin()?;
+        cost(
+            &tx,
+            (w.thread, &w.member),
+            "rlcd",
+            (end.tokens, end.ms, None, end.error.as_deref()),
+        )?;
+        log(&tx, w.thread, &w.member, "thread.rlcd", &end.event)?;
+        let again = match (end.ends, &end.error) {
+            (false, _) => false,
+            (true, Some(_)) => {
+                answered(&tx, w)?;
+                false
+            }
+            (true, None) => seen(&tx, w)?,
+        };
         tx.commit()?;
         Ok(again)
     }
@@ -1252,16 +1310,18 @@ impl Dossiers {
         Ok(self
             .db()
             .prepare(
-                "SELECT member, count(*), sum(tokens), sum(ms), count(over) FROM costs WHERE thread = ?1
-                 GROUP BY member ORDER BY member",
+                "SELECT member, kind, count(*), sum(tokens), sum(ms), count(over), count(error) FROM costs
+                 WHERE thread = ?1 GROUP BY member, kind ORDER BY member, kind",
             )?
             .query_map([thread], |r| {
                 Ok(Cost {
                     member: r.get(0)?,
-                    runs: r.get(1)?,
-                    tokens: r.get(2)?,
-                    ms: r.get(3)?,
-                    over: r.get(4)?,
+                    kind: r.get(1)?,
+                    runs: r.get(2)?,
+                    tokens: r.get(3)?,
+                    ms: r.get(4)?,
+                    over: r.get(5)?,
+                    failed: r.get(6)?,
                 })
             })?
             .collect::<Result<_, _>>()?)

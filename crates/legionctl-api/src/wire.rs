@@ -1500,15 +1500,45 @@ wire! {
         run: String,
     }
 
+    /// An rlcd decision (todo-138) with its outcomes.
+    struct RlcdDecision from core::rlcd::Stored {
+        id: i64,
+        at: i64 = ts,
+        /// observer (a member's wake) or ask (`rlcd ask`).
+        path: String,
+        thread: Option<i64>,
+        member: Option<String>,
+        backend: String,
+        model: String,
+        /// Question id -> {type: choice|yesno|score, instructions, options}.
+        questions: Value,
+        /// Question id -> its answer; none when the call failed.
+        answers: Option<Value>,
+        /// The answer to the question action of a wake: ignore, note or escalate.
+        action: Option<String>,
+        error: Option<String>,
+        input_tokens: i64,
+        cost_usd: f64,
+        ms: i64,
+        /// The answer of the ACP wake it escalated to: {ok, text} or {error}.
+        acp: Option<Value>,
+        /// The next gate result of its thread: {gate, passed, open}.
+        gate: Option<Value>,
+    }
+
     /// The cost of one member of a thread.
     struct ThreadCost from core::pool::Cost {
         member: String,
-        /// Wakes of an operator member; prompts that got thread context for the main agent.
+        /// wake (an ACP wake), rlcd (an rlcd step of a wake) or inject (the thread context of the main agent).
+        kind: String,
+        /// Wakes or rlcd steps; prompts that got thread context for the main agent.
         runs: u32,
         tokens: i64,
         ms: i64,
         /// Wakes stopped at their budget.
         over: u32,
+        /// Runs that failed.
+        failed: u32,
     }
 
     /// What a member did for the main agent, and whether it is undone.

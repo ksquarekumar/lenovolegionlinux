@@ -18,6 +18,8 @@ struct Field<'a> {
     default: Option<String>,
     /// `x-env`: the client's environment variable that gives a path field when the caller does not.
     env: Option<&'a str>,
+    /// `x-from-env`: a secret that the CLI takes only as `--<key>-env <VAR>`, the name of its environment variable.
+    from_env: bool,
 }
 
 #[derive(PartialEq)]
@@ -126,6 +128,7 @@ fn fields(input: &Value) -> Vec<Field<'_>> {
                     _ => None,
                 },
                 env: prop["x-env"].as_str(),
+                from_env: prop["x-from-env"] == true,
             }
         })
         .collect()
@@ -165,6 +168,11 @@ fn argument_named(field: &Field, arg: Arg) -> Arg {
         } else {
             list
         };
+    }
+    if field.from_env {
+        return arg
+            .long(format!("{}-env", field.key.replace('_', "-")))
+            .value_name("VAR");
     }
     let mut arg = arg.long(field.key.replace('_', "-"));
     match &field.kind {
@@ -338,6 +346,18 @@ pub fn fill_client_fields(op: &OpInfo, input: &mut Value, stdin: bool) -> Result
     let Some(map) = input.as_object_mut() else {
         return Ok(());
     };
+    for field in fields(&schema).into_iter().filter(|f| f.from_env) {
+        let Some(var) = map.get(field.key).and_then(Value::as_str) else {
+            continue;
+        };
+        // only a CLI reads its own environment: through MCP, the backend's keyring entry gives the secret
+        anyhow::ensure!(stdin, "--{}-env is for the CLI only", field.key);
+        let secret = std::env::var(var)
+            .ok()
+            .filter(|v| !v.is_empty())
+            .with_context(|| format!("the environment variable {var} is not set or empty"))?;
+        map.insert(field.key.to_string(), Value::from(secret));
+    }
     for field in fields(&schema) {
         if map.contains_key(field.key) && field.kind != Kind::Path {
             continue;

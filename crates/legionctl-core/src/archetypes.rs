@@ -95,7 +95,30 @@ pub struct AgentConfig {
     pub sandbox: Option<String>,
     /// Codex approval policy of an operator session.
     pub approval: Option<String>,
+    /// What answers a wake of an operator member, in order (todo-138): `rlcd` (a System One decision on the events;
+    /// escalate wakes the next step with its answer as a brief) and `acp` (the member's session). A step that is not
+    /// configured is skipped; a step that fails is reported, and the next step does not run in its place. None:
+    /// `acp`.
+    pub route: Vec<String>,
+    /// The rlcd step of the route.
+    pub rlcd: Option<MemberRlcd>,
 }
+
+/// A member's rlcd step: its backend (none: `rlcd.backend`) and questions. The question `action` (a choice of
+/// ignore, note and escalate) decides; with `escalate_at`, an escalate probability of at least that percent escalates
+/// too.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemberRlcd {
+    #[serde(default)]
+    pub backend: Option<String>,
+    pub questions: BTreeMap<String, crate::rlcd::Question>,
+    #[serde(default)]
+    pub escalate_at: Option<u8>,
+}
+
+/// The options of the question `action` of a member's rlcd step.
+pub const ACTIONS: [&str; 3] = ["escalate", "ignore", "note"];
 
 /// A team file (`teams/<name>.jsonc`): the members of a thread and the flow between them.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -305,6 +328,9 @@ impl RunPath {
             }
             (ClaudeSession | CodexSession, _) | (_, "pace" | "budget") | (ClaudeTeam, "model") => {
                 return None;
+            }
+            (ClaudeTeam | CodexSubagent, "route" | "rlcd") => {
+                "only an operator member wakes; the route and rlcd decide its wakes"
             }
             (ClaudeTeam, "mcp") => {
                 "a teammate is a plugin agent type, and Claude Code ignores mcpServers for plugin agents"
@@ -546,6 +572,14 @@ fn apply(
         if from.is_some() {
             to.clone_from(from);
         }
+    }
+    mark("route", !layer.route.is_empty());
+    if !layer.route.is_empty() {
+        into.route.clone_from(&layer.route);
+    }
+    mark("rlcd", layer.rlcd.is_some());
+    if layer.rlcd.is_some() {
+        into.rlcd.clone_from(&layer.rlcd);
     }
     mark("tools", layer.tools != ToolRules::default());
     if !layer.tools.allow.is_empty() {
@@ -810,6 +844,29 @@ impl Sources {
             if !self.instruction_path(file).is_some_and(|p| p.is_file()) {
                 out.push(format!("the instruction file {file} does not exist"));
             }
+        }
+        for step in merged
+            .route
+            .iter()
+            .filter(|s| !["rlcd", "acp"].contains(&s.as_str()))
+        {
+            out.push(format!("route step {step} is not rlcd or acp"));
+        }
+        if !merged.route.is_empty()
+            && !merged.route.iter().any(|s| s == "acp")
+            && merged.rlcd.is_none()
+        {
+            out.push("the route has no configured step: add acp, or configure rlcd".into());
+        }
+        let action = merged.rlcd.as_ref().map(|r| r.questions.get("action"));
+        let actions = |o: &BTreeMap<String, String>| o.keys().map(String::as_str).eq(ACTIONS);
+        if let Some(found) = action
+            && !matches!(found, Some(crate::rlcd::Question::Choice { options, .. }) if actions(options))
+        {
+            out.push(format!(
+                "rlcd.questions needs the choice action with the options {}",
+                ACTIONS.join(", ")
+            ));
         }
         out
     }

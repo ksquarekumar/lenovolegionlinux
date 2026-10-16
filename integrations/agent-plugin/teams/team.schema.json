@@ -165,6 +165,26 @@
             "null"
           ],
           "default": null
+        },
+        "route": {
+          "description": "What answers a wake of an operator member, in order (todo-138): `rlcd` (a System One decision on the events;\nescalate wakes the next step with its answer as a brief) and `acp` (the member's session). A step that is not\nconfigured is skipped; a step that fails is reported, and the next step does not run in its place. None:\n`acp`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "rlcd": {
+          "description": "The rlcd step of the route.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MemberRlcd"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "additionalProperties": false
@@ -258,6 +278,105 @@
         }
       },
       "additionalProperties": false
+    },
+    "MemberRlcd": {
+      "description": "A member's rlcd step: its backend (none: `rlcd.backend`) and questions. The question `action` (a choice of\nignore, note and escalate) decides; with `escalate_at`, an escalate probability of at least that percent escalates\ntoo.",
+      "type": "object",
+      "properties": {
+        "backend": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "questions": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Question"
+          }
+        },
+        "escalate_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255,
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "questions"
+      ]
+    },
+    "Question": {
+      "description": "One typed question.",
+      "oneOf": [
+        {
+          "description": "One of the options; option -> its meaning.",
+          "type": "object",
+          "properties": {
+            "instructions": {
+              "type": "string"
+            },
+            "options": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "choice"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "instructions",
+            "options"
+          ]
+        },
+        {
+          "description": "The probability of yes (System One `noul`, `OpenAI` `predicate`).",
+          "type": "object",
+          "properties": {
+            "instructions": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "yesno"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "instructions"
+          ]
+        },
+        {
+          "description": "A number.",
+          "type": "object",
+          "properties": {
+            "instructions": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "score"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "instructions"
+          ]
+        }
+      ]
     },
     "Flow": {
       "type": "object",

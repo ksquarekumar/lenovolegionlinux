@@ -4101,6 +4101,22 @@ impl Engine for Operator {
         crate::thread::teammate(&input)
     }
 
+    fn rlcd_ask(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::RlcdAskIn,
+    ) -> Result<legionctl_api::RlcdDecision> {
+        Ok(crate::rlcd::ask_op(&self.runtime, &dossiers()?, &input)?.into_wire())
+    }
+
+    fn rlcd_decisions(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::RlcdDecisionsIn,
+    ) -> Result<Vec<legionctl_api::RlcdDecision>> {
+        Ok(dossiers()?.decisions(input.limit, None)?.into_wire())
+    }
+
     fn knobs_show(&self, _: &Ctx, input: InspectIn) -> Result<KnobDetail> {
         let plan = Plan::load(path(input.profile.as_ref())?)?;
         let knob = knobs::find(&plan.machine(), &input.knob)?.with_context(|| {

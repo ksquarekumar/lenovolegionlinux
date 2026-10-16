@@ -1982,3 +1982,68 @@ repositories; stand-ins only where a tool is not the subject.
 7. Dossier names (the user, same day: "agents runs are like projects; unique" is for dossier names): a dossier name
    is descriptive, unique and may be changed at any time, like a project name; the stable id in `dossier.jsonc`
    keeps every reference (bindings, links, events) valid across renames. A rename to a name in use is refused.
+
+## Part F: rlcd, the System One tier of a wake (todo-138, first part of todo-139)
+
+Built 2026-10-16 (not merged). User decisions: plan rows todo-138 and todo-139; wire shapes measured in
+SPIKE-rlcd-apis.
+
+### F1. Question model and backends
+
+- One typed model (`legionctl_core::rlcd`): a question is a `choice` (options with their meanings), a `yesno` or a
+  `score`; an answer has the choice and its probabilities and confidence, the probability of yes, or the score; a
+  decision has its input tokens and cost.
+- Two wire shapes. `system-one` (OpenRouter `POST /api/alpha/decisions`): `{model, state, questions: {<id>: {type:
+  choice|noul|score, instructions, criteria}}}`, answers keyed by id. `openai` (`POST /v1/decisions`): `{model, input,
+  questions: [{type: choice|predicate|score, instructions, choices: [{value, description}]}]}`, answers in order (not
+  measured live yet: the preview answered 500).
+- Backends are config: `rlcd.backends.<name> = {shape, url, model, keyring, timeout_ms}`, `rlcd.backend` names the
+  default. The key is `secret-tool lookup legionctl-rlcd <keyring>`. Defaults: `openrouter` (typesafe/jev-1.14),
+  `openrouter-free` (inception/mercury-decide:free, same key) and `openai` (gpt-6-luna). Development selects
+  `openrouter-free` (user rule 2026-10-16: free models in development) in this repository's layer,
+  `.legionctl/rlcd.jsonc` = `{"rlcd": {"backend": "openrouter-free"}}`; that file goes in after the installed package
+  has rlcd, because an older operator refuses the unknown key `rlcd` in each layer. A repository layer may select a
+  backend; it may not set a backend's url, keyring or shape (it could send the key elsewhere): the call is refused.
+- Option limits per model, where known: Jev 255, Upstage Solar Decide 26, Together Tev1 20, Respan Span-01 yes-no only.
+- A failed or timed-out call fails its step with its error, at once. No other backend runs in its place.
+- Before the state leaves the machine, the backend's key, the values of the operator's `*_KEY`, `*_TOKEN` and
+  `*_SECRET` variables and each word of 16 characters or more that starts like a well-known key become `<secret>`.
+
+### F2. The route of a wake
+
+- Member config: `route` (ordered steps, by configuration only: `rlcd`, `acp`; none: `acp`) and `rlcd: {backend,
+  questions, escalate_at}`. `api` is not built: `agents check` refuses it. A route step that is not configured is
+  skipped; a route with no configured step is refused.
+- The rlcd step sends the wake's text (the events after the cursor, the open messages, the watch rules) and the
+  questions. The choice `action` (options ignore, note, escalate) decides; with `escalate_at` (percent), an escalate
+  probability at or above it escalates too.
+- ignore and note: a cost row (kind `rlcd`) and a `thread.rlcd` event; the cursor moves past the events.
+- escalate: the next step (acp) runs with the line `rlcd (<backend>, <model>) escalated this wake: <answers>` before
+  the events.
+- A failed step: a `thread.rlcd` event and a cost row with the error; the wake request ends, the events stay after the
+  cursor, the next step does not run. The member does not fail and its blocks stay.
+- rlcd never touches a message: it can raise a gate only through the step that it escalates to, and never clears one.
+
+### F3. Learning record
+
+- Each decision is a row of `rlcd_decisions` (operator.db v13, a schema step with its backup): path (`observer`,
+  `ask`), thread, member, backend, model, questions, answers or error, tokens, cost, time.
+- Outcomes: `acp` (the answer of the wake it escalated to, or its error) and `gate` (the next gate result of its
+  thread: gate, passed, open items).
+
+### F4. Operations
+
+| Operation | CLI | Class |
+| --- | --- | --- |
+| `rlcd.ask` | `rlcd ask [--backend <b>] [--key-env <VAR>] --state <text> <id>:choice:a,b=meaning[:instructions] <id>:yesno[:instructions] ...` | session (the state leaves the machine) |
+| `rlcd.decisions` | `rlcd decisions [--limit <n>]` | read |
+
+`--key-env` is for a manual check with a key that is not in the keyring: the CLI reads the variable; the key is never
+on the command line or in the audit; through MCP it is refused.
+
+### F5. Tests
+
+`threads.rs`: `rlcd_ask_sends_each_wire_shape_and_fails_a_failed_call_at_once` and
+`an_observer_routed_through_rlcd_wakes_acp_only_on_escalate`, against the stand-in decision server
+(`tests/fixtures/fake-decisions.py`) and a stand-in `secret-tool`. Not built: the `api` step, rlcd on the hot paths of
+todo-139, the evaluation replay.

@@ -45,6 +45,8 @@ pub struct Config {
     /// The repository's checks (design 23, E2): `<repo>/.legionctl/checks.jsonc`.
     pub checks: crate::checks::ChecksConfig,
     pub app: AppConfig,
+    /// System One decision backends (todo-138).
+    pub rlcd: crate::rlcd::RlcdConfig,
 }
 
 /// The desktop app (`legionctl-app`).

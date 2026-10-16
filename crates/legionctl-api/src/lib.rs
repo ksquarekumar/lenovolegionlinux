@@ -896,4 +896,11 @@ operations! {
     /// Team mode hooks of a lead: `TeammateIdle` (the teammate's new messages) and `TaskCompleted` (the task gate); the
     /// refusal is the text that keeps the teammate working or holds the task.
     thread_teammate / ThreadTeammate = "internal.thread.teammate", Session, TeammateIn => Guard;
+    /// Ask a System One decision model typed questions on a state (todo-138): one call to the backend, with the
+    /// state's secrets removed; the decision is stored. The state leaves the machine. A failed or timed-out call fails
+    /// with its error; no other backend runs in its place.
+    rlcd_ask / RlcdAsk = "rlcd.ask", Session, RlcdAskIn => RlcdDecision;
+    /// The stored rlcd decisions, newest first, with their outcomes: the ACP answer of a wake that a decision
+    /// escalated to, and the next gate result of its thread.
+    rlcd_decisions / RlcdDecisions = "rlcd.decisions", Read, RlcdDecisionsIn => Vec<RlcdDecision>;
 }

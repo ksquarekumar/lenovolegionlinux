@@ -23,6 +23,7 @@ pub mod planning;
 pub mod pool;
 pub mod qmp;
 pub mod reminders;
+pub mod rlcd;
 pub mod session;
 pub mod setup;
 pub mod skills;

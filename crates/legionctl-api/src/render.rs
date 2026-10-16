@@ -2547,3 +2547,83 @@ impl Render for Vec<crate::ViewInfo> {
             .join("\n")
     }
 }
+
+/// `#3 observer thread 1 observer0 openrouter (typesafe/jev-1.14) 169 tokens $0.0000 210 ms: action escalate 0.74
+/// (ignore 0.01, note 0.24) confidence 0.62; acp ok; gate checkpoint passed`.
+fn decision_line(d: &crate::RlcdDecision) -> String {
+    let at = match (d.thread, &d.member) {
+        (Some(t), Some(m)) => format!(" thread {t} {m}"),
+        _ => String::new(),
+    };
+    let what = match (&d.answers, &d.error) {
+        (Some(serde_json::Value::Object(answers)), _) => answers
+            .iter()
+            .map(|(id, a)| match a["type"].as_str() {
+                Some("choice") => {
+                    let choice = a["choice"].as_str().unwrap_or_default();
+                    let p = |o: &str| a["probabilities"][o].as_f64().unwrap_or(0.0);
+                    let others: Vec<String> = a["probabilities"]
+                        .as_object()
+                        .into_iter()
+                        .flatten()
+                        .filter(|(o, _)| *o != choice)
+                        .map(|(o, _)| format!("{o} {:.2}", p(o)))
+                        .collect();
+                    let confidence = a["confidence"]
+                        .as_f64()
+                        .map_or_else(String::new, |c| format!(" confidence {c:.2}"));
+                    format!(
+                        "{id} {choice} {:.2} ({}){confidence}",
+                        p(choice),
+                        others.join(", ")
+                    )
+                }
+                Some("yesno") => format!("{id} yes {:.2}", a["yes"].as_f64().unwrap_or(0.0)),
+                _ => format!("{id} score {:.2}", a["score"].as_f64().unwrap_or(0.0)),
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
+        (_, Some(e)) => format!("failed: {e}"),
+        _ => "no answer".into(),
+    };
+    let acp = match &d.acp {
+        Some(a) if a["error"].is_string() => {
+            format!("; acp failed: {}", a["error"].as_str().unwrap_or_default())
+        }
+        Some(_) => "; acp answered".into(),
+        None => String::new(),
+    };
+    let gate = d.gate.as_ref().map_or_else(String::new, |g| {
+        format!(
+            "; gate {} {}",
+            g["gate"].as_str().unwrap_or_default(),
+            if g["passed"] == true {
+                "passed"
+            } else {
+                "held"
+            }
+        )
+    });
+    format!(
+        "#{} {}{at} {} ({}) {} tokens ${:.4} {} ms: {what}{acp}{gate}",
+        d.id, d.path, d.backend, d.model, d.input_tokens, d.cost_usd, d.ms
+    )
+}
+
+impl Render for crate::RlcdDecision {
+    fn text(&self) -> String {
+        decision_line(self)
+    }
+}
+
+impl Render for Vec<crate::RlcdDecision> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no rlcd decision".into();
+        }
+        self.iter()
+            .map(decision_line)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}

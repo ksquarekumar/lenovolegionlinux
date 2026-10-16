@@ -2302,3 +2302,35 @@ pub struct ViewInfo {
     /// Why the file is not a view.
     pub error: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RlcdAskIn {
+    /// The text the questions are about (read from stdin when not given). Secrets are removed before it is sent.
+    pub state: StdinText,
+    /// The questions: `<id>:choice:<a>[=<meaning>],<b>[:<instructions>]`, `<id>:yesno[:<instructions>]`,
+    /// `<id>:score[:<instructions>]`.
+    pub questions: Vec<String>,
+    /// The backend (`rlcd.backends.<name>`); default: `rlcd.backend`.
+    #[serde(default)]
+    pub backend: Option<String>,
+    /// For a manual check with a key that is not in the keyring: `--key-env <VAR>` names the client's environment
+    /// variable that holds it; the key is never on the command line or in the audit. Default: the backend's keyring
+    /// entry.
+    #[serde(default)]
+    #[schemars(extend("x-secret" = true, "x-from-env" = true))]
+    pub key: Option<String>,
+    /// Where the caller works: its repository layer can select the backend.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RlcdDecisionsIn {
+    /// The newest this many.
+    #[serde(default = "fifty")]
+    pub limit: u32,
+}
+
+fn fifty() -> u32 {
+    50
+}

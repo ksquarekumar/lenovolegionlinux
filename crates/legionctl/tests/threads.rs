@@ -102,11 +102,14 @@ impl Lab {
         )
         .unwrap();
         std::fs::create_dir_all(home.join("root")).unwrap();
-        let env = [
+        let env: Vec<(&str, OsString)> = [
             ("LEGIONCTL_SYSROOT", home.join("root").into()),
             ("HOME", home.into()),
             ("PATH", path),
-        ];
+        ]
+        .into_iter()
+        .filter(|(k, _)| !extra.iter().any(|(e, _)| e == k))
+        .collect();
         Operator::start(&format!("th-{tag}"), &[&env[..], extra].concat())
     }
 
@@ -1088,6 +1091,11 @@ struct Pool {
 }
 
 fn pool(tag: &str, agent: &str) -> Pool {
+    pool_with(tag, agent, &[])
+}
+
+/// A team lab whose operator has `extra` in its environment too.
+fn pool_with(tag: &str, agent: &str, extra: &[(&str, OsString)]) -> Pool {
     let mut lab = Lab::new(tag);
     let scripts = lab.home.join("scripts");
     write(&scripts.join("observer0.sh"), OBSERVER);
@@ -1125,7 +1133,11 @@ fn pool(tag: &str, agent: &str) -> Pool {
     // the members' scripts reach the stand-in through the operator's environment
     lab.op.child.kill().unwrap();
     lab.op.child.wait().unwrap();
-    lab.op = Lab::operator_with(&format!("{tag}p"), &lab.home, &pool_env(&scripts));
+    lab.op = Lab::operator_with(
+        &format!("{tag}p"),
+        &lab.home,
+        &[&pool_env(&scripts)[..], extra].concat(),
+    );
     let launch = lab.launch(agent, "port");
     Pool {
         main: launch["id"].as_str().unwrap().to_string(),
@@ -1879,5 +1891,557 @@ fn a_failed_member_restarts_within_its_limit_then_its_blocks_expire() {
         told.contains("note from observer0 (thread 1): observer0 failed 4 times within 1h:")
             && told.contains("It stopped; 1 of its blocks expired."),
         "{told}"
+    );
+}
+
+/// The stand-in decision server (`tests/fixtures/fake-decisions.py`) and a stand-in keyring on the operator's `PATH`
+/// (`secret-tool lookup legionctl-rlcd <entry>` prints `key-<entry>`), never the user's keyring. Returns the server,
+/// its port, its log and the operator's environment.
+fn decisions(
+    home: &Path,
+) -> (
+    common::process::Kill,
+    u16,
+    PathBuf,
+    Vec<(&'static str, OsString)>,
+) {
+    let (log, port_file) = (home.join("decisions.log"), home.join("decisions.port"));
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-decisions.py");
+    let server = common::process::Kill::spawn(
+        Command::new("python3")
+            .arg(fixture)
+            .arg(&port_file)
+            .arg(&log),
+    );
+    let bin = home.join("bin");
+    write(
+        &bin.join("secret-tool"),
+        "#!/bin/sh\nprintf 'key-%s' \"$3\"\n",
+    );
+    std::fs::set_permissions(
+        bin.join("secret-tool"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let legionctl = Path::new(env!("CARGO_BIN_EXE_legionctl"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let path = std::env::join_paths(
+        [bin, legionctl]
+            .into_iter()
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let port = loop {
+        if let Some(port) = std::fs::read_to_string(&port_file)
+            .ok()
+            .and_then(|p| p.trim().parse().ok())
+        {
+            break port;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the decision server did not start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    // a secret in the operator's environment: it never leaves the machine in a state
+    let env = vec![
+        ("PATH", path),
+        ("DEPLOY_TOKEN", "hunter2-deploy-value".into()),
+    ];
+    (server, port, log, env)
+}
+
+/// The calls the decision server got: `{path, auth, body}`.
+fn calls(log: &Path) -> Vec<Value> {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+/// The user's rlcd backends `stand` (System One) and `oa` (`OpenAI`), which answer `pick`.
+fn rlcd_backends(home: &Path, port: u16, pick: &str) {
+    let url = |path: &str| format!("http://127.0.0.1:{port}/{pick}{path}");
+    write(
+        &home.join(".config/legionctl/rlcd.jsonc"),
+        &json!({"rlcd": {"backends": {
+            "stand": {"shape": "system-one", "url": url("/api/alpha/decisions"), "model": "stand-model",
+                      "keyring": "stand", "timeout_ms": 1000},
+            "oa": {"shape": "openai", "url": url("/v1/decisions"), "model": "oa-model", "keyring": "oa",
+                   "timeout_ms": 1000}
+        }}})
+        .to_string(),
+    );
+}
+
+/// A lab for `rlcd ask`: its operator reaches the stand-in decision server and the stand-in keyring.
+struct AskLab {
+    lab: Lab,
+    port: u16,
+    log: PathBuf,
+    _server: common::process::Kill,
+}
+
+const QUESTIONS: [&str; 2] = [
+    "action:choice:ignore,note=note it,escalate",
+    "stuck:yesno:Is main0 stuck?",
+];
+
+impl AskLab {
+    /// `rlcd ask <args> <QUESTIONS> --json` with `extra` in the client's environment.
+    fn ask(&self, extra: &[(&str, &str)], args: &[&str]) -> std::process::Output {
+        let mut env = vec![("HOME", self.lab.home.to_str().unwrap())];
+        env.extend_from_slice(extra);
+        self.lab.op.run(
+            &self.lab.repo,
+            &env,
+            &[&["rlcd", "ask"], args, &QUESTIONS, &["--json"]].concat(),
+            "",
+        )
+    }
+
+    fn answer(&self, extra: &[(&str, &str)], args: &[&str]) -> Value {
+        let out = self.ask(extra, args);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap()
+    }
+
+    fn refusal(&self, args: &[&str]) -> String {
+        let out = self.ask(&[], args);
+        assert!(!out.status.success(), "{args:?} passed");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    }
+
+    fn last_call(&self) -> Value {
+        calls(&self.log).pop().unwrap()
+    }
+}
+
+/// `rlcd ask` against the stand-in server: the exact request body of each wire shape (System One: questions keyed by
+/// id, a choice's options as criteria, yes-no as noul; `OpenAI`: questions in id order, a choice's options as
+/// value/description objects, yes-no as predicate), the bearer key from the keyring entry, the state's secrets
+/// removed (a well-known key form, an operator variable's value), the answers parsed per shape and stored. A key for a
+/// manual check comes only from the client's environment (`--key-env`) and stays out of the audit. A 500 and a timeout
+/// fail the call at once with the error and a stored row; no other backend gets the call. A repository layer selects a
+/// backend (the dev layer picks the free model) but cannot point one at another URL.
+#[test]
+fn rlcd_ask_sends_each_wire_shape_and_fails_a_failed_call_at_once() {
+    let mut lab = Lab::new("rlcd-ask");
+    let (server, port, log, env) = decisions(&lab.home);
+    lab.op.child.kill().unwrap();
+    lab.op.child.wait().unwrap();
+    lab.op = Lab::operator_with("rlcd-askp", &lab.home, &env);
+    rlcd_backends(&lab.home, port, "escalate");
+    let lab = AskLab {
+        lab,
+        port,
+        log,
+        _server: server,
+    };
+    each_wire_shape_goes_out_without_secrets(&lab);
+    a_failed_call_fails_at_once_and_is_stored(&lab);
+
+    // the repository layer: it selects a backend, and cannot point one elsewhere
+    rlcd_backends(&lab.lab.home, port, "ignore");
+    write(
+        &lab.lab.repo.join(".legionctl/rlcd.jsonc"),
+        r#"{"rlcd": {"backend": "oa"}}"#,
+    );
+    lab.answer(&[], &["--state", "x"]);
+    assert_eq!(lab.last_call()["path"], "/ignore/v1/decisions");
+    write(
+        &lab.lab.repo.join(".legionctl/rlcd.jsonc"),
+        r#"{"rlcd": {"backends": {"oa": {"url": "http://127.0.0.1:9/elsewhere"}}}}"#,
+    );
+    let moved = lab.refusal(&["--backend", "oa", "--state", "x"]);
+    assert!(
+        moved.contains("rlcd.backends.oa.url is set by the repository layer"),
+        "{moved}"
+    );
+}
+
+fn each_wire_shape_goes_out_without_secrets(lab: &AskLab) {
+    let state = "5 edits, no lint; export KEY=sk-or-v1-0123456789abcdef; pass hunter2-deploy-value";
+    let answer = lab.answer(&[], &["--backend", "stand", "--state", state]);
+    let call = lab.last_call();
+    assert_eq!(call["path"], "/escalate/api/alpha/decisions");
+    assert_eq!(call["auth"], "Bearer key-stand");
+    assert_eq!(
+        call["body"],
+        json!({"model": "stand-model", "state": "5 edits, no lint; export KEY=<secret>; pass <secret>",
+               "questions": {
+                   "action": {"type": "choice", "instructions": "action",
+                              "criteria": {"escalate": "escalate", "ignore": "ignore", "note": "note it"}},
+                   "stuck": {"type": "noul", "instructions": "Is main0 stuck?"}}})
+    );
+    assert_eq!(
+        [
+            &answer["path"],
+            &answer["backend"],
+            &answer["action"],
+            &answer["input_tokens"]
+        ],
+        [
+            &json!("ask"),
+            &json!("stand"),
+            &json!("escalate"),
+            &json!(169)
+        ],
+        "{answer}"
+    );
+    assert_eq!(
+        answer["answers"],
+        json!({"action": {"type": "choice", "choice": "escalate", "confidence": 0.6,
+                          "probabilities": {"escalate": 0.8, "ignore": 0.1, "note": 0.1}},
+               "stuck": {"type": "yesno", "yes": 0.02}})
+    );
+
+    let answer = lab.answer(
+        &[("RLCD_MANUAL", "manual-key-0000")],
+        &[
+            "--backend",
+            "oa",
+            "--key-env",
+            "RLCD_MANUAL",
+            "--state",
+            "idle",
+        ],
+    );
+    let call = lab.last_call();
+    assert_eq!(
+        [&call["path"], &call["auth"]],
+        [
+            &json!("/escalate/v1/decisions"),
+            &json!("Bearer manual-key-0000")
+        ]
+    );
+    assert_eq!(
+        call["body"],
+        json!({"model": "oa-model", "input": "idle", "questions": [
+            {"type": "choice", "instructions": "action", "choices": [
+                {"value": "escalate", "description": "escalate"}, {"value": "ignore", "description": "ignore"},
+                {"value": "note", "description": "note it"}]},
+            {"type": "predicate", "instructions": "Is main0 stuck?"}]})
+    );
+    assert_eq!(
+        answer["answers"]["stuck"],
+        json!({"type": "yesno", "yes": 0.3})
+    );
+    let audit = lab.lab.ok("", &lab.lab.repo, &["events", "--json"]);
+    assert!(
+        !audit.contains("manual-key-0000"),
+        "the key is in the audit"
+    );
+    let unset = lab.refusal(&[
+        "--backend",
+        "oa",
+        "--key-env",
+        "NO_SUCH_VAR",
+        "--state",
+        "x",
+    ]);
+    assert!(
+        unset.contains("the environment variable NO_SUCH_VAR is not set or empty"),
+        "{unset}"
+    );
+}
+
+fn a_failed_call_fails_at_once_and_is_stored(lab: &AskLab) {
+    let before = calls(&lab.log).len();
+    rlcd_backends(&lab.lab.home, lab.port, "fail");
+    let failed = lab.refusal(&["--backend", "stand", "--state", "x"]);
+    assert!(
+        failed.contains("rlcd stand: http://127.0.0.1:")
+            && failed.contains(
+                "answered 500 Internal Server Error: {\"error\": {\"message\": \"Decision admission timed out.\""
+            ),
+        "{failed}"
+    );
+    rlcd_backends(&lab.lab.home, lab.port, "slow");
+    let started = std::time::Instant::now();
+    let slow = lab.refusal(&["--backend", "stand", "--state", "x"]);
+    assert!(slow.contains("(timeout 1000 ms)"), "{slow}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(2500),
+        "the timeout did not end the call"
+    );
+    assert_eq!(
+        calls(&lab.log).len(),
+        before + 2,
+        "one call each, no other backend"
+    );
+    let stored: Value = lab.lab.json("", &["rlcd", "decisions"]);
+    let errors: Vec<bool> = stored
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["error"].is_string() && d["answers"].is_null())
+        .collect();
+    assert_eq!(errors, [true, true, false, false], "{stored}");
+}
+
+/// A team lab whose observer0 has the route [rlcd, acp] with the backend `stand`; its ACP script saves its prompt,
+/// raises one hard-block and answers `checked the lint`.
+struct RlcdPool {
+    pool: Pool,
+    port: u16,
+    log: PathBuf,
+    _server: common::process::Kill,
+    _home: Scratch,
+}
+
+impl RlcdPool {
+    fn new() -> RlcdPool {
+        let home = Scratch::new(format!(
+            "/var/tmp/legionctl-rlcd-srv-{}",
+            std::process::id()
+        ));
+        let (server, port, log, env) = decisions(&home);
+        let pool = pool_with("rlcd", "fake", &env);
+        write(
+            &pool.lab.home.join("scripts/observer0.sh"),
+            "printf '%s\\n' \"$FAKE_ACP_PROMPT\" > prompt.txt\n\
+             [ -e .blocked ] || { touch .blocked; legionctl thread send main0 hard-block \"the suite fails\" --tool workspace_checkpoint; }\n\
+             echo checked the lint\n",
+        );
+        write(
+            &pool.lab.home.join(".config/legionctl/observer.jsonc"),
+            &json!({"agents": {"configs": {"thread-observer": {
+                "route": ["rlcd", "acp"],
+                "rlcd": {"backend": "stand", "questions": {
+                    "action": {"type": "choice", "instructions": "What must observer0 do now?",
+                               "options": {"ignore": "nothing to check", "note": "keep a note",
+                                           "escalate": "wake observer0"}},
+                    "stuck": {"type": "yesno", "instructions": "Is main0 stuck?"}}}}}}})
+            .to_string(),
+        );
+        rlcd_backends(&pool.lab.home, port, "ignore");
+        RlcdPool {
+            pool,
+            port,
+            log,
+            _server: server,
+            _home: home,
+        }
+    }
+
+    fn answers(&self, pick: &str) {
+        rlcd_backends(&self.pool.lab.home, self.port, pick);
+    }
+
+    fn show(&self) -> Value {
+        self.pool.lab.show(&self.pool.main, 1)
+    }
+
+    /// observer0's costs: kind -> [runs, failed].
+    fn kinds(&self) -> Value {
+        let rows: serde_json::Map<String, Value> = self.show()["costs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["member"] == "observer0")
+            .map(|c| {
+                (
+                    c["kind"].as_str().unwrap().to_string(),
+                    json!([c["runs"], c["failed"]]),
+                )
+            })
+            .collect();
+        Value::Object(rows)
+    }
+
+    /// A code edit with no lint before the stop: a miss that wakes observer0.
+    fn miss(&self, prompt: &str) {
+        let Pool { lab, main, ws } = &self.pool;
+        lab.hook(main, ws, "prompt", json!({"prompt": prompt}));
+        lab.edit(main, ws, &ws.join("src/lexer.rs"));
+        // after the escalated wake, observer0's hard-block holds each stop
+        lab.stop(main, false);
+    }
+
+    fn last_rlcd_event(&self) -> Value {
+        self.show()["log"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rfind(|r| r["kind"] == "thread.rlcd")
+            .unwrap()["payload"]
+            .clone()
+    }
+
+    fn checkpoint_held(&self) -> bool {
+        self.pool
+            .lab
+            .pre_tool(&self.pool.main, "workspace_checkpoint")
+            .is_some()
+    }
+}
+
+/// observer0 of vanilla with the route [rlcd, acp]: each wake first asks the stand-in decision server its questions
+/// on the wake's events (the secrets of a message to it removed). ignore records a cost row and a thread.rlcd event
+/// and wakes no ACP session; escalate wakes the ACP session with the rlcd answer as its brief, and that answer is the
+/// decision's outcome; a 500 is a failed step (event and cost row with the error) that does not wake the ACP
+/// session, and the member goes on. The hard-block that the escalated wake raised stays open through the rlcd steps
+/// after it (rlcd never clears a gate), and the next gate result is the outcome of each decision.
+#[test]
+fn an_observer_routed_through_rlcd_wakes_acp_only_on_escalate() {
+    let r = RlcdPool::new();
+    let Pool { lab, main, ws } = &r.pool;
+    lab.ok(
+        main,
+        ws,
+        &["thread", "start", "port the parser", "--team", "vanilla"],
+    );
+    lab.ok(
+        main,
+        ws,
+        &[
+            "thread",
+            "send",
+            "observer0",
+            "note",
+            "deploy key sk-or-v1-0123456789abcdef, pass hunter2-deploy-value",
+        ],
+    );
+    r.miss("port the lexer");
+    until("the rlcd step of the first wake", || {
+        r.kinds() == json!({"rlcd": [1, 0]})
+    });
+    let call = calls(&r.log).pop().unwrap();
+    assert_eq!(
+        [&call["path"], &call["auth"]],
+        [
+            &json!("/ignore/api/alpha/decisions"),
+            &json!("Bearer key-stand")
+        ]
+    );
+    assert_eq!(
+        call["body"]["questions"],
+        json!({"action": {"type": "choice", "instructions": "What must observer0 do now?",
+                          "criteria": {"escalate": "wake observer0", "ignore": "nothing to check",
+                                       "note": "keep a note"}},
+               "stuck": {"type": "noul", "instructions": "Is main0 stuck?"}})
+    );
+    let state = call["body"]["state"].as_str().unwrap();
+    assert!(
+        state.contains("stop: rule 1 missed `make lint`")
+            && state.contains("deploy key <secret>, pass <secret>")
+            && !state.contains("hunter2")
+            && !state.contains("sk-or-v1"),
+        "{state}"
+    );
+    assert_eq!(
+        Lab::member(&r.show(), "observer0")["session"],
+        Value::Null,
+        "ignore woke the ACP session"
+    );
+    let ignored = r.last_rlcd_event();
+    assert_eq!(
+        [&ignored["action"], &ignored["escalated"], &ignored["error"]],
+        [&json!("ignore"), &json!(false), &Value::Null],
+        "{ignored}"
+    );
+    escalate_wakes_acp_with_the_brief(&r);
+    a_failed_step_wakes_no_acp_and_clears_no_gate(&r);
+}
+
+fn escalate_wakes_acp_with_the_brief(r: &RlcdPool) {
+    r.answers("escalate");
+    r.miss("go on");
+    until("the escalated wake", || {
+        r.kinds() == json!({"rlcd": [2, 0], "wake": [1, 0]})
+    });
+    let prompt = std::fs::read_to_string(
+        r.pool
+            .lab
+            .home
+            .join("worktrees/repo/port--observer0/prompt.txt"),
+    )
+    .unwrap();
+    assert!(
+        prompt.contains(
+            "rlcd (stand, stand-model) escalated this wake: action escalate p 0.80 (ignore 0.10, note 0.10), \
+             confidence 0.60; stuck yes 0.02"
+        ) && prompt.contains("New events since your last wake"),
+        "{prompt}"
+    );
+    assert!(
+        r.checkpoint_held(),
+        "the escalated wake raised no hard-block"
+    );
+}
+
+fn a_failed_step_wakes_no_acp_and_clears_no_gate(r: &RlcdPool) {
+    r.answers("fail");
+    r.miss("again");
+    until("the failed rlcd step", || {
+        r.kinds() == json!({"rlcd": [3, 1], "wake": [1, 0]})
+    });
+    let failed = r.last_rlcd_event();
+    assert!(
+        failed["error"]
+            .as_str()
+            .unwrap()
+            .contains("answered 500 Internal Server Error")
+            && failed["action"].is_null(),
+        "{failed}"
+    );
+    r.answers("ignore");
+    r.miss("once more");
+    until("an rlcd step after the failure", || {
+        r.kinds() == json!({"rlcd": [4, 1], "wake": [1, 0]})
+    });
+    assert_eq!(
+        Lab::member(&r.show(), "observer0")["state"],
+        "active",
+        "a failed step failed the member"
+    );
+    assert!(r.checkpoint_held(), "an rlcd step cleared the hard-block");
+
+    let Pool { lab, main, .. } = &r.pool;
+    let refused = lab.refused(main, &["thread", "declare", "done"]);
+    assert!(
+        refused.contains("no result from observer0 yet"),
+        "{refused}"
+    );
+    let stored = lab.json(main, &["rlcd", "decisions"]);
+    let rows: Vec<Value> = stored
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .map(|d| {
+            let answered = d["acp"]["text"]
+                .as_str()
+                .map(|t| t.ends_with("checked the lint\n"));
+            json!([
+                d["action"],
+                d["error"].is_string(),
+                d["acp"]["ok"],
+                answered,
+                d["gate"]["gate"],
+                d["gate"]["passed"]
+            ])
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            json!(["ignore", false, null, null, "declare:done", false]),
+            json!(["escalate", false, true, true, "declare:done", false]),
+            json!([null, true, null, null, "declare:done", false]),
+            json!(["ignore", false, null, null, "declare:done", false]),
+        ],
+        "{stored}"
     );
 }

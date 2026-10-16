@@ -242,6 +242,22 @@
     }
   },
 
+  // rlcd (todo-138): System One decision models (typed questions: choice, yes-no, score; calibrated answers, no
+  // text). "backend": the backend that a member's rlcd and `legionctl rlcd ask` use when they name none. "backends":
+  // name -> { "shape": system-one (OpenRouter /api/alpha/decisions) | openai (/v1/decisions), "url", "model",
+  // "keyring": the entry of its API key (`secret-tool store --label=... legionctl-rlcd <keyring>`), "timeout_ms": a
+  // slower call fails }. Only the defaults, /etc/legionctl and the user layer may set a backend's url or keyring (a
+  // repository could send the key elsewhere); a repository may select a backend. A failed call fails its step: no
+  // other backend runs in its place. openrouter-free is for development (a repository layer selects it).
+  "rlcd": {
+    "backend": "openrouter",
+    "backends": {
+      "openrouter": { "shape": "system-one", "url": "https://openrouter.ai/api/alpha/decisions", "model": "typesafe/jev-1.14", "keyring": "openrouter", "timeout_ms": 10000 },
+      "openrouter-free": { "shape": "system-one", "url": "https://openrouter.ai/api/alpha/decisions", "model": "inception/mercury-decide:free", "keyring": "openrouter", "timeout_ms": 10000 },
+      "openai": { "shape": "openai", "url": "https://api.openai.com/v1/decisions", "model": "gpt-6-luna", "keyring": "openai", "timeout_ms": 10000 }
+    }
+  },
+
   // Project checks (design 23, E2): each repository declares its checks in <repo>/.legionctl/checks.jsonc as
   // "checks": { "<name>": { "kind": format|lint|static|types|build|test|deploy|install, "run": "<command>",
   // "fix": "<command>", "gate": checkpoint|merge, "profiles": [files the run writes], "runner": {"format": "libtest"} } }.
