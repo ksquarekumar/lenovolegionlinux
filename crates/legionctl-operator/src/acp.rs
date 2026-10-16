@@ -214,9 +214,20 @@ async fn time_limit(seconds: Option<u64>) {
     }
 }
 
+/// Keep the run's new ACP session id in its job.
+fn keep_acp(live: &Mutex<Live>, job: i64, input: &serde_json::Value) -> Result<()> {
+    lock(live)
+        .db
+        .job_input(job, input)
+        .context("keeping the ACP session id")
+}
+
 impl Live {
     /// The run's output; its ACP session id from the job, also when the connection was dropped.
     fn output(&self, id: String, job: i64, started: Instant) -> Result<RunOutput> {
+        if let Some(why) = &self.unlogged {
+            anyhow::bail!("the run's audit is not whole: {why}");
+        }
         Ok(RunOutput {
             id,
             text: self.text.clone(),
@@ -304,10 +315,7 @@ async fn drive(
                     .session_id;
                 input["acp"] = acp.to_string().into();
                 // without it a resume starts a new ACP session, without the history
-                lock(&live)
-                    .db
-                    .job_input(job, &input)
-                    .context("keeping the ACP session id")?;
+                keep_acp(&live, job, &input)?;
                 acp
             };
             // the run's model (the ui-composer's: config views.composer_models); an agent that refuses it fails the run
@@ -341,9 +349,6 @@ async fn drive(
         done = client => { done?; None }
     };
     let live = lock(&live);
-    if let Some(why) = &live.unlogged {
-        anyhow::bail!("the run's audit is not whole: {why}");
-    }
     // an answer that came in whole within one poll reached its limit too
     let reached = reached.or_else(|| budget.reached(&live.text, started.elapsed().as_secs()));
     Ok((live.output(id, job, started)?, reached))
