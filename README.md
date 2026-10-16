@@ -1,110 +1,134 @@
 # legionctl
 
-One operator for this machine and the coding agents that run on it. It controls power, firmware, GPU and display
-policy with the in-tree Lenovo drivers (no out-of-tree module), gives developers tools to see and check the system,
-and gives Claude Code and Codex hooks, skills, reminders, dossiers, workspaces and an MCP server. Design notes:
-[docs/design](docs/design/README.md) (start with 15-layout).
+One operator for this laptop and the coding agents on it. legionctl keeps the Legion Pro 7 in the power state you
+want, shows you why it is hot or slow, and runs Claude Code and Codex in sandboxes that remember their work and cannot
+change the machine without you.
 
-This repository is for one machine only. It does not guess safe behavior for other models.
+![The legionctl app: live power, temperature and fans; the thread log on the left; the chat bar offers the agents](docs/media/app-now-agent-picker.webp)
 
 | | |
 | --- | --- |
-| Model | `LENOVO 82WQ`, Legion Pro 7 16IRX8H |
-| BIOS / EC | `KWCN54WW` (1.54) / 1.51 |
+| Machine | `LENOVO 82WQ`, Legion Pro 7 16IRX8H, BIOS `KWCN54WW` (1.54), EC 1.51. One model only: legionctl does not guess safe values for other models. |
+| Use it | [docs/guide](docs/guide/README.md): install, the app, the TUI, agents, safety |
+| Design | [docs/design](docs/design/README.md): each design note and its real state |
+| API | [docs/api/schema.json](docs/api/schema.json): every operation with its class and input schema |
 
-## Parts
+## Why it is different
+
+- **One operator, one API.** Each capability is one operation: 199 public operations at main `e8ccd09` (86 read, 25
+  session, 45 workspace, 43 machine). The CLI, the TUI, the desktop app, the MCP server and the agent hooks are
+  adapters to the same operation, with the same permission and the same event log.
+- **Safety by design.** An agent can read everything. It cannot change the machine: each machine change goes to a
+  root daemon through a polkit dialog that only you can approve. Many changes have `--dry-run`, and `undo <event>`
+  turns a change back. A failed call fails with its reason; there are no silent fallbacks.
+- **Agents that remember.** Each agent session binds a dossier (`~/agentWorkspaces/<name>`): a plan, numbered
+  memory, designs and evidence. Code changes go into a git worktree per dossier or per topic. A code graph and a
+  planned graph show what changed and what is still to build (`legionctl code plan status`).
+- **Agents that watch each other.** A thread has a main agent and observers. Observers review tests, remind the main
+  agent of skipped steps, and can block it until it answers. Messages go through a durable outbox.
+- **Generative UI.** Agents compose views (table, tree, gauge, sparkline, diff, markdown) from read operations, and
+  the app and the TUI show them. The next step, where each screen is a view that an agent can remake, is in progress.
+
+## The parts
+
+```mermaid
+flowchart LR
+  subgraph clients["Clients: no state"]
+    cli["legionctl: CLI, TUI, MCP, hooks"]
+    app["legionctl-app: GPUI"]
+    agents["Claude Code, Codex: plugin, skills"]
+  end
+  op["legionctl-operator, as you<br/>operations, events, dossiers, workspaces,<br/>sessions, threads, gateway, rlcd"]
+  sys["legionctl-system, root<br/>power policy, Fn keys, eBPF sensors"]
+  hw["firmware, sysfs, NVIDIA<br/>legionctl_wmi: DKMS, opt-in"]
+  osd["GNOME Shell extension: OSD, overlay"]
+  greeter["legionctl-greeter: greetd"]
+  cli --> op
+  app --> op
+  agents --> op
+  op -->|"D-Bus + polkit"| sys
+  greeter -->|"D-Bus + polkit"| sys
+  sys --> hw
+  op --> osd
+```
 
 | Part | Runs as | Does |
 | --- | --- | --- |
-| `legionctl` | you | CLI, TUI (`legionctl tui`) and MCP server (`legionctl mcp`); each command is an operation of the operator |
-| `legionctl-system` | root, `legionctl-system.service` | power policy on boot, charger plug/unplug, Fn+Q and resume; Fn+R key; D-Bus API `org.legionctl.System1` (polkit decides each change) |
-| `legionctl-operator` | you, `legionctl-operator.socket` and `.service` (user) | the operation API on `$XDG_RUNTIME_DIR/legionctl/api.sock` (reads, plans, agent tooling, event log; machine changes go to `legionctl-system`); Fn+R through Mutter; OSD requests |
-| `legionctl-osd@legionctl` | GNOME Shell extension | the animated OSD: thermal mode, panel refresh rate, Fn lock |
+| `legionctl` | you | CLI, `legionctl tui`, `legionctl mcp`, `legionctl hook <event>` for Claude Code |
+| `legionctl-app` | you | the desktop app: pages Now, Apps & GPU, Health, Bench, Resources; the thread log; a chat bar to an agent |
+| `legionctl-operator` | you, `legionctl-operator.socket` (user) | the API on `$XDG_RUNTIME_DIR/legionctl/api.sock`: reads, plans, agent tooling, the event log |
+| `legionctl-system` | root, `legionctl-system.service` | power policy at start, charger change, Fn+Q and resume; D-Bus `org.legionctl.System1`; eBPF sensors |
+| `legionctl-safe.service` | root | starts when the daemon fails: `balanced` mode and a desktop warning |
+| `legionctl-greeter` | greetd | the login screen in place of GDM (opt-in: `legionctl greeter install`) |
+| `legionctl-osd@legionctl` | GNOME Shell | the OSD for Fn+Q, Fn+R and Fn lock; the vitals overlay (`legionctl overlay`) |
+| `legionctl_wmi` | kernel, DKMS | our driver for the Legion WMI. The package blacklists it (`/usr/lib/modprobe.d/legionctl-wmi.conf`), so the in-tree `lenovo_wmi_*` drivers stay the default. See [08-kernel](docs/design/08-kernel.md). |
 
-State: `/var/lib/legionctl/system.db` (machine: the Fn+Q ledger), `~/.local/state/legionctl/operator.db` (event log),
-`~/agentWorkspaces/<dossier>/` (agent dossiers, each with its own `.state/dossier.db`). Configuration is files only
-(see Agents).
-Machine policy: `profiles/lenovo-82wq-legion-pro-7-16irx8h.json` (JSONC).
+State is in `/var/lib/legionctl/system.db` (machine), `~/.local/state/legionctl/operator.db` (events, threads)
+and `~/agentWorkspaces/<dossier>/` (each with `.state/dossier.db`). Configuration is JSONC files only:
+`config/defaults.jsonc`, then `/etc/legionctl`, `~/.config/legionctl`, `<repo>/.legionctl`. Machine policy:
+`profiles/lenovo-82wq-legion-pro-7-16irx8h.json` and its configset layers.
 
-## Install
+## State (2026-10-16)
 
-Install with the Arch package, so pacman tracks every file:
+| State | What |
+| --- | --- |
+| Built, on main | power policy and configset rules, knobs, plan, undo; sensors, monitor, eBPF sensors, bench, tune, record, replay; fan reads and fan max; GPU, display fixes, VFIO; kernels (list, try, command line, bench, build); boot entry (systemd-boot beside rEFInd); greeter; dual boot and the installed Windows as a VM; resources; dossiers, workspaces, code graph and planned graph, test gate, project checks; sessions (host, container, VM), model gateway, threads, team `vanilla`, views; rlcd core |
+| Building, on topic branches | generative UI step G1 (rail, spaces, tabs) and the fact store; v1 bug fixes; quality fixes; sandbox hardening |
+| Planned (v1) | generative UI G2-G6, the temporal graph, projects, environments with network isolation, accounts, rlcd on hot paths, Windows repair, language tooling: [design index](docs/design/README.md#planned-v1) |
+| Waits for you | fan curve writes (WMI calls to verify, todo-17), the first `legionctl boot install`, the first live polkit dialogs |
+
+## Start
 
 ```bash
-make install-package    # the first time: build this checkout's package, install it with sudo (password)
+make install-package        # build and install the Arch package (sudo password the first time)
 sudo systemctl enable --now legionctl-system.service scx_loader.service
 systemctl --user enable --now legionctl-operator.socket legionctl-operator.service
-gnome-extensions enable legionctl-osd@legionctl    # takes effect at the next login
+legionctl setup apply       # MCP server, skills, agents and ACP adapters for Claude Code and Codex
+legionctl doctor            # what is wrong now, and the command that fixes each finding
 ```
 
-After the first install, `make install-package` runs `sudo -n /usr/lib/legionctl/legionctl-install` with no password
-(`/etc/sudoers.d/legionctl-install`, group `wheel`, no arguments). The wrapper installs only the newest commit of
-`origin/main` on GitHub when its CI run passed: the user `legionctl-build` clones and builds it in
-`/var/lib/legionctl-build`, root installs that file and restarts your operator. Journal: `journalctl -t legionctl-install`.
-Limits: code on `main` is written by agents; the wrapper refuses only a commit that is not on `main` or that has no
-passed CI run. `legionctl-build` is in the group `docker` (the static client builds in a container), which is equal to
-root for that user. The sudo timestamp of this machine (`timestamp_type=global`, 20 minutes) does not change. Details:
-the skill verify-and-ship, `refs/reference-install.md`.
+The [guide](docs/guide/README.md) has the full steps, the plugin, the app and the greeter.
 
-## Commands
+## Do it with legionctl
 
-```bash
-legionctl-app                     # the desktop app: glance, policy preview, GPU wiring, health, bench
-legionctl status                  # power, mode, CPU, limits, GPU wiring, units, modules, load (fans and throttle: root)
-legionctl doctor                  # drift, conflicts, kernel modules and DKMS, NTFS, GPU placement, failed units, OSD, agent setup
-legionctl knobs list              # every knob: value, what the profile wants now, firmware range, policy
-legionctl knobs show cpu.epp      # one knob and the events that changed it
-legionctl record ~/rec-bios       # the files legionctl reads, the profile and machine events: a bug report or fixture
-legionctl replay ~/rec-bios       # what the daemon and doctor decide on that recording
-legionctl bench run cpu --seconds 30 --label pl1-90   # stress-ng/gpu-burn with telemetry; bench compare <earlier> <later>
-legionctl tune ppt_pl1_spl cpu 60 75 90                # sweep a firmware limit (polkit); recommends the knee
-legionctl load                    # one-line load level, and which cgroup waits on I/O
-legionctl monitor --count 10      # power, temperatures, clocks, GPU, PSI, fans, throttle reasons (GET /v1/metrics too)
-legionctl trace                   # follow the event log: agents, people and the machine daemon
-legionctl session run claude "fix the failing test"   # headless: the agent over ACP in the session sandbox
-legionctl windows status          # the Windows boot entry and what Windows left dirty; windows reboot restarts into it once
-legionctl gpu status              # which GPU drives each display; hybrid or discrete
-legionctl run --gpu nvidia -- blender
-legionctl run --cores e --nice 10 -- make -j16
-legionctl power apply --dry-run   # what the policy would change now
-legionctl power apply             # through the daemon; polkit asks you
-legionctl gpu primary nvidia             # applies at the next login
-legionctl validate                # profile structure, no hardware access
-legionctl config layers           # config files in merge order; `config explain <key>` says which file set a value
-legionctl dossier list            # agent dossiers in ~/agentWorkspaces (agents bind them; see Agents)
-legionctl dossier migrate --dry-run  # once, from ~/.agentworkspace: what moves; then without --dry-run to move
-legionctl workspace list          # each dossier's git worktree: path, branch, base
-legionctl session start claude    # Claude Code in a sandbox on the dossier's workspace: home read-only, git gated
-legionctl tui                     # live dashboard
-legionctl --help                  # every operation; add --json to any of them
+| Task | Command |
+| --- | --- |
+| See the machine now | `legionctl status`, `legionctl sensors`, `legionctl monitor --count 10` |
+| Find why it is slow | `legionctl load`, `legionctl doctor` |
+| See what the policy will write | `legionctl plan`, `legionctl knobs show cpu.epp` |
+| Change the policy | `legionctl rules list`, `legionctl power apply --dry-run`, `legionctl undo <event>` |
+| Measure | `legionctl bench run cpu --seconds 30 --label pl1-90`, `legionctl bench compare <earlier> <later>` |
+| Use the NVIDIA GPU for one program | `legionctl run --gpu nvidia -- blender` |
+| Try another kernel once | `legionctl kernel list`, `legionctl kernel try <name>` (needs the boot entry) |
+| Start Windows | `legionctl windows reboot` (bare metal, once) or `legionctl windows vm start` |
+| Give an agent work | `legionctl session run claude "fix the failing test"` |
+| Follow everything | `legionctl trace`, `legionctl tui`, `legionctl-app` |
+
+Each command takes `--json`. `legionctl <group> --help` lists the commands of a group.
+
+```console
+$ legionctl load
+System load: Normal; load 4.5 on 32 CPUs, 18.5 GiB of 31.1 GiB free. I/O wait without disk I/O from docker/09bd9c9baa5f (86%); not counted.
+$ legionctl monitor --count 1
+pkg 90 W  cpu 98 °C 3016 MHz  gpu active 24 W 54 °C  fans 5100/5100 rpm  throttle thermal  runq p99 e 4096 p 4096 µs  top rustc 41%  psi cpu/mem/io 16%/1%/11%
 ```
 
-The policy: AC uses the firmware's `max-power` mode, battery uses `balanced`; power limits are the firmware's own
-(note 02). Fn+Q changes the mode until the charger is plugged in or out, a reboot, or `legionctl power apply`.
+The policy: on AC the firmware mode `max-power`, on battery `balanced`, with the firmware's own power limits. Fn+Q
+changes the mode until the charger changes, a restart, or `legionctl power apply`.
 
 ## Agents
 
-Claude Code plugin (`/plugin marketplace add /data/git/lenovolegionlinux`, then
-`/plugin install legionctl@lenovolegionlinux`):
+Install the Claude Code plugin with `/plugin marketplace add /data/git/lenovolegionlinux`, then
+`/plugin install legionctl@lenovolegionlinux`. Codex gets the same MCP server, skills and agents from
+`legionctl setup apply`.
 
-- one MCP tool per operation (status, load, doctor, power, GPU, cleanup, workspaces, setup, reminders, hooks, skills,
-  config, dossiers);
-- skills `legionctl:ste100-style`, `legionctl:glanceable-style` and `legionctl:dossier-practice`, kept in force by
-  reminders, and the tool skills `legionctl:tool-lifecycle` (an index of every command group),
-  `legionctl:workspace-practice`, `legionctl:machine-tools`, `legionctl:verify-and-ship` and
-  `legionctl:sessions-and-agents`, loaded when the task matches;
-- hooks (`legionctl hook <event>`): reminders, load and setup notices; one dossier per session, bound again at
-  session start where the last session worked; the agent is told first when a session has none (`dossier.nudge`),
-  prompts are blocked until it has one (`dossier.gate`), and writes into another session's dossier are denied;
-- workspaces: a git worktree per dossier and repository, and one per topic for parallel agents
-  (`/legionctl:workspace`: open, status, checkpoint, merge, close); the agent is told to open one at session start and when it changed the main checkout instead;
-- commands `/legionctl:dossier`, `/legionctl:workspace`, `/legionctl:status`, `/legionctl:act`, `/legionctl:setup`,
-  `/legionctl:reminders`, `/legionctl:hooks`, `/legionctl:skills`.
-
-Settings (workspace root, reminders, hook bindings, load thresholds, dossier pattern and gate) are JSONC config:
-built-in defaults (`config/defaults.jsonc`), then `/etc/legionctl`, `~/.config/legionctl` and `<repo>/.legionctl`.
-
-Codex: `legionctl setup apply` adds the MCP server to `~/.codex/config.toml` and links the skills.
+| Part | What |
+| --- | --- |
+| MCP tools | one per operation: the command path with `_` (`kernel cmdline set` is `kernel_cmdline_set`) |
+| Skills | `ste100-style`, `glanceable-style`, `dossier-practice`, `tool-lifecycle`, `workspace-practice`, `machine-tools`, `verify-and-ship`, `sessions-and-agents` ([skills](integrations/agent-plugin/skills)) |
+| Hooks | reminders, load and setup notices; the dossier gate (no prompt until the session has a dossier); thread messages at each prompt, tool call and reply end |
+| Agents | archetypes `main-agent`, `thread-observer`, `ui-composer`; team `vanilla` |
+| Commands | `/legionctl:dossier`, `/legionctl:workspace`, `/legionctl:status`, `/legionctl:act`, `/legionctl:setup`, `/legionctl:reminders`, `/legionctl:hooks`, `/legionctl:skills` |
 
 ## Development
 
@@ -113,12 +137,11 @@ Codex: `legionctl setup apply` adds the MCP server to `~/.codex/config.toml` and
 ```bash
 make tools      # pre-commit and its hooks, Biome and tsc (bun), cargo-machete, cargo-deny
 make lint       # every pre-commit hook on all files
-make rust-lint  # rustfmt check, clippy (pedantic) with warnings as errors, cargo-machete, cargo-deny
-make js-lint    # Biome and tsc for the GNOME Shell extension
-make test       # end-to-end tests: the CLI and MCP against the real operator, the daemon against a recorded copy of this machine
+make test       # end-to-end tests: CLI and MCP against a real operator, the daemon against a recorded machine
 make ci         # what CI runs
-make package    # build the Arch package of this checkout (`make install-package` installs origin/main, see Install)
+make app-shots SHOTS=<dir>   # a screenshot of each app page, in a private headless GNOME Shell
 ```
 
-`scripts/capture-capabilities.sh` records hotkey, WMI, display, fan and power evidence (until `legionctl record`
-exists, note 16).
+After the first install, `make install-package` runs `sudo -n /usr/lib/legionctl/legionctl-install` with no
+password. It installs only the newest commit of `origin/main` whose CI run passed, built by the user
+`legionctl-build`. Details and limits: skill verify-and-ship, `refs/reference-install.md`.
