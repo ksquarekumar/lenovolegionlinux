@@ -1090,10 +1090,14 @@ fn trace_shows_each_change_as_it_happens() {
 /// are reviewed the same way.
 #[test]
 fn the_wire_format_matches_the_committed_schema() {
-    for (rel, schema) in legionctl_core::planning::schemas().into_iter().chain([
-        legionctl_core::archetypes::team_schema(),
-        legionctl_core::views::schema(),
-    ]) {
+    for (rel, schema) in legionctl_core::planning::schemas()
+        .unwrap()
+        .into_iter()
+        .chain([
+            legionctl_core::archetypes::team_schema().unwrap(),
+            legionctl_core::views::schema().unwrap(),
+        ])
+    {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join(rel);
@@ -3980,6 +3984,11 @@ fn dossier_check_finds_dangling_links_unverified_acceptance_and_stale_evidence()
         "id: EV-02\nsupports: [plan#acceptance-2]",
     );
     artifact("MEMORY/01-note.md", "supports: [plan#acceptance-9]");
+    // git cannot answer for a path outside the repository: a finding, not "not stale"
+    artifact(
+        "EVIDENCE/validation/03-outside.md",
+        "id: EV-03\nsupports: [plan#acceptance-1]\ncode: [../elsewhere.md]",
+    );
     // a plan row that names an artifact by path reaches it by its id
     let plan = std::fs::read_to_string(dossier.join("plan.md"))
         .unwrap()
@@ -4003,6 +4012,11 @@ fn dossier_check_finds_dangling_links_unverified_acceptance_and_stale_evidence()
             "MEMORY/01-note supports plan#acceptance-9, which does not exist",
             "plan#acceptance-3 has no EVIDENCE that supports it",
             "EV-01 is stale: README.md changed after it was written",
+            format!(
+                "EV-03: cannot tell if ../elsewhere.md changed after it was written: git log -1 --format=%ct -- \
+                 ../elsewhere.md: fatal: ../elsewhere.md: '../elsewhere.md' is outside repository at '{}'",
+                repo.display()
+            ),
             // the repository declares no checks (design 23, E2 rule 2)
             format!(
                 "{}: this repository has no checks of kind format, lint, build, test: run `legionctl code checks \
@@ -4315,6 +4329,36 @@ fn agent_settings_edit_with_a_diff_and_a_backup() {
     );
 }
 
+/// `agents set` on a settings file that it cannot read (Latin-1, not UTF-8) fails with the path, and the file keeps
+/// every byte: a read error is not an empty file that the write replaces with the one key.
+#[test]
+fn agents_set_never_writes_over_a_settings_file_that_it_cannot_read() {
+    let (op, home) = operator("agentsetunread");
+    let env = [("HOME", home.to_str().unwrap())];
+    let codex = home.join(".codex/config.toml");
+    std::fs::create_dir_all(codex.parent().unwrap()).unwrap();
+    let bytes = b"model = \"mod\xe8le\"\n".to_vec();
+    std::fs::write(&codex, &bytes).unwrap();
+    let o = op.run(
+        &home,
+        &env,
+        &["agents", "set", "codex", "user", "model", "gpt", "--json"],
+        "",
+    );
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success() && err.contains("config.toml"), "{err}");
+    assert_eq!(
+        std::fs::read(&codex).unwrap(),
+        bytes,
+        "the file keeps every byte"
+    );
+    assert_eq!(
+        std::fs::read_dir(codex.parent().unwrap()).unwrap().count(),
+        1,
+        "no backup and no temporary file"
+    );
+}
+
 /// Usage counts each Claude Code message once (its usage repeats on every content block) and each Codex turn, with
 /// Codex's rate-limit use.
 #[test]
@@ -4469,6 +4513,24 @@ fn an_unknown_operation_from_another_build_says_to_restart_the_operator() {
     assert_eq!(
         (error["code"].as_str(), error["message"].as_str()),
         (Some("not_found"), Some("unknown operation packages.newer"))
+    );
+}
+
+/// `images build` in a git repository whose `git rev-parse` fails (no commit yet) fails with git's error before any
+/// build: the tag is the commit, never `dev` as for a folder outside git.
+#[test]
+fn images_build_fails_when_git_cannot_give_the_commit() {
+    let (op, home) = operator("imgnocommit");
+    let repo = home.join("fresh");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&home, &repo, &["init", "--quiet"]);
+    write(&repo.join("svc/Dockerfile"), "FROM scratch\n");
+    let env = [("HOME", home.to_str().unwrap())];
+    let built = op.run(&repo, &env, &["images", "build"], "");
+    let err = String::from_utf8_lossy(&built.stderr);
+    assert!(
+        !built.status.success() && err.contains("git rev-parse --short HEAD"),
+        "{err}"
     );
 }
 

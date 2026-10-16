@@ -89,13 +89,6 @@ fn has_command(name: &str) -> bool {
     which(name).is_some()
 }
 
-fn ppd_current() -> Option<String> {
-    let out = Command::new("powerprofilesctl").arg("get").output().ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
 /// The `GSettings` schema of the fonts' antialiasing.
 const INTERFACE: &str = "org.gnome.desktop.interface";
 
@@ -172,7 +165,10 @@ fn cache_limit(ns: &str) -> Result<u64> {
 
 /// Build each service of the repository that its compose file or Dockerfiles build (`images build`).
 fn build_images(repo: &Path) -> Result<Lines> {
-    let (project, tag) = legionctl_core::images::project(repo);
+    let (project, tag) = (
+        legionctl_core::images::project_name(repo),
+        legionctl_core::images::tag(repo)?,
+    );
     let mut lines = Vec::new();
     for (name, service) in legionctl_core::images::scan_repository(repo)?.services {
         // a prebuilt image from the compose file: compose pulls it
@@ -441,14 +437,17 @@ fn pack(
     let base = match chosen {
         Some(name) => {
             lines.extend(build_images(&repo)?.lines);
-            let (project, tag) = legionctl_core::images::project(&repo);
+            let (project, tag) = (
+                legionctl_core::images::project_name(&repo),
+                legionctl_core::images::tag(&repo)?,
+            );
             legionctl_core::images::image(&project, &name, &tag)
         }
         None => container.base.clone(),
     };
     let context = legionctl_core::cache::default_path()
         .with_file_name("pack")
-        .join(legionctl_core::images::project(&repo).0);
+        .join(legionctl_core::images::project_name(&repo));
     std::fs::create_dir_all(&context)?;
     std::fs::copy(&container.client, context.join("legionctl")).with_context(|| {
         format!(
@@ -805,6 +804,8 @@ struct Plan {
     profile: Profile,
     ledger: Ledger,
     layers: Vec<Layer>,
+    /// power-profiles-daemon's profile, read once with the plan.
+    ppd: Option<String>,
 }
 
 impl Plan {
@@ -818,11 +819,13 @@ impl Plan {
         let ledger = Ledger::read(&root)?;
         let profile = profile::load(Some(profile.unwrap_or(&installed)))?.0;
         let layers = configset::load(&root, &profile, &ledger)?;
+        let ppd = legionctl_machine::ppd::active(&root)?;
         Ok(Plan {
             root,
             profile,
             ledger,
             layers,
+            ppd,
         })
     }
 
@@ -844,7 +847,7 @@ impl Plan {
             root: &self.root,
             profile: &self.profile,
             ledger: &self.ledger,
-            ppd_current: has_command("powerprofilesctl").then(ppd_current).flatten(),
+            ppd_current: self.ppd.clone(),
             has_command: &has_command,
             layers: &self.layers,
         }
@@ -2847,7 +2850,10 @@ impl Engine for Operator {
 
     fn images_run(&self, _: &Ctx, input: RepoIn) -> Result<Lines> {
         let repo = input.repo.get()?;
-        let (project, tag) = legionctl_core::images::project(repo);
+        let (project, tag) = (
+            legionctl_core::images::project_name(repo),
+            legionctl_core::images::tag(repo)?,
+        );
         let scan = legionctl_core::images::scan_repository(repo)?;
         let compose = legionctl_core::images::compose(&scan, &project, &tag);
         let file = repo.join(".legionctl/compose.json");
@@ -2876,7 +2882,7 @@ impl Engine for Operator {
     }
 
     fn images_status(&self, _: &Ctx, input: RepoIn) -> Result<Vec<ServiceState>> {
-        let (project, _) = legionctl_core::images::project(input.repo.get()?);
+        let project = legionctl_core::images::project_name(input.repo.get()?);
         self.runtime
             .block_on(crate::virt::project_containers(&project))
     }

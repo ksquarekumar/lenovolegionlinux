@@ -1,5 +1,5 @@
 //! The machine side against a recorded sysroot of this machine (2026-10-12, on AC with the AC policy applied):
-//! reads and plans through the real operator, with stand-ins for powerprofilesctl, cpupower, systemctl and
+//! reads and plans through the real operator, with stand-ins for cpupower, systemctl and
 //! nvidia-smi; and the daemon's event reactions, whose file and ledger writes run against the recorded tree.
 
 mod common;
@@ -76,11 +76,6 @@ impl Machine {
         for name in ["cpupower", "systemctl", "nvidia-smi"] {
             Self::script(&bin, name, "exit 0");
         }
-        Self::script(
-            &bin,
-            "powerprofilesctl",
-            "if [ \"$1\" = get ]; then echo performance; fi",
-        );
         // a transient unit runs here: units.log gets its program; other options than the daemon's fail it
         Self::script(
             &bin,
@@ -1303,14 +1298,15 @@ mod daemon_events {
     use legionctl_machine::sysroot::SysRoot;
 
     /// The daemon's reaction: every step as a line; file and ledger steps really run against the recorded tree,
-    /// commands (powerprofilesctl, systemctl, nvidia-smi) only as planned lines, so no test touches this machine.
+    /// commands (systemctl, nvidia-smi) and the power-profiles-daemon profile only as planned lines, so no test touches
+    /// this machine.
     fn react_and_write(m: &Machine, event: Event) -> Vec<String> {
         let mut lines = Vec::new();
         with_planner(m, |planner| {
             let steps = react(planner, event).unwrap();
             let files: Vec<Step> = steps
                 .iter()
-                .filter(|s| !matches!(s, Step::Run(_) | Step::Try(_)))
+                .filter(|s| !matches!(s, Step::Run(_) | Step::Try(_) | Step::Ppd(_)))
                 .cloned()
                 .collect();
             policy::execute(planner.root, planner.ledger, &files).unwrap();
@@ -1337,7 +1333,7 @@ mod daemon_events {
         // intel_pstate refuses PPD's EPP change while the governor is performance: governors go first (and again after)
         let ppd = lines
             .iter()
-            .position(|l| l == "would run: powerprofilesctl set balanced")
+            .position(|l| l == "would set the power-profiles-daemon profile balanced")
             .expect("PPD set");
         let first_governor = lines
             .iter()
@@ -1391,7 +1387,7 @@ mod daemon_events {
             lines = react(planner, event)
                 .unwrap()
                 .iter()
-                .filter(|s| !matches!(s, Step::Run(_) | Step::Try(_)))
+                .filter(|s| !matches!(s, Step::Run(_) | Step::Try(_) | Step::Ppd(_)))
                 .filter_map(policy::describe)
                 .collect();
         });
@@ -1599,23 +1595,18 @@ mod daemon_events {
         grouped(&out)
     }
 
-    /// The migration to configsets (todo-74): the shipped layers plan exactly the writes the profile's policy planned,
-    /// step for step, in each state above. The fixture was written by the planner before configsets.
+    /// The plans of the shipped layers in each state above, step for step, against the reference in
+    /// `tests/fixtures/plans-82wq.txt` (first written by the planner before configsets, todo-74; written again with
+    /// `LEGIONCTL_WRITE_PLANS=1` when a plan change is meant: read its diff).
     #[test]
     fn configsets_plan_exactly_the_writes_the_profile_planned() {
-        let golden = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/plans-82wq-before-configsets.txt");
-        // the knobs that were profile flags before (enable_all_idle_states, nvidia.start_*) are new in the catalog, and
-        // so is rgb.profile (todo-82)
+        let golden =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/plans-82wq.txt");
         let plans = migration_plans();
-        let plans: Vec<&str> = plans
-            .lines()
-            .filter(|l| {
-                !["cpu.idle_states = ", "nvidia.services = ", "rgb.profile = "]
-                    .iter()
-                    .any(|k| l.starts_with(k))
-            })
-            .collect();
+        if std::env::var_os("LEGIONCTL_WRITE_PLANS").is_some() {
+            std::fs::write(&golden, &plans).unwrap();
+        }
+        let plans: Vec<&str> = plans.lines().collect();
         let expected = std::fs::read_to_string(golden).unwrap();
         for (line, (want, got)) in expected.lines().zip(&plans).enumerate() {
             assert_eq!(want, *got, "first difference at line {}", line + 1);
@@ -6639,6 +6630,24 @@ mod resources {
         );
     }
 
+    /// A Windows disk that cannot be read (its by-uuid links are not readable) fails `resources list` with the path:
+    /// it is not shown as "no Windows disk" (no VM, no attach or detach) as if the machine had none.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resources_list_fails_when_the_windows_disk_cannot_be_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let m = Machine::new("resunread");
+        let _kernel = windows_machine(&m);
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "resunread");
+        assert_eq!(resource(&op, "vm:windows")["state"], "stopped");
+        let links = m.dir.join("root/dev/disk/by-uuid");
+        std::fs::set_permissions(&links, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let out = op.cli(&["resources", "list"]);
+        std::fs::set_permissions(&links, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success() && err.contains("by-uuid"), "{err}");
+    }
+
     /// The list shows each group with its state and users: the mounted Windows partition with the process in it, the
     /// NVIDIA GPU with the process that has it open, a held knob, a running session and the layers. Each act runs the
     /// existing operation as a call of its own (its effect, its polkit question, its event); the dry run of the disk
@@ -8181,6 +8190,81 @@ mod parity {
             }
         });
         loaded
+    }
+
+    /// A power-profiles-daemon stand-in: its `ActiveProfile` property, read and written over D-Bus.
+    struct Ppd(Arc<Mutex<String>>);
+
+    #[zbus::interface(name = "org.freedesktop.UPower.PowerProfiles")]
+    impl Ppd {
+        #[zbus(property)]
+        fn active_profile(&self) -> String {
+            self.0.lock().unwrap().clone()
+        }
+
+        #[zbus(property)]
+        fn set_active_profile(&mut self, profile: String) {
+            *self.0.lock().unwrap() = profile;
+        }
+    }
+
+    /// power-profiles-daemon over D-Bus, not `powerprofilesctl` (a Python program that aborted at exit under Python
+    /// 3.14 each time the daemon ran it): the dry run names the profile the policy wants and sets nothing, the apply
+    /// sets it through the daemon's property, and an installed daemon that is not on the bus fails the apply with the
+    /// cause, not "no power-profiles-daemon".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_power_profile_is_set_over_d_bus_and_a_daemon_that_does_not_answer_fails_the_apply()
+    {
+        let m = Machine::new("ppd");
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let profile = Arc::new(Mutex::new("performance".to_string()));
+        let ppd = zbus::connection::Builder::address(
+            format!("unix:path={}", m.dir.join("bus").display()).as_str(),
+        )
+        .unwrap()
+        .name("org.freedesktop.UPower.PowerProfiles")
+        .unwrap()
+        .serve_at(
+            "/org/freedesktop/UPower/PowerProfiles",
+            Ppd(profile.clone()),
+        )
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+        // installed after the daemon's start, so its first apply does not use the stand-in
+        m.set(
+            "/usr/share/dbus-1/system-services/org.freedesktop.UPower.PowerProfiles.service",
+            "[D-BUS Service]",
+        );
+        let op = on_bus(&m, "ppd");
+
+        let plan = op.ok(&["power", "apply", "--source", "battery", "--dry-run"]);
+        let wanted = plan
+            .lines()
+            .find_map(|l| l.strip_prefix("would set the power-profiles-daemon profile "))
+            .unwrap_or_else(|| panic!("no power-profiles-daemon step: {plan}"))
+            .to_string();
+        assert_ne!(wanted, "performance");
+        assert_eq!(
+            *profile.lock().unwrap(),
+            "performance",
+            "a dry run sets nothing"
+        );
+        let applied = op.ok(&["power", "apply", "--source", "battery"]);
+        assert!(
+            applied.contains(&format!("set the power-profiles-daemon profile {wanted}")),
+            "{applied}"
+        );
+        assert_eq!(*profile.lock().unwrap(), wanted);
+
+        drop(ppd);
+        let failed = op.cli(&["power", "apply", "--source", "ac"]);
+        let why = String::from_utf8_lossy(&failed.stderr);
+        assert!(
+            !failed.status.success() && why.contains("reading the power-profiles-daemon profile"),
+            "{why}"
+        );
     }
 
     /// Keyboard RGB (`OpenRGB`, knob rgb.profile): `rgb status` finds the keyboard on USB and in `OpenRGB` with its

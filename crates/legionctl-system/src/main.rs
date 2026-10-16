@@ -141,16 +141,6 @@ fn has_command(name: &str) -> bool {
         .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(name).is_file()))
 }
 
-fn ppd_current() -> Option<String> {
-    let out = std::process::Command::new("powerprofilesctl")
-        .arg("get")
-        .output()
-        .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
 /// The machine with the current profile and configset layers (read each time, so an installed change applies without a
 /// restart).
 fn on_machine<T>(root: &SysRoot, f: impl FnOnce(&Machine) -> Result<T>) -> Result<T> {
@@ -161,7 +151,7 @@ fn on_machine<T>(root: &SysRoot, f: impl FnOnce(&Machine) -> Result<T>) -> Resul
         root,
         profile: &profile,
         ledger: &ledger,
-        ppd_current: has_command("powerprofilesctl").then(ppd_current).flatten(),
+        ppd_current: legionctl_machine::ppd::active(root)?,
         has_command: &has_command,
         layers: &layers,
     })

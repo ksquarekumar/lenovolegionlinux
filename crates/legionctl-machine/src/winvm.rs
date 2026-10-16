@@ -75,20 +75,29 @@ fn source_controller(root: &SysRoot, source: &str) -> Result<Option<String>> {
     }
 }
 
-/// The `NVMe` controller that holds the Windows volume.
+/// The `NVMe` controller that holds the Windows volume; None when this machine has no Windows volume.
 ///
 /// # Errors
-/// No NTFS volume with the SYSTEM hive in the mount table or fstab, or it is not on an `NVMe` controller.
-pub fn windows_disk(root: &SysRoot) -> Result<String> {
-    let (source, target) = windows::volume(root).context(
+/// The mount table or fstab cannot be read, or the Windows volume is not on an `NVMe` controller.
+pub fn windows_disk(root: &SysRoot) -> Result<Option<String>> {
+    let Some((source, target)) = windows::volume(root)? else {
+        return Ok(None);
+    };
+    source_controller(root, &source)?
+        .with_context(|| {
+            format!(
+                "the Windows volume {source} ({}) is not on an NVMe controller",
+                target.display()
+            )
+        })
+        .map(Some)
+}
+
+/// The Windows disk, or an error that says why there is none.
+fn require_disk(root: &SysRoot) -> Result<String> {
+    windows_disk(root)?.context(
         "no Windows volume: no NTFS entry of the mount table or /etc/fstab holds Windows\\System32\\config\\SYSTEM",
-    )?;
-    source_controller(root, &source)?.with_context(|| {
-        format!(
-            "the Windows volume {source} ({}) is not on an NVMe controller",
-            target.display()
-        )
-    })
+    )
 }
 
 /// The systemd unit name of a mount point (`/mnt/windows-system` -> `mnt-windows\x2dsystem`), as `systemd-escape --path`.
@@ -131,12 +140,15 @@ fn fstab_targets(root: &SysRoot, disk: &str) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-/// The mount points of the Windows disk's partitions in `/etc/fstab`: what `disk_plan` attaches and detaches.
+/// The mount points of the Windows disk's partitions in `/etc/fstab`: what `disk_plan` attaches and detaches. None
+/// when this machine has no Windows volume.
 ///
 /// # Errors
-/// No Windows disk.
-pub fn disk_targets(root: &SysRoot) -> Result<Vec<PathBuf>> {
-    fstab_targets(root, &windows_disk(root)?)
+/// See [`windows_disk`].
+pub fn disk_targets(root: &SysRoot) -> Result<Option<Vec<PathBuf>>> {
+    windows_disk(root)?
+        .map(|disk| fstab_targets(root, &disk))
+        .transpose()
 }
 
 /// The steps that give the Windows disk's partitions to Linux (`attach`: their automounts started) or take them away
@@ -145,7 +157,7 @@ pub fn disk_targets(root: &SysRoot) -> Result<Vec<PathBuf>> {
 /// # Errors
 /// No Windows disk, or no fstab entry on it.
 pub fn disk_plan(root: &SysRoot, attach: bool) -> Result<Vec<Step>> {
-    let disk = windows_disk(root)?;
+    let disk = require_disk(root)?;
     let units: Vec<String> = fstab_targets(root, &disk)?
         .iter()
         .flat_map(|target| {
@@ -238,7 +250,7 @@ fn refusals(root: &SysRoot) -> Result<Vec<String>> {
     if state.fast_startup == Some(true) {
         why.push("Fast Startup is on: Windows hibernates at shut down; turn it off in Windows (powercfg /h off)".into());
     }
-    if let Some((_, target)) = windows::volume(root)
+    if let Some((_, target)) = windows::volume(root)?
         && hibernated(root, &target)
     {
         why.push(format!("Windows is hibernated ({}/hiberfil.sys): start it on the machine and shut it down fully", target.display()));
@@ -256,7 +268,7 @@ pub fn begin(root: &SysRoot, uid: u32, ask: &Ask) -> Result<(Vec<String>, Record
     if !why.is_empty() {
         bail!("the Windows VM cannot start:\n- {}", why.join("\n- "));
     }
-    let disk = windows_disk(root)?;
+    let disk = require_disk(root)?;
     let mut record = Record::default();
     let mut lines = Vec::new();
     let done = (|| -> Result<()> {

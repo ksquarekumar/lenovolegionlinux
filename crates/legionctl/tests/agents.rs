@@ -673,3 +673,50 @@ fn setup_never_writes_over_a_codex_config_that_it_cannot_read() {
     );
     assert!(!config.with_extension("toml.legionctl-bak").exists());
 }
+
+/// `setup check` reads ctx's own status: each agent's item from its JSON, and an output that is not that JSON is one
+/// item whose status holds the output, not "nothing to report".
+#[test]
+fn setup_check_shows_ctx_status_and_the_output_that_it_cannot_read() {
+    let lab = Lab::new("ctx-status", &shipped_plugin());
+    write(
+        &lab.home.join(".local/bin/ctx"),
+        r#"#!/bin/sh
+case "$1 $2 $3" in
+"integrations status skill") echo '{"results":[{"agent":"claude-code","status":"current","path":"/h/.claude/skills/ctx"},{"agent":"codex","status":"missing","path":null}]}' ;;
+"integrations status mcp") echo 'Error: config is locked' ;;
+*) echo ctx 0.0.0 ;;
+esac
+"#,
+    );
+    std::fs::set_permissions(
+        lab.home.join(".local/bin/ctx"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let check: Value = serde_json::from_str(&lab.op.ok(&["setup", "check", "--json"])).unwrap();
+    let ctx: Vec<(&str, &str, &str)> = check["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["what"].as_str().unwrap().starts_with("ctx "))
+        .map(|i| {
+            (
+                i["agent"].as_str().unwrap(),
+                i["status"].as_str().unwrap(),
+                i["path"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(ctx.len(), 3, "{check:#}");
+    assert_eq!(ctx[0], ("claude-code", "current", "/h/.claude/skills/ctx"));
+    assert_eq!(ctx[1], ("codex", "missing", ""));
+    assert_eq!(ctx[2].0, "all");
+    assert!(
+        ctx[2]
+            .1
+            .contains("ctx integrations status mcp gave: Error: config is locked"),
+        "{}",
+        ctx[2].1
+    );
+}

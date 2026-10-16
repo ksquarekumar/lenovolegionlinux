@@ -407,11 +407,10 @@ fn compose_details(service: &mut Service, repo: &Path, svc: &serde_json::Value) 
     }
 }
 
-/// The project name and image tag of a repository: its folder name, and its short commit (`dev` outside git).
+/// The project name of a repository: its folder name, lower case, with each other character as `-`.
 #[must_use]
-pub fn project(repo: &Path) -> (String, String) {
-    let name: String = repo
-        .file_name()
+pub fn project_name(repo: &Path) -> String {
+    repo.file_name()
         .map(|n| n.to_string_lossy().to_lowercase())
         .unwrap_or_default()
         .chars()
@@ -422,19 +421,18 @@ pub fn project(repo: &Path) -> (String, String) {
                 '-'
             }
         })
-        .collect();
-    let tag = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["rev-parse", "--short", "HEAD"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map_or_else(
-            || "dev".into(),
-            |o| String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        );
-    (name, tag)
+        .collect()
+}
+
+/// The image tag of a repository: its short commit, or `dev` for a folder outside git.
+///
+/// # Errors
+/// The folder is in git and `git rev-parse --short HEAD` fails (no commit yet, or git does not run).
+pub fn tag(repo: &Path) -> Result<String> {
+    if !repo.ancestors().any(|d| d.join(".git").exists()) {
+        return Ok("dev".into());
+    }
+    crate::workspace::git(repo, &["rev-parse", "--short", "HEAD"])
 }
 
 /// The image reference of `service`: `localhost/<project>/<service>:<tag>`.

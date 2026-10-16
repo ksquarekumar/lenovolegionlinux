@@ -143,7 +143,7 @@ pub const WINDOWS_UNIT: &str = legionctl_machine::winvm::UNIT;
 pub fn vm_disk(dir: &Path) -> PathBuf {
     vm_root().join(format!(
         "{}.qcow2",
-        crate::images::project(&place_of(dir)).0
+        crate::images::project_name(&place_of(dir))
     ))
 }
 
@@ -945,7 +945,7 @@ pub fn vm_gpu_mark(disk: &Path) -> PathBuf {
 #[must_use]
 pub fn agent_image(dir: &Path) -> String {
     crate::images::image(
-        &crate::images::project(&place_of(dir)).0,
+        &crate::images::project_name(&place_of(dir)),
         "legionctl-agent",
         "latest",
     )

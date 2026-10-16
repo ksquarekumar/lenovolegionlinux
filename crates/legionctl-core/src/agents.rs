@@ -244,7 +244,8 @@ fn toml_set(text: &str, key: &[&str], value: &serde_json::Value) -> Result<Strin
 /// the changed lines, a backup of the file as it was (`<file>.legionctl-<time>`), then the write. Unless `dry_run`.
 ///
 /// # Errors
-/// The file does not parse, a parent of the key is not an object or table, or the write fails.
+/// The file cannot be read (a missing file is empty) or does not parse, a parent of the key is not an object or
+/// table, or the write fails.
 pub fn set(
     path: &Path,
     key: &str,
@@ -256,7 +257,7 @@ pub fn set(
         parts.iter().all(|p| !p.is_empty()),
         "the key {key} has an empty part"
     );
-    let before = std::fs::read_to_string(path).unwrap_or_default();
+    let before = legionctl_machine::sysroot::read_file(path)?.unwrap_or_default();
     let toml = path.extension().is_some_and(|e| e == "toml");
     let after = if toml {
         toml_set(&before, &parts, &value)

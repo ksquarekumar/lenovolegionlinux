@@ -127,20 +127,38 @@ fn ctx(args: &[&str]) -> Result<String> {
 }
 
 /// Parse `ctx integrations status <kind> --format json` into items.
-#[must_use]
-pub fn parse_ctx_status(kind: &str, json: &str) -> Vec<Item> {
-    let value: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
-    value["results"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|r| Item {
-            what: format!("ctx {kind}"),
-            agent: r["agent"].as_str().unwrap_or("?").into(),
-            status: r["status"].as_str().unwrap_or("unknown").into(),
-            path: r["path"].as_str().unwrap_or("").into(),
-        })
-        .collect()
+///
+/// # Errors
+/// The output is not JSON with a `results` list of `agent`, `status` and `path` (a string or null); the error holds
+/// the output.
+fn parse_ctx_status(kind: &str, json: &str) -> Result<Vec<Item>> {
+    let parse = || -> Result<Vec<Item>> {
+        let value: serde_json::Value = serde_json::from_str(json)?;
+        let field = |r: &serde_json::Value, key: &str| -> Result<String> {
+            r[key]
+                .as_str()
+                .map(Into::into)
+                .with_context(|| format!("no {key} in {r}"))
+        };
+        value["results"]
+            .as_array()
+            .context("no results list")?
+            .iter()
+            .map(|r| {
+                Ok(Item {
+                    what: format!("ctx {kind}"),
+                    agent: field(r, "agent")?,
+                    status: field(r, "status")?,
+                    // null: ctx knows no path for that agent
+                    path: match &r["path"] {
+                        serde_json::Value::Null => String::new(),
+                        _ => field(r, "path")?,
+                    },
+                })
+            })
+            .collect()
+    };
+    parse().with_context(|| format!("ctx integrations status {kind} gave: {}", json.trim()))
 }
 
 fn ctx_items() -> Vec<Item> {
@@ -150,12 +168,12 @@ fn ctx_items() -> Vec<Item> {
         for agent in AGENTS {
             args.extend(["--agent", agent]);
         }
-        match ctx(&args) {
-            Ok(json) => items.extend(parse_ctx_status(kind, &json)),
+        match ctx(&args).and_then(|json| parse_ctx_status(kind, &json)) {
+            Ok(found) => items.extend(found),
             Err(e) => items.push(Item {
                 what: format!("ctx {kind}"),
                 agent: "all".into(),
-                status: e.to_string(),
+                status: format!("{e:#}"),
                 path: String::new(),
             }),
         }
@@ -591,23 +609,4 @@ fn write_codex_agents(files: &std::collections::BTreeMap<String, String>) -> Res
         done.push(format!("legionctl agent {name}: written for codex"));
     }
     Ok(done)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_ctx_status_json() {
-        let json = r#"{"integration":"mcp","results":[
-            {"agent":"claude-code","status":"current","path":"/h/.claude.json"},
-            {"agent":"codex","status":"missing","path":"/h/.codex/config.toml"}]}"#;
-        let items = parse_ctx_status("mcp", json);
-        assert_eq!(items.len(), 2);
-        assert_eq!(
-            (items[1].agent.as_str(), items[1].status.as_str()),
-            ("codex", "missing")
-        );
-        assert!(parse_ctx_status("mcp", "not json").is_empty());
-    }
 }

@@ -21,6 +21,7 @@ pub mod ledger;
 pub mod load;
 pub mod mounts;
 pub mod policy;
+pub mod ppd;
 pub mod profile;
 pub mod react;
 pub mod rgb;

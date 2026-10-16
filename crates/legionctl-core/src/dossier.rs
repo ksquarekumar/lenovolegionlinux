@@ -1250,29 +1250,20 @@ impl Dossiers {
             .map(|s| format!("plan.md has no '## {s}' section"))
             .collect();
         // code paths of EVIDENCE are relative to the dossier's repository (its open workspace's main checkout)
-        let workspace = self
-            .workspaces(Some(dossier))
-            .ok()
-            .and_then(|w| w.into_iter().next());
+        let workspace = match self.workspaces(Some(dossier)) {
+            Ok(w) => w.into_iter().next(),
+            Err(e) => {
+                findings.push(format!("the workspaces of {dossier} cannot be read: {e:#}"));
+                None
+            }
+        };
         let repo = workspace.as_ref().map(|w| w.repo.clone());
-        let changed_after = |path: &str, written: std::time::SystemTime| {
-            let Some(repo) = &repo else { return false };
-            let last = std::process::Command::new("git")
-                .arg("-C")
-                .arg(repo)
-                .args(["log", "-1", "--format=%ct", "--", path])
-                .output()
-                .ok()
-                .and_then(|o| {
-                    String::from_utf8_lossy(&o.stdout)
-                        .trim()
-                        .parse::<u64>()
-                        .ok()
-                });
-            let written = written
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs());
-            last.is_some_and(|t| t > written)
+        let changed_after = |path: &str, written: std::time::SystemTime| -> Result<bool> {
+            let Some(repo) = &repo else { return Ok(false) };
+            let last = crate::workspace::git(repo, &["log", "-1", "--format=%ct", "--", path])?;
+            let written = written.duration_since(std::time::UNIX_EPOCH)?.as_secs();
+            // empty: the file has no commit
+            Ok(!last.is_empty() && last.parse::<u64>()? > written)
         };
         let dir = self.root.join(dossier);
         let graph = crate::graph::build(&dir);

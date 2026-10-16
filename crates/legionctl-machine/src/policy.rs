@@ -73,6 +73,8 @@ pub enum Step {
     },
     /// Load an `OpenRGB` profile (`rgb.profile`) and record it.
     Rgb(String),
+    /// Set the power-profiles-daemon profile over D-Bus.
+    Ppd(String),
     /// One EC RAM byte through port I/O (the EC fan lock only).
     Ec {
         addr: u16,
@@ -108,8 +110,8 @@ pub struct Options {
     pub keep_override: bool,
 }
 
-/// What the planner needs besides the sysroot: the ledger, power-profiles-daemon's current profile, which commands
-/// exist, and the configset layers.
+/// What the planner needs besides the sysroot: the ledger, power-profiles-daemon's current profile ([`crate::ppd::active`]:
+/// none when it is not installed), which commands exist, and the configset layers.
 pub struct Machine<'a> {
     pub root: &'a SysRoot,
     pub profile: &'a Profile,
@@ -158,13 +160,12 @@ impl Machine<'_> {
         }
     }
 
-    /// Keep power-profiles-daemon (GNOME Power Mode) in step instead of fighting it.
+    /// Keep power-profiles-daemon (GNOME Power Mode) in step instead of fighting it; nothing when it is not installed.
     fn power_profile(&self, steps: &mut Vec<Step>, wanted: Option<&str>) {
-        if let Some(wanted) = wanted
-            && (self.has_command)("powerprofilesctl")
-            && self.ppd_current.as_deref() != Some(wanted)
+        if let (Some(wanted), Some(current)) = (wanted, &self.ppd_current)
+            && current != wanted
         {
-            self.run(steps, &["powerprofilesctl", "set", wanted]);
+            steps.push(Step::Ppd(wanted.into()));
         }
     }
 
@@ -619,6 +620,9 @@ pub fn describe(step: &Step) -> Option<String> {
         Step::Hold { path, value: None } => Some(format!("would release {path}")),
         Step::Acpi(call) => Some(format!("would call {call}")),
         Step::Rgb(profile) => Some(format!("would load the OpenRGB profile {profile}")),
+        Step::Ppd(profile) => Some(format!(
+            "would set the power-profiles-daemon profile {profile}"
+        )),
         Step::LoaderVar { name, value } => {
             Some(format!("would set the EFI variable {name} to {value}"))
         }
@@ -735,6 +739,10 @@ fn execute_one(root: &SysRoot, ledger: &Ledger, step: &Step, out: &mut Vec<Strin
             out.push(format!(
                 "loaded the OpenRGB profile {profile} (was {before})"
             ));
+        }
+        Step::Ppd(profile) => {
+            crate::ppd::set(profile)?;
+            out.push(format!("set the power-profiles-daemon profile {profile}"));
         }
         Step::FanCurve(levels) => out.push(fan::write_curve(root, levels)?),
         Step::Fan { key, value } => ledger.set_fan(*key, value.as_deref())?,

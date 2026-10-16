@@ -291,7 +291,7 @@ impl Graph {
     pub fn findings(
         &self,
         dir: &Path,
-        changed_after: &dyn Fn(&str, std::time::SystemTime) -> bool,
+        changed_after: &dyn Fn(&str, std::time::SystemTime) -> anyhow::Result<bool>,
     ) -> Vec<String> {
         let ids: BTreeSet<&str> = self.nodes.iter().map(|n| n.id.as_str()).collect();
         let mut out: Vec<String> = self
@@ -330,11 +330,16 @@ impl Graph {
             {
                 let path = edge.to.trim_start_matches("code:");
                 let file = path.split('#').next().unwrap_or(path);
-                if changed_after(file, written) {
-                    out.push(format!(
+                match changed_after(file, written) {
+                    Ok(true) => out.push(format!(
                         "{} is stale: {file} changed after it was written",
                         evidence.id
-                    ));
+                    )),
+                    Ok(false) => {}
+                    Err(e) => out.push(format!(
+                        "{}: cannot tell if {file} changed after it was written: {e:#}",
+                        evidence.id
+                    )),
                 }
             }
         }

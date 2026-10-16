@@ -49,7 +49,7 @@ fn resource(
 /// The installed Windows in a VM (when this machine has a Windows disk), and each container and VM of `virt status`.
 fn vm(op: &Operator, ctx: &Ctx, root: &SysRoot) -> Result<Vec<Resource>> {
     let mut out = Vec::new();
-    if winvm::windows_disk(root).is_ok() {
+    if winvm::windows_disk(root)?.is_some() {
         let unit = format!("{}.service", legionctl_core::session::WINDOWS_UNIT);
         let state = if !unit_active(&unit) {
             "stopped"
@@ -159,7 +159,7 @@ fn gpu(op: &Operator, ctx: &Ctx, root: &SysRoot) -> Result<Vec<Resource>> {
 /// partitions attach and detach.
 fn disk(root: &SysRoot) -> Result<(Vec<Resource>, usize)> {
     // no Windows disk: no partition to attach or detach
-    let windows = winvm::disk_targets(root).unwrap_or_default();
+    let windows = winvm::disk_targets(root)?.unwrap_or_default();
     let (mounts, not_visible) = mounts::list(root)?;
     let resources = mounts
         .into_iter()

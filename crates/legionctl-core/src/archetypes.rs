@@ -276,12 +276,14 @@ impl Flow {
 }
 
 /// The JSON schema of team files, with its repository path.
-#[must_use]
-pub fn team_schema() -> (&'static str, Value) {
-    (
+///
+/// # Errors
+/// The schema does not serialize.
+pub fn team_schema() -> Result<(&'static str, Value)> {
+    Ok((
         "integrations/agent-plugin/teams/team.schema.json",
-        serde_json::to_value(schemars::schema_for!(Team)).unwrap_or_default(),
-    )
+        serde_json::to_value(schemars::schema_for!(Team))?,
+    ))
 }
 
 /// Where a member runs: its own operator session, a Claude Code teammate (a plugin agent type of the lead), or a

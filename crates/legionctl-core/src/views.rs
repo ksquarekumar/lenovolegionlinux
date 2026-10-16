@@ -124,12 +124,14 @@ pub struct View {
 }
 
 /// The JSON schema of a view file, as `docs/api/view.schema.json` holds it.
-#[must_use]
-pub fn schema() -> (&'static str, Value) {
-    (
+///
+/// # Errors
+/// The schema does not serialize.
+pub fn schema() -> Result<(&'static str, Value)> {
+    Ok((
         "docs/api/view.schema.json",
-        serde_json::to_value(schemars::schema_for!(View)).unwrap_or_default(),
-    )
+        serde_json::to_value(schemars::schema_for!(View))?,
+    ))
 }
 
 /// The `{param}` names in the strings of `value`.

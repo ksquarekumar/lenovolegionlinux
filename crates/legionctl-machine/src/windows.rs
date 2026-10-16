@@ -78,29 +78,35 @@ pub fn dirty_ntfs() -> Vec<String> {
 }
 
 /// The Windows volume: an NTFS volume of the mount table or of `/etc/fstab` (an automount mounts it on access) that
-/// holds the SYSTEM hive; its source (`/dev/...` or `UUID=...`) and mount point.
-#[must_use]
-pub fn volume(root: &SysRoot) -> Option<(String, PathBuf)> {
-    ["/proc/self/mounts", "/etc/fstab"]
-        .iter()
-        .filter_map(|table| std::fs::read_to_string(root.path(table)).ok())
-        .flat_map(|text| {
-            text.lines()
-                .filter(|l| !l.trim_start().starts_with('#'))
-                .filter_map(|l| {
-                    let mut fields = l.split_whitespace();
-                    let source = fields.next()?.to_string();
-                    let target = fields.next()?;
-                    matches!(fields.next()?, "ntfs3" | "ntfs" | "ntfs-3g" | "fuseblk")
-                        .then(|| (source, PathBuf::from(target.replace("\\040", " "))))
-                })
-                .collect::<Vec<_>>()
-        })
-        .find(|(_, target)| root.path(target).join(SYSTEM_HIVE).is_file())
+/// holds the SYSTEM hive; its source (`/dev/...` or `UUID=...`) and mount point. None when no volume holds it.
+///
+/// # Errors
+/// The mount table or `/etc/fstab` is there but cannot be read.
+pub fn volume(root: &SysRoot) -> Result<Option<(String, PathBuf)>> {
+    for table in ["/proc/self/mounts", "/etc/fstab"] {
+        let Some(text) = root.read(table)? else {
+            continue;
+        };
+        let found = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .filter_map(|l| {
+                let mut fields = l.split_whitespace();
+                let source = fields.next()?.to_string();
+                let target = fields.next()?;
+                matches!(fields.next()?, "ntfs3" | "ntfs" | "ntfs-3g" | "fuseblk")
+                    .then(|| (source, PathBuf::from(target.replace("\\040", " "))))
+            })
+            .find(|(_, target)| root.path(target).join(SYSTEM_HIVE).is_file());
+        if found.is_some() {
+            return Ok(found);
+        }
+    }
+    Ok(None)
 }
 
-fn system_hive(root: &SysRoot) -> Option<PathBuf> {
-    volume(root).map(|(_, target)| root.path(target).join(SYSTEM_HIVE))
+fn system_hive(root: &SysRoot) -> Result<Option<PathBuf>> {
+    Ok(volume(root)?.map(|(_, target)| root.path(target).join(SYSTEM_HIVE)))
 }
 
 /// `RealTimeIsUniversal` and `HiberbootEnabled` of the control set Windows starts with.
@@ -147,7 +153,7 @@ pub fn state(root: &SysRoot) -> Result<WindowsState> {
             "the next start boots Windows (BootNext {next}) already"
         ));
     }
-    let hive = system_hive(root);
+    let hive = system_hive(root)?;
     let (mut rtc_utc, mut fast_startup) = (None, None);
     if let Some(path) = &hive {
         match Hive::open(path).and_then(|h| registry(&h)) {

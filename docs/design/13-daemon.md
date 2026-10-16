@@ -155,7 +155,8 @@ may fail by design. The ledger has one writer: the daemon opens `system.db` for 
 | `pacman -U` | `kernel install` | `Step::Unit`: a package changes the system, and its hooks run mkinitcpio, DKMS and `--boot-rebuild` |
 | `ukify`, `sbsign` | `boot install`, `rebuild`, `kernel cmdline`, sets | `Step::Unit`: ukify reads the kernel and initramfs and writes temporary files, which the daemon's `/tmp` (read-only) does not allow |
 | `efibootmgr` (changes) | `boot`, `kernel try`, `kernel cmdline`, `windows reboot` | `Step::Unit` (user decision). A read (`efibootmgr` with no argument) runs in the daemon |
-| `systemctl`, `loginctl`, `udevadm`, `powerprofilesctl`, `logger` | greeter, Windows VM and disk, cleanup, GPU, reboot, journal | in the daemon: they ask a manager over a socket, and the manager writes its own files |
+| `systemctl`, `loginctl`, `udevadm`, `logger` | greeter, Windows VM and disk, cleanup, GPU, reboot, journal | in the daemon: they ask a manager over a socket, and the manager writes its own files |
+| power-profiles-daemon (`ActiveProfile` over D-Bus, `ppd.rs`; not `powerprofilesctl`, a Python program that aborted at exit under Python 3.14) | power | in the daemon: a D-Bus call; the manager writes its own files |
 | `modprobe`, `cpupower`, `chattr`, `sbverify`, `bsdtar`, `modinfo`, `dkms status`, `nvidia-smi` | VFIO, power, boot checks, telemetry | in the daemon: they read, or write `/sys` |
 
 Not under the unit: the one-shot modes that pacman hooks run (`--boot-rebuild`, `--remove-check`, `--greeter-remove`)

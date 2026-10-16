@@ -125,11 +125,12 @@ the daemon applies `legionctl.set=<name>` from the kernel line for that start on
 ### Migration
 
 The shipped profile is in the package, and holds stay in `system.db`, so nothing moves on the machine. The proof:
-`tests/fixtures/plans-82wq-before-configsets.txt` holds each step that the planner of the profile made (written by
-that planner, commit before configsets) on the recorded machine: as recorded and with each policy file scrambled,
-on AC and on battery, with no Fn+Q choice and with five kinds of choice, for start, power change, resume, tick and
-Fn+Q, for `power apply` of each source, and each knob's wanted value. `configsets_plan_exactly_the_writes_the_profile_planned`
-plans the same states with the layers and compares each step (only the wording of notes and warnings is free).
+`tests/fixtures/plans-82wq.txt` holds each step that the planner makes on the recorded machine: as recorded and with
+each policy file scrambled, on AC and on battery, with no Fn+Q choice and with five kinds of choice, for start, power
+change, resume, tick and Fn+Q, for `power apply` of each source, and each knob's wanted value. The planner of the
+profile wrote it first (the commit before configsets); `configsets_plan_exactly_the_writes_the_profile_planned`
+plans the same states with the layers and compares each step. A plan change that is meant writes the file again
+(`LEGIONCTL_WRITE_PLANS=1`), and its diff is read before the commit.
 The `daemon_events` tests pass with unchanged expectations.
 
 ### Open

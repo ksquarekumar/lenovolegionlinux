@@ -145,18 +145,20 @@ pub struct Unit {
 }
 
 /// The JSON schemas of the planning files, with the repository path of each.
-#[must_use]
-pub fn schemas() -> [(&'static str, Value); 2] {
-    [
+///
+/// # Errors
+/// A schema does not serialize.
+pub fn schemas() -> Result<[(&'static str, Value); 2]> {
+    Ok([
         (
             "planning/feature.schema.json",
-            serde_json::to_value(schemars::schema_for!(Feature)).unwrap_or_default(),
+            serde_json::to_value(schemars::schema_for!(Feature))?,
         ),
         (
             "planning/units.schema.json",
-            serde_json::to_value(schemars::schema_for!(Units)).unwrap_or_default(),
+            serde_json::to_value(schemars::schema_for!(Units))?,
         ),
-    ]
+    ])
 }
 
 /// The plan of one tree: its features (with their files), its units, and the files that did not parse.
