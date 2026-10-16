@@ -900,6 +900,12 @@ operations! {
     /// Check a view file and save it into the user's layer, or the repository's (`--repo`), as the next version of the
     /// view of that name; that version shows, and the screens that show the view read it again.
     views_save / ViewsSave = "views.save", Workspace, ViewSaveIn => Lines;
+    /// An intent's view (DESIGN-09 G5): the stored view whose intent it is word for word; else, with config
+    /// `views.rlcd`, the stored view that rlcd picks; else the ui-composer (the agent over ACP, with its model from
+    /// `views.composer_models`) makes a view, or with `--view` the next version of that view. The view is checked
+    /// before it is saved; a view that fails its check is an error with its reason. The state given to models has
+    /// its secrets removed.
+    ask / Ask = "ask", Workspace, AskIn => ViewAnswer;
     /// Show another version of a view: undo, redo, reset (to the pinned version, else the seed), pin, or a number.
     views_version / ViewsVersion = "views.version", Session, ViewVersionIn => Lines;
     /// A view with its data in the shape of its widget; the text is for agents and terminals.

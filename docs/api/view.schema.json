@@ -316,7 +316,7 @@
           "const": "diff"
         },
         {
-          "description": "An array: one row each (the fields of `columns` for an object).",
+          "description": "An array: one row each (the fields of `columns` for an object); one object: a row per field of `columns`\n(all its fields without them), \"field: value\".",
           "type": "string",
           "const": "list"
         },

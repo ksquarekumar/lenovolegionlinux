@@ -12521,6 +12521,14 @@
           ],
           "description": "The ACP session of an earlier run (its `acp`) to go on in: the agent loads it, so it keeps the conversation.\nThe run fails when the agent cannot load sessions.",
           "default": null
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The agent's model for this run (ACP `session/set_model`: `haiku`, `gpt-6-luna`); the run fails when the\nagent does not take it.",
+          "default": null
         }
       },
       "required": [
@@ -16967,6 +16975,970 @@
       "description": "Lines of output (dossier rows, messages).",
       "title": "Lines",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "ask": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "intent": {
+          "type": "string",
+          "description": "What to see, in your words (\"why is the CPU hot\"), or the change of the view `--view` (\"add the fan curve\")."
+        },
+        "view": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The view to change: the answer is its next version.",
+          "default": null
+        },
+        "params": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The view's parameters as `name=value` (its data sample is read with them).",
+          "default": []
+        },
+        "agent": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The agent that composes (a name of `session.acp`; its model from config `views.composer_models`); default\nconfig `app.agent`.",
+          "default": null
+        },
+        "dossier": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The dossier, account and ACP session of the composer's run (as `session run`).",
+          "default": null
+        },
+        "account": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "acp": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "stored": {
+          "type": "boolean",
+          "description": "Only a stored view answers (its intent, or rlcd's pick): the composer does not run.",
+          "default": false
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in a repository: its views layer and config apply.",
+          "default": "."
+        }
+      },
+      "required": [
+        "intent"
+      ],
+      "title": "AskIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "route": {
+          "type": "string",
+          "description": "stored, rlcd or composer."
+        },
+        "view": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The view that answers; none when the composer answered with text only, or its view failed its check."
+        },
+        "text": {
+          "type": "string",
+          "description": "The composer's words for the user (the view's spec taken out)."
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The composer's view failed `views check`: why. Nothing was saved."
+        },
+        "data": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string",
+              "description": "The tab's words, and the intent the view answers."
+            },
+            "intent": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "widget": {
+              "type": "string",
+              "enum": [
+                "table",
+                "tree",
+                "gauge",
+                "sparkline",
+                "markdown",
+                "diff",
+                "list",
+                "stack",
+                "stat",
+                "chart",
+                "graph",
+                "form",
+                "timeline"
+              ],
+              "description": "A widget of the closed set of a view (design 23, C4)."
+            },
+            "columns": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "table: the header words."
+            },
+            "rows": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "description": "table: cells; list and tree: one cell per row."
+            },
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "The group of each row (empty: no groups), and the groups in their order."
+            },
+            "group_order": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "fold": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "minimum": 0,
+              "description": "A group with more rows than this starts folded."
+            },
+            "marks": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "description": "table: each cell's state: \"\", ok, warn, critical."
+            },
+            "numbers": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "format": "double"
+              },
+              "description": "gauge: the value; sparkline: the values; stat: its trend."
+            },
+            "max": {
+              "type": "number",
+              "format": "double",
+              "description": "gauge: the value of a full gauge."
+            },
+            "text": {
+              "type": "string",
+              "description": "markdown and diff; stat: the value."
+            },
+            "unit": {
+              "type": "string",
+              "description": "stat: the unit, the note (or the cause of a missing value) and the state (ok, warn, critical, missing)."
+            },
+            "note": {
+              "type": "string"
+            },
+            "level": {
+              "type": "string"
+            },
+            "series": {
+              "type": "array",
+              "items": {
+                "description": "One line of a chart: (x, y) points; x is seconds since the epoch when the chart's x is a time.",
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "points": {
+                    "type": "array",
+                    "items": {
+                      "type": "array",
+                      "prefixItems": [
+                        {
+                          "type": "number",
+                          "format": "double"
+                        },
+                        {
+                          "type": "number",
+                          "format": "double"
+                        }
+                      ],
+                      "minItems": 2,
+                      "maxItems": 2
+                    }
+                  },
+                  "labels": {
+                    "description": "Each point's x as it shows.",
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "name",
+                  "points",
+                  "labels"
+                ]
+              },
+              "description": "chart: its lines (one per kind), and whether x is a time."
+            },
+            "x_time": {
+              "type": "boolean"
+            },
+            "parts": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ViewData"
+              },
+              "description": "stack: its views."
+            },
+            "actions": {
+              "type": "array",
+              "items": {
+                "description": "A button of a view: the operation it runs with this input, with its normal approval.",
+                "type": "object",
+                "properties": {
+                  "label": {
+                    "type": "string"
+                  },
+                  "op": {
+                    "type": "string"
+                  },
+                  "input": true
+                },
+                "required": [
+                  "label",
+                  "op",
+                  "input"
+                ]
+              },
+              "description": "The view's buttons, and each row's."
+            },
+            "row_actions": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "description": "A button of a view: the operation it runs with this input, with its normal approval.",
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string"
+                    },
+                    "op": {
+                      "type": "string"
+                    },
+                    "input": true
+                  },
+                  "required": [
+                    "label",
+                    "op",
+                    "input"
+                  ]
+                }
+              }
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The source failed, or its answer does not fit the widget."
+            },
+            "refresh": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "The event kinds after which the view reads again (`*` at the end matches any rest), and its live period."
+            },
+            "every": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
+            "version": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0,
+              "description": "The version that shows (0: the seed) and the versions there are."
+            },
+            "versions": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              }
+            },
+            "nodes": {
+              "type": "array",
+              "items": {
+                "description": "A node of a graph view.",
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "count": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  "state": {
+                    "description": "ok, warn, critical, or empty.",
+                    "type": "string"
+                  },
+                  "marked": {
+                    "type": "boolean"
+                  },
+                  "leaf": {
+                    "type": "boolean"
+                  },
+                  "children": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/ViewNode"
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "label",
+                  "kind",
+                  "state",
+                  "marked",
+                  "leaf",
+                  "children"
+                ]
+              },
+              "description": "graph: its nodes and edges, the parameters a click sets (expand: the children; select: the leaf), and\nwhat a mark means."
+            },
+            "edges": {
+              "type": "array",
+              "items": {
+                "description": "An edge of a graph view.",
+                "type": "object",
+                "properties": {
+                  "from": {
+                    "type": "string"
+                  },
+                  "to": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "from",
+                  "to",
+                  "kind"
+                ]
+              }
+            },
+            "expand": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "select": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "legend": {
+              "type": "string"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "The parameters it was read with."
+            }
+          },
+          "required": [
+            "name",
+            "title",
+            "widget",
+            "columns",
+            "rows",
+            "groups",
+            "group_order",
+            "marks",
+            "numbers",
+            "max",
+            "text",
+            "unit",
+            "note",
+            "level",
+            "series",
+            "x_time",
+            "parts",
+            "actions",
+            "row_actions",
+            "refresh",
+            "version",
+            "versions",
+            "nodes",
+            "edges",
+            "legend",
+            "params"
+          ],
+          "description": "The view with its data (the terminal form prints it)."
+        },
+        "run": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string",
+              "description": "The agent's answer."
+            },
+            "ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "permissions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Each permission the agent asked for, and the answer (the sandbox and the gates are the boundary, so asks\ninside it are allowed)."
+            },
+            "acp": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The agent's ACP session: give it as `--acp` to the next run to go on in it."
+            }
+          },
+          "required": [
+            "id",
+            "text",
+            "ms",
+            "permissions"
+          ],
+          "description": "The composer's run: its session and ACP session (the chat bar goes on in it)."
+        },
+        "prompt_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The composer's request and answer in tokens (an estimate: 4 characters each)."
+        },
+        "answer_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "route",
+        "text",
+        "prompt_tokens",
+        "answer_tokens"
+      ],
+      "description": "What answered an intent: a stored view, rlcd's pick, or the composer's view (or text).",
+      "title": "ViewAnswer",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "ViewData": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string",
+              "description": "The tab's words, and the intent the view answers."
+            },
+            "intent": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "widget": {
+              "type": "string",
+              "enum": [
+                "table",
+                "tree",
+                "gauge",
+                "sparkline",
+                "markdown",
+                "diff",
+                "list",
+                "stack",
+                "stat",
+                "chart",
+                "graph",
+                "form",
+                "timeline"
+              ],
+              "description": "A widget of the closed set of a view (design 23, C4)."
+            },
+            "columns": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "table: the header words."
+            },
+            "rows": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "description": "table: cells; list and tree: one cell per row."
+            },
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "The group of each row (empty: no groups), and the groups in their order."
+            },
+            "group_order": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "fold": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "minimum": 0,
+              "description": "A group with more rows than this starts folded."
+            },
+            "marks": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "description": "table: each cell's state: \"\", ok, warn, critical."
+            },
+            "numbers": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "format": "double"
+              },
+              "description": "gauge: the value; sparkline: the values; stat: its trend."
+            },
+            "max": {
+              "type": "number",
+              "format": "double",
+              "description": "gauge: the value of a full gauge."
+            },
+            "text": {
+              "type": "string",
+              "description": "markdown and diff; stat: the value."
+            },
+            "unit": {
+              "type": "string",
+              "description": "stat: the unit, the note (or the cause of a missing value) and the state (ok, warn, critical, missing)."
+            },
+            "note": {
+              "type": "string"
+            },
+            "level": {
+              "type": "string"
+            },
+            "series": {
+              "type": "array",
+              "items": {
+                "description": "One line of a chart: (x, y) points; x is seconds since the epoch when the chart's x is a time.",
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "points": {
+                    "type": "array",
+                    "items": {
+                      "type": "array",
+                      "prefixItems": [
+                        {
+                          "type": "number",
+                          "format": "double"
+                        },
+                        {
+                          "type": "number",
+                          "format": "double"
+                        }
+                      ],
+                      "minItems": 2,
+                      "maxItems": 2
+                    }
+                  },
+                  "labels": {
+                    "description": "Each point's x as it shows.",
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "name",
+                  "points",
+                  "labels"
+                ]
+              },
+              "description": "chart: its lines (one per kind), and whether x is a time."
+            },
+            "x_time": {
+              "type": "boolean"
+            },
+            "parts": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ViewData"
+              },
+              "description": "stack: its views."
+            },
+            "actions": {
+              "type": "array",
+              "items": {
+                "description": "A button of a view: the operation it runs with this input, with its normal approval.",
+                "type": "object",
+                "properties": {
+                  "label": {
+                    "type": "string"
+                  },
+                  "op": {
+                    "type": "string"
+                  },
+                  "input": true
+                },
+                "required": [
+                  "label",
+                  "op",
+                  "input"
+                ]
+              },
+              "description": "The view's buttons, and each row's."
+            },
+            "row_actions": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "description": "A button of a view: the operation it runs with this input, with its normal approval.",
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string"
+                    },
+                    "op": {
+                      "type": "string"
+                    },
+                    "input": true
+                  },
+                  "required": [
+                    "label",
+                    "op",
+                    "input"
+                  ]
+                }
+              }
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The source failed, or its answer does not fit the widget."
+            },
+            "refresh": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "The event kinds after which the view reads again (`*` at the end matches any rest), and its live period."
+            },
+            "every": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
+            "version": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0,
+              "description": "The version that shows (0: the seed) and the versions there are."
+            },
+            "versions": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              }
+            },
+            "nodes": {
+              "type": "array",
+              "items": {
+                "description": "A node of a graph view.",
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "count": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  "state": {
+                    "description": "ok, warn, critical, or empty.",
+                    "type": "string"
+                  },
+                  "marked": {
+                    "type": "boolean"
+                  },
+                  "leaf": {
+                    "type": "boolean"
+                  },
+                  "children": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/ViewNode"
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "label",
+                  "kind",
+                  "state",
+                  "marked",
+                  "leaf",
+                  "children"
+                ]
+              },
+              "description": "graph: its nodes and edges, the parameters a click sets (expand: the children; select: the leaf), and\nwhat a mark means."
+            },
+            "edges": {
+              "type": "array",
+              "items": {
+                "description": "An edge of a graph view.",
+                "type": "object",
+                "properties": {
+                  "from": {
+                    "type": "string"
+                  },
+                  "to": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "from",
+                  "to",
+                  "kind"
+                ]
+              }
+            },
+            "expand": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "select": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "legend": {
+              "type": "string"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "The parameters it was read with."
+            }
+          },
+          "required": [
+            "name",
+            "title",
+            "widget",
+            "columns",
+            "rows",
+            "groups",
+            "group_order",
+            "marks",
+            "numbers",
+            "max",
+            "text",
+            "unit",
+            "note",
+            "level",
+            "series",
+            "x_time",
+            "parts",
+            "actions",
+            "row_actions",
+            "refresh",
+            "version",
+            "versions",
+            "nodes",
+            "edges",
+            "legend",
+            "params"
+          ],
+          "description": "A view with its data in the shape of its widget."
+        },
+        "ViewNode": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "count": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "state": {
+              "type": "string",
+              "description": "ok, warn, critical, or empty."
+            },
+            "marked": {
+              "type": "boolean"
+            },
+            "leaf": {
+              "type": "boolean"
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ViewNode"
+              }
+            }
+          },
+          "required": [
+            "id",
+            "label",
+            "kind",
+            "state",
+            "marked",
+            "leaf",
+            "children"
+          ],
+          "description": "A node of a graph view."
+        }
+      }
     }
   },
   "views.version": {

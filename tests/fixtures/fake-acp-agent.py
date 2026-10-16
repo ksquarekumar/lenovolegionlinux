@@ -12,6 +12,9 @@ After session/new and session/load it offers two commands (available_commands_up
 /status. In a thread member's session (LEGIONCTL_MEMBER=<thread>/<member>), a prompt runs the script
 $FAKE_ACP_SCRIPTS/<member>.sh instead, with the prompt in FAKE_ACP_PROMPT, and its output lines are the answer. A name
 as its first argument ends each answer with the line "agent: <name>" (two session.acp agents in one test). Like the real adapters, it does not end when its input closes: the operator must end the session.
+A ui-composer (DESIGN-09 G5): session/set_model keeps the model, and the answer has the line "model: <model>"; with
+FAKE_ACP_VIEWS set to a folder, a prompt with a line "Intent: <words>" gets the file <first word>.jsonc of that folder
+as a ```json block at the end of the answer (no file: no block).
 """
 
 import json
@@ -23,6 +26,7 @@ import time
 import uuid
 
 SESSIONS = ".fake-acp-sessions"
+model = None
 mcp_servers = []
 loaded = None
 next_id = 100
@@ -119,6 +123,14 @@ def prompt(params):
     ]
     if len(sys.argv) > 1:
         lines.append(f"agent: {sys.argv[1]}")
+    if model:
+        lines.append(f"model: {model}")
+    views = os.environ.get("FAKE_ACP_VIEWS")
+    intent = next((l[len("Intent: "):] for l in text.splitlines() if l.startswith("Intent: ")), "")
+    spec = os.path.join(views or "", (intent.split() or [""])[0] + ".jsonc")
+    if views and intent and os.path.isfile(spec):
+        lines.append("Here is the view.")
+        lines.append("```json\n" + open(spec).read().strip() + "\n```")
     for i, line in enumerate(lines):
         update(session, "agent_message_chunk", content={"type": "text", "text": line + "\n"})
         if i == 0 and text.startswith("WAIT"):
@@ -159,6 +171,9 @@ for line in sys.stdin:
         result = {}
     elif method == "session/prompt":
         result = prompt(params)
+    elif method == "session/set_model":
+        model = params.get("modelId")
+        result = {}
     elif ident is None:
         continue
     else:

@@ -319,5 +319,16 @@
     // The chat bar's agent, a name of session.acp, in a thread where nobody picked one with `/agent <name>` (the
     // pick is a row of the thread's log); null: no agent until a pick.
     "agent": "claude"
+  },
+
+  // Views (DESIGN-09 G5). An intent typed in a tab's chat bar (or `legionctl ask "<intent>"`) opens the stored view
+  // whose intent it is word for word; else, with "rlcd" true, the stored view that rlcd picks with at least
+  // "rlcd_min"; else the ui-composer (the chat bar's agent over ACP) makes a view, or a new version of the tab's view.
+  // "composer_models": the composer's model per agent of session.acp (ACP session/set_model): Haiku on Claude Code,
+  // Luna on Codex.
+  "views": {
+    "composer_models": { "claude": "haiku", "codex": "gpt-6-luna" },
+    "rlcd": false,
+    "rlcd_min": 0.7
   }
 }

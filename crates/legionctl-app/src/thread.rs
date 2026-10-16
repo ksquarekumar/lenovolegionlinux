@@ -20,7 +20,7 @@ use gpui_kit::{
 use legionctl_api::chat::{self, Action, Entry};
 use legionctl_api::{
     AgentCommand, ClientPath, EventRow, ProjectIn, RunOutput, SessionIdIn, ThreadIdIn, ThreadInfo,
-    ThreadLogRow, ThreadView, ViewData, ViewRenderIn, op,
+    ThreadLogRow, ThreadView, ViewAnswer, ViewData, ViewRenderIn, op,
 };
 use serde_json::{Value, json};
 
@@ -177,6 +177,10 @@ impl Screen {
                     format!("Open {} in a tab", v.title.as_deref().unwrap_or(&v.name)),
                 )
             })
+            .chain(std::iter::once((
+                "/change ".to_string(),
+                "Change the view of this tab (a new version; undo goes back)".to_string(),
+            )))
             .chain(self.agents.iter().map(|a| {
                 let current = if now.as_ref() == Some(a) { ", now" } else { "" };
                 (
@@ -365,6 +369,12 @@ impl LegionApp {
                             {
                                 app.attach(&run, cx);
                             }
+                            if op == "ask"
+                                && let Ok(answer) =
+                                    serde_json::from_value::<ViewAnswer>(value.clone())
+                            {
+                                app.answered(answer, cx);
+                            }
                             legionctl_api::render(op, value)
                                 .unwrap_or_else(|e| (format!("{e:#}"), false))
                         }
@@ -396,9 +406,12 @@ impl LegionApp {
         if line.is_empty() {
             return;
         }
-        match chat::action(&line, &self.screen.commands, &["view", "agent"]) {
+        match chat::action(&line, &self.screen.commands, &["view", "agent", "change"]) {
             Action::Prompt(prompt) => self.prompt(&prompt, line, cx),
             Action::Operation(op, input) => self.start(op.name, input, line, cx),
+            Action::Screen(words) if words[0] == "change" => {
+                self.change(&words[1..].join(" "), line, cx);
+            }
             Action::Screen(words) => self.screen_command(&words, cx),
             Action::Refused(why) => self.state.message = Some(why),
         }
@@ -431,7 +444,30 @@ impl LegionApp {
         }
     }
 
-    /// `prompt` to the agent as a headless run on the thread's account, in the agent's last ACP session.
+    /// An intent's answer (DESIGN-09 G5): its view opens as a tab with its data (a change reads the tab again), the
+    /// composer's run is the chat bar's session from now on.
+    fn answered(&mut self, answer: ViewAnswer, cx: &mut Context<Self>) {
+        if let Some(run) = &answer.run {
+            self.attach(run, cx);
+        }
+        if let (Some(name), Some(data)) = (answer.view, answer.data) {
+            let params = match self.tab() {
+                Some(Tab::View {
+                    name: shown,
+                    params,
+                }) if *shown == name => params.clone(),
+                _ => Vec::new(),
+            };
+            let tab = Tab::View { name, params };
+            self.screen.view_data.insert(tab.key(), data);
+            self.open_tab(tab, cx);
+            self.read_views(cx);
+        }
+    }
+
+    /// `prompt` to the agent as a headless run on the thread's account, in the agent's last ACP session: an agent's
+    /// command (`/agent:<name>`) as it is; other text is an intent (`ask`): the stored view that answers it, else the
+    /// ui-composer's view, or the next version of the tab's view.
     fn prompt(&mut self, prompt: &str, line: String, cx: &mut Context<Self>) {
         let Some(agent) = self.screen.agent() else {
             self.state.message = Some(format!(
@@ -440,15 +476,47 @@ impl LegionApp {
             ));
             return;
         };
+        let account = self
+            .screen
+            .thread
+            .as_ref()
+            .and_then(|t| t.thread.account.clone());
+        let acp = self
+            .screen
+            .attached
+            .as_ref()
+            .and_then(|(_, acp)| acp.clone());
+        if prompt.starts_with('/') {
+            let input = json!({
+                "agent": agent, "prompt": prompt, "dossier": self.screen.dossier, "repo": self.screen.repo,
+                "account": account, "acp": acp,
+            });
+            self.start("session.run", input, line, cx);
+            return;
+        }
         let input = json!({
-            "agent": agent,
-            "prompt": prompt,
-            "dossier": self.screen.dossier,
+            "intent": prompt, "agent": agent, "dossier": self.screen.dossier, "repo": self.screen.repo,
+            "account": account, "acp": acp,
+        });
+        self.start("ask", input, line, cx);
+    }
+
+    /// `/change <words>`: the ui-composer makes the next version of the tab's view.
+    fn change(&mut self, words: &str, line: String, cx: &mut Context<Self>) {
+        let (Some(Tab::View { name, params }), Some(agent)) =
+            (self.tab().cloned(), self.screen.agent())
+        else {
+            self.state.message =
+                Some("/change changes the view of the tab, with the chat bar's agent".into());
+            return;
+        };
+        let input = json!({
+            "intent": words, "view": name, "params": params, "agent": agent, "dossier": self.screen.dossier,
             "repo": self.screen.repo,
             "account": self.screen.thread.as_ref().and_then(|t| t.thread.account.clone()),
             "acp": self.screen.attached.as_ref().and_then(|(_, acp)| acp.clone()),
         });
-        self.start("session.run", input, line, cx);
+        self.start("ask", input, line, cx);
     }
 
     /// A key on the screen: the spaces, the navigator and the tabs anywhere, the rest in the chat bar.
@@ -839,9 +907,9 @@ impl LegionApp {
         let chat = self.screen.chat();
         let text: Vec<Div> = if chat.is_empty() {
             vec![div().text_color(t.muted).child(if focused {
-                "▌Ask, or type / for commands"
+                "▌Ask for a view, or / for commands"
             } else {
-                "Ask, or type / for commands"
+                "Ask for a view, or / for commands"
             })]
         } else {
             let mut text = chat.to_string();

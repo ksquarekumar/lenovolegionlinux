@@ -300,6 +300,14 @@ async fn drive(
                 }
                 acp
             };
+            // the run's model (the ui-composer's: config views.composer_models); an agent that refuses it fails the run
+            if let Some(model) = input["model"].as_str() {
+                let set = agent_client_protocol::UntypedMessage::new(
+                    "session/set_model",
+                    serde_json::json!({"sessionId": acp.to_string(), "modelId": model}),
+                )?;
+                cx.send_request(set).block_task().await?;
+            }
             lock(&live).prompting = true;
             cx.send_request(PromptRequest::new(
                 acp.clone(),

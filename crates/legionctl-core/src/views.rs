@@ -31,7 +31,8 @@ pub enum Widget {
     Markdown,
     /// A string of unified diff.
     Diff,
-    /// An array: one row each (the fields of `columns` for an object).
+    /// An array: one row each (the fields of `columns` for an object); one object: a row per field of `columns`
+    /// (all its fields without them), "field: value".
     List,
     /// Other views, top to bottom: by name, or inline.
     Stack,
@@ -491,6 +492,26 @@ fn text(template: &str, values: &BTreeMap<String, Value>) -> String {
     out
 }
 
+/// A path: `$`, then `.field`, `.0` or `.[field=value]` steps; nothing else (no `[]`, `*`, `|` or filters).
+fn check_path(path: &str) -> Result<()> {
+    let bad = || anyhow::anyhow!("a path is $, then .field, .0 or .[field=value] steps: {path}");
+    let rest = path.strip_prefix('$').ok_or_else(bad)?;
+    if rest.is_empty() {
+        return Ok(());
+    }
+    let rest = rest.strip_prefix('.').ok_or_else(bad)?;
+    for step in rest.split('.') {
+        let ok = match step.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            Some(inner) => inner
+                .split_once('=')
+                .is_some_and(|(k, v)| !k.is_empty() && !v.is_empty()),
+            None => !step.is_empty() && !step.contains(['[', ']', '|', '*', ' ']),
+        };
+        ensure!(ok, bad());
+    }
+    Ok(())
+}
+
 impl View {
     /// A view from its JSONC text, with the checks that need no operator.
     ///
@@ -521,11 +542,7 @@ impl View {
             (_, None) => bail!("a {} needs a source", self.widget.as_str()),
             (_, Some(source)) => {
                 ensure!(self.views.is_empty(), "only a stack has views");
-                ensure!(
-                    source.path == "$" || source.path.starts_with("$."),
-                    "a path starts with $ or $.: {}",
-                    source.path
-                );
+                check_path(&source.path)?;
                 let mut names = Vec::new();
                 holes(&source.input, &mut names);
                 if let Some(name) = names.iter().find(|n| !self.params.contains_key(*n)) {
@@ -541,6 +558,12 @@ impl View {
             self.widget != Widget::Chart || (self.x.is_some() && self.y.is_some()),
             "a chart needs x and y"
         );
+        if let Some(h) = &self.highlight {
+            check_path(&h.source.path)?;
+        }
+        if let Some(e) = &self.edges {
+            check_path(&e.path)?;
+        }
         ensure!(
             self.widget != Widget::Graph || self.node.is_some(),
             "a graph needs node (its fields)"
@@ -1224,6 +1247,25 @@ impl Rendered {
             Ok(items)
         };
         match view.widget {
+            // a list of one object: a row per column (all its fields without columns), "field: value"
+            Widget::List if data.is_object() => {
+                let map = data.as_object().cloned().unwrap_or_default();
+                let fields: Vec<String> = if view.columns.is_empty() {
+                    map.keys().cloned().collect()
+                } else {
+                    view.columns.clone()
+                };
+                self.rows = fields
+                    .iter()
+                    .map(|c| {
+                        let label = view.labels.get(c).unwrap_or(c);
+                        vec![format!(
+                            "{label}: {}",
+                            shown(field(&data, c), view.formats.get(c).map(String::as_str))
+                        )]
+                    })
+                    .collect();
+            }
             Widget::Table | Widget::List => self.rows_of(view, values, &array()?),
             Widget::Tree => tree(&data, 0, "", &mut self.rows),
             Widget::Gauge => {

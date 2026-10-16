@@ -970,6 +970,10 @@ pub struct SessionRunIn {
     /// The run fails when the agent cannot load sessions.
     #[serde(default)]
     pub acp: Option<String>,
+    /// The agent's model for this run (ACP `session/set_model`: `haiku`, `gpt-6-luna`); the run fails when the
+    /// agent does not take it.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// What a headless run gave back.
@@ -2558,4 +2562,53 @@ pub struct OpEntry {
     pub dry_run: bool,
     /// The fields of its form.
     pub fields: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AskIn {
+    /// What to see, in your words ("why is the CPU hot"), or the change of the view `--view` ("add the fan curve").
+    pub intent: String,
+    /// The view to change: the answer is its next version.
+    #[serde(default)]
+    pub view: Option<String>,
+    /// The view's parameters as `name=value` (its data sample is read with them).
+    #[serde(default)]
+    pub params: Vec<String>,
+    /// The agent that composes (a name of `session.acp`; its model from config `views.composer_models`); default
+    /// config `app.agent`.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// The dossier, account and ACP session of the composer's run (as `session run`).
+    #[serde(default)]
+    pub dossier: Option<String>,
+    #[serde(default)]
+    pub account: Option<String>,
+    #[serde(default)]
+    pub acp: Option<String>,
+    /// Only a stored view answers (its intent, or rlcd's pick): the composer does not run.
+    #[serde(default)]
+    pub stored: bool,
+    /// A folder in a repository: its views layer and config apply.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+/// What answered an intent: a stored view, rlcd's pick, or the composer's view (or text).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ViewAnswer {
+    /// stored, rlcd or composer.
+    pub route: String,
+    /// The view that answers; none when the composer answered with text only, or its view failed its check.
+    pub view: Option<String>,
+    /// The composer's words for the user (the view's spec taken out).
+    pub text: String,
+    /// The composer's view failed `views check`: why. Nothing was saved.
+    pub error: Option<String>,
+    /// The view with its data (the terminal form prints it).
+    pub data: Option<crate::ViewData>,
+    /// The composer's run: its session and ACP session (the chat bar goes on in it).
+    pub run: Option<RunOutput>,
+    /// The composer's request and answer in tokens (an estimate: 4 characters each).
+    pub prompt_tokens: u64,
+    pub answer_tokens: u64,
 }

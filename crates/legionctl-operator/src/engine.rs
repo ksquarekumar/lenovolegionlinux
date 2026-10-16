@@ -4238,6 +4238,10 @@ impl Engine for Operator {
         crate::views::save(ctx, &input)
     }
 
+    fn ask(&self, ctx: &Ctx, input: legionctl_api::AskIn) -> Result<legionctl_api::ViewAnswer> {
+        crate::views::ask(self, ctx, &input)
+    }
+
     fn views_version(&self, ctx: &Ctx, input: legionctl_api::ViewVersionIn) -> Result<Lines> {
         crate::views::version_op(ctx, &input)
     }
@@ -4434,7 +4438,7 @@ impl Engine for Operator {
         db.issue_token(&launch.id, &token)?;
         // `load`: the caller asked to go on in `acp`, so an agent that cannot load it fails the run
         let job_input = serde_json::json!({"session": launch.id, "prompt": input.prompt, "tag": input.tag,
-            "acp": input.acp, "load": input.acp.is_some()});
+            "acp": input.acp, "load": input.acp.is_some(), "model": input.model});
         let job = db.job_begin("session.run", &job_input)?;
         let out = self.runtime.block_on(crate::acp::run(
             launch,

@@ -47,6 +47,21 @@ pub struct Config {
     pub app: AppConfig,
     /// System One decision backends (todo-138).
     pub rlcd: crate::rlcd::RlcdConfig,
+    /// Views and their composer (DESIGN-09 G5).
+    pub views: ViewsConfig,
+}
+
+/// How an intent finds or gets its view (DESIGN-09 G5): a stored view with that intent, then rlcd's pick when it is
+/// on, then the ui-composer over ACP.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ViewsConfig {
+    /// The composer's model per agent of `session.acp` (ACP `session/set_model`); an agent with none keeps its own.
+    pub composer_models: BTreeMap<String, String>,
+    /// rlcd picks one of the stored views for an intent that no stored view has word for word.
+    pub rlcd: bool,
+    /// rlcd's pick counts from this probability on.
+    pub rlcd_min: f64,
 }
 
 /// The desktop app (`legionctl-app`).

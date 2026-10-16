@@ -2900,3 +2900,35 @@ impl Render for crate::CodeTree {
         .join("\n")
     }
 }
+
+impl Render for crate::ViewAnswer {
+    fn text(&self) -> String {
+        let mut out = vec![format!(
+            "{} ({}{})",
+            self.view.as_deref().unwrap_or("no view"),
+            self.route,
+            if self.prompt_tokens > 0 {
+                format!(
+                    ", {} tokens in, {} out",
+                    self.prompt_tokens, self.answer_tokens
+                )
+            } else {
+                String::new()
+            }
+        )];
+        if !self.text.trim().is_empty() {
+            out.push(self.text.trim().to_string());
+        }
+        if let Some(error) = &self.error {
+            out.push(format!("the view failed its check: {error}"));
+        }
+        if let Some(data) = &self.data {
+            out.push(data.text());
+        }
+        out.join("\n")
+    }
+
+    fn success(&self) -> bool {
+        self.error.is_none() && self.data.as_ref().is_none_or(Render::success)
+    }
+}

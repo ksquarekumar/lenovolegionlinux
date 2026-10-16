@@ -597,6 +597,177 @@ fn the_code_graph_seed_opens_levels_on_click_marks_changes_and_shows_what_uses_a
     drop(runtime);
 }
 
+/// The chat bar's text is an intent (DESIGN-09 G5). The intent of a seed opens it from the store: no model runs (no
+/// session.run). A new intent goes to the ui-composer (the chat bar's agent with its model from `views.composer_models`):
+/// its view opens as a tab under a name no layer has, as version 1, and the intent is a fact of the user; the same
+/// intent again opens the stored view with no model.
+#[gpui_kit::test]
+fn an_intent_opens_a_stored_view_with_no_model_and_a_new_one_gets_the_composers_view(
+    cx: &mut TestAppContext,
+) {
+    let (op, home, repo) = thread_lab("intent");
+    write(
+        &home.join("fake-views/fan.jsonc"),
+        r#"{"name": "health", "title": "Fan speeds", "widget": "table", "source": {"op": "sensors"},
+            "columns": ["name", "value"], "filter": {"unit": "RPM"}}"#,
+    );
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
+    let cx = &mut vcx;
+    // the model runs of the operator: its session.run jobs
+    let runs = || {
+        let jobs: serde_json::Value =
+            serde_json::from_str(&op.ok(&["jobs", "list", "--json"])).unwrap();
+        jobs["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|j| j["kind"] == "session.run")
+            .count()
+    };
+    let say = |cx: &mut VisualTestContext, text: &str| {
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("chat", cx);
+            window.input(text, cx);
+            window.press("enter", cx);
+        });
+    };
+    say(cx, "what is wrong with the machine");
+    wait(cx, &app, "the stored view", |a| {
+        a.tab().is_some_and(|t| t.key().starts_with("view:health:"))
+    });
+    assert_eq!(runs(), 0, "a stored view answers with no model");
+
+    say(cx, "fan speeds of the machine");
+    wait(cx, &app, "the composer's view", |a| {
+        a.screen.view().is_some_and(|v| v.title == "Fan speeds")
+    });
+    app.read_with(cx, |a, _| {
+        let v = a.screen.view().unwrap();
+        assert_eq!(
+            (v.name.as_str(), v.version),
+            ("health-2", 1),
+            "a name no layer has, version 1"
+        );
+        let said = a.state.message.clone().unwrap_or_default();
+        assert!(
+            said.contains("model: fake-small") && said.contains("Here is the view"),
+            "{said}"
+        );
+        assert!(
+            !said.contains(r#""filter": {"unit": "RPM"}"#),
+            "the spec is taken out of the words: {said}"
+        );
+    });
+    assert_eq!(runs(), 1);
+    let facts: serde_json::Value = serde_json::from_str(&lab_cli(
+        &op,
+        &home,
+        &repo,
+        &[
+            "facts",
+            "at",
+            "--entity",
+            "intent:fan speeds of the machine",
+            "--json",
+        ],
+        "",
+    ))
+    .unwrap();
+    assert_eq!(
+        (facts[0]["value"].as_str(), facts[0]["source"].as_str()),
+        (Some("health-2"), Some("user"))
+    );
+
+    cx.update(|window, cx| window.click("nav-machine-now", cx));
+    say(cx, "Fan speeds of the machine?");
+    wait(cx, &app, "the stored answer", |a| {
+        a.tab()
+            .is_some_and(|t| t.key().starts_with("view:health-2:"))
+    });
+    assert_eq!(
+        runs(),
+        1,
+        "the same intent again: the stored view, no model"
+    );
+    drop(runtime);
+}
+
+/// `/change <words>` (DESIGN-09 G5): the composer's answer is the next version of the tab's view (version 2, the same
+/// name); Undo goes back to version 1. A composed view that fails its check is shown as an error with its reason, and
+/// nothing is saved.
+#[gpui_kit::test]
+fn a_change_is_the_next_version_of_the_tabs_view_and_a_bad_view_shows_its_error(
+    cx: &mut TestAppContext,
+) {
+    let (op, home, repo) = thread_lab("change");
+    let views = home.join("fake-views");
+    let spec = |title: &str| {
+        format!(
+            r#"{{"name": "anything", "title": "{title}", "widget": "table", "source": {{"op": "sensors"}},
+                "columns": ["name", "value"]}}"#
+        )
+    };
+    write(&views.join("sensors.jsonc"), &spec("Sensors, plain"));
+    write(&views.join("add.jsonc"), &spec("Sensors, with more"));
+    write(
+        &views.join("bad.jsonc"),
+        r#"{"name": "x", "widget": "piechart", "source": {"op": "sensors"}}"#,
+    );
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
+    let cx = &mut vcx;
+    let say = |cx: &mut VisualTestContext, text: &str| {
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("chat", cx);
+            window.input(text, cx);
+            window.press("enter", cx);
+        });
+    };
+    say(cx, "sensors in a plain table");
+    wait(cx, &app, "version 1", |a| {
+        a.screen.view().is_some_and(|v| v.title == "Sensors, plain")
+    });
+    let name = app.read_with(cx, |a, _| a.screen.view().unwrap().name.clone());
+    say(cx, "/change add the unit");
+    wait(cx, &app, "version 2", |a| {
+        a.screen
+            .view()
+            .is_some_and(|v| v.title == "Sensors, with more")
+    });
+    app.read_with(cx, |a, _| {
+        let v = a.screen.view().unwrap();
+        assert_eq!(
+            (v.name.as_str(), v.version, v.versions.clone()),
+            (name.as_str(), 2, vec![1, 2])
+        );
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("view-undo", cx);
+    });
+    wait(cx, &app, "version 1 again", |a| {
+        a.screen.view().is_some_and(|v| v.version == 1)
+    });
+    app.read_with(cx, |a, _| {
+        assert_eq!(a.screen.view().unwrap().title, "Sensors, plain");
+    });
+
+    say(cx, "/change bad view");
+    wait(cx, &app, "the check's error", |a| {
+        a.state
+            .message
+            .as_deref()
+            .is_some_and(|m| m.contains("the view failed its check"))
+    });
+    app.read_with(cx, |a, _| {
+        let said = a.state.message.clone().unwrap();
+        assert!(said.contains("piechart"), "{said}");
+        assert_eq!(a.screen.view().unwrap().versions, [1, 2], "nothing saved");
+    });
+    drop(runtime);
+}
+
 /// The Resources seed (note 22) against the real operator on the recorded machine, without a daemon: it lists the
 /// configset layers in their group with their actions, which come with the data (each action names its operation);
 /// a click shows the route first (rules.disable is a machine operation with no dry run, so the tab asks inline and
@@ -858,7 +1029,8 @@ fn thread_lab(tag: &str) -> (Operator, PathBuf, PathBuf) {
                 "scope": false,
                 "writable": []
             },
-            "app": {"agent": "fake"}
+            "app": {"agent": "fake"},
+            "views": {"composer_models": {"fake": "fake-small", "other": "other-small"}}
         })
         .to_string(),
     );
@@ -901,6 +1073,8 @@ fn thread_lab(tag: &str) -> (Operator, PathBuf, PathBuf) {
             ("LEGIONCTL_SYSROOT", home.join("root").into()),
             ("HOME", home.as_os_str().to_owned()),
             ("PATH", path),
+            // the stand-in composer answers an intent with the view of <first word>.jsonc there
+            ("FAKE_ACP_VIEWS", home.join("fake-views").into()),
         ],
     );
     for args in [
@@ -1460,8 +1634,11 @@ fn the_app_chat_bar_picks_its_agent_from_session_acp_and_keeps_the_pick_in_the_t
     app.read_with(cx, |a, _| {
         assert_eq!(a.screen.runs[2], ("hello".to_string(), Some(true)));
         let answer = a.state.message.clone().unwrap_or_default();
+        // text is an intent (G5): the picked agent composes, with its model
         assert!(
-            answer.contains("prompt: hello") && answer.contains("agent: other"),
+            answer.contains("Intent: hello")
+                && answer.contains("agent: other")
+                && answer.contains("model: other-small"),
             "{answer}"
         );
     });

@@ -6,6 +6,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use std::fmt::Write as _;
+
 use anyhow::{Context, Result, bail, ensure};
 use legionctl_api::{
     Class, Ctx, Engine, IntoWire, Lines, OPS, Principal, ViewData, ViewInfo, ViewPlaceIn,
@@ -322,22 +324,7 @@ impl Pass<'_> {
             .iter()
             .find(|op| op.name == source.op)
             .with_context(|| format!("no operation {}", source.op))?;
-        // a path field resolves against the render's folder, as a client resolves it against its own: a given one,
-        // and one whose default is the client's folder (".")
-        if let Some(map) = input.as_object_mut() {
-            let schema = (op.input)();
-            for (name, prop) in schema["properties"].as_object().into_iter().flatten() {
-                let given = map.get(name).and_then(Value::as_str).map(String::from);
-                let here = prop["default"] == ".";
-                if prop["format"] == "path" && (given.is_some() || here) {
-                    let path = self.repo.join(given.unwrap_or_default());
-                    map.insert(
-                        name.clone(),
-                        Value::from(path.to_string_lossy().into_owned()),
-                    );
-                }
-            }
-        }
+        resolve_paths(op, &mut input, self.repo);
         // the same checks as a call from outside: known fields, and a session's own id in its session fields
         crate::server::known_fields(op, &input).map_err(|e| anyhow::anyhow!(e.message))?;
         crate::server::own_session(op, &self.ctx.principal, &mut input);
@@ -525,4 +512,590 @@ pub fn place(input: &ViewPlaceIn) -> Result<Lines> {
             input.thread, placed.name
         )],
     })
+}
+
+/// An intent in one form: lower case, single spaces, no end punctuation.
+fn normal(intent: &str) -> String {
+    intent
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_end_matches(['.', '?', '!'])
+        .to_lowercase()
+}
+
+/// The stored view of `intent`: the fact `intent:<intent>` `view`, else a view whose own intent it is.
+fn stored(intent: &str, repo: &Path) -> Result<Option<String>> {
+    let fact = dossiers()?.fact_value(&format!("intent:{intent}"), "view", &scopes(repo))?;
+    if let Some(name) = fact.as_ref().and_then(Value::as_str) {
+        return Ok(Some(name.to_string()));
+    }
+    Ok(legionctl_core::views::list(Some(repo))
+        .into_iter()
+        .filter_map(|(_, _, v)| v.ok())
+        .find(|v| v.intent.as_deref().map(normal).as_deref() == Some(intent))
+        .map(|v| v.name))
+}
+
+/// rlcd's pick among the stored views (config `views.rlcd`): a choice with each view's intent as its meaning, and
+/// "none"; a pick under `views.rlcd_min` is none. A failed call fails the ask (no other route runs).
+fn rlcd_pick(
+    engine: &dyn Engine,
+    ctx: &Ctx,
+    intent: &str,
+    repo: &Path,
+    min: f64,
+) -> Result<Option<String>> {
+    let clean = |t: &str| t.replace([',', ':', '='], " ");
+    let options: Vec<String> = legionctl_core::views::list(Some(repo))
+        .into_iter()
+        .filter_map(|(_, _, v)| v.ok())
+        .map(|v| {
+            format!(
+                "{}={}",
+                v.name,
+                clean(&v.intent.clone().unwrap_or_else(|| v.title()))
+            )
+        })
+        .chain(std::iter::once("none=no view answers it".to_string()))
+        .collect();
+    let question = format!(
+        "view:choice:{}:Which stored view answers what the user asks for? none when no view does.",
+        options.join(",")
+    );
+    let decision = engine.rlcd_ask(
+        ctx,
+        legionctl_api::RlcdAskIn {
+            state: legionctl_api::StdinText(format!("The user asks: {intent}")),
+            questions: vec![question],
+            backend: None,
+            key: None,
+            repo: legionctl_api::ClientPath(repo.to_path_buf()),
+        },
+    )?;
+    let answer = &decision.answers.unwrap_or_default()["view"];
+    let choice = answer["choice"].as_str().unwrap_or("none");
+    let p = answer["probabilities"][choice].as_f64().unwrap_or(0.0);
+    Ok((choice != "none" && p >= min).then(|| choice.to_string()))
+}
+
+/// A JSON schema in a few characters for a model: `string`, `[T]`, `{a: T, b: T}` (with `$defs` of `root`), at most
+/// `depth` objects deep.
+fn shape(schema: &Value, root: &Value, depth: usize) -> String {
+    let schema = match schema["$ref"].as_str() {
+        Some(r) => &root["$defs"][r.trim_start_matches("#/$defs/")],
+        None => schema,
+    };
+    if let Some(any) = schema["anyOf"]
+        .as_array()
+        .or_else(|| schema["oneOf"].as_array())
+    {
+        let parts: Vec<String> = any
+            .iter()
+            .filter(|p| p["type"] != "null")
+            .map(|p| {
+                p["const"]
+                    .as_str()
+                    .map_or_else(|| shape(p, root, depth), |c| format!("\"{c}\""))
+            })
+            .collect();
+        return parts.join("|");
+    }
+    if let Some(words) = schema["enum"].as_array() {
+        return words
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("|");
+    }
+    let kind = match &schema["type"] {
+        Value::String(t) => t.clone(),
+        Value::Array(t) => t
+            .iter()
+            .filter_map(Value::as_str)
+            .find(|t| *t != "null")
+            .unwrap_or("any")
+            .to_string(),
+        _ => "any".into(),
+    };
+    match kind.as_str() {
+        "array" => format!("[{}]", shape(&schema["items"], root, depth)),
+        "object" if depth == 0 => "{...}".into(),
+        "object" => match schema["properties"].as_object() {
+            Some(props) => format!(
+                "{{{}}}",
+                props
+                    .iter()
+                    .map(|(k, v)| format!("{k}: {}", shape(v, root, depth - 1)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            None if schema["additionalProperties"].is_object() => {
+                format!(
+                    "{{name: {}}}",
+                    shape(&schema["additionalProperties"], root, depth - 1)
+                )
+            }
+            None => "{...}".into(),
+        },
+        "integer" | "number" => "number".into(),
+        "boolean" => "bool".into(),
+        other => other.into(),
+    }
+}
+
+/// The words of the view format for a model: each widget, each field with its shape and first sentence (from the
+/// view schema, so they never drift), and one small view as an example.
+fn format_lines() -> Result<Vec<String>> {
+    let (_, schema) = legionctl_core::views::schema()?;
+    let first = |v: &Value| {
+        let text = v["description"]
+            .as_str()
+            .unwrap_or_default()
+            .replace('\n', " ");
+        text.split_once(". ")
+            .map_or(text.clone(), |(a, _)| a.to_string())
+    };
+    let widgets = schema["$defs"]["Widget"]["oneOf"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|w| {
+            format!(
+                "- {}: {}",
+                w["const"].as_str().unwrap_or_default(),
+                first(w)
+            )
+        });
+    let fields = schema["properties"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(k, _)| *k != "$schema")
+        .map(|(k, v)| format!("- {k}: {}. {}", shape(v, &schema, 2), first(v)));
+    let example = r#"Example: {"name": "cpu-heat", "title": "CPU heat", "intent": "how hot is the cpu", "widget": "stack",
+ "views": [{"name": "temp", "title": "CPU temperature", "widget": "stat", "source": {"op": "sensors", "path": "$.[name=Package id 0].value"}, "unit": "°C", "warn": 85, "critical": 95},
+ {"name": "readings", "title": "Temperatures", "widget": "table", "source": {"op": "sensors"}, "filter": {"unit": "°C"}, "columns": ["name", "value"], "levels": [{"column": "value", "warn": 85, "critical": 95}]}]}"#;
+    Ok(std::iter::once("Widgets:".to_string())
+        .chain(widgets)
+        .chain(std::iter::once(
+            "Fields of a view (a stack's parts are views). A path picks one value or one array, never more: $, \
+             $.field, $.0 (an index), $.[field=value] (the first item with that value), joined by dots, as in \
+             $.0.entities; no [], *, | or filters: a table, list, chart or graph takes the array itself and shows \
+             every item."
+                .to_string(),
+        ))
+        .chain(fields)
+        .chain(std::iter::once(example.to_string()))
+        .collect())
+}
+
+/// The operations an intent is likely about: each public operation scored by the intent's words in its name and
+/// summary, and the operations of the groups the tab's view reads; the best `n` reads and `m` changes, one line each
+/// (MEMORY-14: the operations relevant to the tab, not all of them).
+fn relevant(
+    intent: &str,
+    view: Option<&View>,
+    (n, m): (usize, usize),
+) -> (
+    Vec<&'static legionctl_api::OpInfo>,
+    Vec<&'static legionctl_api::OpInfo>,
+) {
+    const STOP: [&str; 12] = [
+        "the", "and", "what", "why", "show", "this", "that", "with", "for", "add", "how", "are",
+    ];
+    let words: Vec<String> = intent
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 2 && !STOP.contains(w))
+        .map(str::to_lowercase)
+        .collect();
+    let mut groups: Vec<String> = Vec::new();
+    let mut collect = |v: &View| {
+        if let Some(s) = &v.source {
+            groups.push(s.op.split('.').next().unwrap_or_default().to_string());
+        }
+    };
+    if let Some(v) = view {
+        collect(v);
+        for p in &v.views {
+            if let Part::Inline(inner) = p {
+                collect(inner);
+            }
+        }
+    }
+    let mut scored: Vec<(usize, &'static legionctl_api::OpInfo)> = OPS
+        .iter()
+        .filter(|op| !op.internal())
+        .map(|op| {
+            let hay = format!("{} {}", op.name, op.summary()).to_lowercase();
+            let hits = words.iter().filter(|w| hay.contains(w.as_str())).count();
+            let group = usize::from(groups.iter().any(|g| op.name.starts_with(g.as_str())));
+            (hits * 2 + group * 3, op)
+        })
+        .filter(|(score, _)| *score > 0)
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.name.cmp(b.1.name)));
+    let reads = scored
+        .iter()
+        .filter(|(_, o)| o.class == Class::Read)
+        .take(n)
+        .map(|(_, o)| *o)
+        .collect();
+    let changes = scored
+        .iter()
+        .filter(|(_, o)| o.class != Class::Read)
+        .take(m)
+        .map(|(_, o)| *o)
+        .collect();
+    (reads, changes)
+}
+
+/// `text` cut to `n` lines, saying how many it left out.
+fn sample(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = lines.iter().take(n).copied().collect::<Vec<_>>().join("\n");
+    if lines.len() > n {
+        let _ = write!(out, "\n({} more lines left out)", lines.len() - n);
+    }
+    legionctl_core::rlcd::redact(&out, &[])
+}
+
+/// The ui-composer's request: the intent, the view to change with its data, the format, the relevant operations
+/// and a data sample of the best read (secrets removed).
+fn composer_prompt(
+    engine: &dyn Engine,
+    ctx: &Ctx,
+    intent: &str,
+    current: Option<(&str, Option<&View>, &str, &str)>,
+    repo: &Path,
+) -> Result<String> {
+    let mut out = vec![
+        "You are the ui-composer of legionctl (DESIGN-09): you answer an intent with one view, a declarative spec \
+         that legionctl draws in its app, TUI and CLI. Answer with one short sentence for the user, then the view as \
+         one ```json block. Use only the widgets and fields below; a source is a read operation of the list; a \
+         button may name an operation of either list (it runs with its own approval). Keep the view small: the \
+         point first, the detail on demand."
+            .to_string(),
+        format!("Intent: {intent}"),
+    ];
+    if let Some((name, _, text, data)) = current {
+        out.push(format!(
+            "Change this view: keep its name \"{}\" (your answer is its next version).\n```json\n{text}\n```\nIts \
+             data now (a sample):\n{}",
+            name,
+            sample(data, 30)
+        ));
+    } else {
+        out.push(
+            "Give the view a new name (a-z, 0-9, -), the intent above as its intent, and a title."
+                .into(),
+        );
+    }
+    out.extend(format_lines()?);
+    let (reads, changes) = relevant(intent, current.and_then(|c| c.1), (20, 8));
+    out.push("Read operations (sources):".into());
+    out.extend(reads.iter().map(|op| {
+        let fields: Vec<String> = legionctl_api::form::fields(op)
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        let output = (op.output)();
+        format!(
+            "- {}({}) -> {}: {}",
+            op.name,
+            fields.join(", "),
+            shape(&output, &output, 1),
+            op.summary()
+        )
+    }));
+    out.push("Actions (buttons):".into());
+    out.extend(changes.iter().map(|op| {
+        format!(
+            "- {} [{}]: {}",
+            op.name,
+            format!("{:?}", op.class).to_lowercase(),
+            op.summary()
+        )
+    }));
+    // a data sample of the best read that needs no input
+    if let Some(op) = reads
+        .iter()
+        .find(|op| legionctl_api::form::fields(op).iter().all(|f| !f.required))
+    {
+        let mut input = Value::Object(serde_json::Map::new());
+        resolve_paths(op, &mut input, repo);
+        let answer = legionctl_api::dispatch(engine, ctx, op.name, input)
+            .map_err(|e| anyhow::anyhow!(e.api_error(op.name).message))
+            .and_then(|v| legionctl_api::render(op.name, v).map(|(t, _)| t));
+        if let Ok(text) = answer {
+            out.push(format!(
+                "Data of {} now (a sample):\n{}",
+                op.name,
+                sample(&text, 25)
+            ));
+        }
+    }
+    Ok(out.join("\n"))
+}
+
+/// A path field of `op`'s input resolves against `repo`, as a client resolves it against its folder: a given one,
+/// and one whose default is the client's folder (".").
+fn resolve_paths(op: &legionctl_api::OpInfo, input: &mut Value, repo: &Path) {
+    if let Some(map) = input.as_object_mut() {
+        let schema = (op.input)();
+        for (name, prop) in schema["properties"].as_object().into_iter().flatten() {
+            let given = map.get(name).and_then(Value::as_str).map(String::from);
+            if prop["format"] == "path" && (given.is_some() || prop["default"] == ".") {
+                let path = repo.join(given.unwrap_or_default());
+                map.insert(
+                    name.clone(),
+                    Value::from(path.to_string_lossy().into_owned()),
+                );
+            }
+        }
+    }
+}
+
+/// The answer's words, and the spec of its last fenced `json` block.
+fn split(answer: &str) -> (String, Option<String>) {
+    let Some(start) = answer.rfind("```json") else {
+        return (answer.trim().to_string(), None);
+    };
+    let body = &answer[start..];
+    let open = body.find('\n').unwrap_or(body.len());
+    let Some(close) = body[open..].find("```") else {
+        return (answer.trim().to_string(), None);
+    };
+    let spec = body[open..open + close].trim().to_string();
+    let words = format!("{}{}", &answer[..start], &body[open + close + 3..]);
+    (words.trim().to_string(), Some(spec))
+}
+
+/// A view name that no layer has yet: `name`, else `name-2`, `name-3`, ...
+fn unique(name: &str, repo: &Path) -> String {
+    let taken: Vec<String> = legionctl_core::views::list(Some(repo))
+        .into_iter()
+        .filter_map(|(_, f, _)| {
+            f.file_stem()
+                .map(|s| s.to_string_lossy().trim_start_matches("seed:").to_string())
+        })
+        .collect();
+    // shortcut: at most 999 views of one name; widen the range if someone keeps more
+    (1..1000)
+        .map(|n| {
+            if n == 1 {
+                name.to_string()
+            } else {
+                format!("{name}-{n}")
+            }
+        })
+        .find(|n| !taken.contains(n))
+        .unwrap_or_else(|| format!("{name}-{}", taken.len()))
+}
+
+/// Save the composer's view: a change as the next version of the tab's view (in its layer), a new view under a name no
+/// layer has with the intent as its intent; the version shows, and a new view is the fact of its intent. Its name.
+fn keep(
+    ctx: &Ctx,
+    view: &mut View,
+    current: Option<&str>,
+    (intent, agent): (&str, &str),
+    repo: &Path,
+) -> Result<String> {
+    // a change is the next version of the tab's view; a new view gets a name no layer has
+    let (name, layer) = match current {
+        Some(old) => {
+            let in_repo = legionctl_core::views::dirs(Some(repo))
+                .first()
+                .is_some_and(|(l, d)| {
+                    *l == "repository" && d.join(format!("{old}.jsonc")).exists()
+                });
+            (old.to_string(), in_repo.then_some(repo))
+        }
+        None => (unique(&view.name, repo), None),
+    };
+    view.name.clone_from(&name);
+    if view.intent.is_none() && current.is_none() {
+        view.intent = Some(intent.to_string());
+    }
+    let text = serde_json::to_string_pretty(&*view)?;
+    let (_, saved) = legionctl_core::views::save(view, &text, layer)?;
+    show_version(ctx, &name, saved, layer, &format!("ask: {intent}"))?;
+    if current.is_none() {
+        dossiers()?.fact_add(&New {
+            entity: format!("intent:{intent}"),
+            attribute: "view".into(),
+            value: Value::from(name.clone()),
+            scope: (Scope::Global, String::new()),
+            source: source(ctx),
+            evidence: serde_json::json!({"actor": ctx.actor, "why": "ask", "agent": agent}),
+            confidence: 1.0,
+            valid_from: facts::now_ms(),
+            valid_to: None,
+            repo: None,
+            from_ref: None,
+            to_ref: None,
+            anchor: None,
+        })?;
+    }
+    Ok(name)
+}
+
+/// The composer's run (`session.run` with its model).
+fn composer_run(
+    engine: &dyn Engine,
+    ctx: &Ctx,
+    input: &legionctl_api::AskIn,
+    (agent, model): (&str, Option<String>),
+    prompt: &str,
+    repo: &Path,
+) -> Result<legionctl_api::RunOutput> {
+    engine.session_run(
+        ctx,
+        legionctl_api::SessionRunIn {
+            agent: agent.to_string(),
+            prompt: prompt.to_string(),
+            dossier: input.dossier.clone(),
+            steal: false,
+            repo: legionctl_api::ClientPath(repo.to_path_buf()),
+            account: input.account.clone(),
+            inside: legionctl_api::Inside::Host,
+            gpu: false,
+            tag: None,
+            acp: input.acp.clone(),
+            model,
+        },
+    )
+}
+
+/// The view that `--view` changes: its name, the view (none when it fails its check now), its text and its data
+/// (or why it fails).
+type TabView = (String, Option<View>, String, String);
+
+fn tab_view(
+    engine: &dyn Engine,
+    ctx: &Ctx,
+    input: &legionctl_api::AskIn,
+    repo: &Path,
+) -> Result<Option<TabView>> {
+    let Some(name) = &input.view else {
+        return Ok(None);
+    };
+    let text = legionctl_core::views::text_of(name, version(name, repo)?, Some(repo))?;
+    // a view that fails its check now is changed too: the composer gets why
+    let (view, data) = match View::parse(&text) {
+        Ok(view) => {
+            let rendered = render(
+                engine,
+                ctx,
+                &ViewRenderIn {
+                    name: name.clone(),
+                    params: input.params.clone(),
+                    repo: legionctl_api::ClientPath(repo.to_path_buf()),
+                },
+            );
+            (
+                Some(view),
+                rendered.map_or_else(|e| format!("{e:#}"), |d| legionctl_api::Render::text(&d)),
+            )
+        }
+        Err(e) => (None, format!("it fails its check: {e:#}")),
+    };
+    Ok(Some((name.clone(), view, text, data)))
+}
+
+pub fn ask(
+    engine: &dyn Engine,
+    ctx: &Ctx,
+    input: &legionctl_api::AskIn,
+) -> Result<legionctl_api::ViewAnswer> {
+    let repo = input.repo.get()?;
+    let resolved =
+        legionctl_core::config::resolve(&legionctl_core::config::Dirs::from_env(), Some(repo))?;
+    let cfg = &resolved.config;
+    let intent = normal(&input.intent);
+    ensure!(!intent.is_empty(), "an intent is the words of what to see");
+    let render_view = |name: &str| {
+        render(
+            engine,
+            ctx,
+            &ViewRenderIn {
+                name: name.to_string(),
+                params: input.params.clone(),
+                repo: legionctl_api::ClientPath(repo.to_path_buf()),
+            },
+        )
+    };
+    let found = |route: &str, name: String| -> Result<legionctl_api::ViewAnswer> {
+        Ok(legionctl_api::ViewAnswer {
+            route: route.into(),
+            data: Some(render_view(&name)?),
+            view: Some(name),
+            text: String::new(),
+            error: None,
+            run: None,
+            prompt_tokens: 0,
+            answer_tokens: 0,
+        })
+    };
+    if input.view.is_none() {
+        if let Some(name) = stored(&intent, repo)? {
+            return found("stored", name);
+        }
+        if cfg.views.rlcd
+            && let Some(name) = rlcd_pick(engine, ctx, &intent, repo, cfg.views.rlcd_min)?
+        {
+            return found("rlcd", name);
+        }
+    }
+    ensure!(!input.stored, "no stored view answers \"{intent}\"");
+    let agent = input
+        .agent
+        .clone()
+        .or_else(|| cfg.app.agent.clone())
+        .context("no agent composes: give --agent, or set config app.agent")?;
+    let current = tab_view(engine, ctx, input, repo)?;
+    let prompt = composer_prompt(
+        engine,
+        ctx,
+        &intent,
+        current
+            .as_ref()
+            .map(|(n, v, t, d)| (n.as_str(), v.as_ref(), t.as_str(), d.as_str())),
+        repo,
+    )?;
+    let model = cfg.views.composer_models.get(&agent).cloned();
+    let run = composer_run(engine, ctx, input, (&agent, model), &prompt, repo)?;
+
+    let (text, spec) = split(&run.text);
+    let mut answer = legionctl_api::ViewAnswer {
+        route: "composer".into(),
+        view: None,
+        text,
+        error: None,
+        data: None,
+        prompt_tokens: legionctl_core::pool::tokens(&prompt),
+        answer_tokens: legionctl_core::pool::tokens(&run.text),
+        run: Some(run),
+    };
+    let Some(spec) = spec else {
+        return Ok(answer);
+    };
+    let mut view = match parsed(&spec, Some(repo)) {
+        Ok(v) => v,
+        Err(e) => {
+            answer.error = Some(format!("{e:#}"));
+            return Ok(answer);
+        }
+    };
+    let name = keep(
+        ctx,
+        &mut view,
+        current.as_ref().map(|c| c.0.as_str()),
+        (&intent, &agent),
+        repo,
+    )?;
+    answer.data = Some(render_view(&name)?);
+    answer.view = Some(name);
+    Ok(answer)
 }

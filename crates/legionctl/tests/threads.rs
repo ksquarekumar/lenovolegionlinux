@@ -1060,7 +1060,8 @@ fn a_view_cannot_bind_a_change_operation_or_a_widget_outside_the_set() {
 
 /// The timeline and form widgets (DESIGN-09 G4) in their terminal form, which agents and the CLI read: a thread's
 /// log as a timeline (its events, the actor and kind of each), and the form of an operation with its required
-/// fields; a form that names no operation is refused at save.
+/// fields; a form that names no operation is refused at save. A list of one object shows a row per field (the
+/// shape of status and load, G5's live finding), and a jq path is refused at save with what a path is.
 #[test]
 fn a_timeline_and_a_form_view_render_their_terminal_form() {
     let lab = thread_lab("widgets");
@@ -1101,6 +1102,115 @@ fn a_timeline_and_a_form_view_render_their_terminal_form() {
     );
     let refused = save(&form.replace("facts.set", "facts.sett"));
     assert!(String::from_utf8_lossy(&refused.stderr).contains("names no operation facts.sett"));
+
+    // a list of one object: a row per column, "field: value" (a model's view of status or load reads one object)
+    let info = r#"{"name": "info", "params": {"thread": "integer"}, "widget": "list",
+        "source": {"op": "thread.show", "input": {"thread": "{thread}"}, "path": "$.thread"},
+        "columns": ["title", "state"], "labels": {"title": "Task"}}"#;
+    assert!(save(info).status.success());
+    let text = lab.ok("main", &lab.repo, &["views", "render", "info", "thread=1"]);
+    assert_eq!(
+        text.lines().skip(1).collect::<Vec<_>>(),
+        ["2 rows", "Task: port the parser", "state: open"],
+        "{text}"
+    );
+    // a model's jq habits are refused at save with what a path is, not read as no data at render
+    let refused = save(&info.replace("$.thread", "$.log[] | .member"));
+    assert!(
+        String::from_utf8_lossy(&refused.stderr)
+            .contains("a path is $, then .field, .0 or .[field=value] steps: $.log[] | .member"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+}
+
+/// `legionctl ask` (DESIGN-09 Rule 1): the same lookup as the app's chat bar. The intent of a stored view (any case and
+/// end mark) prints that view in its terminal form, counts first, with no model; with --stored an intent that no view
+/// has fails and says so.
+#[test]
+fn the_cli_asks_for_an_intent_and_prints_the_stored_view() {
+    let lab = thread_lab("ask");
+    let text = lab.ok(
+        "main",
+        &lab.repo,
+        &["ask", "Everything legionctl can do?", "--stored"],
+    );
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "operations (stored)", "{text}");
+    assert!(
+        lines[1].starts_with("Operations (table, version 0)"),
+        "{text}"
+    );
+    assert!(
+        lines[2].ends_with("rows: Operation | Class | What it does"),
+        "{text}"
+    );
+    let out = lab.op.run(
+        &lab.repo,
+        &[
+            ("HOME", lab.home.to_str().unwrap()),
+            ("LEGIONCTL_SESSION", "main"),
+        ],
+        &["ask", "a view nobody made", "--stored"],
+        "",
+    );
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("no stored view answers \"a view nobody made\""),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The rlcd step of `ask` (config views.rlcd): an intent that no stored view has word for word goes to rlcd as a
+/// choice among the stored views (their intents as meanings, and none); its pick at 0.8 opens that view with no
+/// composer. A pick of none, or a failed rlcd call, does not open a view: with --stored the ask says so, and a failed
+/// call fails the ask with rlcd's error (no other route runs).
+#[test]
+fn ask_takes_rlcds_pick_of_a_stored_view_and_fails_with_a_failed_call() {
+    let mut lab = Lab::new("ask-rlcd");
+    let (server, port, log, env) = decisions(&lab.home);
+    lab.op.child.kill().unwrap();
+    lab.op.child.wait().unwrap();
+    lab.op = Lab::operator_with("ask-rlcdp", &lab.home, &env);
+    write(
+        &lab.home.join(".config/legionctl/views.jsonc"),
+        &json!({"rlcd": {"backend": "stand"}, "views": {"rlcd": true}}).to_string(),
+    );
+    let ask = |pick: &str| {
+        rlcd_backends(&lab.home, port, pick);
+        lab.op.run(
+            &lab.repo,
+            &[("HOME", lab.home.to_str().unwrap())],
+            &["ask", "list what i can run", "--stored"],
+            "",
+        )
+    };
+    let out = ask("operations");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("operations (rlcd)"));
+    let call = calls(&log).pop().unwrap();
+    let criteria = &call["body"]["questions"]["view"]["criteria"];
+    assert_eq!(
+        criteria["operations"], "everything legionctl can do",
+        "{call}"
+    );
+    assert!(criteria["none"].is_string(), "{call}");
+    let none = ask("none");
+    assert!(String::from_utf8_lossy(&none.stderr).contains("no stored view answers"));
+    let failed = ask("fail");
+    assert!(!failed.status.success());
+    assert!(
+        String::from_utf8_lossy(&failed.stderr).contains("rlcd stand"),
+        "{}",
+        String::from_utf8_lossy(&failed.stderr)
+    );
+    drop(server);
 }
 
 /// A view in the repository's layer hides the user's view of that name, and lists first.
