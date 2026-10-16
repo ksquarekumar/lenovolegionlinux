@@ -26,11 +26,12 @@ pub struct Schema {
     pub steps: &'static [(i64, &'static str)],
 }
 
-/// The operator database at v14: the steps of v1-v10 merged into one (todo-68, after the first full release install),
+/// The operator database at v15: the steps of v1-v10 merged into one (todo-68, after the first full release install),
 /// then the rows that span dossiers and the threads (design 23, E1 decision 1; they were in `workspace.db`), then the
-/// pools (design 23, P6b: members that run, effects), then the rlcd decisions (todo-138), then the facts (DESIGN-10).
+/// pools (design 23, P6b: members that run, effects), then the rlcd decisions (todo-138), then the facts (DESIGN-10),
+/// then each session's granted connections (DESIGN-13).
 pub(crate) const OPERATOR: &Schema = &Schema {
-    version: 14,
+    version: 15,
     steps: &[
         (
             10,
@@ -42,6 +43,7 @@ pub(crate) const OPERATOR: &Schema = &Schema {
         (11, crate::pool::tables!()),
         (12, crate::rlcd::tables!()),
         (13, crate::facts::tables!()),
+        (14, crate::runnables::tables!()),
     ],
     sql: concat!(
         "CREATE TABLE events (
@@ -89,7 +91,8 @@ pub(crate) const OPERATOR: &Schema = &Schema {
         crate::thread::tables!(),
         crate::pool::tables!(),
         crate::rlcd::tables!(),
-        crate::facts::tables!()
+        crate::facts::tables!(),
+        crate::runnables::tables!()
     ),
 };
 

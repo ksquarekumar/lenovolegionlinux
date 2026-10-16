@@ -39,7 +39,7 @@
     { "id": "R1", "text": "The api route step: a direct model call through the gateway, no tools", "status": "planned", "stories": ["S2"], "depends_on": ["R0"], "units": [
       { "key": "file:crates/legionctl-operator/src/thread.rs", "change": "edit", "loc": 200 },
       { "key": "file:crates/legionctl-operator/src/gateway.rs", "change": "edit" },
-      { "key": "op:agents.check", "change": "edit" }
+      { "key": "op:runnables.check", "change": "edit" }
     ] },
     { "id": "R2", "text": "Hot path: gateway model routing (tier per request)", "status": "planned", "stories": ["S3"], "depends_on": ["R0"], "units": [
       { "key": "file:crates/legionctl-operator/src/gateway.rs", "change": "edit", "loc": 250 },

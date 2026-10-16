@@ -1,0 +1,31 @@
+// The harness Claude Code (DESIGN-12, needs table and harness profile). A session of agent "claude" requests this set
+// by itself. Its own command sandbox is off (user decision 2026-10-17): our sandbox, the environment and the gateway
+// are the one boundary. Telemetry and update checks are off by their variables; updates come through setup on the host.
+{
+  "$schema": "../../docs/api/runnable.schema.json",
+  "name": "claude-code",
+  "version": 1,
+  "description": "Claude Code in a legionctl session: the model API and the login refresh, telemetry and updates off, its own sandbox off.",
+  "connections": {
+    "out": [
+      { "host": "api.anthropic.com", "why": "the model API (terminated in the gateway, logged per call)" },
+      { "host": "platform.claude.com", "why": "the OAuth refresh of a subscription login (DESIGN-12 wall 1)" }
+    ],
+    "forbidden": ["http-intake.logs.us5.datadoghq.com", "downloads.claude.ai", "storage.googleapis.com"],
+    "mcp": ["legionctl"]
+  },
+  "harness": {
+    "agent": "claude",
+    "versions": ">=2.1 <3",
+    "model_apis": [{ "host": "api.anthropic.com", "shape": "anthropic-messages", "streaming": ["sse"] }],
+    "base_url_variables": ["ANTHROPIC_BASE_URL"],
+    "credentials": ["~/.claude/.credentials.json"],
+    "telemetry": [
+      { "host": "http-intake.logs.us5.datadoghq.com", "env": "DISABLE_TELEMETRY=1" },
+      { "host": "downloads.claude.ai", "env": "DISABLE_AUTOUPDATER=1" }
+    ],
+    "env": { "DISABLE_ERROR_REPORTING": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1" },
+    // into the session's settings file (--settings {settings})
+    "settings": { "sandbox": { "enabled": false } }
+  }
+}

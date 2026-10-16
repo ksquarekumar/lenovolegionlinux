@@ -985,6 +985,7 @@ fn composer_run(
             account: input.account.clone(),
             inside: legionctl_api::Inside::Host,
             gpu: false,
+            capability: Vec::new(),
             tag: None,
             acp: input.acp.clone(),
             model,

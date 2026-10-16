@@ -19,6 +19,8 @@
       "runner": { "format": "libtest" }
     }
   },
+  // The capability set of a session in such a repository (config/capabilities, DESIGN-13).
+  "capability_set": "rust-dev",
   "tools": {
     "toolchain": "rustup",
     "lsp": "rust-analyzer",

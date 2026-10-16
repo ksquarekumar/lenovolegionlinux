@@ -1,0 +1,33 @@
+// The harness Codex (DESIGN-12, needs table and harness profile). A session of agent "codex" requests this set by
+// itself. Its own command sandbox is off (sandbox mode danger-full-access, user decision 2026-10-17): our sandbox, the
+// environment and the gateway are the one boundary; its approval policy stays as the session sets it.
+{
+  "$schema": "../../docs/api/runnable.schema.json",
+  "name": "codex",
+  "version": 1,
+  "description": "Codex in a legionctl session: the model API and the ChatGPT login refresh, the update check off, its own sandbox off.",
+  "connections": {
+    "out": [
+      { "host": "chatgpt.com", "why": "the model backend of a ChatGPT login and its usage" },
+      { "host": "api.openai.com", "why": "the model API of an API key" },
+      { "host": "auth.openai.com", "why": "the ChatGPT login refresh (DESIGN-12 wall 1)" }
+    ],
+    "forbidden": ["ab.chatgpt.com", "api.github.com"],
+    "mcp": ["legionctl"]
+  },
+  "harness": {
+    "agent": "codex",
+    "versions": ">=0.160 <1",
+    "model_apis": [
+      { "host": "chatgpt.com", "shape": "openai-responses", "streaming": ["sse", "websocket"] },
+      { "host": "api.openai.com", "shape": "openai-responses", "streaming": ["sse"] }
+    ],
+    "base_url_variables": ["OPENAI_BASE_URL"],
+    "credentials": ["~/.codex/auth.json"],
+    "telemetry": [
+      { "host": "api.github.com", "args": ["-c", "check_for_update_on_startup=false"] }
+    ],
+    // after the agent's command (session.agents, session.acp)
+    "args": ["-c", "sandbox_mode=\"danger-full-access\""]
+  }
+}

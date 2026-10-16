@@ -1,0 +1,9 @@
+// This machine, read only: the read class of legionctl's operations through its MCP server.
+{
+  "$schema": "../../docs/api/runnable.schema.json",
+  "name": "machine-read",
+  "version": 1,
+  "description": "legionctl's read operations (status, sensors, doctor, knobs) through its MCP server.",
+  "toolverse": { "classes": ["read"] },
+  "connections": { "mcp": ["legionctl"] }
+}

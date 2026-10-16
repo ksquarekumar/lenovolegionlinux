@@ -185,6 +185,14 @@
             }
           ],
           "default": null
+        },
+        "capabilities": {
+          "description": "Capability sets it requests at its start (DESIGN-13); a higher layer may only narrow them.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
         }
       },
       "additionalProperties": false

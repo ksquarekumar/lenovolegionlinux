@@ -174,6 +174,8 @@ pub struct Language {
     pub outputs: Vec<String>,
     pub checks: BTreeMap<String, Check>,
     pub tools: Tools,
+    /// The capability set that a session in a repository of this language gets (`config/capabilities`).
+    pub capability_set: String,
 }
 
 /// What a run cost, from the kernel's accounting of the command and everything it waited for.

@@ -1,12 +1,12 @@
 # Reference: agent configs and teams
 
-An agent is three layers, lowest first. `agents check` shows the layer that set each field (`set_by`).
+An agent is three layers, lowest first. `runnables check` shows the layer that set each field (`set_by`).
 
 | Layer | Where | May |
 | --- | --- | --- |
 | archetype file | `integrations/agent-plugin/agents/<archetype>.md` | set the instruction text, `effort`, `skills`, `tools` |
-| config | `agents.configs.<name>` in the config layers | change `account`, `model`, `effort`, `pace`, `budget`; add `skills`, `mcp`, `instructions`; narrow `tools`, `commands` |
-| team member | `teams/<team>.jsonc` (`.legionctl/teams/`, `~/.config/legionctl/teams/`, the plugin) | narrow `tools`, `commands`, `budget`; set `pace`, `model`; `flow.may` removes message kinds |
+| config | `agents.configs.<name>` in the config layers | change `account`, `model`, `effort`, `pace`, `budget`; add `skills`, `mcp`, `instructions`; narrow `tools`, `commands`; set `capabilities` |
+| team member | `teams/<team>.jsonc` (`.legionctl/teams/`, `~/.config/legionctl/teams/`, the plugin) | narrow `tools`, `commands`, `budget`, `capabilities`; set `pace`, `model`; `flow.may` removes message kinds |
 
 The repository config layer may only narrow too. The shipped team is `vanilla`: `main0`, `observer0`, `ui0`.
 

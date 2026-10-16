@@ -1,0 +1,17 @@
+// GitHub, read: clones and fetches over HTTPS, the API for gh, and raw files.
+{
+  "$schema": "../../docs/api/runnable.schema.json",
+  "name": "github-read",
+  "version": 1,
+  "description": "git over HTTPS, gh and raw files from GitHub.",
+  "connections": {
+    "out": [
+      { "host": "github.com", "why": "git over HTTPS" },
+      { "host": "api.github.com", "why": "gh and the REST API" },
+      { "host": "codeload.github.com", "why": "archives" },
+      { "host": "raw.githubusercontent.com", "why": "raw files" },
+      { "host": "objects.githubusercontent.com", "why": "release assets" }
+    ]
+  },
+  "tools": [{ "name": "git" }, { "name": "gh" }]
+}

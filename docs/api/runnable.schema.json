@@ -1,0 +1,619 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Manifest",
+  "description": "A runnable's manifest (DESIGN-13): a capability set file, or the granted manifest of a runnable (the union of its\ngranted sets). Each part is optional; a set sets only what it needs.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "name": {
+      "description": "A set: its name, the same as its file's. A granted manifest: the runnable (`session:<id>`).",
+      "type": "string",
+      "default": ""
+    },
+    "version": {
+      "description": "A set: its version; a changed set has a higher one.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "default": 0
+    },
+    "description": {
+      "type": "string",
+      "default": ""
+    },
+    "runnable": {
+      "description": "The code or entrypoint and how it starts.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Entry"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "state": {
+      "description": "Its own `SQLite` for its controlled state: where it lives and where it syncs.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/State"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "sandbox": {
+      "description": "The sandbox kinds it may run in; empty: each.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Inside"
+      },
+      "default": []
+    },
+    "host": {
+      "$ref": "#/$defs/Host",
+      "default": {
+        "privileges": [],
+        "devices": [],
+        "forbidden_commands": []
+      }
+    },
+    "storage": {
+      "description": "Known mounts and their mode.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Storage"
+      },
+      "default": []
+    },
+    "channels": {
+      "description": "The ways it may reach the user; empty: none.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Channel"
+      },
+      "default": []
+    },
+    "toolverse": {
+      "$ref": "#/$defs/Toolverse",
+      "default": {
+        "classes": [],
+        "operations": [],
+        "mcp_tools": [],
+        "skills": []
+      }
+    },
+    "connections": {
+      "$ref": "#/$defs/Connections",
+      "default": {
+        "out": [],
+        "in": [],
+        "forbidden": [],
+        "web_read": false,
+        "mcp": []
+      }
+    },
+    "tools": {
+      "description": "The programs it needs.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Tool"
+      },
+      "default": []
+    },
+    "budgets": {
+      "$ref": "#/$defs/Budgets",
+      "default": {
+        "cpus": null,
+        "memory_mib": null,
+        "seconds": null,
+        "storage_mib": null,
+        "network_mib": null,
+        "tokens": null,
+        "usd": null
+      }
+    },
+    "harness": {
+      "description": "A harness's profile (DESIGN-12): how it runs, what it reaches, and how the session sets it up.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Harness"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "Entry": {
+      "type": "object",
+      "properties": {
+        "entrypoint": {
+          "description": "The command line (a program, a script, an image).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "language": {
+          "description": "A language file's name (`rust`, `node`, `python`).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "State": {
+      "type": "object",
+      "properties": {
+        "sqlite": {
+          "description": "The database file, relative to where it lives.",
+          "type": "string"
+        },
+        "lives": {
+          "$ref": "#/$defs/Place"
+        },
+        "syncs_to": {
+          "description": "Where it syncs to; none: it does not sync.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Place"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "sqlite",
+        "lives"
+      ]
+    },
+    "Place": {
+      "type": "string",
+      "enum": [
+        "dossier",
+        "repository",
+        "workspace"
+      ]
+    },
+    "Inside": {
+      "description": "Where a session runs.",
+      "oneOf": [
+        {
+          "description": "On this machine, in a bwrap sandbox.",
+          "type": "string",
+          "const": "host"
+        },
+        {
+          "description": "In a container of the repository's agent image (`legionctl workspace pack`).",
+          "type": "string",
+          "const": "container"
+        },
+        {
+          "description": "In a VM of the repository's disk (`legionctl workspace pack --as vm`), run by `legionctl vm` in the scope.",
+          "type": "string",
+          "const": "vm"
+        }
+      ]
+    },
+    "Host": {
+      "description": "The host side (DESIGN-13: the environment enforces it).",
+      "type": "object",
+      "properties": {
+        "privileges": {
+          "description": "User and system privileges (none is granted yet: a set that names one is refused).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "devices": {
+          "description": "Device nodes (`/dev/...`): bound into a host or container sandbox; a VM gets none.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "forbidden_commands": {
+          "description": "Commands it must not run (`cargo publish`): Claude Code's settings deny them (`Bash(<command>:*)`).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false
+    },
+    "Storage": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "An absolute path, or `~/` for the home.",
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/Mode"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "mode"
+      ]
+    },
+    "Mode": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "read"
+          ]
+        },
+        {
+          "description": "Writable at its own path.",
+          "type": "string",
+          "const": "write"
+        },
+        {
+          "description": "The real folder with every write in the session's layer; on the host only (a container or VM has its own\ncaches, as `session.caches`).",
+          "type": "string",
+          "const": "overlay"
+        },
+        {
+          "description": "Writable at its own path over an overlaid folder above it, so a write reaches the real file.",
+          "type": "string",
+          "const": "write-through"
+        }
+      ]
+    },
+    "Channel": {
+      "oneOf": [
+        {
+          "description": "Notes to the user through main0.",
+          "type": "string",
+          "const": "notes"
+        },
+        {
+          "description": "A desktop notice.",
+          "type": "string",
+          "const": "desktop"
+        }
+      ]
+    },
+    "Toolverse": {
+      "description": "legionctl's own operations, MCP tools and skills (by class and name).",
+      "type": "object",
+      "properties": {
+        "classes": {
+          "description": "Operation classes (`read`, `session`, `workspace`, `machine`).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "operations": {
+          "description": "Operation names; `x.*` names a group.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "mcp_tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false
+    },
+    "Connections": {
+      "description": "Its allowed in and out RPC (the gateway enforces them; until the gateway service, the session record keeps them).",
+      "type": "object",
+      "properties": {
+        "out": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Endpoint"
+          },
+          "default": []
+        },
+        "in": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Endpoint"
+          },
+          "default": []
+        },
+        "forbidden": {
+          "description": "Hosts it must never reach, even through web read.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "web_read": {
+          "description": "HTTPS GET to any public host, logged per host (DESIGN-12 wall 3).",
+          "type": "boolean",
+          "default": false
+        },
+        "mcp": {
+          "description": "MCP servers: `legionctl` or names in `mcp.servers`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false
+    },
+    "Endpoint": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 443
+        },
+        "sni": {
+          "description": "The TLS server name when it is not the host.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "why": {
+          "type": "string",
+          "default": ""
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "host"
+      ]
+    },
+    "Tool": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
+    "Budgets": {
+      "description": "Limits; none: no limit of this set. The grant keeps the smallest of its sets.",
+      "type": "object",
+      "properties": {
+        "cpus": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        },
+        "memory_mib": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "storage_mib": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "network_mib": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "usd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "Harness": {
+      "description": "A harness's profile (DESIGN-12 \"the gateway knows each harness\").",
+      "type": "object",
+      "properties": {
+        "agent": {
+          "description": "The agent name (`session.agents`, `session.acp`) whose sessions request this set by themselves.",
+          "type": "string",
+          "default": ""
+        },
+        "versions": {
+          "description": "The harness versions this profile is for.",
+          "type": "string",
+          "default": ""
+        },
+        "model_apis": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelApi"
+          },
+          "default": []
+        },
+        "base_url_variables": {
+          "description": "The variables that point it at a model API (the gateway sets them).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "credentials": {
+          "description": "Its login files (`~/`): the real files in a session (DESIGN-12 wall 1).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "telemetry": {
+          "description": "Telemetry and update hosts, each with what turns it off.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Telemetry"
+          },
+          "default": []
+        },
+        "env": {
+          "description": "More variables in the session.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "args": {
+          "description": "More arguments after its command.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "settings": {
+          "description": "Merged into the session's Claude Code settings file.",
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "ModelApi": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "default": ""
+        },
+        "shape": {
+          "description": "`anthropic-messages`, `openai-responses` or `openai-chat`.",
+          "type": "string",
+          "default": ""
+        },
+        "streaming": {
+          "description": "`sse`, `websocket`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false
+    },
+    "Telemetry": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "default": ""
+        },
+        "env": {
+          "description": "`NAME=value` that turns it off.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "args": {
+          "description": "Arguments that turn it off.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

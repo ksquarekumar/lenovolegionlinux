@@ -977,6 +977,17 @@ pub struct SessionStartIn {
     /// (VFIO: the desktop must not use it, see `vfio status`; the VM disk needs `workspace pack --as vm --gpu`).
     #[serde(default)]
     pub gpu: bool,
+    /// A capability set to request besides the main agent's, its harness's and its languages' (repeat it); a set that
+    /// the grant refuses stops the start with the reason.
+    #[serde(default)]
+    #[schemars(extend("x-option" = true))]
+    pub capability: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RunnablesShowIn {
+    /// A session id (`session list`), or a thread member as `<thread>/<member>`.
+    pub target: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1006,6 +1017,11 @@ pub struct SessionRunIn {
     /// (VFIO: the desktop must not use it, see `vfio status`; the VM disk needs `workspace pack --as vm --gpu`).
     #[serde(default)]
     pub gpu: bool,
+    /// A capability set to request besides the main agent's, its harness's and its languages' (repeat it); a set that
+    /// the grant refuses stops the start with the reason.
+    #[serde(default)]
+    #[schemars(extend("x-option" = true))]
+    pub capability: Vec<String>,
     /// A tag for the run's live output events (`session.output`), so a client can follow them; `legionctl session
     /// run` sets one.
     #[serde(default)]
@@ -1597,7 +1613,7 @@ pub struct AgentSetIn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct AgentsCheckIn {
+pub struct RunnablesCheckIn {
     /// A team file (`teams/<team>.jsonc` of the repository's .legionctl, the user's config or the plugin); none:
     /// each agent config alone.
     #[serde(default)]

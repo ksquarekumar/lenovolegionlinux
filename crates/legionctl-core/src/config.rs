@@ -49,6 +49,12 @@ pub struct Config {
     pub rlcd: crate::rlcd::RlcdConfig,
     /// Views and their composer (DESIGN-09 G5).
     pub views: ViewsConfig,
+    /// Grants of capability sets (DESIGN-13).
+    pub runnables: crate::runnables::RunnablesConfig,
+    /// The capability sets of the layers (`<layer>/capabilities/*.jsonc`), filled by [`resolve`].
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub capabilities: Vec<crate::runnables::Loaded>,
 }
 
 /// How an intent finds or gets its view (DESIGN-09 G5): a stored view with that intent, then rlcd's pick when it is
@@ -607,7 +613,7 @@ impl Approvals {
 
 /// The content hash of a parsed layer file: what is merged, so a file that changes between its read and the hash
 /// cannot pass with another content's answer.
-fn content_hash(value: &Value) -> String {
+pub(crate) fn content_hash(value: &Value) -> String {
     use blake2::{Blake2b, Digest, digest::consts::U32};
     format!("{:x}", Blake2b::<U32>::digest(value.to_string()))
 }
@@ -842,10 +848,11 @@ pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
         serde_json::from_value(trusted_meta("locked")).context("config.locked")?;
     let approve: Vec<String> =
         serde_json::from_value(trusted_meta("approve")).context("config.approve")?;
-    let approvals = if repo.is_empty() {
-        Approvals::default()
-    } else {
+    // the repository's config files and capability sets need the user's answers
+    let approvals = if repo_dir.is_some() {
         Approvals::read()?
+    } else {
+        Approvals::default()
     };
 
     let mut layers = Vec::new();
@@ -890,8 +897,13 @@ pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
         &mut problems,
     );
     let value = Value::Object(merged);
-    let config: Config =
+    let mut config: Config =
         serde_json::from_value(value.clone()).context("the merged config is not valid")?;
+    let mut unapproved = unapproved;
+    let mut set_layers = vec![("system", system_dir.clone()), ("user", user_dir.clone())];
+    set_layers.extend(repo_dir.iter().map(|d| ("repo", d.clone())));
+    config.capabilities =
+        crate::runnables::load(&set_layers, &approvals, &mut problems, &mut unapproved)?;
     config.gateway.check()?;
     Ok(Resolved {
         config,

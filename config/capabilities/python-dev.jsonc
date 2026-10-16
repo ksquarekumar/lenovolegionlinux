@@ -1,0 +1,15 @@
+// Python work with uv first (config/languages/python.jsonc names this set): PyPI and its downloads. uv's cache is in
+// ~/.cache, which a host session has as an overlay already (session.caches).
+{
+  "$schema": "../../docs/api/runnable.schema.json",
+  "name": "python-dev",
+  "version": 1,
+  "description": "uv and Python packages: PyPI and its downloads.",
+  "connections": {
+    "out": [
+      { "host": "pypi.org", "why": "the package index" },
+      { "host": "files.pythonhosted.org", "why": "package downloads" }
+    ]
+  },
+  "tools": [{ "name": "uv" }]
+}

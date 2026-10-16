@@ -1390,8 +1390,8 @@ fn trace_shows_each_change_as_it_happens() {
 /// The wire format is reviewed: `docs/api/schema.json` holds every operation's class, visibility, input and output
 /// schema, and the code must match it, so a change to a type on the wire shows up as a diff of that file
 /// (`LEGIONCTL_WRITE_SCHEMA=1` writes it after a deliberate change). The schemas of the planning files
-/// (`planning/*.schema.json`), of team files (`teams/team.schema.json`) and of view files (`docs/api/view.schema.json`)
-/// are reviewed the same way.
+/// (`planning/*.schema.json`), of team files (`teams/team.schema.json`), of view files (`docs/api/view.schema.json`)
+/// and of runnable manifests and capability sets (`docs/api/runnable.schema.json`) are reviewed the same way.
 #[test]
 fn the_wire_format_matches_the_committed_schema() {
     for (rel, schema) in legionctl_core::planning::schemas()
@@ -1400,6 +1400,7 @@ fn the_wire_format_matches_the_committed_schema() {
         .chain([
             legionctl_core::archetypes::team_schema().unwrap(),
             legionctl_core::views::schema().unwrap(),
+            legionctl_core::runnables::schema().unwrap(),
         ])
     {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -6546,7 +6547,7 @@ fn the_processes_of_a_test_end_when_it_panics_and_when_its_binary_is_killed() {
 /// todo-122, as on 2026-10-15: the user's operator.db at v10 while an operator of another build runs (a stand-in that
 /// holds `operator.lock` with that build's fingerprint). An operator of this build does not start, and the file stays
 /// at v10 without a backup. After the other operator stopped, this one starts: it keeps the v10 file in
-/// `operator.db.v10.bak`, then takes the database to v14 with its rows.
+/// `operator.db.v10.bak`, then takes the database to v15 with its rows.
 #[test]
 fn an_operator_does_not_start_beside_one_of_another_build_and_keeps_the_old_database() {
     let home = home("holder");
@@ -6620,7 +6621,7 @@ fn an_operator_does_not_start_beside_one_of_another_build_and_keeps_the_old_data
     let op = operator_in("holder", &home);
     let events = op.ok(&["events", "--json"]);
     assert!(events.contains("kept.v10"), "{events}");
-    assert_eq!(version(&db), 14);
+    assert_eq!(version(&db), 15);
     assert_eq!(version(&bak), 10, "the backup is the v10 file");
     let kept: String = rusqlite::Connection::open(&bak)
         .unwrap()

@@ -450,9 +450,13 @@ operations! {
     /// marketplace declares still needs a person to accept it.
     agents_plugins_install / AgentsPluginsInstall = "agents.plugins.install", Workspace, PluginInstallIn => Lines;
     /// Resolve the agent configs of a team (or each config alone) for a harness: the archetype file, then
-    /// `agents.configs.<name>`, then the team. Refuses, with the field named, each field that a member's run path cannot
-    /// apply, and each layer that widens tools, commands, budgets or message kinds.
-    agents_check / AgentsCheck = "agents.check", Read, AgentsCheckIn => AgentCheck;
+    /// `agents.configs.<name>`, then the team; and the capability sets of the layers (DESIGN-13). Refuses, with the
+    /// field named, each field that a member's run path cannot apply, each layer that widens tools, commands, budgets,
+    /// message kinds or capabilities, and each capability that a grant would refuse.
+    runnables_check / RunnablesCheckOp = "runnables.check", Read, RunnablesCheckIn => RunnablesCheck;
+    /// The granted manifest of a session (its id) or a thread member (`<thread>/<member>`): what it asked for, the sets
+    /// it got with their versions and files, and their union (connections, storage, host, harness, toolverse).
+    runnables_show / RunnablesShow = "runnables.show", Read, RunnablesShowIn => RunnableGrant;
     /// Tokens per agent, day and model from Claude Code's and Codex's own transcripts.
     agents_usage / AgentsUsage = "agents.usage", Read, AgentUsageIn => UsageReport;
     /// Open (or reopen) this session's dossier workspace in a repository: a worktree on legionctl/<dossier> with the

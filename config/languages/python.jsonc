@@ -11,6 +11,8 @@
     "build": { "kind": "build", "run": "uv build", "gate": "merge" },
     "test": { "kind": "test", "run": "uv run pytest", "gate": "merge" }
   },
+  // The capability set of a session in such a repository (config/capabilities, DESIGN-13).
+  "capability_set": "python-dev",
   "tools": {
     "toolchain": "uv",
     "lsp": "ty server",

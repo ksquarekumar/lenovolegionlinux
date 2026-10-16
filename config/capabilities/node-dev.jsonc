@@ -1,0 +1,12 @@
+// Node.js work with bun first (config/languages/node.jsonc names this set): the npm registry and bun's install cache.
+{
+  "$schema": "../../docs/api/runnable.schema.json",
+  "name": "node-dev",
+  "version": 1,
+  "description": "bun and npm packages: the npm registry and bun's install cache.",
+  "connections": {
+    "out": [{ "host": "registry.npmjs.org", "why": "packages" }]
+  },
+  "storage": [{ "path": "~/.bun/install/cache", "mode": "overlay" }],
+  "tools": [{ "name": "bun" }]
+}

@@ -1,0 +1,21 @@
+// Rust work (config/languages/rust.jsonc names this set): cargo's registry and its downloads, and cargo's own caches as
+// overlays whose writes stay in the session. The target folder is in the workspace, which a session writes already.
+{
+  "$schema": "../../docs/api/runnable.schema.json",
+  "name": "rust-dev",
+  "version": 1,
+  "description": "cargo and rustup: crates.io, its index and downloads, and cargo's caches.",
+  "connections": {
+    "out": [
+      { "host": "index.crates.io", "why": "the sparse registry index" },
+      { "host": "crates.io", "why": "the registry API" },
+      { "host": "static.crates.io", "why": "crate downloads" },
+      { "host": "static.rust-lang.org", "why": "rustup toolchains" }
+    ]
+  },
+  "storage": [
+    { "path": "~/.cargo/registry", "mode": "overlay" },
+    { "path": "~/.cargo/git", "mode": "overlay" }
+  ],
+  "tools": [{ "name": "cargo" }, { "name": "rustup" }]
+}

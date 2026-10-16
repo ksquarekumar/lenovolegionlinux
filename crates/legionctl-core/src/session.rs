@@ -48,7 +48,8 @@ pub enum Inside {
 }
 
 impl Inside {
-    fn as_str(self) -> &'static str {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
         match self {
             Inside::Host => "host",
             Inside::Container => "container",
@@ -179,6 +180,10 @@ pub struct Start<'a> {
     /// A thread member's session (design 23, P6b): `<thread>/<member>`, and the main agent's folder that it sees
     /// as an overlay.
     pub member: Option<(&'a str, &'a Path)>,
+    /// The capability sets it requests besides its harness's and its languages' (DESIGN-13).
+    pub capabilities: &'a [String],
+    /// A member's parent: the main agent's sets; none: the user is the parent.
+    pub parent: Option<&'a [String]>,
 }
 
 /// Where account profiles live: `~/.local/share/legionctl/accounts/<name>/{claude,codex}`.
@@ -371,7 +376,7 @@ fn size(dir: &Path) -> u64 {
 fn session_files(
     runtime: &Path,
     id: &str,
-    config: &Config,
+    (config, manifest): (&Config, &crate::runnables::Manifest),
     mcp_json: &serde_json::Value,
 ) -> Result<[PathBuf; 3]> {
     let dir = runtime.join("legionctl/sessions").join(id);
@@ -382,7 +387,7 @@ fn session_files(
         dir.join("mcp.json"),
     ];
     std::fs::write(&files[0], "")?;
-    std::fs::write(&files[1], claude_settings(config).to_string())?;
+    std::fs::write(&files[1], claude_settings(config, manifest).to_string())?;
     std::fs::write(&files[2], mcp_json.to_string())?;
     Ok(files)
 }
@@ -677,6 +682,8 @@ enum Mount {
     ReadOnly(PathBuf, PathBuf),
     /// A private empty folder.
     Empty(PathBuf),
+    /// A device node at its own path (a grant's `host.devices`): a host or container sandbox only.
+    Device(PathBuf),
     /// A plain folder seen at its own path, every write into the dossier's layer (`upper`, `work`): bwrap only.
     Overlay {
         folder: PathBuf,
@@ -694,6 +701,7 @@ fn bwrap_args(args: &mut Vec<String>, mounts: &[Mount], env: &[(String, String)]
             Mount::Bind(from, to) => args.extend(["--bind".into(), text(from), text(to)]),
             Mount::ReadOnly(from, to) => args.extend(["--ro-bind".into(), text(from), text(to)]),
             Mount::Empty(p) => args.extend(["--tmpfs".into(), text(p)]),
+            Mount::Device(p) => args.extend(["--dev-bind".into(), text(p), text(p)]),
             Mount::Overlay {
                 folder,
                 upper,
@@ -729,6 +737,7 @@ fn docker_args(args: &mut Vec<String>, mounts: &[Mount], env: &[(String, String)
                 args.extend(["-v".into(), format!("{}:{}:ro", text(from), text(to))]);
             }
             Mount::Empty(p) => args.extend(["--tmpfs".into(), text(p)]),
+            Mount::Device(p) => args.extend(["--device".into(), text(p)]),
             Mount::Overlay { folder, .. } => anyhow::bail!(
                 "a plain folder's workspace ({}) cannot run in a container: use a git repository",
                 folder.display()
@@ -977,9 +986,10 @@ fn vm_sandbox(
                 GuestMount::File(to, std::fs::read_to_string(&from)?)
             }),
             Mount::Empty(p) => guest_mounts.push(GuestMount::Empty(p)),
-            Mount::Overlay { folder, .. } => anyhow::bail!(
-                "a plain folder's workspace ({}) cannot run in a VM: use a git repository",
-                folder.display()
+            // the grant refuses a device in a VM already
+            Mount::Device(p) | Mount::Overlay { folder: p, .. } => anyhow::bail!(
+                "{} cannot be in a VM: a VM gets no host device node, and a plain folder's workspace needs a git repository",
+                p.display()
             ),
         }
     }
@@ -1178,18 +1188,40 @@ impl Dossiers {
     }
 }
 
-/// Claude Code settings for a session (layer 1 of the gates, note 14): the git gate's refusals as `permissions.deny`,
-/// so the agent learns them before it runs a command; the git shim in the sandbox stays the authority.
-#[must_use]
-pub fn claude_settings(config: &Config) -> serde_json::Value {
+/// Claude Code settings for a session (layer 1 of the gates, note 14): the git gate's refusals and the grant's
+/// forbidden commands as `permissions.deny`, so the agent learns them before it runs a command (the git shim in the
+/// sandbox stays the authority for git), with the harness set's settings over them (its own sandbox off).
+fn claude_settings(config: &Config, manifest: &crate::runnables::Manifest) -> serde_json::Value {
     let deny: Vec<String> = config
         .gates
         .git
         .deny
         .iter()
-        .map(|rule| format!("Bash(git {rule}:*)"))
+        .map(|rule| format!("git {rule}"))
+        .chain(manifest.host.forbidden_commands.iter().cloned())
+        .map(|command| format!("Bash({command}:*)"))
         .collect();
-    serde_json::json!({ "permissions": { "deny": deny } })
+    let mut settings = serde_json::json!({ "permissions": { "deny": deny } });
+    if let Some(harness) = &manifest.harness {
+        merge_json(&mut settings, &harness.settings);
+    }
+    settings
+}
+
+/// `over` into `into`: objects merge key by key, any other value replaces.
+fn merge_json(into: &mut serde_json::Value, over: &serde_json::Value) {
+    match (into, over) {
+        (serde_json::Value::Object(into), serde_json::Value::Object(over)) => {
+            for (key, value) in over {
+                merge_json(
+                    into.entry(key.clone()).or_insert(serde_json::Value::Null),
+                    value,
+                );
+            }
+        }
+        (_, serde_json::Value::Null) => {}
+        (into, over) => *into = over.clone(),
+    }
 }
 
 /// The session's MCP config: legionctl's own server, and every configured server behind `legionctl mcp-proxy` with
@@ -1298,6 +1330,92 @@ fn forward(agent: &mut Vec<String>, gateway: Option<u16>, socket: &Path) {
     }
 }
 
+/// The mounts of a grant's storage and devices after the session's own (later mounts go over earlier ones), and a
+/// line for each one that this sandbox leaves out. A folder that is not there yet is made (cargo makes
+/// `~/.cargo/registry` at its first download; the home is read-only in the sandbox).
+fn grant_mounts(
+    mounts: &mut Vec<Mount>,
+    manifest: &crate::runnables::Manifest,
+    layer: &Path,
+    host: bool,
+) -> Result<Vec<String>> {
+    use crate::runnables::Mode;
+    let mut lines = Vec::new();
+    for storage in &manifest.storage {
+        let path = expand_home(&storage.path)?;
+        match storage.mode {
+            Mode::Read if !path.exists() => {
+                lines.push(format!("storage {}: not there, not mounted", storage.path));
+            }
+            Mode::Read => mounts.push(Mount::ReadOnly(path.clone(), path)),
+            Mode::Overlay if !host => lines.push(format!(
+                "storage {}: an overlay on the host only; this sandbox keeps its own",
+                storage.path
+            )),
+            Mode::Overlay => {
+                std::fs::create_dir_all(&path)?;
+                layered(mounts, &path, layer, true)?;
+            }
+            Mode::Write | Mode::WriteThrough => {
+                if !path.exists() {
+                    std::fs::create_dir_all(&path)?;
+                }
+                mounts.push(Mount::Writable(path));
+            }
+        }
+    }
+    mounts.extend(
+        manifest
+            .host
+            .devices
+            .iter()
+            .map(PathBuf::from)
+            .map(Mount::Device),
+    );
+    Ok(lines)
+}
+
+/// The granted harness's variables (into `env`: what turns its telemetry and updates off, and its own) and the
+/// arguments after its command.
+fn harness_parts(
+    manifest: &crate::runnables::Manifest,
+    env: &mut Vec<(String, String)>,
+) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(harness) = &manifest.harness {
+        for t in &harness.telemetry {
+            if let Some((name, value)) = t.env.as_deref().and_then(|e| e.split_once('=')) {
+                env.push((name.into(), value.into()));
+            }
+            args.extend(t.args.iter().cloned());
+        }
+        env.extend(harness.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+        args.extend(harness.args.iter().cloned());
+    }
+    args
+}
+
+/// The line that says what the session got: its sets and its connections, which the session record keeps for the
+/// gateway (the sandbox has no network but the model gateway until the gateway service enforces them).
+fn granted_line(grant: &crate::runnables::Grant) -> String {
+    let sets: Vec<String> = grant
+        .sets
+        .iter()
+        .map(|s| format!("{}@{}", s.name, s.version))
+        .collect();
+    let c = &grant.manifest.connections;
+    format!(
+        "capabilities: {}; connections: {} out, web read {} (kept for the gateway; `legionctl runnables show <session>`)",
+        if sets.is_empty() {
+            "none".into()
+        } else {
+            sets.join(", ")
+        },
+        c.out.len(),
+        if c.web_read { "on" } else { "off" }
+    )
+}
+
 /// A session's own state (`~/.local/state/legionctl/session-home/<id>`): the layers over the home folders it writes
 /// (`home/`), kept for a resume, and the throwaway layers of the commands run for it (`run-*`).
 fn session_home(id: &str) -> PathBuf {
@@ -1314,39 +1432,45 @@ fn home_mounts(mounts: &mut Vec<Mount>, config: &Config, layer: &Path, host: boo
     let caches: &[String] = if host { &config.session.caches } else { &[] };
     for entry in config.session.writable.iter().chain(caches) {
         let path = expand_home(entry)?;
-        if !path.exists() {
-            continue;
+        if path.exists() {
+            layered(mounts, &path, layer, host)?;
         }
-        let own = layer.join(path.strip_prefix("/").unwrap_or(&path));
-        if host && path.is_dir() {
-            for part in ["upper", "work"] {
-                std::fs::create_dir_all(own.join(part))?;
-            }
-            mounts.push(Mount::Overlay {
-                folder: path.clone(),
-                upper: own.join("upper"),
-                work: own.join("work"),
-            });
-            logins_through(mounts, &path);
-            continue;
-        }
-        if !own.exists() {
-            std::fs::create_dir_all(own.parent().context("a layer path has no folder")?)?;
-            let out = std::process::Command::new("cp")
-                .args(["-a", "--reflink=auto", "--"])
-                .args([&path, &own])
-                .output()
-                .context("running cp")?;
-            anyhow::ensure!(
-                out.status.success(),
-                "copying {} for the session: {}",
-                path.display(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
-        mounts.push(Mount::Bind(own, path.clone()));
-        logins_through(mounts, &path);
     }
+    Ok(())
+}
+
+/// `path` with every write in the session's `layer`: on the host a folder is an overlay over the real one; in a
+/// container or VM (and a file) the session's copy in `layer`, made at its first start.
+fn layered(mounts: &mut Vec<Mount>, path: &Path, layer: &Path, host: bool) -> Result<()> {
+    let own = layer.join(path.strip_prefix("/").unwrap_or(path));
+    if host && path.is_dir() {
+        for part in ["upper", "work"] {
+            std::fs::create_dir_all(own.join(part))?;
+        }
+        mounts.push(Mount::Overlay {
+            folder: path.to_path_buf(),
+            upper: own.join("upper"),
+            work: own.join("work"),
+        });
+        logins_through(mounts, path);
+        return Ok(());
+    }
+    if !own.exists() {
+        std::fs::create_dir_all(own.parent().context("a layer path has no folder")?)?;
+        let out = std::process::Command::new("cp")
+            .args(["-a", "--reflink=auto", "--"])
+            .args([path, &own])
+            .output()
+            .context("running cp")?;
+        anyhow::ensure!(
+            out.status.success(),
+            "copying {} for the session: {}",
+            path.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    mounts.push(Mount::Bind(own, path.to_path_buf()));
+    logins_through(mounts, path);
     Ok(())
 }
 
@@ -1479,6 +1603,18 @@ impl Dossiers {
         let skills = skills(config, &store)?;
         let runs = runs(start.inside, start.dir)?;
         let id = new_id()?;
+        // a refused set stops the session before anything is bound (DESIGN-13: at start, not at the first call)
+        let grant = crate::runnables::grant(
+            config,
+            &format!("session:{id}"),
+            &crate::runnables::Request {
+                agent,
+                dir: start.dir,
+                inside: start.inside,
+                names: start.capabilities,
+                parent: start.parent,
+            },
+        )?;
         let place = place_of(start.dir);
         let bound = self.bind(&id, agent, start.dossier, start.steal, Some(&place))?;
         let ws = self.open_workspace(&id, start.dir, None, start.topic, &config.workspace.root)?;
@@ -1488,23 +1624,26 @@ impl Dossiers {
             params![id, agent, start.dossier, agent_dir(&ws).to_string_lossy(), now(), start.account, config.session.scope || start.inside == Inside::Container, start.inside.as_str()],
         )?;
         // a start that fails here (no GPU, no GPU driver in the disk) holds nothing
-        self.launch(
-            id.clone(),
-            (&ws, bound, start.token),
-            config,
-            &Who {
-                agent,
-                command,
-                account: start.account,
-                member: start.member,
-                headless: start.headless,
-            },
-            (mcp_json, skills.as_deref()),
-            (&runs, start.gpu),
-        )
-        .inspect_err(|_| {
-            let _ = self.release(&id);
-        })
+        self.keep_grant(&id, &grant)
+            .and_then(|()| {
+                self.launch(
+                    id.clone(),
+                    (&ws, bound, start.token),
+                    config,
+                    &Who {
+                        agent,
+                        command,
+                        account: start.account,
+                        member: start.member,
+                        headless: start.headless,
+                    },
+                    (mcp_json, skills.as_deref()),
+                    (&runs, start.gpu, &grant),
+                )
+            })
+            .inspect_err(|_| {
+                let _ = self.release(&id);
+            })
     }
 
     /// Prepare an ended session again: the same id, dossier and workspace, and the agent's resume command
@@ -1534,8 +1673,26 @@ impl Dossiers {
         let mcp_json = mcp_config(config, &store)?;
         let skills = skills(config, &store)?;
         let runs = runs(record.inside, &record.workdir)?;
+        // the sets it asked for at its start, granted again under today's layers; a session from before grants asks
+        // for its harness's and languages' sets
+        let before: Option<crate::runnables::Grant> = self
+            .fact_value(&crate::runnables::entity(id), "manifest", &[])?
+            .map(serde_json::from_value)
+            .transpose()?;
+        let grant = crate::runnables::grant(
+            config,
+            &format!("session:{id}"),
+            &crate::runnables::Request {
+                agent: &record.agent,
+                dir: &record.workdir,
+                inside: record.inside,
+                names: before.as_ref().map_or(&[], |b| &b.requested),
+                parent: before.as_ref().and_then(|b| b.parent.as_deref()),
+            },
+        )?;
         let place = place_of(&record.workdir);
         let bound = self.bind(id, &record.agent, &record.dossier, false, Some(&place))?;
+        self.keep_grant(id, &grant)?;
         // after the bind: a refused resume leaves the session on its account
         if let Some(new) = account.filter(|a| record.account.as_deref() != Some(*a)) {
             account_dir(new)?;
@@ -1573,7 +1730,7 @@ impl Dossiers {
             },
             (mcp_json, skills.as_deref()),
             // the GPU is asked for each start: a resumed session runs without it
-            (&runs, false),
+            (&runs, false, &grant),
         )
     }
 
@@ -1585,12 +1742,14 @@ impl Dossiers {
         config: &Config,
         who: &Who,
         (mcp_json, skills): (serde_json::Value, Option<&[(String, PathBuf)]>),
-        (runs, gpu): (&Runs, bool),
+        (runs, gpu, grant): (&Runs, bool, &crate::runnables::Grant),
     ) -> Result<Launch> {
         let runtime = PathBuf::from(
             std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?,
         );
-        let [real_git, settings, mcp] = session_files(&runtime, &id, config, &mcp_json)?;
+        let manifest = &grant.manifest;
+        let [real_git, settings, mcp] =
+            session_files(&runtime, &id, (config, manifest), &mcp_json)?;
         let workdir = agent_dir(ws);
         let host = matches!(runs, Runs::Host);
         // the operator's sockets read-only (a sandbox cannot put its own in their place), and of the sessions' files
@@ -1603,10 +1762,18 @@ impl Dossiers {
             Mount::ReadOnly(own.clone(), own),
         ];
         mounts.extend(self.work_mounts(ws, config, &session_home(&id).join("home"), host)?);
+        let mut lines = uses(bound, ws, &workdir);
+        lines.extend(grant_mounts(
+            &mut mounts,
+            manifest,
+            &session_home(&id).join("storage"),
+            host,
+        )?);
         let mut env = vec![
             ("LEGIONCTL_SESSION".to_string(), id.clone()),
             ("LEGIONCTL_TOKEN".to_string(), token.to_string()),
         ];
+        let harness_args = harness_parts(manifest, &mut env);
         if let Some(account) = who.account {
             account_mounts(&mut mounts, &mut env, account)?;
         }
@@ -1616,7 +1783,7 @@ impl Dossiers {
         }
 
         let gateway = (config.gateway.port != 0).then_some(config.gateway.port);
-        let mut lines = uses(bound, ws, &workdir);
+        lines.push(granted_line(grant));
         lines.push(network(&mut env, gateway));
         let mut agent: Vec<String> = who
             .command
@@ -1626,6 +1793,7 @@ impl Dossiers {
                     .replace("{settings}", &settings.to_string_lossy())
                     .replace("{mcp}", &mcp.to_string_lossy())
             })
+            .chain(harness_args)
             .collect();
         let sandbox = match runs {
             Runs::Host => {

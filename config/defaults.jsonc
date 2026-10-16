@@ -15,7 +15,7 @@
     // Keys or prefixes that a repository's .legionctl file sets only after you allow that file once (trust on first
     // use): legionctl asks with a desktop notification the first time, and again when the file changes. Until you
     // allow it, and after Deny, the file's values of these keys are not used (`legionctl config layers` says so).
-    "approve": ["hooks", "session", "gates", "gateway", "mcp", "packages", "plugins", "dossier", "workspace"]
+    "approve": ["hooks", "session", "gates", "gateway", "mcp", "packages", "plugins", "dossier", "workspace", "runnables"]
   },
 
   "workspace": {
@@ -258,13 +258,15 @@
   // Agent configs (design 23, B+2): name -> { "archetype": main-agent|thread-observer|ui-composer, and the fields it
   // changes: "harness" (claude|codex; none: both), "account", "model", "effort", "tools": {allow, deny}, "skills",
   // "mcp" (legionctl or names in mcp.servers), "commands": {allow, deny, ask}, "instructions" (files), "pace",
-  // "budget": {tokens_per_day, wake_tokens, wake_seconds}, "sandbox" and "approval" (Codex sessions) }. The archetype
-  // file (integrations/agent-plugin/agents/<archetype>.md) is the layer below; the repository layer and a team may
-  // only narrow tools, commands and budgets. `legionctl agents check [--team <t>] [--harness claude|codex]` resolves
-  // them and refuses each field that a run path cannot apply; `legionctl setup apply` writes them as Codex agents.
+  // "budget": {tokens_per_day, wake_tokens, wake_seconds}, "sandbox" and "approval" (Codex sessions), "capabilities"
+  // (capability sets, DESIGN-13) }. The archetype file (integrations/agent-plugin/agents/<archetype>.md) is the layer
+  // below; the repository layer and a team may only narrow tools, commands, budgets and capabilities. `legionctl
+  // runnables check [--team <t>] [--harness claude|codex]` resolves them and refuses each field that a run path cannot
+  // apply; `legionctl setup apply` writes them as Codex agents. A session (the main agent) requests the capabilities
+  // of main-agent; a member those of its config. Bound agents (observers, the composer) get no web-read.
   "agents": {
     "configs": {
-      "main-agent": { "archetype": "main-agent" },
+      "main-agent": { "archetype": "main-agent", "capabilities": ["web-read", "github-read", "dossier-write", "machine-read"] },
       "thread-observer": { "archetype": "thread-observer", "pace": "on-trigger", "budget": { "tokens_per_day": 2000000 } },
       "ui-composer": { "archetype": "ui-composer", "pace": "on-trigger", "budget": { "tokens_per_day": 500000 } }
     },
@@ -348,6 +350,17 @@
       "memory_available_percent": 5,
       "load_per_cpu": 1.5
     }
+  },
+
+  // Capability sets (DESIGN-13): named, versioned parts of a runnable's manifest in config/capabilities (shipped), and
+  // in the folder capabilities/ of /etc/legionctl, ~/.config/legionctl and a repository's .legionctl. A session gets
+  // the set of its harness and of its repository's languages by itself, and the sets that it names (its config, a
+  // team member's config, `session start --capability <set>`). The grant is the subset that its environment, its
+  // parent and this layer allow; anything else refuses the start with the reason. "allow": the shipped, system and
+  // user sets that a grant may hold; a repository's own set needs no entry, but its powerful parts (host, storage,
+  // toolverse, connections, harness) need your first-use answer. `legionctl runnables show <session>` gives a grant.
+  "runnables": {
+    "allow": ["claude-code", "codex", "rust-dev", "node-dev", "python-dev", "web-read", "github-read", "dossier-write", "machine-read"]
   },
 
   // The desktop app (legionctl-app).

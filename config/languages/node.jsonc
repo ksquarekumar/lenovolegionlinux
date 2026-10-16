@@ -11,6 +11,8 @@
     "build": { "kind": "build", "run": "bun run build", "gate": "merge" },
     "test": { "kind": "test", "run": "bun test", "gate": "merge" }
   },
+  // The capability set of a session in such a repository (config/capabilities, DESIGN-13).
+  "capability_set": "node-dev",
   "tools": {
     "toolchain": "bun",
     "lsp": "typescript-language-server",

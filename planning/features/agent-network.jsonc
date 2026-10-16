@@ -55,7 +55,7 @@
       { "key": "file:integrations/agent-plugin/teams/vanilla.jsonc", "change": "add" },
       { "key": "file:crates/legionctl-core/src/archetypes.rs", "change": "add", "loc": 600 },
       { "key": "file:crates/legionctl-core/src/setup.rs", "change": "edit" },
-      { "key": "op:agents.check", "change": "add" }
+      { "key": "op:runnables.check", "change": "add" }
     ] },
     { "id": "P6b", "text": "Members through ACP, pace, wake budgets, the flow of vanilla, backfill, branch, compensation", "status": "done", "stories": ["S3"], "depends_on": ["P6a"], "units": [
       { "key": "file:crates/legionctl-core/src/pool.rs", "change": "add", "loc": 1000 },

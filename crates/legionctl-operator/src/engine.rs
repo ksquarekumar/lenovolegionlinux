@@ -18,12 +18,13 @@ use legionctl_api::{
     WindowsState, coded,
 };
 use legionctl_api::{
-    AccountAddIn, AgentCheck, AgentsCheckIn, CapabilityList, Changes, CheckpointIn, CleanupIn,
-    ClientPath, CloseIn, ConfigFiles, ConfigView, Ctx, Empty, Engine, ExplainIn, Explanation,
-    Findings, GpuPrimaryIn, GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LayerList, LoadState,
-    MergeIn, PowerApplyIn, PowerSource, ProfileIn, ProjectIn, ReminderAddIn, Reminders, RunEnv,
-    RunEnvIn, SetupApplyIn, SetupReport, SkillList, Snapshot, StatusIn, Validation, Workspace,
-    WorkspaceIn, WorkspaceOpenIn, WorkspaceStatus, Workspaces,
+    AccountAddIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath, CloseIn,
+    ConfigFiles, ConfigView, Ctx, Empty, Engine, ExplainIn, Explanation, Findings, GpuPrimaryIn,
+    GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LayerList, LoadState, MergeIn, PowerApplyIn,
+    PowerSource, ProfileIn, ProjectIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn, RunnableGrant,
+    RunnablesCheck, RunnablesCheckIn, RunnablesShowIn, SetupApplyIn, SetupReport, SkillList,
+    Snapshot, StatusIn, Validation, Workspace, WorkspaceIn, WorkspaceOpenIn, WorkspaceStatus,
+    Workspaces,
 };
 use legionctl_api::{
     Autostart, AutostartIn, DisplayFixIn, FanCurveIn, FanState, FirmwareDevices, FirmwareUpdateIn,
@@ -1555,7 +1556,19 @@ fn gate_message(resolved: &Resolved) -> Result<String> {
     ))
 }
 
-/// The config for work in `project` (its repository layer applies), or without a repository.
+/// The sets that a session (the main agent) requests: those of the config main-agent, and the start's flags.
+fn main_agent_sets(config: &legionctl_core::config::Config, flags: &[String]) -> Vec<String> {
+    config
+        .agents
+        .configs
+        .get("main-agent")
+        // no config main-agent: it requests nothing; its harness's and languages' sets still come
+        .map_or_else(Vec::new, |c| c.capabilities.clone())
+        .into_iter()
+        .chain(flags.iter().cloned())
+        .collect()
+}
+
 /// The config for work in `project`; a repository layer file with keys that wait for the user's first answer gets
 /// its question (O-2), and resolves without them until then.
 pub(crate) fn config(project: Option<&ClientPath>) -> Result<Resolved> {
@@ -2124,7 +2137,7 @@ impl Engine for Operator {
         .into_wire())
     }
 
-    fn agents_check(&self, _: &Ctx, input: AgentsCheckIn) -> Result<AgentCheck> {
+    fn runnables_check(&self, _: &Ctx, input: RunnablesCheckIn) -> Result<RunnablesCheck> {
         let sources = Sources::resolve(&Dirs::from_env(), Some(input.project.get()?))?;
         let team = match &input.team {
             Some(name) => Some((
@@ -2144,6 +2157,10 @@ impl Engine for Operator {
                 false,
             )?
             .into_wire())
+    }
+
+    fn runnables_show(&self, _: &Ctx, input: RunnablesShowIn) -> Result<RunnableGrant> {
+        Ok(dossiers()?.grant_of(&input.target)?.into_wire())
     }
 
     fn agents_usage(&self, _: &Ctx, input: AgentUsageIn) -> Result<UsageReport> {
@@ -4681,6 +4698,8 @@ impl Engine for Operator {
             inside: input.inside.into(),
             gpu: input.gpu,
             member: None,
+            capabilities: &main_agent_sets(&resolved.config, &input.capability),
+            parent: None,
         };
         let launch = store.start_session(&start, &resolved.config)?;
         Db::open_default()?.issue_token(&launch.id, &token)?;
@@ -4933,6 +4952,8 @@ impl Operator {
             inside: input.inside.into(),
             gpu: input.gpu,
             member: None,
+            capabilities: &main_agent_sets(&resolved.config, &input.capability),
+            parent: None,
         };
         let launch = store.start_session(&start, &resolved.config)?;
         let db = Db::open_default()?;

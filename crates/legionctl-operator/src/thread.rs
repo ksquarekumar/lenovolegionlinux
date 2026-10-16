@@ -279,8 +279,8 @@ pub fn account(input: &legionctl_api::ThreadAccountIn) -> Result<Lines> {
     }]))
 }
 
-/// The member's session for this wake on its account (`account_of`): made at its first wake, else resumed, with
-/// the token of its run.
+/// The member's session for this wake on its account (`account_of`): made at its first wake (headless on the host,
+/// the capability sets of its config with the main agent's as its parent), else resumed, with the token of its run.
 fn launch(
     store: &legionctl_core::dossier::Dossiers,
     w: &legionctl_core::pool::Wake,
@@ -304,6 +304,8 @@ fn launch(
                     inside: Inside::Host,
                     gpu: false,
                     member: Some((&name, &w.workdir)),
+                    capabilities: &member_sets(&w.fields)?,
+                    parent: Some(&main_sets(&resolved.config)),
                 },
                 &resolved.config,
             )?;
@@ -333,6 +335,26 @@ fn wake_prompt(
         Some((_, brief)) => format!("{instructions}\n\n{brief}\n\n{}", w.prompt),
         None => format!("{instructions}\n\n{}", w.prompt),
     })
+}
+
+/// The capability sets of a member's resolved config (`runnables check` shows them).
+fn member_sets(fields: &serde_json::Value) -> Result<Vec<String>> {
+    match &fields["capabilities"] {
+        serde_json::Value::Null => Ok(Vec::new()),
+        value => serde_json::from_value(value.clone())
+            .map_err(|e| anyhow::anyhow!("the member's capabilities: {e}")),
+    }
+}
+
+/// A member's parent: the sets of the config main-agent (the main agent of its thread).
+// shortcut: a team whose main0 uses another config still has main-agent's sets as the parent; upgrade when a thread
+// keeps its main agent's grant
+fn main_sets(config: &legionctl_core::config::Config) -> Vec<String> {
+    config
+        .agents
+        .configs
+        .get("main-agent")
+        .map_or_else(Vec::new, |c| c.capabilities.clone())
 }
 
 /// The acp step of a wake: the member's session (made at its first wake), one ACP prompt with its instructions, the

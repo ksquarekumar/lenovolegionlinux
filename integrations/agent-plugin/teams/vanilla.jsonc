@@ -1,6 +1,6 @@
 // The team vanilla (design 23, B+4): main0 does the critical-path work; observer0 and ui0 sleep until a trigger.
 // Each member names a config (agents.configs.<name>) or an archetype. A member may only narrow its config: tools,
-// commands and budget; flow.may removes message kinds. `legionctl agents check --team vanilla` resolves it, and
+// commands and budget; flow.may removes message kinds. `legionctl runnables check --team vanilla` resolves it, and
 // `legionctl thread start --team vanilla "<task>"` starts it: with a Claude main agent as a Claude Code agent team,
 // with a Codex one as Codex subagents, with any other agent as operator sessions.
 {

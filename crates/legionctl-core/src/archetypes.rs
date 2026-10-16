@@ -102,6 +102,8 @@ pub struct AgentConfig {
     pub route: Vec<String>,
     /// The rlcd step of the route.
     pub rlcd: Option<MemberRlcd>,
+    /// Capability sets it requests at its start (DESIGN-13); a higher layer may only narrow them.
+    pub capabilities: Vec<String>,
 }
 
 /// A member's rlcd step: its backend (none: `rlcd.backend`) and questions. The question `action` (a choice of
@@ -328,6 +330,9 @@ impl RunPath {
             (CodexSession | CodexSubagent, "tools") => {
                 "Codex has no allow or deny list of tools; use commands"
             }
+            (ClaudeTeam | CodexSubagent, "capabilities") => {
+                "a teammate or subagent runs in its lead's sandbox, with the lead's grant"
+            }
             (ClaudeSession | CodexSession, _) | (_, "pace" | "budget") | (ClaudeTeam, "model") => {
                 return None;
             }
@@ -534,6 +539,15 @@ fn widenings(lower: &AgentConfig, higher: &AgentConfig, whole: bool) -> Vec<Stri
             _ => {}
         }
     }
+    if whole {
+        for item in higher
+            .capabilities
+            .iter()
+            .filter(|c| !lower.capabilities.contains(c))
+        {
+            out.push(format!("capabilities adds {item}"));
+        }
+    }
     if whole && lower.archetype != higher.archetype {
         out.push("archetype changes".into());
     }
@@ -578,6 +592,10 @@ fn apply(
     mark("route", !layer.route.is_empty());
     if !layer.route.is_empty() {
         into.route.clone_from(&layer.route);
+    }
+    mark("capabilities", !layer.capabilities.is_empty());
+    if !layer.capabilities.is_empty() {
+        into.capabilities.clone_from(&layer.capabilities);
     }
     mark("rlcd", layer.rlcd.is_some());
     if layer.rlcd.is_some() {
@@ -630,12 +648,28 @@ pub struct Member {
     pub set_by: BTreeMap<String, String>,
 }
 
-/// What `agents check` found.
+/// A capability set as `runnables check` shows it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetState {
+    pub name: String,
+    pub version: u32,
+    pub layer: String,
+    pub file: String,
+    pub trust: crate::runnables::Trust,
+    /// Its powerful parts (a repository set gets them after the user's first-use answer).
+    pub powerful: Vec<String>,
+    /// Why a grant would refuse it now; none: it may be granted.
+    pub refusal: Option<String>,
+}
+
+/// What `runnables check` found.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Check {
     pub harness: Harness,
     pub team: Option<String>,
     pub members: Vec<Member>,
+    /// The capability sets of the layers.
+    pub sets: Vec<SetState>,
     /// Each field that a run path cannot apply, each layer that widens, each missing file: one line each.
     pub refused: Vec<String>,
     /// The team's flow (empty without a team).
@@ -656,6 +690,10 @@ pub struct Sources {
     pub repo: Option<PathBuf>,
     /// The user's config folder, for the user's teams.
     user_dir: PathBuf,
+    /// The config with the repository layer: its capability sets and `runnables.allow`.
+    config: crate::config::Config,
+    /// The layers' problems with capability sets.
+    set_problems: Vec<String>,
 }
 
 impl Sources {
@@ -668,11 +706,17 @@ impl Sources {
         let below = crate::config::resolve(dirs, None)?;
         Ok(Sources {
             plugin: crate::setup::plugin_root(),
-            configs: with.config.agents.configs,
+            configs: with.config.agents.configs.clone(),
             configs_below_repo: below.config.agents.configs,
-            mcp_servers: with.config.mcp.servers.into_keys().collect(),
+            mcp_servers: with.config.mcp.servers.keys().cloned().collect(),
             repo: project.and_then(crate::config::repo_root),
             user_dir: dirs.user.clone(),
+            set_problems: with
+                .problems
+                .into_iter()
+                .filter(|p| p.contains("capability set"))
+                .collect(),
+            config: with.config,
         })
     }
 
@@ -747,6 +791,13 @@ impl Sources {
             if *kind == Layer::Team {
                 for w in widenings(&merged, layer, false) {
                     no(format!("{label} widens {w}"));
+                }
+                for c in layer
+                    .capabilities
+                    .iter()
+                    .filter(|c| !merged.capabilities.contains(c))
+                {
+                    no(format!("{label} widens capabilities: adds {c}"));
                 }
             }
             apply(&mut merged, layer, label, &mut set_by);
@@ -841,6 +892,11 @@ impl Sources {
             .filter(|s| *s != "legionctl" && !self.mcp_servers.contains(s))
         {
             out.push(format!("mcp {server} is not in mcp.servers"));
+        }
+        for set in &merged.capabilities {
+            if let Some(why) = crate::runnables::refusal(&self.config, set) {
+                out.push(format!("capability set {set}: {why}"));
+            }
         }
         for file in &merged.instructions {
             if !self.instruction_path(file).is_some_and(|p| p.is_file()) {
@@ -953,10 +1009,26 @@ impl Sources {
                 ));
             }
         }
+        refused.extend(self.set_problems.iter().cloned());
+        let sets = self
+            .config
+            .capabilities
+            .iter()
+            .map(|l| SetState {
+                name: l.set.name.clone(),
+                version: l.set.version,
+                layer: l.source.layer.clone(),
+                file: l.source.file.clone(),
+                trust: l.trust,
+                powerful: l.set.powerful().iter().map(|p| (*p).to_string()).collect(),
+                refusal: crate::runnables::refusal(&self.config, &l.set.name),
+            })
+            .collect();
         Ok(Check {
             harness,
             team: team.map(|t| t.0.to_string()),
             members: resolved,
+            sets,
             refused,
             flow,
         })

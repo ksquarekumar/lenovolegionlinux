@@ -3,13 +3,14 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    AgentCheck, BatteryState, BenchCompare, BenchRun, BootState, CapabilityList, Changes,
-    Conditions, ConfigFile, ConfigView, DossierFindings, DossierInfo, Empty, EventRow, Explanation,
-    Findings, FirmwareDevices, GpuState, GreeterState, Guard, HookReply, HookTable, KernelBench,
-    Knob, KnobDetail, Launch, LayerList, Lines, LoadState, Lock, Manifest, PackageState, PlanView,
-    Reading, Recording, Reminder, RgbState, RuleDetail, RuleState, Rules, RunEnv, Sample,
-    SessionState, SetupReport, SkillInfo, Snapshot, TestDetail, TestReview, TestRow, ToolCallRow,
-    TuneReport, Validation, VfioDevices, WindowsState, WindowsVmBegun, Workspace, WorkspaceStatus,
+    BatteryState, BenchCompare, BenchRun, BootState, CapabilityList, Changes, Conditions,
+    ConfigFile, ConfigView, DossierFindings, DossierInfo, Empty, EventRow, Explanation, Findings,
+    FirmwareDevices, GpuState, GreeterState, Guard, HookReply, HookTable, KernelBench, Knob,
+    KnobDetail, Launch, LayerList, Lines, LoadState, Lock, Manifest, PackageState, PlanView,
+    Reading, Recording, Reminder, RgbState, RuleDetail, RuleState, Rules, RunEnv, RunnableGrant,
+    RunnablesCheck, Sample, SessionState, SetupReport, SkillInfo, Snapshot, TestDetail, TestReview,
+    TestRow, ToolCallRow, TuneReport, Validation, VfioDevices, WindowsState, WindowsVmBegun,
+    Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -659,7 +660,7 @@ impl Render for WorkspaceStatus {
     }
 }
 
-impl Render for AgentCheck {
+impl Render for RunnablesCheck {
     fn text(&self) -> String {
         let mut out = vec![format!(
             "{} for {}",
@@ -681,6 +682,23 @@ impl Render for AgentCheck {
                 out.push(format!("  {field}: {value}{by}"));
             }
         }
+        let usable = self.sets.iter().filter(|s| s.refusal.is_none()).count();
+        out.push(format!(
+            "capability sets: {} ({usable} usable)",
+            self.sets.len()
+        ));
+        for s in &self.sets {
+            out.push(format!(
+                "  {}@{} [{}] {}{}",
+                s.name,
+                s.version,
+                s.layer,
+                s.trust,
+                s.refusal
+                    .as_deref()
+                    .map_or(String::new(), |r| format!(": {r}"))
+            ));
+        }
         out.extend(self.refused.iter().map(|r| format!("refused: {r}")));
         out.push(if self.refused.is_empty() {
             "ok".into()
@@ -692,6 +710,81 @@ impl Render for AgentCheck {
 
     fn success(&self) -> bool {
         self.refused.is_empty()
+    }
+}
+
+impl Render for RunnableGrant {
+    /// Counts first, one line per part; the manifest's detail is in `--json`.
+    fn text(&self) -> String {
+        let m = &self.manifest;
+        let count = |part: &str, key: &str| m[part][key].as_array().map_or(0, Vec::len);
+        let sets: Vec<String> = self
+            .sets
+            .iter()
+            .map(|s| format!("{}@{} [{}]", s.name, s.version, s.layer))
+            .collect();
+        let hosts: Vec<&str> = m["connections"]["out"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e["host"].as_str())
+            .collect();
+        let storage: Vec<String> = m["storage"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|s| {
+                format!(
+                    "{} ({})",
+                    s["path"].as_str().unwrap_or("?"),
+                    s["mode"].as_str().unwrap_or("?")
+                )
+            })
+            .collect();
+        let mut out = vec![
+            format!(
+                "{}: {} sets: {}",
+                self.runnable,
+                sets.len(),
+                sets.join(", ")
+            ),
+            format!(
+                "connections: {} out ({}), {} in, {} forbidden, web read {}",
+                hosts.len(),
+                hosts.join(", "),
+                count("connections", "in"),
+                count("connections", "forbidden"),
+                if m["connections"]["web_read"] == true {
+                    "on"
+                } else {
+                    "off"
+                }
+            ),
+            format!(
+                "storage: {}",
+                if storage.is_empty() {
+                    "none".into()
+                } else {
+                    storage.join(", ")
+                }
+            ),
+            format!(
+                "host: {} privileges, {} devices, {} forbidden commands",
+                count("host", "privileges"),
+                count("host", "devices"),
+                count("host", "forbidden_commands")
+            ),
+        ];
+        if let Some(agent) = m["harness"]["agent"].as_str() {
+            out.push(format!(
+                "harness: {agent} {}",
+                m["harness"]["versions"].as_str().unwrap_or_default()
+            ));
+        }
+        if let Some(parent) = &self.parent {
+            out.push(format!("parent: {}", parent.join(", ")));
+        }
+        out.join("\n")
     }
 }
 

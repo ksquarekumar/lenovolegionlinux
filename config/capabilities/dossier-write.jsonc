@@ -1,0 +1,9 @@
+// The dossier: its operations and skill. The session's dossier is mounted writable for every session already.
+{
+  "$schema": "../../docs/api/runnable.schema.json",
+  "name": "dossier-write",
+  "version": 1,
+  "description": "The dossier operations and the skill dossier-practice; notes to the user through main0.",
+  "channels": ["notes"],
+  "toolverse": { "operations": ["dossier.*"], "skills": ["dossier-practice"] }
+}

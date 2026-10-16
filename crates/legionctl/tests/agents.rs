@@ -1,5 +1,5 @@
 //! End-to-end: agent archetypes, configs and teams (design 23, B+2 to B+4, P6a) through the CLI and the real
-//! operator: `agents check` resolves the layers (archetype file, `agents.configs.<name>`, team) and refuses each field
+//! operator: `runnables check` resolves the layers (archetype file, `agents.configs.<name>`, team) and refuses each field
 //! that a member's run path cannot apply and each layer that widens; `setup apply` writes each config as a Codex agent
 //! and the systemd user manager's PATH (environment.d). `agents accounts usage` reads each account's rate-limit
 //! windows from stand-in providers with the profile's own token, read only (todo-136).
@@ -120,9 +120,9 @@ esac
         write(&self.home.join(".config/legionctl/agents.jsonc"), text);
     }
 
-    /// The JSON of `agents check <args>` in the repository, and whether the text form exits 0.
+    /// The JSON of `runnables check <args>` in the repository, and whether the text form exits 0.
     fn check(&self, args: &[&str]) -> (Value, bool) {
-        let mut command = vec!["agents", "check"];
+        let mut command = vec!["runnables", "check"];
         command.extend(args);
         let text = self.op.cli_in(&self.repo, &command);
         command.push("--json");
@@ -217,11 +217,15 @@ fn vanilla_resolves_its_three_members_through_their_layers_and_a_layer_that_wide
     write(
         &lab.repo.join(".legionctl/teams/narrow.jsonc"),
         r#"{ "name": "narrow", "members": {
-            "main0": { "agent": "main-agent", "tools": { "allow": ["Read", "Bash"] } },
+            "main0": { "agent": "main-agent", "tools": { "allow": ["Read", "Bash"] }, "capabilities": ["web-read"] },
             "observer0": { "agent": "thread-observer", "budget": { "wake_tokens": 1000 } } } }"#,
     );
     let (narrow, ok) = lab.check(&["--team", "narrow"]);
     assert!(ok && refused(&narrow).is_empty(), "{narrow:#}");
+    assert_eq!(
+        member(&narrow, "main0")["fields"]["capabilities"],
+        serde_json::json!(["web-read"])
+    );
     assert_eq!(
         member(&narrow, "main0")["fields"]["tools"]["allow"],
         serde_json::json!(["Read", "Bash"])
@@ -229,7 +233,8 @@ fn vanilla_resolves_its_three_members_through_their_layers_and_a_layer_that_wide
     write(
         &lab.repo.join(".legionctl/teams/wide.jsonc"),
         r#"{ "name": "wide", "members": {
-            "main0": { "agent": "main-agent", "tools": { "allow": ["Read", "Bash", "WebFetch"] } },
+            "main0": { "agent": "main-agent", "tools": { "allow": ["Read", "Bash", "WebFetch"] },
+                       "capabilities": ["web-read", "rust-dev"] },
             "ui0": { "agent": "ui-composer" } },
             "flow": { "may": { "ui0": ["note", "hard-block"] } } }"#,
     );
@@ -239,6 +244,7 @@ fn vanilla_resolves_its_three_members_through_their_layers_and_a_layer_that_wide
         refused(&wide),
         [
             "main0: team wide widens tools.allow adds WebFetch",
+            "main0: team wide widens capabilities: adds rust-dev",
             "ui0: flow.may widens: ui-composer may not send hard-block"
         ],
         "{wide:#}"

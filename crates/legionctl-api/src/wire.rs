@@ -127,7 +127,18 @@ macro_rules! wire_enum {
     )*};
 }
 
+impl IntoWire<Value> for core::runnables::Manifest {
+    fn into_wire(self) -> Value {
+        // its schema is docs/api/runnable.schema.json; a manifest always serializes
+        serde_json::to_value(self).unwrap_or(Value::Null)
+    }
+}
+
 wire_enum! {
+    /// Whether a capability set may be used, by its layer: layer (`runnables.allow` decides), plain (a repository set
+    /// with no powerful part), allowed, waits (for the user's first answer) or denied.
+    enum SetTrust from core::runnables::Trust as "kebab-case" { Layer, Plain, Allowed, Waits, Denied }
+
     /// The harness of an agent.
     enum Harness from core::archetypes::Harness as "lowercase" {
         Claude,
@@ -308,16 +319,50 @@ wire! {
         value: Value,
     }
 
-    /// What `agents check` found: each member with its layers resolved, and each refusal.
-    struct AgentCheck from core::archetypes::Check {
+    /// What `runnables check` found: each member with its layers resolved, the capability sets of the layers, and
+    /// each refusal.
+    struct RunnablesCheck from core::archetypes::Check {
         harness: Harness,
         team: Option<String>,
         members: Vec<AgentMember>,
+        sets: Vec<CapabilitySet>,
         /// Each field that a run path cannot apply, each layer that widens, each missing file: one line each.
         refused: Vec<String>,
     }
 
-    /// One member of `agents check`.
+    /// A capability set as `runnables check` shows it.
+    struct CapabilitySet from core::archetypes::SetState {
+        name: String,
+        version: u32,
+        layer: String,
+        file: String,
+        trust: SetTrust,
+        /// Its powerful parts (a repository set gets them after the user's first-use answer).
+        powerful: Vec<String>,
+        /// Why a grant would refuse it now; none: it may be granted.
+        refusal: Option<String>,
+    }
+
+    /// What a runnable got at its start (DESIGN-13): what it asked for, its parent's sets, the granted sets and their
+    /// union, the manifest (`docs/api/runnable.schema.json`).
+    struct RunnableGrant from core::runnables::Grant {
+        runnable: String,
+        requested: Vec<String>,
+        /// A member's parent (the main agent's sets); none: the user is the parent.
+        parent: Option<Vec<String>>,
+        sets: Vec<GrantedSet>,
+        manifest: Value,
+    }
+
+    /// A set in a grant: its version and the file it came from.
+    struct GrantedSet from core::runnables::Granted {
+        name: String,
+        version: u32,
+        layer: String,
+        file: String,
+    }
+
+    /// One member of `runnables check`.
     struct AgentMember from core::archetypes::Member {
         name: String,
         archetype: String,

@@ -1,0 +1,9 @@
+// The open web, read only (DESIGN-12 wall 3, user decision 2026-10-17): HTTPS GET to any public host, logged per host,
+// never a private or local address. The main agent requests it (agents.configs.main-agent); bound agents do not.
+{
+  "$schema": "../../docs/api/runnable.schema.json",
+  "name": "web-read",
+  "version": 1,
+  "description": "HTTPS GET to any public host, logged per host; never private or local addresses.",
+  "connections": { "web_read": true }
+}

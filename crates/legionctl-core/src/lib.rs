@@ -29,6 +29,7 @@ pub mod qga;
 pub mod qmp;
 pub mod reminders;
 pub mod rlcd;
+pub mod runnables;
 pub mod session;
 pub mod setup;
 pub mod skills;

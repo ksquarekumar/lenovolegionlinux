@@ -97,7 +97,7 @@ impl Run {
     }
 }
 
-/// One member of a team, resolved (`agents check`).
+/// One member of a team, resolved (`runnables check`).
 pub struct NewMember<'a> {
     pub name: &'a str,
     pub archetype: Archetype,

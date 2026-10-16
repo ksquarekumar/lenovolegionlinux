@@ -49,8 +49,10 @@ user-invocable: true
 21. Send through the thread outbox (`thread send`); it is durable. For an urgent message to an idle Claude peer, also
     use `SendMessage`; the post-tool hook records it in the thread log.
 22. A member is an archetype (`main-agent`, `thread-observer`, `ui-composer`) plus its config `agents.configs.<name>`.
-    Before you start a team, run `agents check --team <team> --harness claude|codex`.
-23. If `agents check` refuses a field, change the config. Do not drop the field in silence.
+    Before you start a team, run `runnables check --team <team> --harness claude|codex`.
+23. If `runnables check` refuses a field or a capability set, change the config. Do not drop the field in silence.
+    A session gets only the capability sets that its start asks for and the grant allows (`--capability <set>`); a
+    refused set stops the start with its reason. `runnables show <session>` gives what a session got.
 24. When you delegate work (a subagent, a session, a thread member), tell the delegate to read the full dossier plan
     (`dossier read <dossier>/plan.md`) and the MEMORY and DESIGN files its rows name by itself, not only your prompt.
     Tell a reviewer or auditor to be adversarial and thorough and to report what it did not check. When you are the
@@ -66,5 +68,5 @@ user-invocable: true
 - `refs/scenario-headless-review.md` - read for a headless run in a container.
 - `refs/scenario-second-account.md` - read when a rate limit stops a session.
 - `refs/reference-threads.md` - read when you start a thread, add a member or a watch rule, or send a message.
-- `refs/reference-agent-configs.md` - read when you write an agent config or a team file, or `agents check` refuses
+- `refs/reference-agent-configs.md` - read when you write an agent config or a team file, or `runnables check` refuses
   one.

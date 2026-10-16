@@ -2099,7 +2099,7 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
-  "agents.check": {
+  "runnables.check": {
     "class": "read",
     "internal": false,
     "input": {
@@ -2129,7 +2129,7 @@
           "default": "."
         }
       },
-      "title": "AgentsCheckIn",
+      "title": "RunnablesCheckIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
@@ -2152,7 +2152,7 @@
         "members": {
           "type": "array",
           "items": {
-            "description": "One member of `agents check`.",
+            "description": "One member of `runnables check`.",
             "type": "object",
             "properties": {
               "name": {
@@ -2192,6 +2192,62 @@
             ]
           }
         },
+        "sets": {
+          "type": "array",
+          "items": {
+            "description": "A capability set as `runnables check` shows it.",
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              },
+              "layer": {
+                "type": "string"
+              },
+              "file": {
+                "type": "string"
+              },
+              "trust": {
+                "description": "Whether a capability set may be used, by its layer: layer (`runnables.allow` decides), plain (a repository set\nwith no powerful part), allowed, waits (for the user's first answer) or denied.",
+                "type": "string",
+                "enum": [
+                  "layer",
+                  "plain",
+                  "allowed",
+                  "waits",
+                  "denied"
+                ]
+              },
+              "powerful": {
+                "description": "Its powerful parts (a repository set gets them after the user's first-use answer).",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "refusal": {
+                "description": "Why a grant would refuse it now; none: it may be granted.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "version",
+              "layer",
+              "file",
+              "trust",
+              "powerful"
+            ]
+          }
+        },
         "refused": {
           "type": "array",
           "items": {
@@ -2203,10 +2259,92 @@
       "required": [
         "harness",
         "members",
+        "sets",
         "refused"
       ],
-      "description": "What `agents check` found: each member with its layers resolved, and each refusal.",
-      "title": "AgentCheck",
+      "description": "What `runnables check` found: each member with its layers resolved, the capability sets of the layers, and\neach refusal.",
+      "title": "RunnablesCheck",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "runnables.show": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "A session id (`session list`), or a thread member as `<thread>/<member>`."
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "title": "RunnablesShowIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "runnable": {
+          "type": "string"
+        },
+        "requested": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "parent": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "A member's parent (the main agent's sets); none: the user is the parent."
+        },
+        "sets": {
+          "type": "array",
+          "items": {
+            "description": "A set in a grant: its version and the file it came from.",
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              },
+              "layer": {
+                "type": "string"
+              },
+              "file": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "version",
+              "layer",
+              "file"
+            ]
+          }
+        },
+        "manifest": true
+      },
+      "required": [
+        "runnable",
+        "requested",
+        "sets",
+        "manifest"
+      ],
+      "description": "What a runnable got at its start (DESIGN-13): what it asked for, its parent's sets, the granted sets and their\nunion, the manifest (`docs/api/runnable.schema.json`).",
+      "title": "RunnableGrant",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
@@ -12799,6 +12937,15 @@
           "type": "boolean",
           "description": "The NVIDIA GPU: its device nodes on the host and in a container (the host's driver); the GPU itself in a VM\n(VFIO: the desktop must not use it, see `vfio status`; the VM disk needs `workspace pack --as vm --gpu`).",
           "default": false
+        },
+        "capability": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "A capability set to request besides the main agent's, its harness's and its languages' (repeat it); a set that\nthe grant refuses stops the start with the reason.",
+          "default": [],
+          "x-option": true
         }
       },
       "required": [
@@ -12954,6 +13101,15 @@
           "type": "boolean",
           "description": "The NVIDIA GPU: its device nodes on the host and in a container (the host's driver); the GPU itself in a VM\n(VFIO: the desktop must not use it, see `vfio status`; the VM disk needs `workspace pack --as vm --gpu`).",
           "default": false
+        },
+        "capability": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "A capability set to request besides the main agent's, its harness's and its languages' (repeat it); a set that\nthe grant refuses stops the start with the reason.",
+          "default": [],
+          "x-option": true
         },
         "tag": {
           "type": [
