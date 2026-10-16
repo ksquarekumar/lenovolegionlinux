@@ -243,13 +243,14 @@ fn skill_names() -> Vec<String> {
 
 fn codex_items() -> Vec<Item> {
     let config = codex_config();
-    let status = match std::fs::read_to_string(&config) {
-        Ok(text) => match codex_has_legionctl(&text) {
+    let status = match legionctl_machine::sysroot::read_file(&config) {
+        Ok(Some(text)) => match codex_has_legionctl(&text) {
             Ok(true) => "current".into(),
             Ok(false) => "missing".into(),
             Err(e) => e.to_string(),
         },
-        Err(_) => "missing".into(),
+        Ok(None) => "missing".into(),
+        Err(e) => format!("{e:#}"),
     };
     let mut items = vec![Item {
         what: "legionctl mcp".into(),
@@ -426,7 +427,7 @@ pub fn apply(
     }
 
     let config = codex_config();
-    let text = std::fs::read_to_string(&config).unwrap_or_default();
+    let text = legionctl_machine::sysroot::read_file(&config)?.unwrap_or_default();
     if !codex_has_legionctl(&text)? {
         ensure!(
             !text.contains("[mcp_servers.legionctl]"),

@@ -634,3 +634,42 @@ fn the_archetype_files_carry_only_the_frontmatter_fields_that_plugin_agents_hono
         "{lines:?}"
     );
 }
+
+/// F-9 (EV-review-05): a Codex config that is there but cannot be read (not UTF-8) is an error for `setup check` and
+/// `setup apply`; apply never takes it as empty and never writes over it.
+#[test]
+fn setup_never_writes_over_a_codex_config_that_it_cannot_read() {
+    let lab = Lab::new("codex-unreadable", &shipped_plugin());
+    lab.stand_in_ctx();
+    let config = lab.home.join(".codex/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    // Latin-1 "modèle": valid for the user's editor, not UTF-8
+    let bytes = b"model = \"mod\xe8le\"\n".to_vec();
+    std::fs::write(&config, &bytes).unwrap();
+
+    let check: Value = serde_json::from_str(&lab.op.ok(&["setup", "check", "--json"])).unwrap();
+    let item = check["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["what"] == "legionctl mcp" && i["agent"] == "codex")
+        .unwrap_or_else(|| panic!("{check:#}"))
+        .clone();
+    assert!(
+        item["status"].as_str().unwrap().contains("reading"),
+        "{item:#}"
+    );
+
+    let out = lab.op.cli_in(&lab.home, &["setup", "apply"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && err.contains("config.toml"),
+        "{err}"
+    );
+    assert_eq!(
+        std::fs::read(&config).unwrap(),
+        bytes,
+        "the config keeps every byte"
+    );
+    assert!(!config.with_extension("toml.legionctl-bak").exists());
+}
