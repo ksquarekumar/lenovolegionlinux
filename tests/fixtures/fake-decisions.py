@@ -5,7 +5,7 @@ The first path segment picks the answer: http://127.0.0.1:<port>/<choice>/api/al
 One shape (questions keyed by id), .../<choice>/v1/decisions in the OpenAI shape (answers in question order). A choice
 question gets <choice> (else its first option) with probability 0.8 and 0.1 for each other option, confidence 0.6; a
 yes-no question 0.02 (System One noul) or 0.3 (OpenAI predicate); a score 0.5. /fail/... answers 500 as the OpenAI
-preview did on 2026-10-16; /slow/... answers after 3 s. Each call appends `{"path", "auth", "body"}` to the log.
+preview did on 2026-10-16; /slow/... answers after 60 s (far past any time limit, so a call that ends sooner was cut by its limit). Each call appends `{"path", "auth", "body"}` to the log.
 """
 
 import json
@@ -55,7 +55,7 @@ class Decisions(BaseHTTPRequestHandler):
             f.write(json.dumps({"path": self.path, "auth": self.headers.get("authorization"), "body": body}) + "\n")
         pick = self.path.split("/")[1]
         if pick == "slow":
-            time.sleep(3)
+            time.sleep(60)
         if pick == "fail":
             status, answer = 500, {"error": {"message": "Decision admission timed out.", "type": "server_error"}}
         else:

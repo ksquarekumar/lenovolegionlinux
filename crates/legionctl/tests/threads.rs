@@ -2422,8 +2422,9 @@ fn a_failed_call_fails_at_once_and_is_stored(lab: &AskLab) {
     let started = std::time::Instant::now();
     let slow = lab.refusal(&["--backend", "stand", "--state", "x"]);
     assert!(slow.contains("(timeout 1000 ms)"), "{slow}");
+    // the stand-in answers after 60 s: an end within half of that is the 1000 ms limit, also on a loaded machine
     assert!(
-        started.elapsed() < std::time::Duration::from_millis(2500),
+        started.elapsed() < std::time::Duration::from_secs(30),
         "the timeout did not end the call"
     );
     assert_eq!(
