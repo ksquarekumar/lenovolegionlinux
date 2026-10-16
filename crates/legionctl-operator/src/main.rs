@@ -7,6 +7,7 @@ mod code;
 mod desktop;
 mod display;
 mod engine;
+mod facts;
 mod gateway;
 mod kernels;
 mod policy;

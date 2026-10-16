@@ -15806,6 +15806,811 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "facts.set": {
+    "class": "session",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "entity": {
+          "type": "string",
+          "description": "What it is about: `app`, `view:<name>`, `intent:<words>`, a code graph key (`rust:.:add`)."
+        },
+        "attribute": {
+          "type": "string",
+          "description": "The attribute of the entity.",
+          "default": "value"
+        },
+        "value": {
+          "type": "string",
+          "description": "The value as JSON."
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "global",
+            "project",
+            "dossier",
+            "workspace",
+            "thread"
+          ],
+          "description": "Where it holds: global (the user), project (the repository of --repo), workspace (its worktree), dossier\n(--dossier) or thread (--thread).",
+          "default": "global"
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder: its repository is the project scope, its worktree the workspace scope, and its refs resolve there.",
+          "default": "."
+        },
+        "dossier": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The dossier scope.",
+          "default": null
+        },
+        "thread": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "description": "The thread scope.",
+          "default": null
+        },
+        "valid_from": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "description": "When it starts to be true (ms since the epoch); default now.",
+          "default": null
+        },
+        "valid_to": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "description": "When it stops to be true (ms since the epoch); default open.",
+          "default": null
+        },
+        "from_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The commit (a ref of the repository) where it starts to hold; then it holds at the refs that contain it.",
+          "default": null
+        },
+        "to_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The commit where it stops to hold.",
+          "default": null
+        },
+        "anchor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A code graph key: the fact holds while the symbol's content is the same as at --from-ref (default HEAD).",
+          "default": null
+        },
+        "evidence": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why: the request, the event or the commit.",
+          "default": null
+        },
+        "confidence": {
+          "type": "number",
+          "format": "double",
+          "description": "1 for a user or rule fact; a probability for a model's.",
+          "default": 1.0
+        },
+        "corrects": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "description": "Correct the fact with this id (bitemporal: the old row stays in the history with its recorded time).",
+          "default": null
+        }
+      },
+      "required": [
+        "entity",
+        "value"
+      ],
+      "title": "FactSetIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "facts.at": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "entity": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "An entity, or a prefix with `*` at its end (`view:*`); default all.",
+          "default": null
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder: its repository is the project scope, its worktree the workspace scope, and its refs resolve there.",
+          "default": "."
+        },
+        "dossier": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The dossier scope.",
+          "default": null
+        },
+        "thread": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "description": "The thread scope.",
+          "default": null
+        },
+        "time": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "description": "The valid time to look at (ms since the epoch); default now.",
+          "default": null
+        },
+        "recorded": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "description": "What the store knew at this time (ms since the epoch); default now.",
+          "default": null
+        },
+        "ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The ref of ref-bound and anchored facts; default HEAD.",
+          "default": null
+        },
+        "winners": {
+          "type": "boolean",
+          "description": "Only the winner of each entity and attribute.",
+          "default": false
+        }
+      },
+      "title": "FactsAtIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "description": "A fact of the graph (DESIGN-10) on its four axes: valid time, recorded time, ref range and content anchor;\ntimes in ms since the epoch.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "entity": {
+            "description": "What it is about: `app`, `view:<name>`, `intent:<words>`, a code graph key.",
+            "type": "string"
+          },
+          "attribute": {
+            "type": "string"
+          },
+          "value": true,
+          "scope": {
+            "description": "Where a fact holds (DESIGN-10); the nearest scope wins: thread, workspace, dossier, project, global.",
+            "type": "string",
+            "enum": [
+              "global",
+              "project",
+              "dossier",
+              "workspace",
+              "thread"
+            ]
+          },
+          "scope_id": {
+            "description": "The repository root, the dossier, the workspace path or the thread id; empty for global.",
+            "type": "string"
+          },
+          "source": {
+            "description": "user, agent:<who>, seed or rule.",
+            "type": "string"
+          },
+          "evidence": true,
+          "confidence": {
+            "type": "number",
+            "format": "double"
+          },
+          "valid_from": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "valid_to": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "recorded_from": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "recorded_to": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "repo": {
+            "description": "The repository of its ref range and anchor.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from_ref": {
+            "description": "The commit where it starts to hold, and the commit where it ends.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "to_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "anchor_key": {
+            "description": "The code graph key it is about, and its content hash when written.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "anchor_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "corrects": {
+            "description": "The row this one corrects or ends.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "state": {
+            "description": "holds; or before, ended, unreachable (a rebase), stale, absent, no graph at the query's ref.",
+            "type": "string"
+          },
+          "wins": {
+            "description": "The fact that answers for its entity and attribute.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "entity",
+          "attribute",
+          "value",
+          "scope",
+          "scope_id",
+          "source",
+          "evidence",
+          "confidence",
+          "valid_from",
+          "recorded_from",
+          "state",
+          "wins"
+        ]
+      },
+      "title": "Array_of_Fact",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "facts.history": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "entity": {
+          "type": "string",
+          "description": "An entity, or a prefix with `*` at its end."
+        }
+      },
+      "required": [
+        "entity"
+      ],
+      "title": "FactsHistoryIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "description": "A fact of the graph (DESIGN-10) on its four axes: valid time, recorded time, ref range and content anchor;\ntimes in ms since the epoch.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "entity": {
+            "description": "What it is about: `app`, `view:<name>`, `intent:<words>`, a code graph key.",
+            "type": "string"
+          },
+          "attribute": {
+            "type": "string"
+          },
+          "value": true,
+          "scope": {
+            "description": "Where a fact holds (DESIGN-10); the nearest scope wins: thread, workspace, dossier, project, global.",
+            "type": "string",
+            "enum": [
+              "global",
+              "project",
+              "dossier",
+              "workspace",
+              "thread"
+            ]
+          },
+          "scope_id": {
+            "description": "The repository root, the dossier, the workspace path or the thread id; empty for global.",
+            "type": "string"
+          },
+          "source": {
+            "description": "user, agent:<who>, seed or rule.",
+            "type": "string"
+          },
+          "evidence": true,
+          "confidence": {
+            "type": "number",
+            "format": "double"
+          },
+          "valid_from": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "valid_to": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "recorded_from": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "recorded_to": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "repo": {
+            "description": "The repository of its ref range and anchor.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from_ref": {
+            "description": "The commit where it starts to hold, and the commit where it ends.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "to_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "anchor_key": {
+            "description": "The code graph key it is about, and its content hash when written.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "anchor_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "corrects": {
+            "description": "The row this one corrects or ends.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "state": {
+            "description": "holds; or before, ended, unreachable (a rebase), stale, absent, no graph at the query's ref.",
+            "type": "string"
+          },
+          "wins": {
+            "description": "The fact that answers for its entity and attribute.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "entity",
+          "attribute",
+          "value",
+          "scope",
+          "scope_id",
+          "source",
+          "evidence",
+          "confidence",
+          "valid_from",
+          "recorded_from",
+          "state",
+          "wins"
+        ]
+      },
+      "title": "Array_of_Fact",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "facts.diff": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "entity": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "An entity, or a prefix with `*` at its end; default all.",
+          "default": null
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder: its repository is the project scope, its worktree the workspace scope, and its refs resolve there.",
+          "default": "."
+        },
+        "dossier": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The dossier scope.",
+          "default": null
+        },
+        "thread": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "description": "The thread scope.",
+          "default": null
+        },
+        "from_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The first point: a ref, and a valid time (ms); default HEAD and now.",
+          "default": null
+        },
+        "from_time": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "default": null
+        },
+        "to_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The second point.",
+          "default": null
+        },
+        "to_time": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "default": null
+        }
+      },
+      "title": "FactsDiffIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "description": "A change of a fact's winning value between two points.",
+        "type": "object",
+        "properties": {
+          "entity": {
+            "type": "string"
+          },
+          "attribute": {
+            "type": "string"
+          },
+          "before": true,
+          "after": true
+        },
+        "required": [
+          "entity",
+          "attribute"
+        ]
+      },
+      "title": "Array_of_FactChange",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "facts.stale": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "entity": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "An entity, or a prefix with `*` at its end (`view:*`); default all.",
+          "default": null
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder: its repository is the project scope, its worktree the workspace scope, and its refs resolve there.",
+          "default": "."
+        },
+        "dossier": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The dossier scope.",
+          "default": null
+        },
+        "thread": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "description": "The thread scope.",
+          "default": null
+        },
+        "time": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "description": "The valid time to look at (ms since the epoch); default now.",
+          "default": null
+        },
+        "recorded": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "description": "What the store knew at this time (ms since the epoch); default now.",
+          "default": null
+        },
+        "ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The ref of ref-bound and anchored facts; default HEAD.",
+          "default": null
+        },
+        "winners": {
+          "type": "boolean",
+          "description": "Only the winner of each entity and attribute.",
+          "default": false
+        }
+      },
+      "title": "FactsAtIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "description": "A fact of the graph (DESIGN-10) on its four axes: valid time, recorded time, ref range and content anchor;\ntimes in ms since the epoch.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "entity": {
+            "description": "What it is about: `app`, `view:<name>`, `intent:<words>`, a code graph key.",
+            "type": "string"
+          },
+          "attribute": {
+            "type": "string"
+          },
+          "value": true,
+          "scope": {
+            "description": "Where a fact holds (DESIGN-10); the nearest scope wins: thread, workspace, dossier, project, global.",
+            "type": "string",
+            "enum": [
+              "global",
+              "project",
+              "dossier",
+              "workspace",
+              "thread"
+            ]
+          },
+          "scope_id": {
+            "description": "The repository root, the dossier, the workspace path or the thread id; empty for global.",
+            "type": "string"
+          },
+          "source": {
+            "description": "user, agent:<who>, seed or rule.",
+            "type": "string"
+          },
+          "evidence": true,
+          "confidence": {
+            "type": "number",
+            "format": "double"
+          },
+          "valid_from": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "valid_to": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "recorded_from": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "recorded_to": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "repo": {
+            "description": "The repository of its ref range and anchor.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from_ref": {
+            "description": "The commit where it starts to hold, and the commit where it ends.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "to_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "anchor_key": {
+            "description": "The code graph key it is about, and its content hash when written.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "anchor_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "corrects": {
+            "description": "The row this one corrects or ends.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "state": {
+            "description": "holds; or before, ended, unreachable (a rebase), stale, absent, no graph at the query's ref.",
+            "type": "string"
+          },
+          "wins": {
+            "description": "The fact that answers for its entity and attribute.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "entity",
+          "attribute",
+          "value",
+          "scope",
+          "scope_id",
+          "source",
+          "evidence",
+          "confidence",
+          "valid_from",
+          "recorded_from",
+          "state",
+          "wins"
+        ]
+      },
+      "title": "Array_of_Fact",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "views.list": {
     "class": "read",
     "internal": false,

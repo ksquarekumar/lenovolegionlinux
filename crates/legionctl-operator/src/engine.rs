@@ -4152,6 +4152,42 @@ impl Engine for Operator {
         })
     }
 
+    fn facts_set(&self, ctx: &Ctx, input: legionctl_api::FactSetIn) -> Result<Lines> {
+        crate::facts::set(ctx, &input)
+    }
+
+    fn facts_at(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::FactsAtIn,
+    ) -> Result<Vec<legionctl_api::Fact>> {
+        crate::facts::at_op(&input)
+    }
+
+    fn facts_history(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::FactsHistoryIn,
+    ) -> Result<Vec<legionctl_api::Fact>> {
+        crate::facts::history(&input)
+    }
+
+    fn facts_diff(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::FactsDiffIn,
+    ) -> Result<Vec<legionctl_api::FactChange>> {
+        crate::facts::diff(&input)
+    }
+
+    fn facts_stale(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::FactsAtIn,
+    ) -> Result<Vec<legionctl_api::Fact>> {
+        crate::facts::stale(&input)
+    }
+
     fn views_list(
         &self,
         _: &Ctx,

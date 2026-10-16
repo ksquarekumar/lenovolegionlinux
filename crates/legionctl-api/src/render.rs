@@ -2640,3 +2640,66 @@ impl Render for Vec<crate::RlcdDecision> {
             .join("\n")
     }
 }
+
+/// One fact in one line: `* #id entity attribute = value (scope, source[, state])`; `*` marks a winner.
+fn fact_line(f: &crate::Fact) -> String {
+    let mark = if f.wins { "*" } else { " " };
+    let scope = if f.scope_id.is_empty() {
+        f.scope.to_string()
+    } else {
+        format!("{} {}", f.scope, f.scope_id)
+    };
+    let state = if f.state.is_empty() || f.state == "holds" {
+        String::new()
+    } else {
+        format!(", {}", f.state)
+    };
+    let refs = match (&f.from_ref, &f.to_ref) {
+        (None, None) => String::new(),
+        (from, to) => format!(
+            ", refs {}..{}",
+            from.as_deref().map_or("", |c| &c[..c.len().min(8)]),
+            to.as_deref().map_or("", |c| &c[..c.len().min(8)])
+        ),
+    };
+    let recorded = if f.recorded_to.is_some() {
+        ", corrected"
+    } else {
+        ""
+    };
+    format!(
+        "{mark} #{} {} {} = {} ({scope}, {}{refs}{state}{recorded})",
+        f.id, f.entity, f.attribute, f.value, f.source
+    )
+}
+
+impl Render for Vec<crate::Fact> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no fact".into();
+        }
+        self.iter().map(fact_line).collect::<Vec<_>>().join("\n")
+    }
+}
+
+impl Render for Vec<crate::FactChange> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no change".into();
+        }
+        let shown =
+            |v: &Option<serde_json::Value>| v.as_ref().map_or("-".into(), ToString::to_string);
+        self.iter()
+            .map(|c| {
+                format!(
+                    "{} {}: {} -> {}",
+                    c.entity,
+                    c.attribute,
+                    shown(&c.before),
+                    shown(&c.after)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}

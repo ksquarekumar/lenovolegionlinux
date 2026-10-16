@@ -3,6 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::wire::FactScope;
 use crate::wire::{
     Action, Battery, BenchResult, Binding, Capability, ConfigFile, ConfigLayer, DesktopGpu,
     DossierInfo, EditMode, Event, EventRow, FirmwareDevice, GpuMode, Harness, Inside, Knob, Lock,
@@ -2382,4 +2383,124 @@ pub struct RlcdDecisionsIn {
 
 fn fifty() -> u32 {
     50
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FactSetIn {
+    /// What it is about: `app`, `view:<name>`, `intent:<words>`, a code graph key (`rust:.:add`).
+    pub entity: String,
+    /// The attribute of the entity.
+    #[serde(default = "value_word")]
+    pub attribute: String,
+    /// The value as JSON.
+    pub value: String,
+    /// Where it holds: global (the user), project (the repository of --repo), workspace (its worktree), dossier
+    /// (--dossier) or thread (--thread).
+    #[serde(default = "global")]
+    pub scope: FactScope,
+    /// A folder: its repository is the project scope, its worktree the workspace scope, and its refs resolve there.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+    /// The dossier scope.
+    #[serde(default)]
+    pub dossier: Option<String>,
+    /// The thread scope.
+    #[serde(default)]
+    pub thread: Option<i64>,
+    /// When it starts to be true (ms since the epoch); default now.
+    #[serde(default)]
+    pub valid_from: Option<i64>,
+    /// When it stops to be true (ms since the epoch); default open.
+    #[serde(default)]
+    pub valid_to: Option<i64>,
+    /// The commit (a ref of the repository) where it starts to hold; then it holds at the refs that contain it.
+    #[serde(default)]
+    pub from_ref: Option<String>,
+    /// The commit where it stops to hold.
+    #[serde(default)]
+    pub to_ref: Option<String>,
+    /// A code graph key: the fact holds while the symbol's content is the same as at --from-ref (default HEAD).
+    #[serde(default)]
+    pub anchor: Option<String>,
+    /// Why: the request, the event or the commit.
+    #[serde(default)]
+    pub evidence: Option<String>,
+    /// 1 for a user or rule fact; a probability for a model's.
+    #[serde(default = "certain")]
+    pub confidence: f64,
+    /// Correct the fact with this id (bitemporal: the old row stays in the history with its recorded time).
+    #[serde(default)]
+    pub corrects: Option<i64>,
+}
+
+fn value_word() -> String {
+    "value".into()
+}
+
+fn global() -> FactScope {
+    FactScope::Global
+}
+
+fn certain() -> f64 {
+    1.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FactsAtIn {
+    /// An entity, or a prefix with `*` at its end (`view:*`); default all.
+    #[serde(default)]
+    pub entity: Option<String>,
+    /// A folder: its repository is the project scope, its worktree the workspace scope, and its refs resolve there.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+    /// The dossier scope.
+    #[serde(default)]
+    pub dossier: Option<String>,
+    /// The thread scope.
+    #[serde(default)]
+    pub thread: Option<i64>,
+    /// The valid time to look at (ms since the epoch); default now.
+    #[serde(default)]
+    pub time: Option<i64>,
+    /// What the store knew at this time (ms since the epoch); default now.
+    #[serde(default)]
+    pub recorded: Option<i64>,
+    /// The ref of ref-bound and anchored facts; default HEAD.
+    #[serde(default, rename = "ref")]
+    pub rev: Option<String>,
+    /// Only the winner of each entity and attribute.
+    #[serde(default)]
+    pub winners: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FactsHistoryIn {
+    /// An entity, or a prefix with `*` at its end.
+    pub entity: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FactsDiffIn {
+    /// An entity, or a prefix with `*` at its end; default all.
+    #[serde(default)]
+    pub entity: Option<String>,
+    /// A folder: its repository is the project scope, its worktree the workspace scope, and its refs resolve there.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+    /// The dossier scope.
+    #[serde(default)]
+    pub dossier: Option<String>,
+    /// The thread scope.
+    #[serde(default)]
+    pub thread: Option<i64>,
+    /// The first point: a ref, and a valid time (ms); default HEAD and now.
+    #[serde(default)]
+    pub from_ref: Option<String>,
+    #[serde(default)]
+    pub from_time: Option<i64>,
+    /// The second point.
+    #[serde(default)]
+    pub to_ref: Option<String>,
+    #[serde(default)]
+    pub to_time: Option<i64>,
 }

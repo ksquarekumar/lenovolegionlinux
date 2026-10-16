@@ -1006,6 +1006,295 @@ fn an_annotation_is_valid_while_its_symbol_is_the_same_stale_after_a_change_and_
     assert_eq!(one.as_array().unwrap().len(), 1, "{one}");
 }
 
+/// One `facts.set` through `legionctl mcp` (an agent's MCP surface: the fact's source is an agent).
+fn agent_fact(lab: &Lab, cwd: &Path, args: &Value) -> Value {
+    use std::io::{BufRead as _, Write as _};
+    let mut child = Command::new(env!("CARGO_BIN_EXE_legionctl"))
+        .arg("mcp")
+        .current_dir(cwd)
+        .env_clear()
+        .env("XDG_RUNTIME_DIR", &*lab.op.runtime)
+        .env("HOME", &lab.home)
+        .env("PATH", path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+    let init = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params":
+        {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "0"}}});
+    let call = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "facts_set", "arguments": args}});
+    let mut line = String::new();
+    writeln!(stdin, "{init}").unwrap();
+    out.read_line(&mut line).unwrap();
+    writeln!(
+        stdin,
+        r#"{{"jsonrpc": "2.0", "method": "notifications/initialized"}}"#
+    )
+    .unwrap();
+    writeln!(stdin, "{call}").unwrap();
+    line.clear();
+    out.read_line(&mut line).unwrap();
+    drop(stdin);
+    child.wait().unwrap();
+    serde_json::from_str::<Value>(&line).unwrap()["result"].clone()
+}
+
+/// DESIGN-10 T1 at its boundaries. A fact anchored on `two` at a holds at a, is stale at m (its body changed) and holds
+/// again after a commit that reverts the body. A fact from m is not there yet at the older commit a; one from a to b
+/// holds at m and has ended at b. A fact from a commit that a rebase left on no branch is unreachable at the rebased
+/// branch, and stays in the history. A correction keeps what the store believed before (query by recorded time). A
+/// user fact wins over an agent's fact of the same scope (the agent through MCP), and a newer user fact supersedes
+/// the older one in valid time, which an earlier time still shows.
+#[test]
+fn facts_hold_by_ref_anchor_and_time_and_a_user_fact_wins_over_an_agent_fact() {
+    let lab = Lab::new("facts", &standin());
+    let (ws, revs) = scenario(&lab);
+    facts_at_refs(&lab, &ws, &revs);
+    // the one anchored fact whose code changed at the middle commit
+    let changed = lab.json(&ws, &["facts", "stale", "--ref", &revs[1]]);
+    assert_eq!(changed.as_array().unwrap().len(), 1, "{changed}");
+    assert_eq!(changed[0]["entity"], "rust:.:two");
+    facts_in_time(&lab, &ws);
+}
+
+/// `facts set <args>` in the workspace.
+fn fact(lab: &Lab, ws: &Path, args: &[&str]) -> String {
+    lab.ok(ws, &[&["facts", "set"][..], args].concat())
+}
+
+/// The state of the one fact of `entity` at `rev`.
+fn fact_state(lab: &Lab, ws: &Path, entity: &str, rev: &str) -> String {
+    let rows = lab.json(ws, &["facts", "at", "--entity", entity, "--ref", rev]);
+    let rows = rows.as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{entity} at {rev}: {rows:?}");
+    rows[0]["state"].as_str().unwrap().to_string()
+}
+
+fn facts_at_refs(lab: &Lab, ws: &Path, [start, mid, end]: &[String; 3]) {
+    // the revert: two's body as it was at the start
+    let lib = std::fs::read_to_string(ws.join("src/lib.rs")).unwrap();
+    write(
+        &ws.join("src/lib.rs"),
+        &lib.replace("add(2, 0)", "add(1, 1)"),
+    );
+    lab.ok(ws, &["workspace", "checkpoint", "two as before"]);
+    let revert = lab.git(ws, &["rev-parse", "--short", "HEAD"]);
+    let all = [start, mid, end, &revert];
+    for rev in all {
+        lab.ok(ws, &["code", "graph", "refresh", "--ref", rev]);
+    }
+    let project = ["--scope", "project", "--attribute", "note"];
+    fact(
+        lab,
+        ws,
+        &[
+            &[
+                "rust:.:two",
+                r#""reviewed""#,
+                "--from-ref",
+                start,
+                "--anchor",
+                "rust:.:two",
+            ][..],
+            &project,
+        ]
+        .concat(),
+    );
+    fact(
+        lab,
+        ws,
+        &[
+            &["rust:.:zero", r#""new""#, "--from-ref", mid][..],
+            &project,
+        ]
+        .concat(),
+    );
+    fact(
+        lab,
+        ws,
+        &[
+            &[
+                "rust:.:old_fn",
+                r#""kept""#,
+                "--from-ref",
+                start,
+                "--to-ref",
+                end,
+            ][..],
+            &project,
+        ]
+        .concat(),
+    );
+    let states = |entity: &str| all.map(|rev| fact_state(lab, ws, entity, rev));
+    assert_eq!(
+        states("rust:.:two"),
+        ["holds", "stale", "stale", "holds"],
+        "anchored on two's body"
+    );
+    assert_eq!(
+        states("rust:.:zero"),
+        ["before", "holds", "holds", "holds"],
+        "from mid on"
+    );
+    assert_eq!(
+        states("rust:.:old_fn"),
+        ["holds", "holds", "ended", "ended"],
+        "from start to end"
+    );
+
+    facts_after_rebase(lab, ws, start, end);
+}
+
+/// A rebase: the side branch's commit is copied onto the end, and the old one is on no branch any more.
+fn facts_after_rebase(lab: &Lab, ws: &Path, start: &str, end: &str) {
+    let old = lab.git(
+        ws,
+        &[
+            "commit-tree",
+            &lab.tree(ws, start),
+            "-p",
+            start,
+            "-m",
+            "side",
+        ],
+    );
+    lab.git(ws, &["branch", "side", &old]);
+    fact(
+        lab,
+        ws,
+        &["side-note", "1", "--scope", "project", "--from-ref", "side"],
+    );
+    assert_eq!(fact_state(lab, ws, "side-note", "side"), "holds");
+    let rebased = lab.git(
+        ws,
+        &["commit-tree", &lab.tree(ws, end), "-p", end, "-m", "side"],
+    );
+    lab.git(ws, &["branch", "-f", "side", &rebased]);
+    assert_eq!(
+        fact_state(lab, ws, "side-note", "side"),
+        "unreachable",
+        "the old commit is on no branch after the rebase"
+    );
+    let history = lab.json(ws, &["facts", "history", "side-note"]);
+    assert_eq!(
+        history.as_array().unwrap().len(),
+        1,
+        "the row stays: {history}"
+    );
+}
+
+fn now_ms() -> i64 {
+    std::thread::sleep(Duration::from_millis(5));
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap()
+}
+
+/// The facts of the entity `app`: (value, source, wins).
+fn app_facts(lab: &Lab, ws: &Path, args: &[&str]) -> Vec<(String, String, bool)> {
+    lab.json(
+        ws,
+        &[&["facts", "at", "--entity", "app"][..], args].concat(),
+    )
+    .as_array()
+    .unwrap()
+    .iter()
+    .map(|f| {
+        (
+            f["value"].to_string(),
+            f["source"].as_str().unwrap().to_string(),
+            f["wins"] == true,
+        )
+    })
+    .collect()
+}
+
+fn facts_in_time(lab: &Lab, ws: &Path) {
+    // a bitemporal correction: the store's belief before it stays a query
+    let first = fact(lab, ws, &["app", "0.25", "--attribute", "width"]);
+    let id = first
+        .split(':')
+        .next()
+        .unwrap()
+        .trim_start_matches("fact ")
+        .to_string();
+    let believed = now_ms();
+    now_ms();
+    fact(
+        lab,
+        ws,
+        &["app", "0.3", "--attribute", "width", "--corrects", &id],
+    );
+    assert_eq!(
+        app_facts(lab, ws, &[]),
+        [("0.3".into(), "user".into(), true)]
+    );
+    assert_eq!(
+        app_facts(lab, ws, &["--recorded", &believed.to_string()]),
+        [("0.25".into(), "user".into(), true)]
+    );
+
+    // an agent's fact of the same scope does not win over the user's
+    let args =
+        serde_json::json!({"entity": "app", "attribute": "width", "value": "0.5", "repo": ws});
+    let reply = agent_fact(lab, ws, &args);
+    assert_ne!(reply["isError"], true, "{reply}");
+    let both = app_facts(lab, ws, &[]);
+    assert!(
+        both.contains(&("0.3".into(), "user".into(), true)),
+        "{both:?}"
+    );
+    assert!(
+        both.contains(&("0.5".into(), "agent:mcp".into(), false)),
+        "{both:?}"
+    );
+
+    // a newer user fact supersedes the older one from its valid time on; an earlier time shows the older value
+    let before = now_ms();
+    now_ms();
+    fact(lab, ws, &["app", "0.4", "--attribute", "width"]);
+    let winner = |args: &[&str]| {
+        app_facts(lab, ws, args)
+            .into_iter()
+            .find(|w| w.2)
+            .unwrap()
+            .0
+    };
+    assert_eq!(winner(&[]), "0.4");
+    let rows = lab.json(ws, &["facts", "history", "app"]);
+    let ended = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["value"] == 0.3 && f["source"] == "user" && f["recorded_to"].is_null())
+        .unwrap_or_else(|| panic!("{rows:#}"));
+    assert!(
+        ended["valid_to"].is_i64(),
+        "the newer fact ended the older one: {ended}"
+    );
+    assert_eq!(winner(&["--time", &before.to_string()]), "0.3");
+    let changed = lab.json(
+        ws,
+        &[
+            "facts",
+            "diff",
+            "--entity",
+            "app",
+            "--from-time",
+            &before.to_string(),
+        ],
+    );
+    assert_eq!(changed[0]["before"], 0.3, "{changed}");
+    assert_eq!(changed[0]["after"], 0.4, "{changed}");
+}
+
 /// The plan of the fixture: W1 is done (a symbol, a config key, an operation and a unit), W2 is in progress (a file to
 /// edit, a function to add, a function to remove).
 const FEATURE: &str = r#"// one feature of the fixture

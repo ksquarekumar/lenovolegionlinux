@@ -1,11 +1,12 @@
-//! `legionctl-app` (note 09): the machine at a glance with every sensor (note 16), GPU wiring, health, bench and the
-//! resources (note 22), from `legionctl-operator`.
-//! Every value comes from an operation; every change is an operation that shows its plan first (a dry run), and the
-//! daemon asks polkit when it is applied.
+//! `legionctl-app` (DESIGN-09): the rail of the spaces, the navigator of the space, and tabs: machine pages, threads
+//! and views that agents make, each tab with its chat bar. Every value comes from an operation; every change is an
+//! operation that shows its plan first (a dry run), and the daemon asks polkit when it is applied.
 
+pub mod activity;
 pub mod greeter;
 mod pages;
 pub use pages::AppAssets;
+pub mod shell;
 pub mod theme;
 pub mod thread;
 
@@ -16,17 +17,22 @@ use std::time::Duration;
 use gpui_kit::{AppContext, AsyncApp, Context, FocusHandle, Task, WeakEntity};
 use legionctl_api::client::Client;
 use legionctl_api::{
-    Acted, BenchIn, BenchRun, Changes, DesktopGpu, Empty, FanState, Findings, GpuPrimaryIn,
-    GpuState, MonitorIn, PageIn, PowerApplyIn, PowerSource, ProfileIn, Reading, Render as _,
-    ResourceActIn, ResourceList, Sample, Scenario, SensorsIn, SetupApplyIn, Snapshot, StatusIn, op,
+    Acted, BenchIn, BenchRun, Changes, DesktopGpu, Empty, EventRow, FanState, Findings,
+    GpuPrimaryIn, GpuState, MonitorIn, PageIn, PowerApplyIn, PowerSource, ProfileIn, Reading,
+    Render as _, ResourceActIn, ResourceList, Sample, Scenario, SensorsIn, SetupApplyIn, Snapshot,
+    StatusIn, op,
 };
+use serde::{Deserialize, Serialize};
+
+pub use shell::{Space, Tab};
 
 /// How often the glance values refresh.
 const REFRESH: Duration = Duration::from_secs(2);
-/// How often the thread screen takes the events that the stream gave.
+/// How often the screen takes the events that the stream gave.
 const EVENTS: Duration = Duration::from_millis(100);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Page {
     Now,
     Gpu,
@@ -47,15 +53,24 @@ impl Page {
     /// The page a command-line word names: now, gpu, health, bench, resources.
     #[must_use]
     pub fn named(word: &str) -> Option<Page> {
-        Page::ALL
-            .into_iter()
-            .find(|p| format!("{p:?}").eq_ignore_ascii_case(word))
+        Page::ALL.into_iter().find(|p| p.word() == word)
+    }
+
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Page::Now => "now",
+            Page::Gpu => "gpu",
+            Page::Health => "health",
+            Page::Bench => "bench",
+            Page::Resources => "resources",
+        }
     }
 
     pub(crate) fn title(self) -> &'static str {
         match self {
-            Page::Now => "Now",
-            Page::Gpu => "Apps & GPU",
+            Page::Now => "Machine now",
+            Page::Gpu => "Apps and GPU",
             Page::Health => "Health",
             Page::Bench => "Bench",
             Page::Resources => "Resources",
@@ -101,9 +116,8 @@ pub struct State {
 pub struct LegionApp {
     client: Arc<Client>,
     runtime: tokio::runtime::Handle,
-    pub page: Page,
     pub state: State,
-    /// The thread screen: panes, chat bar, thread and view.
+    /// The screen: spaces, navigator, tabs, chat bars, threads and views.
     pub screen: thread::Screen,
     chat_focus: FocusHandle,
     _refresh: Task<()>,
@@ -121,10 +135,13 @@ impl Drop for Follower {
 }
 
 impl LegionApp {
+    /// The app on `client`; `open` is a tab to show at the start (the command line's), besides the tabs that the
+    /// layout facts keep.
     pub fn new(
         client: Client,
         runtime: tokio::runtime::Handle,
-        page: Page,
+        open: Option<Tab>,
+        repo: std::path::PathBuf,
         cx: &mut Context<Self>,
     ) -> LegionApp {
         let refresh = cx.spawn(
@@ -142,34 +159,33 @@ impl LegionApp {
         let mut app = LegionApp {
             client,
             runtime,
-            page,
             state: State::default(),
-            screen: thread::Screen::new(std::env::current_dir().unwrap_or_else(|_| "/".into())),
+            screen: thread::Screen::new(repo),
             chat_focus: cx.focus_handle(),
             _refresh: refresh,
             _events: events,
             _follower: follower,
         };
+        app.read_layout(open, cx);
         app.read_thread(cx);
         app
     }
 
-    /// The dossier of the chat bar's runs and their repository.
+    /// The dossier of the chat bar's runs.
     #[must_use]
-    pub fn with_runs(mut self, dossier: Option<String>, repo: std::path::PathBuf) -> Self {
+    pub fn with_dossier(mut self, dossier: Option<String>) -> Self {
         self.screen.dossier = dossier;
-        self.screen.repo = repo;
         self
     }
 
-    /// Follow the operator's event stream from now on the app's tokio runtime; the kinds of the events go to
+    /// Follow the operator's event stream from now on the app's tokio runtime; the events go to
     /// [`LegionApp::events`]. A broken stream opens again after its last event (C6).
     fn follow(
         client: Arc<Client>,
         runtime: &tokio::runtime::Handle,
         cx: &mut Context<Self>,
     ) -> (Task<()>, Follower) {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<EventRow>();
         let follower = runtime.spawn(async move {
             let mut offset = "now".to_string();
             loop {
@@ -179,7 +195,9 @@ impl LegionApp {
                             if let Some(id) = e["id"].as_i64() {
                                 offset = id.to_string();
                             }
-                            let _ = tx.send(e["kind"].as_str().unwrap_or_default().to_string());
+                            if let Ok(row) = serde_json::from_value::<EventRow>(e.clone()) {
+                                let _ = tx.send(row);
+                            }
                         })
                         .await;
                 }
@@ -192,14 +210,14 @@ impl LegionApp {
             async move |this: WeakEntity<LegionApp>, cx: &mut AsyncApp| {
                 loop {
                     cx.background_executor().timer(EVENTS).await;
-                    let mut kinds = Vec::new();
-                    while let Ok(kind) = rx.try_recv() {
-                        kinds.push(kind);
+                    let mut rows = Vec::new();
+                    while let Ok(row) = rx.try_recv() {
+                        rows.push(row);
                     }
                     if this
                         .update(cx, |app, cx| {
-                            if !kinds.is_empty() {
-                                app.events(&kinds, cx);
+                            if !rows.is_empty() {
+                                app.events(rows, cx);
                             }
                         })
                         .is_err()
@@ -212,7 +230,7 @@ impl LegionApp {
         (task, Follower(follower))
     }
 
-    /// The glance values, and the data of the open page.
+    /// The glance values, and the data of the tab that shows.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let client = self.client.clone();
         let task = self.operator(cx, async move {
@@ -242,6 +260,7 @@ impl LegionApp {
                             app.state.sample = sample;
                             app.state.fan = fan;
                             app.state.offline = None;
+                            app.screen.updated = Some(std::time::Instant::now());
                         }
                         Err(e) => app.state.offline = Some(format!("{e:#}")),
                     }
@@ -250,12 +269,33 @@ impl LegionApp {
             },
         )
         .detach();
-        self.load_page(cx);
+        self.load_tab(cx);
+        if self.screen.ticks.is_multiple_of(15) {
+            self.load_space(cx);
+        }
+        self.screen.ticks += 1;
     }
 
-    fn load_page(&mut self, cx: &mut Context<Self>) {
+    /// The data of the tab that shows: its page's operation, its view, or its thread.
+    pub(crate) fn load_tab(&mut self, cx: &mut Context<Self>) {
+        match self.tab().cloned() {
+            Some(Tab::Page { page }) => self.load_page(page, cx),
+            Some(Tab::View { .. }) if !self.screen.view_data.contains_key(&self.tab_key()) => {
+                self.render_view(cx);
+            }
+            Some(Tab::Thread { .. }) => self.read_thread(cx),
+            _ => {}
+        }
+    }
+
+    /// The key of the tab that shows.
+    pub(crate) fn tab_key(&self) -> String {
+        self.tab().map(Tab::key).unwrap_or_default()
+    }
+
+    fn load_page(&mut self, page: Page, cx: &mut Context<Self>) {
         let client = self.client.clone();
-        match self.page {
+        match page {
             Page::Now => {
                 let task = self.operator(cx, async move {
                     client
@@ -330,6 +370,16 @@ impl LegionApp {
         task: Task<anyhow::Result<T>>,
         ok: impl FnOnce(&mut LegionApp, T) + 'static,
     ) {
+        self.finish_with(cx, task, |app, value, _| ok(app, value));
+    }
+
+    /// [`LegionApp::finish`] where `ok` needs the view's context.
+    fn finish_with<T: Send + 'static>(
+        &mut self,
+        cx: &mut Context<Self>,
+        task: Task<anyhow::Result<T>>,
+        ok: impl FnOnce(&mut LegionApp, T, &mut Context<Self>) + 'static,
+    ) {
         self.state.busy = true;
         cx.spawn(
             async move |this: WeakEntity<LegionApp>, cx: &mut AsyncApp| {
@@ -337,7 +387,7 @@ impl LegionApp {
                 let _ = this.update(cx, |app, cx| {
                     app.state.busy = false;
                     match result {
-                        Ok(value) => ok(app, value),
+                        Ok(value) => ok(app, value, cx),
                         Err(e) => app.state.message = Some(format!("{e:#}")),
                     }
                     cx.notify();
@@ -347,11 +397,9 @@ impl LegionApp {
         .detach();
     }
 
+    /// Open a page as a tab.
     pub fn open(&mut self, page: Page, cx: &mut Context<Self>) {
-        self.page = page;
-        self.screen.view = None;
-        self.load_page(cx);
-        cx.notify();
+        self.open_tab(Tab::Page { page }, cx);
     }
 
     /// What the power policy would change now (dry run).

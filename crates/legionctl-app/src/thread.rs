@@ -1,10 +1,10 @@
-//! The thread screen of the app (design 23, Part C, P8), the same as `legionctl tui`: pane 1 lists the pages and the
-//! thread's view as icons, pane 2 shows the thread's log and the runs of this screen, pane 3 shows the page or the
-//! view (C4). Panes 1 and 2 fold to a 24 px rail. The chat bar is at the bottom centre of pane 3: 60% of its width
-//! at the start, wider and narrower with Ctrl+Right and Ctrl+Left, taller with its text up to 40% of the pane. The
-//! `/` commands and the prompts are the TUI's (`legionctl_api::chat`). The screen reads the thread and its view
-//! again at each event of the operator's event stream, not on a timer.
+//! The tabs' content and their chat bar (design 23 P8, DESIGN-09): a thread tab shows its timeline, members and
+//! rules; a view tab shows its widget; each tab has its chat bar below its content (it never covers it), 60% of the
+//! tab's width at the start, wider and narrower with Ctrl+Right and Ctrl+Left, taller with its text up to 40% of the
+//! tab. The `/` commands and the prompts are the TUI's (`legionctl_api::chat`). The screen reads the threads and the
+//! views again at each event of the operator's event stream, not on a timer.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use gpui_kit::assets::IconName;
@@ -20,35 +20,40 @@ use gpui_kit::{
 };
 use legionctl_api::chat::{self, Action, Entry};
 use legionctl_api::{
-    AgentCommand, ClientPath, Empty, ProjectIn, RunOutput, SessionIdIn, ThreadIdIn, ThreadLogRow,
-    ThreadView, ViewData, ViewRenderIn, ViewWidget, op,
+    AgentCommand, ClientPath, EventRow, ProjectIn, RunOutput, SessionIdIn, ThreadIdIn, ThreadInfo,
+    ThreadLogRow, ThreadView, ViewData, ViewRenderIn, ViewWidget, op,
 };
 use serde_json::{Value, json};
 
-use crate::pages::PAGES;
+use crate::activity::Activity;
+use crate::shell::{Drag, Space, Tab};
 use crate::theme::{
     R_LG, R_MD, R_SM, S1, S2, S3, S4, S5, T_MD, T_SM, T_XS, Tokens, badge, card, icon,
 };
 use crate::{LegionApp, Page};
 
-/// A view of pane 3 (`views.place`, or `/view <name>`): its name, `name=value` parameters and the folder whose
-/// repository layer applies.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Shown {
-    pub name: String,
-    pub params: Vec<String>,
-    pub repo: PathBuf,
-}
-
-/// What the thread screen knows; the operator holds the rest (C6: a restart reads it again).
+/// What the screen knows; the operator holds the rest (C6: a restart reads it again).
 #[derive(Debug)]
 pub struct Screen {
-    /// Panes 1 and 2.
-    pub folded: [bool; 2],
-    pub chat: String,
-    /// The chat bar's width in percent of pane 3.
+    pub space: Space,
+    /// The navigator's width: a part of the window.
+    pub navigator: f32,
+    pub navigator_open: bool,
+    pub tabs: Vec<Tab>,
+    pub active: usize,
+    /// Tabs opened before the layout facts came.
+    pub early: Vec<Tab>,
+    /// The layout facts were read: changes are kept from now on.
+    pub restored: bool,
+    pub drag: Option<Drag>,
+    /// The chat bar's text of each tab (by its key).
+    pub chats: BTreeMap<String, String>,
+    /// The chat bar's width in percent of the tab.
     pub chat_width: u32,
-    /// The newest open thread.
+    pub threads: Vec<ThreadInfo>,
+    /// The threads that tabs show, by id.
+    pub shown: BTreeMap<i64, ThreadView>,
+    /// The chat bar's thread: the thread of the tab, else the newest open one.
     pub thread: Option<ThreadView>,
     pub thread_error: Option<String>,
     /// This screen's lines that ran, each with its result once it ended.
@@ -63,22 +68,38 @@ pub struct Screen {
     /// The dossier of the chat bar's runs (`--dossier`), and their repository.
     pub dossier: Option<String>,
     pub repo: PathBuf,
-    /// The view in pane 3 instead of the page, and its data.
-    pub view: Option<Shown>,
-    pub view_data: Option<ViewData>,
-    /// The log id of the thread's newest `views.place` that this screen applied.
+    /// The data of each view tab (by its key).
+    pub view_data: BTreeMap<String, ViewData>,
+    /// The log id of the newest `views.place` that this screen applied, and whether it read the threads once.
     pub placed: i64,
+    pub seen: bool,
     /// The events that this screen got from the stream.
     pub events: usize,
+    /// The log rows whose full text is open (U5).
+    pub expanded: BTreeSet<i64>,
+    pub activity: Activity,
+    /// When the operator last answered the glance values.
+    pub updated: Option<std::time::Instant>,
+    /// The refreshes since the start (the Activity reads its slow parts each 15th).
+    pub ticks: u32,
 }
 
 impl Screen {
     #[must_use]
     pub fn new(repo: PathBuf) -> Screen {
         Screen {
-            folded: [false; 2],
-            chat: String::new(),
+            space: Space::Machine,
+            navigator: crate::shell::NAVIGATOR,
+            navigator_open: true,
+            tabs: Vec::new(),
+            early: Vec::new(),
+            active: 0,
+            restored: false,
+            drag: None,
+            chats: BTreeMap::new(),
             chat_width: 60,
+            threads: Vec::new(),
+            shown: BTreeMap::new(),
             thread: None,
             thread_error: None,
             runs: Vec::new(),
@@ -88,11 +109,36 @@ impl Screen {
             default_agent: None,
             dossier: None,
             repo,
-            view: None,
-            view_data: None,
+            view_data: BTreeMap::new(),
             placed: 0,
+            seen: false,
             events: 0,
+            expanded: BTreeSet::new(),
+            activity: Activity::default(),
+            updated: None,
+            ticks: 0,
         }
+    }
+
+    fn key(&self) -> String {
+        self.tabs.get(self.active).map(Tab::key).unwrap_or_default()
+    }
+
+    /// The chat bar's text of the tab that shows.
+    #[must_use]
+    pub fn chat(&self) -> &str {
+        self.chats.get(&self.key()).map_or("", String::as_str)
+    }
+
+    pub fn chat_mut(&mut self) -> &mut String {
+        let key = self.key();
+        self.chats.entry(key).or_default()
+    }
+
+    /// The data of the view tab that shows.
+    #[must_use]
+    pub fn view(&self) -> Option<&ViewData> {
+        self.view_data.get(&self.key())
     }
 
     /// The chat bar's agent: the thread's newest `/agent` pick (a `thread.agent` row), else `app.agent`.
@@ -110,13 +156,15 @@ impl Screen {
     #[must_use]
     pub fn completions(&self) -> Vec<Entry> {
         let now = self.agent();
-        let screen = ["1", "2"]
+        let screen = Page::ALL
             .iter()
-            .map(|n| (format!("/fold {n}"), format!("Fold or open pane {n}")))
-            .chain(Page::ALL.iter().map(|p| {
-                let name = format!("{p:?}").to_lowercase();
-                (format!("/view {name}"), format!("Show {name} in pane 3"))
-            }))
+            .map(|p| {
+                let name = p.word();
+                (
+                    format!("/view {name}"),
+                    format!("Open {} in a tab", p.title()),
+                )
+            })
             .chain(self.agents.iter().map(|a| {
                 let current = if now.as_ref() == Some(a) { ", now" } else { "" };
                 (
@@ -125,50 +173,67 @@ impl Screen {
                 )
             }))
             .collect();
-        chat::completions(&self.chat, chat::entries(&self.commands, screen))
+        chat::completions(self.chat(), chat::entries(&self.commands, screen))
     }
 }
 
 impl LegionApp {
-    /// Read the newest open thread and the chat bar's agents (config `session.acp`, `app.agent`), and apply a new
-    /// placement of the thread's view.
+    /// Read the threads, the thread of each thread tab, the chat bar's thread (the tab's, else the newest open one)
+    /// and its agents (config `session.acp`, `app.agent`), and apply a new placement of a view.
     pub(crate) fn read_thread(&mut self, cx: &mut Context<Self>) {
         let client = self.client.clone();
         let project = ProjectIn {
             project: ClientPath(self.screen.repo.clone()),
         };
+        let mut wanted: BTreeSet<i64> = self
+            .screen
+            .tabs
+            .iter()
+            .filter_map(|t| match t {
+                Tab::Thread { id } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        let current = match self.tab() {
+            Some(Tab::Thread { id }) => Some(*id),
+            _ => None,
+        };
         let task = self.operator(cx, async move {
             let config = client.call::<op::ConfigShow>(&project).await?.value;
-            let newest = client
-                .call::<op::ThreadList>(&Empty {})
-                .await?
-                .into_iter()
-                .find(|t| t.state == "open");
-            let thread = match newest {
-                Some(t) => Some(
+            let threads = client
+                .call::<op::ThreadList>(&legionctl_api::Empty {})
+                .await?;
+            let chat = current.or_else(|| threads.iter().find(|t| t.state == "open").map(|t| t.id));
+            wanted.extend(chat);
+            let mut shown = BTreeMap::new();
+            for id in wanted {
+                shown.insert(
+                    id,
                     client
-                        .call::<op::ThreadShow>(&ThreadIdIn { thread: t.id })
+                        .call::<op::ThreadShow>(&ThreadIdIn { thread: id })
                         .await?,
-                ),
-                None => None,
-            };
-            Ok((thread, config))
+                );
+            }
+            Ok((threads, shown, chat, config))
         });
         cx.spawn(
             async move |this: WeakEntity<LegionApp>, cx: &mut AsyncApp| {
                 let result = task.await;
                 let _ = this.update(cx, |app, cx| {
                     match result {
-                        Ok((thread, config)) => {
+                        Ok((threads, shown, chat, config)) => {
                             app.screen.agents = config["session"]["acp"]
                                 .as_object()
                                 .map(|acp| acp.keys().cloned().collect())
                                 .unwrap_or_default();
                             app.screen.default_agent =
                                 config["app"]["agent"].as_str().map(String::from);
-                            app.screen.thread = thread;
+                            app.screen.threads = threads;
+                            app.screen.thread = chat.and_then(|id| shown.get(&id).cloned());
+                            app.screen.shown = shown;
                             app.screen.thread_error = None;
                             app.apply_layout(cx);
+                            app.screen.seen = true;
                         }
                         Err(e) => app.screen.thread_error = Some(format!("{e:#}")),
                     }
@@ -179,21 +244,27 @@ impl LegionApp {
         .detach();
     }
 
-    /// The thread's layout: its newest `views.place` row, once.
+    /// The newest `views.place` row of the threads that this screen reads opens its view as a tab, once.
     fn apply_layout(&mut self, cx: &mut Context<Self>) {
-        let Some(row) = self.screen.thread.as_ref().and_then(|t| {
-            t.log
-                .iter()
-                .rev()
-                .find(|r| r.kind == "views.place")
-                .cloned()
-        }) else {
+        let Some(row) = self
+            .screen
+            .shown
+            .values()
+            .flat_map(|t| t.log.iter())
+            .filter(|r| r.kind == "views.place")
+            .max_by_key(|r| r.id)
+            .cloned()
+        else {
             return;
         };
-        if row.id == self.screen.placed {
+        if row.id <= self.screen.placed {
             return;
         }
         self.screen.placed = row.id;
+        // a placement before this screen's first read is history: its view opens when the user asks for it
+        if !self.screen.seen {
+            return;
+        }
         let p = &row.payload;
         let params = p["params"]
             .as_object()
@@ -201,54 +272,62 @@ impl LegionApp {
             .flatten()
             .map(|(k, v)| format!("{k}={}", v.as_str().unwrap_or_default()))
             .collect();
-        self.show_view(
-            Shown {
-                name: p["view"].as_str().unwrap_or_default().to_string(),
-                params,
-                repo: PathBuf::from(p["repo"].as_str().unwrap_or("/")),
-            },
-            cx,
-        );
+        let tab = Tab::View {
+            name: p["view"].as_str().unwrap_or_default().to_string(),
+            params,
+        };
+        self.screen.view_data.remove(&tab.key());
+        self.open_tab(tab, cx);
     }
 
-    pub(crate) fn show_view(&mut self, shown: Shown, cx: &mut Context<Self>) {
-        self.screen.view = Some(shown);
-        self.render_view(cx);
-    }
-
-    /// Read the view of pane 3 again.
-    fn render_view(&mut self, cx: &mut Context<Self>) {
-        let Some(shown) = self.screen.view.clone() else {
+    /// Read the view of the tab that shows again.
+    pub(crate) fn render_view(&mut self, cx: &mut Context<Self>) {
+        let Some(Tab::View { name, params }) = self.tab().cloned() else {
             return;
         };
+        let key = self.tab_key();
         let client = self.client.clone();
+        let repo = self.screen.repo.clone();
         let task = self.operator(cx, async move {
             client
                 .call::<op::ViewsRender>(&ViewRenderIn {
-                    name: shown.name,
-                    params: shown.params,
-                    repo: ClientPath(shown.repo),
+                    name,
+                    params,
+                    repo: ClientPath(repo),
                 })
                 .await
         });
-        self.finish(cx, task, |app, data| app.screen.view_data = Some(data));
+        self.finish(cx, task, move |app, data| {
+            app.screen.view_data.insert(key, data);
+        });
     }
 
-    /// Events of the operator's stream: the thread again, and the view when an event refreshes it.
-    pub(crate) fn events(&mut self, kinds: &[String], cx: &mut Context<Self>) {
-        self.screen.events += kinds.len();
-        self.read_thread(cx);
-        if self
+    /// Events of the operator's stream: the threads again, the views that an event refreshes, the Activity.
+    pub(crate) fn events(&mut self, rows: Vec<EventRow>, cx: &mut Context<Self>) {
+        self.screen.events += rows.len();
+        let refreshed: Vec<String> = self
             .screen
             .view_data
-            .as_ref()
-            .is_some_and(|v| kinds.iter().any(|k| v.refreshes_on(k)))
-        {
-            self.render_view(cx);
+            .iter()
+            .filter(|(_, v)| rows.iter().any(|r| v.refreshes_on(&r.kind)))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in refreshed {
+            self.screen.view_data.remove(&key);
+        }
+        self.screen.activity.take(rows);
+        self.read_thread(cx);
+        self.load_tab(cx);
+    }
+
+    /// The data of the space that shows.
+    pub(crate) fn load_space(&mut self, cx: &mut Context<Self>) {
+        if self.screen.space == Space::Activity {
+            self.load_activity(cx);
         }
     }
 
-    /// Run `op` with `input` as the line `line` of pane 2; its text goes to the message line.
+    /// Run `op` with `input` as the line `line` of this screen's runs; its text goes to the message line.
     fn start(&mut self, op: &'static str, input: Value, line: String, cx: &mut Context<Self>) {
         self.screen.runs.push((line, None));
         let row = self.screen.runs.len() - 1;
@@ -292,11 +371,11 @@ impl LegionApp {
 
     /// The chat bar's line: a command, or a prompt for the agent.
     pub fn submit(&mut self, cx: &mut Context<Self>) {
-        let line = std::mem::take(&mut self.screen.chat).trim().to_string();
+        let line = std::mem::take(self.screen.chat_mut()).trim().to_string();
         if line.is_empty() {
             return;
         }
-        match chat::action(&line, &self.screen.commands, &["fold", "view", "agent"]) {
+        match chat::action(&line, &self.screen.commands, &["view", "agent"]) {
             Action::Prompt(prompt) => self.prompt(&prompt, line, cx),
             Action::Operation(op, input) => self.start(op.name, input, line, cx),
             Action::Screen(words) => self.screen_command(&words, cx),
@@ -307,21 +386,15 @@ impl LegionApp {
 
     fn screen_command(&mut self, words: &[String], cx: &mut Context<Self>) {
         match words.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-            ["fold", n @ ("1" | "2")] => {
-                let i = usize::from(n == "2");
-                self.screen.folded[i] = !self.screen.folded[i];
-            }
             ["view", name, ..] => {
-                if let Some(page) = Page::named(name) {
-                    self.open(page, cx);
-                } else {
-                    let shown = Shown {
+                let tab = match Page::named(name) {
+                    Some(page) => Tab::Page { page },
+                    None => Tab::View {
                         name: name.to_string(),
                         params: words[2..].to_vec(),
-                        repo: self.screen.repo.clone(),
-                    };
-                    self.show_view(shown, cx);
-                }
+                    },
+                };
+                self.open_tab(tab, cx);
             }
             ["agent", name] => match &self.screen.thread {
                 Some(t) => {
@@ -335,8 +408,7 @@ impl LegionApp {
                 }
             },
             _ => {
-                self.state.message =
-                    Some("/fold 1, /fold 2, /view <name> [name=value...] or /agent <name>".into());
+                self.state.message = Some("/view <name> [name=value...] or /agent <name>".into());
             }
         }
     }
@@ -361,7 +433,7 @@ impl LegionApp {
         self.start("session.run", input, line, cx);
     }
 
-    /// A key on the screen: the folds anywhere, the rest in the chat bar.
+    /// A key on the screen: the spaces, the navigator and the tabs anywhere, the rest in the chat bar.
     pub(crate) fn key(
         &mut self,
         event: &KeyDownEvent,
@@ -371,31 +443,51 @@ impl LegionApp {
         let k = &event.keystroke;
         let control = k.modifiers.control;
         let alt = k.modifiers.alt;
+        let shift = k.modifiers.shift;
+        let n = self.screen.tabs.len();
         match k.key.as_str() {
-            "1" | "2" if control || alt => {
-                let i = usize::from(k.key == "2");
-                self.screen.folded[i] = !self.screen.folded[i];
+            "1" | "2" | "3" | "4" if control || alt => {
+                let i = k.key.parse::<usize>().unwrap_or(1) - 1;
+                self.show_space(Space::ALL[i], cx);
+            }
+            "w" if control => self.close_tab(self.screen.active, cx),
+            "tab" if control && n > 0 => {
+                let next = if shift {
+                    (self.screen.active + n - 1) % n
+                } else {
+                    (self.screen.active + 1) % n
+                };
+                self.show_tab(next, cx);
+            }
+            "left" | "right" if control && shift && n > 0 => {
+                let from = self.screen.active;
+                let to = if k.key == "left" {
+                    from.saturating_sub(1)
+                } else {
+                    (from + 1).min(n - 1)
+                };
+                self.move_tab(from, to, cx);
             }
             _ if !self.chat_focus.is_focused(window) => return,
-            "enter" if alt || k.modifiers.shift => self.screen.chat.push('\n'),
-            "j" if control => self.screen.chat.push('\n'),
+            "enter" if alt || shift => self.screen.chat_mut().push('\n'),
+            "j" if control => self.screen.chat_mut().push('\n'),
             "enter" => self.submit(cx),
             "right" if control => self.screen.chat_width = (self.screen.chat_width + 10).min(100),
             "left" if control => {
                 self.screen.chat_width = self.screen.chat_width.saturating_sub(10).max(30);
             }
             "backspace" => {
-                self.screen.chat.pop();
+                self.screen.chat_mut().pop();
             }
             "tab" => {
                 if let Some(first) = self.screen.completions().first()
-                    && first.text.starts_with(&self.screen.chat)
+                    && first.text.starts_with(self.screen.chat())
                 {
-                    self.screen.chat = format!("{} ", first.text);
+                    *self.screen.chat_mut() = format!("{} ", first.text);
                 }
             }
             _ => match &k.key_char {
-                Some(text) if !control && !alt => self.screen.chat.push_str(text),
+                Some(text) if !control && !alt => self.screen.chat_mut().push_str(text),
                 _ => return,
             },
         }
@@ -413,7 +505,12 @@ pub(crate) fn unix_now() -> i64 {
 
 /// How long ago `at` was, in a short word: now, 5 min, 3 h, 2 d.
 pub(crate) fn ago(now: i64, at: i64) -> String {
-    match now.saturating_sub(at) {
+    ago_short(u64::try_from(now.saturating_sub(at)).unwrap_or(0))
+}
+
+/// `seconds` as a short age: now, 5 min, 3 h, 2 d.
+pub(crate) fn ago_short(seconds: u64) -> String {
+    match seconds {
         s if s < 60 => "now".into(),
         s if s < 3600 => format!("{} min", s / 60),
         s if s < 86_400 => format!("{} h", s / 3600),
@@ -488,418 +585,226 @@ fn kind_color(kind: &str, t: &Tokens) -> gpui_kit::Hsla {
     }
 }
 
-/// A row of the thread's timeline: the member's chip, its name, the kind, the time (UTC in the tooltip), and what
-/// the row says.
-fn log_row(r: &ThreadLogRow, now: i64, t: &Tokens) -> AnyElement {
-    let kind = r
-        .kind
-        .trim_start_matches("thread.")
-        .trim_start_matches("views.");
-    let member = if r.member.is_empty() {
-        "legionctl"
-    } else {
-        &r.member
-    };
-    let when = utc(r.at);
-    div()
-        .h_flex()
-        .items_start()
-        .gap(S2)
-        .py(S2)
-        .child(avatar(member, 24.))
-        .child(
+/// A thread tab's head: its title, state, dossier and account, and its members.
+fn thread_header(v: &ThreadView, t: &Tokens) -> Div {
+    let members = v.members.iter().filter(|m| m.state != "left").map(|m| {
+        div()
+            .h_flex()
+            .gap(S1)
+            .pl(px(2.))
+            .pr(S2)
+            .py(px(2.))
+            .rounded_full()
+            .bg(t.card)
+            .text_size(T_XS)
+            .text_color(t.text2)
+            .child(avatar(&m.name, 18.))
+            .child(format!("{} · {}", m.name, m.archetype))
+    });
+    let mut facts = vec![
+        badge(
+            v.thread.state.clone(),
+            if v.thread.state == "open" {
+                t.ok
+            } else {
+                t.muted
+            },
+        ),
+        div().text_color(t.muted).child(format!(
+            "thread {} · dossier {}",
+            v.thread.id, v.thread.dossier
+        )),
+    ];
+    if let Some(account) = &v.thread.account {
+        facts.push(
             div()
-                .v_flex()
-                .flex_1()
-                .min_w_0()
-                .gap(px(2.))
-                .child(
-                    div()
-                        .h_flex()
-                        .gap(S2)
-                        .text_size(T_XS)
-                        .child(
-                            div()
-                                .font_semibold()
-                                .text_color(t.text)
-                                .child(member.to_string()),
-                        )
-                        .child(badge(kind.to_string(), kind_color(kind, t)))
-                        .child(div().flex_1())
-                        .child(
-                            div()
-                                .id(SharedString::from(format!("at-{}", r.id)))
-                                .text_color(t.muted)
-                                .child(ago(now, r.at))
-                                .tooltip(move |window, cx| {
-                                    Tooltip::new(when.clone()).build(window, cx)
-                                }),
-                        ),
-                )
-                .child(
-                    div()
-                        .text_size(T_SM)
-                        .text_color(t.text2)
-                        .child(chat::log_detail(r)),
-                ),
-        )
-        .into_any_element()
-}
-
-/// A folded pane: a 24 px rail with an open icon and its name top to bottom; a click opens it.
-fn rail(
-    id: &'static str,
-    label: &str,
-    t: &Tokens,
-    cx: &mut Context<LegionApp>,
-    pane: usize,
-) -> AnyElement {
-    let tip = format!("Open {label}");
-    div()
-        .id(id)
-        .w(px(24.))
-        .h_full()
-        .flex_none()
-        .v_flex()
-        .items_center()
-        .gap(S2)
-        .pt(S3)
-        .bg(t.pane)
-        .border_r_1()
-        .border_color(t.border)
-        .cursor_pointer()
-        .hover(|s| s.bg(t.card))
-        .child(icon(IconName::PanelLeftOpen, px(14.), t.muted))
-        .child(
-            div()
-                .v_flex()
-                .items_center()
-                .text_size(px(10.))
                 .text_color(t.muted)
-                .children(
-                    label
-                        .chars()
-                        .map(|c| div().child(c.to_uppercase().to_string())),
-                ),
-        )
-        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-        .on_click(cx.listener(move |app, _, _, cx| {
-            app.screen.folded[pane] = false;
-            cx.notify();
-        }))
-        .test_support()
-        .into_any_element()
-}
-
-/// The button that folds a pane.
-fn fold(id: &'static str, pane: usize, t: &Tokens, cx: &mut Context<LegionApp>) -> AnyElement {
-    let tip = if pane == 0 {
-        "Fold the pages (Ctrl+1)"
-    } else {
-        "Fold the thread (Ctrl+2)"
-    };
+                .child(format!("account {account}")),
+        );
+    }
     div()
-        .id(id)
-        .flex_none()
-        .p(S1)
-        .rounded(R_SM)
-        .cursor_pointer()
-        .hover(|s| s.bg(t.card))
-        .child(icon(IconName::PanelLeftClose, px(16.), t.muted))
-        .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
-        .on_click(cx.listener(move |app, _, _, cx| {
-            app.screen.folded[pane] = true;
-            cx.notify();
-        }))
-        .test_support()
-        .into_any_element()
-}
-
-/// One entry of pane 1: its icon and its name, the accent bar when it shows, the full name in its tooltip.
-fn entry(
-    id: usize,
-    glyph: IconName,
-    name: &str,
-    selected: bool,
-    t: &Tokens,
-) -> gpui_kit::Stateful<Div> {
-    let tip = name.to_string();
-    let color = if selected { t.accent } else { t.text2 };
-    div()
-        .id(id)
-        .relative()
         .v_flex()
-        .items_center()
-        .gap(S1)
-        .py(S2)
-        .px(S1)
-        .rounded(R_SM)
-        .cursor_pointer()
-        .when(selected, |d| d.bg(t.accent.opacity(0.14)))
-        .when(!selected, |d| d.hover(|s| s.bg(t.card)))
-        .child(icon(glyph, px(20.), color))
+        .gap(S2)
         .child(
             div()
-                .w_full()
-                .text_center()
-                .truncate()
-                .text_size(px(11.))
-                .text_color(color)
-                .child(name.to_string()),
+                .text_size(T_MD)
+                .font_semibold()
+                .text_color(t.text)
+                .child(v.thread.title.clone()),
         )
-        .when(selected, |d| {
-            d.child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top(S2)
-                    .bottom(S2)
-                    .w(px(3.))
-                    .rounded_full()
-                    .bg(t.accent),
-            )
-        })
-        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+        .child(
+            div()
+                .h_flex()
+                .flex_wrap()
+                .gap(S2)
+                .text_size(T_XS)
+                .children(facts),
+        )
+        .child(div().h_flex().flex_wrap().gap(S1).children(members))
 }
 
 impl LegionApp {
-    /// Pane 1: an icon for each page, and one for the thread's view when it has one.
-    fn pane1(&self, t: &Tokens, cx: &mut Context<Self>) -> AnyElement {
-        if self.screen.folded[0] {
-            return rail("pane-1", "pages", t, cx, 0);
-        }
-        let selected = |page: Page| self.screen.view.is_none() && self.page == page;
-        let mut icons: Vec<AnyElement> = PAGES
-            .iter()
-            .enumerate()
-            .map(|(i, (page, glyph))| {
-                let page = *page;
-                entry(i, *glyph, page.title(), selected(page), t)
-                    .on_click(cx.listener(move |app, _, _, cx| app.open(page, cx)))
-                    .test_support()
-                    .into_any_element()
-            })
-            .collect();
-        if let Some(shown) = &self.screen.view {
-            icons.push(
-                entry(PAGES.len(), IconName::LayoutDashboard, &shown.name, true, t)
-                    .test_support()
-                    .into_any_element(),
-            );
-        }
+    /// A row of a thread's timeline: the member's chip and name only when the actor changes (U15), the kind, the time
+    /// (UTC in the tooltip), and what the row says; a long row shows its first line with "More" (U5).
+    fn log_row(
+        &self,
+        r: &ThreadLogRow,
+        actor_changed: bool,
+        now: i64,
+        t: &Tokens,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let kind = r
+            .kind
+            .trim_start_matches("thread.")
+            .trim_start_matches("views.");
+        let member = if r.member.is_empty() {
+            "legionctl"
+        } else {
+            &r.member
+        };
+        let when = utc(r.at);
+        let more = chat::log_more(r);
+        let open = self.screen.expanded.contains(&r.id);
+        let id = r.id;
         div()
-            .id("pane-1")
-            .w(relative(0.07))
-            .flex_none()
-            .h_full()
-            .v_flex()
+            .id(SharedString::from(format!("log-{}", r.id)))
+            .h_flex()
+            .items_start()
             .gap(S2)
-            .p(S1)
-            .pt(S2)
-            .bg(t.pane)
-            .border_r_1()
-            .border_color(t.border)
+            .pt(if actor_changed { S3 } else { px(2.) })
+            .child(if actor_changed {
+                avatar(member, 24.)
+            } else {
+                div().w(px(24.)).flex_none()
+            })
             .child(
                 div()
-                    .h_flex()
-                    .justify_center()
-                    .child(fold("fold-1", 0, t, cx)),
-            )
-            .child(
-                div()
-                    .id("pages")
                     .v_flex()
-                    .gap(S1)
-                    .children(icons)
-                    .test_support(),
+                    .flex_1()
+                    .min_w_0()
+                    .gap(px(2.))
+                    .when(actor_changed, |d| {
+                        d.child(
+                            div()
+                                .font_semibold()
+                                .text_size(T_XS)
+                                .text_color(t.text)
+                                .child(member.to_string()),
+                        )
+                    })
+                    .child(
+                        div()
+                            .h_flex()
+                            .items_start()
+                            .gap(S2)
+                            .child(badge(kind.to_string(), kind_color(kind, t)))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_size(T_SM)
+                                    .text_color(t.text2)
+                                    .child(chat::log_detail(r)),
+                            )
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("at-{}", r.id)))
+                                    .flex_none()
+                                    .text_size(T_XS)
+                                    .text_color(t.muted)
+                                    .child(ago(now, r.at))
+                                    .tooltip(move |window, cx| {
+                                        Tooltip::new(when.clone()).build(window, cx)
+                                    }),
+                            ),
+                    )
+                    .when_some(more, |d, more| {
+                        d.child(
+                            div()
+                                .id(SharedString::from(format!("more-{id}")))
+                                .text_size(T_XS)
+                                .text_color(t.accent)
+                                .cursor_pointer()
+                                .child(if open { "Less" } else { "More" })
+                                .on_click(cx.listener(move |app, _, _, cx| {
+                                    if !app.screen.expanded.remove(&id) {
+                                        app.screen.expanded.insert(id);
+                                    }
+                                    cx.notify();
+                                }))
+                                .test_support(),
+                        )
+                        .when(open, |d| {
+                            d.child(
+                                div()
+                                    .text_size(T_XS)
+                                    .text_color(t.text2)
+                                    .children(more.lines().map(|l| div().child(l.to_string()))),
+                            )
+                        })
+                    }),
             )
             .test_support()
             .into_any_element()
     }
 
-    /// Pane 2's header: the thread's title, its state, account and members, and the fold button.
-    fn thread_header(&self, t: &Tokens, cx: &mut Context<Self>) -> Div {
-        let (title, facts, members): (String, Vec<Div>, Vec<String>) =
-            match (&self.screen.thread, &self.screen.thread_error) {
-                (_, Some(e)) => (
-                    "Thread".into(),
-                    vec![
-                        badge("cannot read", t.critical),
-                        div().text_color(t.muted).child(e.clone()),
-                    ],
-                    Vec::new(),
-                ),
-                (Some(v), None) => {
-                    let mut facts = vec![badge(
-                        v.thread.state.clone(),
-                        if v.thread.state == "open" {
-                            t.ok
-                        } else {
-                            t.muted
-                        },
-                    )];
-                    facts.push(
-                        div()
-                            .text_color(t.muted)
-                            .child(format!("#{} · {}", v.thread.id, v.thread.dossier)),
-                    );
-                    if let Some(account) = &v.thread.account {
-                        facts.push(
-                            div()
-                                .text_color(t.muted)
-                                .child(format!("account {account}")),
-                        );
-                    }
-                    (
-                        v.thread.title.clone(),
-                        facts,
-                        v.members
-                            .iter()
-                            .filter(|m| m.state != "left")
-                            .map(|m| m.name.clone())
-                            .collect(),
-                    )
-                }
-                (None, None) => ("No open thread".into(), Vec::new(), Vec::new()),
-            };
+    /// A thread tab: its title and facts, its members, its rules and its timeline.
+    fn thread_tab(&self, id: i64, t: &Tokens, cx: &mut Context<Self>) -> Div {
+        let Some(v) = self.screen.shown.get(&id) else {
+            return div()
+                .text_color(t.muted)
+                .child(match &self.screen.thread_error {
+                    Some(e) => format!("cannot read thread {id}: {e}"),
+                    None => "reading the thread…".into(),
+                });
+        };
+        let now = unix_now();
+        let mut last = None;
+        let rows: Vec<AnyElement> = v
+            .log
+            .iter()
+            .map(|r| {
+                let changed = last.as_deref() != Some(r.member.as_str());
+                last = Some(r.member.clone());
+                self.log_row(r, changed, now, t, cx)
+            })
+            .collect();
         div()
             .v_flex()
-            .gap(S2)
-            .p(S3)
-            .border_b_1()
-            .border_color(t.border)
-            .child(
-                div()
-                    .h_flex()
-                    .gap(S2)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(T_MD)
-                            .font_semibold()
-                            .text_color(t.text)
-                            .child(title),
-                    )
-                    .child(fold("fold-2", 1, t, cx)),
-            )
-            .child(
-                div()
-                    .h_flex()
-                    .flex_wrap()
-                    .gap(S2)
-                    .text_size(T_XS)
-                    .children(facts),
-            )
-            .when(!members.is_empty(), |d| {
+            .gap(S4)
+            .child(thread_header(v, t))
+            .when(!v.rules.is_empty(), |d| {
                 d.child(
-                    div()
-                        .h_flex()
-                        .flex_wrap()
+                    card(t)
                         .gap(S1)
-                        .children(members.iter().map(|m| {
-                            div()
-                                .h_flex()
-                                .gap(S1)
-                                .pl(px(2.))
-                                .pr(S2)
-                                .py(px(2.))
-                                .rounded_full()
-                                .bg(t.card)
-                                .text_size(T_XS)
-                                .text_color(t.text2)
-                                .child(avatar(m, 18.))
-                                .child(m.clone())
+                        .child(crate::theme::heading("Watch rules", t))
+                        .children(v.rules.iter().map(|r| {
+                            div().text_size(T_SM).text_color(t.text2).child(format!(
+                                "{} watches {}: after {} calls in {}, expect {} (missed {})",
+                                r.member,
+                                r.watched,
+                                r.every,
+                                if r.path.is_empty() { "/" } else { &r.path },
+                                r.expect,
+                                r.misses
+                            ))
                         })),
                 )
             })
-    }
-
-    /// Pane 2: the thread as a timeline, then this screen's runs.
-    fn pane2(&self, t: &Tokens, cx: &mut Context<Self>) -> AnyElement {
-        if self.screen.folded[1] {
-            return rail("pane-2", "thread", t, cx, 1);
-        }
-        let now = unix_now();
-        let rows: Vec<AnyElement> = self
-            .screen
-            .thread
-            .iter()
-            .flat_map(|v| v.log.iter())
-            .map(|r| log_row(r, now, t))
-            .collect();
-        let empty = rows.is_empty();
-        let runs = (!self.screen.runs.is_empty()).then(|| {
-            div()
-                .v_flex()
-                .gap(S1)
-                .pt(S3)
-                .child(
-                    div()
-                        .text_size(T_XS)
-                        .font_semibold()
-                        .text_color(t.muted)
-                        .child("FROM THIS SCREEN"),
-                )
-                .children(self.screen.runs.iter().map(|(line, ok)| {
-                    let (glyph, color) = match ok {
-                        None => (IconName::LoaderCircle, t.muted),
-                        Some(true) => (IconName::CircleCheck, t.ok),
-                        Some(false) => (IconName::CircleX, t.critical),
-                    };
-                    div()
-                        .h_flex()
-                        .gap(S2)
-                        .text_size(T_SM)
-                        .text_color(t.text2)
-                        .child(icon(glyph, px(14.), color))
-                        .child(div().truncate().child(line.replace('\n', " ↵ ")))
-                }))
-        });
-        div()
-            .id("pane-2")
-            .w(relative(0.30))
-            .flex_none()
-            .h_full()
-            .v_flex()
-            .bg(t.pane)
-            .border_r_1()
-            .border_color(t.border)
-            .child(self.thread_header(t, cx))
             .child(
                 div()
-                    .id("events")
-                    .flex_1()
-                    .overflow_y_scroll()
+                    .id("timeline")
                     .v_flex()
-                    .px(S3)
-                    .pb(S4)
                     .children(rows)
-                    .when(empty && self.screen.thread_error.is_none(), |d| {
-                        d.child(
-                            div()
-                                .pt(S3)
-                                .text_size(T_SM)
-                                .text_color(t.muted)
-                                .child("Nothing in the thread yet"),
-                        )
+                    .when(v.log.is_empty(), |d| {
+                        d.child(div().text_color(t.muted).child("Nothing in the thread yet"))
                     })
-                    .children(runs),
+                    .test_support(),
             )
-            .test_support()
-            .into_any_element()
     }
 
-    /// The view of pane 3 with its widget.
-    pub(crate) fn view(&self, cx: &mut Context<Self>) -> Div {
-        match &self.screen.view_data {
-            Some(data) => widget(data, cx),
-            None => div().child("reading the view…"),
-        }
-    }
-
-    /// The chat bar: the text or its placeholder, raised over the page.
+    /// The chat bar of the tab: the agent chip, the text or its placeholder.
     fn chat_bar(
         &self,
         width: gpui_kit::DefiniteLength,
@@ -908,14 +813,15 @@ impl LegionApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let focused = self.chat_focus.is_focused(window);
-        let text: Vec<Div> = if self.screen.chat.is_empty() {
+        let chat = self.screen.chat();
+        let text: Vec<Div> = if chat.is_empty() {
             vec![div().text_color(t.muted).child(if focused {
                 "▌Ask, or type / for commands"
             } else {
                 "Ask, or type / for commands"
             })]
         } else {
-            let mut text = self.screen.chat.clone();
+            let mut text = chat.to_string();
             if focused {
                 text.push('▌');
             }
@@ -923,12 +829,43 @@ impl LegionApp {
                 .map(|l| div().child(l.to_string()))
                 .collect()
         };
+        let agent = self.screen.agent();
+        let chip = div()
+            .id("agent-chip")
+            .flex_none()
+            .h_flex()
+            .gap(S1)
+            .px(S2)
+            .py(px(2.))
+            .rounded_full()
+            .bg(if agent.is_some() {
+                t.accent.opacity(0.14)
+            } else {
+                t.warn.opacity(0.16)
+            })
+            .text_size(T_XS)
+            .text_color(if agent.is_some() { t.accent } else { t.warn })
+            .cursor_pointer()
+            .child(icon(
+                IconName::Bot,
+                px(12.),
+                if agent.is_some() { t.accent } else { t.warn },
+            ))
+            .child(agent.clone().unwrap_or_else(|| "pick an agent".into()))
+            .tooltip(|window, cx| {
+                Tooltip::new("The agent of this chat bar: /agent <name>").build(window, cx)
+            })
+            .on_click(cx.listener(|app, _, window, cx| {
+                *app.screen.chat_mut() = "/agent ".into();
+                app.chat_focus.focus(window, cx);
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .test_support();
         div()
             .id("chat")
             .track_focus(&self.chat_focus)
             .w(width)
-            .max_h(relative(0.4))
-            .overflow_hidden()
             .h_flex()
             .items_end()
             .gap(S3)
@@ -942,13 +879,8 @@ impl LegionApp {
                 t.border
             })
             .bg(t.raised)
-            .shadow_lg()
             .cursor_text()
-            .child(
-                div()
-                    .pb(px(2.))
-                    .child(icon(IconName::MessageSquare, px(16.), t.muted)),
-            )
+            .child(chip)
             .child(
                 div()
                     .flex_1()
@@ -959,28 +891,41 @@ impl LegionApp {
                     .text_color(t.text)
                     .children(text),
             )
-            .child(div().text_size(T_XS).text_color(t.muted).child("Enter ↵"))
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(T_XS)
+                    .text_color(t.muted)
+                    .child("Enter ↵"),
+            )
             .on_click(cx.listener(|app, _, window, cx| app.chat_focus.focus(window, cx)))
             .test_support()
     }
 
-    /// Pane 3 with the chat bar at its bottom centre and the completion list above the bar.
-    fn pane3(&self, body: Div, t: &Tokens, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    /// The tab's body: its content (scrolls), then its chat bar with the completion list above it, at most 40% of
+    /// the tab. The bar is below the content, so it never covers a row (U2).
+    pub(crate) fn tab_body(
+        &self,
+        content: Div,
+        t: &Tokens,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let width =
             relative(f32::from(u16::try_from(self.screen.chat_width).unwrap_or(100)) / 100.);
-        let bar = self.chat_bar(width, t, window, cx);
         let entries = self.screen.completions();
         let list = (!entries.is_empty()).then(|| {
             div()
                 .id("completions")
                 .w(width)
+                .max_h(px(260.))
+                .overflow_y_scroll()
                 .v_flex()
                 .p(S1)
                 .rounded(R_MD)
                 .border_1()
                 .border_color(t.border)
                 .bg(t.raised)
-                .shadow_lg()
                 .text_size(T_XS)
                 .children(entries.iter().take(12).enumerate().map(|(i, e)| {
                     div()
@@ -1004,58 +949,57 @@ impl LegionApp {
                 .test_support()
         });
         div()
-            .id("pane-3")
+            .id("tab")
             .flex_1()
-            .min_w_0()
-            .overflow_hidden()
-            .h_full()
-            .relative()
-            .bg(t.window)
+            .min_h_0()
+            .v_flex()
             .child(
                 div()
                     .id("body")
-                    .size_full()
+                    .flex_1()
+                    .min_h_0()
                     .overflow_y_scroll()
-                    .v_flex()
                     .px(S5)
                     .pt(S5)
-                    // the chat bar and the completions float over the end of the page
-                    .pb(px(180.))
-                    .child(body),
+                    .pb(S4)
+                    // the content keeps a readable width on wide windows (U10)
+                    .child(div().max_w(px(1180.)).child(content))
+                    .test_support(),
             )
             .child(
                 div()
-                    .absolute()
-                    .bottom(S4)
-                    .left_0()
-                    .right_0()
-                    .top_0()
+                    .id("chat-area")
+                    .flex_none()
+                    .max_h(relative(0.4))
                     .v_flex()
-                    .justify_end()
                     .items_center()
                     .gap(S1)
+                    .px(S5)
+                    .pb(S3)
+                    .pt(S1)
+                    .border_t_1()
+                    .border_color(t.border)
                     .children(list)
-                    .child(bar),
+                    .child(self.chat_bar(width, t, window, cx))
+                    .test_support(),
             )
             .test_support()
             .into_any_element()
     }
 
-    /// The three panes.
-    pub(crate) fn panes(
-        &self,
-        body: Div,
-        t: &Tokens,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        div()
-            .flex_1()
-            .min_h_0()
-            .h_flex()
-            .child(self.pane1(t, cx))
-            .child(self.pane2(t, cx))
-            .child(self.pane3(body, t, window, cx))
+    /// The content of the tab that shows.
+    pub(crate) fn tab_content(&self, t: &Tokens, cx: &mut Context<Self>) -> Div {
+        match self.tab().cloned() {
+            None => div()
+                .text_color(t.muted)
+                .child("No tab: pick an entry in the navigator, or type an intent below"),
+            Some(Tab::Page { page }) => self.page(page, t, cx),
+            Some(Tab::Thread { id }) => self.thread_tab(id, t, cx),
+            Some(Tab::View { .. }) => match self.screen.view() {
+                Some(data) => widget(data, cx),
+                None => div().text_color(t.muted).child("reading the view…"),
+            },
+        }
     }
 }
 

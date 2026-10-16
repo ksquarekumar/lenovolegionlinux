@@ -15,11 +15,16 @@ use gpui_kit::{
     WindowOptions, point, px, size,
 };
 use legionctl_api::client::Client;
-use legionctl_app::{LegionApp, Page, Pending};
+use legionctl_app::{LegionApp, Page, Pending, Space, Tab};
 
 const FIXTURE: &str = "../../tests/fixtures/sysroot-82wq-2026-10-12";
 const PROFILE: &str = "../../profiles/lenovo-82wq-legion-pro-7-16irx8h.json";
 const LAYERS: &str = "../../configsets/lenovo-82wq-legion-pro-7-16irx8h";
+
+/// The folder of the app's runs and layout facts in the tests that have no repository of their own.
+fn here() -> PathBuf {
+    std::env::current_dir().unwrap()
+}
 
 fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
@@ -104,21 +109,7 @@ fn the_app_shows_the_machine_previews_the_policy_reports_a_refused_apply_and_lis
     cx: &mut TestAppContext,
 ) {
     let op = unplugged_machine("app");
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    let client = Client::at("app", &op.runtime);
-    let handle = runtime.handle().clone();
-    cx.update(gpui_kit::init);
-    let window: WindowHandle<gpui_kit::base::Root> = cx.update(|cx| {
-        let (window, _) = gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| {
-            cx.new(|cx| LegionApp::new(client, handle, Page::Now, cx))
-        })
-        .unwrap();
-        window.downcast().unwrap()
-    });
-    let app: Entity<LegionApp> = window
-        .update(cx, |root, _, _| root.view().clone().downcast().unwrap())
-        .unwrap();
-    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., None);
     let cx = &mut vcx;
 
     // the glance: unplugged, firmware still in the AC mode
@@ -163,10 +154,10 @@ fn the_app_shows_the_machine_previews_the_policy_reports_a_refused_apply_and_lis
     });
 
     // the Health tab: doctor's findings for this machine
-    cx.update(|window, cx| window.within("pages").click(2usize, cx));
+    cx.update(|window, cx| window.click("nav-health", cx));
     wait(cx, &app, "the findings", |a| a.state.findings.is_some());
     app.read_with(cx, |a, _| {
-        assert_eq!(a.page, Page::Health);
+        assert_eq!(a.tab(), Some(&Tab::Page { page: Page::Health }));
         let findings = a.state.findings.as_ref().unwrap();
         assert!(
             findings
@@ -200,10 +191,10 @@ fn the_app_shows_the_machine_previews_the_policy_reports_a_refused_apply_and_lis
         .status()
         .unwrap();
     assert!(stored.success());
-    cx.update(|window, cx| window.within("pages").click(3usize, cx));
+    cx.update(|window, cx| window.click("nav-bench", cx));
     wait(cx, &app, "the runs", |a| a.state.runs.is_some());
     app.read_with(cx, |a, _| {
-        assert_eq!(a.page, Page::Bench);
+        assert_eq!(a.tab(), Some(&Tab::Page { page: Page::Bench }));
         let runs = a.state.runs.as_ref().unwrap();
         assert_eq!(runs.len(), 1001);
         assert_eq!(runs[1000].result.label.as_deref(), Some("run-1001"));
@@ -220,23 +211,12 @@ fn the_resources_page_lists_the_resources_and_an_action_click_calls_its_operatio
     cx: &mut TestAppContext,
 ) {
     let op = unplugged_machine("resources");
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    let client = Client::at("app", &op.runtime);
-    let handle = runtime.handle().clone();
-    cx.update(gpui_kit::init);
-    let window: WindowHandle<gpui_kit::base::Root> = cx.update(|cx| {
-        let (window, _) = gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| {
-            cx.new(|cx| LegionApp::new(client, handle, Page::Resources, cx))
-        })
-        .unwrap();
-        window.downcast().unwrap()
-    });
-    let app: Entity<LegionApp> = window
-        .update(cx, |root, _, _| root.view().clone().downcast().unwrap())
-        .unwrap();
-    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., None);
     let cx = &mut vcx;
-
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("nav-resources", cx);
+    });
     wait(cx, &app, "the resources", |a| a.state.resources.is_some());
     app.read_with(cx, |a, _| {
         let list = &a.state.resources.as_ref().unwrap().resources;
@@ -253,7 +233,10 @@ fn the_resources_page_lists_the_resources_and_an_action_click_calls_its_operatio
         assert_eq!(actions, [("disable", "rules.disable")]);
     });
 
-    cx.update(|window, cx| window.click("layer:shipped/20-ac/disable", cx));
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("layer:shipped/20-ac/disable", cx);
+    });
     wait(cx, &app, "the route", |a| a.state.pending.is_some());
     app.read_with(cx, |a, _| {
         let Some(Pending::Resource(id, action, acted)) = &a.state.pending else {
@@ -463,7 +446,8 @@ fn lab_cli(op: &Operator, home: &Path, repo: &Path, args: &[&str], stdin: &str) 
     String::from_utf8(out.stdout).unwrap()
 }
 
-/// The app in a headless window of `width` x 700 against `op`, and its entity.
+/// The app in a headless window of `width` x 700 against `op` with the Now page as its tab, and its entity; `runs`
+/// is the repository of the chat bar's runs (dossier `chat`).
 fn open_app(
     cx: &mut TestAppContext,
     op: &Operator,
@@ -477,7 +461,8 @@ fn open_app(
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let client = Client::at("app", &op.runtime);
     let handle = runtime.handle().clone();
-    let runs = runs.map(|(_, repo)| repo.to_path_buf());
+    let repo = runs.map_or_else(here, |(_, repo)| repo.to_path_buf());
+    let dossier = runs.map(|_| "chat".to_string());
     cx.update(gpui_kit::init);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds {
@@ -489,11 +474,14 @@ fn open_app(
     let window: WindowHandle<gpui_kit::base::Root> = cx.update(|cx| {
         let (window, _) = gpui_kit::open_window(options, cx, |_, cx| {
             cx.new(|cx| {
-                let app = LegionApp::new(client, handle, Page::Now, cx);
-                match runs {
-                    Some(repo) => app.with_runs(Some("chat".into()), repo),
-                    None => app,
-                }
+                LegionApp::new(
+                    client,
+                    handle,
+                    Some(Tab::Page { page: Page::Now }),
+                    repo,
+                    cx,
+                )
+                .with_dossier(dossier)
             })
         })
         .unwrap();
@@ -502,11 +490,10 @@ fn open_app(
     let app: Entity<LegionApp> = window
         .update(cx, |root, _, _| root.view().clone().downcast().unwrap())
         .unwrap();
-    (
-        app,
-        VisualTestContext::from_window(window.into(), cx),
-        runtime,
-    )
+    let mut vcx = VisualTestContext::from_window(window.into(), cx);
+    // the layout facts first: they set the tabs
+    wait(&mut vcx, &app, "the layout", |a| a.screen.restored);
+    (app, vcx, runtime)
 }
 
 /// The bounds of the element `id` in the last frame: (x, width, height).
@@ -526,48 +513,55 @@ fn near(got: f32, want: f32, what: &str) {
     assert!((got - want).abs() <= 1.0, "{what}: {got}, not {want}");
 }
 
-/// The thread screen of the app at 1000 px: pane 1 is 7% (70 px), pane 2 30% (300 px), pane 3 the rest (630 px).
-/// Ctrl+1 folds pane 1 to its 24 px rail and pane 3 takes the space; a click on the rail opens it; the fold button
-/// of pane 2 folds it. The chat bar is at the bottom centre of pane 3, 60% of its width; three lines make it taller,
-/// many lines stop at 40% of the pane; Ctrl+Right makes it 70% wide. Pane 2 shows the thread's log.
+/// The top and the bottom of the element `id` in the last frame.
+fn rows_of(cx: &mut VisualTestContext, id: &'static str) -> (f32, f32) {
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        let b = window.find(id).bounds();
+        (f32::from(b.origin.y), f32::from(b.origin.y + b.size.height))
+    })
+}
+
+/// DESIGN-09 at 1000 px (it replaces the 7%/30% panes of P8): the rail is 56 px, the navigator 30% of the window
+/// (300 px), the tab the rest. The chat bar belongs to the tab: below its content (it never covers the last row, U2),
+/// centred, 60% of the tab's width; three lines make it taller, many lines stop at 40% of the tab; Ctrl+Right makes
+/// it 70%. A drag of the navigator's edge sets its width; a click on the space that shows folds the navigator.
 #[gpui_kit::test]
-fn the_app_thread_screen_sizes_its_panes_folds_them_and_grows_the_chat_bar(
+fn the_app_rail_navigator_and_tab_have_their_sizes_and_the_chat_bar_never_covers_the_tab(
     cx: &mut TestAppContext,
 ) {
     let (op, _home, _repo) = thread_lab("panes");
     let (app, mut vcx, runtime) = open_app(cx, &op, 1000., None);
     let cx = &mut vcx;
-    wait(cx, &app, "the thread", |a| a.screen.thread.is_some());
-    app.read_with(cx, |a, _| {
-        let t = a.screen.thread.as_ref().unwrap();
-        assert_eq!(t.thread.title, "port the parser");
-        let lines: Vec<String> = t.log.iter().map(legionctl_api::chat::log_line).collect();
-        assert!(
-            lines
-                .iter()
-                .any(|l| l.contains("observer0 join thread-observer")),
-            "{lines:?}"
-        );
+    wait(cx, &app, "the layout and the sensors", |a| {
+        a.screen.restored && a.state.sensors.is_some()
     });
-
-    let (x1, w1, _) = place(cx, "pane-1");
-    let (x2, w2, _) = place(cx, "pane-2");
+    let (xr, wr, _) = place(cx, "rail");
+    let (xn, wn, _) = place(cx, "navigator");
     let (x3, w3, h3) = place(cx, "pane-3");
-    near(x1, 0., "pane 1 starts at the left");
-    near(w1, 70., "pane 1 is 7%");
-    near(x2, 70., "pane 2 follows pane 1");
-    near(w2, 300., "pane 2 is 30%");
-    near(x3, 370., "pane 3 follows pane 2");
-    near(w3, 630., "pane 3 is the rest");
+    near(xr, 0., "the rail starts at the left");
+    near(wr, 56., "the rail is 56 px");
+    near(xn, 56., "the navigator follows the rail");
+    near(wn, 300., "the navigator is 30% of the window");
+    near(x3, 356., "the tab follows the navigator");
+    near(w3, 644., "the tab is the rest");
 
-    // the chat bar: 60% of pane 3, centred, one line
+    // the chat bar: below the content, never over it, 60% of the tab's inner width, centred
+    let (_, body_bottom) = rows_of(cx, "body");
+    let (chat_top, _) = rows_of(cx, "chat-area");
+    assert!(
+        chat_top >= body_bottom - 0.5,
+        "the chat bar starts below the content: {chat_top} < {body_bottom}"
+    );
+    let (xa, wa, _) = place(cx, "chat-area");
+    let inner = wa - 48.;
     cx.update(|window, cx| window.click("chat", cx));
     let (xc, wc, hc1) = place(cx, "chat");
-    near(wc, 378., "the chat bar is 60% of pane 3");
+    near(wc, inner * 0.6, "the chat bar is 60% of the tab");
     near(
         xc,
-        370. + (630. - 378.) / 2.,
-        "the chat bar is centred in pane 3",
+        xa + 24. + (inner - wc) / 2.,
+        "the chat bar is centred in the tab",
     );
     cx.update(|window, cx| {
         window.input("one", cx);
@@ -576,7 +570,7 @@ fn the_app_thread_screen_sizes_its_panes_folds_them_and_grows_the_chat_bar(
         window.press("shift-enter", cx);
         window.input("three", cx);
     });
-    app.read_with(cx, |a, _| assert_eq!(a.screen.chat, "one\ntwo\nthree"));
+    app.read_with(cx, |a, _| assert_eq!(a.screen.chat(), "one\ntwo\nthree"));
     let (_, _, hc3) = place(cx, "chat");
     assert!(
         hc3 > hc1 + 20.,
@@ -587,46 +581,174 @@ fn the_app_thread_screen_sizes_its_panes_folds_them_and_grows_the_chat_bar(
             window.press("shift-enter", cx);
         }
     });
-    let (_, _, hc_most) = place(cx, "chat");
+    let (_, _, ha) = place(cx, "chat-area");
     assert!(
-        hc_most <= h3 * 0.4 + 1. && hc_most > hc3,
-        "the chat bar stops at 40% of pane 3 ({h3}): {hc_most}"
+        ha <= (h3 - 36.) * 0.4 + 1.,
+        "the chat bar stops at 40% of the tab ({h3}): {ha}"
+    );
+    let (_, body_bottom) = rows_of(cx, "body");
+    let (chat_top, _) = rows_of(cx, "chat-area");
+    assert!(
+        chat_top >= body_bottom - 0.5,
+        "a tall chat bar still starts below the content"
     );
     cx.update(|window, cx| window.press("ctrl-right", cx));
-    let (_, wc_wide, _) = place(cx, "chat");
-    near(wc_wide, 441., "Ctrl+Right makes the chat bar 70% of pane 3");
+    near(
+        place(cx, "chat").1,
+        inner * 0.7,
+        "Ctrl+Right makes the chat bar 70% of the tab",
+    );
 
-    // fold pane 1 with Ctrl+1: a 24 px rail, and pane 3 takes the space
-    cx.update(|window, cx| window.press("ctrl-1", cx));
-    let (_, w1, _) = place(cx, "pane-1");
-    let (x3, w3, _) = place(cx, "pane-3");
-    near(w1, 24., "folded pane 1 is a 24 px rail");
-    near(x3, 324., "pane 3 starts after the rail and pane 2");
-    near(w3, 676., "pane 3 takes the width of pane 1");
-    cx.update(|window, cx| window.click("pane-1", cx));
+    // the navigator's edge: a drag to 40% of the window
+    let (edge, to) = (356., 456.);
+    cx.update(|window, cx| window.drag(point(px(edge), px(300.)), point(px(to), px(300.)), cx));
     near(
-        place(cx, "pane-1").1,
-        70.,
-        "a click on the rail opens pane 1",
+        place(cx, "navigator").1,
+        400.,
+        "the drag sets the navigator's width",
     );
-    cx.update(|window, cx| window.click("fold-2", cx));
-    near(place(cx, "pane-2").1, 24., "the fold button folds pane 2");
     near(
-        place(cx, "pane-3").1,
-        906.,
-        "pane 3 takes the width of pane 2",
+        place(cx, "pane-3").0,
+        to,
+        "the tab follows the navigator's edge",
     );
+    app.read_with(cx, |a, _| assert!(a.screen.drag.is_none()));
+    // a click on the space that shows folds the navigator, and opens it again
+    cx.update(|window, cx| window.click("space-machine", cx));
+    near(
+        place(cx, "pane-3").0,
+        56.,
+        "a folded navigator gives the tab its width",
+    );
+    cx.update(|window, cx| window.click("space-machine", cx));
+    near(place(cx, "navigator").1, 400., "it opens with its width");
     drop(runtime);
 }
 
-/// Pane 2 says what each row of the thread's log means (todo-127, A3): a watch rule that a member adds reaches the
-/// app through the event stream and reads as a sentence, in the app and in the TUI's line; no row is raw JSON.
+/// The app's layout is the user's facts (DESIGN-09 Rule 1, DESIGN-10): tabs open from the navigator, close, move by a
+/// drag onto another tab; the space and the navigator's width change. A new app on the same operator (a restart)
+/// shows the same tabs in the same order with the same active tab, the same space and width, and `facts at` names
+/// the user as their source.
+#[gpui_kit::test]
+fn tabs_the_space_and_the_navigator_width_persist_across_an_app_restart(cx: &mut TestAppContext) {
+    let (op, home, repo) = thread_lab("tabs");
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
+    {
+        let cx = &mut vcx;
+        wait(cx, &app, "the layout", |a| {
+            a.screen.restored && a.screen.tabs.len() == 1
+        });
+        cx.update(|window, cx| window.click("nav-health", cx));
+        cx.update(|window, cx| window.click("nav-bench", cx));
+        app.read_with(cx, |a, _| {
+            assert_eq!(a.screen.tabs.len(), 3);
+            assert_eq!(a.screen.active, 2, "a new tab shows");
+        });
+        // close Machine now, then drag Bench onto Health
+        cx.update(|window, cx| window.click("tab-close-0", cx));
+        cx.update(|window, cx| window.drag_to("tab-1", "tab-0", cx));
+        app.read_with(cx, |a, _| {
+            assert_eq!(
+                a.screen.tabs,
+                [
+                    Tab::Page { page: Page::Bench },
+                    Tab::Page { page: Page::Health }
+                ]
+            );
+            assert_eq!(a.screen.active, 0, "the moved tab stays active");
+        });
+        let (edge, to) = (56. + 1200. * 0.3, 56. + 1200. * 0.25);
+        cx.update(|window, cx| window.drag(point(px(edge), px(300.)), point(px(to), px(300.)), cx));
+        // the Work space, then its first thread as a tab
+        cx.update(|window, cx| window.click("space-work", cx));
+        wait(cx, &app, "the threads", |a| !a.screen.threads.is_empty());
+        cx.update(|window, cx| window.click("nav-thread-1", cx));
+        wait(cx, &app, "the thread tab", |a| {
+            a.screen.shown.contains_key(&1)
+        });
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.drag_to("tab-2", "tab-1", cx);
+        });
+        app.read_with(cx, |a, _| {
+            assert_eq!(
+                a.screen.tabs[1],
+                Tab::Thread { id: 1 },
+                "{:?} {}",
+                a.screen.tabs,
+                a.screen.active
+            );
+        });
+    }
+    let want = [
+        Tab::Page { page: Page::Bench },
+        Tab::Thread { id: 1 },
+        Tab::Page { page: Page::Health },
+    ];
+    // the facts reach the operator: the user's
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let facts: serde_json::Value = serde_json::from_str(&lab_cli(
+            &op,
+            &home,
+            &repo,
+            &["facts", "at", "--entity", "app", "--winners", "--json"],
+            "",
+        ))
+        .unwrap();
+        let tabs = facts
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["attribute"] == "tabs")
+            .cloned()
+            .unwrap_or_default();
+        if tabs["value"]["tabs"] == serde_json::to_value(&want).unwrap() {
+            assert_eq!(tabs["source"], "user", "{tabs}");
+            assert_eq!(tabs["value"]["active"], 1, "{tabs}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "the tabs fact: {facts:#}");
+        // the app's writes run on its executor
+        vcx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(app);
+    drop(vcx);
+    drop(runtime);
+
+    // a restart: the same layout
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
+    let cx = &mut vcx;
+    wait(cx, &app, "the layout", |a| a.screen.restored);
+    app.read_with(cx, |a, _| {
+        // the command line's tab (Machine now) comes at the end of the kept ones
+        assert_eq!(a.screen.tabs[..3], want, "{:?}", a.screen.tabs);
+        assert_eq!(a.screen.space, Space::Work);
+        assert!(
+            (a.screen.navigator - 0.25).abs() < 0.01,
+            "{}",
+            a.screen.navigator
+        );
+    });
+    near(place(cx, "navigator").1, 300., "the kept width");
+    drop(runtime);
+}
+
+/// A thread tab says what each row of the thread's log means (todo-127, A3): a watch rule that a member adds reaches
+/// the app through the event stream and reads as a sentence, in the app and in the TUI's line; no row is raw JSON.
 #[gpui_kit::test]
 fn the_app_thread_pane_shows_a_watch_rule_as_a_sentence(cx: &mut TestAppContext) {
     let (op, home, repo) = thread_lab("rule");
     let (app, mut vcx, runtime) = open_app(cx, &op, 1000., None);
     let cx = &mut vcx;
     wait(cx, &app, "the thread", |a| a.screen.thread.is_some());
+    // the thread is a tab (DESIGN-09): the Work space lists it
+    cx.update(|window, cx| window.click("space-work", cx));
+    cx.update(|window, cx| window.click("nav-thread-1", cx));
+    wait(cx, &app, "the thread tab", |a| {
+        a.screen.shown.contains_key(&1)
+    });
     lab_cli(
         &op,
         &home,
@@ -667,6 +789,18 @@ fn the_app_thread_pane_shows_a_watch_rule_as_a_sentence(cx: &mut TestAppContext)
             assert!(!detail.contains('{'), "{}: {detail}", row.kind);
         }
     });
+    let rule = app.read_with(cx, |a, _| {
+        a.screen.shown[&1]
+            .log
+            .iter()
+            .find(|r| r.kind == "thread.rule")
+            .unwrap()
+            .id
+    });
+    assert!(cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.find(format!("log-{rule}")).visible()
+    }));
     drop(runtime);
 }
 
@@ -881,13 +1015,10 @@ fn the_app_thread_page_updates_from_the_event_stream(cx: &mut TestAppContext) {
         "",
     );
     wait(cx, &app, "the placed view", |a| {
-        a.screen
-            .view_data
-            .as_ref()
-            .is_some_and(|v| v.rows.len() == 2)
+        a.screen.view().is_some_and(|v| v.rows.len() == 2)
     });
     app.read_with(cx, |a, _| {
-        let v = a.screen.view_data.as_ref().unwrap();
+        let v = a.screen.view().unwrap();
         assert_eq!(v.columns, ["name", "archetype", "pace"]);
         assert_eq!(v.rows[0], ["main0", "main-agent", "on-trigger"]);
         assert_eq!(v.rows[1], ["observer0", "thread-observer", "on-trigger"]);
@@ -911,13 +1042,10 @@ fn the_app_thread_page_updates_from_the_event_stream(cx: &mut TestAppContext) {
         "",
     );
     wait(cx, &app, "the new member", |a| {
-        a.screen
-            .view_data
-            .as_ref()
-            .is_some_and(|v| v.rows.len() == 3)
+        a.screen.view().is_some_and(|v| v.rows.len() == 3)
     });
     app.read_with(cx, |a, _| {
-        let v = a.screen.view_data.as_ref().unwrap();
+        let v = a.screen.view().unwrap();
         assert_eq!(v.rows[2], ["observer1", "thread-observer", "on-stop"]);
     });
 
@@ -930,13 +1058,10 @@ fn the_app_thread_page_updates_from_the_event_stream(cx: &mut TestAppContext) {
         &view.replace(r#"["name", "archetype", "pace"]"#, r#"["name"]"#),
     );
     wait(cx, &app, "the changed view", |a| {
-        a.screen
-            .view_data
-            .as_ref()
-            .is_some_and(|v| v.columns == ["name"])
+        a.screen.view().is_some_and(|v| v.columns == ["name"])
     });
     app.read_with(cx, |a, _| {
-        let v = a.screen.view_data.as_ref().unwrap();
+        let v = a.screen.view().unwrap();
         assert_eq!(v.rows, [["main0"], ["observer0"], ["observer1"]]);
         assert!(a.screen.events >= 2, "{}", a.screen.events);
     });

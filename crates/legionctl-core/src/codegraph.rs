@@ -1052,6 +1052,63 @@ pub struct AnnotationAt {
     pub state: String,
 }
 
+/// The content anchor of the symbol with this stable key at `rev` (its snapshot is made when missing): the tree and
+/// the symbol's content hash.
+///
+/// # Errors
+/// The ref does not resolve, its snapshot cannot be made, or the key is not at the ref.
+pub fn anchor(dir: &Path, rev: &str, key: &str) -> Result<(String, String)> {
+    let (tree, db) = snapshot_for(dir, rev, true)?;
+    let node = nodes(&db)?
+        .remove(key)
+        .ok_or_else(|| coded(Code::NotFound, format!("no symbol {key} at {rev}")))?;
+    let hash = Blobs {
+        dir,
+        tree: &tree,
+        read: HashMap::new(),
+    }
+    .content_hash(&node)?;
+    Ok((tree, hash))
+}
+
+/// The state at `rev` of an anchor (a key and the content hash it had): valid (the same content), stale (other
+/// content), absent (no such key), no graph (no snapshot of the ref).
+///
+/// # Errors
+/// The ref does not resolve, or its snapshot cannot be read.
+pub fn anchor_state(dir: &Path, rev: &str, key: &str, hash: &str) -> Result<&'static str> {
+    let (_, tree) = resolve(dir, rev)?;
+    let db = file(&graf(dir)?, &tree);
+    if !db.exists() {
+        return Ok("no graph");
+    }
+    anchored(&nodes(&db)?, dir, &tree, key, hash)
+}
+
+fn anchored(
+    graph: &BTreeMap<String, Node>,
+    dir: &Path,
+    tree: &str,
+    key: &str,
+    hash: &str,
+) -> Result<&'static str> {
+    Ok(match graph.get(key) {
+        None => "absent",
+        Some(node) => {
+            let mut blobs = Blobs {
+                dir,
+                tree,
+                read: HashMap::new(),
+            };
+            if blobs.content_hash(node)? == hash {
+                "valid"
+            } else {
+                "stale"
+            }
+        }
+    })
+}
+
 /// Write an annotation on the symbol with this stable key, as it is at `rev` (its snapshot is made when missing).
 ///
 /// # Errors
@@ -1064,16 +1121,7 @@ pub fn annotate(
     (session, agent): (&str, &str),
 ) -> Result<i64> {
     let value: Value = serde_json::from_str(value).context("the value must be JSON")?;
-    let (tree, db) = snapshot_for(dir, rev, true)?;
-    let node = nodes(&db)?
-        .remove(key)
-        .ok_or_else(|| coded(Code::NotFound, format!("no symbol {key} at {rev}")))?;
-    let content_hash = Blobs {
-        dir,
-        tree: &tree,
-        read: HashMap::new(),
-    }
-    .content_hash(&node)?;
+    let (tree, content_hash) = anchor(dir, rev, key)?;
     let writer = dossiers.writer(dir)?;
     writer.conn().execute(
         "INSERT INTO annotations (repo, key, kind, value, tree, content_hash, session, agent, created)
@@ -1137,21 +1185,9 @@ pub fn annotations(
     let mut out = Vec::new();
     for mut row in rows {
         for (rev, tree, graph) in &at {
-            let state = match graph.as_ref().map(|g| g.get(&row.key)) {
+            let state = match graph {
                 None => "no graph",
-                Some(None) => "absent",
-                Some(Some(node)) => {
-                    let mut blobs = Blobs {
-                        dir,
-                        tree,
-                        read: HashMap::new(),
-                    };
-                    if blobs.content_hash(node)? == row.content_hash {
-                        "valid"
-                    } else {
-                        "stale"
-                    }
-                }
+                Some(graph) => anchored(graph, dir, tree, &row.key, &row.content_hash)?,
             };
             row.at.push(AnnotationAt {
                 rev: (*rev).clone(),

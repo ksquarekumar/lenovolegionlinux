@@ -873,6 +873,19 @@ operations! {
     /// Copy a thread to another account profile: its log, members, messages, watch rules and layout, and its main
     /// session's transcript. The copy records the thread it came from; the original stays and is read-only.
     thread_import / ThreadImport = "thread.import", Workspace, ThreadImportIn => Lines;
+    /// Add a fact (DESIGN-10): an entity's attribute with a value, where it holds (scope), when (valid time), at
+    /// which commits (ref range) and while which code is the same (anchor); it supersedes the open fact of the same
+    /// entity, attribute, scope and source. `--corrects <id>` corrects a fact and keeps the old row in the history.
+    facts_set / FactsSet = "facts.set", Session, FactSetIn => Lines;
+    /// The facts that hold at a time, a ref and a place, one line each, the winner of each entity and attribute
+    /// marked; facts that are not at the ref come with why (before, ended, unreachable, stale, absent).
+    facts_at / FactsAt = "facts.at", Read, FactsAtIn => Vec<Fact>;
+    /// Every row of an entity on all axes, oldest first.
+    facts_history / FactsHistory = "facts.history", Read, FactsHistoryIn => Vec<Fact>;
+    /// What the winning facts changed between two refs or times.
+    facts_diff / FactsDiff = "facts.diff", Read, FactsDiffIn => Vec<FactChange>;
+    /// The anchored facts whose code changed (stale) or went away (absent) at a ref.
+    facts_stale / FactsStale = "facts.stale", Read, FactsAtIn => Vec<Fact>;
     /// The view files of the repository's layer and the user's (design 23, C4); a higher layer hides the same name.
     views_list / ViewsList = "views.list", Read, ViewsListIn => Vec<ViewInfo>;
     /// Check a view file: the format, a widget of the closed set, a read operation as its source, its parameters.

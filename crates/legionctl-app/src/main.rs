@@ -1,17 +1,30 @@
 use gpui_kit::component::{Theme, TitleBar};
 use gpui_kit::{AppContext, Bounds, WindowBounds, WindowOptions, px, size};
 use legionctl_api::client::Client;
-use legionctl_app::{AppAssets, LegionApp, Page, theme};
+use legionctl_app::{AppAssets, LegionApp, Page, Tab, theme};
+
+/// The window's decoration around its content (the kit's client-side shadow, 20 px on each side), so that the content
+/// gets the size asked for (U3).
+const DECORATION: f32 = 40.;
 
 fn main() -> anyhow::Result<()> {
-    let usage = "usage: legionctl-app [now|gpu|health|bench|resources] [--dossier <name>]";
-    let mut page = Page::Now;
+    let usage = "usage: legionctl-app [now|gpu|health|bench|resources|<view>] [--dossier <name>]";
+    let mut open = None;
     let mut dossier = None;
     let mut args = std::env::args().skip(1);
     while let Some(word) = args.next() {
         match word.as_str() {
             "--dossier" => dossier = Some(args.next().ok_or_else(|| anyhow::anyhow!(usage))?),
-            _ => page = Page::named(&word).ok_or_else(|| anyhow::anyhow!(usage))?,
+            w if w.starts_with('-') => anyhow::bail!(usage),
+            w => {
+                open = Some(match Page::named(w) {
+                    Some(page) => Tab::Page { page },
+                    None => Tab::View {
+                        name: w.to_string(),
+                        params: Vec::new(),
+                    },
+                });
+            }
         }
     }
     let repo = std::env::current_dir()?;
@@ -23,7 +36,7 @@ fn main() -> anyhow::Result<()> {
         .with_assets(AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
-            // 70% of the monitor, at least the smallest size at which every page reads well
+            // 70% of the monitor, at least the smallest content size at which every tab reads well
             // Wayland names no primary display: the first one
             let monitor = cx
                 .primary_display()
@@ -33,12 +46,12 @@ fn main() -> anyhow::Result<()> {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                     None,
                     size(
-                        (monitor.width * 0.7).max(px(960.)),
-                        (monitor.height * 0.7).max(px(600.)),
+                        (monitor.width * 0.7).max(px(960. + DECORATION)),
+                        (monitor.height * 0.7).max(px(600. + DECORATION)),
                     ),
                     cx,
                 ))),
-                window_min_size: Some(size(px(960.), px(600.))),
+                window_min_size: Some(size(px(960. + DECORATION), px(600. + DECORATION))),
                 app_id: Some("legionctl".into()),
                 ..TitleBar::window_options()
             };
@@ -52,7 +65,7 @@ fn main() -> anyhow::Result<()> {
                         theme::adopt(cx);
                     })
                     .detach();
-                cx.new(|cx| LegionApp::new(client, handle, page, cx).with_runs(dossier, repo))
+                cx.new(|cx| LegionApp::new(client, handle, open, repo, cx).with_dossier(dossier))
             })
             .expect("opening the window");
         });

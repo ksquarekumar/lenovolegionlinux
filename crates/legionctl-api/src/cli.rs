@@ -30,6 +30,7 @@ enum Kind {
     Stdin,
     Flag,
     Text,
+    Number,
     Path,
     Integer,
     /// A list of strings, or of integers: the last positional arguments; a command line (`x-argv`) takes the rest
@@ -109,6 +110,7 @@ fn fields(input: &Value) -> Vec<Field<'_>> {
                 match kind {
                     Some("boolean") => Kind::Flag,
                     Some("integer") => Kind::Integer,
+                    Some("number") => Kind::Number,
                     Some("array") => Kind::List {
                         integers: schema["items"]["type"] == "integer",
                         argv: prop["x-argv"] == true,
@@ -145,6 +147,7 @@ fn argument(field: &Field) -> Arg {
     if field.required && field.default.is_none() {
         match &field.kind {
             Kind::Integer => return arg.required(true).value_parser(clap::value_parser!(i64)),
+            Kind::Number => return arg.required(true).value_parser(clap::value_parser!(f64)),
             Kind::Choice(values) => {
                 return arg
                     .required(true)
@@ -191,6 +194,7 @@ fn argument_named(field: &Field, arg: Arg) -> Arg {
     match &field.kind {
         Kind::Flag => return arg.action(ArgAction::SetTrue),
         Kind::Integer => arg = arg.value_parser(clap::value_parser!(i64)),
+        Kind::Number => arg = arg.value_parser(clap::value_parser!(f64)),
         Kind::Choice(values) => {
             arg = arg.value_parser(clap::builder::PossibleValuesParser::new(values.clone()));
         }
@@ -310,6 +314,7 @@ pub fn operation(matches: &ArgMatches, stdin: bool) -> Result<Option<(&'static O
         let value = match field.kind {
             Kind::Flag => Some(Value::Bool(at.get_flag(field.key))),
             Kind::Integer => at.get_one::<i64>(field.key).map(|n| Value::from(*n)),
+            Kind::Number => at.get_one::<f64>(field.key).map(|n| Value::from(*n)),
             Kind::List { integers: true, .. } => Some(Value::from(
                 at.get_many::<i64>(field.key)
                     .into_iter()

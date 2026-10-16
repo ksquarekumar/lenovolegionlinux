@@ -44,7 +44,8 @@ gpui_kit::assets::icon_assets!(
         Play,
         Wrench,
         MessageSquare,
-        Users
+        Users,
+        FolderGit2
     ]
 );
 
@@ -1092,8 +1093,8 @@ impl LegionApp {
         )
     }
 
-    fn page(&self, t: &Tokens, cx: &mut Context<Self>) -> Div {
-        match self.page {
+    pub(crate) fn page(&self, page: Page, t: &Tokens, cx: &mut Context<Self>) -> Div {
+        match page {
             Page::Now => self.now_page(t, cx),
             Page::Gpu => self.gpu_page(t, cx),
             Page::Health => self.health_page(t, cx),
@@ -1136,14 +1137,16 @@ impl LegionApp {
 impl Render for LegionApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Tokens::of(cx);
-        let place = match &self.screen.view {
-            Some(shown) => shown.name.clone(),
-            None => self.page.title().to_string(),
-        };
+        let place = self.tab().map_or_else(
+            || self.screen.space.title().to_string(),
+            |tab| self.tab_title(tab),
+        );
         let title = TitleBar::new().child(
             div()
+                .flex_1()
                 .h_flex()
                 .gap(S2)
+                .pr(S3)
                 .text_size(T_SM)
                 .child(
                     div()
@@ -1157,22 +1160,21 @@ impl Render for LegionApp {
                 )
                 .child(div().font_semibold().text_color(t.text).child("legionctl"))
                 .child(div().text_color(t.muted).child("/"))
-                .child(div().text_color(t.text2).child(place)),
+                .child(div().min_w_0().truncate().text_color(t.text2).child(place))
+                .child(div().flex_1())
+                .child(self.status(&t)),
         );
-        let mut body = div().v_flex().gap(S5);
+        let mut content = div().v_flex().gap(S5);
         if let Some(why) = &self.state.offline {
-            body = body.child(LegionApp::offline(why, &t));
+            content = content.child(LegionApp::offline(why, &t));
         } else {
-            body = body
+            content = content
                 .children(self.pending(&t, cx))
-                .child(if self.screen.view.is_some() {
-                    self.view(cx)
-                } else {
-                    self.page(&t, cx)
-                });
+                .child(self.tab_content(&t, cx));
             if let Some(message) = &self.state.message {
-                body = body.child(
+                content = content.child(
                     card(&t)
+                        .id("message")
                         .gap(S1)
                         .text_size(T_SM)
                         .text_color(t.text2)
@@ -1189,6 +1191,7 @@ impl Render for LegionApp {
                 );
             }
         }
+        let body = self.tab_body(content, &t, window, cx);
         div()
             .size_full()
             .v_flex()
@@ -1197,6 +1200,6 @@ impl Render for LegionApp {
             .text_size(T_SM)
             .on_key_down(cx.listener(LegionApp::key))
             .child(title)
-            .child(self.panes(body, &t, window, cx))
+            .child(self.panes(body, &t, cx))
     }
 }

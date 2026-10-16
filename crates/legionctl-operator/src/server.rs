@@ -135,8 +135,25 @@ async fn approved(op: &OpInfo, principal: &Principal, input: &Value) -> Result<(
         message,
         op: String::new(),
     };
+    // the app's Activity lists an ask until its answer
+    let note = |kind: &str, answer: &str| {
+        let payload = json!({"session": session, "what": what, "answer": answer});
+        if let Err(e) = Db::open_default().and_then(|db| db.record("operator", kind, &payload)) {
+            eprintln!("operator: cannot log the approval {kind}: {e:#}");
+        }
+    };
+    note("approval.ask", "");
     let short = &session[..session.len().min(8)];
-    match crate::desktop::ask(&format!("legionctl: agent session {short} asks"), &what).await {
+    let asked = crate::desktop::ask(&format!("legionctl: agent session {short} asks"), &what).await;
+    note(
+        "approval.answer",
+        match &asked {
+            Ok(true) => "allowed",
+            Ok(false) => "denied",
+            Err(_) => "not asked",
+        },
+    );
+    match asked {
         Ok(true) => Ok(()),
         Ok(false) => Err(denied(format!(
             "{} changes more than this session, and the user did not allow it",

@@ -2,10 +2,12 @@
 # Screenshots of legionctl-app's pages (the visual check of the app, todo-127): a private headless GNOME Shell on its
 # own D-Bus session and its own settings (a plain background, no extensions, your dark or light choice), the app on
 # each page, a screenshot through the desktop portal (GNOME refuses the shell's own Screenshot call), cut to the
-# window. The app talks to an operator of its own build (the binary next to it) on a private socket, with a home of
-# its own that holds a copy of your operator.db (threads, bench runs); it reads the machine and clicks nothing, so
-# nothing on the machine, in your home or in your desktop settings changes.
+# window. The app talks to an operator of its own build (the binary next to it, else the installed one in
+# /usr/lib/legionctl) on a private socket, with a home of its own that holds a copy of your operator.db (threads,
+# bench runs); it reads the machine and clicks nothing, so nothing on the machine, in your home or in your desktop
+# settings changes. Each monitor size gets its own shell; the shots are <folder>/<monitor>-<page>.png.
 # usage: scripts/app-shots.sh <folder> [app binary] [pages...]; APP_SHOTS_SCHEME='prefer-light' for the light look;
+# APP_SHOTS_MONITOR='1920x1080' for other monitor sizes (default: 1366x768 1920x1080 2560x1600);
 # APP_SHOTS_CHAT='/agent ' clicks the chat bar and types the text (a-z, 0-9, space, / and -) before the shot
 set -eu
 out=$(realpath -m "${1:?usage: scripts/app-shots.sh <folder> [app binary] [pages...]}")
@@ -26,30 +28,39 @@ color-shading-type='solid'" >"$work/config/glib-2.0/settings/keyfile"
     dbus-run-session -- "$0" "$out" "$app" "${pages[@]}"
 fi
 work=$APP_SHOTS_WORK
+operator=$(dirname "$app")/legionctl-operator
+[ -x "$operator" ] || operator=/usr/lib/legionctl/legionctl-operator
+[ -x "$operator" ] || {
+  echo "app-shots: no legionctl-operator next to $app or in /usr/lib/legionctl" >&2
+  exit 1
+}
 mkdir -p "$out" "$work/run/legionctl" "$work/home/.local/state/legionctl"
 sqlite3 "$HOME/.local/state/legionctl/operator.db" ".backup '$work/home/.local/state/legionctl/operator.db'"
 systemd-socket-activate -l "$work/run/legionctl/api.sock" --setenv=HOME="$work/home" \
   --setenv=XDG_RUNTIME_DIR="$work/run" --setenv=PATH="$PATH" \
-  --setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent/bus "$(dirname "$app")/legionctl-operator" \
+  --setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent/bus "$operator" \
   >"$out/operator.log" 2>&1 &
-operator=$!
-display=app-shots-$$
-# the app's runtime folder is the private operator's; it finds the shell by its full path
-wayland=$XDG_RUNTIME_DIR/$display
-gnome-shell --headless --virtual-monitor 2560x1600 --wayland-display "$display" >"$out/shell.log" 2>&1 &
-shell=$!
-trap 'kill $shell $operator 2>/dev/null; wait 2>/dev/null; rm -rf "$work"' EXIT
-for _ in $(seq 40); do
-  [ -S "$wayland" ] && break
-  sleep 0.5
-done
-[ -S "$wayland" ] || {
-  echo "app-shots: the headless shell did not start; see $out/shell.log" >&2
-  exit 1
-}
-sleep 3
-# the shell starts in its overview: Escape through Mutter's remote desktop interface shows the desktop
-python3 -I - <<'EOF'
+operator_pid=$!
+shell=
+trap 'kill $shell $operator_pid 2>/dev/null; wait 2>/dev/null; rm -rf "$work"' EXIT
+# start_shell <monitor>: a headless shell with one virtual monitor; the app's runtime folder is the private
+# operator's, and the app finds the shell by its full path
+start_shell() {
+  display=app-shots-$$-$1
+  wayland=$XDG_RUNTIME_DIR/$display
+  gnome-shell --headless --virtual-monitor "$1" --wayland-display "$display" >"$out/shell-$1.log" 2>&1 &
+  shell=$!
+  for _ in $(seq 40); do
+    [ -S "$wayland" ] && break
+    sleep 0.5
+  done
+  [ -S "$wayland" ] || {
+    echo "app-shots: the headless shell did not start; see $out/shell-$1.log" >&2
+    exit 1
+  }
+  sleep 3
+  # the shell starts in its overview: Escape through Mutter's remote desktop interface shows the desktop
+  python3 -I - <<'EOF'
 import time
 from gi.repository import Gio, GLib
 bus = Gio.bus_get_sync(Gio.BusType.SESSION)
@@ -63,7 +74,8 @@ for pressed in (True, False):
 time.sleep(1)
 call(session, "org.gnome.Mutter.RemoteDesktop.Session", "Stop")
 EOF
-sleep 1
+  sleep 1
+}
 # chat <x> <y> <text>: a click at x,y and the text, through Mutter's remote desktop (relative motion: absolute motion
 # needs a screen cast stream; the hot corner is off, so the move to the top left corner opens no overview)
 chat() {
@@ -124,26 +136,33 @@ if not out.get("uri"):
 shutil.move(urllib.parse.unquote(out["uri"].removeprefix("file://")), sys.argv[1])
 EOF
 }
-shoot "$work/desktop.png"
-for page in "${pages[@]}"; do
-  XDG_RUNTIME_DIR=$work/run WAYLAND_DISPLAY=$wayland DISPLAY='' "$app" "$page" >"$out/$page.log" 2>&1 &
-  pid=$!
-  # the first answers of the operator (the first page also starts it), and the portal's dark/light choice
-  sleep "${wait:-15}"
-  wait=7
-  shoot "$work/$page.png"
-  # the window alone: what differs from the empty desktop, below the top bar and its clock
-  window=$(magick "$work/$page.png" "$work/desktop.png" -compose difference -composite \
-    -fill black -draw 'rectangle 0,0 10000,40' -threshold 2% -trim -format '%wx%h%X%Y' info:)
-  if [ -n "${APP_SHOTS_CHAT:-}" ]; then
-    # the chat bar: the bottom centre of pane 3 (pane 1 is 7% and pane 2 30% of the window)
-    geometry=${window//[x+]/ }
-    read -r w h x y <<<"$geometry"
-    chat $((x + w * 37 / 100 + w * 63 / 200)) $((y + h - 40)) "$APP_SHOTS_CHAT"
+for monitor in ${APP_SHOTS_MONITOR:-1366x768 1920x1080 2560x1600}; do
+  start_shell "$monitor"
+  shoot "$work/desktop.png"
+  wait=15
+  for page in "${pages[@]}"; do
+    XDG_RUNTIME_DIR=$work/run WAYLAND_DISPLAY=$wayland DISPLAY='' "$app" "$page" >"$out/$monitor-$page.log" 2>&1 &
+    pid=$!
+    # the first answers of the operator (the first page also starts it), and the portal's dark/light choice
+    sleep "$wait"
+    wait=7
     shoot "$work/$page.png"
-  fi
-  kill $pid
-  wait $pid 2>/dev/null || true
-  magick "$work/$page.png" -crop "$window" +repage "$out/$page.png"
-  echo "$out/$page.png"
+    # the window alone: what differs from the empty desktop, below the top bar and its clock
+    window=$(magick "$work/$page.png" "$work/desktop.png" -compose difference -composite \
+      -fill black -draw 'rectangle 0,0 10000,40' -threshold 2% -trim -format '%wx%h%X%Y' info:)
+    if [ -n "${APP_SHOTS_CHAT:-}" ]; then
+      # the chat bar: the bottom centre of the tab (the rail is 56 px and the navigator 30% of the window)
+      geometry=${window//[x+]/ }
+      read -r w h x y <<<"$geometry"
+      chat $((x + 56 + w * 30 / 100 + (w - 56 - w * 30 / 100) / 2)) $((y + h - 40)) "$APP_SHOTS_CHAT"
+      shoot "$work/$page.png"
+    fi
+    kill $pid
+    wait $pid 2>/dev/null || true
+    magick "$work/$page.png" -crop "$window" +repage "$out/$monitor-$page.png"
+    echo "$out/$monitor-$page.png"
+  done
+  kill "$shell"
+  wait "$shell" 2>/dev/null || true
+  shell=
 done

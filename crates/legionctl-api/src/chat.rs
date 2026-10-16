@@ -148,6 +148,9 @@ pub fn log_detail(row: &ThreadLogRow) -> String {
     if row.kind == "thread.rule" {
         return rule_sentence(p);
     }
+    if let (Some(commit), Some(message)) = (p["commit"].as_str(), p["message"].as_str()) {
+        return format!("{}: {}", &commit[..commit.len().min(8)], short(message));
+    }
     match (p["to"].as_str(), p["text"].as_str()) {
         (Some(to), Some(text)) => format!("→ {to}: {text}"),
         _ => [
@@ -164,6 +167,24 @@ pub fn log_detail(row: &ThreadLogRow) -> String {
         .find_map(|k| p[k].as_str())
         .map_or_else(|| p.to_string(), String::from),
     }
+}
+
+/// The full text of a row whose [`log_detail`] is shortened (a checkpoint's commit message), for a disclosure.
+#[must_use]
+pub fn log_more(row: &ThreadLogRow) -> Option<String> {
+    let message = row.payload["message"].as_str()?;
+    (short(message) != message).then(|| message.to_string())
+}
+
+/// The first line of `text`, at most 100 characters, cut at a word with "…".
+fn short(text: &str) -> String {
+    let line = text.lines().next().unwrap_or_default();
+    if line.chars().count() <= 100 && !text.contains('\n') {
+        return line.to_string();
+    }
+    let cut: String = line.chars().take(100).collect();
+    let cut = cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head);
+    format!("{}…", cut.trim_end_matches([',', ';', ':']))
 }
 
 /// A watch rule of the log (`thread.rule`): "reminder: after 4 Edit/Write/MultiEdit in crates/, expect make lint".

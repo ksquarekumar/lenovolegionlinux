@@ -5974,7 +5974,7 @@ fn the_processes_of_a_test_end_when_it_panics_and_when_its_binary_is_killed() {
 /// todo-122, as on 2026-10-15: the user's operator.db at v10 while an operator of another build runs (a stand-in that
 /// holds `operator.lock` with that build's fingerprint). An operator of this build does not start, and the file stays
 /// at v10 without a backup. After the other operator stopped, this one starts: it keeps the v10 file in
-/// `operator.db.v10.bak`, then takes the database to v13 with its rows.
+/// `operator.db.v10.bak`, then takes the database to v14 with its rows.
 #[test]
 fn an_operator_does_not_start_beside_one_of_another_build_and_keeps_the_old_database() {
     let home = home("holder");
@@ -6048,7 +6048,7 @@ fn an_operator_does_not_start_beside_one_of_another_build_and_keeps_the_old_data
     let op = operator_in("holder", &home);
     let events = op.ok(&["events", "--json"]);
     assert!(events.contains("kept.v10"), "{events}");
-    assert_eq!(version(&db), 13);
+    assert_eq!(version(&db), 14);
     assert_eq!(version(&bak), 10, "the backup is the v10 file");
     let kept: String = rusqlite::Connection::open(&bak)
         .unwrap()

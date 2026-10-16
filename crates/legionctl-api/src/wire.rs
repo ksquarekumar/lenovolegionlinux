@@ -1685,3 +1685,59 @@ wire! {
         update_summary: Option<String>,
     }
 }
+
+wire_enum! {
+    /// Where a fact holds (DESIGN-10); the nearest scope wins: thread, workspace, dossier, project, global.
+    enum FactScope from core::facts::Scope as "lowercase" {
+        Global,
+        Project,
+        Dossier,
+        Workspace,
+        Thread,
+    }
+}
+
+wire! {
+    /// A fact of the graph (DESIGN-10) on its four axes: valid time, recorded time, ref range and content anchor;
+    /// times in ms since the epoch.
+    struct Fact from core::facts::Fact {
+        id: i64,
+        /// What it is about: `app`, `view:<name>`, `intent:<words>`, a code graph key.
+        entity: String,
+        attribute: String,
+        value: Value,
+        scope: FactScope,
+        /// The repository root, the dossier, the workspace path or the thread id; empty for global.
+        scope_id: String,
+        /// user, agent:<who>, seed or rule.
+        source: String,
+        evidence: Value,
+        confidence: f64,
+        valid_from: i64,
+        valid_to: Option<i64>,
+        recorded_from: i64,
+        recorded_to: Option<i64>,
+        /// The repository of its ref range and anchor.
+        repo: Option<std::path::PathBuf>,
+        /// The commit where it starts to hold, and the commit where it ends.
+        from_ref: Option<String>,
+        to_ref: Option<String>,
+        /// The code graph key it is about, and its content hash when written.
+        anchor_key: Option<String>,
+        anchor_hash: Option<String>,
+        /// The row this one corrects or ends.
+        corrects: Option<i64>,
+        /// holds; or before, ended, unreachable (a rebase), stale, absent, no graph at the query's ref.
+        state: String,
+        /// The fact that answers for its entity and attribute.
+        wins: bool,
+    }
+
+    /// A change of a fact's winning value between two points.
+    struct FactChange from core::facts::Change {
+        entity: String,
+        attribute: String,
+        before: Option<Value>,
+        after: Option<Value>,
+    }
+}
