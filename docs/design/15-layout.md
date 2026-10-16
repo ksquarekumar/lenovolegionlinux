@@ -15,23 +15,22 @@ This note is the authority for names, processes, crates and paths. Notes 00–14
 
 ```
  clients (no state)                                engines (own state, restartable)
- legionctl       CLI · TUI · MCP · hook dispatch ─┐
+ legionctl       CLI · TUI · MCP · hook adapter ─┐
  legionctl-app   GPUI desktop                     ├─ api.sock ─▶ legionctl-operator (user) ─ D-Bus + polkit ─▶ legionctl-system (root)
  agent plugin    /legionctl:*                     │              operator.db, approvals,       ◀── events ──────  system.db, firmware, power,
  GNOME extension OSD ◀────────────────────────────┘              agents, sessions, tools,                         GPU, kernel, eBPF, sysctl,
                                                                  workspaces, config, event log                    input, display
-                                                     legionctl-sandbox: per session, bwrap + git shim, MCP proxy
-                                                     legionctl-bootstrap (oneshot, system and user): install, upgrade, boot, migrations
+ legionctl-greeter  greetd greeter (cage) ──────── D-Bus + polkit (user greeter) ──────────────────────────────▶ legionctl-system
+                                                     sessions: bwrap sandbox, git gate and `legionctl mcp-proxy`, made by the operator
 ```
 
 | Process | Runs as | Owns | Interface |
 | --- | --- | --- | --- |
-| `legionctl-system` | root, system service | machine state, firmware, power, GPU, display policy, kernel, eBPF, Fn keys | D-Bus `org.legionctl.System1`, polkit per method |
-| `legionctl-operator` | user service | operator database, operation registry, approvals, agents, sessions, tools, workspaces, config, OSD and Mutter calls when a graphical session exists | `$XDG_RUNTIME_DIR/legionctl/api.sock` (axum, HTTP + WebSocket) |
-| `legionctl-sandbox` | user, one per session scope | bwrap sandbox, gated-command shim, MCP proxy | stdio to the agent |
-| `legionctl-bootstrap` | oneshot, system and user | checks, migrations with backup, version marker, safe mode | none |
-| `legionctl` | user | nothing | CLI, `legionctl tui`, `legionctl mcp`, `legionctl hooks run` |
+| `legionctl-system` | root, system service (`--safe`: `legionctl-safe.service`) | machine state, firmware, power, GPU, display policy, kernel, eBPF, Fn keys | D-Bus `org.legionctl.System1`, polkit per method |
+| `legionctl-operator` | user service (socket-activated) | operator database and its schema steps with backups, operation registry, approvals, agents, sessions and their sandboxes, tools, workspaces, config, OSD and Mutter calls when a graphical session exists | `$XDG_RUNTIME_DIR/legionctl/api.sock` (axum, HTTP + SSE) |
+| `legionctl` | user | nothing | CLI, `legionctl tui`, `legionctl mcp`, `legionctl mcp-proxy`, `legionctl hook <event>` |
 | `legionctl-app` | user | nothing | GPUI |
+| `legionctl-greeter` | user `greeter` (greetd, in cage) | nothing | GPUI; logins through greetd, machine actions through `legionctl-system` |
 
 Why these boundaries:
 
@@ -46,13 +45,13 @@ Why these boundaries:
 Each operation is declared once in `legionctl-api`: name, input and output schemas, permission class (read,
 workspace, machine, account) and engine. The registry generates every surface:
 
-| From `power.policy.set` | Surface |
+| From `power.apply` | Surface |
 | --- | --- |
-| HTTP | `POST /v1/ops/power.policy.set` |
-| MCP tool | `power_policy_set` |
-| CLI | `legionctl power policy set ac` |
-| polkit action | `org.legionctl.power.policy.set` |
-| event log kind | `power.policy.set` with actor, input and outcome |
+| HTTP | `POST /v1/ops/power.apply` |
+| MCP tool | `power_apply` |
+| CLI | `legionctl power apply --source ac` |
+| polkit action | `org.legionctl.power.apply` |
+| event log kind | `power.apply` with actor, input and outcome |
 | TUI and GPUI | view models read the same schema |
 
 A surface cannot have an operation that the others do not have.
@@ -61,17 +60,16 @@ A surface cannot have an operation that the others do not have.
 
 ```
 crates/
-  legionctl-core      ids, errors, config layers (precedence, locks, explain), event log, one-writer database, migrations
-  legionctl-api       operation registry, schemas, API version, unix-socket client
-  legionctl-machine   sysroot (paths over /sys, /proc, /dev, /run), sensors, actuators, firmware attributes, power,
-                      cpufreq, PPD, sched_ext, GPU, display, fans, input, sysctl, kernel modules, DKMS, initramfs,
-                      disks, boot, windows
-  legionctl-bpf       aya programs and loader; observation only; pinned in bpffs
-  legionctl-operator  gateway (19), agents (settings, skills, reminders, hooks, setup, accounts), sessions (ACP, workdirs, git state,
-                      lifecycle), tools (package store, MCP proxy, call cache), workspaces (18), approvals, sagas, session OSD
-  legionctl-ui        view models and disclosure levels for the TUI and GPUI
-bins/
-  legionctl  legionctl-system  legionctl-operator  legionctl-bootstrap  legionctl-sandbox  legionctl-app
+  legionctl-core      config layers (precedence, locks, explain), event log, one-writer databases and their schema steps,
+                      dossiers, workspaces, sessions, threads, code graph and checks, agents, setup, rlcd, views
+  legionctl-api       operation registry, schemas, API version, unix-socket client, CLI, render
+  legionctl-machine   sysroot (paths over /sys, /proc, /dev, /run), sensors, firmware attributes, power policy and
+                      configsets, cpufreq, power-profiles-daemon, GPU, display, fans, kernel, boot, greeter, windows, VFIO
+  legionctl-system    the root daemon (bin legionctl-system) with its eBPF sensors (aya)
+  legionctl-operator  the user operator (bin legionctl-operator): engine, gateway (19), sessions (ACP), threads, views,
+                      resources, rlcd backends
+  legionctl           the client (bin legionctl): CLI, TUI, MCP server and proxy, hook adapter
+  legionctl-app       GPUI (bins legionctl-app and legionctl-greeter)
 ```
 
 A module becomes its own crate only when its size or its dependencies require it. Until then it stays a module.
@@ -80,9 +78,9 @@ A module becomes its own crate only when its size or its dependencies require it
 
 | Kind | Name |
 | --- | --- |
-| binaries | `/usr/bin/legionctl`, `/usr/bin/legionctl-app`; `/usr/lib/legionctl/legionctl-{system,operator,bootstrap,sandbox}` |
-| system units | `legionctl-system.service`, `legionctl-bootstrap.service`, `legionctl-safe.service` |
-| user units | `legionctl-operator.service`, `legionctl-session-<id>.scope`, `legionctl-session-<id>.timer` |
+| binaries | `/usr/bin/legionctl`, `/usr/bin/legionctl-app`; `/usr/lib/legionctl/legionctl-{system,operator,greeter,install,static}` |
+| system units | `legionctl-system.service`, `legionctl-safe.service` |
+| user units | `legionctl-operator.service` and `.socket`, `legionctl-windows-vm.service`, `legionctl-session-<id>.scope` |
 | D-Bus, polkit | `org.legionctl.System1`, actions `org.legionctl.<operation>` |
 | config layers | built-in defaults (`config/defaults.jsonc`) → `/etc/legionctl` → `~/.config/legionctl` → `<repo>/.legionctl` → session; JSONC (14) |
 | state | `/var/lib/legionctl/system.db`, `~/.local/state/legionctl/operator.db`, `~/.local/share/legionctl/{store,sessions}`, `~/.cache/legionctl/{gateway,tools}` |
@@ -94,18 +92,19 @@ A module becomes its own crate only when its size or its dependencies require it
 
 ## Command tree
 
+The groups of `legionctl --help` (2026-10-16; todo-78 regroups them):
+
 | Area | Commands | Engine |
 | --- | --- | --- |
-| overview | `status`, `doctor`, `load`, `events`, `approve` | operator |
-| power and thermal | `power` (policy, profile, limits, tune), `thermal`, `fan` | system |
-| graphics and display | `gpu` (mode, desktop GPU, pinning, run on), `display` (refresh, primary GPU) | system, operator for Mutter |
-| kernel and OS | `kernel` (modules, DKMS, initramfs, sysctl, sched_ext), `disk`, `boot`, `windows` | system |
-| input | `input` (Fn keys, Logitech devices) | system |
-| virtualization | `virt` (status, list, create, start, stop, pause, tune), 17-virtualization | operator, system for kernel parts |
-| config | `config` (layers, explain, edit, lock) | operator, system for `/etc` |
-| agents | `agents`, `skills`, `reminders`, `hooks`, `tools` | operator |
-| work | `dossier` (use, add, read, edit, search, check, graph), `workspace` (open with topic workspaces, status, list, checkpoint, merge, close, pack built; sessions run in a container with `--in container`; replaced `worktree` 2026-10-13), `sessions`, `gateway` | operator, gateway |
-| surfaces | `tui`, `mcp`, `app` | client |
+| overview | `status`, `load`, `doctor`, `capabilities`, `validate`, `events`, `trace`, `monitor`, `sensors`, `undo` | operator |
+| power and thermal | `power apply`, `plan`, `knobs`, `rules`, `fan`, `battery`, `bench`, `tune`, `record`, `replay`, `cleanup` | system, operator plans |
+| graphics and display | `gpu`, `display`, `overlay`, `rgb`, `vfio`, `run` | system, operator for Mutter |
+| kernel, boot and firmware | `kernel`, `boot`, `greeter`, `firmware`, `windows` | system |
+| virtualization | `virt`, `images`, `resources` | operator, system for kernel parts |
+| config | `config` (show, explain, layers) | operator |
+| agents | `agents`, `setup`, `skills`, `reminders`, `hooks`, `tools`, `packages`, `cache`, `gateway`, `rlcd` | operator |
+| work | `dossier`, `workspace`, `code`, `session`, `thread`, `views`, `jobs` | operator |
+| surfaces | `tui`, `mcp`, `mcp-proxy`, `hook` | client |
 
 ## Switch from the Python tooling
 

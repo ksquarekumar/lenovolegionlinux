@@ -7,7 +7,7 @@ change then replaces it (15-layout). No phase leaves two implementations install
 
 Cheap, independent, and they de-risk the Rust work by answering open questions.
 
-1. Resume hook: `/usr/lib/systemd/system-sleep/legion` runs `legionctl apply auto` after resume.
+1. Resume hook: `/usr/lib/systemd/system-sleep/legion` runs `legionctl apply auto` after resume (the old Python CLI; the daemon now plans the resume itself).
 2. `reassert` also restores RAPL (or switches to firmware `ppt_*`, see 4).
 3. Primary GPU: udev rule tagging the NVIDIA card `mutter-device-preferred-primary` while the external monitor
    is the main display; re-login to test the choppy-animation fix. Measure battery impact.
@@ -39,7 +39,7 @@ Cheap, independent, and they de-risk the Rust work by answering open questions.
 
 ## Phase 3 — observability and tuning
 
-- MSR throttle-reason sensor; validated fan source; `legionctl power monitor`.
+- MSR throttle-reason sensor; validated fan source; `legionctl monitor`.
 - eBPF sensors: workload classifier, run-queue latency, power attribution, session activity.
 - Tuning engine in the daemon sweeps `ppt_*`; delete `scripts/rapl-sweep.sh` in the same change.
 

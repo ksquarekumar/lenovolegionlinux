@@ -10,10 +10,12 @@ system down.
 
 | Unit | Scope | Owns | API |
 | --- | --- | --- | --- |
-| `legionctl-bootstrap.service` | system and user (oneshot) | install/upgrade/boot checks, schema migrations, version marker | none; exits |
 | `legionctl-system.service` | system (root) | machine control: power, firmware, sysctl, kernel modules, eBPF, initramfs | `/run/legionctl/system.sock`, D-Bus `org.legionctl.System1` with polkit per method |
-| `legionctl-operator.service` | user (`systemd --user`) | agent harness: workspaces, hooks, reminders, ACP sessions, gateway | `$XDG_RUNTIME_DIR/legionctl/api.sock` (axum: HTTP + WebSocket) |
+| `legionctl-operator.service` | user (`systemd --user`) | agent harness: workspaces, hooks, reminders, ACP sessions, gateway | `$XDG_RUNTIME_DIR/legionctl/api.sock` (axum: HTTP + SSE) |
 | clients | user | nothing | CLI, TUI, GPUI app, MCP server, hook dispatcher |
+
+No `legionctl-bootstrap` unit was built: schema steps run in `Db::open`, safe mode in `legionctl-safe.service` (see
+Bootstrap).
 
 - Clients are thin: they read and write only through the APIs. With a daemon down they show "legionctl-operator is not
   running" with a start action. There is no direct-read path.
@@ -75,13 +77,13 @@ system down.
    safe mode (read-only API, firmware defaults), with a desktop notification that says what failed.
 
 Built (2026-10-13, part 1), without a separate `legionctl-bootstrap` binary:
-- One schema per database (todo-68, 2026-10-14, after the first full release install): `operator.db` v10 (v11 with
-  design 23 P9), `workspace.db` v9 (the migration of P9 reads it up to v14, then moves it to the backup),
-  `dossier.db` v1, `cache.db` v1. `Db::open` makes a new database whole in a private file (WAL mode, schema,
-  version) and links it into place, so no opener sees it half made; a file at that version opens; a file of another
-  version (from before the merge, or from a newer legionctl) is refused with its version and left as it is.
-  The steps up to the merge are gone. The next schema change adds steps after these versions again, with a backup
-  of the file before the first step.
+- One schema per database, with steps (todo-68, todo-122): `operator.db` v13 (one schema for v1-v10, merged
+  2026-10-14, then steps 10-12: shared dossier rows and threads (design 23 P9), pools (P6b), rlcd decisions
+  (todo-138)), `dossier.db` v2, `cache.db` v1; `workspace.db` is read only by the one-time migration of P9 (up to
+  v14). `Db::open` makes a new database whole in a private file (WAL mode, schema, version) and links it into place,
+  so no opener sees it half made. A file at an older version that a step covers gets each step in order, each after
+  a copy of the file to `<db>.v<old>.bak`, and not while an operator of another build holds `operator.lock`. A file
+  older than the first step or newer than this release is refused with its version and left as it is.
 - The build check: the client sends a fingerprint of the operation registry (`x-legionctl-api`); the operator sends
   its own back. A different build makes the client say once that the operator must restart, and an operation the
   old operator does not know says the same (after a package upgrade the running operator is the old build).

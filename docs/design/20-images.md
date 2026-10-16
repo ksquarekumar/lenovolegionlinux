@@ -55,7 +55,7 @@ hand.
 }
 ```
 
-`legionctl images pack-vm` builds every image of the repository, saves them into the VM overlay (`docker save` into
+`legionctl workspace pack --as vm` builds every image of the repository, saves them into the VM overlay (`docker save` into
 the guest image store), adds the generated compose file, and sets the start command; the VM boots and starts all
 services with docker compose, offline. The overlay is copy-on-write over the base, so several VMs share one base.
 

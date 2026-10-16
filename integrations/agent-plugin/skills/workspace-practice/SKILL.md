@@ -23,12 +23,13 @@ user-invocable: true
 9. A folder outside git gets a folder workspace (an overlay layer, no branch). `--topic` is refused there.
 10. Commit with `workspace checkpoint "<message>"`, not raw `git commit`. It stages everything and commits; its test gate
     refuses a new or changed test with no assertion or no kill, and it runs each `gate: checkpoint` check of
-    `.legionctl/checks.jsonc` that has no passing run at the tree. Skill verify-and-ship says what the message holds.
+    `.legionctl/checks.jsonc` that has no passing run at the tree. Without that file it runs no check (skill
+    verify-and-ship, rule 2). Skill verify-and-ship says what the message holds.
 11. Write each checkpoint's SHA, scope and tests into its `plan.md` row in the same turn.
 12. `workspace status` shows ahead and behind the base, changes, conflicts and drift. If it shows drift, say what
     happened and propose the fix (switch the branch back, or open the workspace again).
 13. `workspace merge` rebases the branch onto the base, runs each `gate: merge` check that has no passing run at the
-    rebased head (a failure refuses the merge; the branch stays rebased), then fast-forwards the base in the main
+    rebased head (a failure refuses the merge; the branch stays rebased; no file, no check), then fast-forwards the base in the main
     checkout, which must be clean. It is class workspace, so it asks the user. Ask the user before you call it; if a
     lead agent merges, do not merge.
 14. Merge topics one at a time. Each later merge rebases onto the new base, so the history stays linear.

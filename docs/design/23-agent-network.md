@@ -317,8 +317,8 @@ across refs and rebases.
 The user's rule: tests are e2e and of high diagnostic value only; obvious tests are banned. Mutation checks are the
 evidence today.
 
-Runs: `code tests run [--filter]` runs `tests.command` as a job. The default command is
-`cargo test --profile test-fast --workspace --no-fail-fast -j8`. The job reads the libtest lines
+Runs: `code tests run [--filter]` runs each `test` check of `.legionctl/checks.jsonc` as a job (P10; no
+`tests.command`). The job reads the libtest lines
 (`test <name> ... ok|FAILED|ignored`) and stores each result in `test_runs` (tree, test key, result, ms, job, time).
 Tests that need root or a VM keep `#[ignore]` and show as `ignored`, not as `failed`.
 
@@ -348,7 +348,7 @@ Hook points:
 | `pre-tool` on `Write`/`Edit` of a test file | Static signals only (no assertion, unit test in `src/`). A note to the agent. Does not deny. |
 | `thread-observer` at `stop` (test review job) | Runs the cheap signals, reads the test, and sends `soft-block` or `hint` messages (B3). |
 | `workspace checkpoint` | Gate: each new or changed test needs a mutant record with a kill at this change set. A hard signal refuses the checkpoint with the test names and the reasons. `--accept-test <test> --reason <text>` passes one; the reason is an annotation and an event. |
-| `pre-commit` (`.pre-commit-config.yaml`) | `legionctl tests review --staged` with the same rules, for commits made outside legionctl. |
+| `pre-commit` (`.pre-commit-config.yaml`) | `legionctl code tests review --staged` with the same rules, for commits made outside legionctl. |
 
 #### Built: P4 without the planning links (2026-10-15)
 
@@ -356,14 +356,14 @@ What exists (`crates/legionctl-core/src/codetests.rs`, operations `code.tests.*`
 
 | Part | Built | Different from the design, and why |
 | --- | --- | --- |
-| Runs | `code tests run [--filter]`: a job (`code.tests.run`, the counts so far are its progress). Each test is a row in `test_runs`: repository, ref, file (the source of the test binary, from cargo's `Running` line), test, result, job, time. | No time per test: stable libtest does not print it. The command is fixed (`cargo test --profile test-fast --workspace --no-fail-fast -j8`), not a `tests.command` setting. |
+| Runs | `code tests run [--filter]`: a job (`code.tests.run`, the counts so far are its progress). Each test is a row in `test_runs`: repository, ref, file (the source of the test binary, from cargo's `Running` line), test, result, job, time. | No time per test: stable libtest does not print it. The command is each `test` check of the repository's `.legionctl/checks.jsonc` (P10), not a `tests.command` setting. |
 | Mutants | Table `mutants` (repository, ref, file, line, description, killed = the tests that failed, source `tool` or `agent`). `code tests mutant record <file> <line> <description> [<test>...]` and `code tests mutant run` (cargo-mutants on the `.rs` files outside `tests/` that the branch changed since its base; a job with `done`/`total` progress; the tests that failed come from each mutant's log). | Records count for the repository (git common folder), not for one tree: a test name with a kill is evidence until the test changes again. |
 | Review | `code tests review [--staged]`: the `#[test]` functions that the diff against HEAD touches. Hard: no assertion, no kill. Soft: duplicate (another test kills each of its mutants), outside `tests/`. | The spans and the boundary come from the text, not from the code graph: a snapshot exists only for a committed tree and needs ctx, and the gate reviews the index or the working tree (CI has no ctx). Braces in strings can cut a span; "boundary" is "in a `tests/` folder", not the callees. No "constant only" signal (the test-reviewer observer, P6). |
 | Gate | `workspace checkpoint` stages, reviews the index and refuses with each test and reason; nothing is committed. `--accept-test <test> --reason <why>` keeps the reason in `test_accepts` and writes the event `code.tests.accept`. | One test per accept; an accept stays, so the pre-commit hook and later checkpoints see it. The annotation of the reason waits for A6 (P2). |
 | Pre-commit | Hook `legionctl-test-gate` (`scripts/test-gate.sh`): `code tests review --staged` when something is staged. | When the `legionctl` on `PATH` has no `code tests review` (a package older than the repository), the hook refuses the commit: install the new package (`make package install-package`). The user's decision, 2026-10-15. |
-| Not built | Links from tests to stories and work items (needs P3), the `pre-tool` note on test files and the observer (P5/P6). | |
+| Not built | Links from tests to stories and work items, and the `pre-tool` note on test files. The observer is built (P6b: the `thread-observer` member). | |
 
-Tests: `the_checkpoint_gate_refuses_tests_without_evidence_and_takes_kills_and_accepts`,
+Tests: `the_checkpoint_gate_refuses_tests_without_evidence_and_takes_recorded_kills_and_accepts`,
 `a_test_run_records_each_test_with_its_file_result_and_ref` (stand-ins for cargo-mutants and cargo that write their
 real output), and `cargo_mutants_on_a_fixture_crate_records_the_tests_that_kill_its_mutants` (`#[ignore]`: the real
 cargo-mutants 27.1, run locally).
@@ -419,6 +419,9 @@ ctx's own MCP tools stay for the working copy. legionctl does not wrap them one 
   of an old one makes it again.
 
 ### A11. Tests (e2e, high diagnostic value)
+
+Planned names (design): the built tests are named in each "Built" section and may have other names;
+`rg 'fn <name>' crates/legionctl/tests` shows which of these exist.
 
 | Test | It catches |
 | --- | --- |
@@ -637,6 +640,9 @@ Each is also an MCP tool (`thread_send`, ...). The events have kind `thread.*`, 
 The observer is the stand-in ACP agent of `tests/fixtures/fake-acp-agent.py` with a script per archetype; the hooks are the
 real `legionctl hook` commands with Claude Code's hook JSON.
 
+Planned names (design): the built tests are named in each "Built" section and may have other names;
+`rg 'fn <name>' crates/legionctl/tests` shows which of these exist.
+
 | Test | It catches |
 | --- | --- |
 | `an_observer_reminds_main_with_the_count_and_a_hard_block_stops_the_tool` | Three edits without lint give a reminder with count 3; a hard block denies `workspace_checkpoint` until ack; an expired block does not deny. |
@@ -828,8 +834,8 @@ Install and visibility:
 - Claude Code: the plugin ships `agents/*.md`, so the subagent types are `legionctl:main-agent`,
   `legionctl:thread-observer`, `legionctl:ui-composer`. Claude Code must read `agents/` without its subfolders, as
   `agents/refs/` is not an agent folder (to check; if it reads subfolders, refs move to `agent-refs/`).
-- Codex: `legionctl agents install --agent codex [--scope user|project]` writes `~/.codex/agents/<archetype>.toml`
-  (or `.codex/agents/`) from the same files, through the `agents set` writer (diff, backup, rename).
+- Codex: `legionctl setup apply` writes `~/.codex/agents/<config>.toml` for each config that Codex runs (built as
+  "Codex install" below; there is no `agents install`).
 
 | Where | Operator member (thread member) | Plugin subagent | Claude Code teammate (team mode, B+4) | Codex subagent |
 | --- | --- | --- | --- | --- |
@@ -947,12 +953,15 @@ P5 grows by presence (B+1, about 300 lines). P6 splits; the order stays P5, then
 
 | Phase | Content | Size (new lines, estimate) | Needs |
 | --- | --- | --- | --- |
-| P6a | Archetype files, refs, `agents.configs` resolution, per-harness application (B+2 table), `agents check`, `agents install --agent codex` | M (700) | P5 |
+| P6a | Archetype files, refs, `agents.configs` resolution, per-harness application (B+2 table), `agents check`, Codex files through `setup apply` | M (700) | P5 |
 | P6b | Operator members through ACP, pace `on-trigger` and wake budgets, branch, compensation, team files, `vanilla`, flow (may, gates, stop, restart), the process job's steps (overlay, private-index checkpoint), cost measures | L (1100) | P6a |
 | P6c | Team mode (`run: claude-team`): `TeammateIdle`/`TaskCompleted` delivery and gates, lost teammates | S (300) | P6b, question 4, live check |
 
 Tests (e2e, high diagnostic value; the stand-ins of B9, and stand-in `claude` and `codex` commands that record
 their argv, env and the files they get):
+
+Planned names (design): the built tests are named in each "Built" section and may have other names;
+`rg 'fn <name>' crates/legionctl/tests` shows which of these exist.
 
 | Test | It catches |
 | --- | --- |
@@ -1013,8 +1022,9 @@ What is different from B2-B8 and B+1, and why:
 | Subagents (todo-120) | A peer id is the session id, or `<session>/<agent id>` for a subagent: the `post-tool` hook sends Claude Code's `agent_id` and `agent_type`, so each subagent has its own state, last tool call, workspace (its `cwd`), type (`subagent`), watch rule counts (a member with `--member-session <session>/<agent id>`) and messages. A subagent has no prompt hook: its messages come back as the `additionalContext` of its next `post-tool` hook. Its dossier is its session's binding. | The hooks of a subagent's tool calls carry the lead's `session_id`, so all subagents were one peer with the lead. The recorded fixtures are of a lead; the two fields are Claude Code's documented common hook fields. A subagent stays `running` until the stale time (no `SubagentStop` hook yet). |
 | Classes | `start`, `join`, `leave`: workspace; `send`, `ack`, `declare`, `pace`, `rules add/rm`: session; the others read. | B8. |
 
-Not built yet: model members through ACP, wake budgets, timed paces, branch, compensation and the `effects` table
-(P6b); archetype files, default watch rules of the `thread-observer` and agent configs (P6a); `thread.commands` (P7).
+Built later: model members through ACP, wake budgets, branch, compensation and the `effects` table (P6b, P6c:
+"Built: P6b and P6c"); archetype files, default watch rules of the `thread-observer` and agent configs (P6a);
+`thread.commands` (P7). Not built: timed paces (a pace is on-trigger, on-stop or on-declare).
 The prompt hook gives the messages as text on stdout, which Claude Code adds to the context, as the other prompt lines.
 
 Tests (`crates/legionctl/tests/threads.rs`; the real `legionctl hook` with Claude Code's payloads, the CLI and the
@@ -1051,7 +1061,7 @@ What is different from B+2 to B+5, and why:
 | Narrowing | Config over archetype and team over config: `tools.allow` and `commands.allow` may not add an item. Repository layer over the user's config: also no removed deny, ask or limit, and no other archetype. `flow.may` may only remove kinds. | B+2, B+3. |
 | Team files | The first `<team>.jsonc` of `.legionctl/teams/`, the user's `teams/`, then the plugin's; team files do not merge. `vanilla` has the members and `flow.may`. | `gates`, `stop`, `restart` and `when` come with the flow in P6b. |
 | `agents check` | Not run by `make static`. | It needs the operator; the e2e test checks the shipped files. |
-| Backfill | The observer's text has the rule (idle only, the dossier lock, append only, `(by observer0)`, a nudge when refused). | Member writes (`--member`, E6) are not built: the operator refuses a write into another dossier, so the observer sends a nudge until then. |
+| Backfill | The observer's text has the rule (idle only, the dossier lock, append only, `(by observer0)`, a nudge when refused). | Member writes are built (`dossier append --member`, E6; see "Built: P6b and P6c"): only while main0 is idle; else the write is refused and the observer nudges. |
 
 Tests (`crates/legionctl/tests/agents.rs`, the CLI and the real operator):
 
@@ -1201,6 +1211,9 @@ event id. A view whose operation fails shows the error in its frame; the other v
 
 ### C7. Tests (e2e, high diagnostic value)
 
+Planned names (design): the built tests are named in each "Built" section and may have other names;
+`rg 'fn <name>' crates/legionctl/tests` shows which of these exist.
+
 | Test | It catches |
 | --- | --- |
 | `the_thread_tui_folds_panes_and_runs_an_agent_command` | In a pty: fold pane 1 and 2, pane 3 takes the width; the stand-in ACP agent's `available_commands_update` gives `/agent:plan`; the prompt it gets is `/plan x`. |
@@ -1254,13 +1267,13 @@ What is different from C2 to C5, and why:
 | App page | The whole window is the thread screen: pane 1 holds the old pages (Now, Apps & GPU, Health, Bench, Resources) as icons, and the thread's view. Not a page "Threads" next to them. | The same screen as the TUI (C1); the old tab bar and pane 1 did the same job. |
 | Pane 2 | The newest open thread, read again at each event of `GET /v1/events`. The stream runs on the app's tokio runtime; the screen takes its events each 100 ms. | GPUI's test scheduler refuses a wake from a tokio thread. A timer that takes events is not a poll of the operator. |
 | Chat bar | Click to type; `Shift+Enter` adds a line; `Ctrl+Left` and `Ctrl+Right` (30% to 100%). No drag. | The keys are the TUI's; a drag handle was not asked for in P7 and is not built. |
-| The chat bar's agent | A headless run as in P7, on the thread's account. The app has no `--agent` (todo-144, 2026-10-16): `/agent <name>` picks a name of `session.acp` (completion offers each; another is refused with the names) and `thread.agent` keeps the pick as a row of the thread's log; a thread with no pick uses config `app.agent` (default `claude`). `setup check` reports an adapter command of `session.acp` that is not on the user manager's PATH; `setup apply` installs it with `bun add -g` (package from `session.acp_packages`) and puts bun's global folder (`bun pm -g bin`) into the environment.d PATH file. | P6b is not built. The desktop entries start the app without arguments, so the agent comes from config and the thread. The log is the thread's store (B2): every screen and an import see the pick. |
+| The chat bar's agent | A headless run as in P7, on the thread's account. The app has no `--agent` (todo-144, 2026-10-16): `/agent <name>` picks a name of `session.acp` (completion offers each; another is refused with the names) and `thread.agent` keeps the pick as a row of the thread's log; a thread with no pick uses config `app.agent` (default `claude`). `setup check` reports an adapter command of `session.acp` that is not on the user manager's PATH; `setup apply` installs it with `bun add -g` (package from `session.acp_packages`) and puts bun's global folder (`bun pm -g bin`) into the environment.d PATH file. | The desktop entries start the app without arguments, so the agent comes from config and the thread. The log is the thread's store (B2): every screen and an import see the pick. |
 | Layout | `views place` writes the row `views.place` (view, parameters, repository) into the thread's log; the screens show the newest one. No `layout` column. | The log is the source (B2); an import copies it. |
 | View operations | `views.show` is not built: `views list` gives each file, layer and widget, and `views render` gives the data. | One operation less with the same facts. |
 | View class | `views.save` is class workspace (it writes the user's or the repository's files); `views.place` is class session; the others read. A view's source runs as the caller, with the same input checks as a call from outside. | A view cannot run a change, and a session's view cannot read as another session. |
 | Thread account | No column: the account is the newest `thread.import` row's, else the main session's account. The original's state becomes `imported` (read-only: join, send, rules, pace and place are refused). | The thread tables were in move (P9 put them in `operator.db`, with `sessions`); rows in the log need no schema step, and an import copies them. |
 | Import | Copies the log, the members (without their sessions, which run on the old account; their cursor is the import row), the messages, the rules and main0's Claude transcript (the code of `session resume --account`). A second import of a thread is refused: the copy exists. | C5. A member session on the new account starts with P6b. |
-| ui-composer | The format, the files, the checks and `views save`/`views place` are there for the model and for a person; the model's wake is P6b. | P6b is not built. |
+| ui-composer | The format, the files, the checks and `views save`/`views place` are there for the model and for a person. | P6b is built (Built: P6b and P6c, below), but ui0 has no trigger: `when: ui` is not built. |
 
 Tests:
 
@@ -1898,6 +1911,9 @@ thread), the `--member` option of the dossier write operations (session), and `b
 Real operator and a real `legionctl-system` on a private bus (as the machine tests), temporary homes and
 repositories; stand-ins only where a tool is not the subject.
 
+Planned names (design): the built tests are named in each "Built" section and may have other names;
+`rg 'fn <name>' crates/legionctl/tests` shows which of these exist.
+
 | Test | It catches |
 | --- | --- |
 | `the_dossiers_move_to_their_homes_once_and_keep_their_ids_links_and_rows` | A row in the wrong `dossier.db`; a worktree link left on the old path; a second run that moves again; removal before the counts match; a rename that loses bindings. |
@@ -1985,7 +2001,7 @@ repositories; stand-ins only where a tool is not the subject.
 
 ## Part F: rlcd, the System One tier of a wake (todo-138, first part of todo-139)
 
-Built 2026-10-16 (not merged). User decisions: plan rows todo-138 and todo-139; wire shapes measured in
+Built 2026-10-16 (merged d014e65). User decisions: plan rows todo-138 and todo-139; wire shapes measured in
 SPIKE-rlcd-apis.
 
 ### F1. Question model and backends

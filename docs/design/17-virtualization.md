@@ -17,7 +17,7 @@ three in one inventory, so a health problem in a provider shows which consumers 
 | Containers | Docker 29.9 on containerd, overlay2, data root `/data/builds/docker`; Flatpak; bwrap (legionctl sessions, Steam pressure-vessel) |
 | GPU compute in containers | NVIDIA container runtime (`nvidia-ctk`, runtime `nvidia` in `daemon.json`) |
 | GPU graphics in VMs | virtio-gpu GL and Venus (`qemu-hw-display-virtio-gpu-*-gl`, rutabaga), VirtualGL |
-| GPU offload on the host | NVIDIA PRIME render offload; `legionctl gpu run` (02-platform) |
+| GPU offload on the host | NVIDIA PRIME render offload; `legionctl run` (02-platform) |
 | Foreign-architecture emulation | `qemu-user-static` with binfmt (aarch64, arm, riscv, ...) |
 | Windows binaries | Wine (`wine-cachyos`, binfmt `DOSWin`), Proton (`proton-cachyos-slr`, `umu-launcher`), Mono binfmt `CLR` |
 

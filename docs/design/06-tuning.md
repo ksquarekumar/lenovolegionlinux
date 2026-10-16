@@ -2,7 +2,7 @@
 
 ## What the sweep taught us
 
-- The 2026-10-12 runs mixed in background load (WinBoat install, a manual `legionctl apply` mid-step), so their
+- The 2026-10-12 runs mixed in background load (WinBoat install, a manual `apply` of the old Python CLI mid-step), so their
   throughput numbers are unreliable. CPU-only, 55→70 W gave +14 % and 70→85 W about +0 % at 7 °C hotter, which
   suggests the knee near 70 W, but this needs a clean run.
 - The sweep tuned RAPL PL1 while the firmware's own `ppt_pl1_spl` was 90 W. The real knobs are the firmware

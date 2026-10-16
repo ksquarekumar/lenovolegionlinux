@@ -25,14 +25,12 @@ system state outside it, recorded here so they are not lost.
 | 16 | `gh` CLI token invalid | `gh auth status` | host | `gh auth login -p ssh -w` — **Fixed: logged in** |
 | 17 | Pending sudo-side host fixes | faillock/sudoers, libvirt modular daemons, toolchain packages, `paccache` | host | Commands listed in the session; confirm which ran |
 | 18 | 197 package updates pending | `checkupdates` | host | `pacman -Syu` when convenient — **Open: 14 updates pending (2026-10-12 evening)** |
-
 | 19 | `thinkpad_acpi` force-loaded on a Legion; logs "secondary fan control detected & enabled" | `/etc/modules-load.d/acpi.conf`, dmesg | host | Drop it from autoload (08-kernel) — **Fixed: acpi.conf now loads only acpi_call, ideapad_laptop** |
 | 20 | Broadcom `wl` loaded on an Intel Wi-Fi machine; DKMS rebuilt every kernel update | `lsmod`, `dkms status`, wlan0 → iwlwifi | host | `pacman -R broadcom-wl-dkms` — **Fixed: package removed** |
 | 21 | Module autoload files reference missing modules (`vfio_mdev`, `virtio_serial`, `vmmon`) | systemd-modules-load "Failed to find module" each boot | host | Prune `vfio.conf`, `virtio.conf`, `vmware.conf`, `openlogi.conf`, `kvm.conf` (GVT-g) — **Fixed: vfio.conf/virtio.conf pruned, vmware.conf gone** |
 | 22 | `i915 enable_gvt=1` set; GVT-g unsupported on 13th gen | `/etc/modprobe.d/intel.conf` | host | Remove the option — **Fixed: option removed** |
 | 23 | Stale module trees of removed kernels | `/usr/lib/modules/{6.8.9,6.9.3,6.10.5}*`, unowned | host | Delete after confirming no package owns them — **Fixed: only current kernels remain** |
 | 24 | `blacklist ecdh_generic` (old Bluetooth workaround) | `/etc/modprobe.d/blacklist.conf` | host | Verify Bluetooth, then remove — **Open** |
-
 | 25 | Boot loader stage 3 min 33 s | rEFInd `enable_mouse`: any mouse movement cancels the 5 s countdown | host | `timeout 2`, disable `enable_mouse` — **Check: loader stage still 10.1 s in the last boot** |
 | 26 | 300 MB initramfs per kernel | `MODULES=(i915 intel_agp nvidia)` + `kms` hook pull NVIDIA modules and GSP firmware into early boot | host | Drop `nvidia` and the `kms` hook; NVIDIA loads from modules-load.d before GDM — **Fixed: 27 MB per kernel** |
 | 27 | 9.2 s waiting for Wi-Fi at boot | `systemd-networkd-wait-online@wlan0` enabled though networkd manages no links (NetworkManager does) | host | Disable systemd-networkd and its wait-online units — **Fixed: networkd masked/disabled** |
@@ -40,7 +38,6 @@ system state outside it, recorded here so they are not lost.
 | 29 | Maintenance jobs hammer the disk right after login | `fstrim` 16 min, `plocate-updatedb` 7 min, `man-db` catch up at boot | host | Run them at idle CPU/IO priority |
 | 30 | VMware leftovers (installed with VMware's own installer) | `/etc/vmware`, `/usr/lib/vmware-installer`, `/var/log/vmware*`, `~/.vmware`, autoload `vmware.conf` | host | Remove — **Fixed: removed** |
 | 31 | `/etc/default/grub` is unused | the machine boots rEFInd via shim; kernel options live in `/boot/refind_linux.conf` | host | Treat `refind_linux.conf` as the source of kernel options in tooling and docs |
-
 | 32 | Phantom I/O pressure (60–90 % "some" and "full") with idle disks | the WinBoat container (`ghcr.io/dockur/windows`, QEMU/KVM Windows VM): 77–91 % in its cgroup, all other cgroups below 1 %, its disk counters do not change (2026-10-13) | host, VM | Load classifier gates on disk activity and ignores pressure from a cgroup that did no I/O in the sample window (a short unrelated disk burst gave a false Overloaded on 2026-10-13); `legionctl load` names the cgroup (`I/O wait without disk I/O from docker/09bd9c9baa5f`). The earlier cause (one RCU kworker) was wrong: those kworkers are short D-state sleeps. Open: which QEMU thread waits in iowait; needs root (`kernel.task_delayacct=1`, then field 42 of `/proc/<qemu>/task/*/stat`) |
 | 33 | Two `docker` CLIs | `/usr/local/bin/docker` (unowned) shadows `/usr/bin/docker`, both 29.9.0 | host | Remove `/usr/local/bin/docker` |
 | 34 | Docker uses the cgroupfs driver on a systemd, cgroup v2 host | `/etc/docker/daemon.json` `native.cgroupdriver=cgroupfs` | host | Switch to the systemd driver (recreates containers) |
@@ -54,6 +51,7 @@ system state outside it, recorded here so they are not lost.
 
 ## Cleanups in this repo
 
-- `tuning/` holds one file (`scx_loader.toml`); fold into configsets when the config layers exist (14-sessions).
+- `tuning/` holds one file (`scx_loader.toml`), installed as `/etc/scx_loader.toml` (the scx_loader service's own
+  config). The config layers exist, but no knob writes this file: a configset knob for it is open.
 - `packaging/arch/PKGBUILD` keeps `# shellcheck disable=SC2034,SC2154`: makepkg reads the variables and provides
   `$pkgdir`, which shellcheck cannot see. Kept for review (rule: no suppressed lints).

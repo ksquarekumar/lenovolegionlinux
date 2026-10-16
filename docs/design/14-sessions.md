@@ -262,7 +262,7 @@ session's resolved snapshot.
 ## Order of work
 
 1. Config model (layers, precedence, locks, explain) — everything else reads it.
-2. Session record, workdir copies, git state; `legionctl sessions create|list|show`.
+2. Session record, workdir copies, git state; built as `legionctl session start|run|list|...`.
 3. Sandbox + git shim + agent permission generation.
 4. ACP client (agent-client-protocol crate): create, prompt, pause/offload/resume.
 5. Package store and MCP proxy with call log, then the cache.

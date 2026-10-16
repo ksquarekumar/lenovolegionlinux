@@ -111,8 +111,9 @@ clears the choice).
   the knob from them) and your holds; with `--system`, the `/etc` layers (or the knob from them) and the on/off
   states. After an edit, `rules edit` shows when a rule between layers keeps the layer out.
 
-`Layers()` and `Plan()` on D-Bus (point 9 of the design) are not built: each planner reads the same files (the
-workload too), so the operator gives the same answer without a second path.
+`Layers()` and the configset `Plan()` on D-Bus (point 9 of the design) are not built: each planner reads the same
+files (the workload too), so the operator gives the same answer without a second path. The `Plan(kind, action)`
+method that `System1` has is another one: the dry run of a boot or greeter action (the steps the daemon would run).
 
 ### Saved sets
 

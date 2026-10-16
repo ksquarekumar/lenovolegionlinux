@@ -97,7 +97,8 @@ end of a throttle that was seen is seen within a second. Full fan speed (`fan cl
 ## Check: is the machine correct
 
 `legionctl doctor` runs checks that are data: id, severity, evidence, and a fix operation with a preview diff.
-Fixes are applied only through `legionctl approve`.
+Fixes are applied through the operation that owns the change, with its normal approval (polkit or the class of the
+operation); no `approve` command was built (M3g built `undo` and the override layer, todo-24).
 
 | Check group | Detects |
 | --- | --- |
@@ -114,7 +115,7 @@ Fixes are applied only through `legionctl approve`.
 Built (2026-10-13, M3b): besides the policy, kernel, conflict, NTFS and GPU checks, `doctor` now finds failed
 system and user units, the OSD extension when it is not active, setup gaps, dossier bindings idle past
 `dossier.stale_hours`, and workspaces that drifted from their record or have conflicts. The findings are still
-lines; checks as data with fix operations come with `approve` (M3g).
+lines; checks as data with fix operations are not built (the first fix operation is `display fix <id>`, todo-81).
 
 ## Change: tune and experiment safely
 
@@ -136,8 +137,9 @@ lines; checks as data with fix operations come with `approve` (M3g).
   reasons) and every knob value at the start (with the `sched_ext` scheduler). Failed stressors and gpu-burn
   computation errors are problems: the command exits 1. `bench list` and `bench compare --a A --b B` (each number
   with its change, then the knobs that differ) read the event log.
-- `legionctl power tune`: the sweep engine (06-tuning) writes a generated configset layer for review.
-- `legionctl wmi`: catalog of the firmware WMI methods this model has (10-gap), each marked read-only or write;
+- `legionctl tune`: the sweep engine (06-tuning) steps one firmware limit and returns each step and the knee;
+  `tune --per-kernel` writes the configset layer `tuned-<package>` (todo-84).
+- Planned, not built: `legionctl wmi`, a catalog of the firmware WMI methods this model has (10-gap), each marked read-only or write;
   read-only methods run directly, write methods only through an operation with approval. Parked: the measured
   method table is in 10-gap, but the exact `acpi_call` argument strings for WMAA/WMAF were not recorded; they must
   be verified with the user before legionctl calls them.
