@@ -5148,7 +5148,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
     }
 
     /// The greeter in place of GDM (todo-83), through the operator and the daemon: refused, with nothing changed, while
-    /// cage is not installed; then greetd's configuration is legionctl's (the old file kept byte for byte), GDM is
+    /// cage or greetd's user greeter is not there; then greetd's configuration is legionctl's (the old file kept byte for byte), GDM is
     /// disabled before greetd is enabled (the display-manager alias is one link); a second install cannot overwrite the
     /// kept file; remove puts the old file and GDM back. A stand-in systemctl moves the alias as systemd does.
     #[tokio::test(flavor = "multi_thread")]
@@ -5171,16 +5171,20 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         };
 
         let refused = op.cli(&["greeter", "install"]);
+        let why = String::from_utf8_lossy(&refused.stderr);
         assert!(
-            String::from_utf8_lossy(&refused.stderr).contains("cage (pacman -S cage)"),
-            "{}",
-            String::from_utf8_lossy(&refused.stderr)
+            why.contains("cage (pacman -S cage)") && why.contains("the user greeter"),
+            "{why}"
         );
         assert_eq!(config(), original);
         // the daemon's plan refuses before the polkit dialog
         assert_eq!((unit_changes(), asked.lock().unwrap().len()), (vec![], 0));
 
         m.set("/usr/bin/cage", "");
+        m.set(
+            "/etc/passwd",
+            "root:x:0:0::/root:/bin/bash\ngreeter:x:932:932::/:/bin/bash",
+        );
         op.ok(&["greeter", "install"]);
         let ours = config();
         assert!(

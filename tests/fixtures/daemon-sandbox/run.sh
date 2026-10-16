@@ -43,8 +43,9 @@ install -dm755 /etc/greetd
 install -dm750 /etc/polkit-1/rules.d
 systemctl reload dbus
 
-# greetd, cage and the greeter are there; GDM is the display manager
+# greetd (with the user greeter that its package makes), cage and the greeter are there; GDM is the display manager
 for f in /usr/bin/greetd /usr/bin/cage /usr/lib/legionctl/legionctl-greeter; do install -Dm755 /bin/true "$f"; done
+id greeter >/dev/null 2>&1 || useradd --system --no-create-home --home-dir / greeter
 for unit in gdm greetd; do
   printf '[Service]\nExecStart=/bin/true\n\n[Install]\nAlias=display-manager.service\n' >"/usr/lib/systemd/system/$unit.service"
 done

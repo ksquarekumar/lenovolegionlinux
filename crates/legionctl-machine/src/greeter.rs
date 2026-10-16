@@ -50,6 +50,11 @@ pub fn state(root: &SysRoot) -> Result<GreeterState> {
             missing.push(what.to_string());
         }
     }
+    // greetd's package makes its user; greetd runs the greeter as it, and its folder is its
+    let users = root.read("/etc/passwd")?.unwrap_or_default();
+    if !users.lines().any(|l| l.starts_with("greeter:")) {
+        missing.push("the user greeter (the greetd package makes it)".into());
+    }
     Ok(GreeterState {
         installed: root.read(CONFIG)?.is_some_and(|c| c.starts_with(MARK)),
         display_manager: root
@@ -86,6 +91,17 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
         );
     }
     let mut steps = Vec::new();
+    // first, so a failure changes nothing of greetd or GDM; outside the daemon's sandbox (its ReadWritePaths do not
+    // have /var/lib); the folder stays after remove
+    steps.push(Step::Unit(
+        [
+            "install", "-d", "-m", "700", "-o", "greeter", "-g", "greeter",
+        ]
+        .map(String::from)
+        .into_iter()
+        .chain([root.path(STATE).to_string_lossy().into_owned()])
+        .collect(),
+    ));
     if let Some(old) = read_file(&root.path(CONFIG))? {
         steps.push(Step::Create {
             path: BEFORE.into(),
@@ -100,16 +116,6 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
              [default_session]\ncommand = \"cage -s -- {GREETER}\"\nuser = \"greeter\"\n"
         ),
     });
-    // outside the daemon's sandbox (its ReadWritePaths do not have /var/lib); the folder stays after remove
-    steps.push(Step::Unit(
-        [
-            "install", "-d", "-m", "700", "-o", "greeter", "-g", "greeter",
-        ]
-        .map(String::from)
-        .into_iter()
-        .chain([root.path(STATE).to_string_lossy().into_owned()])
-        .collect(),
-    ));
     steps.push(systemctl("disable", GDM));
     steps.push(systemctl("enable", GREETD));
     Ok(steps)
