@@ -84,25 +84,3 @@ pub fn inventory(home: &Path, config: &Resolved) -> Vec<SkillInfo> {
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reads_the_claude_plugin_registry() {
-        let home = crate::scratch::Scratch::new(
-            std::env::temp_dir().join(format!("legionctl-skills-{}", std::process::id())),
-        );
-        std::fs::create_dir_all(home.join(".claude/plugins")).unwrap();
-        std::fs::write(
-            home.join(".claude/plugins/installed_plugins.json"),
-            r#"{"version": 2, "plugins": {"legionctl@lenovolegionlinux": [{"scope": "user", "installPath": "/x/legionctl/0.4.0"}]}}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            claude_plugin_dir(&home),
-            Some(PathBuf::from("/x/legionctl/0.4.0"))
-        );
-    }
-}

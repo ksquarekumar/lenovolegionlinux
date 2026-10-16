@@ -65,7 +65,7 @@ class Docker(BaseHTTPRequestHandler):
     def address_string(self):
         return "unix"
 
-    def log_message(self, format, *args):  # noqa: A002 (the base class names it so)
+    def log_message(self, _format, *_args):
         pass
 
 

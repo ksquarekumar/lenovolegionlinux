@@ -1,6 +1,10 @@
 //! End-to-end: the binary as the agent plugin uses it (hook dispatch, MCP over stdio), in an isolated HOME.
 
 mod common;
+#[path = "common/git.rs"]
+mod git;
+#[path = "common/hooks.rs"]
+mod hooks;
 #[path = "common/provider.rs"]
 mod provider;
 
@@ -12,24 +16,9 @@ use std::process::{Command, Output, Stdio};
 use common::Operator;
 use common::process::{Kill, own};
 use common::scratch::Scratch;
+use git::git;
+use hooks::claude_hook;
 use serde_json::{Value, json};
-
-/// A hook payload as Claude Code sends it (recorded 2026-10-13, anonymized in tests/fixtures/claude-code-hooks), with
-/// the test's own fields set over it. A `pre-tool` payload is the one recorded for its `tool_name`.
-fn claude_hook(event: &str, fields: &Value) -> String {
-    let name = match fields["tool_name"].as_str() {
-        Some(tool) => format!("{event}-{}", tool.to_lowercase()),
-        None => event.to_string(),
-    };
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("tests/fixtures/claude-code-hooks/{name}.json"));
-    let mut payload: Value =
-        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    for (key, value) in fields.as_object().unwrap() {
-        payload[key] = value.clone();
-    }
-    payload.to_string()
-}
 
 /// What an agent gets from `legionctl hook <event>` (Claude Code's hook JSON, the fixture session) in `cwd`.
 fn hook_out(op: &Operator, cwd: &Path, event: &str) -> String {
@@ -392,7 +381,7 @@ fn an_unknown_input_field_is_refused_before_the_operation_runs() {
 
 #[test]
 fn mcp_server_has_one_tool_per_operation_and_calls_the_operator() {
-    let (op, _home) = operator("mcp");
+    let (op, home) = operator("mcp");
     let mut mcp = Mcp::start(&op, &[]);
 
     let tools = mcp.call("tools/list", &json!({}));
@@ -453,6 +442,34 @@ fn mcp_server_has_one_tool_per_operation_and_calls_the_operator() {
             "no plugin registry in a fresh HOME: {s}"
         );
     }
+    // Claude Code's plugin registry (version 2) gives the plugin's folder; a skill shows its path there
+    let plugin = home.join("plugins/legionctl/0.4.0");
+    write(
+        &plugin.join("skills/ste100-style/SKILL.md"),
+        "---\nname: ste100-style\n---\n",
+    );
+    write(
+        &home.join(".claude/plugins/installed_plugins.json"),
+        &json!({"version": 2, "plugins": {"legionctl@lenovolegionlinux":
+            [{"scope": "user", "installPath": plugin}]}})
+        .to_string(),
+    );
+    let result = mcp.call("tools/call", &json!({"name": "skills", "arguments": {}}));
+    let skills: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    let installed: Vec<(&str, &str)> = skills
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| Some((s["name"].as_str()?, s["claude"].as_str()?)))
+        .collect();
+    assert_eq!(
+        installed,
+        [(
+            "ste100-style",
+            plugin.join("skills/ste100-style").to_str().unwrap()
+        )]
+    );
 
     // an agent's relative path is its own working directory, not the operator's
     let result = mcp.call(
@@ -1258,23 +1275,6 @@ fn sql(home: &Path, statement: &str) {
     );
 }
 
-/// git with the test's own HOME (its identity and default branch), in `dir`.
-fn git(home: &Path, dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .env("HOME", home)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
-
 /// A repository with one commit on main that ignores the dossier home's link (as legionctl's own), and workspaces
 /// configured under `home/worktrees`.
 fn repository(home: &Path) -> PathBuf {
@@ -1562,8 +1562,8 @@ fn stand_in(home: &Path, name: &str, script: &str) {
     std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 }
 
-/// A `mutants.out` as cargo-mutants 27.1 writes it (shape recorded from a real run on a fixture crate, see
-/// `cargo_mutants_on_a_fixture_crate_records_the_tests_that_kill_its_mutants`): `outcomes.json` with the baseline
+/// A `mutants.out` as cargo-mutants 27.1 writes it (shape recorded from a real run on a fixture crate; the manual
+/// check is in the dossier, EVIDENCE/validation/37-manual-tool-contract-checks): `outcomes.json` with the baseline
 /// first, then one outcome per mutant (`file`, `line`, `name`, the tests that fail in its log; none: missed).
 fn mutants_out(dir: &Path, mutants: &[(&str, u32, &str, &[&str])]) {
     let phases = json!([
@@ -1736,7 +1736,7 @@ impl GateAgent {
 
 /// One test of each form that the review must find (the file need not compile: the review parses it).
 // a .txt file: the test gate of the installed legionctl (a line parser) would read its tests as tests of e2e.rs
-const FORMS: &str = include_str!("fixtures/test-forms.txt");
+const FORMS: &str = include_str!("../../../tests/fixtures/test-forms.txt");
 
 const GATE_TESTS: &str =
     "use fx::double;\n\n#[test]\nfn doubles_three() {\n    assert_eq!(double(3), 6);\n}\n";
@@ -2331,79 +2331,6 @@ fn a_test_run_that_does_not_build_fails_with_the_compiler_error() {
     );
     let jobs: Value = serde_json::from_str(&op.ok(&["jobs", "list", "--json"])).unwrap();
     assert_eq!(jobs["items"][0]["state"], "failed", "{jobs}");
-}
-
-/// The real cargo-mutants (not in CI; run it here with `cargo install cargo-mutants --locked`) on a fixture crate in a
-/// workspace: its output parses, each mutant names the tests that killed it, and the review refuses the test that
-/// kills nothing.
-#[test]
-#[ignore = "needs cargo-mutants; CI does not install it"]
-fn cargo_mutants_on_a_fixture_crate_records_the_tests_that_kill_its_mutants() {
-    let home = home("realmutants");
-    let toolchain: Vec<(&str, OsString)> = ["RUSTUP_HOME", "CARGO_HOME"]
-        .iter()
-        .map(|k| {
-            let real = std::env::var_os("HOME").map(PathBuf::from).unwrap();
-            (
-                *k,
-                std::env::var_os(k).unwrap_or_else(|| {
-                    real.join(if *k == "RUSTUP_HOME" {
-                        ".rustup"
-                    } else {
-                        ".cargo"
-                    })
-                    .into()
-                }),
-            )
-        })
-        .collect();
-    let op = operator_with("realmutants", &home, &toolchain);
-    let repo = repository(&home);
-    let env = [
-        ("HOME", home.to_str().unwrap()),
-        ("LEGIONCTL_SESSION", "s1"),
-    ];
-    let ok = |cwd: &Path, args: &[&str]| {
-        let o = op.run(cwd, &env, args, "");
-        (
-            o.status.success(),
-            String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr),
-        )
-    };
-    write(
-        &repo.join("Cargo.toml"),
-        "[package]\nname = \"fx\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
-    );
-    write(&repo.join(".gitignore"), "/target\nCargo.lock\n");
-    git(&home, &repo, &["add", "."]);
-    git(&home, &repo, &["commit", "--quiet", "-m", "crate"]);
-    assert!(ok(&repo, &["dossier", "use", "real"]).0);
-    assert!(ok(&repo, &["workspace", "open"]).0);
-    let ws = home.join("worktrees/repo/real");
-    write(
-        &ws.join("src/lib.rs"),
-        "pub fn double(x: i32) -> i32 {\n    x * 2\n}\n",
-    );
-    write(
-        &ws.join("tests/t.rs"),
-        "#[test]\nfn doubles() {\n    assert_eq!(fx::double(3), 6);\n}\n\n#[test]\nfn calls() {\n    assert!(fx::double(1) != 7);\n}\n",
-    );
-    let (ran, out) = ok(&ws, &["code", "tests", "mutant", "run"]);
-    assert!(ran && out.contains("caught"), "{out}");
-    let (_, review) = ok(&ws, &["code", "tests", "review", "--json"]);
-    let review: Value = serde_json::from_str(&review).unwrap();
-    let kills = |name: &str| {
-        review["tests"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|t| t["name"] == name)
-            .unwrap()["kills"]
-            .as_u64()
-            .unwrap()
-    };
-    assert!(kills("doubles") >= 1, "{review}");
-    assert_eq!(kills("calls"), 0, "{review}");
 }
 
 #[test]
@@ -5178,35 +5105,6 @@ fn an_account_profile_gives_the_session_its_own_agent_logins_and_usage() {
     );
 }
 
-/// `workspace pack --as vm --gpu` builds the NVIDIA open module (DKMS) for the guest's generic kernel, with the GSP
-/// firmware and nvidia-smi, from Debian's non-free sections, and marks the disk for `--gpu` sessions. Slow (packages
-/// and a module build), so neither CI nor the VM step runs it: run it when the guest's packages may have changed.
-#[test]
-#[ignore = "downloads the NVIDIA packages and builds the module in a VM: run by hand"]
-fn a_vm_disk_packed_with_the_gpu_has_the_nvidia_module() {
-    let (op, home, repo, _provider) = vm_repository("vmgpu", "vmgpu2");
-    let packed = op.run(
-        &repo,
-        &[("HOME", home.to_str().unwrap())],
-        &["workspace", "pack", "--as", "vm", "--gpu"],
-        "",
-    );
-    let disk = home.join(".local/share/legionctl/vm/repo.qcow2");
-    let log = std::fs::read_to_string(disk.with_extension("pack.log")).unwrap_or_default();
-    assert!(
-        String::from_utf8_lossy(&packed.stdout).contains("with the NVIDIA driver")
-            && log.contains("updates/dkms/nvidia.ko"),
-        "{}{}\n{}",
-        String::from_utf8_lossy(&packed.stdout),
-        String::from_utf8_lossy(&packed.stderr),
-        &log[log.len().saturating_sub(3000)..]
-    );
-    assert!(
-        disk.with_extension("gpu").exists(),
-        "the disk is marked for --gpu"
-    );
-}
-
 /// Run QEMU on `disk` with the read-only `iso` until the guest powers off (it may restart before); the serial console
 /// goes to `log`. `results` adds a raw results disk, `table` an ACPI table.
 fn boot_until_poweroff(
@@ -5357,7 +5255,7 @@ fn vm_test_base(image: &Path) -> PathBuf {
     base
 }
 
-/// The checks of fixtures/legionctl-wmi/run.sh, in their order: each must report ok.
+/// The checks of tests/fixtures/legionctl-wmi/run.sh, in their order: each must report ok.
 const LEGIONCTL_WMI_CHECKS: [&str; 48] = [
     "dkms-build",
     "no-autoload",
@@ -5410,7 +5308,7 @@ const LEGIONCTL_WMI_CHECKS: [&str; 48] = [
 ];
 
 /// todo-79: the legionctl-wmi kernel module (kernel/legionctl-wmi), built by DKMS in a VM against Debian's 7.x
-/// kernel and bound to a stand-in of the 82WQ firmware (fixtures/legionctl-wmi/ssdt.asl, a QEMU -acpitable) after a
+/// kernel and bound to a stand-in of the 82WQ firmware (tests/fixtures/legionctl-wmi/ssdt.asl, a QEMU -acpitable) after a
 /// restart with the package's blacklist in place. The guest (run.sh) uses it through sysfs only: `platform_profile`
 /// and its Fn+Q notice, the firmware attributes within and outside their bounds and modes, the fan table byte for
 /// byte as the firmware gets it, its refusals and its return after a mode change, Fn+Q and resume, full speed, fan
@@ -5436,7 +5334,7 @@ fn the_legionctl_wmi_module_gives_the_legion_wmi_through_sysfs() {
     for name in ["legionctl-wmi.conf", "no-autoload.conf"] {
         std::fs::copy(kmod.join(name), test.join(name)).unwrap();
     }
-    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legionctl-wmi");
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/legionctl-wmi");
     std::fs::copy(fixtures.join("run.sh"), test.join("run.sh")).unwrap();
     std::fs::create_dir(test.join("aml-call")).unwrap();
     for name in ["aml_call.c", "Kbuild"] {
@@ -5495,7 +5393,7 @@ fn the_legionctl_wmi_module_gives_the_legion_wmi_through_sysfs() {
     );
 }
 
-/// The checks of fixtures/daemon-sandbox/run.sh, in their order: each must report ok.
+/// The checks of tests/fixtures/daemon-sandbox/run.sh, in their order: each must report ok.
 const DAEMON_SANDBOX_CHECKS: [&str; 20] = [
     "unit-active",
     "esp-after-start",
@@ -5539,7 +5437,8 @@ fn under_its_own_unit_the_daemon_writes_the_greeter_the_esp_and_the_rules() {
     std::fs::create_dir_all(test.join("profiles")).unwrap();
     for (from, to) in [
         (
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/daemon-sandbox/run.sh"),
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/daemon-sandbox/run.sh"),
             "run.sh",
         ),
         (
@@ -5952,7 +5851,7 @@ fn old_home(home: &Path) -> (PathBuf, PathBuf) {
         .unwrap()
         .as_secs();
     let fixture = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/workspace-v13.sql"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/workspace-v13.sql"),
     )
     .unwrap()
     .replace("@HOME@", home.to_str().unwrap())

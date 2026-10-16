@@ -67,7 +67,7 @@ class Decisions(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def log_message(self, format, *args):  # noqa: A002 (the base class names it so)
+    def log_message(self, _format, *_args):
         pass
 
 

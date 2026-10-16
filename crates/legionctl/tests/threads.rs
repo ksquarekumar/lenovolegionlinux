@@ -4,6 +4,8 @@
 //! an operator restart, and presence.
 
 mod common;
+#[path = "common/hooks.rs"]
+mod hooks;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -11,27 +13,12 @@ use std::process::Command;
 
 use common::Operator;
 use common::scratch::Scratch;
+use hooks::claude_hook;
 use serde_json::{Value, json};
 
 fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();
-}
-
-/// A hook payload as Claude Code sends it (`<event>-<tool>.json` for a tool event), with the test's fields over it.
-fn claude_hook(event: &str, fields: &Value) -> String {
-    let name = match fields["tool_name"].as_str() {
-        Some(tool) => format!("{event}-{}", tool.to_lowercase()),
-        None => event.to_string(),
-    };
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("tests/fixtures/claude-code-hooks/{name}.json"));
-    let mut payload: Value =
-        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    for (key, value) in fields.as_object().unwrap() {
-        payload[key] = value.clone();
-    }
-    payload.to_string()
 }
 
 /// An operator with its own HOME and a repository with one commit on main.

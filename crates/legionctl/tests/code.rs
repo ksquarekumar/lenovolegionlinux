@@ -1,6 +1,6 @@
 //! End-to-end: the code graphs (design 23, Part A, P1-P2) through the CLI and the real operator, in a temporary
-//! repository with worktrees. ctx is the stand-in of `tests/fixtures/ctx-standin` (CI has no ctx); the ignored test
-//! runs the same change scenario with the installed ctx.
+//! repository with worktrees. ctx is the stand-in of `tests/fixtures/ctx-standin` (CI has no ctx); the check with the
+//! installed ctx is a manual check (dossier EVIDENCE/validation/37-manual-tool-contract-checks).
 
 mod common;
 
@@ -36,7 +36,7 @@ fn path_with(first: &Path) -> OsString {
 }
 
 fn standin() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ctx-standin")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/ctx-standin")
 }
 
 /// An operator with its own HOME (ctx is `ctx` there), and a repository with one commit on main.
@@ -1006,21 +1006,6 @@ fn an_annotation_is_valid_while_its_symbol_is_the_same_stale_after_a_change_and_
     assert_eq!(one.as_array().unwrap().len(), 1, "{one}");
 }
 
-/// The change scenario with the installed ctx (`~/.local/bin/ctx`, 2.2.8): the same entity rows as the stand-in.
-/// Run it by hand: `cargo test --profile test-fast -p legionctl --test code -- --ignored`.
-#[test]
-#[ignore = "needs the real ctx; CI has the stand-in only"]
-fn the_real_ctx_gives_the_change_rows_of_the_stand_in() {
-    let real = PathBuf::from(std::env::var_os("HOME").unwrap()).join(".local/bin/ctx");
-    assert!(real.exists(), "no ctx at {}", real.display());
-    let lab = Lab::new("realctx", &real);
-    let (ws, [a, m, b]) = scenario(&lab);
-    let sets = lab.json(&ws, &["code", "graph", "changes", &a, &b, "--build"]);
-    assert_eq!(rows(&sets[0]), expected(&m, &b), "{:#}", sets[0]);
-    let impact = lab.json(&ws, &["code", "graph", "impact", "rust:.:add", "--ref", &b]);
-    assert!(impact.to_string().contains("rust:.:two"), "{impact}");
-}
-
 /// The plan of the fixture: W1 is done (a symbol, a config key, an operation and a unit), W2 is in progress (a file to
 /// edit, a function to add, a function to remove).
 const FEATURE: &str = r#"// one feature of the fixture
@@ -1132,7 +1117,7 @@ fn plan_findings(lab: &Lab, ws: &Path) -> Vec<String> {
 /// A repository with the fixture plan committed in the workspace of dossier `port`, and tokei's stand-in: the
 /// workspace and the plan's commit.
 fn plan_fixture(lab: &Lab) -> (PathBuf, String) {
-    let tokei = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tokei-standin");
+    let tokei = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/tokei-standin");
     std::os::unix::fs::symlink(tokei, lab.home.join(".cargo/bin/tokei")).unwrap();
     let repo = lab.repo.clone();
     lab.ok(&repo, &["dossier", "use", "port"]);

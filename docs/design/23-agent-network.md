@@ -365,8 +365,8 @@ What exists (`crates/legionctl-core/src/codetests.rs`, operations `code.tests.*`
 
 Tests: `the_checkpoint_gate_refuses_tests_without_evidence_and_takes_recorded_kills_and_accepts`,
 `a_test_run_records_each_test_with_its_file_result_and_ref` (stand-ins for cargo-mutants and cargo that write their
-real output), and `cargo_mutants_on_a_fixture_crate_records_the_tests_that_kill_its_mutants` (`#[ignore]`: the real
-cargo-mutants 27.1, run locally).
+real output). The check against the real cargo-mutants (27.1) is a manual check (dossier
+EVIDENCE/validation/37-manual-tool-contract-checks): no CI step runs it.
 
 ### A8. Rebase and conflicts
 
@@ -464,8 +464,8 @@ of its own (the checkpoint and git-hook triggers have).
 
 Tests (`crates/legionctl/tests/code.rs`): ctx is a stand-in (`tests/fixtures/ctx-standin`, Python and SQLite) that
 writes the `index.db` schema of ctx 2.2.8 and its node shape for free functions, private functions, closures and
-call edges. `the_real_ctx_gives_the_change_rows_of_the_stand_in` (ignored, run by hand) runs the same change
-scenario with the installed ctx and expects the same rows.
+call edges. The same change scenario with the installed ctx is a manual check (dossier
+EVIDENCE/validation/37-manual-tool-contract-checks): no CI step runs it.
 
 | Test | It catches |
 | --- | --- |

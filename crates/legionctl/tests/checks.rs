@@ -3,13 +3,16 @@
 //! they commit or merge, each run keeps its log and profile in the dossier home, and a missing kind is a finding.
 
 mod common;
+#[path = "common/git.rs"]
+mod git;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 use common::Operator;
 use common::scratch::Scratch;
+use git::git;
 use serde_json::{Value, json};
 
 fn write(path: &Path, text: &str) {
@@ -75,15 +78,7 @@ impl Lab {
     }
 
     fn git(&self, dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .env("HOME", &self.home)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", text(&out).1);
-        text(&out).0
+        git(&self.home, dir, args)
     }
 
     /// A repository `name` with these files in its first commit on main.
@@ -133,7 +128,7 @@ impl Lab {
     /// What the agent of session s1 reads at session start in `cwd`.
     fn session_start(&self, cwd: &Path) -> String {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/claude-code-hooks/session-start.json");
+            .join("../../tests/fixtures/claude-code-hooks/session-start.json");
         let mut payload: Value =
             serde_json::from_str(&std::fs::read_to_string(fixture).unwrap()).unwrap();
         payload["session_id"] = json!("s1");
