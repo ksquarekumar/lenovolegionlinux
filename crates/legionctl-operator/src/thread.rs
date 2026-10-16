@@ -28,6 +28,17 @@ fn lines(lines: Vec<String>) -> Lines {
 
 pub fn start(input: &ThreadStartIn) -> Result<Lines> {
     let store = dossiers()?;
+    // no session: the user's own thread (the app's chat), on the dossier that the user names
+    if input.session.0.is_empty() && input.team.is_none() {
+        let dossier = input.dossier.as_deref().context(
+            "the user's thread needs its dossier: give --dossier <name> (dossier list; a new one: dossier create <name>)",
+        )?;
+        store.known(dossier)?;
+        let id = store.thread_start(None, &input.title, dossier)?;
+        return Ok(lines(vec![format!(
+            "thread {id} started on dossier {dossier}: the user's thread"
+        )]));
+    }
     let me = session(&input.session)?;
     let dossier = match &input.dossier {
         Some(d) => d.clone(),
@@ -36,7 +47,7 @@ pub fn start(input: &ThreadStartIn) -> Result<Lines> {
             .context("this session has no dossier; bind one or give --dossier")?,
     };
     let Some(team) = &input.team else {
-        let id = store.thread_start(me, &input.title, &dossier)?;
+        let id = store.thread_start(Some(me), &input.title, &dossier)?;
         return Ok(lines(vec![format!(
             "thread {id} started on dossier {dossier}: this session is main0"
         )]));
@@ -287,6 +298,7 @@ fn launch(
                     steal: false,
                     token: &token,
                     dir: &w.workdir,
+                    topic: None,
                     headless: true,
                     account: account.as_deref(),
                     inside: Inside::Host,
@@ -301,6 +313,26 @@ fn launch(
         Some(id) => store.resume_session(id, &resolved.config, account.as_deref(), &token, true)?,
     };
     Ok((launch, token))
+}
+
+/// The prompt of a member's wake: its archetype's instructions with the member's own, the escalation's brief, then
+/// the wake's prompt.
+fn wake_prompt(
+    w: &legionctl_core::pool::Wake,
+    escalated: Option<&(i64, String)>,
+) -> Result<String> {
+    // no instructions field: none; a field that is not a list of texts fails the wake (never a wake without them)
+    let extra: Vec<String> = match &w.fields["instructions"] {
+        serde_json::Value::Null => Vec::new(),
+        value => serde_json::from_value(value.clone())
+            .map_err(|e| anyhow::anyhow!("member {} instructions: {e}", w.member))?,
+    };
+    let instructions = Sources::resolve(&Dirs::from_env(), Some(&w.workdir))?
+        .instructions(w.archetype.as_str(), &extra)?;
+    Ok(match escalated {
+        Some((_, brief)) => format!("{instructions}\n\n{brief}\n\n{}", w.prompt),
+        None => format!("{instructions}\n\n{}", w.prompt),
+    })
 }
 
 /// The acp step of a wake: the member's session (made at its first wake), one ACP prompt with its instructions, the
@@ -319,18 +351,7 @@ fn acp_wake(
         let id = launch.id.clone();
         let db = Db::open_default()?;
         db.issue_token(&launch.id, &token)?;
-        // no instructions field: none; a field that is not a list of texts fails the wake (never a wake without them)
-        let extra: Vec<String> = match &w.fields["instructions"] {
-            serde_json::Value::Null => Vec::new(),
-            value => serde_json::from_value(value.clone())
-                .map_err(|e| anyhow::anyhow!("member {member} instructions: {e}"))?,
-        };
-        let instructions = Sources::resolve(&Dirs::from_env(), Some(&w.workdir))?
-            .instructions(w.archetype.as_str(), &extra)?;
-        let prompt = match escalated {
-            Some((_, brief)) => format!("{instructions}\n\n{brief}\n\n{}", w.prompt),
-            None => format!("{instructions}\n\n{}", w.prompt),
-        };
+        let prompt = wake_prompt(w, escalated)?;
         let input = serde_json::json!({"thread": thread, "member": member, "session": launch.id,
             "tag": format!("thread-{name}"), "acp": w.acp, "load": false});
         let job = db.job_begin(WAKE, &input)?;

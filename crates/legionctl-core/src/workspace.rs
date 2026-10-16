@@ -307,6 +307,21 @@ impl Dossiers {
         root: &Path,
     ) -> Result<Workspace> {
         let dossier = self.active_dossier(session)?;
+        self.open_dossier_workspace(dossier, dir, base, topic, root)
+    }
+
+    /// [`Dossiers::open_workspace`] of `dossier` (the user's thread names its dossier; no session binds it).
+    ///
+    /// # Errors
+    /// The topic is not valid, `dir` is not in a git repository (for a topic), or git refuses.
+    pub fn open_dossier_workspace(
+        &self,
+        dossier: String,
+        dir: &Path,
+        base: Option<&str>,
+        topic: Option<&str>,
+        root: &Path,
+    ) -> Result<Workspace> {
         ensure!(
             topic.is_none_or(crate::dossier::valid_name),
             "topic must be a-z, 0-9 and '-', starting with a letter or digit"

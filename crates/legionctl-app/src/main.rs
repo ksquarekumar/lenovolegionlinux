@@ -8,13 +8,10 @@ use legionctl_app::{AppAssets, LegionApp, Tab, theme};
 const DECORATION: f32 = 40.;
 
 fn main() -> anyhow::Result<()> {
-    let usage = "usage: legionctl-app [<view> [name=value...]] [--dossier <name>]";
+    let usage = "usage: legionctl-app [<view> [name=value...]]";
     let mut open = None;
-    let mut dossier = None;
-    let mut args = std::env::args().skip(1);
-    while let Some(word) = args.next() {
+    for word in std::env::args().skip(1) {
         match word.as_str() {
-            "--dossier" => dossier = Some(args.next().ok_or_else(|| anyhow::anyhow!(usage))?),
             w if w.starts_with('-') => anyhow::bail!(usage),
             // a view, and its parameters after it: `code-graph key=rust:.:add`
             w if w.contains('=') => match open.as_mut() {
@@ -67,7 +64,7 @@ fn main() -> anyhow::Result<()> {
                         theme::adopt(cx);
                     })
                     .detach();
-                cx.new(|cx| LegionApp::new(client, handle, open, repo, cx).with_dossier(dossier))
+                cx.new(|cx| LegionApp::new(client, handle, open, repo, cx))
             })
             .expect("opening the window");
         });

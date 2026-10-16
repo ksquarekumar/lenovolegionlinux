@@ -736,11 +736,16 @@ operations! {
     tune / Tune = "tune", Machine, TuneIn => TuneReport;
     /// Two bench runs side by side: scores, telemetry and the knobs that differ.
     bench_compare / BenchCompareOp = "bench.compare", Read, BenchCompareIn => BenchCompare;
-    /// Bind this session to a dossier (one writable dossier per session); a new name makes it from the pattern.
+    /// Make a new dossier (its home in ~/agentWorkspaces), linked into a folder when one is given; a name in use is
+    /// refused. It binds nothing: choose it with dossier use.
+    dossier_create / DossierCreate = "dossier.create", Workspace, DossierCreateIn => Lines;
+    /// Bind this session to a dossier (one writable dossier per session); a new name makes it from the pattern. With
+    /// no session (the app, a terminal) it chooses the user's dossier, an existing one: the app's new chats and agent
+    /// runs work in it.
     dossier_use / DossierUse = "dossier.use", Session, DossierUseIn => Lines;
-    /// This session's active dossier.
+    /// This session's active dossier; with no session, the user's dossier.
     dossier_active / DossierActive = "dossier.active", Read, SessionIn => Lines;
-    /// Give up this session's dossier.
+    /// Give up this session's dossier; with no session, the user's dossier choice.
     dossier_release / DossierRelease = "dossier.release", Session, DossierReleaseIn => Lines;
     /// Which session holds which dossier, and stale bindings.
     dossier_locks / DossierLocks = "dossier.locks", Read, Empty => Locks;
@@ -848,7 +853,12 @@ operations! {
     /// Start a thread: one task with this session as its main agent `main0`, on the caller's dossier. With `--team`,
     /// the team file's members join asleep and its flow applies: a Claude main agent leads them as an agent team,
     /// a Codex one as Codex subagents, any other agent gets them as operator sessions that wake on their triggers.
+    /// With no session (the app, a terminal) it is the user's own thread (a chat) on the dossier that `--dossier`
+    /// names.
     thread_start / ThreadStart = "thread.start", Workspace, ThreadStartIn => Lines;
+    /// The user's thread works on a repository (its own worktree on a branch from a base ref) or a plain folder (an
+    /// overlay); its next runs work there. A thread starts with none (a scratch folder).
+    thread_repo / ThreadRepo = "thread.repo", Workspace, ThreadRepoIn => Lines;
     /// Every thread, newest first.
     thread_list / ThreadList = "thread.list", Read, Empty => Vec<ThreadInfo>;
     /// One thread: its members (pace, cursor, wakes), messages, watch rules with their counts, and its log.

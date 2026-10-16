@@ -728,8 +728,18 @@ pub struct DossierReleaseIn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DossierCreateIn {
+    /// Dossier name: a-z, 0-9 and '-', starting with a letter or digit; a name in use is refused.
+    pub name: String,
+    /// A folder (a repository) where the home is linked as `agentWorkspaces`.
+    #[serde(default)]
+    pub folder: Option<ClientPath>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DossierUseIn {
-    /// Dossier name: a-z, 0-9 and '-'. A name that does not exist makes a new dossier from the pattern.
+    /// Dossier name: a-z, 0-9 and '-'. For a session, a name that does not exist makes a new dossier from the
+    /// pattern; for the user (no session), the dossier must exist (dossier create).
     pub name: String,
     /// Take it over from another live session; for an agent, the operator asks the user first.
     #[serde(default)]
@@ -995,6 +1005,10 @@ pub struct SessionRunIn {
     /// fails when the agent does not take it.
     #[serde(default)]
     pub model: Option<String>,
+    /// The user's thread of the run (the app's chat): the run works on the thread's dossier and in its folder, goes
+    /// on in the thread's last ACP session, and the prompt and the answer (or the failure) are rows of its log.
+    #[serde(default)]
+    pub thread: Option<i64>,
 }
 
 /// What a headless run gave back.
@@ -2110,6 +2124,18 @@ pub struct ThreadStartIn {
     pub repo: ClientPath,
     #[serde(default)]
     pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThreadRepoIn {
+    /// The user's thread (`thread list`).
+    pub thread: i64,
+    /// A folder in the repository to work on (the thread gets its own worktree), or a plain folder (an overlay).
+    pub repo: ClientPath,
+    /// The ref that the thread's branch starts from; default: the repository's current branch. Not for a plain
+    /// folder.
+    #[serde(default)]
+    pub base: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

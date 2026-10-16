@@ -346,7 +346,9 @@ impl Dossiers {
     /// The database write fails.
     pub fn fact_add(&self, f: &New) -> Result<i64> {
         let recorded = now_ms();
-        let tx = self.db().unchecked_transaction()?;
+        // IMMEDIATE: it reads the open facts, then writes; a deferred one fails at once (SQLITE_BUSY) when another
+        // writer (a run's output events) commits between its read and its write
+        let tx = self.begin()?;
         let open = self.facts_where(
             "entity = ?1 AND attribute = ?2 AND scope = ?3 AND scope_id = ?4 AND source = ?5 \
              AND recorded_to IS NULL AND to_ref IS NULL AND (valid_to IS NULL OR valid_to > ?6)",
@@ -404,7 +406,9 @@ impl Dossiers {
                 format!("no fact {id} that is still recorded (`facts history` shows its rows)")
             })?;
         let recorded = now_ms();
-        let tx = self.db().unchecked_transaction()?;
+        // IMMEDIATE: it reads the open facts, then writes; a deferred one fails at once (SQLITE_BUSY) when another
+        // writer (a run's output events) commits between its read and its write
+        let tx = self.begin()?;
         self.db().execute(
             "UPDATE facts SET recorded_to = ?2 WHERE id = ?1",
             params![id, recorded],

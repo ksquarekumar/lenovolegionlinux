@@ -1254,10 +1254,73 @@ fn delegation_rule(d: &str) -> String {
     )
 }
 
+/// `prompt` of thread `id` for an agent with no session of the thread in `dir` yet (its first run, or a run after the
+/// thread moved to a repository): the conversation so far comes first, so it goes on there.
+fn conversation_prompt(store: &Dossiers, id: i64, dir: &Path, prompt: &str) -> Result<String> {
+    let earlier = store.thread_conversation(id, 12)?;
+    if earlier.is_empty() {
+        return Ok(prompt.to_string());
+    }
+    let lines: Vec<String> = earlier
+        .iter()
+        .map(|(who, text)| format!("{who}: {}", text.chars().take(2000).collect::<String>()))
+        .collect();
+    Ok(format!(
+        "The conversation of this thread so far (it now works in {}):\n{}\n\nThe user's new message:\n{prompt}",
+        dir.display(),
+        lines.join("\n")
+    ))
+}
+
+/// The user's dossier (no session: the app, a terminal): the fact `app` `dossier` of the user, global.
+pub(crate) fn user_dossier() -> Result<Option<String>> {
+    let facts = crate::facts::at_op(&legionctl_api::FactsAtIn {
+        entity: Some("app".into()),
+        repo: ClientPath(PathBuf::from("/")),
+        dossier: None,
+        thread: None,
+        time: None,
+        recorded: None,
+        rev: None,
+        winners: true,
+    })?;
+    Ok(facts
+        .into_iter()
+        .find(|f| f.attribute == "dossier")
+        .and_then(|f| f.value.as_str().map(String::from)))
+}
+
+/// Choose the user's dossier (`None`: no dossier).
+fn user_dossier_set(ctx: &Ctx, repo: &ClientPath, dossier: Option<&str>) -> Result<()> {
+    crate::facts::set(
+        ctx,
+        &legionctl_api::FactSetIn {
+            entity: "app".into(),
+            attribute: "dossier".into(),
+            value: serde_json::json!(dossier).to_string(),
+            scope: legionctl_api::FactScope::Global,
+            repo: repo.clone(),
+            dossier: None,
+            thread: None,
+            valid_from: None,
+            valid_to: None,
+            from_ref: None,
+            to_ref: None,
+            anchor: None,
+            evidence: Some("dossier use".into()),
+            confidence: 1.0,
+            corrects: None,
+        },
+    )?;
+    Ok(())
+}
+
 pub(crate) fn session(id: &SessionId) -> Result<&str> {
     anyhow::ensure!(
         !id.0.is_empty(),
-        "this acts on an agent session's dossier: run it in a session (LEGIONCTL_SESSION or CLAUDE_CODE_SESSION_ID)"
+        "this acts on an agent session's dossier: an agent does it in its session (LEGIONCTL_SESSION or \
+         CLAUDE_CODE_SESSION_ID). To work in a dossier yourself, choose it: dossier use <name> (dossier list); make \
+         one: dossier create <name>"
     );
     Ok(&id.0)
 }
@@ -2647,7 +2710,28 @@ impl Engine for Operator {
         })
     }
 
+    fn dossier_create(&self, ctx: &Ctx, input: legionctl_api::DossierCreateIn) -> Result<Lines> {
+        let folder = path(input.folder.as_ref())?;
+        let lines = dossiers()?.create_new(&input.name, folder)?;
+        Db::open_default()?.record(
+            &ctx.actor,
+            "dossier.create",
+            &serde_json::json!({"name": input.name, "folder": folder}),
+        )?;
+        Ok(Lines { lines })
+    }
+
     fn dossier_use(&self, ctx: &Ctx, input: DossierUseIn) -> Result<Lines> {
+        if input.session.0.is_empty() {
+            dossiers()?.known(&input.name)?;
+            user_dossier_set(ctx, &input.repo, Some(&input.name))?;
+            return Ok(Lines {
+                lines: vec![format!(
+                    "the user's dossier: {} (the app's new chats and agent runs work in it)",
+                    input.name
+                )],
+            });
+        }
         let lines = dossiers()?.bind(
             session(&input.session)?,
             &ctx.actor,
@@ -2659,6 +2743,16 @@ impl Engine for Operator {
     }
 
     fn dossier_active(&self, _: &Ctx, input: SessionIn) -> Result<Lines> {
+        if input.session.0.is_empty() {
+            return Ok(Lines {
+                lines: vec![match user_dossier()? {
+                    Some(d) => format!("the user's dossier: {d}"),
+                    None => "the user has no dossier: choose one with dossier use <name> (dossier list), or make one \
+                             with dossier create <name>"
+                        .into(),
+                }],
+            });
+        }
         let id = session(&input.session)?;
         let active = dossiers()?.active(id)?;
         Ok(Lines {
@@ -2669,7 +2763,17 @@ impl Engine for Operator {
         })
     }
 
-    fn dossier_release(&self, _: &Ctx, input: DossierReleaseIn) -> Result<Lines> {
+    fn dossier_release(&self, ctx: &Ctx, input: DossierReleaseIn) -> Result<Lines> {
+        if input.session.0.is_empty() {
+            let had = user_dossier()?;
+            user_dossier_set(ctx, &ClientPath(PathBuf::from("/")), None)?;
+            return Ok(Lines {
+                lines: vec![had.map_or_else(
+                    || "the user had no dossier".into(),
+                    |d| format!("the user's dossier {d} is no longer chosen"),
+                )],
+            });
+        }
         let store = dossiers()?;
         // the session-end hook: a pool whose main agent ended stops (flow.stop `main0 ended`); /clear and /resume
         // end only this session of the agent
@@ -2689,7 +2793,12 @@ impl Engine for Operator {
     }
 
     fn dossier_list(&self, _: &Ctx, _: Empty) -> Result<DossierList> {
-        Ok(dossiers()?.list()?.into_wire())
+        let chosen = user_dossier()?;
+        let mut list = dossiers()?.list()?;
+        for d in &mut list {
+            d.chosen = chosen.as_ref() == Some(&d.name);
+        }
+        Ok(list.into_wire())
     }
 
     fn dossier_migrate(&self, _: &Ctx, input: DossierMigrateIn) -> Result<Lines> {
@@ -4252,6 +4361,18 @@ impl Engine for Operator {
         crate::thread::start(&input)
     }
 
+    fn thread_repo(&self, _: &Ctx, input: legionctl_api::ThreadRepoIn) -> Result<Lines> {
+        let root = config(Some(&input.repo))?.config.workspace.root;
+        Ok(Lines {
+            lines: dossiers()?.thread_repo(
+                input.thread,
+                input.repo.get()?,
+                input.base.as_deref(),
+                &root,
+            )?,
+        })
+    }
+
     fn thread_list(&self, _: &Ctx, _: Empty) -> Result<Vec<legionctl_api::ThreadInfo>> {
         crate::thread::list()
     }
@@ -4511,6 +4632,7 @@ impl Engine for Operator {
             steal: input.steal,
             token: &token,
             dir,
+            topic: None,
             headless: false,
             account: input.account.as_deref(),
             inside: input.inside.into(),
@@ -4523,47 +4645,92 @@ impl Engine for Operator {
     }
 
     fn session_run(&self, _: &Ctx, input: SessionRunIn) -> Result<RunOutput> {
-        let dir = input.repo.get()?;
         let resolved = config(Some(&input.repo))?;
         let store = Dossiers::open(&resolved.config.dossier)?;
-        let dossier = match input.dossier {
-            Some(d) => d,
-            None => store.last_in(&place_of(dir))?.context(
-                "no dossier was used in this repository yet; add --dossier <name> --create",
-            )?,
+        // the user's thread: its dossier, its folder and its ACP session; the prompt and the answer go into its log
+        let thread = match input.thread {
+            Some(id) => {
+                let info = store
+                    .threads()?
+                    .into_iter()
+                    .find(|t| t.id == id)
+                    .with_context(|| format!("no thread {id}"))?;
+                if let Some(owner) = &info.owner {
+                    anyhow::bail!(
+                        "thread {id} is the thread of session {owner}: a run goes into a thread of the user (a chat; \
+                         the app's /chat starts one)"
+                    );
+                }
+                anyhow::ensure!(
+                    input.dossier.as_ref().is_none_or(|d| *d == info.dossier),
+                    "thread {id} works on dossier {}, not {}",
+                    info.dossier,
+                    input.dossier.as_deref().unwrap_or_default()
+                );
+                let root = &resolved.config.workspace.root;
+                Some((info, store.thread_folder(id, root)?, store.thread_acp(id)?))
+            }
+            None => None,
         };
-        let token = legionctl_api::random_token()?;
-        let start = Start {
-            agent: &input.agent,
-            dossier: &dossier,
-            steal: input.steal,
-            token: &token,
-            dir,
-            headless: true,
-            account: input.account.as_deref(),
-            inside: input.inside.into(),
-            gpu: input.gpu,
-            member: None,
+        let dir = match &thread {
+            Some((_, folder, _)) => folder.as_path(),
+            None => input.repo.get()?,
         };
-        let launch = store.start_session(&start, &resolved.config)?;
-        let db = Db::open_default()?;
-        db.issue_token(&launch.id, &token)?;
-        // `load`: the caller asked to go on in `acp`, so an agent that cannot load it fails the run
-        let job_input = serde_json::json!({"session": launch.id, "prompt": input.prompt, "tag": input.tag,
-            "acp": input.acp, "load": input.acp.is_some(), "model": input.model});
-        let job = db.job_begin("session.run", &job_input)?;
-        let out = self.runtime.block_on(crate::acp::run(
-            launch,
-            &input.prompt,
-            (job, &job_input),
-            stoppable(job),
+        let dossier = match (&thread, input.dossier.clone()) {
+            (Some((info, _, _)), _) => info.dossier.clone(),
+            (None, Some(d)) => d,
+            (None, None) => store.last_in(&place_of(dir))?.with_context(|| {
+                format!(
+                    "no dossier was used in {} yet: give --dossier <name> (dossier list; a new one: dossier create \
+                     <name>)",
+                    dir.display()
+                )
+            })?,
+        };
+        let acp = input
+            .acp
+            .clone()
+            .or_else(|| thread.as_ref().and_then(|(_, _, acp)| acp.clone()));
+        let tag = input
+            .tag
+            .clone()
+            .or_else(|| input.thread.map(|id| format!("thread:{id}")));
+        let prompt = match input.thread {
+            Some(id) if acp.is_none() => conversation_prompt(&store, id, dir, &input.prompt)?,
+            _ => input.prompt.clone(),
+        };
+        if let Some(id) = input.thread {
+            store.thread_note(
+                id,
+                "user",
+                "thread.say",
+                &serde_json::json!({"text": input.prompt, "agent": input.agent}),
+            )?;
+        }
+        // a thread on a repository works in its own worktree (topic thread-<id>)
+        let topic = thread
+            .as_ref()
+            .and_then(|(info, _, _)| info.branch.as_ref().map(|_| format!("thread-{}", info.id)));
+        let out = self.run_headless(
             &store,
-        ));
-        STOPS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&job);
-        end_job(&db, job, &out)?;
+            &resolved,
+            (&input.agent, &dossier, dir, topic.as_deref()),
+            &input,
+            (tag, acp, &prompt),
+        );
+        if let Some(id) = input.thread {
+            let row = match &out {
+                Ok(run) => (
+                    "thread.answer",
+                    serde_json::json!({"text": run.text, "acp": run.acp, "session": run.id, "ms": run.ms}),
+                ),
+                Err(e) => (
+                    "thread.fail",
+                    serde_json::json!({"error": format!("{e:#}")}),
+                ),
+            };
+            store.thread_note(id, &input.agent, row.0, &row.1)?;
+        }
         out
     }
 
@@ -4697,5 +4864,52 @@ impl Engine for Operator {
             locked: resolved.config.config.locked,
             problems: resolved.problems,
         })
+    }
+}
+
+impl Operator {
+    /// A headless run of `agent` on `dossier` in `dir`, with the output `tag` and the ACP session `acp` to go on in.
+    fn run_headless(
+        &self,
+        store: &Dossiers,
+        resolved: &Resolved,
+        (agent, dossier, dir, topic): (&str, &str, &Path, Option<&str>),
+        input: &SessionRunIn,
+        (tag, acp, prompt): (Option<String>, Option<String>, &str),
+    ) -> Result<RunOutput> {
+        let token = legionctl_api::random_token()?;
+        let start = Start {
+            agent,
+            dossier,
+            steal: input.steal,
+            token: &token,
+            dir,
+            topic,
+            headless: true,
+            account: input.account.as_deref(),
+            inside: input.inside.into(),
+            gpu: input.gpu,
+            member: None,
+        };
+        let launch = store.start_session(&start, &resolved.config)?;
+        let db = Db::open_default()?;
+        db.issue_token(&launch.id, &token)?;
+        // `load`: the caller asked to go on in `acp`, so an agent that cannot load it fails the run
+        let job_input = serde_json::json!({"session": launch.id, "prompt": prompt, "tag": tag,
+            "acp": acp, "load": acp.is_some(), "model": input.model});
+        let job = db.job_begin("session.run", &job_input)?;
+        let out = self.runtime.block_on(crate::acp::run(
+            launch,
+            prompt,
+            (job, &job_input),
+            stoppable(job),
+            store,
+        ));
+        STOPS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&job);
+        end_job(&db, job, &out)?;
+        out
     }
 }

@@ -298,6 +298,16 @@ pub fn command(client_only: Vec<Command>) -> Command {
 /// # Errors
 /// A client-filled field cannot be filled (see [`fill_client_fields`]).
 pub fn operation(matches: &ArgMatches, stdin: bool) -> Result<Option<(&'static OpInfo, Value)>> {
+    let Some((op, mut input)) = parse(matches) else {
+        return Ok(None);
+    };
+    fill_client_fields(op, &mut input, stdin)?;
+    Ok(Some((op, input)))
+}
+
+/// The operation a parsed command line names, and the input that the line gives (no field of the calling process).
+#[must_use]
+pub fn parse(matches: &ArgMatches) -> Option<(&'static OpInfo, Value)> {
     let mut words = Vec::new();
     let mut at = matches;
     while let Some((word, sub)) = at.subcommand() {
@@ -305,9 +315,7 @@ pub fn operation(matches: &ArgMatches, stdin: bool) -> Result<Option<(&'static O
         at = sub;
     }
     let name = words.join(".");
-    let Some(op) = OPS.iter().find(|op| op.name == name) else {
-        return Ok(None);
-    };
+    let op = OPS.iter().find(|op| op.name == name)?;
     let schema = (op.input)();
     let mut input = Map::new();
     for field in fields(&schema) {
@@ -339,9 +347,7 @@ pub fn operation(matches: &ArgMatches, stdin: bool) -> Result<Option<(&'static O
             input.insert(field.key.to_string(), value);
         }
     }
-    let mut input = Value::Object(input);
-    fill_client_fields(op, &mut input, stdin)?;
-    Ok(Some((op, input)))
+    Some((op, Value::Object(input)))
 }
 
 /// The agent session of this process: `LEGIONCTL_SESSION`, else Claude Code's `CLAUDE_CODE_SESSION_ID`.
@@ -409,4 +415,23 @@ pub fn fill_client_fields(op: &OpInfo, input: &mut Value, stdin: bool) -> Result
         }
     }
     Ok(())
+}
+
+/// Fill a line of the user's chat bar (the app): the user is no agent session, so no session field comes
+/// from the process's environment (a chat bar started from an agent's terminal still acts as the user), and path
+/// fields (with their defaults such as `.`) are against `dir`, the chat bar's folder, not the process's.
+pub fn fill_user_fields(op: &OpInfo, input: &mut Value, dir: &std::path::Path) {
+    let schema = (op.input)();
+    let Some(map) = input.as_object_mut() else {
+        return;
+    };
+    for field in fields(&schema).into_iter().filter(|f| f.kind == Kind::Path) {
+        let given = map.get(field.key).and_then(Value::as_str).map(String::from);
+        if let Some(path) = given.or(field.default) {
+            map.insert(
+                field.key.to_string(),
+                Value::from(dir.join(path).to_string_lossy().as_ref()),
+            );
+        }
+    }
 }

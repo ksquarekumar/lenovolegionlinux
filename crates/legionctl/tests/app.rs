@@ -1046,8 +1046,18 @@ fn thread_lab(tag: &str) -> (Operator, PathBuf, PathBuf) {
             ("PATH", path),
             // the stand-in composer answers an intent with the view of <first word>.jsonc there
             ("FAKE_ACP_VIEWS", home.join("fake-views").into()),
+            // a WAIT prompt holds until the test makes this file (a chat's folder is an overlay: its lower
+            // folder's new files need not show)
+            ("FAKE_ACP_RELEASE", home.join("release").into()),
         ],
     );
+    // the user's dossier of the app's chats and runs, made and chosen as the user does (no session)
+    for args in [
+        &["dossier", "create", "chat"][..],
+        &["dossier", "use", "chat"],
+    ] {
+        user_cli(&op, &home, &repo, args);
+    }
     for args in [
         &["dossier", "use", "port"][..],
         &["thread", "start", "port the parser"],
@@ -1066,6 +1076,17 @@ fn thread_lab(tag: &str) -> (Operator, PathBuf, PathBuf) {
     let path = home.to_path_buf();
     op.held.push(home);
     (op, path, repo)
+}
+
+/// stdout of `legionctl <args>` of the user (no agent session) in `cwd`; it must succeed.
+fn user_cli(op: &Operator, home: &Path, cwd: &Path, args: &[&str]) -> String {
+    let out = op.run(cwd, &[("HOME", home.to_str().unwrap())], args, "");
+    assert!(
+        out.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
 }
 
 /// stdout of `legionctl <args>` of the session `main` in the repository, with `stdin`; it must succeed.
@@ -1088,7 +1109,7 @@ fn lab_cli(op: &Operator, home: &Path, repo: &Path, args: &[&str], stdin: &str) 
 }
 
 /// The app in a headless window of `width` x 700 against `op` with the seed Machine now as its tab, and its entity; `runs`
-/// is the repository of the chat bar's runs (dossier `chat`).
+/// is the repository of the app's views and config (the lab's).
 fn open_app(
     cx: &mut TestAppContext,
     op: &Operator,
@@ -1103,7 +1124,6 @@ fn open_app(
     let client = Client::at("app", &op.runtime);
     let handle = runtime.handle().clone();
     let repo = runs.map_or_else(here, |(_, repo)| repo.to_path_buf());
-    let dossier = runs.map(|_| "chat".to_string());
     cx.update(gpui_kit::init);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds {
@@ -1114,10 +1134,7 @@ fn open_app(
     };
     let window: WindowHandle<gpui_kit::base::Root> = cx.update(|cx| {
         let (window, _) = gpui_kit::open_window(options, cx, |_, cx| {
-            cx.new(|cx| {
-                LegionApp::new(client, handle, Some(view("machine-now")), repo, cx)
-                    .with_dossier(dossier)
-            })
+            cx.new(|cx| LegionApp::new(client, handle, Some(view("machine-now")), repo, cx))
         })
         .unwrap();
         window.downcast().unwrap()
@@ -1288,8 +1305,8 @@ fn tabs_the_space_and_the_navigator_width_persist_across_an_app_restart(cx: &mut
         });
         let (edge, to) = (56. + 1200. * 0.3, 56. + 1200. * 0.25);
         cx.update(|window, cx| window.drag(point(px(edge), px(300.)), point(px(to), px(300.)), cx));
-        // the Work space, then its first thread as a tab
-        cx.update(|window, cx| window.click("space-work", cx));
+        // the Agents space, then the agent session's thread as a tab
+        cx.update(|window, cx| window.click("space-agents", cx));
         wait(cx, &app, "the threads", |a| !a.screen.threads.is_empty());
         cx.update(|window, cx| window.click("nav-thread-1", cx));
         wait(cx, &app, "the thread tab", |a| {
@@ -1349,7 +1366,7 @@ fn tabs_the_space_and_the_navigator_width_persist_across_an_app_restart(cx: &mut
     app.read_with(cx, |a, _| {
         // the command line's tab (Machine now) comes at the end of the kept ones
         assert_eq!(a.screen.tabs[..3], want, "{:?}", a.screen.tabs);
-        assert_eq!(a.screen.space, Space::Work);
+        assert_eq!(a.screen.space, Space::Agents);
         assert!(
             (a.screen.navigator - 0.25).abs() < 0.01,
             "{}",
@@ -1367,9 +1384,9 @@ fn the_app_thread_pane_shows_a_watch_rule_as_a_sentence(cx: &mut TestAppContext)
     let (op, home, repo) = thread_lab("rule");
     let (app, mut vcx, runtime) = open_app(cx, &op, 1000., None);
     let cx = &mut vcx;
-    wait(cx, &app, "the thread", |a| a.screen.thread.is_some());
-    // the thread is a tab (DESIGN-09): the Work space lists it
-    cx.update(|window, cx| window.click("space-work", cx));
+    wait(cx, &app, "the threads", |a| !a.screen.threads.is_empty());
+    // the thread is a tab (DESIGN-09): the Agents space lists an agent session's thread
+    cx.update(|window, cx| window.click("space-agents", cx));
     cx.update(|window, cx| window.click("nav-thread-1", cx));
     wait(cx, &app, "the thread tab", |a| {
         a.screen.shown.contains_key(&1)
@@ -1511,20 +1528,18 @@ fn the_app_chat_bar_offers_the_agents_commands_first_and_runs_a_registry_line(
     drop(runtime);
 }
 
-/// todo-144: the chat bar picks its agent. It starts with config app.agent (`fake`); `/agent ` offers each name of
-/// session.acp (the defaults' claude and codex, the lab's fake and other); `/agent nobody` is refused with the names;
-/// `/agent other` is a row of the thread's log, so the pick is the thread's (every screen reads it); the next prompt
-/// runs on `other`, whose answer names it.
+/// todo-144, todo-174: the chat bar picks its agent. It starts with config app.agent (`fake`); `/agent ` offers each
+/// name of session.acp (the defaults' claude and codex, the lab's fake and other); `/agent nobody` is refused with the
+/// names; outside a thread `/agent other` is this screen's pick, and a new chat keeps it: its thread starts with a
+/// `thread.agent` row of other, and the answer comes from other.
 #[gpui_kit::test]
-fn the_app_chat_bar_picks_its_agent_from_session_acp_and_keeps_the_pick_in_the_thread(
+fn the_app_chat_bar_picks_its_agent_from_session_acp_and_a_new_chat_keeps_the_pick_in_its_thread(
     cx: &mut TestAppContext,
 ) {
     let (op, home, repo) = thread_lab("pick");
     let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
     let cx = &mut vcx;
-    wait(cx, &app, "the thread and the agents", |a| {
-        a.screen.thread.is_some() && !a.screen.agents.is_empty()
-    });
+    wait(cx, &app, "the agents", |a| !a.screen.agents.is_empty());
     app.read_with(cx, |a, _| {
         assert_eq!(a.screen.agent().as_deref(), Some("fake"));
     });
@@ -1554,11 +1569,7 @@ fn the_app_chat_bar_picks_its_agent_from_session_acp_and_keeps_the_pick_in_the_t
         window.input("nobody", cx);
         window.press("enter", cx);
     });
-    wait(cx, &app, "the refused pick", |a| {
-        a.screen.runs.first().is_some_and(|r| r.1.is_some())
-    });
     app.read_with(cx, |a, _| {
-        assert_eq!(a.screen.runs[0], ("/agent nobody".to_string(), Some(false)));
         let why = a.state.message.clone().unwrap_or_default();
         assert!(
             why.contains("no agent nobody in session.acp; it has claude, codex, fake, other"),
@@ -1569,15 +1580,33 @@ fn the_app_chat_bar_picks_its_agent_from_session_acp_and_keeps_the_pick_in_the_t
     cx.update(|window, cx| {
         window.input("/agent other", cx);
         window.press("enter", cx);
+        window.input("/chat", cx);
+        window.press("enter", cx);
+        window.input("hello", cx);
+        window.press("enter", cx);
     });
-    wait(cx, &app, "the pick in the thread's log", |a| {
-        a.screen.agent().as_deref() == Some("other")
+    wait(cx, &app, "the chat's answer", |a| {
+        a.screen
+            .thread
+            .as_ref()
+            .is_some_and(|t| t.log.iter().any(|r| r.kind == "thread.answer"))
+    });
+    let id = app.read_with(cx, |a, _| {
+        let t = a.screen.thread.as_ref().unwrap();
+        let answer = t.log.iter().find(|r| r.kind == "thread.answer").unwrap();
+        let text = answer.payload["text"].as_str().unwrap_or_default();
+        assert!(
+            text.contains("prompt: hello") && text.contains("agent: other"),
+            "{text}"
+        );
+        assert_eq!(a.screen.agent().as_deref(), Some("other"));
+        t.thread.id
     });
     let log: serde_json::Value = serde_json::from_str(&lab_cli(
         &op,
         &home,
         &repo,
-        &["thread", "show", "1", "--json"],
+        &["thread", "show", &id.to_string(), "--json"],
         "",
     ))
     .unwrap();
@@ -1589,24 +1618,485 @@ fn the_app_chat_bar_picks_its_agent_from_session_acp_and_keeps_the_pick_in_the_t
             .any(|r| r["kind"] == "thread.agent" && r["payload"]["agent"] == "other"),
         "{log:#}"
     );
+    drop(runtime);
+}
+
+/// The user's text of a chat message of `kind` in the thread that the tab shows.
+fn said(a: &LegionApp, kind: &str) -> Vec<String> {
+    a.screen
+        .thread
+        .iter()
+        .flat_map(|t| t.log.iter())
+        .filter(|r| r.kind == kind)
+        .map(|r| {
+            r.payload["text"]
+                .as_str()
+                .or(r.payload["error"].as_str())
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect()
+}
+
+/// Type `line` into the chat bar and send it.
+fn send(cx: &mut VisualTestContext, line: &str) {
     cx.update(|window, cx| {
-        window.input("hello", cx);
+        window.render_frame(cx);
+        window.click("chat", cx);
+        window.input(line, cx);
         window.press("enter", cx);
     });
-    wait(cx, &app, "the prompt's run", |a| {
-        a.screen.runs.len() == 3 && a.screen.runs[2].1.is_some()
+}
+
+/// No dossier: "Hi" in a new chat says what a dossier is for and opens the Dossiers view; `/dossier add` names the
+/// commands that work; New dossier (the form of dossier.create, an inline confirm) makes appreview, and the app uses it.
+fn make_a_dossier_in_the_app(
+    cx: &mut VisualTestContext,
+    app: &Entity<LegionApp>,
+    op: &Operator,
+    home: &Path,
+    repo: &Path,
+) {
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("space-work", cx);
+        window.render_frame(cx);
+        window.click("nav-new-chat", cx);
     });
+    send(cx, "Hi");
     app.read_with(cx, |a, _| {
-        assert_eq!(a.screen.runs[2], ("hello".to_string(), Some(true)));
-        let answer = a.state.message.clone().unwrap_or_default();
-        // text is an intent (G5): the picked agent composes, with its model
+        let why = a.state.message.clone().unwrap_or_default();
         assert!(
-            answer.contains("Intent: hello")
-                && answer.contains("agent: other")
-                && answer.contains("model: other-small"),
-            "{answer}"
+            why.starts_with("No dossier: a chat and an agent run keep their record in a dossier")
+                && why.contains("/dossier use <name>")
+                && why.contains("/dossier create <name>"),
+            "{why}"
+        );
+        assert_eq!(a.tab(), Some(&view("dossiers")), "the choice opens");
+    });
+    send(cx, "/dossier add MEMORY notes");
+    app.read_with(cx, |a, _| {
+        let why = a.state.message.clone().unwrap_or_default();
+        assert!(
+            why.contains("an agent does it in its session")
+                && why.contains("choose it: /dossier use <name>"),
+            "{why}"
         );
     });
+    wait(cx, app, "the dossiers", |a| {
+        shown(a, "dossiers").is_some_and(|v| v.rows.len() == 2)
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("view-dossiers-action-0", cx);
+    });
+    app.read_with(cx, |a, _| {
+        let form = a.state.form.as_ref().expect("the form of dossier.create");
+        assert!(form.fields.iter().any(|f| f.name == "name" && f.required));
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("form-field-name", cx);
+        window.input("appreview", cx);
+        window.click("form-submit", cx);
+    });
+    app.read_with(cx, |a, _| {
+        let pending = a.state.pending.as_ref().expect("an inline confirm");
+        assert_eq!(pending.class, legionctl_api::Class::Workspace);
+        assert_eq!(pending.button.input["name"], "appreview");
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("apply", cx);
+    });
+    wait(cx, app, "the new dossier in use", |a| {
+        a.screen.dossier.as_deref() == Some("appreview")
+    });
+    assert!(home.join("agentWorkspaces/appreview/plan.md").is_file());
+    let listed = user_cli(op, home, repo, &["dossier", "list"]);
+    assert!(
+        listed
+            .lines()
+            .any(|l| l.starts_with("appreview") && l.ends_with("(the user's dossier)")),
+        "{listed}"
+    );
+}
+
+/// Wait until the layout fact of the app keeps the tab of thread `id`.
+fn wait_for_the_tab_fact(
+    cx: &mut VisualTestContext,
+    op: &Operator,
+    home: &Path,
+    repo: &Path,
+    id: i64,
+) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let facts = user_cli(
+            op,
+            home,
+            repo,
+            &["facts", "at", "--entity", "app", "--winners", "--json"],
+        );
+        let facts: serde_json::Value = serde_json::from_str(&facts).unwrap();
+        let kept = facts.as_array().unwrap().iter().any(|f| {
+            f["attribute"] == "tabs"
+                && f["value"]["tabs"]
+                    .as_array()
+                    .is_some_and(|t| t.contains(&serde_json::json!({"kind": "thread", "id": id})))
+        });
+        if kept {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the tabs fact: {facts}");
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// "Work on a repository" in the thread tab: the form of thread.repo (the repository given or `prefilled` with the
+/// dossier's), base main, the inline confirm; then the thread has its branch.
+fn attach_repository(
+    cx: &mut VisualTestContext,
+    app: &Entity<LegionApp>,
+    repo: &Path,
+    prefilled: bool,
+) {
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("thread-repo", cx);
+    });
+    wait(cx, app, "the form of thread.repo", |a| {
+        a.state.form.is_some()
+    });
+    // the second chat's form has the dossier's repository (the first chat's) already
+    let given = app.read_with(cx, |a, _| {
+        a.state.form.as_ref().unwrap().values.get("repo").cloned()
+    });
+    assert_eq!(
+        given.as_deref(),
+        prefilled.then(|| repo.to_str().unwrap()),
+        "the dossier's repository first"
+    );
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        if given.is_none() {
+            window.click("form-field-repo", cx);
+            window.input(repo.to_str().unwrap(), cx);
+        }
+        window.click("form-more", cx);
+        window.render_frame(cx);
+        window.click("form-field-base", cx);
+        window.input("main", cx);
+        window.click("form-submit", cx);
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("apply", cx);
+    });
+    wait(cx, app, "the thread's branch", |a| {
+        a.screen
+            .thread
+            .as_ref()
+            .is_some_and(|t| t.thread.branch.is_some())
+    });
+}
+
+/// todo-174, the user's path from no dossier to a kept conversation (the user's repro on r271: a dossier made, "Hi"
+/// answered with "no dossier in use in this repo", and `/dossier add ... --create` did nothing). An agent session's
+/// thread (thread 1 of session main) never opens by default and is not in the Work space. With no dossier chosen, the
+/// title bar says so; "Hi" in a new chat says what a dossier is for, how to choose or make one, and opens the Dossiers
+/// view; `/dossier add` says that an agent does it and names the commands that work. New dossier (the generated form
+/// of dossier.create) makes appreview after an inline confirm, and the app uses it at once. "WAIT hi" starts the
+/// user's own thread on appreview (no session: owner none), the answer shows in the tab as the agent writes it (the
+/// stand-in holds after its first line), then whole; "again" goes on in the same ACP session. A second chat is a
+/// second thread. After a restart both chat tabs are back with their conversations, and the title names the
+/// dossier and the thread.
+#[gpui_kit::test]
+fn a_new_user_chooses_no_dossier_makes_one_in_the_app_and_keeps_two_chats_across_a_restart(
+    tcx: &mut TestAppContext,
+) {
+    let (op, home, repo) = thread_lab("path");
+    user_cli(&op, &home, &repo, &["dossier", "release"]);
+    let (app, mut vcx, runtime) = open_app(tcx, &op, 1400., Some((&home, &repo)));
+    let cx = &mut vcx;
+    wait(cx, &app, "the threads and agents", |a| {
+        !a.screen.threads.is_empty() && !a.screen.agents.is_empty()
+    });
+    app.read_with(cx, |a, _| {
+        assert_eq!(a.screen.dossier, None);
+        assert!(a.screen.thread.is_none(), "no thread opens by default");
+        assert_eq!(a.screen.tabs, [view("machine-now")]);
+        let lead = a.screen.threads.iter().find(|t| t.id == 1).unwrap();
+        assert_eq!(
+            lead.owner.as_deref(),
+            Some("main"),
+            "thread 1 is an agent session's"
+        );
+    });
+    make_a_dossier_in_the_app(cx, &app, &op, &home, &repo);
+
+    // the first message makes the user's thread; the answer comes as it is written
+    app.update(cx, |a, cx| a.open_tab(Tab::Chat, cx));
+    send(cx, "WAIT hi");
+    wait(cx, &app, "the first line of the answer", |a| {
+        a.screen
+            .live
+            .values()
+            .any(|(_, text)| text.contains("prompt: WAIT hi"))
+    });
+    let first = app.read_with(cx, |a, _| {
+        let Some(Tab::Thread { id }) = a.tab().cloned() else {
+            panic!("the chat tab is its thread's tab: {:?}", a.tab());
+        };
+        let info = a.screen.threads.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(
+            (info.dossier.as_str(), info.owner.as_deref()),
+            ("appreview", None)
+        );
+        assert!(said(a, "thread.answer").is_empty(), "not whole yet");
+        id
+    });
+    std::fs::write(home.join("release"), "").unwrap();
+    wait(cx, &app, "the whole answer", |a| {
+        !said(a, "thread.answer").is_empty() && a.screen.live.is_empty()
+    });
+    send(cx, "again");
+    wait(cx, &app, "the second answer", |a| {
+        said(a, "thread.answer").len() == 2
+    });
+    app.read_with(cx, |a, _| {
+        assert_eq!(said(a, "thread.say"), ["WAIT hi", "again"]);
+        let answers = said(a, "thread.answer");
+        assert!(answers[0].contains("acp: new"), "{}", answers[0]);
+        assert!(
+            answers[1].contains("acp: loaded"),
+            "the same conversation: {}",
+            answers[1]
+        );
+    });
+    app.update(cx, |a, cx| a.open_tab(Tab::Chat, cx));
+    send(cx, "second");
+    wait(cx, &app, "the second chat's answer", |a| {
+        !said(a, "thread.answer").is_empty()
+            && a.screen
+                .thread
+                .as_ref()
+                .is_some_and(|t| t.thread.id != first)
+    });
+    let second = app.read_with(cx, |a, _| a.screen.thread.as_ref().unwrap().thread.id);
+    // the layout fact keeps both chat tabs
+    wait_for_the_tab_fact(cx, &op, &home, &repo, second);
+    drop(app);
+    drop(vcx);
+    drop(runtime);
+
+    let (app, mut vcx, runtime) = open_app(tcx, &op, 1400., Some((&home, &repo)));
+    let cx = &mut vcx;
+    app.read_with(cx, |a, _| {
+        let chats: Vec<&Tab> = a
+            .screen
+            .tabs
+            .iter()
+            .filter(|t| matches!(t, Tab::Thread { .. }))
+            .collect();
+        assert_eq!(
+            chats,
+            [&Tab::Thread { id: first }, &Tab::Thread { id: second }],
+            "{:?}",
+            a.screen.tabs
+        );
+    });
+    app.update(cx, |a, cx| a.open_tab(Tab::Thread { id: first }, cx));
+    wait(cx, &app, "the first chat's conversation", |a| {
+        said(a, "thread.answer").len() == 2
+    });
+    app.read_with(cx, |a, _| {
+        assert_eq!(a.screen.dossier.as_deref(), Some("appreview"));
+        assert_eq!(said(a, "thread.say"), ["WAIT hi", "again"]);
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("place").visible());
+    });
+    drop(runtime);
+}
+
+/// todo-174, the thread and code (approved 2026-10-17): a chat starts with no repository (its runs work in a scratch
+/// folder: the stand-in cannot commit there). "Work on a repository" opens the form of thread.repo; with the lab's
+/// repository and base main, the thread gets its own worktree on its own branch, the title names repository@branch,
+/// and the next run commits there, not on main (the agent gets the conversation so far: it has no session in the new
+/// folder). A second chat's form has that repository first (the dossier's linked one), and it gets a second worktree.
+#[gpui_kit::test]
+fn a_chat_gets_a_repository_once_and_each_chat_works_in_its_own_worktree(cx: &mut TestAppContext) {
+    let (op, home, repo) = thread_lab("code");
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1400., Some((&home, &repo)));
+    let cx = &mut vcx;
+    wait(cx, &app, "the dossier", |a| a.screen.dossier.is_some());
+    let mut threads = Vec::new();
+    for first in ["one", "two"] {
+        app.update(cx, |a, cx| a.open_tab(Tab::Chat, cx));
+        send(cx, first);
+        wait(cx, &app, "the scratch answer", |a| {
+            !said(a, "thread.answer").is_empty()
+        });
+        app.read_with(cx, |a, _| {
+            let answer = &said(a, "thread.answer")[0];
+            assert!(
+                answer.contains("COMMIT_FAILED"),
+                "no repository yet: {answer}"
+            );
+        });
+        attach_repository(cx, &app, &repo, first != "one");
+        send(cx, "commit");
+        wait(cx, &app, "the answer in the worktree", |a| {
+            said(a, "thread.answer").len() == 2
+        });
+        let (id, branch) = app.read_with(cx, |a, _| {
+            let answer = &said(a, "thread.answer")[1];
+            assert!(answer.contains("COMMIT_OK"), "{answer}");
+            assert!(
+                answer.contains("prompt: The conversation of this thread so far")
+                    && answer.contains(&format!("user: {first}")),
+                "a new session in the worktree gets the conversation: {answer}"
+            );
+            let t = &a.screen.thread.as_ref().unwrap().thread;
+            (t.id, t.branch.clone().unwrap())
+        });
+        assert_eq!(branch, format!("legionctl/chat--thread-{id}"));
+        // the timeline says where the thread works, as a sentence
+        app.read_with(cx, |a, _| {
+            let row = a
+                .screen
+                .thread
+                .as_ref()
+                .unwrap()
+                .log
+                .iter()
+                .find(|r| r.kind == "thread.repo")
+                .cloned();
+            assert_eq!(
+                legionctl_api::chat::log_detail(&row.unwrap()),
+                format!("works on {} at {branch} (from main)", repo.display())
+            );
+        });
+        threads.push((id, branch));
+    }
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("place").visible());
+    });
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(args)
+            .env("HOME", &home)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    assert_eq!(
+        git(&["log", "--format=%s", "main"]),
+        "start",
+        "main has no agent commit"
+    );
+    for (_, branch) in &threads {
+        assert_eq!(
+            git(&["log", "--format=%s", branch]),
+            "headless\nstart",
+            "{branch}"
+        );
+    }
+    let worktrees = git(&["worktree", "list"]);
+    for (id, _) in &threads {
+        assert!(
+            worktrees.contains(&format!("chat--thread-{id}")),
+            "{worktrees}"
+        );
+    }
+    drop(runtime);
+}
+
+/// todo-174: each failure in the chat names its cause and the command that fixes it, and the conversation keeps the
+/// failure: a dossier name in use, a dossier that is not there, an ACP adapter that is not on the operator's PATH (a
+/// chat on `missing`: the thread's log has a thread.fail row with that cause), an adapter that ends before it answers
+/// (its exit and stderr, as a missing login gives them), and a message into an agent session's thread (refused: a run
+/// goes into a thread of the user).
+#[gpui_kit::test]
+fn each_failure_of_the_chat_names_its_cause(cx: &mut TestAppContext) {
+    let (op, home, repo) = thread_lab("fail");
+    // the config gets an agent whose adapter is not there
+    let config = home.join(".config/legionctl/app.jsonc");
+    let mut value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    value["session"]["acp"]["missing"] = serde_json::json!(["no-such-adapter"]);
+    value["session"]["acp"]["broken"] =
+        serde_json::json!(["sh", "-c", "echo 'cannot start: no login' >&2; exit 1"]);
+    write(&config, &value.to_string());
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1400., Some((&home, &repo)));
+    let cx = &mut vcx;
+    wait(cx, &app, "the agents and the dossier", |a| {
+        a.screen.agents.iter().any(|n| n == "missing") && a.screen.dossier.is_some()
+    });
+    let message = |cx: &mut VisualTestContext, app: &Entity<LegionApp>, what: &str, want: &str| {
+        wait(cx, app, what, |a| {
+            a.state.message.as_deref().is_some_and(|m| m.contains(want))
+        });
+    };
+    send(cx, "/dossier create chat");
+    message(
+        cx,
+        &app,
+        "the name in use",
+        "dossier chat exists already: choose it with dossier use chat",
+    );
+    send(cx, "/dossier use nobody");
+    message(
+        cx,
+        &app,
+        "no such dossier",
+        "no dossier nobody (dossier list); make it with dossier create nobody",
+    );
+    send(cx, "/agent missing");
+    send(cx, "/chat");
+    send(cx, "x");
+    message(
+        cx,
+        &app,
+        "the missing adapter",
+        "the ACP adapter no-such-adapter is not on the operator's PATH",
+    );
+    wait(cx, &app, "the failure in the conversation", |a| {
+        !said(a, "thread.fail").is_empty()
+    });
+    app.read_with(cx, |a, _| {
+        assert!(
+            said(a, "thread.fail")[0].contains("no-such-adapter is not on the operator's PATH")
+        );
+        assert_eq!(said(a, "thread.say"), ["x"]);
+    });
+    // an adapter that ends before it answers: its exit and its stderr, not the JSON-RPC envelope
+    send(cx, "/agent broken");
+    send(cx, "/chat");
+    send(cx, "y");
+    message(
+        cx,
+        &app,
+        "the adapter that ended",
+        "the agent's ACP adapter ended before it answered: Process exited with exit status: 1: cannot start: no login",
+    );
+    app.update(cx, |a, cx| a.open_tab(Tab::Thread { id: 1 }, cx));
+    wait(cx, &app, "thread 1", |a| {
+        a.screen.thread.as_ref().is_some_and(|t| t.thread.id == 1)
+    });
+    send(cx, "hi");
+    message(
+        cx,
+        &app,
+        "the agent's thread",
+        "thread 1 is the thread of session main",
+    );
     drop(runtime);
 }
 
@@ -1628,6 +2118,8 @@ fn the_app_thread_page_updates_from_the_event_stream(cx: &mut TestAppContext) {
     lab_cli(&op, &home, &repo, &["views", "save"], view);
     let (app, mut vcx, runtime) = open_app(cx, &op, 1200., None);
     let cx = &mut vcx;
+    // a placement shows in the app on a thread that it shows: the user opens thread 1
+    app.update(cx, |a, cx| a.open_tab(Tab::Thread { id: 1 }, cx));
     wait(cx, &app, "the thread", |a| a.screen.thread.is_some());
     lab_cli(
         &op,

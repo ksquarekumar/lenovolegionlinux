@@ -5,7 +5,7 @@ On a prompt it announces a tool call, asks one permission, commits a file and tr
 (inside the session's sandbox), then answers with what it saw: the prompt, its ACP session (new, or loaded), the MCP
 servers from session/new, the permission outcome, and whether the commit and the push went through. The answer comes
 line by line, 0.1 s apart; a prompt that starts with WAIT holds after the first line until a file `release` is in the
-working folder (at most 30 s), and one that starts with SLOW waits 30 s first (a long run, for the test that stops the
+working folder, or the file $FAKE_ACP_RELEASE when that is set (at most 30 s), and one that starts with SLOW waits 30 s first (a long run, for the test that stops the
 operator in the middle of one). It can load its sessions (kept in `.fake-acp-sessions` in the working folder, so a
 new adapter process finds them): session/load replays the earlier prompts and a REPLAYED line before it answers.
 After session/new and session/load it offers two commands (available_commands_update): /plan <what to plan> and
@@ -135,7 +135,8 @@ def prompt(params):
         update(session, "agent_message_chunk", content={"type": "text", "text": line + "\n"})
         if i == 0 and text.startswith("WAIT"):
             deadline = time.time() + 30
-            while not os.path.exists("release") and time.time() < deadline:
+            release = os.environ.get("FAKE_ACP_RELEASE", "release")
+            while not os.path.exists(release) and time.time() < deadline:
                 time.sleep(0.1)
         time.sleep(0.1)
     return {"stopReason": "end_turn"}

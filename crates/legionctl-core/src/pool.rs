@@ -547,7 +547,7 @@ impl Dossiers {
     /// # Errors
     /// A member name is not valid, or the database write fails.
     pub fn team_start(&self, s: &TeamStart) -> Result<(i64, Vec<String>)> {
-        let id = self.thread_start(s.session, s.title, s.dossier)?;
+        let id = self.thread_start(Some(s.session), s.title, s.dossier)?;
         let tx = self.begin()?;
         tx.execute(
             "UPDATE threads SET team = ?2, flow = ?3, workdir = ?4 WHERE id = ?1",

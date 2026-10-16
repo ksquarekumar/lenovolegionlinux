@@ -1,0 +1,19 @@
+// Seed (todo-174, DESIGN-15): the dossiers, the one the user chose (the app's new chats and agent runs keep their
+// record there), and the actions: use one, make one (name, folder link), choose none.
+{
+  "$schema": "../../docs/api/view.schema.json",
+  "name": "dossiers",
+  "title": "Dossiers",
+  "intent": "my dossiers and the one I work in",
+  "space": "work",
+  "widget": "table",
+  "source": { "op": "dossier.list" },
+  "columns": ["name", "chosen", "has_plan"],
+  "labels": { "name": "Dossier", "chosen": "Yours now", "has_plan": "Has a plan" },
+  "row_actions": [{ "label": "Use", "op": "dossier.use", "input": { "name": "{row.name}" } }],
+  "actions": [
+    { "label": "New dossier", "op": "dossier.create", "input": {} },
+    { "label": "Choose none", "op": "dossier.release", "input": { "reason": null } }
+  ],
+  "refresh": { "events": ["dossier.*", "facts.*"] }
+}

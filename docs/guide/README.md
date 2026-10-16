@@ -60,14 +60,17 @@ for bench and tune.
 
 ## The app
 
-`legionctl-app [now|gpu|health|bench|resources] [--dossier <name>]` opens the desktop app. It needs the operator.
+`legionctl-app [<view>]` opens the desktop app. It needs the operator.
 
 | Part | What |
 | --- | --- |
 | Pane 1 | the pages: Now, Apps & GPU, Health, Bench, Resources |
-| Pane 2 | the newest open thread: its members and its log as a timeline |
+| Pane 2 | the navigator: in Work, New chat and your chats (your threads), newest first |
 | Pane 3 | the page, or a view that an agent or you placed (`legionctl views place`) |
-| Chat bar | `/` lists the commands; other text is a prompt for the agent |
+| Chat bar | `/` lists the commands; in a chat, other text is a message to the agent, and the answer comes into the tab |
+
+A chat keeps its conversation in a dossier. Choose one with `/dossier use <name>`, or make one with `/dossier create
+<name>` (the title bar shows it; a click opens the Dossiers view).
 
 Pick the agent of the chat bar with `/agent claude` or `/agent codex` (the names of config `session.acp`). The pick
 is a row of the thread's log, so every app window on the thread uses the same agent. With no pick, config `app.agent` applies

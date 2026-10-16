@@ -246,6 +246,9 @@ pub struct DossierInfo {
     /// The stable id in its `dossier.jsonc`; it stays when the folder is renamed.
     pub id: Option<String>,
     pub has_plan: bool,
+    /// The user's dossier (`dossier use` with no session): the app's chats and runs work in it.
+    #[serde(default)]
+    pub chosen: bool,
 }
 
 pub struct Dossiers {
@@ -637,6 +640,44 @@ impl Dossiers {
         Ok(())
     }
 
+    /// A new dossier `name`, its home linked into `folder` (E1a) when one is given; an existing name is refused
+    /// (never a second dossier of one name, never a silent use of the old one).
+    ///
+    /// # Errors
+    /// The name is not valid or in use, the link cannot be made, or the home cannot be written.
+    pub fn create_new(&self, name: &str, folder: Option<&Path>) -> Result<Vec<String>> {
+        ensure!(
+            valid_name(name),
+            "dossier name must be a-z, 0-9 and '-', starting with a letter or digit"
+        );
+        ensure!(
+            !self.root.join(name).exists(),
+            "dossier {name} exists already: choose it with dossier use {name}"
+        );
+        let mut out = self.create(name)?;
+        if let Some(folder) = folder {
+            out.extend(crate::home::link(self, folder).with_context(|| {
+                format!(
+                    "dossier {name} is made; linking its home into {}",
+                    folder.display()
+                )
+            })?);
+        }
+        Ok(out)
+    }
+
+    /// `name` is a dossier in the home.
+    ///
+    /// # Errors
+    /// There is no dossier `name`.
+    pub fn known(&self, name: &str) -> Result<()> {
+        ensure!(
+            valid_name(name) && self.root.join(name).is_dir(),
+            "no dossier {name} (dossier list); make it with dossier create {name}"
+        );
+        Ok(())
+    }
+
     /// The class folders, `plan.md` with every ledger section, `dossier.jsonc` with a new id and the title, and the
     /// dossier's database; the id goes into the registry.
     fn create(&self, name: &str) -> Result<Vec<String>> {
@@ -817,6 +858,7 @@ impl Dossiers {
                     name: e.file_name().to_string_lossy().into_owned(),
                     id: read_id(&e.path())?,
                     has_plan: e.path().join("plan.md").is_file(),
+                    chosen: false,
                 },
             ));
         }

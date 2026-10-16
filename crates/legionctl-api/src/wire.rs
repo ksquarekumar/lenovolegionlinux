@@ -223,6 +223,8 @@ wire! {
         /// The stable id in its `dossier.jsonc`; it stays when the dossier is renamed.
         id: Option<String>,
         has_plan: bool,
+        /// The user's dossier (`dossier use` with no session): the app's chats and runs work in it.
+        chosen: bool,
     }
 
     /// Which session holds a dossier.
@@ -1594,6 +1596,13 @@ wire! {
         account: Option<String>,
         /// The thread it is a copy of (`thread import`).
         imported_from: Option<i64>,
+        /// The agent session that started it; none: the user's own thread (the app's chat, a terminal).
+        owner: Option<String>,
+        /// The repository (main checkout) or plain folder that the user's thread works on (`thread repo`); none:
+        /// its scratch folder.
+        repo: Option<String>,
+        /// The branch of the thread's own worktree; none for a plain folder (an overlay) or no repository.
+        branch: Option<String>,
     }
 
     /// A member of a thread.

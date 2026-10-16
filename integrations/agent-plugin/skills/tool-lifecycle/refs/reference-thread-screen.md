@@ -1,6 +1,6 @@
 # The thread screen (the app)
 
-The app (`legionctl-app [<page or view>] [--dossier <name>]`) is the only UI: spaces and tabs (DESIGN-09; below). A
+The app (`legionctl-app [<view>]`) is the only UI: spaces and tabs (DESIGN-09; below). A
 person and an agent get the same commands. Agents and scripts read the same views as text or JSON with
 `legionctl views render`.
 
@@ -9,9 +9,11 @@ person and an agent get the same commands. Agents and scripts read the same view
 | Text | What runs |
 | --- | --- |
 | `/agent:<name> <input>` | The agent's command (ACP): the prompt `/<name> <input>`. The list comes with the agent's first run. |
-| `/view <name> [name=value...]`, `/change <words>`, `/agent <name>` | The screen's own commands. |
+| `/view <name> [name=value...]`, `/change <words>`, `/agent <name>`, `/chat` | The screen's own commands. `/chat` opens a new chat. |
+| `/dossier use <name>`, `/dossier create <name> [--folder <repo>]`, `/dossier list`, `/dossier release` | The user's dossier: chats and agent runs keep their record there. A dossier made in the app is the user's at once. `/dossier add`, `write`, `append` and `edit` are an agent session's; the app says so and names these commands. |
 | `/<words> [options]` | The operation of the registry with the CLI's words, as `legionctl <words> [options]`. |
-| Other text | An intent (`ask`, the same in the app and the CLI): the stored view that answers it shows; else the agent (`/agent`) composes one in a headless run that goes on in the ACP session of the run before it. |
+| Other text in a chat tab | A message to the chat's agent: the first one starts the user's thread on the user's dossier; the answer comes into the tab as the agent writes it; the conversation is the thread's log. With no dossier the app says what a dossier is for and opens the Dossiers view. |
+| Other text in a view tab | An intent (`ask`, the same in the app and the CLI): the stored view that answers it shows; else the agent (`/agent`) composes one in a headless run that goes on in the ACP session of the run before it. |
 
 The list above the chat bar shows the commands that match the text: the agent's commands first, marked `(agent)`,
 then the screen's, then the registry's with their class.
@@ -21,12 +23,13 @@ then the screen's, then the registry's with their class.
 | Part | What it is |
 | --- | --- |
 | Rail | 56 px: the spaces Machine, Work, Agents and Activity (`Ctrl+1` to `Ctrl+4`, or `Alt`); the name is in the tooltip. A dot on Activity: an approval waits or doctor reports a failure. A click on the space that shows folds or opens the navigator. |
-| Navigator | The entries of the space, 30% of the window at the first start; drag its right edge for another width (15% to 60%). Machine: the machine pages. Work: the threads. Agents: the agents of `session.acp` (a click puts `/agent <name>` into the chat bar). Activity: approvals that wait, doctor's failures, running jobs, the events since the start. |
+| Navigator | The entries of the space, 30% of the window at the first start; drag its right edge for another width (15% to 60%). Machine: the machine pages. Work: New chat and the user's chats, newest first, then the views (Dossiers among them). Agents: the agents of `session.acp` (a click puts `/agent <name>` into the chat bar) and the threads of agent sessions with their owner. Activity: approvals that wait, doctor's failures, running jobs, the events since the start. |
 | Tabs | Pages, threads and views (`views place` opens the placed view as a tab; `/view <name> [name=value...]`). Close with the x or `Ctrl+W`; `Ctrl+Tab` and `Ctrl+Shift+Tab` go to the next or the one before; drag a tab onto another, or `Ctrl+Shift+Left`/`Right`, to move it. A thread tab shows its members, watch rules and timeline: the member's name only where it changes; a long row (a checkpoint's commit message) shows its first line, and More opens it. |
 | Layout facts | The tabs, the active tab, the space and the navigator's width are facts of the entity `app` (`legionctl facts at --entity app`), written by the user's own changes; the next start shows them again. |
 | Chat bar | Each tab has one, below its content (it never covers it). Click it to type; `Shift+Enter` adds a line. The agent chip shows the chat bar's agent; a click puts `/agent ` into the bar. |
 | Intents | Text in the chat bar is an intent (DESIGN-09 G5; `legionctl ask "<intent>"` is the same): the stored view whose intent it is word for word opens (no model runs); else, with config `views.rlcd`, the stored view that rlcd picks; else the chat bar's agent composes a view (its model from `views.composer_models`: Haiku on Claude Code; ACP `session/set_model`; an agent with no entry, as Codex, uses its account's default model), checked before it is saved, and the intent becomes a fact of the user. `/change <words>` makes the next version of the tab's view (undo goes back). A composed view that fails its check, or has a view or part without a title, shows its reason; nothing is saved. A view with no `space` is listed in the space of its first source (code, plan, dossier, workspace: Work; agents, sessions, threads, ops, views, facts: Agents; else Machine); a composed view always is. An empty value shows `none` (empty) or `no value` (null); a table grouped by a column does not repeat it in its rows; a cut path keeps its file name (the cut is in the middle). `/agent:<name> ...` stays a command of the agent. |
 | Agent | `/agent <name>` picks the chat bar's agent (a name of config `session.acp`; the list offers each); another name is refused with the names. The pick is a `thread.agent` row of the thread's log (`thread agent <thread> <name>`), so each screen of the thread uses it. A thread with no pick uses config `app.agent` (default `claude`). Other text is a prompt for that agent. |
+| Place | The title bar shows the user's dossier, the tab's thread, its repository@branch and the environment (host sandbox); with no dossier, "No dossier: choose one". A click opens the Dossiers view (Use, New dossier, Choose none). A chat tab's "Work on a repository" gives its thread a repository once (`thread repo <thread> <repo> [--base <ref>]`): its own worktree on `legionctl/<dossier>--thread-<id>`, or a plain folder's overlay. |
 | Status | The title bar says whether the operator answers and how old the values are. |
 | Buttons and forms | A view's button runs its operation with the operation's own approval: a read at once; a change with a dry run shows its plan first (Apply runs it; polkit asks for a machine change); a change without one asks inline with its operation and input. A button that misses a required field, or gives no input to an operation that takes some, opens the operation's form, made from its input schema (`legionctl_api::form`): the required fields first, the others on demand, a choice as buttons, yes or no for a flag. The seed Operations (Agents space; `ops list`) lists every public operation by group: Open is its form. |
 | Look | Dark or light as GNOME is set; the colours, sizes and type scale are in `crates/legionctl-app/src/theme.rs`. `scripts/app-shots.sh` takes a screenshot of each tab at 1366x768, 1920x1080 and 2560x1600 (`APP_SHOTS_MONITOR` for others). |

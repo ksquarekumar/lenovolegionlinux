@@ -906,10 +906,15 @@ impl Render for Vec<DossierInfo> {
         self.iter()
             .map(|d| {
                 let id = d.id.as_deref().unwrap_or("(no id)");
-                if d.has_plan {
-                    format!("{}  {id}", d.name)
+                let chosen = if d.chosen {
+                    "  (the user's dossier)"
                 } else {
-                    format!("{}  {id}  (no plan.md)", d.name)
+                    ""
+                };
+                if d.has_plan {
+                    format!("{}  {id}{chosen}", d.name)
+                } else {
+                    format!("{}  {id}  (no plan.md){chosen}", d.name)
                 }
             })
             .collect::<Vec<_>>()

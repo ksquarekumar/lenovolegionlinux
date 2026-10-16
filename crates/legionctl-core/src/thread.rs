@@ -163,6 +163,12 @@ pub struct ThreadInfo {
     pub state: String,
     pub account: Option<String>,
     pub imported_from: Option<i64>,
+    /// The session that started it (its main agent); none: the user started it (the app, a terminal).
+    pub owner: Option<String>,
+    /// The repository (its main checkout) or the plain folder that the user's thread works on; none: its scratch
+    /// folder. The branch of its own worktree there; none for a plain folder (an overlay).
+    pub repo: Option<String>,
+    pub branch: Option<String>,
 }
 
 pub struct Member {
@@ -588,11 +594,12 @@ impl Dossiers {
         }
     }
 
-    /// A new thread on `dossier`, with `session` as its main agent `main0`.
+    /// A new thread on `dossier`, with `session` as its main agent `main0`; none: the user's own thread (the app's
+    /// chat), whose runs each start a session of their own.
     ///
     /// # Errors
     /// The database write fails.
-    pub fn thread_start(&self, session: &str, title: &str, dossier: &str) -> Result<i64> {
+    pub fn thread_start(&self, session: Option<&str>, title: &str, dossier: &str) -> Result<i64> {
         let tx = self.begin()?;
         tx.execute(
             "INSERT INTO threads (title, dossier, created) VALUES (?1, ?2, ?3)",
@@ -607,13 +614,7 @@ impl Dossiers {
             &json!({"title": title, "dossier": dossier, "session": session}),
         )?;
         tx.commit()?;
-        self.thread_join(
-            id,
-            "main0",
-            Archetype::MainAgent,
-            Some(session),
-            Pace::OnTrigger,
-        )?;
+        self.thread_join(id, "main0", Archetype::MainAgent, session, Pace::OnTrigger)?;
         Ok(id)
     }
 
@@ -1202,7 +1203,13 @@ impl Dossiers {
                           (SELECT s.account FROM members m JOIN sessions s ON s.id = m.session
                            WHERE m.thread = t.id AND m.name = 'main0')),
                  (SELECT json_extract(payload, '$.from') FROM thread_log l
-                  WHERE l.thread = t.id AND l.kind = 'thread.import' ORDER BY l.id DESC LIMIT 1)
+                  WHERE l.thread = t.id AND l.kind = 'thread.import' ORDER BY l.id DESC LIMIT 1),
+                 (SELECT json_extract(payload, '$.session') FROM thread_log l
+                  WHERE l.thread = t.id AND l.kind = 'thread.start' ORDER BY l.id LIMIT 1),
+                 (SELECT json_extract(payload, '$.repo') FROM thread_log l
+                  WHERE l.thread = t.id AND l.kind = 'thread.repo' ORDER BY l.id DESC LIMIT 1),
+                 (SELECT json_extract(payload, '$.branch') FROM thread_log l
+                  WHERE l.thread = t.id AND l.kind = 'thread.repo' ORDER BY l.id DESC LIMIT 1)
                  FROM threads t ORDER BY id DESC",
             )?
             .query_map([], |r| {
@@ -1214,6 +1221,9 @@ impl Dossiers {
                     state: r.get(4)?,
                     account: r.get(5)?,
                     imported_from: r.get(6)?,
+                    owner: r.get(7)?,
+                    repo: r.get(8)?,
+                    branch: r.get(9)?,
                 })
             })?
             .collect::<Result<_, _>>()?)
@@ -1447,6 +1457,151 @@ impl Dossiers {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// A row of the conversation in `thread`'s log: the user's prompt (`thread.say`), the agent's answer
+    /// (`thread.answer`) or why the run failed (`thread.fail`).
+    ///
+    /// # Errors
+    /// No such thread, it is read-only, or the database write fails.
+    pub fn thread_note(
+        &self,
+        thread: i64,
+        member: &str,
+        kind: &str,
+        payload: &Value,
+    ) -> Result<i64> {
+        self.writable(thread)?;
+        let tx = self.begin()?;
+        let id = log(&tx, thread, member, kind, payload)?;
+        tx.commit()?;
+        Ok(id)
+    }
+
+    /// Where the runs of the user's `thread` work: its folder (a repository's workspace once one is attached), else
+    /// its own scratch folder `<root>/threads/thread-<id>` (made here; `root` is config workspace.root, which the
+    /// sessions see): a thread starts with no repository.
+    ///
+    /// # Errors
+    /// No such thread, or the folder cannot be made.
+    pub fn thread_folder(&self, thread: i64, root: &Path) -> Result<PathBuf> {
+        let workdir: Option<String> = self
+            .db()
+            .query_row("SELECT workdir FROM threads WHERE id = ?1", [thread], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .with_context(|| format!("no thread {thread}"))?;
+        if let Some(dir) = workdir {
+            return Ok(PathBuf::from(dir));
+        }
+        let dir = root.join("threads").join(format!("thread-{thread}"));
+        std::fs::create_dir_all(&dir).with_context(|| format!("making {}", dir.display()))?;
+        Ok(dir)
+    }
+
+    /// The user's `thread` works on the repository that holds `dir` (its own worktree on a branch from `base`, else
+    /// the repository's current branch: one worktree per thread), or on the plain folder `dir` (an overlay whose
+    /// writes stay in the dossier's layer). Its runs work there from now on.
+    ///
+    /// # Errors
+    /// No such thread, it is an agent session's or read-only, a base for a plain folder, or git refuses.
+    pub fn thread_repo(
+        &self,
+        thread: i64,
+        dir: &Path,
+        base: Option<&str>,
+        root: &Path,
+    ) -> Result<Vec<String>> {
+        self.writable(thread)?;
+        let info = self
+            .threads()?
+            .into_iter()
+            .find(|t| t.id == thread)
+            .with_context(|| format!("no thread {thread}"))?;
+        if let Some(owner) = &info.owner {
+            bail!(
+                "thread {thread} is the thread of session {owner}: only the user's thread gets a repository here"
+            );
+        }
+        let git = crate::workspace::repo_of(dir)?.is_some();
+        ensure!(
+            git || base.is_none(),
+            "{} is a plain folder: it has no base ref",
+            dir.display()
+        );
+        let topic = format!("thread-{thread}");
+        let ws = self.open_dossier_workspace(
+            info.dossier,
+            dir,
+            base,
+            git.then_some(topic.as_str()),
+            root,
+        )?;
+        let branch = git.then(|| ws.branch.clone());
+        self.db().execute(
+            "UPDATE threads SET workdir = ?2 WHERE id = ?1",
+            params![thread, ws.repo.to_string_lossy()],
+        )?;
+        let tx = self.begin()?;
+        log(
+            &tx,
+            thread,
+            "user",
+            "thread.repo",
+            &json!({"repo": ws.repo, "branch": branch, "base": ws.base, "path": ws.path}),
+        )?;
+        tx.commit()?;
+        Ok(vec![match &branch {
+            Some(b) => format!(
+                "thread {thread} works on {} in its own worktree {} (branch {b} from {})",
+                ws.repo.display(),
+                ws.path.display(),
+                ws.base
+            ),
+            None => format!(
+                "thread {thread} works on the folder {} through an overlay {} (its writes stay there)",
+                ws.repo.display(),
+                ws.path.display()
+            ),
+        }])
+    }
+
+    /// The ACP session of `thread`'s newest answer since it last moved to a folder (`thread.repo`): its next prompt
+    /// goes on in it. An agent keeps its sessions per folder, so a moved thread starts a new one.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn thread_acp(&self, thread: i64) -> Result<Option<String>> {
+        Ok(self
+            .db()
+            .query_row(
+                "SELECT json_extract(payload, '$.acp') FROM thread_log WHERE thread = ?1 AND kind = 'thread.answer'
+                 AND id > coalesce((SELECT max(id) FROM thread_log WHERE thread = ?1 AND kind = 'thread.repo'), 0)
+                 ORDER BY id DESC LIMIT 1",
+                [thread],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// The newest `limit` messages of `thread`'s conversation, oldest first: (who, text), the user's prompts and the
+    /// agent's answers; a new ACP session of the thread gets them, so the conversation goes on in a new folder.
+    ///
+    /// # Errors
+    /// The database read fails.
+    pub fn thread_conversation(&self, thread: i64, limit: u32) -> Result<Vec<(String, String)>> {
+        let mut rows = self
+            .db()
+            .prepare(
+                "SELECT member, json_extract(payload, '$.text') FROM thread_log WHERE thread = ?1
+                 AND kind IN ('thread.say', 'thread.answer') ORDER BY id DESC LIMIT ?2",
+            )?
+            .query_map(params![thread, limit], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<(String, String)>, _>>()?;
+        rows.reverse();
+        Ok(rows)
     }
 
     /// One thread: its members, messages, rules and log.

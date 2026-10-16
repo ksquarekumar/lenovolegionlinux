@@ -84,9 +84,10 @@ pub enum Tab {
         #[serde(default)]
         params: Vec<String>,
     },
-    Thread {
-        id: i64,
-    },
+    /// A thread: the user's own chat, or another's thread that the user opened.
+    Thread { id: i64 },
+    /// A new chat: its first message makes the user's thread on the user's dossier, and the tab becomes its tab.
+    Chat,
 }
 
 impl Tab {
@@ -96,6 +97,7 @@ impl Tab {
         match self {
             Tab::View { name, params } => format!("view:{name}:{}", params.join(",")),
             Tab::Thread { id } => format!("thread:{id}"),
+            Tab::Chat => "chat".into(),
         }
     }
 }
@@ -486,28 +488,27 @@ impl LegionApp {
         match self.screen.space {
             Space::Machine => self.view_entries("machine", t, cx),
             Space::Work => {
-                let mut out = vec![Self::nav_section("Threads", t)];
-                if self.screen.threads.is_empty() {
-                    out.push(Self::nav_note("No thread yet: legionctl thread start", t));
-                }
-                out.extend(self.screen.threads.iter().map(|th| {
-                    let tab = Tab::Thread { id: th.id };
-                    let selected = active.as_ref() == Some(&tab);
-                    let state = if th.state == "open" { t.ok } else { t.muted };
+                let mut out = vec![Self::nav_section("Your chats", t)];
+                let selected = active.as_ref() == Some(&Tab::Chat);
+                out.push(
                     Self::nav_entry(
-                        format!("nav-thread-{}", th.id),
-                        (
-                            IconName::MessageSquare,
-                            th.title.clone(),
-                            Some((th.dossier.clone(), state)),
-                        ),
+                        "nav-new-chat".into(),
+                        (IconName::Plus, "New chat".into(), None),
                         selected,
                         t,
                     )
-                    .on_click(cx.listener(move |app, _, _, cx| app.open_tab(tab.clone(), cx)))
+                    .on_click(cx.listener(|app, _, _, cx| app.open_tab(Tab::Chat, cx)))
                     .test_support()
-                    .into_any_element()
-                }));
+                    .into_any_element(),
+                );
+                // the user's own threads, newest first; the agents' threads are in the Agents space
+                out.extend(
+                    self.screen
+                        .threads
+                        .iter()
+                        .filter(|th| th.owner.is_none())
+                        .map(|th| self.thread_entry(th, None, t, cx)),
+                );
                 out.push(Self::nav_section("Views", t));
                 out.extend(self.view_entries("work", t, cx));
                 out
@@ -535,12 +536,48 @@ impl LegionApp {
                     .test_support()
                     .into_any_element()
                 }));
+                out.push(Self::nav_section("Threads of agent sessions", t));
+                out.extend(self.screen.threads.iter().filter_map(|th| {
+                    let owner = th.owner.as_deref()?;
+                    Some(self.thread_entry(th, Some(owner), t, cx))
+                }));
                 out.push(Self::nav_section("Views that agents made", t));
                 out.extend(self.view_entries("agents", t, cx));
                 out
             }
             Space::Activity => self.activity_entries(t, cx),
         }
+    }
+
+    /// A thread in the navigator: its title, and its dossier (or its owner's session, for an agent's thread); a click
+    /// opens it as a tab.
+    fn thread_entry(
+        &self,
+        th: &legionctl_api::ThreadInfo,
+        owner: Option<&str>,
+        t: &Tokens,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tab = Tab::Thread { id: th.id };
+        let selected = self.tab() == Some(&tab);
+        let state = if th.state == "open" { t.ok } else { t.muted };
+        let value = match owner {
+            Some(session) => format!("{} · {}", th.dossier, &session[..session.len().min(8)]),
+            None => th.dossier.clone(),
+        };
+        Self::nav_entry(
+            format!("nav-thread-{}", th.id),
+            (
+                IconName::MessageSquare,
+                th.title.clone(),
+                Some((value, state)),
+            ),
+            selected,
+            t,
+        )
+        .on_click(cx.listener(move |app, _, _, cx| app.open_tab(tab.clone(), cx)))
+        .test_support()
+        .into_any_element()
     }
 
     /// The views that the navigator lists (`views.list`): the seeds and the saved views with their space.
@@ -718,7 +755,57 @@ impl LegionApp {
                 .iter()
                 .find(|t| t.id == *id)
                 .map_or_else(|| format!("Thread {id}"), |t| t.title.clone()),
+            Tab::Chat => "New chat".into(),
         }
+    }
+
+    /// The title bar's work place: the user's dossier and the tab's thread, or the choice to make; a click opens the
+    /// Dossiers view, where the user chooses, makes or releases one.
+    pub(crate) fn place(&self, t: &Tokens, cx: &mut Context<Self>) -> AnyElement {
+        let thread = self.screen.thread.as_ref().map(|v| &v.thread);
+        let (text, color) = match (&self.screen.dossier, thread) {
+            (_, Some(th)) => {
+                let repo = match (&th.repo, &th.branch) {
+                    (Some(repo), Some(branch)) => {
+                        let name = std::path::Path::new(repo)
+                            .file_name()
+                            .map_or_else(|| repo.clone(), |n| n.to_string_lossy().into_owned());
+                        format!("{name}@{branch}")
+                    }
+                    (Some(folder), None) => folder.clone(),
+                    _ => "no repository".into(),
+                };
+                (
+                    format!(
+                        "dossier {} · thread {} · {repo} · host sandbox",
+                        th.dossier, th.id
+                    ),
+                    t.accent,
+                )
+            }
+            (Some(d), None) => (format!("dossier {d}"), t.accent),
+            (None, None) => ("No dossier: choose one".to_string(), t.warn),
+        };
+        div()
+            .id("place")
+            .h_flex()
+            .gap(S1)
+            .px(S2)
+            .py(px(2.))
+            .rounded_full()
+            .bg(color.opacity(0.14))
+            .text_size(T_XS)
+            .text_color(color)
+            .cursor_pointer()
+            .child(icon(IconName::FolderGit2, px(12.), color))
+            .child(text)
+            .tooltip(|window, cx| {
+                Tooltip::new("Where chats and agent runs keep their record: click to choose")
+                    .build(window, cx)
+            })
+            .on_click(cx.listener(|app, _, _, cx| app.open_view("dossiers", cx)))
+            .test_support()
+            .into_any_element()
     }
 
     /// The title bar's status (U19): the operator's answer and how old the data is.

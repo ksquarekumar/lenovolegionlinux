@@ -988,6 +988,7 @@ fn composer_run(
             tag: None,
             acp: input.acp.clone(),
             model,
+            thread: None,
         },
     )
 }
@@ -1072,7 +1073,10 @@ pub fn ask(
             return found("rlcd", name);
         }
     }
-    ensure!(!input.stored, "no stored view answers \"{intent}\"");
+    ensure!(
+        !input.stored,
+        "no stored view answers \"{intent}\"; a new view needs an agent run in a dossier (dossier use <name>)"
+    );
     let agent = input
         .agent
         .clone()

@@ -31,7 +31,8 @@ gpui_kit::assets::icon_assets!(
         Users,
         FolderGit2,
         Pin,
-        LayoutDashboard
+        LayoutDashboard,
+        Plus
     ]
 );
 
@@ -189,6 +190,7 @@ impl Render for LegionApp {
                 .child(div().text_color(t.muted).child("/"))
                 .child(div().min_w_0().truncate().text_color(t.text2).child(place))
                 .child(div().flex_1())
+                .child(self.place(&t, cx))
                 .child(self.status(&t)),
         );
         // the tab's content width: the window less the rail, the navigator and the tab's padding

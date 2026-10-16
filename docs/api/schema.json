@@ -11346,6 +11346,50 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "dossier.create": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Dossier name: a-z, 0-9 and '-', starting with a letter or digit; a name in use is refused."
+        },
+        "folder": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "path",
+          "description": "A folder (a repository) where the home is linked as `agentWorkspaces`.",
+          "default": null
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "DossierCreateIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "dossier.use": {
     "class": "session",
     "internal": false,
@@ -11354,7 +11398,7 @@
       "properties": {
         "name": {
           "type": "string",
-          "description": "Dossier name: a-z, 0-9 and '-'. A name that does not exist makes a new dossier from the pattern."
+          "description": "Dossier name: a-z, 0-9 and '-'. For a session, a name that does not exist makes a new dossier from the\npattern; for the user (no session), the dossier must exist (dossier create)."
         },
         "steal": {
           "type": "boolean",
@@ -11545,11 +11589,16 @@
           },
           "has_plan": {
             "type": "boolean"
+          },
+          "chosen": {
+            "description": "The user's dossier (`dossier use` with no session): the app's chats and runs work in it.",
+            "type": "boolean"
           }
         },
         "required": [
           "name",
-          "has_plan"
+          "has_plan",
+          "chosen"
         ]
       },
       "title": "Array_of_DossierInfo",
@@ -12618,6 +12667,15 @@
             "null"
           ],
           "description": "The agent's model for this run (ACP `session/set_model`: `haiku`); none: the account's default; the run\nfails when the agent does not take it.",
+          "default": null
+        },
+        "thread": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "description": "The user's thread of the run (the app's chat): the run works on the thread's dossier and in its folder, goes\non in the thread's last ACP session, and the prompt and the answer (or the failure) are rows of its log.",
           "default": null
         }
       },
@@ -14736,6 +14794,56 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "thread.repo": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The user's thread (`thread list`)."
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in the repository to work on (the thread gets its own worktree), or a plain folder (an overlay)."
+        },
+        "base": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The ref that the thread's branch starts from; default: the repository's current branch. Not for a plain\nfolder.",
+          "default": null
+        }
+      },
+      "required": [
+        "thread",
+        "repo"
+      ],
+      "title": "ThreadRepoIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "thread.list": {
     "class": "read",
     "internal": false,
@@ -14782,6 +14890,27 @@
               "null"
             ],
             "format": "int64"
+          },
+          "owner": {
+            "description": "The agent session that started it; none: the user's own thread (the app's chat, a terminal).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo": {
+            "description": "The repository (main checkout) or plain folder that the user's thread works on (`thread repo`); none:\nits scratch folder.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "branch": {
+            "description": "The branch of the thread's own worktree; none for a plain folder (an overlay) or no repository.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -14852,6 +14981,27 @@
               ],
               "format": "int64",
               "description": "The thread it is a copy of (`thread import`)."
+            },
+            "owner": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The agent session that started it; none: the user's own thread (the app's chat, a terminal)."
+            },
+            "repo": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The repository (main checkout) or plain folder that the user's thread works on (`thread repo`); none:\nits scratch folder."
+            },
+            "branch": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The branch of the thread's own worktree; none for a plain folder (an overlay) or no repository."
             }
           },
           "required": [

@@ -130,13 +130,6 @@ impl LegionApp {
         app
     }
 
-    /// The dossier of the chat bar's runs.
-    #[must_use]
-    pub fn with_dossier(mut self, dossier: Option<String>) -> Self {
-        self.screen.dossier = dossier;
-        self
-    }
-
     /// Follow the operator's event stream from now on the app's tokio runtime; the events go to
     /// [`LegionApp::events`]. A broken stream opens again after its last event (C6).
     fn follow(
@@ -263,6 +256,31 @@ impl LegionApp {
     ) -> Task<anyhow::Result<T>> {
         let runtime = self.runtime.clone();
         cx.background_spawn(async move { runtime.block_on(call) })
+    }
+
+    /// Run a long operator call (an agent's run) on the app's tokio runtime, and take its end on a timer of the screen,
+    /// as the event stream's rows: the screen goes on (and shows the run's output events) while the call runs.
+    fn operator_long<T: Send + 'static>(
+        &self,
+        cx: &Context<Self>,
+        call: impl Future<Output = anyhow::Result<T>> + Send + 'static,
+    ) -> Task<anyhow::Result<T>> {
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        self.runtime.spawn(async move {
+            let _ = tx.send(call.await);
+        });
+        cx.spawn(async move |_, cx: &mut AsyncApp| {
+            loop {
+                cx.background_executor().timer(EVENTS).await;
+                match rx.try_recv() {
+                    Ok(result) => return result,
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                        return Err(anyhow::anyhow!("the call ended without an answer"));
+                    }
+                }
+            }
+        })
     }
 
     /// Await an operator call on the view: `ok` with the answer, or the error as the message.
@@ -409,16 +427,18 @@ impl LegionApp {
             input["dry_run"] = Value::Bool(false);
         }
         let op = button.op;
+        let then = (op.clone(), input.clone());
         let task = self.operator(cx, async move {
             let value = client.call_value(&op, &input).await?;
             legionctl_api::render(&op, value).map(|(text, _)| text)
         });
-        self.finish(cx, task, |app, text: String| {
+        self.finish_with(cx, task, move |app, text: String, cx| {
             app.state.message = Some(if text.trim().is_empty() {
                 "done".into()
             } else {
                 text
             });
+            app.after(&then.0, &then.1, cx);
         });
         let key = self.tab_key();
         self.screen.view_data.remove(&key);

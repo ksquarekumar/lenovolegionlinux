@@ -346,12 +346,27 @@ async fn drive(
         _ = stop => anyhow::bail!("offloaded: memory is under pressure"),
         () = over.notified() => Some("tokens"),
         () = seconds => Some("seconds"),
-        done = client => { done?; None }
+        done = client => { done.map_err(adapter_error)?; None }
     };
     let live = lock(&live);
     // an answer that came in whole within one poll reached its limit too
     let reached = reached.or_else(|| budget.reached(&live.text, started.elapsed().as_secs()));
     Ok((live.output(id, job, started)?, reached))
+}
+
+/// `e` of a run's connection; an adapter that ended before it answered gives its exit and its stderr, not the
+/// JSON-RPC envelope.
+fn adapter_error(e: agent_client_protocol::Error) -> anyhow::Error {
+    let ended = e
+        .data
+        .as_ref()
+        .and_then(|d| d["data"].as_str())
+        .filter(|why| why.starts_with("Process exited"))
+        .map(|why| why.trim_end().to_string());
+    match ended {
+        Some(why) => anyhow::anyhow!("the agent's ACP adapter ended before it answered: {why}"),
+        None => e.into(),
+    }
 }
 
 /// The session's MCP servers as ACP's `session/new` takes them.
@@ -391,6 +406,17 @@ fn adapter(launch: Launch) -> Result<AcpAgent> {
                 launch.real_git.display().to_string(),
             ]);
         }
+    }
+    // on the host the sandbox runs the adapter from the operator's PATH: a missing one is named, not a bwrap error
+    if launch.inside == Inside::Host
+        && let Some(program) = launch.agent.first()
+        && legionctl_machine::policy::which(program).is_none()
+        && !std::path::Path::new(program).is_file()
+    {
+        anyhow::bail!(
+            "the ACP adapter {program} is not on the operator's PATH: `legionctl setup check` names it and `legionctl \
+             setup apply` installs it (config session.acp names the command)"
+        );
     }
     let argv = [launch.scope, sandbox, gate, launch.agent].concat();
     Ok(AcpAgent::new(McpServer::Stdio(

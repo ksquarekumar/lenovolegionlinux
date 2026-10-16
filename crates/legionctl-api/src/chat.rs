@@ -75,9 +75,15 @@ pub enum Action {
 
 /// What `line` does: text without `/` is a prompt; `/agent:<name> ...` is the prompt `/<name> ...` (ACP's
 /// convention) when the agent offers `<name>` (`commands`); a first word in `screen` is the screen's own command;
-/// any other line is an operation of the registry.
+/// any other line is an operation of the registry, filled as the user's (no session; paths against `dir`, the chat
+/// bar's folder).
 #[must_use]
-pub fn action(line: &str, commands: &[AgentCommand], screen: &[&str]) -> Action {
+pub fn action(
+    line: &str,
+    commands: &[AgentCommand],
+    screen: &[&str],
+    dir: &std::path::Path,
+) -> Action {
     let line = line.trim();
     let Some(command) = line.strip_prefix('/') else {
         return Action::Prompt(line.to_string());
@@ -114,11 +120,14 @@ pub fn action(line: &str, commands: &[AgentCommand], screen: &[&str]) -> Action 
             let matches = crate::cli::command(Vec::new())
                 .try_get_matches_from(std::iter::once("legionctl".to_string()).chain(words))
                 .map_err(|e| anyhow::anyhow!("{}", e.render()))?;
-            crate::cli::operation(&matches, false)?
+            crate::cli::parse(&matches)
                 .ok_or_else(|| anyhow::anyhow!("not an operation: {command}"))
         });
     match parsed {
-        Ok((op, input)) => Action::Operation(op, input),
+        Ok((op, mut input)) => {
+            crate::cli::fill_user_fields(op, &mut input, dir);
+            Action::Operation(op, input)
+        }
         Err(e) => Action::Refused(format!("{e:#}")),
     }
 }
@@ -143,12 +152,24 @@ pub fn log_detail(row: &ThreadLogRow) -> String {
             _ => p.to_string(),
         };
     }
+    if row.kind == "thread.repo" {
+        let repo = p["repo"].as_str().unwrap_or_default();
+        return match p["branch"].as_str() {
+            Some(branch) => format!(
+                "works on {repo} at {branch} (from {})",
+                p["base"].as_str().unwrap_or_default()
+            ),
+            None => format!("works on the folder {repo} (an overlay)"),
+        };
+    }
     if let (Some(commit), Some(message)) = (p["commit"].as_str(), p["message"].as_str()) {
         return format!("{}: {}", &commit[..commit.len().min(8)], short(message));
     }
     match (p["to"].as_str(), p["text"].as_str()) {
         (Some(to), Some(text)) => format!("→ {to}: {text}"),
         _ => [
+            "text",
+            "error",
             "title",
             "reason",
             "word",
