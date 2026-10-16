@@ -1225,7 +1225,7 @@ Planned names (design): the built tests are named in each "Built" section and ma
 
 | Part | Where |
 | --- | --- |
-| Thread screen | `legionctl tui [--thread <id>] [--agent <name>] [--dossier <name>]` (`crates/legionctl/src/tui.rs`, ratatui) |
+| Thread screen | `legionctl tui [--thread <id>] [--agent <name>] [--dossier <name>] [--view <name>]` (`crates/legionctl/src/tui.rs`, ratatui) |
 | Agent commands | The operator records each ACP `available_commands_update` as the event `session.commands` (`acp.rs`); operation `session.commands <session>` (read) gives the newest list |
 | Chat with an agent | `session.run` takes `acp` (go on in the ACP session of an earlier run) and gives `acp` back |
 | Keys and commands | `integrations/agent-plugin/skills/tool-lifecycle/refs/reference-thread-screen.md` |
@@ -1234,12 +1234,12 @@ What is different from C2 and C3, and why:
 
 | Item | Built | Why |
 | --- | --- | --- |
-| The chat bar's agent | `--agent <name>`: each prompt is a headless run (`session run`) that goes on in the ACP session of the run before it (`session/load`); a run whose agent cannot load sessions fails. Not `#main0`. | P6b is not built: no member has a live ACP session. When it comes, the chat bar sends to main0. |
+| The chat bar's agent | `--agent <name>`: text is an intent (`ask`, DESIGN-09 G6): a stored view that answers it shows, else the agent composes one in a headless run; `/agent:<cmd>` is a headless run (`session run`); each goes on in the ACP session of the run before it (`session/load`); a run whose agent cannot load sessions fails. Not `#main0`. | P6b is not built: no member has a live ACP session. When it comes, the chat bar sends to main0. |
 | Agent commands | Kept per session (event `session.commands`, operation `session.commands`), not on the member with `thread.commands`. The list comes with the first run, so `/agent:<name>` is refused until the agent ran once. The file scan of the command folders (no ACP) is not built. | No member has an ACP session yet (P6b). A list that the agent did not give is a guess. |
 | Fold keys | `Alt+1` and `Alt+2`, and `Ctrl+1`, `Ctrl+2` where the terminal reports them; `/fold 1`, `/fold 2`. | A plain xterm sends no key for `Ctrl+1`. |
 | Chat bar | 60% of pane 3 at the start, `Ctrl+Right` and `Ctrl+Left` in steps of 10% (30% to 100%), taller with its text (`Alt+Enter` or `Ctrl+J` adds a line) up to 40% of the height, then the newest rows. | A terminal has no drag. |
 | Pane 2 | The thread's log (the newest open thread, or `--thread`) and the runs of this screen; it reads the thread each second. No filter by member. | The event stream (`GET /v1/events`) is for the app (P8); the TUI reads as the dashboard did. |
-| Views | Pane 3 shows one of the dashboard, resources, sensors and the output of the last command (`d`, `r`, `s`, `o`, `/view <name>`); pane 1 lists them. A view that cannot read shows the error in its frame. | JSONC views, `views.*` and the `ui-composer` are P8. |
+| Views | DESIGN-09 G6: pane 3 shows a stored view (`views render`, the same terminal form as the CLI; default `machine-now`) or the output of the last command; pane 1 lists the views (`views list`) and the output; `Left`/`Right` or `/view <name> [name=value...]` choose. Its buttons are below it: `Up`/`Down` choose, `Enter` takes one with its operation's approval (`legionctl_api::form::route`, as the app: a read runs, a dry run shows its plan, another change asks), `Enter` again applies; an operation that needs input gets its CLI words in the chat bar. `/change <words>` makes the next version of the view. A view that cannot read shows the error in its frame. | The fixed dashboard, resources and sensors pages are gone (Rule 0). |
 | Commands | `/` gives the agent's commands (marked `(agent)`), the screen's own (`/fold`, `/view`), then every operation of the registry with the CLI's words and its class; for an agent caller a workspace operation says that it asks the user. The operator gates each call as from the CLI. | One screen for a person and an agent (C1). |
 
 Tests (`crates/legionctl/tests/tui.rs`; a pty with a small terminal emulator, so the test reads the place of each
@@ -1248,7 +1248,8 @@ cell; the real operator, a real thread and the stand-in ACP agent):
 | Test | It catches |
 | --- | --- |
 | `the_thread_tui_sizes_its_panes_folds_them_and_grows_the_chat_bar` | Pane widths other than 7%, 30% and the rest; a fold that does not give pane 3 the width or has no folded column; a thread's log not in pane 2, or not read again; a chat bar not at 60% centred, not taller with three lines, or not wider after `Ctrl+Right`. |
-| `the_thread_tui_runs_an_agent_command_and_a_registry_operation` | The agent's commands not kept or not offered, or offered after the registry; `/agent:plan x` not sent as `/plan x`, or in a new ACP session; a registry command not run with the CLI's words; runs not in pane 2; `session commands` of a session that does not exist answered. |
+| `the_thread_tui_runs_an_agent_command_and_a_registry_operation` | Text sent to the agent and not to `ask`; the agent's commands not kept or not offered, or offered after the screen's; `/agent:plan x` not sent as `/plan x`, or in a new ACP session; a registry command not run with the CLI's words; runs not in pane 2; a stored view's intent that does not show the view; `session commands` of a session that does not exist answered. |
+| `the_tui_draws_the_resources_seed_and_a_button_asks_as_the_app` (`app.rs`) | Pane 3 without the view's terminal form; a row's button without its row; a machine change without a dry run that runs at once; the call not made, or not as the TUI. |
 
 ### Built: P8 (2026-10-15)
 

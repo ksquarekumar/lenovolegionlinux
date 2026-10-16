@@ -379,30 +379,28 @@ fn the_thread_tui_sizes_its_panes_folds_them_and_grows_the_chat_bar() {
     assert_eq!(columns(folded, 0, '┐'), [199], "{}", text(folded));
 }
 
-/// The chat bar with the stand-in agent: the first prompt is a headless run; its agent's `available_commands_update`
-/// gives `/agent:plan` in the completion of `/`, marked as the agent's and before the registry's operations;
-/// `/agent:plan x` reaches the agent as the prompt `/plan x` in the same ACP session, as the TUI's call; a registry
-/// command (`/thread show 1`) runs with the CLI's words; pane 2 lists the runs. `session commands` gives the agent's
+/// The chat bar with the stand-in agent: text is an intent (`ask`, DESIGN-09 G6): no stored view answers hello, so the
+/// agent composes in a headless run (its request has the intent) and the screen says that no view came; its agent's
+/// `available_commands_update` gives `/agent:plan` in the completion of `/`, marked as the agent's and before the
+/// screen's commands and the registry's operations; `/agent:plan x` reaches the agent as the prompt `/plan x` in the
+/// composer's ACP session (loaded, not new), as the TUI's call; a registry command (`/thread show 1`) runs with the
+/// CLI's words; pane 2 lists the runs; the intent of a stored view opens it. `session commands` gives the agent's
 /// commands, and refuses a session that does not exist.
 #[test]
 fn the_thread_tui_runs_an_agent_command_and_a_registry_operation() {
     let (op, home, repo) = thread_lab("chat");
     let steps = json!([
         {"wait": "check the lint", "keys": "\thello\r"},
-        {"wait": "inside: host", "snap": "answer", "keys": "/"},
+        {"wait": "no view (composer", "snap": "answer", "keys": "/"},
         {"wait": "/agent:plan", "snap": "complete", "keys": "agent:plan x\r"},
         {"wait": "prompt: /plan x", "snap": "command", "keys": "/thread show 1\r"},
-        {"wait": "dossier port): port the parser", "snap": "registry", "keys": "\u{1b}"},
+        {"wait": "dossier port): port the parser", "snap": "registry", "keys": "everything legionctl can do\r"},
+        {"wait": "Operations · version 0", "snap": "intent", "keys": "\u{1b}"},
         {"keys": "q"},
     ]);
     let shots = screens(&op, &home, &repo, &SCREEN, &steps);
     let answer = text(&shots["answer"]);
-    assert!(answer.contains("prompt: hello"), "{answer}");
-    let acp = answer
-        .split("acp: new ")
-        .nth(1)
-        .and_then(|rest| rest.split_whitespace().next())
-        .unwrap_or_else(|| panic!("a new ACP session:\n{answer}"));
+    assert!(answer.contains("Intent: hello"), "{answer}");
     let complete = text(&shots["complete"]);
     let at = |entry: &str| {
         complete
@@ -410,13 +408,13 @@ fn the_thread_tui_runs_an_agent_command_and_a_registry_operation() {
             .unwrap_or_else(|| panic!("{entry} not offered:\n{complete}"))
     };
     assert!(
-        at("/agent:plan  Plan a change <what to plan> (agent)") < at("/status  Power source"),
-        "the agent's commands first, then the registry's operations:\n{complete}"
+        at("/agent:plan  Plan a change <what to plan> (agent)") < at("/fold 1  Fold"),
+        "the agent's commands first, then the screen's and the registry's:\n{complete}"
     );
     let command = text(&shots["command"]);
     assert!(
-        command.contains("prompt: /plan x") && command.contains(&format!("acp: loaded {acp}")),
-        "the agent's command as the prompt /plan x, in the same ACP session {acp}:\n{command}"
+        command.contains("prompt: /plan x") && command.contains("acp: loaded "),
+        "the agent's command as the prompt /plan x, in the composer's ACP session:\n{command}"
     );
     let session = command
         .split("session ")
@@ -428,6 +426,12 @@ fn the_thread_tui_runs_an_agent_command_and_a_registry_operation() {
         pane2(registry).contains("✓ /agent:plan x") && pane2(registry).contains("✓ /thread show 1"),
         "the runs in pane 2:\n{}",
         text(registry)
+    );
+    // a stored view's intent opens that view in pane 3, from the store
+    let intent = text(&shots["intent"]);
+    assert!(
+        intent.contains("operations") && intent.contains("rows: Operation"),
+        "{intent}"
     );
     let (ok, listed) = cli(&op, &home, &repo, "main", &["session", "commands", session]);
     assert!(

@@ -205,6 +205,29 @@ pub fn texts(input: &Value) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// How a button's operation is approved (the class language of DESIGN-09 G2), the same on every surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    /// A read runs at once.
+    Run,
+    /// A change with a dry run shows its plan first.
+    Plan,
+    /// Another change asks with its operation and input.
+    Confirm,
+}
+
+/// The route of `op`.
+#[must_use]
+pub fn route(op: &OpInfo) -> Route {
+    if op.class == crate::Class::Read {
+        Route::Run
+    } else if (op.input)()["properties"].get("dry_run").is_some() {
+        Route::Plan
+    } else {
+        Route::Confirm
+    }
+}
+
 /// Whether a button with `input` needs the form first: a required field is missing, or it gives no input to an
 /// operation that takes some.
 #[must_use]

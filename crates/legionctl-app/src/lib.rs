@@ -364,9 +364,10 @@ impl LegionApp {
         let Some(info) = OPS.iter().find(|o| o.name == button.op) else {
             return;
         };
-        let dry_run = (info.input)()["properties"].get("dry_run").is_some();
+        let route = legionctl_api::form::route(info);
+        let dry_run = route == legionctl_api::form::Route::Plan;
         let class = info.class;
-        if class == Class::Read {
+        if route == legionctl_api::form::Route::Run {
             self.state.pending = None;
             self.run(button, false, cx);
             return;

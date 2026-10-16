@@ -967,38 +967,56 @@ fn a_view_keeps_its_versions_and_the_tab_undoes_redoes_pins_and_resets_them(
     drop(runtime);
 }
 
-/// The TUI's resources view (note 22) in a terminal (a pty) against the real operator on the recorded machine, without
-/// a daemon or Docker: `r` shows the list (the desktop GPU, then the layers), Down twice selects the layer 20-ac, `1`
-/// shows its first action's route (rules.disable has no dry run of its own, so nothing runs), and Enter runs the
-/// routed operation as a call of its own: the operator refuses it without the system bus, and the event log names it
-/// with the TUI as its actor.
+/// The TUI (DESIGN-09 G6, Rule 1) draws the same view as the app: the Resources seed in a terminal (a pty) against the
+/// real operator on the recorded machine, without a daemon or Docker. Pane 3 has the view's terminal form and its
+/// buttons (each row's with the row's name); Down moves to the layer 20-ac's disable, Enter shows its route
+/// (rules.disable is a machine operation with no dry run, so it asks with its operation and input, and nothing
+/// runs), and Enter runs it as a call of its own: the operator refuses it without the system bus, the screen says
+/// why, and the event log names it with the TUI as its actor.
 #[test]
-fn the_tui_resources_view_lists_the_resources_and_a_key_runs_the_route() {
+fn the_tui_draws_the_resources_seed_and_a_button_asks_as_the_app() {
     let op = unplugged_machine("tui");
-    // keys in order, each after the text it waits for; prints the screen text without escape codes
+    // keys in order; Down until the selected button is 20-ac's; prints the screen text without escape codes
     let driver = r#"
 import os, pty, re, select, struct, sys, fcntl, termios, time
 pid, fd = pty.fork()
 if pid == 0:
-    os.execv(sys.argv[1], [sys.argv[1], "tui"])
+    os.execv(sys.argv[1], [sys.argv[1], "tui", "--view", "resources"])
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 220, 0, 0))
 seen = ""
-def until(text, limit=20):
+def read(limit):
     global seen
+    chunk = ""
+    end = time.time() + limit
+    while time.time() < end:
+        r, _, _ = select.select([fd], [], [], 0.2)
+        if r:
+            try:
+                chunk += re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", " ", os.read(fd, 65536).decode("utf-8", "replace"))
+            except OSError:
+                break
+        elif chunk:
+            break
+    seen += chunk
+    return chunk
+def until(text, limit=20):
     end = time.time() + limit
     while text not in seen:
         if time.time() > end:
             sys.stdout.write(seen); sys.exit("timed out waiting for " + text)
-        r, _, _ = select.select([fd], [], [], 0.2)
-        if r:
-            try:
-                seen += re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", " ", os.read(fd, 65536).decode("utf-8", "replace"))
-            except OSError:
-                break
-for wait, key in [("r resources", b"r"), ("used by", b"\x1b[B"), ("", b"\x1b[B"), ("", b"1"),
-                  ("Enter applies it", b"\r"), ("system bus", b"q")]:
-    until(wait)
-    os.write(fd, key)
+        read(0.5)
+until("Configuration layers")
+for _ in range(80):
+    os.write(fd, b"\x1b[B")
+    if re.search(r"▶\s+\S*/20-ac\.jsonc:\s+disable", read(2)):
+        break
+else:
+    sys.stdout.write(seen); sys.exit("no button of 20-ac")
+os.write(fd, b"\r")
+until("Enter applies")
+os.write(fd, b"\r")
+until("system bus")
+os.write(fd, b"q")
 os.waitpid(pid, 0)
 sys.stdout.write(seen)
 "#;
@@ -1016,10 +1034,13 @@ sys.stdout.write(seen)
         "{screen}{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(screen.contains("layer:shipped/20-ac"), "the list: {screen}");
     assert!(
-        screen.contains(r#"disable layer:shipped/20-ac: dry run: would run rules.disable {"layer":"shipped/20-ac"}"#),
-        "the route of the selected row: {screen}"
+        screen.contains("Resources · version 0"),
+        "the seed's title: {screen}"
+    );
+    assert!(
+        screen.contains(r#"runs rules.disable {"layer":"shipped/20-ac"}"#),
+        "the route of the selected button: {screen}"
     );
     let events = op.ok(&["events"]);
     assert!(

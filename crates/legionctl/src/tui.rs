@@ -1,305 +1,50 @@
-//! The thread screen (design 23, Part C, P7). Pane 1 lists the views as icons, pane 2 shows the thread's events and
-//! the runs of this screen, pane 3 shows the plugged view: the dashboard (load, machine, workspaces, agent settings),
-//! the resources (note 22, each action with its dry run first), the sensors (note 16) or the output of the last
-//! command. Panes 1 and 2 fold to one column each. The chat bar is at the bottom centre of pane 3: it grows wider on
-//! demand and taller with its text. A line that starts with `/` is a command: an operation of the registry with the
-//! CLI's words, a command of the screen (`/fold`, `/view`) or a command of the attached agent (`/agent:<name>`, from
-//! its ACP `available_commands_update`). Other text goes to the agent as a prompt (`session run`, in the same ACP
-//! session). A person and an agent get the same screen and the same commands.
+//! The thread screen (design 23, Part C, P7; DESIGN-09 G6, Rule 1). Pane 1 lists the views (`views list`: the seeds,
+//! the user's and the repository's) and the output of the last command, pane 2 shows the thread's events and the
+//! runs of this screen, pane 3 shows the chosen view in its terminal form (`views render`: the same text as
+//! `legionctl views render`) with its buttons below it. A button runs its operation with its own approval, as in the
+//! app: a read at once, a change with a dry run shows its plan first, another change asks; Enter applies. A button
+//! whose operation needs input puts the operation's CLI words into the chat bar. Panes 1 and 2 fold to one column
+//! each. The chat bar is at the bottom centre of pane 3: it grows wider on demand and taller with its text. A line
+//! that starts with `/` is a command: an operation of the registry with the CLI's words, a command of the screen
+//! (`/fold`, `/view <name> [name=value...]`, `/change <words>`) or a command of the attached agent (`/agent:<name>`,
+//! from its ACP `available_commands_update`). Other text is an intent (`ask`): the stored view that answers it, else
+//! the composer's view, which then shows. A person and an agent get the same screen and the same commands.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use clap::ArgMatches;
 use legionctl_api::chat::{self, Action, Entry};
+use legionctl_api::form::{self, Route};
 use legionctl_api::{
-    AgentCommand, ClientPath, ConfigFile, Empty, ProjectIn, Reading, Render as _, ResourceActIn,
-    ResourceList, RunOutput, SensorsIn, SessionIdIn, Snapshot, StatusIn, ThreadIdIn, ThreadView,
-    Workspace, op,
+    AgentCommand, ClientPath, Empty, OPS, Render as _, RunOutput, SessionIdIn, ThreadIdIn,
+    ThreadView, ViewAnswer, ViewButton, ViewData, ViewInfo, ViewRenderIn, ViewsListIn, op,
 };
-use legionctl_api::{Level, Pressure};
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Clear, Gauge, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, Clear, Paragraph};
 use serde_json::{Value, json};
 
 use legionctl_api::client::Client;
 
-fn level_color(level: Level) -> Color {
-    match level {
-        Level::Idle | Level::Normal => Color::Green,
-        Level::Busy => Color::Yellow,
-        Level::Overloaded => Color::Red,
-    }
-}
-
-fn pressure_gauge(title: &str, p: Option<&Pressure>) -> Gauge<'static> {
-    let pct = p.map_or(0.0, |p| p.some_avg10);
-    let color = if pct >= 60.0 {
-        Color::Red
-    } else if pct >= 20.0 {
-        Color::Yellow
-    } else {
-        Color::Green
-    };
-    Gauge::default()
-        .block(Block::bordered().title(format!("{title} pressure")))
-        .gauge_style(Style::default().fg(color))
-        .ratio((pct / 100.0).clamp(0.0, 1.0))
-        .label(format!("{pct:.0}%"))
-}
-
-/// Open workspaces of every dossier.
-fn workspaces_table(workspaces: &[Workspace]) -> Table<'_> {
-    let rows = workspaces.iter().map(|w| {
-        Row::new(vec![
-            w.dossier.clone(),
-            w.branch.clone(),
-            w.base.clone(),
-            w.path.display().to_string(),
-        ])
-    });
-    Table::new(
-        rows,
-        [
-            Constraint::Length(16),
-            Constraint::Length(24),
-            Constraint::Length(10),
-            Constraint::Min(10),
-        ],
-    )
-    .header(Row::new(vec!["dossier", "branch", "base", "path"]).bold())
-    .block(Block::bordered().title(" workspaces "))
-}
-
-/// Agent settings files that exist; invalid ones in red.
-fn configs_table(configs: &[ConfigFile]) -> Table<'_> {
-    let cfg_rows = configs.iter().filter(|c| c.exists).map(|c| {
-        let state = if c.valid == Some(true) {
-            c.sections.join(", ")
-        } else {
-            format!("INVALID: {}", c.error.clone().unwrap_or_default())
-        };
-        let row = Row::new(vec![c.agent.clone(), c.scope.clone(), state]);
-        if c.valid == Some(true) {
-            row
-        } else {
-            row.style(Style::default().fg(Color::Red))
-        }
-    });
-    Table::new(
-        cfg_rows,
-        [
-            Constraint::Length(7),
-            Constraint::Length(14),
-            Constraint::Min(10),
-        ],
-    )
-    .header(Row::new(vec!["agent", "scope", "sections"]).bold())
-    .block(Block::bordered().title(" agent settings "))
-}
-
-fn draw_dashboard(
-    f: &mut Frame,
-    area: Rect,
-    s: &Snapshot,
-    workspaces: &[Workspace],
-    configs: &[ConfigFile],
-) {
-    let [header, gauges, body] = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Length(3),
-        Constraint::Min(8),
-    ])
-    .areas(area);
-
-    let mode = s.platform_profile.as_deref().unwrap_or("?");
-    let fnq = s
-        .fn_q_override
-        .as_ref()
-        .map_or(String::new(), |o| format!(" (Fn+Q: {o})"));
-    let temp = s
-        .package_temp_c
-        .map_or("?".into(), |t| format!("{t:.0} °C"));
-    let status = Line::from(vec![
-        format!(" {} ", s.power_source).bold(),
-        format!("mode {mode}{fnq}  ").into(),
-        format!("load {:?} ", s.load.level)
-            .fg(level_color(s.load.level))
-            .bold(),
-        format!(
-            "({:.1} on {} CPUs)  CPU {temp}  limits {}/{} W",
-            s.load.load1,
-            s.load.cpus,
-            s.firmware_limits
-                .get("ppt_pl1_spl")
-                .map_or("?", String::as_str),
-            s.firmware_limits
-                .get("ppt_pl2_sppt")
-                .map_or("?", String::as_str)
-        )
-        .into(),
-    ]);
-    f.render_widget(
-        Paragraph::new(status).block(Block::bordered().title(" legionctl ")),
-        header,
-    );
-
-    let [cpu, mem, io] = Layout::horizontal([Constraint::Ratio(1, 3); 3]).areas(gauges);
-    f.render_widget(pressure_gauge("CPU", s.load.cpu.as_ref()), cpu);
-    f.render_widget(pressure_gauge("Memory", s.load.memory.as_ref()), mem);
-    f.render_widget(pressure_gauge("I/O", s.load.io.as_ref()), io);
-
-    let [left, right] =
-        Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(body);
-    let mut machine: Vec<Line> = vec![
-        format!("GPU mode {} · desktop on {}", s.gpu_mode, s.desktop_gpu).into(),
-        format!("governors {:?}", s.governors).into(),
-        format!("EPP {:?}", s.energy_performance_preference).into(),
-        "".into(),
-        "firmware limits".bold().into(),
-    ];
-    machine.extend(
-        s.firmware_limits
-            .iter()
-            .map(|(k, v)| Line::from(format!("  {k} = {v}"))),
-    );
-    machine.push("".into());
-    machine.push("displays".bold().into());
-    machine.extend(
-        s.outputs
-            .iter()
-            .filter(|o| o.connected)
-            .map(|d| Line::from(format!("  {} on {} ({})", d.connector, d.card, d.driver))),
-    );
-    f.render_widget(
-        Paragraph::new(machine).block(Block::bordered().title(" machine ")),
-        left,
-    );
-
-    let [wt_area, cfg_area] =
-        Layout::vertical([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(right);
-    f.render_widget(workspaces_table(workspaces), wt_area);
-    f.render_widget(configs_table(configs), cfg_area);
-}
-
-/// The resources view: what is selected, and the action whose dry run is shown.
-#[derive(Default)]
-struct ResourcesState {
-    selected: usize,
-    /// (id, action, the dry run's text)
-    pending: Option<(String, String, String)>,
-    /// The last result or error.
-    message: String,
-}
-
-fn draw_resources(f: &mut Frame, area: Rect, list: &ResourceList, view: &ResourcesState) {
-    let [table_area, detail] =
-        Layout::vertical([Constraint::Min(8), Constraint::Length(8)]).areas(area);
-    let rows = list.resources.iter().map(|r| {
-        let actions: Vec<String> = r
-            .actions
-            .iter()
-            .enumerate()
-            .map(|(i, a)| format!("{} {}", i + 1, a.name))
-            .collect();
-        Row::new(vec![
-            r.group.clone(),
-            r.id.clone(),
-            r.state.clone(),
-            r.users.join(", "),
-            actions.join("  "),
-        ])
-    });
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(10),
-            Constraint::Percentage(30),
-            Constraint::Length(22),
-            Constraint::Percentage(20),
-            Constraint::Min(10),
-        ],
-    )
-    .header(Row::new(vec!["group", "id", "state", "used by", "actions"]).bold())
-    .row_highlight_style(Style::default().reversed())
-    .block(Block::bordered().title(" resources "));
-    let mut state = TableState::default().with_selected(Some(view.selected));
-    f.render_stateful_widget(table, table_area, &mut state);
-    let text = match &view.pending {
-        Some((id, action, plan)) => {
-            format!("{action} {id}:\n{plan}\n\nEnter applies it, Esc discards it")
-        }
-        None => view.message.clone(),
-    };
-    f.render_widget(
-        Paragraph::new(text).block(Block::bordered().title(" action ")),
-        detail,
-    );
-}
-
-fn draw_sensors(f: &mut Frame, area: Rect, readings: &[Reading]) {
-    let rows = readings.iter().map(|r| {
-        let value = r.value.map_or_else(
-            || r.text.clone().unwrap_or_default(),
-            |v| format!("{v:.1} {}", r.unit),
-        );
-        let low = r.history.iter().copied().reduce(f64::min);
-        let high = r.history.iter().copied().reduce(f64::max);
-        let range = low
-            .zip(high)
-            .filter(|_| r.history.len() > 1)
-            .map_or_else(String::new, |(l, h)| {
-                format!("{l:.1}-{h:.1} ({})", r.history.len())
-            });
-        Row::new(vec![r.source.clone(), r.name.clone(), value, range])
-    });
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(26),
-            Constraint::Percentage(35),
-            Constraint::Percentage(30),
-            Constraint::Min(10),
-        ],
-    )
-    .header(Row::new(vec!["source", "sensor", "value", "history"]).bold())
-    .block(Block::bordered().title(" sensors "));
-    f.render_widget(table, area);
-}
-
-/// The views that pane 3 can show: (view, key, icon, name), in the order of pane 1.
+/// What pane 3 shows: a view, or the output of the last command.
 #[derive(Clone, Copy, PartialEq)]
-enum ViewKind {
-    Dashboard,
-    Resources,
-    Sensors,
+enum Shown {
+    View,
     Output,
 }
 
-const VIEWS: [(ViewKind, char, &str, &str); 4] = [
-    (ViewKind::Dashboard, 'd', "▦", "dashboard"),
-    (ViewKind::Resources, 'r', "▣", "resources"),
-    (ViewKind::Sensors, 's', "◎", "sensors"),
-    (ViewKind::Output, 'o', "≡", "output"),
-];
-
-/// What the view of pane 3 read at its last refresh.
-enum Data {
-    Dashboard(Box<Snapshot>, Vec<Workspace>, Vec<ConfigFile>),
-    Resources(ResourceList),
-    Sensors(Vec<Reading>),
-    Output,
-}
-
-/// A command that runs in the background: the operation and the line that started it (its row in pane 2).
+/// A command that runs in the background: the operation and the line that started it (its row in pane 2); a
+/// button's result goes under the buttons, not to the output.
 struct Running {
     op: &'static str,
     row: usize,
+    button: bool,
     task: tokio::task::JoinHandle<Result<Value>>,
 }
 
@@ -309,12 +54,30 @@ enum Focus {
     Chat,
 }
 
+/// A button that waits for Enter: its route and what it will do (the dry run's plan, or its operation and input).
+struct Pending {
+    button: ViewButton,
+    route: Route,
+    text: String,
+}
+
 struct Screen {
     client: Arc<Client>,
-    view: ViewKind,
-    data: Result<Data, String>,
-    refreshed: Option<Instant>,
-    resources: ResourcesState,
+    repo: PathBuf,
+    views: Vec<ViewInfo>,
+    /// The view of pane 3 and its parameters (`name=value`).
+    view: String,
+    params: Vec<String>,
+    shown: Shown,
+    data: Result<Option<ViewData>, String>,
+    read_at: Option<Instant>,
+    thread_at: Option<Instant>,
+    /// Pane 3's first row, and the selected button.
+    scroll: u16,
+    selected: usize,
+    pending: Option<Pending>,
+    /// The last button's result, or an answer's words.
+    message: String,
     folded: [bool; 2],
     focus: Focus,
     chat: String,
@@ -332,6 +95,22 @@ struct Screen {
     /// The session and the ACP session of the agent's last run: the next prompt goes on in it.
     attached: Option<(String, Option<String>)>,
     commands: Vec<AgentCommand>,
+}
+
+/// The buttons of a view and of its parts, in order: the view's own, then each row's with the row's first cell.
+fn buttons(data: &ViewData) -> Vec<ViewButton> {
+    let mut out = data.actions.clone();
+    for (row, actions) in data.rows.iter().zip(&data.row_actions) {
+        let first = row.first().map_or("", String::as_str);
+        out.extend(actions.iter().map(|b| ViewButton {
+            label: format!("{first}: {}", b.label),
+            ..b.clone()
+        }));
+    }
+    for part in &data.parts {
+        out.extend(buttons(part));
+    }
+    out
 }
 
 /// Text cut into rows of `width` characters: the chat bar's rows, so its height is exact.
@@ -352,90 +131,133 @@ fn rows_of(text: &str, width: u16) -> Vec<String> {
 }
 
 impl Screen {
+    /// The view's data of its last read.
+    fn read(&self) -> Option<&ViewData> {
+        self.data.as_ref().ok().and_then(Option::as_ref)
+    }
+
     /// The `/` commands that match the chat bar's text.
     fn completions(&self) -> Vec<Entry> {
         if self.focus != Focus::Chat {
             return Vec::new();
         }
-        let screen =
-            ["1", "2"]
-                .iter()
-                .map(|n| (format!("/fold {n}"), format!("Fold or open pane {n}")))
-                .chain(VIEWS.iter().map(|(_, _, _, name)| {
-                    (format!("/view {name}"), format!("Show {name} in pane 3"))
-                }))
-                .collect();
+        let screen = ["1", "2"]
+            .iter()
+            .map(|n| (format!("/fold {n}"), format!("Fold or open pane {n}")))
+            .chain(self.views.iter().map(|v| {
+                (
+                    format!("/view {}", v.name),
+                    format!("Show {} in pane 3", v.title.as_deref().unwrap_or(&v.name)),
+                )
+            }))
+            .chain(std::iter::once((
+                "/change ".to_string(),
+                "Change the view of pane 3 (the agent makes its next version)".to_string(),
+            )))
+            .collect();
         chat::completions(&self.chat, chat::entries(&self.commands, screen))
     }
 
     fn refresh(&mut self, runtime: &tokio::runtime::Runtime) {
-        let client = &self.client;
-        let thread = runtime.block_on(async {
-            let id = match self.thread_arg {
-                Some(id) => Some(id),
-                None => client
-                    .call::<op::ThreadList>(&Empty {})
-                    .await?
-                    .iter()
-                    .rev()
-                    .find(|t| t.state == "open")
-                    .map(|t| t.id),
-            };
-            match id {
-                Some(thread) => Ok(Some(
-                    client
-                        .call::<op::ThreadShow>(&ThreadIdIn { thread })
-                        .await?,
-                )),
-                None => Ok(None),
-            }
-        });
-        self.thread = thread.map_err(|e: anyhow::Error| format!("{e:#}"));
-        let data = runtime.block_on(async {
-            Ok(match self.view {
-                ViewKind::Dashboard => {
-                    let status = StatusIn {
-                        profile: None,
-                        fast: true,
-                    };
-                    let project = ProjectIn {
-                        project: ClientPath(std::env::current_dir()?),
-                    };
-                    let (snapshot, configs, workspaces) = tokio::try_join!(
-                        client.call::<op::Status>(&status),
-                        client.call::<op::AgentsList>(&project),
-                        client.call::<op::WorkspaceList>(&Empty {})
-                    )?;
-                    Data::Dashboard(Box::new(snapshot), workspaces, configs)
+        if self
+            .thread_at
+            .is_none_or(|t| t.elapsed() >= Duration::from_secs(1))
+        {
+            let client = &self.client;
+            let thread = runtime.block_on(async {
+                let id = match self.thread_arg {
+                    Some(id) => Some(id),
+                    None => client
+                        .call::<op::ThreadList>(&Empty {})
+                        .await?
+                        .iter()
+                        .rev()
+                        .find(|t| t.state == "open")
+                        .map(|t| t.id),
+                };
+                match id {
+                    Some(thread) => Ok(Some(
+                        client
+                            .call::<op::ThreadShow>(&ThreadIdIn { thread })
+                            .await?,
+                    )),
+                    None => Ok(None),
                 }
-                ViewKind::Resources => {
-                    let list = client.call::<op::ResourcesList>(&Empty {}).await?;
-                    self.resources.selected = self
-                        .resources
-                        .selected
-                        .min(list.resources.len().saturating_sub(1));
-                    Data::Resources(list)
-                }
-                ViewKind::Sensors => Data::Sensors(
-                    client
-                        .call::<op::Sensors>(&SensorsIn { watch: false })
-                        .await?,
-                ),
-                ViewKind::Output => Data::Output,
-            })
+            });
+            self.thread = thread.map_err(|e: anyhow::Error| format!("{e:#}"));
+            self.thread_at = Some(Instant::now());
+        }
+        // a view reads again when it changed, after a command, and at its refresh.every
+        let every = self
+            .read()
+            .and_then(|d| d.every)
+            .map(|s| Duration::from_secs(u64::from(s)));
+        if self
+            .read_at
+            .is_some_and(|t| every.is_none_or(|every| t.elapsed() < every))
+        {
+            return;
+        }
+        let repo = ClientPath(self.repo.clone());
+        let (views, data) = runtime.block_on(async {
+            let views = self
+                .client
+                .call::<op::ViewsList>(&ViewsListIn { repo: repo.clone() })
+                .await;
+            let data = self
+                .client
+                .call::<op::ViewsRender>(&ViewRenderIn {
+                    name: self.view.clone(),
+                    params: self.params.clone(),
+                    repo,
+                })
+                .await;
+            (views, data)
         });
-        self.data = data.map_err(|e: anyhow::Error| format!("{e:#}"));
-        self.refreshed = Some(Instant::now());
+        match views {
+            Ok(views) => self.views = views,
+            Err(e) => self.message = format!("the views: {e:#}"),
+        }
+        self.data = data.map(Some).map_err(|e| format!("{e:#}"));
+        self.read_at = Some(Instant::now());
     }
 
-    fn show(&mut self, view: ViewKind) {
-        // the key of the view on screen goes back to the dashboard
-        self.view = if self.view == view {
-            ViewKind::Dashboard
-        } else {
-            view
+    /// Show the view `name` with `params` in pane 3.
+    fn open(&mut self, name: &str, params: Vec<String>) {
+        if name != self.view {
+            self.scroll = 0;
+            self.selected = 0;
+        }
+        self.view = name.to_string();
+        self.params = params;
+        self.shown = Shown::View;
+        self.pending = None;
+        self.read_at = None;
+    }
+
+    /// The entries of pane 1: the views, then the output.
+    fn entries(&self) -> Vec<&str> {
+        self.views
+            .iter()
+            .map(|v| v.name.as_str())
+            .chain(std::iter::once("output"))
+            .collect()
+    }
+
+    /// The previous (`-1`) or next (`1`) entry of pane 1.
+    fn step(&mut self, by: isize) {
+        let entries = self.entries();
+        let at = match self.shown {
+            Shown::Output => entries.len() - 1,
+            Shown::View => entries.iter().position(|e| *e == self.view).unwrap_or(0),
         };
-        self.refreshed = None;
+        let next = at.saturating_add_signed(by).min(entries.len() - 1);
+        if next == entries.len() - 1 {
+            self.shown = Shown::Output;
+        } else {
+            let name = entries[next].to_string();
+            self.open(&name, Vec::new());
+        }
     }
 
     /// Start `op` with `input` in the background, as the row `line` in pane 2.
@@ -445,24 +267,28 @@ impl Screen {
         op: &'static str,
         input: Value,
         line: &str,
+        button: bool,
     ) {
         if self.running.is_some() {
-            self.output = "a command runs: wait for its end".into();
-            self.chat = line.to_string();
+            self.message = "a command runs: wait for its end".into();
+            if !button {
+                self.chat = line.to_string();
+            }
             return;
         }
         let client = self.client.clone();
         self.runs.push((line.to_string(), None));
-        self.output = format!("running: {line}");
-        self.view = ViewKind::Output;
+        self.message = format!("running: {line}");
         self.running = Some(Running {
             op,
             row: self.runs.len() - 1,
+            button,
             task: runtime.spawn(async move { client.call_value(op, &input).await }),
         });
     }
 
-    /// When the running command ended: its text in the output view, and a run's session attached.
+    /// When the running command ended: its text under the buttons (a button's) or in the output view; an answer's
+    /// view shows; a run's session is attached; the view reads again.
     fn collect(&mut self, runtime: &tokio::runtime::Runtime) {
         if !self.running.as_ref().is_some_and(|r| r.task.is_finished()) {
             return;
@@ -481,13 +307,50 @@ impl Screen {
                 {
                     self.attach(runtime, &run);
                 }
+                if running.op == "ask"
+                    && let Ok(answer) = serde_json::from_value::<ViewAnswer>(value.clone())
+                {
+                    self.answered(runtime, &answer);
+                }
                 legionctl_api::render(running.op, value)
                     .unwrap_or_else(|e| (format!("{e:#}"), false))
             }
             Err(e) => (format!("{e:#}"), false),
         };
-        self.output = text;
         self.runs[running.row].1 = Some(ok);
+        self.read_at = None;
+        if running.button {
+            self.message = if text.trim().is_empty() {
+                "done".into()
+            } else {
+                text
+            };
+        } else if running.op != "ask" || self.shown == Shown::Output {
+            self.output = text;
+            self.shown = Shown::Output;
+        }
+    }
+
+    /// An intent's answer: its view shows in pane 3 with the composer's words under it, or why there is none.
+    fn answered(&mut self, runtime: &tokio::runtime::Runtime, answer: &ViewAnswer) {
+        if let Some(run) = &answer.run {
+            self.attach(runtime, run);
+        }
+        match &answer.view {
+            Some(name) => {
+                let params = if *name == self.view {
+                    self.params.clone()
+                } else {
+                    Vec::new()
+                };
+                self.open(name, params);
+            }
+            None => self.shown = Shown::Output,
+        }
+        self.message = answer.error.as_ref().map_or_else(
+            || answer.text.clone(),
+            |e| format!("the view failed its check: {e}"),
+        );
     }
 
     fn attach(&mut self, runtime: &tokio::runtime::Runtime, run: &RunOutput) {
@@ -495,67 +358,152 @@ impl Screen {
         let input = SessionIdIn { id: run.id.clone() };
         match runtime.block_on(self.client.call::<op::SessionCommands>(&input)) {
             Ok(commands) => self.commands = commands,
-            Err(e) => self.output = format!("the agent's commands: {e:#}"),
+            Err(e) => self.message = format!("the agent's commands: {e:#}"),
         }
     }
 
-    /// The chat bar's line: a command, or a prompt for the agent.
+    /// The chat bar's line: a command, an intent, or a command of the agent.
     fn submit(&mut self, runtime: &tokio::runtime::Runtime) {
         let line = std::mem::take(&mut self.chat).trim().to_string();
         if line.is_empty() {
             return;
         }
-        match chat::action(&line, &self.commands, &["fold", "view"]) {
-            Action::Prompt(prompt) => self.prompt(runtime, &prompt, &line),
-            Action::Operation(op, input) => self.start(runtime, op.name, input, &line),
+        match chat::action(&line, &self.commands, &["fold", "view", "change"]) {
+            Action::Prompt(prompt) if prompt.starts_with('/') => {
+                self.prompt(runtime, &prompt, &line);
+            }
+            Action::Prompt(intent) => self.ask(runtime, &intent, None, &line),
+            Action::Operation(op, input) => self.start(runtime, op.name, input, &line, false),
             Action::Screen(words) => match words.iter().map(String::as_str).collect::<Vec<_>>()[..]
             {
                 ["fold", n @ ("1" | "2")] => {
                     let i = usize::from(n == "2");
                     self.folded[i] = !self.folded[i];
                 }
-                ["view", name] => match VIEWS.iter().find(|v| v.3 == name) {
-                    Some(v) => {
-                        self.view = v.0;
-                        self.refreshed = None;
-                    }
-                    None => self.output = format!("no view {name}"),
-                },
+                ["view", name, ..] => self.open(name, words[2..].to_vec()),
+                ["change", ..] if words.len() > 1 => {
+                    let view = self.view.clone();
+                    self.ask(runtime, &words[1..].join(" "), Some(&view), &line);
+                }
                 _ => {
-                    self.output = "/fold 1, /fold 2 or /view <name>".into();
-                    self.view = ViewKind::Output;
+                    self.message =
+                        "/fold 1, /fold 2, /view <name> [name=value...] or /change <words>".into();
                 }
             },
-            Action::Refused(why) => {
-                self.output = why;
-                self.view = ViewKind::Output;
-            }
+            Action::Refused(why) => self.message = why,
         }
     }
 
-    /// `prompt` to the agent as a headless run that goes on in the agent's last ACP session.
+    /// `intent` (`ask`): the stored view that answers it, else the composer's view; with `view`, its next version.
+    fn ask(
+        &mut self,
+        runtime: &tokio::runtime::Runtime,
+        intent: &str,
+        view: Option<&str>,
+        line: &str,
+    ) {
+        let params = if view.is_some() {
+            self.params.clone()
+        } else {
+            Vec::new()
+        };
+        let input = json!({
+            "intent": intent, "view": view, "params": params, "agent": self.agent, "dossier": self.dossier,
+            "repo": self.repo, "acp": self.attached.as_ref().and_then(|(_, acp)| acp.clone()),
+        });
+        self.start(runtime, "ask", input, line, false);
+    }
+
+    /// An agent's command (`/agent:<name> ...`) as a headless run that goes on in the agent's last ACP session.
     fn prompt(&mut self, runtime: &tokio::runtime::Runtime, prompt: &str, line: &str) {
         let Some(agent) = self.agent.clone() else {
-            self.output =
+            self.message =
                 "no agent: start the screen with --agent <name> (config session.acp)".into();
-            self.view = ViewKind::Output;
             return;
-        };
-        let repo = match std::env::current_dir() {
-            Ok(dir) => dir,
-            Err(e) => {
-                self.output = format!("the working folder: {e}");
-                return;
-            }
         };
         let input = json!({
             "agent": agent,
             "prompt": prompt,
             "dossier": self.dossier,
-            "repo": repo,
+            "repo": self.repo,
             "acp": self.attached.as_ref().and_then(|(_, acp)| acp.clone()),
         });
-        self.start(runtime, "session.run", input, line);
+        self.start(runtime, "session.run", input, line, false);
+    }
+
+    /// The selected button, with its operation's approval: a read runs; a change with a dry run shows its plan; another
+    /// change asks. An operation that needs input gets its CLI words in the chat bar.
+    fn take(&mut self, runtime: &tokio::runtime::Runtime) {
+        let Some(button) = self
+            .read()
+            .and_then(|d| buttons(d).into_iter().nth(self.selected))
+        else {
+            return;
+        };
+        let Some(info) = OPS.iter().find(|o| o.name == button.op && !o.internal()) else {
+            self.message = format!(
+                "the button {} names no operation {}",
+                button.label, button.op
+            );
+            return;
+        };
+        if form::needed(info, &button.input) {
+            let required: Vec<String> = form::fields(info)
+                .into_iter()
+                .filter(|f| f.required)
+                .map(|f| f.name)
+                .collect();
+            self.message = format!(
+                "{} needs {}: type them in the chat bar",
+                info.name,
+                required.join(", ")
+            );
+            self.chat = format!("/{} ", info.name.replace('.', " "));
+            self.focus = Focus::Chat;
+            return;
+        }
+        let route = form::route(info);
+        let text = match route {
+            Route::Run => {
+                self.start(
+                    runtime,
+                    info.name,
+                    button.input.clone(),
+                    &button.label,
+                    true,
+                );
+                return;
+            }
+            Route::Plan => {
+                let mut input = button.input.clone();
+                input["dry_run"] = Value::Bool(true);
+                runtime
+                    .block_on(self.client.call_value(info.name, &input))
+                    .and_then(|v| legionctl_api::render(info.name, v))
+                    .map_or_else(|e| format!("{e:#}"), |(text, _)| text)
+            }
+            Route::Confirm => format!("runs {} {}", info.name, button.input),
+        };
+        self.pending = Some(Pending {
+            button,
+            route,
+            text,
+        });
+    }
+
+    /// Enter on a pending button: its operation runs (a dry-run operation for real).
+    fn apply(&mut self, runtime: &tokio::runtime::Runtime) {
+        let Some(pending) = self.pending.take() else {
+            return;
+        };
+        let Some(info) = OPS.iter().find(|o| o.name == pending.button.op) else {
+            return;
+        };
+        let mut input = pending.button.input;
+        if pending.route == Route::Plan {
+            input["dry_run"] = Value::Bool(false);
+        }
+        self.start(runtime, info.name, input, &pending.button.label, true);
     }
 
     /// A key in the chat bar.
@@ -588,12 +536,6 @@ impl Screen {
 
     /// A key on the view; `true` when the screen must quit.
     fn view_key(&mut self, runtime: &tokio::runtime::Runtime, key: KeyEvent) -> bool {
-        if let KeyCode::Char(c) = key.code
-            && let Some(v) = VIEWS.iter().find(|v| v.1 == c)
-        {
-            self.show(v.0);
-            return false;
-        }
         match key.code {
             KeyCode::Char('q') => return true,
             KeyCode::Char('/') => {
@@ -601,50 +543,26 @@ impl Screen {
                 self.chat = "/".into();
             }
             KeyCode::Tab => self.focus = Focus::Chat,
-            _ if self.view == ViewKind::Resources => self.resources_key(runtime, key),
+            KeyCode::Left => self.step(-1),
+            KeyCode::Right => self.step(1),
+            KeyCode::Up => {
+                self.selected = self.selected.saturating_sub(1);
+                self.pending = None;
+            }
+            KeyCode::Down => {
+                self.selected += 1;
+                self.pending = None;
+            }
+            KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(10),
+            KeyCode::PageDown => self.scroll = self.scroll.saturating_add(10),
+            KeyCode::Esc => self.pending = None,
+            KeyCode::Enter if self.pending.is_some() => self.apply(runtime),
+            KeyCode::Enter => self.take(runtime),
             _ => {}
         }
+        let count = self.read().map_or(0, |d| buttons(d).len());
+        self.selected = self.selected.min(count.saturating_sub(1));
         false
-    }
-
-    fn resources_key(&mut self, runtime: &tokio::runtime::Runtime, key: KeyEvent) {
-        let client = &self.client;
-        let act = |id: &str, action: &str, dry_run: bool| {
-            let input = ResourceActIn {
-                id: id.into(),
-                action: action.into(),
-                dry_run,
-            };
-            runtime
-                .block_on(client.call::<op::ResourcesAct>(&input))
-                .map_or_else(|e| format!("{e:#}"), |acted| acted.text())
-        };
-        let view = &mut self.resources;
-        match key.code {
-            KeyCode::Up => view.selected = view.selected.saturating_sub(1),
-            KeyCode::Down => view.selected += 1,
-            KeyCode::Esc => view.pending = None,
-            KeyCode::Enter => {
-                if let Some((id, action, _)) = view.pending.take() {
-                    view.message = act(&id, &action, false);
-                }
-            }
-            KeyCode::Char(c @ '1'..='9') => {
-                let Ok(Data::Resources(list)) = &self.data else {
-                    return;
-                };
-                let chosen = list.resources.get(view.selected).and_then(|r| {
-                    let i = c.to_digit(10)? as usize - 1;
-                    Some((r.id.clone(), r.actions.get(i)?.name.clone()))
-                });
-                if let Some((id, action)) = chosen {
-                    let plan = act(&id, &action, true);
-                    view.pending = Some((id, action, plan));
-                }
-            }
-            _ => {}
-        }
-        self.refreshed = None;
     }
 
     /// A key; `true` when the screen must quit.
@@ -669,19 +587,20 @@ fn folded(f: &mut Frame, area: Rect, label: &str) {
 }
 
 fn draw_views(f: &mut Frame, area: Rect, s: &Screen) {
-    let lines: Vec<Line> = VIEWS
-        .iter()
-        .map(|(view, key, icon, _)| {
-            let line = Line::from(format!(" {icon} {key}"));
-            if *view == s.view {
-                line.reversed()
-            } else {
-                line
-            }
+    let lines: Vec<Line> = s
+        .entries()
+        .into_iter()
+        .map(|name| {
+            let on = match s.shown {
+                Shown::Output => name == "output",
+                Shown::View => name == s.view,
+            };
+            let line = Line::from(format!(" {name}"));
+            if on { line.reversed() } else { line }
         })
         .collect();
     f.render_widget(
-        Paragraph::new(lines).block(Block::bordered().title("1")),
+        Paragraph::new(lines).block(Block::bordered().title("1 views")),
         area,
     );
 }
@@ -718,25 +637,72 @@ fn draw_events(f: &mut Frame, area: Rect, s: &Screen) {
     );
 }
 
+/// Pane 3: the view's terminal form, and below it its buttons with the selected one, a pending button's plan and the
+/// last result.
 fn draw_view(f: &mut Frame, area: Rect, s: &Screen) {
-    match &s.data {
-        Err(e) => {
-            let name = VIEWS.iter().find(|v| v.0 == s.view).map_or("view", |v| v.3);
-            f.render_widget(
-                Paragraph::new(format!("cannot read the view: {e}"))
-                    .block(Block::bordered().title(format!(" {name} "))),
-                area,
-            );
-        }
-        Ok(Data::Dashboard(snapshot, workspaces, configs)) => {
-            draw_dashboard(f, area, snapshot, workspaces, configs);
-        }
-        Ok(Data::Resources(list)) => draw_resources(f, area, list, &s.resources),
-        Ok(Data::Sensors(readings)) => draw_sensors(f, area, readings),
-        Ok(Data::Output) => f.render_widget(
+    if s.shown == Shown::Output {
+        f.render_widget(
             Paragraph::new(s.output.as_str()).block(Block::bordered().title(" output ")),
             area,
+        );
+        return;
+    }
+    let (title, text, list) = match &s.data {
+        Err(e) => (
+            format!(" {} ", s.view),
+            format!("cannot read the view: {e}"),
+            Vec::new(),
         ),
+        Ok(None) => (format!(" {} ", s.view), "reading…".to_string(), Vec::new()),
+        Ok(Some(d)) => (
+            format!(" {} · version {} ", d.title, d.version),
+            d.text(),
+            buttons(d),
+        ),
+    };
+    let mut below: Vec<Line> = list
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let line = Line::from(format!(
+                "{} {}  ({})",
+                if i == s.selected { "▶" } else { " " },
+                b.label,
+                b.op
+            ));
+            if i == s.selected { line.bold() } else { line }
+        })
+        .collect();
+    // the selected button stays in sight: at most 8 rows of buttons
+    let first = s.selected.saturating_sub(7);
+    below = below.split_off(first.min(below.len()));
+    below.truncate(8);
+    if let Some(p) = &s.pending {
+        below.extend(p.text.lines().map(|l| Line::from(l.to_string()).cyan()));
+        below.push(Line::from("Enter applies · Esc cancels").cyan());
+    } else if !s.message.is_empty() {
+        below.extend(s.message.lines().map(|l| Line::from(l.to_string())));
+    }
+    let height = if below.is_empty() {
+        0
+    } else {
+        u16::try_from(below.len() + 2)
+            .unwrap_or(u16::MAX)
+            .min(area.height / 2)
+    };
+    let [top, bottom] =
+        Layout::vertical([Constraint::Min(3), Constraint::Length(height)]).areas(area);
+    f.render_widget(
+        Paragraph::new(text)
+            .scroll((s.scroll, 0))
+            .block(Block::bordered().title(title)),
+        top,
+    );
+    if height > 0 {
+        f.render_widget(
+            Paragraph::new(below).block(Block::bordered().title(" buttons ")),
+            bottom,
+        );
     }
 }
 
@@ -841,23 +807,32 @@ fn draw(f: &mut Frame, s: &Screen) {
     draw_chat(f, p3, bar, &rows, s);
     let keys = if s.focus == Focus::Chat {
         " Enter send · Alt+Enter new line · Tab complete · Ctrl+Left/Right width · Esc views · Alt+1/Alt+2 fold"
-    } else if s.view == ViewKind::Resources {
-        " q quit · r back · Up/Down select · 1-9 an action (dry run first) · / command · Tab chat · Alt+1/Alt+2 fold"
     } else {
-        " q quit · d dashboard · r resources · s sensors · o output · / command · Tab chat · Alt+1/Alt+2 fold"
+        " q quit · Left/Right views · Up/Down buttons · Enter a button, then applies · Esc cancel · PgUp/PgDn scroll · / command · Tab chat · Alt+1/Alt+2 fold"
     };
     f.render_widget(Paragraph::new(keys).dim(), help);
 }
 
-/// `legionctl tui [--thread <id>] [--agent <name>] [--dossier <name>]`.
+/// `legionctl tui [--thread <id>] [--agent <name>] [--dossier <name>] [--view <name>]`.
 pub fn run(args: &ArgMatches) -> Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     let mut screen = Screen {
         client: Arc::new(Client::new("tui")?),
-        view: ViewKind::Dashboard,
-        data: Ok(Data::Output),
-        refreshed: None,
-        resources: ResourcesState::default(),
+        repo: std::env::current_dir()?,
+        views: Vec::new(),
+        view: args
+            .get_one::<String>("view")
+            .cloned()
+            .unwrap_or_else(|| "machine-now".into()),
+        params: Vec::new(),
+        shown: Shown::View,
+        data: Ok(None),
+        read_at: None,
+        thread_at: None,
+        scroll: 0,
+        selected: 0,
+        pending: None,
+        message: String::new(),
         folded: [false; 2],
         focus: Focus::View,
         chat: String::new(),
@@ -876,12 +851,7 @@ pub fn run(args: &ArgMatches) -> Result<()> {
     let result = (|| -> Result<()> {
         loop {
             screen.collect(&runtime);
-            if screen
-                .refreshed
-                .is_none_or(|t| t.elapsed() >= Duration::from_secs(1))
-            {
-                screen.refresh(&runtime);
-            }
+            screen.refresh(&runtime);
             terminal.draw(|f| draw(f, &screen))?;
             let wait = if screen.running.is_some() { 100 } else { 1000 };
             if event::poll(Duration::from_millis(wait))?

@@ -41,7 +41,7 @@ fn client_only() -> Vec<Command> {
                     .last(true),
             ),
         Command::new("tui")
-            .about("The thread screen: views, the thread's events, and a chat bar for / commands and the agent")
+            .about("The thread screen: views, the thread's events, and a chat bar for intents, / commands and the agent")
             .arg(
                 Arg::new("thread")
                     .long("thread")
@@ -51,7 +51,8 @@ fn client_only() -> Vec<Command> {
             .arg(Arg::new("agent").long("agent").help(
                 "The agent that the chat bar talks to: a headless run (session run) of this agent of config session.acp",
             ))
-            .arg(Arg::new("dossier").long("dossier").help("The dossier of the agent's runs")),
+            .arg(Arg::new("dossier").long("dossier").help("The dossier of the agent's runs"))
+            .arg(Arg::new("view").long("view").help("The view of pane 3 (views list); default: machine-now")),
         // a session in a VM (W5): the host's runner and relay, and the guest's boot service; legionctl starts them
         Command::new("vm")
             .hide(true)
