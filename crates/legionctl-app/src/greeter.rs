@@ -5,7 +5,7 @@
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result, bail};
@@ -162,7 +162,17 @@ impl Greetd {
     }
 }
 
-/// A Wayland session from `/usr/share/wayland-sessions`.
+/// Where the greeter keeps the last desktop of each user (`greeter install` makes the folder for the user
+/// `greeter`).
+pub const REMEMBERED: &str = "/var/lib/legionctl-greeter/last-sessions";
+
+/// The folders of the session files: Wayland sessions, which the greeter starts, and X11 sessions, which it shows as
+/// not supported.
+pub const WAYLAND_SESSIONS: &str = "/usr/share/wayland-sessions";
+pub const X11_SESSIONS: &str = "/usr/share/xsessions";
+
+/// A session from `/usr/share/wayland-sessions` (or an X11 one from `/usr/share/xsessions`, with why it does not
+/// start).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     pub name: String,
@@ -171,6 +181,8 @@ pub struct Session {
     pub exec: Vec<String>,
     /// `DesktopNames`, for `XDG_CURRENT_DESKTOP`.
     pub desktops: String,
+    /// Why the greeter cannot start it (an X11 session); `None` for a Wayland session.
+    pub unsupported: Option<String>,
 }
 
 impl Session {
@@ -183,10 +195,24 @@ impl Session {
     }
 }
 
-/// The sessions in `dir`, GNOME first.
+/// The Wayland sessions in `wayland`, GNOME first, then the X11 sessions in `x11`, each with why it does not start:
+/// the greeter runs in cage, a Wayland compositor, and starts no X server (todo-150).
 #[must_use]
-pub fn sessions(dir: &Path) -> Vec<Session> {
-    let mut found: Vec<Session> = std::fs::read_dir(dir)
+pub fn sessions(wayland: &Path, x11: &Path) -> Vec<Session> {
+    let mut found = read_sessions(wayland, None);
+    found.extend(read_sessions(
+        x11,
+        Some(
+            "an X11 session: this greeter starts Wayland sessions only; log in to it through GDM \
+             (legionctl greeter remove)",
+        ),
+    ));
+    found.sort_by_key(|s| (s.unsupported.is_some(), s.id != "gnome", s.name.clone()));
+    found
+}
+
+fn read_sessions(dir: &Path, unsupported: Option<&str>) -> Vec<Session> {
+    std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
@@ -217,11 +243,59 @@ pub fn sessions(dir: &Path) -> Vec<Session> {
                 name,
                 id,
                 exec,
+                unsupported: unsupported.map(String::from),
             })
         })
-        .collect();
-    found.sort_by_key(|s| (s.id != "gnome", s.name.clone()));
-    found
+        .collect()
+}
+
+/// The last desktop of each user, one `<user>\t<session id>` line each, in a file of the greeter's own.
+#[derive(Debug, Clone)]
+pub struct Remembered(pub PathBuf);
+
+impl Remembered {
+    fn read(&self) -> Result<Vec<(String, String)>> {
+        let text = match std::fs::read_to_string(&self.0) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", self.0.display())),
+        };
+        Ok(text
+            .lines()
+            .filter_map(|l| l.split_once('\t'))
+            .map(|(u, s)| (u.to_string(), s.to_string()))
+            .collect())
+    }
+
+    /// The session id that `user` started last.
+    ///
+    /// # Errors
+    /// The file is there but cannot be read.
+    pub fn session(&self, user: &str) -> Result<Option<String>> {
+        Ok(self
+            .read()?
+            .into_iter()
+            .find(|(u, _)| u == user)
+            .map(|(_, s)| s))
+    }
+
+    /// `user` started `session`.
+    ///
+    /// # Errors
+    /// The file cannot be read or written.
+    pub fn set(&self, user: &str, session: &str) -> Result<()> {
+        let mut all = self.read()?;
+        all.retain(|(u, _)| u != user);
+        all.push((user.to_string(), session.to_string()));
+        let text: String = all
+            .iter()
+            .flat_map(|(u, s)| [u.as_str(), "\t", s.as_str(), "\n"])
+            .collect();
+        let tmp = self.0.with_extension("new");
+        std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
+        std::fs::rename(&tmp, &self.0).with_context(|| format!("writing {}", self.0.display()))?;
+        Ok(())
+    }
 }
 
 /// What the screen asks for now.
@@ -245,6 +319,9 @@ pub struct Greeter {
     runtime: tokio::runtime::Handle,
     pub sessions: Vec<Session>,
     pub session: usize,
+    /// The user chose a session on this screen: the remembered one does not replace it.
+    chosen: bool,
+    remembered: Remembered,
     user: Entity<InputState>,
     answer: Entity<InputState>,
     pub stage: Stage,
@@ -258,6 +335,7 @@ impl Greeter {
     pub fn new(
         greetd: Greetd,
         sessions: Vec<Session>,
+        remembered: Remembered,
         runtime: tokio::runtime::Handle,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -286,6 +364,8 @@ impl Greeter {
             runtime,
             sessions,
             session: 0,
+            chosen: false,
+            remembered,
             user,
             answer,
             stage: Stage::User,
@@ -348,12 +428,25 @@ impl Greeter {
                 self.greetd(window, cx, |g| g.respond(None).map(After::Auth));
             }
             Auth::Done => {
-                let Some(session) = self.sessions.get(self.session).cloned() else {
-                    self.message = Some("no session in /usr/share/wayland-sessions".into());
+                let Some(session) = self
+                    .sessions
+                    .get(self.session)
+                    .filter(|s| s.unsupported.is_none())
+                    .cloned()
+                else {
+                    self.message = Some(format!("no session in {WAYLAND_SESSIONS}"));
                     return;
                 };
+                let (user, remembered) = (self.user_name(cx), self.remembered.clone());
                 self.greetd(window, cx, move |g| {
-                    g.start(&session).map(|()| After::Started)
+                    g.start(&session)?;
+                    // the session starts either way; greetd's journal keeps the line
+                    if let Err(e) = remembered.set(&user, &session.id) {
+                        eprintln!(
+                            "legionctl-greeter: the last desktop of {user} is not kept: {e:#}"
+                        );
+                    }
+                    Ok(After::Started)
                 });
                 self.stage = Stage::Started;
             }
@@ -375,6 +468,20 @@ impl Greeter {
             self.message = Some("Type the user name".into());
             cx.notify();
             return;
+        }
+        if !self.chosen {
+            match self.remembered.session(&user) {
+                Ok(last) => {
+                    if let Some(i) = self
+                        .sessions
+                        .iter()
+                        .position(|s| Some(&s.id) == last.as_ref() && s.unsupported.is_none())
+                    {
+                        self.session = i;
+                    }
+                }
+                Err(e) => self.message = Some(format!("the last desktop of {user}: {e:#}")),
+            }
         }
         self.greetd(window, cx, move |g| {
             g.create_session(&user).map(After::Auth)
@@ -544,15 +651,29 @@ impl Render for Greeter {
         }
         login = login.child(div().h_flex().flex_wrap().gap_2().children(
             self.sessions.iter().enumerate().map(|(i, s)| {
+                let label = match &s.unsupported {
+                    Some(_) => format!("{} (X11, not supported)", s.name),
+                    None => s.name.clone(),
+                };
                 Button::new(gpui_kit::SharedString::from(format!("session-{}", s.id)))
-                    .label(s.name.clone())
+                    .label(label)
                     .selected(i == self.session)
+                    .disabled(s.unsupported.is_some())
                     .on_click(cx.listener(move |g, _, _, cx| {
                         g.session = i;
+                        g.chosen = true;
                         cx.notify();
                     }))
             }),
         ));
+        if let Some(why) = self.sessions.iter().find_map(|s| s.unsupported.as_ref()) {
+            login = login.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("X11 sessions: {why}")),
+            );
+        }
         if let Some(message) = &self.message {
             login = login.child(
                 div()

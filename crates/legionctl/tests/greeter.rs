@@ -13,7 +13,7 @@ use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
     AppContext, Entity, TestAppContext, VisualTestContext, WindowHandle, WindowOptions,
 };
-use legionctl_app::greeter::{Auth, Greetd, Greeter, Session, Stage, sessions};
+use legionctl_app::greeter::{Auth, Greetd, Greeter, Remembered, Session, Stage, sessions};
 use serde_json::{Value, json};
 
 #[path = "common/scratch.rs"]
@@ -105,6 +105,7 @@ fn gnome() -> Session {
         id: "gnome".into(),
         exec: vec!["/usr/bin/gnome-session".into()],
         desktops: "GNOME".into(),
+        unsupported: None,
     }
 }
 
@@ -209,14 +210,80 @@ fn desktop(dir: &Path, id: &str, body: &str) {
     .unwrap();
 }
 
-/// The screen with the keyboard and the mouse: GNOME is the first session and chosen; a click chooses COSMIC; the
-/// user name, Enter, the password, Enter: greetd starts COSMIC's command.
+/// The greeter's window on `greetd` with `found` and `remembered`, and its screen.
+fn open_screen(
+    cx: &mut TestAppContext,
+    greetd: Greetd,
+    found: Vec<Session>,
+    remembered: &Remembered,
+    handle: tokio::runtime::Handle,
+) -> (Entity<Greeter>, VisualTestContext) {
+    let remembered = remembered.clone();
+    let window: WindowHandle<gpui_kit::base::Root> = cx.update(|cx| {
+        let (window, _) = gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+            cx.new(|cx| Greeter::new(greetd, found, remembered, handle, window, cx))
+        })
+        .unwrap();
+        window.downcast().unwrap()
+    });
+    let screen: Entity<Greeter> = window
+        .update(cx, |root, _, _| root.view().clone().downcast().unwrap())
+        .unwrap();
+    (screen, VisualTestContext::from_window(window.into(), cx))
+}
+
+/// Run the screen until `ready`, at most 10 s.
+fn wait(
+    cx: &mut VisualTestContext,
+    screen: &Entity<Greeter>,
+    what: &str,
+    ready: &dyn Fn(&Greeter) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        cx.run_until_parked();
+        if screen.read_with(cx, |g, _| ready(g)) {
+            return;
+        }
+        let state = screen.read_with(cx, |g, _| format!("{:?} {:?}", g.stage, g.message));
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {what}: {state}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The user name, Enter, the password `right`, Enter: until the session starts.
+fn log_in(cx: &mut VisualTestContext, screen: &Entity<Greeter>, user: &str) {
+    cx.update(|window, cx| {
+        window.click("user", cx);
+        window.input(user, cx);
+        window.press("enter", cx);
+    });
+    wait(cx, screen, "the password prompt", &|g| {
+        matches!(g.stage, Stage::Prompt { secret: true, .. })
+    });
+    cx.update(|window, cx| {
+        window.input("right", cx);
+        window.press("enter", cx);
+    });
+    wait(cx, screen, "the session start", &|g| {
+        g.stage == Stage::Started && !g.busy
+    });
+}
+
+/// The screen with the keyboard and the mouse: GNOME is the first session and chosen; the X11 session is shown as not
+/// supported and cannot be chosen; a click chooses COSMIC; the user name, Enter, the password, Enter: greetd starts
+/// COSMIC's command. The next screen (after the logout) selects COSMIC for alice by itself, not for bob (todo-150).
 #[gpui_kit::test]
 fn the_screen_logs_in_with_the_keyboard_and_starts_the_chosen_session(cx: &mut TestAppContext) {
     let (stand_in, requests) = greetd("screen", false);
     let socket = stand_in.join("greetd.sock");
     let dir = socket.with_file_name("wayland-sessions");
+    let x11 = socket.with_file_name("xsessions");
     std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&x11).unwrap();
     desktop(
         &dir,
         "cosmic",
@@ -232,64 +299,57 @@ fn the_screen_logs_in_with_the_keyboard_and_starts_the_chosen_session(cx: &mut T
         "gnome-wayland",
         "Name=GNOME on Wayland\nExec=/usr/bin/gnome-session\nNoDisplay=true",
     );
-    let found = sessions(&dir);
+    desktop(
+        &x11,
+        "gnome-flashback-metacity",
+        "Name=GNOME Flashback (Metacity)\nExec=gnome-session --session=gnome-flashback-metacity",
+    );
+    let found = sessions(&dir, &x11);
+    let remembered = Remembered(socket.with_file_name("last-sessions"));
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let handle = runtime.handle().clone();
-    let greetd = Greetd::connect(&socket).unwrap();
+    let client = Greetd::connect(&socket).unwrap();
     cx.update(gpui_kit::init);
-    let window: WindowHandle<gpui_kit::base::Root> = cx.update(|cx| {
-        let (window, _) = gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
-            cx.new(|cx| Greeter::new(greetd, found, handle, window, cx))
-        })
-        .unwrap();
-        window.downcast().unwrap()
-    });
-    let screen: Entity<Greeter> = window
-        .update(cx, |root, _, _| root.view().clone().downcast().unwrap())
-        .unwrap();
-    let mut vcx = VisualTestContext::from_window(window.into(), cx);
-    let cx = &mut vcx;
-    let wait = |cx: &mut VisualTestContext, what: &str, ready: &dyn Fn(&Greeter) -> bool| {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            cx.run_until_parked();
-            if screen.read_with(cx, |g, _| ready(g)) {
-                return;
-            }
-            let state = screen.read_with(cx, |g, _| format!("{:?} {:?}", g.stage, g.message));
-            assert!(
-                Instant::now() < deadline,
-                "timed out waiting for {what}: {state}"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    };
+    let (screen, mut vcx) = open_screen(
+        cx,
+        client,
+        found.clone(),
+        &remembered,
+        runtime.handle().clone(),
+    );
+    let vcx = &mut vcx;
 
-    screen.read_with(cx, |g, _| {
-        let names: Vec<&str> = g.sessions.iter().map(|s| s.name.as_str()).collect();
+    screen.read_with(vcx, |g, _| {
+        let names: Vec<(&str, bool)> = g
+            .sessions
+            .iter()
+            .map(|s| (s.name.as_str(), s.unsupported.is_some()))
+            .collect();
         assert_eq!(
             names,
-            ["GNOME", "COSMIC"],
-            "GNOME first, hidden ones left out"
+            [
+                ("GNOME", false),
+                ("COSMIC", false),
+                ("GNOME Flashback (Metacity)", true)
+            ],
+            "GNOME first, hidden ones left out, the X11 session last and not supported"
+        );
+        assert!(
+            g.sessions[2]
+                .unsupported
+                .as_ref()
+                .unwrap()
+                .contains("Wayland sessions only")
         );
         assert_eq!(g.session, 0);
     });
-    cx.update(|window, cx| window.click("session-cosmic", cx));
-    cx.update(|window, cx| {
-        window.click("user", cx);
-        window.input("alice", cx);
-        window.press("enter", cx);
-    });
-    wait(cx, "the password prompt", &|g| {
-        matches!(g.stage, Stage::Prompt { secret: true, .. })
-    });
-    cx.update(|window, cx| {
-        window.input("right", cx);
-        window.press("enter", cx);
-    });
-    wait(cx, "the session start", &|g| {
-        g.stage == Stage::Started && !g.busy
-    });
+    vcx.update(|window, cx| window.click("session-gnome-flashback-metacity", cx));
+    assert_eq!(
+        screen.read_with(vcx, |g, _| g.session),
+        0,
+        "an X11 session cannot be chosen"
+    );
+    vcx.update(|window, cx| window.click("session-cosmic", cx));
+    log_in(vcx, &screen, "alice");
     assert_eq!(
         requests.lock().unwrap().clone(),
         vec![
@@ -299,5 +359,20 @@ fn the_screen_logs_in_with_the_keyboard_and_starts_the_chosen_session(cx: &mut T
                 "XDG_SESSION_TYPE=wayland", "XDG_SESSION_DESKTOP=cosmic", "XDG_CURRENT_DESKTOP=COSMIC"]}),
         ]
     );
+
+    // after the logout greetd starts a new greeter: alice gets COSMIC without a click, bob the first session
+    for (user, cmd) in [("alice", "start-cosmic"), ("bob", "/usr/bin/gnome-session")] {
+        let (stand_in, requests) = greetd(&format!("again-{user}"), false);
+        let client = Greetd::connect(&stand_in.join("greetd.sock")).unwrap();
+        let (screen, mut vcx) = open_screen(
+            cx,
+            client,
+            found.clone(),
+            &remembered,
+            runtime.handle().clone(),
+        );
+        log_in(&mut vcx, &screen, user);
+        assert_eq!(requests.lock().unwrap()[2]["cmd"], json!([cmd]), "{user}");
+    }
     drop(runtime);
 }

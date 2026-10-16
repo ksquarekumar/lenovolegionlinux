@@ -15,6 +15,8 @@ pub const BEFORE: &str = "/etc/greetd/config.toml.before";
 /// The greeter binary of the package.
 pub const GREETER: &str = "/usr/lib/legionctl/legionctl-greeter";
 const MARK: &str = "# legionctl greeter";
+/// The greeter's own folder (the last desktop of each user), its user's: `greeter` has `/` as its home.
+pub const STATE: &str = "/var/lib/legionctl-greeter";
 /// The alias that `systemctl enable` of a display manager makes.
 const DISPLAY_MANAGER: &str = "/etc/systemd/system/display-manager.service";
 const GDM: &str = "gdm.service";
@@ -98,6 +100,16 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
              [default_session]\ncommand = \"cage -s -- {GREETER}\"\nuser = \"greeter\"\n"
         ),
     });
+    // outside the daemon's sandbox (its ReadWritePaths do not have /var/lib); the folder stays after remove
+    steps.push(Step::Unit(
+        [
+            "install", "-d", "-m", "700", "-o", "greeter", "-g", "greeter",
+        ]
+        .map(String::from)
+        .into_iter()
+        .chain([root.path(STATE).to_string_lossy().into_owned()])
+        .collect(),
+    ));
     steps.push(systemctl("disable", GDM));
     steps.push(systemctl("enable", GREETD));
     Ok(steps)

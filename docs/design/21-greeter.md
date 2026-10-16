@@ -12,6 +12,13 @@ it waits for todo-17, and the screen shows nothing for it.
   waits.
 - You choose the session from `/usr/share/wayland-sessions`. GNOME is first and is the default. The screen does not
   show sessions with `Hidden=true` or `NoDisplay=true`.
+- The screen selects the session that the user started last when the user name is entered, unless you chose one on
+  this screen (todo-150). It keeps one `<user> <session>` line per user in `/var/lib/legionctl-greeter/last-sessions`;
+  `greeter install` makes that folder for the user `greeter` (its home is `/`), and `greeter remove` keeps it. The
+  greeter writes the line after greetd started the session; a failed write goes to greetd's journal, and the session
+  starts.
+- X11 sessions (`/usr/share/xsessions`) are listed last as "not supported" and cannot be chosen, with the reason: the
+  greeter runs in cage (Wayland) and starts no X server; log in to them through GDM.
 - Before login, for the user name that you typed, the screen changes these through the daemon:
 
 | Row | Buttons | Daemon method (polkit action) |

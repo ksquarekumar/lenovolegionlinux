@@ -5140,13 +5140,9 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         );
     }
 
-    /// The greeter in place of GDM (todo-83), through the operator and the daemon: refused, with nothing changed, while
-    /// cage is not installed; then greetd's configuration is legionctl's (the old file kept byte for byte), GDM is
-    /// disabled before greetd is enabled (the display-manager alias is one link); a second install cannot overwrite the
-    /// kept file; remove puts the old file and GDM back. A stand-in systemctl moves the alias as systemd does.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn the_greeter_replaces_gdm_keeps_the_old_greetd_config_and_remove_puts_both_back() {
-        let m = Machine::new("greeter");
+    /// The recorded machine for the greeter: greetd, the greeter and GDM installed, GDM the display manager, greetd's
+    /// configuration `original`, and a stand-in systemctl that moves the alias as systemd does; returns its log.
+    fn greeter_machine(m: &Machine, original: &str) -> PathBuf {
         let root = m.dir.join("root");
         let units = "/usr/lib/systemd/system";
         for file in [
@@ -5157,7 +5153,6 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         ] {
             m.set(file, "");
         }
-        let original = "[terminal]\nvt = 1\n\n[default_session]\ncommand = \"agreety --cmd /bin/sh\"\nuser = \"greeter\"\n";
         std::fs::create_dir_all(root.join("etc/greetd")).unwrap();
         std::fs::write(root.join("etc/greetd/config.toml"), original).unwrap();
         let alias = root.join("etc/systemd/system/display-manager.service");
@@ -5177,6 +5172,23 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
                 alias = alias.display()
             ),
         );
+        // root's install makes the greeter's folder (todo-150); systemd-run logs the program, this its words
+        let words = format!("echo \"$*\" >> {}", m.dir.join("units.log").display());
+        Machine::script(&m.dir.join("bin"), "install", &words);
+        log
+    }
+
+    /// The greeter in place of GDM (todo-83), through the operator and the daemon: refused, with nothing changed, while
+    /// cage is not installed; then greetd's configuration is legionctl's (the old file kept byte for byte), GDM is
+    /// disabled before greetd is enabled (the display-manager alias is one link); a second install cannot overwrite the
+    /// kept file; remove puts the old file and GDM back. A stand-in systemctl moves the alias as systemd does.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_greeter_replaces_gdm_keeps_the_old_greetd_config_and_remove_puts_both_back() {
+        let m = Machine::new("greeter");
+        let root = m.dir.join("root");
+        let original = "[terminal]\nvt = 1\n\n[default_session]\ncommand = \"agreety --cmd /bin/sh\"\nuser = \"greeter\"\n";
+        let log = greeter_machine(&m, original);
+        let units = m.dir.join("units.log");
         let (_stand_ins, asked, _processes) = start(&m).await;
         let op = on_bus(&m, "greeter");
         let config = || std::fs::read_to_string(root.join("etc/greetd/config.toml")).unwrap();
@@ -5215,6 +5227,15 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         assert_eq!(
             unit_changes(),
             ["disable gdm.service", "enable greetd.service"]
+        );
+        let folder = root.join("var/lib/legionctl-greeter");
+        assert_eq!(
+            std::fs::read_to_string(&units).unwrap(),
+            format!(
+                "install\n-d -m 700 -o greeter -g greeter {}\n",
+                folder.display()
+            ),
+            "the greeter's folder, in a transient unit outside the daemon's sandbox"
         );
         assert!(
             asked
