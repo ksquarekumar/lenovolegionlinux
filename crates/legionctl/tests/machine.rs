@@ -3691,7 +3691,7 @@ mod operator_and_daemon {
         let text = std::fs::read_to_string(&rule).unwrap();
         assert!(
             text.contains(
-                "action.id == \"org.legionctl.windows.vm\" && subject.user == \"tester\""
+                "action.id == \"org.legionctl.windows.vm\" && subject.user == \"tester\" && subject.local && subject.active"
             ) && text.matches("polkit.Result.YES").count() == 1,
             "{text}"
         );
@@ -5525,10 +5525,11 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         system.call("GreeterAct", &(user, action)).await
     }
 
-    /// The greeter's Windows VM autostart for two people (review 02, LOW): each user has a polkit rule of their own,
-    /// so ben's choice keeps anna's, and anna's VM still starts before login after ben turned his autostart off.
+    /// The greeter changes nothing that lasts (P-1, EV-review-08): a person at the login screen cannot turn on the
+    /// Windows VM autostart of any account (a lasting polkit rule with no prompt); each user does it after login. A
+    /// start before login still needs the user's own rule.
     #[tokio::test(flavor = "multi_thread")]
-    async fn each_users_windows_vm_autostart_is_a_rule_of_its_own() {
+    async fn the_greeter_cannot_write_a_lasting_autostart_rule() {
         let m = Machine::new("autostarts");
         m.set(
             "/etc/passwd",
@@ -5545,18 +5546,20 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         )
         .await
         .unwrap();
-        greeter_act(&system, "anna", "autostart-login")
-            .await
-            .unwrap();
-        greeter_act(&system, "ben", "autostart-login")
-            .await
-            .unwrap();
-        greeter_act(&system, "ben", "autostart-off").await.unwrap();
-        let anna = std::fs::read_to_string(rules.join("49-legionctl-windows-vm-anna.rules"))
-            .unwrap_or_default();
-        assert!(anna.contains("subject.user == \"anna\""), "{anna}");
-        assert!(!rules.join("49-legionctl-windows-vm-ben.rules").exists());
-        greeter_act(&system, "anna", "vm-start").await.unwrap();
+        for action in ["autostart-login", "autostart-boot", "autostart-off"] {
+            let refused = greeter_act(&system, "anna", action).await.unwrap_err();
+            assert!(
+                refused
+                    .to_string()
+                    .contains("the greeter changes nothing that lasts"),
+                "{refused}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_dir(&rules).unwrap().count(),
+            0,
+            "no rule written"
+        );
         let ben = greeter_act(&system, "ben", "vm-start").await.unwrap_err();
         assert!(
             ben.to_string()
@@ -6202,6 +6205,160 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             .status()
             .unwrap();
         assert!(added.success());
+    }
+
+    /// A repository's hooks file: a command bound to every prompt.
+    fn hooks_layer(repo: &std::path::Path, command: &str) {
+        std::fs::create_dir_all(repo.join(".legionctl")).unwrap();
+        std::fs::write(
+            repo.join(".legionctl/hooks.jsonc"),
+            serde_json::json!({"hooks": {
+                "actions": {"probe": {"command": command, "timeout": 5}},
+                "bindings": {"prompt": ["probe"]}
+            }})
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    /// The operator of `a_repository_sets_a_powerful_key_only_after_the_user_allows_its_content` on the private bus
+    /// (also its session bus, for the desktop), and its repository with a hooks file and a checks file.
+    fn tofu_operator(
+        m: &Machine,
+        address: String,
+    ) -> (Operator, std::path::PathBuf, std::path::PathBuf) {
+        let home = m.dir.join("home");
+        let repo = home.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        hooks_layer(&repo, "echo PROBE_FIRST");
+        std::fs::write(
+            repo.join(".legionctl/checks.jsonc"),
+            r#"{"checks": {"lint": {"kind": "lint", "run": "true"}}}"#,
+        )
+        .unwrap();
+        let path = std::env::join_paths(
+            std::iter::once(m.dir.join("bin"))
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        let op = Operator::start(
+            "tofu",
+            &[
+                ("PATH", path),
+                ("HOME", home.clone().into()),
+                ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+                ("DBUS_SYSTEM_BUS_ADDRESS", address.clone().into()),
+                ("DBUS_SESSION_BUS_ADDRESS", address.into()),
+            ],
+        );
+        (op, home, repo)
+    }
+
+    /// Trust on first use (O-2, user decision 2026-10-16): a repository's `.legionctl` file that sets a powerful key
+    /// (here a hook command on every prompt) is not used for it until the user allows that content once, through the
+    /// desktop question; the next prompts run it without a question. A changed file asks again, and after Deny its
+    /// command does not run and nobody is asked again for that content. A safe key (checks) in the same layer works
+    /// at once and asks nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_repository_sets_a_powerful_key_only_after_the_user_allows_its_content() {
+        let m = Machine::new("tofu");
+        let (_stand_ins, _asked, (_bus, _daemon)) = start(&m).await;
+        let address = format!("unix:path={}", m.dir.join("bus").display());
+        let (_desktop, asked) = answering_desktop(&address, &["allow", "deny"]).await;
+        let (op, home, repo) = tofu_operator(&m, address);
+        let layer = |command: &str| hooks_layer(&repo, command);
+        let env = [
+            ("LEGIONCTL_SESSION", "s1"),
+            ("HOME", home.to_str().unwrap()),
+        ];
+        assert!(
+            op.run(&repo, &env, &["dossier", "use", "tofu"], "")
+                .status
+                .success()
+        );
+        let prompt = || {
+            let out = op.run(
+                &repo,
+                &env,
+                &["hook", "prompt"],
+                &serde_json::json!({"session_id": "s1", "cwd": repo, "hook_event_name": "UserPromptSubmit",
+                                    "prompt": "hi"})
+                .to_string(),
+            );
+            String::from_utf8_lossy(&out.stdout).to_string()
+        };
+        let approvals = home.join(".local/state/legionctl/approvals.json");
+        let answered = |n: usize| {
+            for _ in 0..200 {
+                let text = std::fs::read_to_string(&approvals).unwrap_or_default();
+                if text.matches("hooks.jsonc").count() >= 1 && asked.lock().unwrap().len() >= n {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            panic!("no answer stored: {:?}", asked.lock().unwrap());
+        };
+
+        let first = prompt();
+        assert!(
+            !first.contains("PROBE_FIRST"),
+            "used before the user allowed it: {first}"
+        );
+        answered(1);
+        let allowed = prompt();
+        assert!(allowed.contains("PROBE_FIRST"), "{allowed}");
+        assert!(prompt().contains("PROBE_FIRST"));
+        assert_eq!(
+            asked.lock().unwrap().len(),
+            1,
+            "one question for one content"
+        );
+        let question = asked.lock().unwrap()[0].clone();
+        assert!(
+            question.contains("hooks.jsonc") && question.contains("hooks"),
+            "{question}"
+        );
+
+        layer("echo PROBE_CHANGED");
+        let changed = prompt();
+        assert!(
+            !changed.contains("PROBE_CHANGED") && !changed.contains("PROBE_FIRST"),
+            "{changed}"
+        );
+        for _ in 0..200 {
+            if std::fs::read_to_string(&approvals)
+                .unwrap_or_default()
+                .contains("false")
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            !prompt().contains("PROBE_CHANGED"),
+            "denied content stays unused"
+        );
+        assert_eq!(
+            asked.lock().unwrap().len(),
+            2,
+            "a changed file asks again, a denied content does not"
+        );
+        let checks = op.run(&repo, &env, &["code", "checks", "list"], "");
+        assert!(
+            String::from_utf8_lossy(&checks.stdout).contains("lint (lint"),
+            "{}",
+            String::from_utf8_lossy(&checks.stderr)
+        );
+        assert_eq!(asked.lock().unwrap().len(), 2, "a safe key asks nothing");
     }
 
     /// An agent's call outside its own session waits for the user (DESIGN/03): a `workspace` op from a session's

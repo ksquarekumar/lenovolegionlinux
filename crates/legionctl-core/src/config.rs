@@ -362,8 +362,13 @@ pub struct SessionConfig {
     /// Agent name -> command line; `{id}` is the session id, `{settings}` the generated Claude Code settings file and
     /// `{mcp}` the generated MCP config (the proxied servers and legionctl's own).
     pub agents: BTreeMap<String, Vec<String>>,
-    /// Writable in the sandbox besides the workspace, the dossier and the repository's .git (`~/` is the home).
+    /// The agents' own state that they write besides the workspace, the dossier and their commits (`~/` is the
+    /// home): never the real files. On the host each folder is an overlay whose writes stay in the session, in a
+    /// container or VM the session's own copy; each file is the session's own copy.
     pub writable: Vec<String>,
+    /// Caches the agent's tools write (`~/` is the home): on the host an overlay whose writes stay in the session; a
+    /// container or VM has its own.
+    pub caches: Vec<String>,
     /// Agent name -> the command that continues an ended session (`session resume`); placeholders as in `agents`.
     pub resume: BTreeMap<String, Vec<String>>,
     /// Agent name -> the command of its ACP adapter, for headless runs (`session run`).
@@ -479,6 +484,9 @@ pub struct Meta {
     pub precedence: Vec<String>,
     /// Keys or key prefixes that only the defaults and /etc/legionctl may set.
     pub locked: Vec<String>,
+    /// Keys or key prefixes that a repository layer file sets only after the user allowed that file's content once
+    /// (trust on first use, O-2): until then, and after a Deny, the file's values of these keys are not used.
+    pub approve: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -546,7 +554,60 @@ pub struct Resolved {
     pub trace: BTreeMap<String, Vec<Setting>>,
     /// Files and keys that were not used, and why.
     pub problems: Vec<String>,
+    /// Repository layer files whose `config.approve` keys wait for the user's first answer.
+    pub unapproved: Vec<Unapproved>,
     user_dir: PathBuf,
+}
+
+/// A repository layer file that sets keys of `config.approve` with content the user did not answer yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unapproved {
+    pub file: String,
+    /// The hash of the parsed content: an answer holds for this content only.
+    pub hash: String,
+    pub keys: Vec<String>,
+}
+
+/// The user's answers to repository layer files (`~/.local/state/legionctl/approvals.json`): file -> the content
+/// hash and whether the user allowed it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Approvals(pub BTreeMap<String, (String, bool)>);
+
+impl Approvals {
+    fn path() -> PathBuf {
+        crate::db::default_path().with_file_name("approvals.json")
+    }
+
+    /// # Errors
+    /// The file is there but cannot be read or parsed.
+    pub fn read() -> Result<Approvals> {
+        match std::fs::read(Self::path()) {
+            Ok(bytes) => serde_json::from_slice(&bytes).context("approvals.json"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Approvals::default()),
+            Err(e) => Err(e).context("reading approvals.json"),
+        }
+    }
+
+    /// Record the user's answer for `file` at content `hash`.
+    ///
+    /// # Errors
+    /// The file cannot be read or written.
+    pub fn answer(file: &str, hash: &str, allowed: bool) -> Result<()> {
+        let mut all = Approvals::read()?;
+        all.0.insert(file.to_string(), (hash.to_string(), allowed));
+        let path = Self::path();
+        std::fs::create_dir_all(path.parent().context("no state folder")?)?;
+        let part = path.with_extension("part");
+        std::fs::write(&part, serde_json::to_vec_pretty(&all)?)?;
+        Ok(std::fs::rename(&part, &path)?)
+    }
+}
+
+/// The content hash of a parsed layer file: what is merged, so a file that changes between its read and the hash
+/// cannot pass with another content's answer.
+fn content_hash(value: &Value) -> String {
+    use blake2::{Blake2b, Digest, digest::consts::U32};
+    format!("{:x}", Blake2b::<U32>::digest(value.to_string()))
 }
 
 /// Where the system and user layers are.
@@ -602,6 +663,10 @@ struct Merge<'a> {
     /// The defaults and /etc/legionctl may set `config` and locked keys.
     trusted: bool,
     locks: &'a [String],
+    /// A repository layer file: the `config.approve` keys and the user's answer to this content (none yet: `None`).
+    approve: Option<(&'a [String], Option<bool>)>,
+    /// The `config.approve` keys this file set that wait for an answer.
+    held: Vec<String>,
     trace: &'a mut BTreeMap<String, Vec<Setting>>,
     problems: &'a mut Vec<String>,
 }
@@ -625,6 +690,25 @@ impl Merge<'_> {
                     "{}: {path} is set only by the defaults and /etc/legionctl (locked); ignored",
                     self.source.file
                 ));
+                continue;
+            }
+            if let Some((keys, answer)) = self.approve
+                && answer != Some(true)
+                && locked(keys, &path)
+            {
+                self.problems.push(match answer {
+                    Some(_) => format!(
+                        "{}: {path} is not used: the user denied this content (a changed file asks again)",
+                        self.source.file
+                    ),
+                    None => format!(
+                        "{}: {path} is not used until the user allows this file (legionctl asks once)",
+                        self.source.file
+                    ),
+                });
+                if answer.is_none() {
+                    self.held.push(path);
+                }
                 continue;
             }
             match (into.get_mut(&key), value) {
@@ -662,6 +746,49 @@ impl Merge<'_> {
                 value,
             });
     }
+}
+
+/// Merge the layer files in order: each one's keys over the lower ones, with the locks, and a repository layer
+/// file's `config.approve` keys only when the user allowed its content; the files whose keys wait for an answer.
+fn merge_layers(
+    ordered: Vec<(Source, bool, Value)>,
+    (locks, approve, approvals): (&[String], &[String], &Approvals),
+    trace: &mut BTreeMap<String, Vec<Setting>>,
+    problems: &mut Vec<String>,
+) -> (Map<String, Value>, Vec<Unapproved>) {
+    let mut merged = Map::new();
+    let mut unapproved = Vec::new();
+    for (source, trusted, value) in ordered {
+        // only a repository layer file needs the user's answer for its content
+        let hash = (source.layer == "repo").then(|| content_hash(&value));
+        let answer = hash.as_ref().map(|hash| {
+            approvals
+                .0
+                .get(&source.file)
+                .filter(|(h, _)| h == hash)
+                .map(|(_, allowed)| *allowed)
+        });
+        if let Value::Object(map) = value {
+            let mut merge = Merge {
+                source: &source,
+                trusted,
+                locks,
+                approve: answer.map(|answer| (approve, answer)),
+                held: Vec::new(),
+                trace,
+                problems,
+            };
+            merge.object(&mut merged, map, "");
+            if let (false, Some(hash)) = (merge.held.is_empty(), hash) {
+                unapproved.push(Unapproved {
+                    file: source.file.clone(),
+                    hash,
+                    keys: merge.held,
+                });
+            }
+        }
+    }
+    (merged, unapproved)
 }
 
 /// Resolve the config for work in `project` (its repository layer applies), or without a repository.
@@ -710,6 +837,13 @@ pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
         serde_json::from_value(trusted_meta("precedence")).context("config.precedence")?;
     let locks: Vec<String> =
         serde_json::from_value(trusted_meta("locked")).context("config.locked")?;
+    let approve: Vec<String> =
+        serde_json::from_value(trusted_meta("approve")).context("config.approve")?;
+    let approvals = if repo.is_empty() {
+        Approvals::default()
+    } else {
+        Approvals::read()?
+    };
 
     let mut layers = Vec::new();
     let mut ordered: Vec<(Source, bool, Value)> = Vec::new();
@@ -745,20 +879,13 @@ pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
         "config.precedence must start with defaults"
     );
 
-    let mut merged = Map::new();
     let mut trace = BTreeMap::new();
-    for (source, trusted, value) in ordered {
-        if let Value::Object(map) = value {
-            Merge {
-                source: &source,
-                trusted,
-                locks: &locks,
-                trace: &mut trace,
-                problems: &mut problems,
-            }
-            .object(&mut merged, map, "");
-        }
-    }
+    let (merged, unapproved) = merge_layers(
+        ordered,
+        (&locks, &approve, &approvals),
+        &mut trace,
+        &mut problems,
+    );
     let value = Value::Object(merged);
     let config: Config =
         serde_json::from_value(value.clone()).context("the merged config is not valid")?;
@@ -769,6 +896,7 @@ pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
         layers,
         trace,
         problems,
+        unapproved,
         user_dir,
     })
 }

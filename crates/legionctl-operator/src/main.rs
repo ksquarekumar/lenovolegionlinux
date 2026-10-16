@@ -21,6 +21,7 @@ mod session;
 mod system1;
 mod thread;
 mod translate;
+mod trust;
 mod views;
 mod virt;
 
@@ -107,6 +108,7 @@ async fn run() -> Result<()> {
     // while it runs: no process of another build steps the schema of a database it reads (todo-122)
     let _holder = legionctl_core::db::hold(&legionctl_core::db::default_path())?;
     let listener = server::activated_listener()?;
+    trust::init(tokio::runtime::Handle::current());
     let operator = Arc::new(engine::Operator {
         runtime: tokio::runtime::Handle::current(),
         ring: std::sync::Mutex::default(),

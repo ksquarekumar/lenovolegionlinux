@@ -49,6 +49,15 @@ pub async fn tell(bus: &zbus::Connection, icon: &str, summary: &str, body: &str)
 /// # Errors
 /// There is no session bus or notification service to ask.
 pub async fn ask(summary: &str, what: &str) -> Result<bool> {
+    Ok(question(summary, what).await? == Some(true))
+}
+
+/// Ask the user `body` with the title `summary`, with Allow and Deny: the answer, or `None` when the user closed the
+/// notification or gave no answer within the time.
+///
+/// # Errors
+/// There is no session bus or notification service to ask.
+pub async fn question(summary: &str, body: &str) -> Result<Option<bool>> {
     let bus = zbus::Connection::session()
         .await
         .context("no session bus to ask the user")?;
@@ -65,7 +74,7 @@ pub async fn ask(summary: &str, what: &str) -> Result<bool> {
         0u32,
         "dialog-question",
         summary,
-        what,
+        body,
         vec!["allow", "Allow", "deny", "Deny"],
         hints,
         0i32,
@@ -87,19 +96,19 @@ pub async fn ask(summary: &str, what: &str) -> Result<bool> {
                 Some("ActionInvoked") => {
                     let (of, key): (u32, String) = signal.body().deserialize()?;
                     if of == id {
-                        return Ok(key == "allow");
+                        return Ok(Some(key == "allow"));
                     }
                 }
                 Some("NotificationClosed") => {
                     let (of, _reason): (u32, u32) = signal.body().deserialize()?;
                     if of == id {
-                        return Ok(false);
+                        return Ok(None);
                     }
                 }
                 _ => {}
             }
         }
-        anyhow::Ok(false)
+        anyhow::Ok(None)
     })
     .await;
     if answer.is_err() {
@@ -113,5 +122,5 @@ pub async fn ask(summary: &str, what: &str) -> Result<bool> {
             )
             .await;
     }
-    answer.unwrap_or(Ok(false))
+    answer.unwrap_or(Ok(None))
 }

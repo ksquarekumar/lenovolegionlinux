@@ -1070,6 +1070,19 @@ pub(crate) fn dossiers() -> Result<Dossiers> {
     Dossiers::open(&config(None)?.config.dossier)
 }
 
+/// Where the repository commands of a call run (O-1): in the caller's own session sandbox, or on the host for the
+/// user, who calls them.
+fn jail(
+    ctx: &Ctx,
+    store: &Dossiers,
+    project: Option<&ClientPath>,
+) -> Result<Option<legionctl_core::session::Jail>> {
+    match &ctx.principal {
+        Principal::Session(id) => Ok(Some(store.jail(id, &config(project)?.config)?)),
+        Principal::User => Ok(None),
+    }
+}
+
 /// The agent side of `doctor`: setup gaps, stale dossier bindings, workspaces that drifted from their record.
 fn agent_findings() -> Result<Vec<String>> {
     let mut w: Vec<String> = setup::check(
@@ -1444,8 +1457,12 @@ fn gate_message(resolved: &Resolved) -> Result<String> {
 }
 
 /// The config for work in `project` (its repository layer applies), or without a repository.
+/// The config for work in `project`; a repository layer file with keys that wait for the user's first answer gets
+/// its question (O-2), and resolves without them until then.
 pub(crate) fn config(project: Option<&ClientPath>) -> Result<Resolved> {
-    resolve(&Dirs::from_env(), path(project)?)
+    let resolved = resolve(&Dirs::from_env(), path(project)?)?;
+    crate::trust::ask(&resolved.unapproved);
+    Ok(resolved)
 }
 
 impl Operator {
@@ -2169,7 +2186,8 @@ impl Engine for Operator {
         if let Some(held) = store.checkpoint_gate(session)? {
             anyhow::bail!(held);
         }
-        let lines = store.checkpoint(&ws, &input.message, session)?;
+        let jail = jail(ctx, &store, Some(&input.repo))?;
+        let lines = store.checkpoint(&ws, &input.message, (session, jail.as_ref()))?;
         // the commit's patch id links it to this checkpoint, also after `workspace merge` rebased it; a folder
         // workspace has no commits
         let patch = if ws.is_folder() {
@@ -2194,19 +2212,26 @@ impl Engine for Operator {
         Ok(Lines { lines })
     }
 
-    fn code_tests_run(&self, _: &Ctx, input: TestsRunIn) -> Result<Lines> {
+    fn code_tests_run(&self, ctx: &Ctx, input: TestsRunIn) -> Result<Lines> {
         let repo = input.repo.get()?;
+        let store = dossiers()?;
+        let jail = jail(ctx, &store, Some(&input.repo))?;
         let db = Db::open_default()?;
         let job = db.job_begin(
             "code.tests.run",
             &serde_json::json!({"repo": repo, "filter": input.filter}),
         )?;
-        let out = dossiers()?.run_tests(repo, input.filter.as_deref(), job, |counts| {
-            let _ = db.job_step(
-                job,
-                &serde_json::json!({"repo": repo, "filter": input.filter, "results": counts}),
-            );
-        });
+        let out = store.run_tests(
+            repo,
+            (input.filter.as_deref(), jail.as_ref()),
+            job,
+            |counts| {
+                let _ = db.job_step(
+                    job,
+                    &serde_json::json!({"repo": repo, "filter": input.filter, "results": counts}),
+                );
+            },
+        );
         let out = out.map(|lines| Lines { lines });
         end_job(&db, job, &out)?;
         out
@@ -2224,9 +2249,11 @@ impl Engine for Operator {
         })
     }
 
-    fn code_checks_run(&self, _: &Ctx, input: ChecksRunIn) -> Result<Lines> {
+    fn code_checks_run(&self, ctx: &Ctx, input: ChecksRunIn) -> Result<Lines> {
         let session = Some(input.session.0.as_str()).filter(|s| !s.is_empty());
-        let runs = dossiers()?.run_checks(input.repo.get()?, &input.checks, session)?;
+        let store = dossiers()?;
+        let jail = jail(ctx, &store, Some(&input.repo))?;
+        let runs = store.run_checks(input.repo.get()?, &input.checks, (session, jail.as_ref()))?;
         Ok(Lines {
             lines: runs
                 .iter()
@@ -2324,7 +2351,7 @@ impl Engine for Operator {
         out
     }
 
-    fn workspace_merge(&self, _: &Ctx, input: MergeIn) -> Result<Lines> {
+    fn workspace_merge(&self, ctx: &Ctx, input: MergeIn) -> Result<Lines> {
         let store = dossiers()?;
         let (dir, topic) = (input.repo.get()?, input.topic.as_deref());
         // no agent session: the user, whose merge of a branch that sets its own gates the desktop dialog confirms
@@ -2341,7 +2368,8 @@ impl Engine for Operator {
                 Some(input.session.0.as_str()),
             )
         };
-        let lines = store.merge(&ws, session, |what| {
+        let jail = jail(ctx, &store, Some(&input.repo))?;
+        let lines = store.merge(&ws, (session, jail.as_ref()), |what| {
             self.runtime
                 .block_on(crate::desktop::ask("legionctl: confirm a merge", what))
                 .context("the merge changes .legionctl/ and needs the user's confirmation in a desktop dialog")
@@ -2540,7 +2568,8 @@ impl Engine for Operator {
                 place.as_ref(),
             ));
         }
-        let ran = hooks::run(&resolved, input.event.into());
+        let make = || jail(ctx, &store, Some(&input.project));
+        let ran = hooks::run(&resolved, input.event.into(), &mut hooks::Jail::new(&make));
         if !ran.is_empty() {
             lines.push(ran);
         }

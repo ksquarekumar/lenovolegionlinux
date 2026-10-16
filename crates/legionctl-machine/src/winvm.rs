@@ -355,16 +355,17 @@ pub fn autostart_file(user: &str) -> Result<String> {
     ))
 }
 
-/// The autostart rule of `user`.
+/// The autostart rule of `user`: no prompt only for a process of the user's local, active session (P-2: never for
+/// cron, ssh or a process outside the seat).
 ///
 /// # Errors
 /// The user name has characters a rule cannot hold.
 pub fn autostart_rule(user: &str) -> Result<String> {
     autostart_file(user)?;
     Ok(format!(
-        "// legionctl windows vm autostart: {user} may start and end the Windows VM without a prompt\n\
+        "// legionctl windows vm autostart: {user} may start and end the Windows VM without a prompt from the active local session\n\
          polkit.addRule(function(action, subject) {{\n    \
-         if (action.id == \"org.legionctl.windows.vm\" && subject.user == \"{user}\") {{\n        \
+         if (action.id == \"org.legionctl.windows.vm\" && subject.user == \"{user}\" && subject.local && subject.active) {{\n        \
          return polkit.Result.YES;\n    }}\n}});\n"
     ))
 }

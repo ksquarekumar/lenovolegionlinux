@@ -791,7 +791,7 @@ impl Dossiers {
     pub fn run_tests(
         &self,
         dir: &Path,
-        filter: Option<&str>,
+        (filter, jail): (Option<&str>, Option<&crate::session::Jail>),
         job: i64,
         mut progress: impl FnMut(&BTreeMap<String, u32>),
     ) -> Result<Vec<String>> {
@@ -819,7 +819,7 @@ impl Dossiers {
                 Some(f) => vec!["--", f],
                 None => Vec::new(),
             };
-            let run = self.run_check(dir, (name, check), &args, job, None)?;
+            let run = self.run_check(dir, (name, check), &args, job, (None, jail))?;
             if check.runner.is_none() {
                 lines.push(format!("{name}: exit {} (run {})", run.exit, run.id));
                 continue;

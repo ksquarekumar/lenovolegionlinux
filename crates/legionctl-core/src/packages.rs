@@ -295,7 +295,7 @@ fn sandboxed(dir: &Path, argv: &[String], hidden: &[String]) -> Result<()> {
     std::fs::create_dir_all(&scratch)?;
     let mut hiding = Vec::new();
     if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
-        crate::session::hide(&mut hiding, Path::new(&runtime), hidden);
+        crate::session::hide(&mut hiding, Path::new(&runtime), hidden)?;
     }
     let out = Command::new("bwrap")
         .args([

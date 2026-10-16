@@ -1,9 +1,11 @@
 //! Sessions (note 14, milestone 1): an agent that legionctl starts itself, so it runs where the dossier's work is and
-//! inside a sandbox: `systemd-run --user --scope` (unit `legionctl-session-<id>`), then `bwrap` with the real home
-//! read-only and only the workspace, the dossier, the repository's `.git` and the agent's own folders writable,
-//! then the agent. `/usr/bin/git` in the sandbox is the git gate (gates.rs). A session can also run in a container
-//! (W5, note 18): `docker run` of the repository's agent image (`workspace pack`) with the same folders mounted at
-//! their own paths; the container is then what pause, unpause, stop and the session's state act on.
+//! inside a sandbox: `systemd-run --user --scope` (unit `legionctl-session-<id>`), then `bwrap` in its own PID, IPC and
+//! network namespaces with the real home read-only, keys and tokens hidden, and only the workspace, the dossier and
+//! what a commit writes in the repository's `.git` writable; the agents' own folders are layers whose writes stay in
+//! the session. The only network is the model gateway, through its socket. `/usr/bin/git` in the sandbox is the git
+//! gate (gates.rs). A session can also run in a container (W5, note 18): `docker run` of the repository's agent image
+//! (`workspace pack`) with the same folders mounted at their own paths and no network but the gateway; the container
+//! is then what pause, unpause, stop and the session's state act on.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -384,14 +386,20 @@ fn new_id() -> Result<String> {
 
 /// bwrap arguments that hide the ways out of a sandbox. The runtime folder holds the session bus, systemd's user
 /// manager and the `GnuPG`, ssh and keyring agents, so it becomes a private tmpfs (callers bind back what they need);
-/// each `hidden` path that exists becomes an empty tmpfs (a folder) or `/dev/null` (a file or socket, like docker's).
-pub fn hide(args: &mut Vec<String>, runtime: &Path, hidden: &[String]) {
+/// each `hidden` path (`~/` is the home) that exists becomes an empty tmpfs (a folder) or `/dev/null` (a file or
+/// socket, like docker's).
+///
+/// # Errors
+/// A `~/` path and no HOME.
+pub fn hide(args: &mut Vec<String>, runtime: &Path, hidden: &[String]) -> Result<()> {
     args.extend(["--tmpfs".into(), runtime.to_string_lossy().into_owned()]);
     // the real paths, once each: bwrap cannot mount through a symlink like /var/run -> /run
-    let mut real: Vec<PathBuf> = hidden
-        .iter()
-        .filter_map(|h| std::fs::canonicalize(h).ok())
-        .collect();
+    let mut real: Vec<PathBuf> = Vec::new();
+    for h in hidden {
+        if let Ok(path) = std::fs::canonicalize(expand_home(h)?) {
+            real.push(path);
+        }
+    }
     real.sort();
     real.dedup();
     for path in real {
@@ -402,6 +410,16 @@ pub fn hide(args: &mut Vec<String>, runtime: &Path, hidden: &[String]) {
             args.extend(["--ro-bind".into(), "/dev/null".into(), target]);
         }
     }
+    Ok(())
+}
+
+/// Each `.env` file (`.env`, `.env.local`, ...) at the top of `dirs`: keys a sandbox must not read.
+fn env_files(dirs: &[&Path]) -> Vec<String> {
+    dirs.iter()
+        .flat_map(|d| std::fs::read_dir(d).into_iter().flatten().flatten())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".env"))
+        .map(|e| e.path().to_string_lossy().into_owned())
+        .collect()
 }
 
 /// Where the agent works: a repository's worktree, or a plain folder itself (seen through its overlay).
@@ -522,9 +540,28 @@ fn copy_transcript(from: &Path, to: &Path, id: &str) -> Result<()> {
 
 /// Copy the transcript of session `id` from the folders of account `from` (none: the home's) to account `to`'s.
 pub(crate) fn copy_transcript_to(id: &str, from: Option<&str>, to: &str) -> Result<()> {
-    let [from, _] = agent_homes(from)?;
+    let [claude, _] = agent_homes(from)?;
+    let from = match from {
+        Some(_) => claude,
+        None => written_home(id, &claude),
+    };
     let [to, _] = agent_homes(Some(to))?;
     copy_transcript(&from, &to, id)
+}
+
+/// Where session `id` wrote the home folder `real`: a session that legionctl ran wrote its layer (the overlay's upper
+/// folder on the host, its copy in a container or VM); any other (the user's own agent) wrote the real folder.
+fn written_home(id: &str, real: &Path) -> PathBuf {
+    let layer = session_home(id)
+        .join("home")
+        .join(real.strip_prefix("/").unwrap_or(real));
+    if layer.join("upper").is_dir() {
+        layer.join("upper")
+    } else if layer.is_dir() {
+        layer
+    } else {
+        real.to_path_buf()
+    }
 }
 
 /// The skills folders of Claude Code and Codex (the account's, or the home's) as exactly `skills`, read-only.
@@ -568,6 +605,8 @@ struct Who<'a> {
     command: &'a [String],
     account: Option<&'a str>,
     member: Option<(&'a str, &'a Path)>,
+    /// An ACP adapter with no terminal (`session run`).
+    headless: bool,
 }
 
 /// A thread member sees the main agent's folder with its own empty upper layer, so its checks never change main's
@@ -622,6 +661,8 @@ pub fn drop_overlay(id: &str) -> Result<()> {
 enum Mount {
     /// Writable, at its own path.
     Writable(PathBuf),
+    /// A file or folder, writable, at another path.
+    Bind(PathBuf, PathBuf),
     /// A file or folder, read-only, at another path.
     ReadOnly(PathBuf, PathBuf),
     /// A private empty folder.
@@ -640,6 +681,7 @@ fn bwrap_args(args: &mut Vec<String>, mounts: &[Mount], env: &[(String, String)]
     for mount in mounts {
         match mount {
             Mount::Writable(p) => args.extend(["--bind".into(), text(p), text(p)]),
+            Mount::Bind(from, to) => args.extend(["--bind".into(), text(from), text(to)]),
             Mount::ReadOnly(from, to) => args.extend(["--ro-bind".into(), text(from), text(to)]),
             Mount::Empty(p) => args.extend(["--tmpfs".into(), text(p)]),
             Mount::Overlay {
@@ -670,6 +712,9 @@ fn docker_args(args: &mut Vec<String>, mounts: &[Mount], env: &[(String, String)
     for mount in mounts {
         match mount {
             Mount::Writable(p) => args.extend(["-v".into(), format!("{}:{}", text(p), text(p))]),
+            Mount::Bind(from, to) => {
+                args.extend(["-v".into(), format!("{}:{}", text(from), text(to))]);
+            }
             Mount::ReadOnly(from, to) => {
                 args.extend(["-v".into(), format!("{}:{}:ro", text(from), text(to))]);
             }
@@ -707,11 +752,14 @@ fn gpu_nodes(args: &mut Vec<String>) -> Result<()> {
     Ok(())
 }
 
-/// `bwrap ...` over the host's root, read-only, with the ways out hidden, then `mounts` and `env`.
+/// `bwrap ...` over the host's root, read-only, in its own PID, IPC and network namespaces (it sees only its own
+/// processes and has only a loopback device), with the ways out and each `.env` file of the repository and the
+/// workspace hidden, then `mounts` and `env`. A headless sandbox also has a session of its own (no controlling
+/// terminal to push input into); an interactive one keeps the terminal, whose input `dev.tty.legacy_tiocsti = 0`
+/// guards.
 fn bwrap_sandbox(
     ws: &crate::workspace::Workspace,
-    runtime: &Path,
-    hidden: &[String],
+    (runtime, hidden, headless): (&Path, &[String], bool),
     mounts: &[Mount],
     env: &[(String, String)],
 ) -> Result<Vec<String>> {
@@ -719,6 +767,11 @@ fn bwrap_sandbox(
     let mut args: Vec<String> = [
         "bwrap",
         "--die-with-parent",
+        "--unshare-pid",
+        "--unshare-ipc",
+        "--unshare-net",
+        "--cap-drop",
+        "ALL",
         "--ro-bind",
         "/",
         "/",
@@ -732,7 +785,12 @@ fn bwrap_sandbox(
     ]
     .map(String::from)
     .to_vec();
-    hide(&mut args, runtime, hidden);
+    if headless {
+        args.push("--new-session".into());
+    }
+    let mut hidden = hidden.to_vec();
+    hidden.extend(env_files(&[&ws.repo, &agent_dir(ws)]));
+    hide(&mut args, runtime, &hidden)?;
     if mounts.iter().any(|m| matches!(m, Mount::Overlay { .. })) {
         let help = std::process::Command::new("bwrap").arg("--help").output()?;
         anyhow::ensure!(
@@ -762,9 +820,22 @@ fn docker_sandbox(
         std::os::unix::fs::MetadataExt::gid(&me),
     );
     let home = std::env::var("HOME").context("HOME is not set")?;
-    let mut args: Vec<String> = ["docker", "run", "--rm", "--init", "-i"]
-        .map(String::from)
-        .to_vec();
+    // no network but the gateway (`legionctl forward` below), no capabilities, no new privileges
+    let mut args: Vec<String> = [
+        "docker",
+        "run",
+        "--rm",
+        "--init",
+        "-i",
+        "--network",
+        "none",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+    ]
+    .map(String::from)
+    .to_vec();
     args.extend([
         "--name".into(),
         container_name(id),
@@ -864,17 +935,19 @@ fn vm_sandbox(
     let mut guest_mounts = vec![GuestMount::Empty(home.clone())];
     for mount in mounts {
         match mount {
-            Mount::Writable(p) if p == legionctl => {
-                guest_mounts.push(GuestMount::Empty(p.clone()));
-                let files = p.join("sessions").join(id);
-                guest_mounts.push(share(files.clone(), files, false));
+            // the guest's runtime folder is its own: its operator and gateway sockets relay to the host's
+            Mount::ReadOnly(from, _) if from == legionctl => {
+                guest_mounts.push(GuestMount::Empty(from));
             }
-            // virtiofs shares only folders: a writable file (~/.claude.json) is the VM's own copy, so the
-            // agent's changes to it stay in the VM
+            // virtiofs shares only folders: a writable file (the session's ~/.claude.json) is the VM's own copy
+            Mount::Bind(from, to) if from.is_file() => {
+                guest_mounts.push(GuestMount::File(to, std::fs::read_to_string(&from)?));
+            }
             Mount::Writable(p) if p.is_file() => {
                 guest_mounts.push(GuestMount::File(p.clone(), std::fs::read_to_string(&p)?));
             }
             Mount::Writable(p) => guest_mounts.push(share(p.clone(), p, false)),
+            Mount::Bind(from, to) => guest_mounts.push(share(from, to, false)),
             Mount::ReadOnly(from, to) if from.is_dir() => guest_mounts.push(share(from, to, true)),
             Mount::ReadOnly(from, to) => {
                 guest_mounts.push(GuestMount::File(to, std::fs::read_to_string(&from)?));
@@ -1154,6 +1227,183 @@ pub fn mcp_config(config: &Config, store: &crate::packages::Store) -> Result<ser
     Ok(serde_json::json!({ "mcpServers": servers }))
 }
 
+/// The agents' variables for the model gateway (their model calls go there), and the line that says what network the
+/// session has.
+fn network(env: &mut Vec<(String, String)>, gateway: Option<u16>) -> String {
+    let Some(port) = gateway else {
+        return "network: none (gateway.port is 0: no model gateway)".into();
+    };
+    env.extend([
+        (
+            "ANTHROPIC_BASE_URL".into(),
+            format!("http://127.0.0.1:{port}"),
+        ),
+        (
+            "OPENAI_BASE_URL".into(),
+            format!("http://127.0.0.1:{port}/v1"),
+        ),
+    ]);
+    format!("network: none but the model gateway (127.0.0.1:{port} in the sandbox)")
+}
+
+/// The agent command behind `legionctl forward`: the sandbox's own 127.0.0.1:`port` goes to the gateway's `socket`,
+/// its only way out.
+fn forward(agent: &mut Vec<String>, gateway: Option<u16>, socket: &Path) {
+    if let Some(port) = gateway {
+        agent.splice(
+            0..0,
+            [
+                "legionctl".into(),
+                "forward".into(),
+                port.to_string(),
+                socket.to_string_lossy().into_owned(),
+                "--".into(),
+            ],
+        );
+    }
+}
+
+/// A session's own state (`~/.local/state/legionctl/session-home/<id>`): the layers over the home folders it writes
+/// (`home/`), kept for a resume, and the throwaway layers of the commands run for it (`run-*`).
+fn session_home(id: &str) -> PathBuf {
+    crate::db::default_path()
+        .with_file_name("session-home")
+        .join(id)
+}
+
+/// The agents' own state and, on the host, the caches (`session.writable`, `session.caches`), never the real files:
+/// on the host each folder is an overlay over the real one with its writes in `layer`, in a container or VM the
+/// session's copy in `layer` (made at its first start); each file is the session's copy in `layer`. A path that does
+/// not exist is left out.
+fn home_mounts(mounts: &mut Vec<Mount>, config: &Config, layer: &Path, host: bool) -> Result<()> {
+    let caches: &[String] = if host { &config.session.caches } else { &[] };
+    for entry in config.session.writable.iter().chain(caches) {
+        let path = expand_home(entry)?;
+        if !path.exists() {
+            continue;
+        }
+        let own = layer.join(path.strip_prefix("/").unwrap_or(&path));
+        if host && path.is_dir() {
+            for part in ["upper", "work"] {
+                std::fs::create_dir_all(own.join(part))?;
+            }
+            mounts.push(Mount::Overlay {
+                folder: path,
+                upper: own.join("upper"),
+                work: own.join("work"),
+            });
+            continue;
+        }
+        if !own.exists() {
+            std::fs::create_dir_all(own.parent().context("a layer path has no folder")?)?;
+            let out = std::process::Command::new("cp")
+                .args(["-a", "--reflink=auto", "--"])
+                .args([&path, &own])
+                .output()
+                .context("running cp")?;
+            anyhow::ensure!(
+                out.status.success(),
+                "copying {} for the session: {}",
+                path.display(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        mounts.push(Mount::Bind(own, path));
+    }
+    Ok(())
+}
+
+/// What a commit in worktree `workdir` on `branch` writes in the repository's git folder: the objects, the refs and
+/// reflogs folder of its own branch, the stash and the worktree's own folder. The config, hooks and info, the other
+/// branches, tags and remotes, and the files that point git to its folders (the worktree's `.git`, `commondir`,
+/// `gitdir`) stay read-only, so that nothing the agent writes runs when the host's git reads it (S-4).
+fn git_mounts(mounts: &mut Vec<Mount>, workdir: &Path, branch: &str) -> Result<()> {
+    let common = git_common_dir(workdir)?;
+    let own = PathBuf::from(crate::workspace::git(
+        workdir,
+        &["rev-parse", "--absolute-git-dir"],
+    )?);
+    anyhow::ensure!(
+        own != common,
+        "a session works in a worktree, not in the main checkout {}",
+        workdir.display()
+    );
+    let folder = Path::new(branch)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .with_context(|| {
+            format!("the session's branch {branch} has no folder (legionctl/<dossier>)")
+        })?;
+    let refs = common.join("refs");
+    // the folder itself, read-only: a container or VM sees nothing of the host but its mounts
+    mounts.push(Mount::ReadOnly(common.clone(), common.clone()));
+    mounts.push(Mount::Writable(common.join("objects")));
+    mounts.push(Mount::Writable(refs.clone()));
+    for sub in std::fs::read_dir(&refs)? {
+        let sub = sub?.path();
+        if sub.is_dir() {
+            mounts.push(Mount::ReadOnly(sub.clone(), sub));
+        }
+    }
+    for dir in [
+        refs.join("heads").join(folder),
+        common.join("logs/refs/heads").join(folder),
+    ] {
+        std::fs::create_dir_all(&dir)?;
+        mounts.push(Mount::Writable(dir));
+    }
+    // the reflog of the stash, beside the read-only reflogs of the main checkout
+    let stash = common.join("logs/refs/stash");
+    if !stash.exists() {
+        std::fs::write(&stash, "")?;
+    }
+    mounts.push(Mount::Writable(stash));
+    mounts.push(Mount::Writable(own.clone()));
+    for file in ["commondir", "gitdir", "config.worktree"] {
+        let path = own.join(file);
+        if path.exists() {
+            mounts.push(Mount::ReadOnly(path.clone(), path));
+        }
+    }
+    let link = workdir.join(".git");
+    mounts.push(Mount::ReadOnly(link.clone(), link));
+    Ok(())
+}
+
+/// A sandbox of a session for the commands that legionctl runs for it (O-1): the repository's checks and tests, the
+/// hooks of its repository layer and the checkpoint's commit run here, never on the host. It is the session's host
+/// sandbox without the runtime folder (no operator, no gateway, no network) and with a throwaway layer over the home
+/// folders, which goes when the jail goes.
+pub struct Jail {
+    argv: Vec<String>,
+    /// The session's workspace.
+    pub workdir: PathBuf,
+    layer: PathBuf,
+}
+
+impl Jail {
+    /// `argv` in `dir`, inside the sandbox.
+    #[must_use]
+    pub fn command(&self, dir: &Path, argv: &[&str]) -> std::process::Command {
+        let mut cmd = std::process::Command::new(&self.argv[0]);
+        cmd.args(&self.argv[1..])
+            .arg("--chdir")
+            .arg(dir)
+            .arg("--")
+            .args(argv);
+        cmd
+    }
+}
+
+impl Drop for Jail {
+    fn drop(&mut self) {
+        // shortcut: a layer that cannot be removed stays in session-home/<id>/run-*; doctor does not list them yet
+        if crate::folder::clear(&self.layer).is_ok() {
+            let _ = std::fs::remove_dir(&self.layer);
+        }
+    }
+}
+
 impl Dossiers {
     /// Prepare a session of `agent` on `dossier` in the repository that contains `dir`: bind the dossier to a new
     /// session id, open its workspace, record the session, and return how to start it.
@@ -1204,6 +1454,7 @@ impl Dossiers {
                 command,
                 account: start.account,
                 member: start.member,
+                headless: start.headless,
             },
             (mcp_json, skills.as_deref()),
             (&runs, start.gpu),
@@ -1275,6 +1526,7 @@ impl Dossiers {
                 command,
                 account: record.account.as_deref(),
                 member: member.as_ref().map(|(m, w)| (m.as_str(), Path::new(w))),
+                headless,
             },
             (mcp_json, skills.as_deref()),
             // the GPU is asked for each start: a resumed session runs without it
@@ -1292,38 +1544,22 @@ impl Dossiers {
         (mcp_json, skills): (serde_json::Value, Option<&[(String, PathBuf)]>),
         (runs, gpu): (&Runs, bool),
     ) -> Result<Launch> {
-        let dossier = ws.dossier.as_str();
         let runtime = PathBuf::from(
             std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?,
         );
         let [real_git, settings, mcp] = session_files(&runtime, &id, config, &mcp_json)?;
         let workdir = agent_dir(ws);
-        // its `.state` must be there for the read-only mount
-        self.home(dossier)?;
-        let state = self.root.join(dossier).join(".state");
-
+        let host = matches!(runs, Runs::Host);
+        // the operator's sockets read-only (a sandbox cannot put its own in their place), and of the sessions' files
+        // only its own
+        let legionctl = runtime.join("legionctl");
+        let own = legionctl.join("sessions").join(&id);
         let mut mounts = vec![
-            Mount::Writable(runtime.join("legionctl")),
-            Mount::Writable(self.root.join(dossier)),
-            // the dossier's database holds the test gate's evidence: only legionctl writes it
-            Mount::ReadOnly(state.clone(), state),
+            Mount::ReadOnly(legionctl.clone(), legionctl.clone()),
+            Mount::Empty(legionctl.join("sessions")),
+            Mount::ReadOnly(own.clone(), own),
         ];
-        if ws.is_folder() {
-            mounts.push(Mount::Overlay {
-                folder: workdir.clone(),
-                upper: crate::folder::upper(&ws.path),
-                work: crate::folder::work(&ws.path),
-            });
-        } else {
-            mounts.push(Mount::Writable(workdir.clone()));
-            mounts.push(Mount::Writable(git_common_dir(&workdir)?));
-        }
-        for writable in &config.session.writable {
-            let path = expand_home(writable)?;
-            if path.exists() {
-                mounts.push(Mount::Writable(path));
-            }
-        }
+        mounts.extend(self.work_mounts(ws, config, &session_home(&id).join("home"), host)?);
         let mut env = vec![
             ("LEGIONCTL_SESSION".to_string(), id.clone()),
             ("LEGIONCTL_TOKEN".to_string(), token.to_string()),
@@ -1337,11 +1573,27 @@ impl Dossiers {
         }
 
         let gateway = (config.gateway.port != 0).then_some(config.gateway.port);
+        let mut lines = uses(bound, ws, &workdir);
+        lines.push(network(&mut env, gateway));
+        let mut agent: Vec<String> = who
+            .command
+            .iter()
+            .map(|a| {
+                a.replace("{id}", &id)
+                    .replace("{settings}", &settings.to_string_lossy())
+                    .replace("{mcp}", &mcp.to_string_lossy())
+            })
+            .collect();
         let sandbox = match runs {
             Runs::Host => {
+                forward(&mut agent, gateway, &legionctl.join(GATEWAY_SOCKET));
                 mounts.push(Mount::ReadOnly("/usr/bin/git".into(), real_git.clone()));
-                let mut sandbox =
-                    bwrap_sandbox(ws, &runtime, &config.session.hidden, &mounts, &env)?;
+                let mut sandbox = bwrap_sandbox(
+                    ws,
+                    (&runtime, &config.session.hidden, who.headless),
+                    &mounts,
+                    &env,
+                )?;
                 if gpu {
                     gpu_nodes(&mut sandbox)?;
                 }
@@ -1376,20 +1628,79 @@ impl Dossiers {
                 Runs::Container(_) => Inside::Container,
                 Runs::Vm(_) => Inside::Vm,
             },
-            agent: who
-                .command
-                .iter()
-                .map(|a| {
-                    a.replace("{id}", &id)
-                        .replace("{settings}", &settings.to_string_lossy())
-                        .replace("{mcp}", &mcp.to_string_lossy())
-                })
-                .collect(),
+            agent,
             real_git,
-            lines: uses(bound, ws, &workdir),
+            lines,
             workdir,
             mcp: mcp_json,
             id,
+        })
+    }
+
+    /// The folders of a session's work: its dossier (the evidence database read-only), its workspace (a plain
+    /// folder through its overlay), what a commit writes in git, and the home layers in `layer`.
+    fn work_mounts(
+        &self,
+        ws: &crate::workspace::Workspace,
+        config: &Config,
+        layer: &Path,
+        host: bool,
+    ) -> Result<Vec<Mount>> {
+        let dossier = ws.dossier.as_str();
+        // its `.state` must be there for the read-only mount
+        self.home(dossier)?;
+        let state = self.root.join(dossier).join(".state");
+        let workdir = agent_dir(ws);
+        let mut mounts = vec![
+            Mount::Writable(self.root.join(dossier)),
+            // the dossier's database holds the test gate's evidence: only legionctl writes it
+            Mount::ReadOnly(state.clone(), state),
+        ];
+        if ws.is_folder() {
+            mounts.push(Mount::Overlay {
+                folder: workdir,
+                upper: crate::folder::upper(&ws.path),
+                work: crate::folder::work(&ws.path),
+            });
+        } else {
+            mounts.push(Mount::Writable(workdir.clone()));
+            git_mounts(&mut mounts, &workdir, &ws.branch)?;
+        }
+        home_mounts(&mut mounts, config, layer, host)?;
+        Ok(mounts)
+    }
+
+    /// The sandbox of session `id` for the commands legionctl runs for it ([`Jail`]).
+    ///
+    /// # Errors
+    /// No such session, its workspace is not open or is a plain folder (no repository commands), or a mount cannot
+    /// be prepared.
+    pub fn jail(&self, id: &str, config: &Config) -> Result<Jail> {
+        let record = self.session(id)?;
+        let ws = self
+            .workspaces(Some(&record.dossier))?
+            .into_iter()
+            .find(|ws| agent_dir(ws) == record.workdir)
+            .with_context(|| {
+                format!(
+                    "session {id} has no open workspace at {}",
+                    record.workdir.display()
+                )
+            })?;
+        anyhow::ensure!(
+            !ws.is_folder(),
+            "session {id} works in a plain folder, which has no repository commands"
+        );
+        let runtime = PathBuf::from(
+            std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?,
+        );
+        let layer = session_home(id).join(format!("run-{}", new_id()?));
+        let mounts = self.work_mounts(&ws, config, &layer, true)?;
+        let argv = bwrap_sandbox(&ws, (&runtime, &config.session.hidden, true), &mounts, &[])?;
+        Ok(Jail {
+            argv,
+            workdir: record.workdir,
+            layer,
         })
     }
 

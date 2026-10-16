@@ -192,7 +192,59 @@ pub fn remove_action(config: &Resolved, id: &str) -> Result<()> {
     config.set_user(&format!("hooks.actions.{id}"), Value::Null)
 }
 
-fn run_action(config: &Resolved, action: &Action, event: Event) -> String {
+/// Where a command action runs: a repository layer's action in the calling session's sandbox (O-1); the user's own,
+/// and a repository's for a caller that is no session (which the user allowed, O-2), on the host.
+fn command(config: &Resolved, action: &Action, jail: &mut Jail<'_>) -> Result<Command> {
+    let argv = [
+        format!("{}s", action.timeout_s),
+        "sh".into(),
+        "-c".into(),
+        action.detail.clone(),
+    ];
+    let from_repo = config
+        .trace
+        .get(&format!("hooks.actions.{}.command", action.id))
+        .and_then(|settings| settings.last())
+        .is_some_and(|s| s.source.layer == "repo");
+    if from_repo && let Some(jail) = jail.get()? {
+        let argv: Vec<&str> = std::iter::once("timeout")
+            .chain(argv.iter().map(String::as_str))
+            .collect();
+        return Ok(jail.command(&jail.workdir, &argv));
+    }
+    let mut cmd = Command::new("timeout");
+    cmd.args(argv);
+    Ok(cmd)
+}
+
+/// The calling session's sandbox, made at the first repository action that needs it.
+pub struct Jail<'a> {
+    make: &'a dyn Fn() -> Result<Option<crate::session::Jail>>,
+    asked: bool,
+    made: Option<crate::session::Jail>,
+}
+
+impl<'a> Jail<'a> {
+    /// `make` gives the caller's session sandbox, or `None` for a caller that is no session.
+    #[must_use]
+    pub fn new(make: &'a dyn Fn() -> Result<Option<crate::session::Jail>>) -> Jail<'a> {
+        Jail {
+            make,
+            asked: false,
+            made: None,
+        }
+    }
+
+    fn get(&mut self) -> Result<Option<&crate::session::Jail>> {
+        if !self.asked {
+            self.made = (self.make)()?;
+            self.asked = true;
+        }
+        Ok(self.made.as_ref())
+    }
+}
+
+fn run_action(config: &Resolved, action: &Action, event: Event, jail: &mut Jail<'_>) -> String {
     let result: Result<String> = match action.id.as_str() {
         "reminders" => Ok(reminders::emit(config, event)),
         "load" => {
@@ -225,15 +277,8 @@ fn run_action(config: &Resolved, action: &Action, event: Event) -> String {
                     }
                 })
         }
-        _ => Command::new("timeout")
-            .args([
-                format!("{}s", action.timeout_s),
-                "sh".into(),
-                "-c".into(),
-                action.detail.clone(),
-            ])
-            .output()
-            .map_err(Into::into)
+        _ => command(config, action, jail)
+            .and_then(|mut cmd| Ok(cmd.output()?))
             .map(|out| {
                 if out.status.success() {
                     String::from_utf8_lossy(&out.stdout).trim().to_string()
@@ -249,14 +294,14 @@ fn run_action(config: &Resolved, action: &Action, event: Event) -> String {
 }
 
 /// Run every action bound to `event`, in order, and return their combined output. A failed action is reported in
-/// the output; the others still run.
+/// the output; the others still run. `jail` is where a repository layer's command action runs ([`command`]).
 #[must_use]
-pub fn run(config: &Resolved, event: Event) -> String {
+pub fn run(config: &Resolved, event: Event, jail: &mut Jail<'_>) -> String {
     let actions = actions(config);
     bound(config, event)
         .iter()
         .filter_map(|id| actions.iter().find(|a| &a.id == id))
-        .map(|action| run_action(config, action, event))
+        .map(|action| run_action(config, action, event, jail))
         .filter(|text| !text.is_empty())
         .collect::<Vec<_>>()
         .join("\n")
@@ -285,7 +330,7 @@ mod tests {
         for id in ["broken", "slow", "hello"] {
             bind(&config(), Event::Prompt, id).unwrap();
         }
-        let out = run(&config(), Event::Prompt);
+        let out = run(&config(), Event::Prompt, &mut Jail::new(&|| Ok(None)));
         let lines: Vec<&str> = out.lines().collect();
         assert!(
             lines[0].starts_with("legionctl hook action broken failed"),

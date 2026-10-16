@@ -165,12 +165,13 @@ pub fn person(root: &SysRoot, user: &str) -> Result<u32> {
     Ok(uid)
 }
 
-/// The steps of a Windows VM choice of the greeter for `user`, in that user's service manager: `vm-start`, `vm-stop`,
-/// `autostart-off`, `autostart-login`, `autostart-boot` (as `legionctl windows vm autostart`).
+/// The steps of a Windows VM choice of the greeter for `user`, in that user's service manager: `vm-start` and
+/// `vm-stop`. The greeter changes nothing that lasts (P-1): autostart is the user's choice after login (`legionctl
+/// windows vm autostart`, with the user's own approval).
 ///
 /// # Errors
-/// Another action; or a start without the user's autostart rule: the VM's runner asks polkit as that user, and before
-/// login no one can answer.
+/// Another action, an autostart choice; or a start without the user's autostart rule: the VM's runner asks polkit as
+/// that user, and before login no one can answer.
 pub fn vm_plan(root: &SysRoot, user: &str, uid: u32, action: &str) -> Result<Vec<Step>> {
     let unit = format!("{}.service", winvm::UNIT);
     // root reaches a user's service manager through -M user@; it runs once user@<uid> started
@@ -195,31 +196,10 @@ pub fn vm_plan(root: &SysRoot, user: &str, uid: u32, action: &str) -> Result<Vec
             vec![manager, user_systemctl(&["start", "--no-block"])]
         }
         "vm-stop" => vec![user_systemctl(&["stop"])],
-        "autostart-off" => vec![
-            Step::Remove {
-                path: winvm::autostart_file(user)?,
-            },
-            manager,
-            user_systemctl(&["disable"]),
-        ],
-        "autostart-login" | "autostart-boot" => {
-            let mut steps = vec![
-                Step::Create {
-                    path: winvm::autostart_file(user)?,
-                    content: winvm::autostart_rule(user)?,
-                },
-                manager,
-                user_systemctl(&["enable"]),
-            ];
-            if action == "autostart-boot" {
-                steps.push(Step::Run(
-                    ["loginctl", "enable-linger", user]
-                        .map(String::from)
-                        .to_vec(),
-                ));
-            }
-            steps
-        }
+        "autostart-off" | "autostart-login" | "autostart-boot" => bail!(
+            "the greeter changes nothing that lasts: {user} turns the Windows VM autostart on or off after login \
+             (`legionctl windows vm autostart`)"
+        ),
         other => bail!("{other} is not a Windows VM action of the greeter"),
     })
 }

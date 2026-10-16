@@ -464,12 +464,18 @@ impl Dossiers {
     }
 
     /// Stage everything in the workspace and commit it, when the test gate lets the new and changed tests through and
-    /// each `gate: checkpoint` check has a passing run at the tree (one without runs now, design 23 E2 rule 4).
+    /// each `gate: checkpoint` check has a passing run at the tree (one without runs now, design 23 E2 rule 4). For a
+    /// session (`jail`), the checks and the commit (with the repository's commit hooks) run in its sandbox (O-1).
     ///
     /// # Errors
     /// The workspace is not open, there are conflicts, the test gate or a check refuses (nothing is committed), or git
     /// refuses.
-    pub fn checkpoint(&self, ws: &Workspace, message: &str, session: &str) -> Result<Vec<String>> {
+    pub fn checkpoint(
+        &self,
+        ws: &Workspace,
+        message: &str,
+        (session, jail): (&str, Option<&crate::session::Jail>),
+    ) -> Result<Vec<String>> {
         ensure!(!message.trim().is_empty(), "a checkpoint needs a message");
         if ws.is_folder() {
             return Ok(vec![crate::folder::checkpoint(
@@ -482,9 +488,30 @@ impl Dossiers {
         }
         self.test_gate(&ws.path)?;
         let mut lines = self
-            .gate(&ws.path, crate::checks::Gate::Checkpoint, Some(session))
+            .gate(
+                &ws.path,
+                crate::checks::Gate::Checkpoint,
+                (Some(session), jail),
+            )
             .map_err(|e| refused("checkpoint refused, nothing committed", &e))?;
-        git(&ws.path, &["commit", "--quiet", "-m", message])?;
+        let commit = ["commit", "--quiet", "-m", message];
+        match jail {
+            Some(jail) => {
+                let out = jail
+                    .command(&ws.path, &[&["git"][..], &commit].concat())
+                    .output()
+                    .context("running the commit in the session's sandbox")?;
+                ensure!(
+                    out.status.success(),
+                    "git commit: {}{}",
+                    String::from_utf8_lossy(&out.stdout).trim(),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+            }
+            None => {
+                git(&ws.path, &commit)?;
+            }
+        }
         lines.push(git(&ws.path, &["log", "-1", "--format=%h %s"])?);
         Ok(lines)
     }
@@ -544,7 +571,7 @@ impl Dossiers {
     pub fn merge(
         &self,
         ws: &Workspace,
-        session: Option<&str>,
+        (session, jail): (Option<&str>, Option<&crate::session::Jail>),
         confirm: impl FnOnce(&str) -> Result<bool>,
     ) -> Result<Vec<String>> {
         if ws.is_folder() {
@@ -584,7 +611,7 @@ impl Dossiers {
         }
         let tested = git(&ws.path, &["rev-parse", "HEAD"])?;
         let mut lines = self
-            .gate(&ws.path, crate::checks::Gate::Merge, session)
+            .gate(&ws.path, crate::checks::Gate::Merge, (session, jail))
             .map_err(|e| {
                 refused(
                     &format!(

@@ -11,7 +11,11 @@
     // Only these defaults and /etc/legionctl may set "config". Lowest first.
     "precedence": ["defaults", "system", "user", "repo"],
     // Keys or prefixes ("hooks.actions") that only the defaults and /etc/legionctl may set.
-    "locked": []
+    "locked": [],
+    // Keys or prefixes that a repository's .legionctl file sets only after you allow that file once (trust on first
+    // use): legionctl asks with a desktop notification the first time, and again when the file changes. Until you
+    // allow it, and after Deny, the file's values of these keys are not used (`legionctl config layers` says so).
+    "approve": ["hooks", "session", "gates", "gateway", "mcp", "packages", "plugins", "dossier", "workspace"]
   },
 
   "workspace": {
@@ -159,15 +163,28 @@
       "cpus": 4,
       "virtiofsd": "/usr/lib/virtiofsd"
     },
-    // Writable besides the workspace, the dossier, the repository's .git and the runtime folder (/tmp is private to
-    // the session): the agents' own state.
-    "writable": ["~/.claude", "~/.claude.json", "~/.codex", "~/.cache"],
+    // The agents' own state, which they write (/tmp is private to the session). Never the real files: on the host each
+    // folder is an overlay whose writes stay in the session (~/.local/state/legionctl/session-home/<id>), in a
+    // container or VM the session's own copy; each file is the session's own copy. A resume keeps them.
+    "writable": ["~/.claude", "~/.claude.json", "~/.codex"],
+    // Caches of the agent's tools: on the host an overlay whose writes stay in the session; a container or VM has
+    // its own.
+    "caches": ["~/.cache"],
     // Skills from the package store: "<package>" or "<package>/<folder in it>", each a folder with SKILL.md. When
     // set, Claude Code and Codex see exactly these (read-only, hash-checked at session start); null keeps the user's.
     "skills": null,
-    // Hidden in the sandbox: a container or VM manager would let the agent run anything on the host's files. The
-    // runtime folder (session bus, systemd, GnuPG, ssh and keyring agents) is hidden always, but legionctl's part.
-    "hidden": ["/run/docker.sock", "/var/run/docker.sock", "/run/containerd", "/run/podman", "/run/libvirt", "/var/run/libvirt"]
+    // Hidden in the sandbox (`~/` is the home): a container or VM manager or the system bus would let the agent act on
+    // the host, keys and tokens would let it act as you. The runtime folder (session bus, systemd, GnuPG, ssh and
+    // keyring agents) is hidden always, but legionctl's part; so is each .env file at the top of the repository and
+    // the workspace. Agents that push use the git gate, not your credentials.
+    "hidden": [
+      "/run/docker.sock", "/var/run/docker.sock", "/run/containerd", "/run/podman", "/run/libvirt", "/var/run/libvirt",
+      "/run/dbus/system_bus_socket",
+      "~/.ssh", "~/.gnupg", "~/.git-credentials", "~/.netrc", "~/.config/gh", "~/.docker", "~/.npmrc", "~/.pypirc",
+      "~/.cargo/credentials.toml", "~/.cargo/credentials", "~/.aws", "~/.kube", "~/.local/share/keyrings",
+      "~/.password-store", "~/.mozilla", "~/.config/google-chrome", "~/.config/chromium",
+      "~/.local/state/legionctl", "~/.local/share/legionctl/accounts"
+    ]
   },
 
   // MCP servers for session agents: name -> { "command": [...] or "package": name, "allow": [tools] }. The agent reaches each only

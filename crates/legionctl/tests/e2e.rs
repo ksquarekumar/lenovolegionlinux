@@ -675,12 +675,12 @@ fn config_layers_merge_in_order_and_etc_locks_win() {
     assert!(inside.contains("Use the make targets."), "{inside}");
     let outside = hook_out(&op, &home, "prompt");
     assert!(!outside.contains("make targets"), "{outside}");
+    // a repository's hooks wait for the user's first answer (O-2); its reminder needs none
     assert_eq!(
         json(&repo, &["config", "explain", "hooks.bindings.prompt"])["value"],
-        json!(["reminders", "load-if-busy", "load"]),
-        "prompt+ appends to the defaults"
+        json!(["reminders", "load-if-busy"]),
+        "a repository's hooks are not used before the user allowed the file"
     );
-
     // /etc/legionctl wins: the locked key keeps its default, the layer order stays, and both are reported
     let explained = json(&repo, &["config", "explain", "load.busy.cpu_pressure"]);
     assert_eq!(explained["value"], 20.0);
@@ -700,6 +700,10 @@ fn config_layers_merge_in_order_and_etc_locks_win() {
     );
     assert!(
         problems.contains("mine.jsonc: config is set only by"),
+        "{problems}"
+    );
+    assert!(
+        problems.contains("rules.jsonc: hooks is not used until the user allows this file"),
         "{problems}"
     );
     assert_eq!(
@@ -4994,10 +4998,175 @@ fn run_launch(op: &Operator, home: &Path, launch: &Value) -> std::process::Outpu
         .args(&argv[1..])
         .env_clear()
         .env("HOME", home)
-        .env("PATH", std::env::var_os("PATH").unwrap())
+        .env("PATH", path_with_build())
         .env("XDG_RUNTIME_DIR", &op.runtime)
         .output()
         .unwrap()
+}
+
+/// What a hostile agent tries in its sandbox: $1 a host PID, $2 a port on the host's loopback, $3 the repository's
+/// git folder, $4 the main checkout.
+const ESCAPE_PROBE: &str = r#"
+        echo x > note.txt && git add note.txt && git commit -qm probe && echo COMMIT_OK
+        [ -d /proc/$1 ] && echo HOST_PID_SEEN
+        echo pwn > /proc/$1/root$HOME/pwned 2>/dev/null && echo PROC_ROOT_WRITTEN
+        python3 -c 'import socket, sys; socket.create_connection(("127.0.0.1", int(sys.argv[1])), 2)' $2 2>/dev/null           && echo LOOPBACK_REACHED
+        python3 -c 'import json, os, urllib.request as u
+body = json.dumps({"model": "in-sandbox", "max_tokens": 5, "messages": [{"role": "user", "content": "hi"}]}).encode()
+h = {"x-api-key": "caller-key", "anthropic-version": "2023-06-01", "content-type": "application/json"}
+r = u.urlopen(u.Request(os.environ["ANTHROPIC_BASE_URL"] + "/v1/messages", body, h), timeout=20)
+print("GATEWAY_" + str(r.status))'
+        echo '{"hooks": "planted"}' > ~/.claude/settings.json && echo CLAUDE_WRITE_KEPT
+        echo planted > ~/.cache/sccache/kept && echo CACHE_WRITE_KEPT
+        printf '[core]
+	fsmonitor = touch /tmp/pwn
+' >> $3/config 2>/dev/null && echo GIT_CONFIG_WRITTEN
+        echo 'touch /tmp/pwn' > $3/hooks/post-checkout 2>/dev/null && echo GIT_HOOK_WRITTEN
+        echo 0000000000000000000000000000000000000000 > $3/refs/heads/main 2>/dev/null && echo MAIN_MOVED
+        echo 'gitdir: /tmp' > .git 2>/dev/null && echo GIT_LINK_WRITTEN
+        cat ~/.ssh/id_test ~/.git-credentials $4/.env 2>/dev/null | grep -q SECRET && echo SECRET_READ
+        rm -f $XDG_RUNTIME_DIR/legionctl/api.sock 2>/dev/null
+        [ -S $XDG_RUNTIME_DIR/legionctl/api.sock ] && echo API_SOCKET_KEPT
+        echo "SESSION_FOLDERS=$(ls $XDG_RUNTIME_DIR/legionctl/sessions | wc -l)"
+        legionctl dossier active 2>&1 | grep -q 'active dossier escape' && echo OPERATOR_REACHED
+"#;
+
+/// The agent config and caches, keys and a token of a home, and the repository's .env, as on this machine.
+fn home_with_secrets(home: &Path, repo: &Path) {
+    write(&home.join(".claude/settings.json"), "{}");
+    write(&home.join(".cache/sccache/kept"), "cache");
+    write(&home.join(".ssh/id_test"), "SECRET ssh key");
+    write(
+        &home.join(".git-credentials"),
+        "https://user:SECRET@github.com",
+    );
+    write(&repo.join(".env"), "OPENAI_API_KEY=SECRET");
+}
+
+/// The probe agent of `a_sandboxed_agent_finds_no_way_out_and_still_commits_calls_the_model_and_the_operator`, and the
+/// gateway to the stand-in provider.
+fn escape_config(home: &Path, repo: &Path, (gateway, provider): (u16, u16), service: u16) {
+    let common = home.join("repo/.git");
+    write(
+        &home.join(".config/legionctl/session.jsonc"),
+        &json!({
+            "session": {
+                "agents": {"probe": ["bash", "-c", ESCAPE_PROBE, "probe", std::process::id().to_string(),
+                                     service.to_string(), common, repo]},
+                "scope": false
+            },
+            "gateway": {
+                "port": gateway,
+                "accounts": {"main": {"provider": "anthropic", "base_url": format!("http://127.0.0.1:{provider}/ok")}},
+                "pool": {"*": ["main"]}
+            }
+        })
+        .to_string(),
+    );
+}
+
+/// A hostile agent in a host session tries each way out that the security review found (EV-review-08: S-1 host
+/// processes, S-2 the operator's socket, S-3 the real agent config and caches, S-4 the repository's git config,
+/// hooks, other branches and git links, S-5 a service on the host's loopback, S-6 keys and tokens of the home and the
+/// repository's .env) and each fails, while the work still works: a commit through the git gate, a model call
+/// through the gateway (the only network), and calls to the operator. The writes to the agents' own folders stay in
+/// the session's layer; the real files keep their content.
+#[test]
+fn a_sandboxed_agent_finds_no_way_out_and_still_commits_calls_the_model_and_the_operator() {
+    let home = home("breakout");
+    let (_provider, (gateway, provider)) = gateway_ports(&home);
+    let repo = repository(&home);
+    home_with_secrets(&home, &repo);
+    // a service on the host's loopback, like the sccache server
+    let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    escape_config(
+        &home,
+        &repo,
+        (gateway, provider),
+        service.local_addr().unwrap().port(),
+    );
+    let op = operator_in("breakout", &home);
+    let main_before = git(&home, &repo, &["rev-parse", "main"]);
+    let started = op.run(
+        &repo,
+        &[("HOME", home.to_str().unwrap())],
+        &["session", "start", "probe", "--dossier", "escape", "--json"],
+        "",
+    );
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let launch: Value = serde_json::from_slice(&started.stdout).unwrap();
+    let out = run_launch(&op, &home, &launch);
+    let text = String::from_utf8_lossy(&out.stdout);
+    let why = format!("{text}\n{}", String::from_utf8_lossy(&out.stderr));
+    for works in [
+        "COMMIT_OK",
+        "GATEWAY_200",
+        "CLAUDE_WRITE_KEPT",
+        "CACHE_WRITE_KEPT",
+        "API_SOCKET_KEPT",
+        "SESSION_FOLDERS=1",
+        "OPERATOR_REACHED",
+    ] {
+        assert!(text.contains(works), "{works} missing: {why}");
+    }
+    for escape in [
+        "HOST_PID_SEEN",
+        "PROC_ROOT_WRITTEN",
+        "LOOPBACK_REACHED",
+        "GIT_CONFIG_WRITTEN",
+        "GIT_HOOK_WRITTEN",
+        "MAIN_MOVED",
+        "GIT_LINK_WRITTEN",
+        "SECRET_READ",
+    ] {
+        assert!(!text.contains(escape), "{escape}: {why}");
+    }
+    assert_eq!(
+        sandbox_calls(&home),
+        1,
+        "the model call went through the gateway"
+    );
+    assert!(!home.join("pwned").exists());
+    assert_eq!(git(&home, &repo, &["rev-parse", "main"]), main_before);
+    assert_eq!(
+        std::fs::read_to_string(home.join(".claude/settings.json")).unwrap(),
+        "{}",
+        "the real Claude Code settings keep their content"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join(".cache/sccache/kept")).unwrap(),
+        "cache"
+    );
+    let layer = home
+        .join(".local/state/legionctl/session-home")
+        .join(launch["id"].as_str().unwrap())
+        .join("home")
+        .join(home.strip_prefix("/").unwrap());
+    assert!(
+        std::fs::read_to_string(layer.join(".claude/upper/settings.json"))
+            .unwrap()
+            .contains("planted"),
+        "the agent's write stays in its own layer"
+    );
+    assert!(
+        launch["lines"].as_array().unwrap().iter().any(|l| l
+            .as_str()
+            .unwrap()
+            .starts_with("network: none but the model gateway")),
+        "{launch}"
+    );
+    assert_eq!(
+        git(
+            &home,
+            &home.join("worktrees/repo/escape"),
+            &["log", "-1", "--format=%s"]
+        ),
+        "probe"
+    );
 }
 
 #[test]
@@ -5082,6 +5251,126 @@ fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_h
     let listed = op.run(&repo, &[], &["session", "list"], "");
     assert!(String::from_utf8_lossy(&listed.stdout).contains(id));
     gpu_on_request(&op, &home, &repo);
+}
+
+/// What the agent of `a_sessions_repository_commands_run_in_its_sandbox_never_on_the_host` copies into `workspace`:
+/// its escape script, a checks file, a hooks file (allowed by the user, O-2) and a prompt hook's input.
+fn jail_files(home: &Path, workspace: &Path) {
+    let h = home.display();
+    let escape = format!(
+        "echo ran-$1 >> agentWorkspaces/jail/ran.log\n\
+         touch {h}/pwned-$1 2>/dev/null\n\
+         grep -q SECRET {h}/.ssh/id_test 2>/dev/null && touch agentWorkspaces/jail/leaked-$1\n\
+         [ -d /proc/{pid} ] && touch agentWorkspaces/jail/host-pid-$1\n\
+         echo HOOK_DONE\n\
+         exit 0\n",
+        pid = std::process::id()
+    );
+    let checks = json!({"checks": {
+        "escape": {"kind": "lint", "run": "sh ./escape.sh check"},
+        "suite": {"kind": "test", "run": "sh ./escape.sh test"}
+    }});
+    let hooks = json!({"hooks": {
+        "actions": {"probe": {"command": "sh ./escape.sh hook", "timeout": 10}},
+        "bindings": {"prompt": ["probe"]}
+    }});
+    // the user allowed this content of the repository's hooks file (O-2); the agent cannot write the answers
+    let hash = Command::new("python3")
+        .args([
+            "-c",
+            "import hashlib, json, sys; v = json.loads(sys.argv[1]); \
+             print(hashlib.blake2b(json.dumps(v, separators=(',', ':')).encode(), digest_size=32).hexdigest())",
+            &hooks.to_string(),
+        ])
+        .output()
+        .unwrap();
+    write(
+        &home.join(".local/state/legionctl/approvals.json"),
+        &json!({workspace.join(".legionctl/hooks.jsonc").to_string_lossy():
+                [String::from_utf8_lossy(&hash.stdout).trim(), true]})
+        .to_string(),
+    );
+    write(&workspace.with_file_name("escape.sh"), &escape);
+    write(
+        &workspace.with_file_name("checks.jsonc"),
+        &checks.to_string(),
+    );
+    write(&workspace.with_file_name("hooks.jsonc"), &hooks.to_string());
+    write(
+        &workspace.with_file_name("prompt.json"),
+        &claude_hook("prompt", &json!({"cwd": workspace})),
+    );
+}
+
+/// O-1 (EV-review-08): the commands of a repository's config that legionctl runs for a sandboxed agent run in that
+/// session's sandbox, never on the host: its checks (`code checks run`), its test runs (`code tests run`), the user's
+/// commit hook at `workspace checkpoint` (which runs a script of the working tree, as pre-commit does) and a command
+/// hook of the repository layer (allowed by the user, O-2). The agent writes each of them to escape: write the real
+/// home, read a key, see a host process. Each runs (its line in the dossier), none escapes, and the commit lands.
+#[test]
+fn a_sessions_repository_commands_run_in_its_sandbox_never_on_the_host() {
+    let (op, home) = operator("jail");
+    let repo = repository(&home);
+    write(&home.join(".ssh/id_test"), "SECRET ssh key");
+    let hook = repo.join(".git/hooks/pre-commit");
+    write(&hook, "#!/bin/sh\nexec sh ./commit-check.sh\n");
+    std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let workspace = home.join("worktrees/repo/jail");
+    jail_files(&home, &workspace);
+    let agent = "mkdir -p .legionctl && cp ../escape.sh . && cp ../checks.jsonc ../hooks.jsonc .legionctl/ && \
+                 echo 'sh ./escape.sh commit' > commit-check.sh && \
+                 legionctl code checks run escape && legionctl code tests run && \
+                 legionctl workspace checkpoint probe && legionctl hook prompt < ../prompt.json";
+    write(
+        &home.join(".config/legionctl/session.jsonc"),
+        &json!({"session": {"agents": {"probe": ["sh", "-c", agent]}, "writable": [], "scope": false}})
+            .to_string(),
+    );
+    let started = op.run(
+        &repo,
+        &[("HOME", home.to_str().unwrap())],
+        &["session", "start", "probe", "--dossier", "jail", "--json"],
+        "",
+    );
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let launch: Value = serde_json::from_slice(&started.stdout).unwrap();
+    let out = run_launch(&op, &home, &launch);
+    let text = String::from_utf8_lossy(&out.stdout);
+    let why = format!("{text}\n{}", String::from_utf8_lossy(&out.stderr));
+    assert!(text.contains("escape: exit 0"), "{why}");
+    assert!(
+        text.contains("HOOK_DONE"),
+        "the repository's hook ran: {why}"
+    );
+    assert_eq!(
+        git(&home, &workspace, &["log", "-1", "--format=%s"]),
+        "probe",
+        "{why}"
+    );
+    let dossier = home.join("agentWorkspaces/jail");
+    assert_eq!(
+        std::fs::read_to_string(dossier.join("ran.log")).unwrap_or_default(),
+        "ran-check\nran-test\nran-commit\nran-hook\n",
+        "{why}"
+    );
+    for what in ["check", "test", "commit", "hook"] {
+        assert!(
+            !home.join(format!("pwned-{what}")).exists(),
+            "{what} wrote the home: {why}"
+        );
+        assert!(
+            !dossier.join(format!("leaked-{what}")).exists(),
+            "{what} read the key: {why}"
+        );
+        assert!(
+            !dossier.join(format!("host-pid-{what}")).exists(),
+            "{what} saw the host: {why}"
+        );
+    }
 }
 
 /// `--gpu` gives a host session the NVIDIA device nodes (the host's driver), which a session without it does not see;

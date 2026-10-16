@@ -108,9 +108,10 @@ runs again; a headless run goes on in its own session (same dossier and workspac
   btrfs/xfs the same API uses reflink copies.
 - **Tracking:** registry of worktrees with repo, branch, plan, session, created, size and dirty state; garbage
   collection proposals for merged or idle worktrees (never automatic deletion of uncommitted work).
-- **Sandbox per session:** the agent process runs inside `bwrap` (installed) with the worktree read-write, the repo's
-  `.git` and toolchains read-only, `$HOME` replaced by a session home, and network on/off per policy; `landlock`
-  adds a second, in-process boundary where supported.
+- **Sandbox per session:** the agent process runs inside `bwrap` (installed) in its own PID, IPC and network
+  namespaces with the worktree read-write, the repo's `.git` config and hooks and the toolchains read-only, the
+  agent folders as layers of the session, keys hidden, and no network but the model gateway (14-sessions,
+  "Hardened"); the repository's commands for a session run in the same sandbox; `landlock` is not used.
 
 ### Can the harness force agents into its sandbox and intercept calls over ACP?
 

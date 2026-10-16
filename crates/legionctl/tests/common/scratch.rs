@@ -44,11 +44,28 @@ impl Drop for Scratch {
             eprintln!("LEGIONCTL_TEST_KEEP=1: kept {}", self.0.display());
             return;
         }
+        open_folders(&self.0);
         match std::fs::remove_dir_all(&self.0) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound && !failed => {
                 panic!("{} was not removed: {e}", self.0.display());
             }
             _ => {}
+        }
+    }
+}
+
+/// Make every folder under `dir` writable by its owner: an overlay's work folder (`work/work`, a session's layers over
+/// the home) has mode 000.
+fn open_folders(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            let path = entry.path();
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700));
+            open_folders(&path);
         }
     }
 }

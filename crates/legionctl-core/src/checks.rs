@@ -550,9 +550,9 @@ fn top(dir: &Path) -> Result<PathBuf> {
 }
 
 impl Dossiers {
-    /// Run check `name` in the workspace of `dir` (with `args` after its command) and keep its log, profile and
-    /// `profiles` files in the writer dossier's `.state/runs/<job>-<name>/` and its row in `check_runs`. A failed
-    /// command is a run with its exit code, not an error.
+    /// Run check `name` in the workspace of `dir` (with `args` after its command; in `jail` for a session, O-1) and keep
+    /// its log, profile and `profiles` files in the writer dossier's `.state/runs/<job>-<name>/` and its row in
+    /// `check_runs`. A failed command is a run with its exit code, not an error.
     ///
     /// # Errors
     /// No dossier is attached to the repository, the command cannot start, or a write fails.
@@ -562,7 +562,7 @@ impl Dossiers {
         (name, check): (&str, &Check),
         args: &[&str],
         job: i64,
-        session: Option<&str>,
+        (session, jail): (Option<&str>, Option<&crate::session::Jail>),
     ) -> Result<CheckRun> {
         let (top, repo, tree) = (top(dir)?, repo_key(dir)?, tree(dir)?);
         let dossier = self.writer_name(dir)?;
@@ -571,7 +571,10 @@ impl Dossiers {
         let folder = home.join(".state/runs").join(&id);
         std::fs::create_dir_all(&folder)?;
         let log = std::fs::File::create(folder.join("log.txt"))?;
-        let mut cmd = Command::new("sh");
+        let mut cmd = match jail {
+            Some(jail) => jail.command(&top, &["sh"]),
+            None => Command::new("sh"),
+        };
         if args.is_empty() {
             cmd.arg("-c").arg(&check.run);
         } else {
@@ -681,7 +684,12 @@ impl Dossiers {
     /// # Errors
     /// A check fails (the error names the check, its exit code and log, and ends with the log's last lines), or a
     /// run cannot start.
-    pub fn gate(&self, dir: &Path, gate: Gate, session: Option<&str>) -> Result<Vec<String>> {
+    pub fn gate(
+        &self,
+        dir: &Path,
+        gate: Gate,
+        (session, jail): (Option<&str>, Option<&crate::session::Jail>),
+    ) -> Result<Vec<String>> {
         let checks = config_at(dir)?;
         let wanted: Vec<(&String, &Check)> = checks
             .defs
@@ -707,7 +715,7 @@ impl Dossiers {
                         &serde_json::json!({"dir": dir, "gate": gate}),
                     )?),
                 };
-                let run = self.run_check(dir, (name, check), &[], id, session)?;
+                let run = self.run_check(dir, (name, check), &[], id, (session, jail))?;
                 if run.tree.is_empty() {
                     return Err(coded(
                         Code::Conflict,
@@ -758,7 +766,7 @@ impl Dossiers {
         &self,
         dir: &Path,
         names: &[String],
-        session: Option<&str>,
+        (session, jail): (Option<&str>, Option<&crate::session::Jail>),
     ) -> Result<Vec<CheckRun>> {
         let checks = config_at(dir)?;
         for name in names {
@@ -796,7 +804,7 @@ impl Dossiers {
                     names.contains(n)
                 }
             })
-            .map(|(n, c)| self.run_check(dir, (n, c), &[], job, session))
+            .map(|(n, c)| self.run_check(dir, (n, c), &[], job, (session, jail)))
             .collect::<Result<Vec<_>>>();
         let outcome = match &out {
             Ok(runs) => Ok(serde_json::to_value(runs)?),

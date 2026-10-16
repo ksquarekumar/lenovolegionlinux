@@ -18,8 +18,8 @@ Builds on 12-operator (harness, sandbox, gateway) and 13-daemon (one-writer data
   gets it as `--session-id`, so its hooks find the binding), opens the dossier's workspace (18), records the session
   in the operator's database, and runs the agent in the terminal: `systemd-run --user --scope` (unit
   `legionctl-session-<id>`), then `bwrap` with `/` read-only (your home too, decided 2026-10-13), a private `/tmp`,
-  and writable: the workspace, the dossier, the repository's `.git`, the runtime folder and `session.writable`
-  (`~/.claude`, `~/.claude.json`, `~/.codex`, `~/.cache`). The network stays on: agents need their model API.
+  and writable: the workspace, the dossier and what a commit writes in the repository's `.git`. The rest is the
+  hardening below (EV-review-08, 2026-10-16).
 - The git gate: `/usr/bin/git` in the sandbox is the `legionctl` binary; started as `git`, it asks the operator
   (`internal.gates.check`, config `gates.git.deny`, lockable from `/etc`) and runs the real git (mounted read-only in the
   session's runtime folder) or refuses. Default (decided 2026-10-13): local commands run; push, fetch, pull, remote,
@@ -128,6 +128,32 @@ the host's files) and libvirt. Now the runtime folder is a private tmpfs with on
 `/dev/null` on a file or socket. Package fetches (`cargo install` runs build scripts) use the same hiding. The session test checks a decoy session bus and a listening socket from inside;
 its runtime folder is under /var/tmp like /run/user (under /tmp the sandbox hid it anyway, and the test passed
 without the fix).
+
+Hardened (2026-10-16, EV-review-08, user decision "approve all, do it first"):
+- S-1, S-5: own PID, IPC and network namespaces (`--unshare-pid --unshare-ipc --unshare-net --cap-drop ALL`; a
+  headless run also `--new-session`). The only network is the model gateway: `legionctl forward <port>
+  gateway.sock` serves the sandbox's own 127.0.0.1:`gateway.port`, and `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` point
+  there. Without a gateway port a session has no network. A container runs with `--network none` (plus `--cap-drop
+  ALL`, `no-new-privileges`) and the same forward; a VM's user network is `restrict=on` with its two guest forwards.
+- S-2: `legionctl/` of the runtime folder is read-only, and of `sessions/` only the session's own folder is there.
+- S-3: `session.writable` (`~/.claude`, `~/.claude.json`, `~/.codex`) and `session.caches` (`~/.cache`) are never
+  the real files: on the host each folder is an overlay whose writes stay in
+  `~/.local/state/legionctl/session-home/<id>/home` (kept for a resume; the transcript for `resume --account` comes
+  from there), each file the session's copy; a container or VM gets copies of `writable` and no caches. An account
+  profile stays writable: it is the session's own.
+- S-4: of the repository's git folder only the objects, `refs/` (but not the folders of other branches, tags and
+  remotes), the refs and reflogs folder of the session's branch, the stash reflog and the worktree's own folder are
+  writable; config, hooks, info, `commondir`, `gitdir` and the worktree's `.git` stay read-only. `git stash` works;
+  `git gc` cannot pack refs.
+- S-6, S-8: `session.hidden` also has the system bus, `~/.ssh`, `~/.gnupg`, credentials and token files,
+  `~/.local/state/legionctl` and the other accounts; each `.env*` file at the top of the repository and the
+  workspace is hidden.
+- O-1: the repository's commands for a session (checks, test runs, the checkpoint's commit with the commit hooks,
+  repository layer hooks) run in a sandbox of the session (`session::Jail`: the same mounts with a throwaway home
+  layer, no runtime folder and no network), never on the host. The user's own calls run on the host.
+- O-2: a repository layer file sets the keys of `config.approve` (hooks, session, gates, gateway, mcp, packages,
+  plugins, dossier, workspace) only after the user allowed its content once (desktop question, answer in
+  `approvals.json` with the content hash); a changed file asks again.
 
 ## Session record
 

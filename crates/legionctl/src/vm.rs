@@ -209,7 +209,8 @@ impl Drop for Passthrough {
     }
 }
 
-/// QEMU's user network with the guest's forwards: the operator socket, and the gateway socket when it serves.
+/// QEMU's user network, restricted (no way to the host or out), with the guest's forwards only: the operator socket,
+/// and the gateway socket when it serves.
 fn netdev(me: &Path, spec: &VmSpec) -> String {
     let relay = |to: &str, socket: &Path| {
         format!(
@@ -218,7 +219,7 @@ fn netdev(me: &Path, spec: &VmSpec) -> String {
             socket.display()
         )
     };
-    let mut netdev = format!("user,id=net{}", relay(OPERATOR, &spec.socket));
+    let mut netdev = format!("user,id=net,restrict=on{}", relay(OPERATOR, &spec.socket));
     if spec.guest.gateway.is_some() {
         netdev.push_str(&relay(GATEWAY, &spec.socket.with_file_name(GATEWAY_SOCKET)));
     }
