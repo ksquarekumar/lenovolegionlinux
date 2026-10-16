@@ -37,6 +37,9 @@ user-invocable: true
 12. When a method or property of `legionctl-system` changes, write `dbus/org.legionctl.System1.xml` again:
     `LEGIONCTL_WRITE_DBUS=1 cargo test --profile test-fast -p legionctl --test machine the_daemon_serves`.
 13. Read the diff of each generated file before you commit it. A change that you did not intend is a bug.
+13a. For a new or changed agent tool, measure its answer on a real task: the tokens of the answer and the calls
+    the task needs. A tool over its budget, or one that needs a second call to be useful, is not done (tool-lifecycle
+    rule 12).
 14. Write the EVIDENCE from the real output when the check runs: `dossier add EVIDENCE/validation <slug>` with the
     commands, the counts (passed, failed, ignored), the mutations and the commit SHA, and front matter `id`, `class`,
     `status`, `code`, `supports` (skill dossier-practice).

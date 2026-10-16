@@ -21,6 +21,10 @@ user-invocable: true
 9. `--json` prints the operation's JSON output. `--dry-run`, where a command has it, shows the plan and changes nothing.
 10. Read `legionctl <group> --help` before you use a flag. Do not guess.
 11. Check `legionctl load` before builds, test suites and parallel runs. If the machine is busy, run less.
+12. Each agent tool that you add or change (an operation's output, an MCP tool, CLI output for agents, a hook or
+    skill text) is token-efficient and task-efficient: one call answers one task; counts and stable keys first, one
+    line each, detail through a cursor; a `max_tokens` budget that says what it left out; deltas since the last call;
+    keys, not pasted content. This rule is binding for all tooling (the user, 2026-10-16).
 
 ## Order of a task
 
