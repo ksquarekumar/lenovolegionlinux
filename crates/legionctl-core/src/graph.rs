@@ -87,6 +87,82 @@ pub fn status_changes(
         .collect()
 }
 
+/// The front-matter links of an artifact's text: `supports` and `supersedes` targets.
+fn links(text: &str) -> BTreeSet<String> {
+    let fm = front_matter(text);
+    ["supports", "supersedes"]
+        .iter()
+        .flat_map(|k| fm.get(*k).into_iter().flatten().cloned())
+        .collect()
+}
+
+/// The plan row ids that `plan` has more than once.
+fn duplicate_rows(plan: &str) -> BTreeSet<String> {
+    let mut graph = Graph::default();
+    plan_rows(plan, &BTreeMap::new(), &mut graph);
+    let mut seen = BTreeSet::new();
+    graph
+        .nodes
+        .into_iter()
+        .filter(|n| !seen.insert(n.id.clone()))
+        .map(|n| n.id)
+        .collect()
+}
+
+/// Refuse a write of `file` (relative to the dossier at `dir`; `plan.md`, an artifact, or empty for a new numbered
+/// artifact) from `old` to `new` that adds a plan row id that is there already, or a front-matter link to no node; a
+/// bare plan row id (`todo-12`) gets its form (`plan#todo-12`) in the refusal (todo-121). Links and duplicate rows that
+/// `old` has already do not refuse a write.
+///
+/// # Errors
+/// The write adds a duplicate row id or a link to no node.
+pub fn check_write(dir: &Path, file: &str, old: &str, new: &str) -> anyhow::Result<()> {
+    if file == "plan.md" {
+        let before = duplicate_rows(old);
+        let added: Vec<String> = duplicate_rows(new)
+            .into_iter()
+            .filter(|id| !before.contains(id))
+            .collect();
+        anyhow::ensure!(
+            added.is_empty(),
+            "plan.md would have the row {} twice: give the new row the next free id",
+            added.join(", ")
+        );
+        return Ok(());
+    }
+    let before = links(old);
+    let added: Vec<String> = links(new)
+        .into_iter()
+        .filter(|l| !before.contains(l))
+        .collect();
+    if added.is_empty() {
+        return Ok(());
+    }
+    let graph = build(dir);
+    let own = front_matter(new).get("id").and_then(|v| v.first()).cloned();
+    let ids: BTreeSet<&str> = graph
+        .nodes
+        .iter()
+        .map(|n| n.id.as_str())
+        .chain(own.as_deref())
+        .collect();
+    for link in added {
+        if ids.contains(link.as_str()) {
+            continue;
+        }
+        let row = format!("plan#{link}");
+        anyhow::ensure!(
+            !ids.contains(row.as_str()),
+            "the front matter links to {link}, which is no node: a plan row is {row}"
+        );
+        anyhow::bail!(
+            "the front matter links to {link}, which does not exist: link a plan row as plan#<id>, an artifact by its \
+             id (legionctl dossier graph lists the nodes)"
+        );
+    }
+    Ok(())
+}
+
 /// `key: value` and `key: [a, b]` lines between the leading `---` lines.
 pub(crate) fn front_matter(text: &str) -> BTreeMap<String, Vec<String>> {
     let mut out = BTreeMap::new();

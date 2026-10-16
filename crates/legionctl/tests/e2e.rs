@@ -323,6 +323,135 @@ fn a_dossier_write_of_a_new_file_through_a_symlink_out_of_the_dossier_is_refused
     assert!(!home.join("gone").exists(), "a folder outside was made");
 }
 
+/// A dossier write never follows a link planted at its temporary file's name (S-7 of the security review): the old
+/// name was `.<file>.<operator pid>.tmp` in a folder that the agent writes, and the operator wrote the agent's text
+/// through the link into any file of the user. The write goes on, and the file the link points to keeps its bytes.
+#[test]
+fn a_dossier_write_never_follows_a_link_planted_at_its_temporary_name() {
+    let (op, home) = operator("plant");
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", "s1"),
+    ];
+    let o = op.run(&home, &env, &["dossier", "use", "plant"], "");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let runtime = op.runtime.to_string_lossy().into_owned();
+    let operator_pid = std::fs::read_dir("/proc")
+        .unwrap()
+        .flatten()
+        .find(|p| {
+            std::fs::read(p.path().join("cmdline"))
+                .is_ok_and(|c| String::from_utf8_lossy(&c).contains("legionctl-operator"))
+                && std::fs::read(p.path().join("environ"))
+                    .is_ok_and(|e| String::from_utf8_lossy(&e).contains(&runtime))
+        })
+        .expect("the operator's process")
+        .file_name();
+    let victim = home.join(".bashrc");
+    std::fs::write(&victim, "# the user's own\n").unwrap();
+    let dossier = home.join("agentWorkspaces/plant");
+    std::os::unix::fs::symlink(
+        &victim,
+        dossier.join(format!(".plan.md.{}.tmp", operator_pid.to_string_lossy())),
+    )
+    .unwrap();
+    let o = op.run(
+        &home,
+        &env,
+        &["dossier", "append", "plant/plan.md"],
+        "an agent's line\n",
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        std::fs::read_to_string(&victim).unwrap(),
+        "# the user's own\n",
+        "written through the planted link"
+    );
+    assert!(
+        std::fs::read_to_string(dossier.join("plan.md"))
+            .unwrap()
+            .ends_with("an agent's line\n")
+    );
+}
+
+/// A dossier write checks its links and plan rows against the dossier graph (todo-121): agents wrote
+/// `supports: [todo-NN]` for `plan#todo-NN` 7 times, and two agents gave new plan rows the same ids. A link to no node
+/// is refused, a bare plan row id with its right form, in `add`, `write` and `append`; a plan change that makes a row
+/// id twice is refused, in `write`, `append` and `edit`; the right forms go through. Nothing changes on a refusal.
+#[test]
+fn a_dossier_write_refuses_a_link_to_no_node_and_a_plan_row_id_twice() {
+    let (op, home) = operator("links");
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", "s1"),
+    ];
+    let run = |args: &[&str], stdin: &str| op.run(&home, &env, args, stdin);
+    let refused = |args: &[&str], stdin: &str, why: &str| {
+        let o = run(args, stdin);
+        let text = String::from_utf8_lossy(&o.stderr);
+        assert!(
+            !o.status.success() && text.contains(why),
+            "{args:?}: {text}"
+        );
+    };
+    assert!(run(&["dossier", "use", "links"], "").status.success());
+    let plan = "# links\n\n## ToDo\n| id | item | status |\n| --- | --- | --- |\n| todo-1 | one | open |\n";
+    let o = run(&["dossier", "write", "links/plan.md", "--overwrite"], plan);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let artifact =
+        |to: &str| format!("---\nid: EV-1\nclass: EVIDENCE\nsupports: [{to}]\n---\n# One\n");
+    let bare = "links to todo-1, which is no node: a plan row is plan#todo-1";
+    let add = ["dossier", "add", "EVIDENCE", "one"];
+    refused(&add, &artifact("todo-1"), bare);
+    refused(
+        &add,
+        &artifact("plan#todo-9"),
+        "plan#todo-9, which does not exist",
+    );
+    let one = ["dossier", "write", "links/EVIDENCE/one.md"];
+    refused(&one, &artifact("todo-1"), bare);
+    let evidence = home.join("agentWorkspaces/links/EVIDENCE");
+    assert_eq!(
+        std::fs::read_dir(&evidence).unwrap().count(),
+        0,
+        "nothing written"
+    );
+    let o = run(&one, &artifact("plan#todo-1"));
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // an append gives an empty file its front matter
+    assert!(
+        run(&["dossier", "write", "links/MEMORY/m.md"], "")
+            .status
+            .success()
+    );
+    let append = ["dossier", "append", "links/MEMORY/m.md"];
+    refused(&append, "---\nid: M-1\nsupports: [todo-1]\n---\n", bare);
+
+    let twice = "plan.md would have the row plan#todo-1 twice";
+    let row = "| todo-1 | again | open |";
+    refused(&["dossier", "append", "links/plan.md"], row, twice);
+    let overwrite = ["dossier", "write", "links/plan.md", "--overwrite"];
+    refused(&overwrite, &format!("{plan}{row}\n"), twice);
+    let read = run(&["dossier", "read", "links/plan.md"], "");
+    let anchor = String::from_utf8_lossy(&read.stdout)
+        .lines()
+        .find(|l| l.contains("| todo-1 |"))
+        .and_then(|l| l.split('|').next())
+        .unwrap()
+        .to_string();
+    let edit = ["dossier", "edit", "links/plan.md", "insert-after", &anchor];
+    refused(&[&edit[..], &["--content", row]].concat(), "", twice);
+    let o = run(
+        &["dossier", "append", "links/plan.md"],
+        "| todo-2 | two | open |\n",
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        std::fs::read_to_string(home.join("agentWorkspaces/links/plan.md")).unwrap(),
+        format!("{plan}| todo-2 | two | open |\n")
+    );
+}
+
 /// A misspelled field is refused, not dropped: an agent's `dossier_edit` with `lines` for `content` (as happened on
 /// 2026-10-14) ran as an empty replace and deleted the plan row it was to change. Through the MCP server, as agents
 /// call it: the call fails with the operation's real fields, and the row stays.

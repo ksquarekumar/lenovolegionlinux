@@ -237,6 +237,13 @@ from, to; null when the node did not exist). `dossier graph --node <id>` returns
 change made outside legionctl (an editor, a script) is not seen: agents write through the dossier tools. Code-graph
 symbols (`touches`) are not linked yet; the code graphs and the change graph are built (note 23, "Built: P1 and P2").
 
+Built (todo-121): each write through legionctl (`dossier write`, `append`, `edit`, `add`) is checked against the graph
+before it is written: a new front-matter link to no node is refused (a bare plan row id with its form, `plan#todo-12`),
+and so is a plan change that gives a row id a second row. Links and duplicate rows that the file had before do not
+refuse a write. The write goes through a new temporary file (O_EXCL, O_NOFOLLOW) in its folder, which is opened beneath
+the dossier (openat2 RESOLVE_BENEATH): a link planted at the temporary name or a folder that leads out is refused
+(S-7 of the security review).
+
 `legionctl dossier check` then reports what the practice asks for as concrete findings: missing plan sections, a
 claim or a `Done` row without EVIDENCE, an acceptance row with no `verified-by`, a dangling link, a DESIGN that
 contradicts an approved decision, and EVIDENCE whose linked symbols changed after it was written (stale evidence).

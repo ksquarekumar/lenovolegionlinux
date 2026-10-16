@@ -648,9 +648,9 @@ impl Dossiers {
         for section in &self.config.plan_sections {
             let _ = write!(plan, "\n## {section}\n");
         }
-        atomic_write(&dir.join("plan.md"), &plan)?;
+        atomic_write(&dir, &dir.join("plan.md"), &plan)?;
         let id = new_id()?;
-        atomic_write(&dir.join("dossier.jsonc"), &jsonc(&id, name)?)?;
+        atomic_write(&dir, &dir.join("dossier.jsonc"), &jsonc(&id, name)?)?;
         self.home(name)?;
         self.register(&id, name, None)?;
         made.push("plan.md, dossier.jsonc and the class folders".into());
@@ -908,6 +908,12 @@ impl Dossiers {
         Ok((dossier, full))
     }
 
+    /// The folder of the dossier of `rel` (`<dossier>/...`, checked by [`Self::resolve`]) and the path in it.
+    fn split(&self, rel: &str) -> (PathBuf, String) {
+        let (dossier, inner) = rel.split_once('/').unwrap_or((rel, ""));
+        (self.root.join(dossier), inner.to_string())
+    }
+
     fn guard_write(&self, session: &str, rel: &str) -> Result<PathBuf> {
         let (dossier, full) = self.resolve(rel)?;
         let active = self.active(session)?;
@@ -1056,7 +1062,9 @@ impl Dossiers {
         }
         let old = std::fs::read_to_string(&full).unwrap_or_default();
         let new = with_newline(content);
-        atomic_write(&full, &new)?;
+        let (base, file) = self.split(rel);
+        crate::graph::check_write(&base, &file, &old, &new)?;
+        atomic_write(&base, &full, &new)?;
         self.log(session, "write", rel, (&old, &new))?;
         Ok(full)
     }
@@ -1073,7 +1081,9 @@ impl Dossiers {
             "\n"
         };
         let new = format!("{old}{sep}{}", with_newline(content));
-        atomic_write(&full, &new)?;
+        let (base, file) = self.split(rel);
+        crate::graph::check_write(&base, &file, &old, &new)?;
+        atomic_write(&base, &full, &new)?;
         self.log(session, "append", rel, (&old, &new))?;
         Ok(full)
     }
@@ -1093,7 +1103,7 @@ impl Dossiers {
             "\n"
         };
         let new = format!("{old}{sep}{line}\n");
-        atomic_write(&full, &new)?;
+        atomic_write(&self.split(rel).0, &full, &new)?;
         self.log(session, "append", rel, (&old, &new))
     }
 
@@ -1111,7 +1121,7 @@ impl Dossiers {
             .with_context(|| format!("{rel} no longer has the line '{line}'"))?;
         lines.remove(at);
         let new = with_newline(&lines.join("\n"));
-        atomic_write(&full, &new)?;
+        atomic_write(&self.split(rel).0, &full, &new)?;
         self.log(session, "edit", rel, (&old, &new))
     }
 
@@ -1162,7 +1172,9 @@ impl Dossiers {
             }
         };
         let text: String = file.iter().flat_map(|l| [l.as_str(), "\n"]).collect();
-        atomic_write(&full, &text)?;
+        let (base, inner) = self.split(rel);
+        crate::graph::check_write(&base, &inner, &old, &text)?;
+        atomic_write(&base, &full, &text)?;
         self.log(session, "edit", rel, (&old, &text))?;
         Ok(file
             .iter()
@@ -1199,6 +1211,7 @@ impl Dossiers {
         );
         let folder_rel = format!("{dossier}/{class}");
         let folder = self.guard_write(session, &folder_rel)?;
+        crate::graph::check_write(&self.root.join(&dossier), "", "", content)?;
         std::fs::create_dir_all(&folder)?;
         let mut next = std::fs::read_dir(&folder)
             .into_iter()
@@ -1431,7 +1444,7 @@ fn jsonc(id: &str, name: &str) -> Result<String> {
 pub(crate) fn write_id(dir: &Path, id: &str, name: &str) -> Result<()> {
     let path = dir.join("dossier.jsonc");
     let Ok(text) = std::fs::read_to_string(&path) else {
-        return atomic_write(&path, &jsonc(id, name)?);
+        return atomic_write(dir, &path, &jsonc(id, name)?);
     };
     // the comments become spaces of the same length, so a position in the stripped text is one in the file
     let mut stripped = String::new();
@@ -1456,7 +1469,7 @@ pub(crate) fn write_id(dir: &Path, id: &str, name: &str) -> Result<()> {
         &text[..=open],
         &text[open + 1..]
     );
-    atomic_write(&path, &text)
+    atomic_write(dir, &path, &text)
 }
 
 /// Point every row that names dossier `old` at `new`, and keep `old` as a former name of `id`.
@@ -1486,17 +1499,50 @@ fn with_newline(text: &str) -> String {
     }
 }
 
-/// Write through a temporary file in the same folder and rename, so a reader never sees half a file.
-fn atomic_write(path: &Path, text: &str) -> Result<()> {
-    let dir = path.parent().context("no parent folder")?;
-    std::fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(
-        ".{}.{}.tmp",
-        path.file_name().unwrap_or_default().to_string_lossy(),
+/// Write through a temporary file in the same folder and rename, so a reader never sees half a file. The folder is
+/// opened beneath `base` (the dossier: no link out of it, also when a folder changes after the path check), and the
+/// temporary file is made new there (`O_EXCL`, `O_NOFOLLOW`), so a link planted at its name is refused, never followed
+/// (S-7 of EVIDENCE/review/08).
+fn atomic_write(base: &Path, path: &Path, text: &str) -> Result<()> {
+    use rustix::fs::{Mode, OFlags, ResolveFlags};
+    let inside = path
+        .strip_prefix(base)
+        .with_context(|| format!("{} is not in {}", path.display(), base.display()))?;
+    let name = inside.file_name().context("no file name")?;
+    let folder = inside
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(base.join(folder))?;
+    let dir_flags = OFlags::DIRECTORY | OFlags::RDONLY | OFlags::CLOEXEC;
+    let root = rustix::fs::open(base, dir_flags, Mode::empty())
+        .with_context(|| format!("opening {}", base.display()))?;
+    let dir = rustix::fs::openat2(
+        &root,
+        folder,
+        dir_flags,
+        Mode::empty(),
+        ResolveFlags::BENEATH,
+    )
+    .with_context(|| format!("{} leads out of {}", folder.display(), base.display()))?;
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    let tmp = format!(
+        ".{}.{}.{nanos}.tmp",
+        name.to_string_lossy(),
         std::process::id()
-    ));
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)?;
+    );
+    let fd = rustix::fs::openat(
+        &dir,
+        tmp.as_str(),
+        OFlags::CREATE | OFlags::EXCL | OFlags::WRONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o666),
+    )
+    .with_context(|| format!("making {tmp} in {}", base.join(folder).display()))?;
+    std::fs::File::from(fd).write_all(text.as_bytes())?;
+    rustix::fs::renameat(&dir, tmp.as_str(), &dir, name)?;
     Ok(())
 }
 

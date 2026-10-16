@@ -19,6 +19,8 @@ user-invocable: false
 9. Put detail in numbered artifacts: MEMORY (intake, source reads, decisions, chat context), DESIGN (intended design),
    EVIDENCE (validation output), SPIKE (disposable experiments).
 10. `dossier add <CLASS>[/<sub>] <slug>` makes the next `NN-<slug>.md`, with the content from stdin or `--content`.
+    Front matter links a plan row as `plan#<id>` (`supports: [plan#todo-12]`). A write with a link to no node, or
+    with a plan row id that is there already, is refused.
 11. With no plan content yet, write a MEMORY document first.
 12. Move an entry that grows past a few sentences to MEMORY or EVIDENCE, and leave a pointer.
 13. Write chat context that later work needs into MEMORY in the same turn.
