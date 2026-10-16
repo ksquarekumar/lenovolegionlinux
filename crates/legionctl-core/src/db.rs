@@ -514,16 +514,6 @@ impl Db {
         Ok(rows.into_iter().next())
     }
 
-    /// The newest `limit` events that `filter` lets through, oldest first.
-    ///
-    /// # Errors
-    /// The database read fails.
-    pub fn events_newest(&self, filter: &EventFilter, limit: u32) -> Result<Vec<EventRow>> {
-        let (mut rows, _) = self.events_page_in(filter, 0, limit, "DESC")?;
-        rows.reverse();
-        Ok(rows)
-    }
-
     /// For each peer (`PEER` of a call's audit), its newest event of these kinds since `ts`.
     ///
     /// # Errors

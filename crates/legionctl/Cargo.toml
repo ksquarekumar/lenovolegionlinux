@@ -9,7 +9,6 @@ publish.workspace = true
 [dependencies]
 legionctl-api = { path = "../legionctl-api", features = ["client", "cli"] }
 legionctl-core = { path = "../legionctl-core" }
-legionctl-machine = { path = "../legionctl-machine" }
 anyhow.workspace = true
 serde_json.workspace = true
 clap = { version = "4.6.7", features = ["string"] }
@@ -20,6 +19,7 @@ blake2 = "0.10.6"
 tokio = { version = "1.53.2", features = ["macros", "net", "rt-multi-thread", "io-std", "io-util", "process", "signal"] }
 
 [dev-dependencies]
+legionctl-machine = { path = "../legionctl-machine" }
 legionctl-app = { path = "../legionctl-app" }
 gpui-kit = { version = "=0.7.3", features = ["gpui-fast", "test-support"] }
 zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }

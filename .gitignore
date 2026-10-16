@@ -5,3 +5,6 @@ target/
 node_modules/
 /agentWorkspaces
 /.env
+# agent and code-graph state of local tools
+.claude/
+.graf/

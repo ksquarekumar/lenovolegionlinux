@@ -191,7 +191,6 @@ pub fn codex_has_legionctl(text: &str) -> Result<bool> {
     let table: toml::Table = text
         .parse()
         .context("~/.codex/config.toml is not valid TOML; fix it before setup")?;
-    // an entry that still starts the old `legion` binary needs attention too
     Ok(table
         .get("mcp_servers")
         .and_then(|s| s.get("legionctl"))

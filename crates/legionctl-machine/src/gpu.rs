@@ -166,16 +166,6 @@ pub fn primary_rule(choice: DesktopGpu, release_nvidia: bool) -> Option<String> 
 
 const IGNORE_TAG: &str = "mutter-device-ignore";
 
-/// Mutter leaves the NVIDIA GPU alone (from the udev rule), so it can go to a VM.
-///
-/// # Errors
-/// The rule cannot be read.
-pub fn nvidia_released(root: &SysRoot) -> Result<bool> {
-    Ok(root
-        .read(PRIMARY_GPU_RULE)?
-        .is_some_and(|rule| rule.contains(IGNORE_TAG)))
-}
-
 /// CPU list of the performance (`p`) or efficiency (`e`) cores on hybrid Intel CPUs.
 ///
 /// # Errors
