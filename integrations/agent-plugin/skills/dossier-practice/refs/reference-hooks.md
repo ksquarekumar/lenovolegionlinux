@@ -9,6 +9,7 @@ actions bound to each event; `/legionctl:hooks` and `/legionctl:reminders` chang
 | `prompt` | Blocks each prompt while the session has no dossier (`dossier.gate`); only `/legionctl:dossier` passes. Runs the bound actions (default: reminders, load-if-busy). Gives the new thread messages to you (note, hint, reminder, notice, result) as one block, once. |
 | `pre-tool` | Runs for each tool. Denies a tool that an open thread hard-block names, and `Write`, `Edit`, `MultiEdit` and `NotebookEdit` into a dossier that is not this session's. |
 | `subagent-start` | Runs when the agent starts a subagent. In a session with a dossier, the subagent gets the delegation rule in its context: read the dossier plan and the MEMORY and DESIGN files its rows name, review adversarially, keep messages short and link the dossier. |
+| `pre-compact` | Runs before a compaction. In a session with a dossier, it writes an immutable HEALTH note (`dossier health`) and a JOURNAL entry with the session's status changes and checkpoints; the session start after the compaction points to both. |
 | `post-tool` | Runs for each tool. Records the call (presence, the watch rules of your thread), and each `SendMessage` in the thread log. |
 | `stop` | An open thread hard-block stops each reply end; a soft-block stops one. The dossier nudge (`dossier.nudge_turns`). It also tells you when the main checkout has changes and the dossier has no workspace there (`workspace.nudge`). |
 | `session-end` | Releases the dossier binding. |

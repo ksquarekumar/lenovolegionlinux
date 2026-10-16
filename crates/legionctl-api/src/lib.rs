@@ -761,6 +761,12 @@ operations! {
     dossier_add / DossierAdd = "dossier.add", Session, DossierAddIn => Lines;
     /// Ledger findings for a dossier (default: this session's): a missing plan.md or plan section.
     dossier_check / DossierCheck = "dossier.check", Read, DossierCheckIn => DossierFindings;
+    /// The dossier's health audit in one compact block: a count line, then one keyed line per finding (stale or
+    /// ambiguous: check findings, plan row ids twice, a status that git contradicts, orphan artifacts).
+    dossier_health / DossierHealth = "dossier.health", Read, DossierHealthIn => Lines;
+    /// Before a compaction (the `PreCompact` hook): the session's dossier gets a JOURNAL entry of the operator's record
+    /// of this session and a HEALTH note, both immutable; the session start after the compaction points to them.
+    hooks_compact / HooksCompact = "internal.hooks.compact", Session, CompactIn => HookReply;
     /// The dossier's work graph: plan rows and artifacts, linked by supports, supersedes, code and plan references.
     dossier_graph / DossierGraph = "dossier.graph", Read, DossierGraphIn => Graph;
     /// The dossier nudges in order: each level a session reached (info, warn, block) with its count of replies that

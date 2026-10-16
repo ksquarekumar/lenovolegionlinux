@@ -862,6 +862,31 @@ pub struct DossierCheckIn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DossierHealthIn {
+    /// Dossier to audit; default: this session's.
+    #[serde(default)]
+    pub dossier: Option<String>,
+    /// At most this many finding lines; the answer says how many it left out.
+    #[serde(default = "forty")]
+    pub limit: u32,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+fn forty() -> u32 {
+    40
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CompactIn {
+    /// What started the compaction: `manual` (/compact) or `auto`.
+    #[serde(default)]
+    pub trigger: Option<String>,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DossierFindings {
     pub dossier: String,
     /// Empty when the ledger is complete.

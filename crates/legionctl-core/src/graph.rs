@@ -110,13 +110,27 @@ fn duplicate_rows(plan: &str) -> BTreeSet<String> {
 }
 
 /// Refuse a write of `file` (relative to the dossier at `dir`; `plan.md`, an artifact, or empty for a new numbered
-/// artifact) from `old` to `new` that adds a plan row id that is there already, or a front-matter link to no node; a
-/// bare plan row id (`todo-12`) gets its form (`plan#todo-12`) in the refusal (todo-121). Links and duplicate rows that
-/// `old` has already do not refuse a write.
+/// artifact) from `old` to `new` that changes an immutable artifact (front matter `immutable: true`, or a file of one
+/// of the `immutable` classes, todo-156), adds a plan row id that is there already, or a front-matter link to no node;
+/// a bare plan row id (`todo-12`) gets its form (`plan#todo-12`) in the refusal (todo-121). Links and duplicate rows
+/// that `old` has already do not refuse a write.
 ///
 /// # Errors
-/// The write adds a duplicate row id or a link to no node.
-pub fn check_write(dir: &Path, file: &str, old: &str, new: &str) -> anyhow::Result<()> {
+/// The write changes an immutable artifact, adds a duplicate row id or a link to no node.
+pub fn check_write(
+    dir: &Path,
+    file: &str,
+    (old, new): (&str, &str),
+    immutable: &[String],
+) -> anyhow::Result<()> {
+    let class = file.split('/').next().unwrap_or_default();
+    let marked = front_matter(old)
+        .get("immutable")
+        .is_some_and(|v| v.first().is_some_and(|v| v == "true"));
+    anyhow::ensure!(
+        old.is_empty() || !(marked || immutable.iter().any(|c| c == class)),
+        "{file} is immutable once written: write a new entry whose front matter has supersedes: [<its id>]"
+    );
     if file == "plan.md" {
         let before = duplicate_rows(old);
         let added: Vec<String> = duplicate_rows(new)
@@ -362,12 +376,15 @@ impl Graph {
     }
 
     /// What the practice asks for: links to nodes that do not exist, acceptance rows that no EVIDENCE supports, and
-    /// EVIDENCE whose code changed after it was written (`changed_after(path, written)` asks the repository).
+    /// EVIDENCE whose code changed after it was written. Staleness is content-anchored (todo-156, DESIGN-10): a code
+    /// link `<path>#<symbol>` is stale when that symbol changed after the EVIDENCE was written
+    /// (`changed_after(path, symbol, written)` asks the repository; an error, such as a symbol that is not in the
+    /// file, is a finding); a link to a whole file cannot say, and all of them count once as unanchored.
     #[must_use]
     pub fn findings(
         &self,
         dir: &Path,
-        changed_after: &dyn Fn(&str, std::time::SystemTime) -> anyhow::Result<bool>,
+        changed_after: &dyn Fn(&str, &str, std::time::SystemTime) -> anyhow::Result<bool>,
     ) -> Vec<String> {
         let ids: BTreeSet<&str> = self.nodes.iter().map(|n| n.id.as_str()).collect();
         let mut out: Vec<String> = self
@@ -393,6 +410,7 @@ impl Graph {
                 out.push(format!("{} has no EVIDENCE that supports it", row.id));
             }
         }
+        let mut unanchored = 0;
         for evidence in self.nodes.iter().filter(|n| n.kind.starts_with("EVIDENCE")) {
             let Ok(written) =
                 std::fs::metadata(dir.join(&evidence.file)).and_then(|m| m.modified())
@@ -405,19 +423,25 @@ impl Graph {
                 .filter(|e| e.from == evidence.id && e.kind == "code")
             {
                 let path = edge.to.trim_start_matches("code:");
-                let file = path.split('#').next().unwrap_or(path);
-                match changed_after(file, written) {
-                    Ok(true) => out.push(format!(
-                        "{} is stale: {file} changed after it was written",
-                        evidence.id
-                    )),
+                let Some((file, symbol)) = path.split_once('#') else {
+                    unanchored += 1;
+                    continue;
+                };
+                match changed_after(file, symbol, written) {
                     Ok(false) => {}
-                    Err(e) => out.push(format!(
-                        "{}: cannot tell if {file} changed after it was written: {e:#}",
+                    Ok(true) => out.push(format!(
+                        "{} is stale: {symbol} in {file} changed after it was written",
                         evidence.id
                     )),
+                    Err(e) => out.push(format!("{} links {path}: {e:#}", evidence.id)),
                 }
             }
+        }
+        if unanchored > 0 {
+            out.push(format!(
+                "{unanchored} code links of EVIDENCE name a whole file (unanchored): their staleness is not \
+                 checked; link <path>#<symbol>"
+            ));
         }
         out
     }

@@ -8,6 +8,7 @@
 //! | prompt | `internal.hooks.run` | stdout, or `{"decision":"block","reason":...}` from the dossier gate |
 //! | pre-tool | `internal.thread.gate`, `internal.dossier.guard` | `permissionDecision: deny` for a tool that a thread hard-block holds, or a write into another dossier |
 //! | subagent-start | `internal.hooks.delegate` | `additionalContext` for the subagent: the delegation rule of the session's dossier (none without a dossier) |
+//! | pre-compact | `internal.hooks.compact` | nothing (Claude Code takes no instructions for the summary from a `PreCompact` hook): the session's dossier gets an immutable JOURNAL entry and HEALTH note, and the session start after the compaction (`source: compact`) points to them |
 //! | post-tool | `internal.agent.tool` | the call is recorded (thread log, watch rules, presence) per peer: a subagent (`agent_id`) is a peer of its own and gets its messages as `additionalContext` |
 //! | stop | `internal.hooks.run` | `{"decision":"block","reason":...}` to the agent when the session is not set up (once per reply), or for a thread block |
 //! | session-end | `dossier.release` | nothing; its `reason` `clear` or `resume` keeps the pool that the session leads |
@@ -18,18 +19,19 @@
 
 use anyhow::{Context, Result};
 use legionctl_api::{
-    AgentToolIn, ClientPath, DossierReleaseIn, Event, Guard, GuardIn, HookReply, HookRunIn,
-    SessionId, SessionIn, TeammateIn, ThreadGateIn, op,
+    AgentToolIn, ClientPath, CompactIn, DossierReleaseIn, Event, Guard, GuardIn, HookReply,
+    HookRunIn, SessionId, SessionIn, TeammateIn, ThreadGateIn, op,
 };
 use serde_json::{Value, json};
 
 use legionctl_api::client::Client;
 
-pub const EVENTS: [&str; 9] = [
+pub const EVENTS: [&str; 10] = [
     "session-start",
     "prompt",
     "pre-tool",
     "subagent-start",
+    "pre-compact",
     "post-tool",
     "stop",
     "session-end",
@@ -108,6 +110,17 @@ async fn answer(event: &str, input: &Value) -> Result<Option<Answer>> {
             }
             None => None,
         },
+        "pre-compact" => {
+            if let Some(session) = session {
+                client
+                    .call::<op::HooksCompact>(&CompactIn {
+                        trigger: input["trigger"].as_str().map(String::from),
+                        session,
+                    })
+                    .await?;
+            }
+            None
+        }
         "post-tool" => match session {
             Some(session) => post_tool(&client, session, project, input, path).await?,
             None => None,

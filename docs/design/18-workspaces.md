@@ -244,6 +244,21 @@ refuse a write. The write goes through a new temporary file (O_EXCL, O_NOFOLLOW)
 the dossier (openat2 RESOLVE_BENEATH): a link planted at the temporary name or a folder that leads out is refused
 (S-7 of the security review).
 
+Built (todo-156, first part): JOURNAL and HEALTH are classes whose artifacts cannot change once written
+(`dossier.immutable_classes`), as any artifact with front matter `immutable: true`; a correction is a new entry that
+supersedes one. EVIDENCE staleness is content-anchored: a code link `<path>#<symbol>` is stale when git's last commit of
+that symbol's lines (`git log -L :<symbol>:<path>`) is newer than the EVIDENCE; a symbol that is not there is a finding;
+links to whole files count once as unanchored. `dossier health` is the audit in one block (a count line, then one
+keyed line per finding, `--limit`): the check findings, plan row ids twice, a row that says `not merged` of a commit
+that the base has (ancestor, or the same patch after a rebase), and orphan artifacts. Claude Code's `PreCompact` hook
+takes no instructions for the summary (hooks reference: input `trigger` and `custom_instructions`, no output field
+for the summary), so the closest documented path is used: the `pre-compact` hook writes a HEALTH note and a JOURNAL
+entry (the operator's record of the session: status changes, checkpoints) into the session's dossier, and the session
+start with `source: compact` tells the agent to read the plan and both entries first and to add its own entry, every
+item linked to its source. Codex has `PreCompact` and `SessionStart` hooks (plain stdout of `PreCompact` is ignored),
+but legionctl installs no Codex hooks yet. Not built: rlcd in the audit, the layered memory files that the agent
+writes after the compaction (the start line asks for them), `code plan status` beyond its row findings.
+
 `legionctl dossier check` then reports what the practice asks for as concrete findings: missing plan sections, a
 claim or a `Done` row without EVIDENCE, an acceptance row with no `verified-by`, a dangling link, a DESIGN that
 contradicts an approved decision, and EVIDENCE whose linked symbols changed after it was written (stale evidence).

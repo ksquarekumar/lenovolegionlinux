@@ -4025,13 +4025,34 @@ fn a_plain_folder_workspace_keeps_the_source_until_merge() {
     ended_scope_frees_the_dossier(&op, &home, &notes, launch["id"].as_str().unwrap());
 }
 
+/// `src/lib.rs` in `repo` with `parse` and `keep`, both committed in 2001; `parse` changed again in a commit of now.
+fn lib_with_dated_symbols(home: &Path, repo: &Path) {
+    let lib = |one: &str| format!("fn parse() {{\n    {one}\n}}\n\nfn keep() {{\n    2\n}}\n");
+    write(&repo.join("src/lib.rs"), &lib("1"));
+    git(home, repo, &["add", "."]);
+    let old = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["commit", "--quiet", "-m", "lib"])
+        .env("HOME", home)
+        .env("GIT_COMMITTER_DATE", "2001-01-01T00:00:00")
+        .status()
+        .unwrap();
+    assert!(old.success());
+    write(&repo.join("src/lib.rs"), &lib("10"));
+    git(home, repo, &["commit", "--quiet", "-am", "parse"]);
+}
+
 /// The work graph from a dossier's files: plan rows and artifacts with front matter; `dossier check` finds a link
 /// to a row that does not exist, an acceptance row without EVIDENCE, and EVIDENCE whose code changed after it was
-/// written; `dossier graph` shows a row with what supports it.
+/// written, anchored to the symbol it names (todo-156): `src/lib.rs#parse` changed after its EVIDENCE was written,
+/// `src/lib.rs#keep` did not (its file did), a symbol that is not there is a finding, and whole-file links count once
+/// as unanchored; `dossier graph` shows a row with what supports it.
 #[test]
 fn dossier_check_finds_dangling_links_unverified_acceptance_and_stale_evidence() {
     let (op, home) = operator("graph");
     let repo = repository(&home);
+    lib_with_dated_symbols(&home, &repo);
     let env = [
         ("HOME", home.to_str().unwrap()),
         ("LEGIONCTL_SESSION", "s1"),
@@ -4069,11 +4090,12 @@ fn dossier_check_finds_dangling_links_unverified_acceptance_and_stale_evidence()
         "id: EV-02\nsupports: [plan#acceptance-2]",
     );
     artifact("MEMORY/01-note.md", "supports: [plan#acceptance-9]");
-    // git cannot answer for a path outside the repository: a finding, not "not stale"
-    artifact(
-        "EVIDENCE/validation/03-outside.md",
-        "id: EV-03\nsupports: [plan#acceptance-1]\ncode: [../elsewhere.md]",
-    );
+    for (n, symbol) in [(3, "parse"), (4, "keep"), (5, "gone")] {
+        artifact(
+            &format!("EVIDENCE/validation/0{n}-{symbol}.md"),
+            &format!("id: EV-0{n}\nsupports: [plan#acceptance-1]\ncode: [src/lib.rs#{symbol}]"),
+        );
+    }
     // a plan row that names an artifact by path reaches it by its id
     let plan = std::fs::read_to_string(dossier.join("plan.md"))
         .unwrap()
@@ -4082,13 +4104,20 @@ fn dossier_check_finds_dangling_links_unverified_acceptance_and_stale_evidence()
             "| acceptance-2 | tests pass (EVIDENCE/validation/02-tests.md) | done |",
         );
     write(&dossier.join("plan.md"), &plan);
-    // EV-01 was written long before README.md's last commit
-    std::fs::File::options()
-        .write(true)
-        .open(dossier.join("EVIDENCE/validation/01-build.md"))
-        .unwrap()
-        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_hours(262_968))
-        .unwrap();
+    // EV-01 was written long before README.md's last commit, EV-03..05 in 2010
+    for (file, hours) in [
+        ("01-build", 262_968),
+        ("03-parse", 350_640),
+        ("04-keep", 350_640),
+        ("05-gone", 350_640),
+    ] {
+        std::fs::File::options()
+            .write(true)
+            .open(dossier.join(format!("EVIDENCE/validation/{file}.md")))
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_hours(hours))
+            .unwrap();
+    }
 
     let check: Value = serde_json::from_str(&ok(&["dossier", "check", "--json"])).unwrap();
     assert_eq!(
@@ -4096,12 +4125,10 @@ fn dossier_check_finds_dangling_links_unverified_acceptance_and_stale_evidence()
         json!([
             "MEMORY/01-note supports plan#acceptance-9, which does not exist",
             "plan#acceptance-3 has no EVIDENCE that supports it",
-            "EV-01 is stale: README.md changed after it was written",
-            format!(
-                "EV-03: cannot tell if ../elsewhere.md changed after it was written: git log -1 --format=%ct -- \
-                 ../elsewhere.md: fatal: ../elsewhere.md: '../elsewhere.md' is outside repository at '{}'",
-                repo.display()
-            ),
+            "EV-03 is stale: parse in src/lib.rs changed after it was written",
+            "EV-05 links src/lib.rs#gone: fatal: -L parameter 'gone' starting at line 1: no match",
+            "1 code links of EVIDENCE name a whole file (unanchored): their staleness is not checked; link \
+             <path>#<symbol>",
             // the repository declares no checks (design 23, E2 rule 2)
             format!(
                 "{}: this repository has no checks of kind format, lint, build, test: run `legionctl code checks \
@@ -4127,6 +4154,123 @@ fn dossier_check_finds_dangling_links_unverified_acceptance_and_stale_evidence()
         "the plan row names the artifact by path and reaches its id"
     );
     assert_eq!(around["nodes"].as_array().unwrap().len(), 2);
+}
+
+/// A compaction defers to the dossier (todo-156): `dossier health` gives a count line and one keyed line per stale or
+/// ambiguous finding (a row says not merged of a commit that main has, a row id twice, an orphan artifact); the
+/// `PreCompact` hook writes an immutable HEALTH note and a JOURNAL entry with this session's status changes and the
+/// note's link; the session start after the compaction points to both; JOURNAL entries and an artifact marked
+/// `immutable: true` refuse each change.
+#[test]
+fn a_compaction_leaves_an_immutable_journal_and_health_note_that_the_next_start_points_to() {
+    let (op, home) = operator("compact");
+    let repo = repository(&home);
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", "s1"),
+    ];
+    let run = |args: &[&str], stdin: &str| op.run(&repo, &env, args, stdin);
+    let ok = |args: &[&str], stdin: &str| {
+        let o = run(args, stdin);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8_lossy(&o.stdout).to_string()
+    };
+    ok(&["dossier", "use", "port"], "");
+    ok(&["workspace", "open"], "");
+    let merged = git(&home, &repo, &["rev-parse", "--short", "HEAD"]);
+    let dossier = home.join("agentWorkspaces/port");
+    let plan = std::fs::read_to_string(dossier.join("plan.md"))
+        .unwrap()
+        .replace(
+            "## ToDo\n",
+            &format!(
+                "## ToDo\n| id | item | status |\n| --- | --- | --- |\n\
+             | todo-1 | parser | built {merged}, not merged |\n| todo-2 | lexer | open |\n"
+            ),
+        );
+    ok(&["dossier", "write", "port/plan.md", "--overwrite"], &plan);
+    // a second todo-2 that came in outside legionctl, and a note nothing links
+    let row = "| todo-2 | lexer | open |\n";
+    write(
+        &dossier.join("plan.md"),
+        &plan.replace(row, &format!("{row}{row}")),
+    );
+    write(&dossier.join("MEMORY/01-loose.md"), "# loose\n");
+
+    let health = ok(&["dossier", "health"], "");
+    for line in [
+        "port: 4 findings (check 1, duplicate 1, orphan 1, status-vs-git 1)",
+        &format!("status-vs-git: plan#todo-1 says not merged, but main has {merged}"),
+        "duplicate: plan#todo-2 is a plan row id twice",
+        "orphan: MEMORY/01-loose (MEMORY/01-loose.md) has no link to or from it",
+    ] {
+        assert!(health.contains(line), "{line} missing:\n{health}");
+    }
+
+    let compact = json!({"cwd": repo, "session_id": "s1"});
+    let out = op.run(
+        &repo,
+        &[],
+        &["hook", "pre-compact"],
+        &claude_hook("pre-compact", &compact),
+    );
+    assert!(out.status.success() && out.stdout.is_empty(), "{out:?}");
+    let journal = std::fs::read_to_string(dossier.join("JOURNAL/01-compaction.md")).unwrap();
+    assert!(
+        journal.contains("- plan#todo-1: new -> built")
+            && journal.contains("Health: HEALTH/01-before-compaction."),
+        "{journal}"
+    );
+    let note = std::fs::read_to_string(dossier.join("HEALTH/01-before-compaction.md")).unwrap();
+    assert!(note.contains("port: 4 findings"), "{note}");
+
+    let start = json!({"cwd": repo, "session_id": "s1", "source": "compact"});
+    let out = op.run(
+        &repo,
+        &[],
+        &["hook", "session-start"],
+        &claude_hook("session-start", &start),
+    );
+    let told = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        told.contains(
+            "Read port/plan.md, port/JOURNAL/01-compaction.md and port/HEALTH/01-before-compaction.md first"
+        ),
+        "{told}"
+    );
+
+    immutable_entries_refuse_each_change(&op, &repo, &env);
+    assert_eq!(
+        std::fs::read_to_string(dossier.join("JOURNAL/01-compaction.md")).unwrap(),
+        journal
+    );
+}
+
+/// JOURNAL entries and an artifact marked `immutable: true` refuse each change (todo-156).
+fn immutable_entries_refuse_each_change(op: &Operator, repo: &Path, env: &[(&str, &str)]) {
+    let run = |args: &[&str], stdin: &str| op.run(repo, env, args, stdin);
+    let refused = |args: &[&str], stdin: &str| {
+        let o = run(args, stdin);
+        let text = String::from_utf8_lossy(&o.stderr).to_string();
+        assert!(
+            !o.status.success() && text.contains("is immutable once written"),
+            "{args:?}: {text}"
+        );
+    };
+    let journal = "port/JOURNAL/01-compaction.md";
+    refused(&["dossier", "write", journal, "--overwrite"], "# new\n");
+    refused(&["dossier", "append", journal], "- one more\n");
+    let fixed = "port/MEMORY/02-fixed.md";
+    let o = run(
+        &["dossier", "write", fixed],
+        "---\nimmutable: true\n---\n# fixed\n",
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    refused(&["dossier", "append", fixed], "- later\n");
 }
 
 /// The work graph keeps each status change made through legionctl (write, edit, add), with the session, oldest

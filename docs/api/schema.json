@@ -11927,6 +11927,100 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "dossier.health": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "dossier": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Dossier to audit; default: this session's.",
+          "default": null
+        },
+        "limit": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "At most this many finding lines; the answer says how many it left out.",
+          "default": 40
+        },
+        "session": {
+          "type": "string",
+          "format": "session",
+          "description": "Agent session id; the client fills it.",
+          "default": ""
+        }
+      },
+      "title": "DossierHealthIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "internal.hooks.compact": {
+    "class": "session",
+    "internal": true,
+    "input": {
+      "type": "object",
+      "properties": {
+        "trigger": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What started the compaction: `manual` (/compact) or `auto`.",
+          "default": null
+        },
+        "session": {
+          "type": "string",
+          "format": "session",
+          "description": "Agent session id; the client fills it.",
+          "default": ""
+        }
+      },
+      "title": "CompactIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "block": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Set when the prompt is blocked: the reason the user sees."
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "HookReply",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "dossier.graph": {
     "class": "read",
     "internal": false,

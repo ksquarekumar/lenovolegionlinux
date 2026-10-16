@@ -452,6 +452,8 @@ pub struct DossierConfig {
     pub message_chars: usize,
     /// Class name -> purpose.
     pub classes: BTreeMap<String, String>,
+    /// Classes whose artifacts cannot change once written (as front matter `immutable: true`).
+    pub immutable_classes: Vec<String>,
     pub plan_sections: Vec<String>,
 }
 

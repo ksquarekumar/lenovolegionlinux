@@ -26,6 +26,8 @@ user-invocable: false
 13. Write chat context that later work needs into MEMORY in the same turn.
 14. Update the dossier in the same turn as the finding, decision or commit.
 15. Keep every section of `plan.md`. `dossier check` reports a missing section, stale EVIDENCE and dangling links.
+    Link EVIDENCE code as `<path>#<symbol>`: only then is its staleness checked. `dossier health` gives the audit in
+    one block: stale and ambiguous findings, counts first.
 16. `dossier read` prints each line as `<line>:<hash>|<text>`. `dossier edit` takes those anchors (`replace`,
     `insert-after`, `delete`).
 17. An anchor from an outdated read is refused. Read again, then retry.
@@ -45,6 +47,11 @@ user-invocable: false
     `legionctl dossier migrate`. Your session keeps its dossier after the move.
 25. A delegate reads the plan and the MEMORY and DESIGN that its rows name itself; the lead's prompt is a start, not
     the whole context (skill sessions-and-agents).
+
+25. JOURNAL and HEALTH entries, and artifacts with front matter `immutable: true`, cannot change once written. A
+    correction is a new entry with `supersedes: [<id>]`.
+26. Before a compaction the `pre-compact` hook writes a JOURNAL entry and a HEALTH note. After it, read the plan and
+    both entries first, then add your own JOURNAL entry: state, decisions and open work as links, never copies.
 
 ## Refs
 

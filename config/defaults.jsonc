@@ -90,8 +90,13 @@
       "MEMORY": "Working memory: intake, source reads, decision and ambiguity registers, context from chat",
       "DESIGN": "Intended design, separate from plan status and evidence",
       "EVIDENCE": "Proof from real output: validation logs, reports, inventories, comparisons",
-      "SPIKE": "Disposable prototypes and reproducible experiments"
+      "SPIKE": "Disposable prototypes and reproducible experiments",
+      "JOURNAL": "Serial entries, one per compaction or hand-off: state, decisions and open work as links, not copies",
+      "HEALTH": "Dossier and planning health notes (dossier health), one before each compaction"
     },
+    // Artifacts of these classes cannot change once written (as front matter immutable: true): a correction is a new
+    // entry whose front matter supersedes the old one.
+    "immutable_classes": ["JOURNAL", "HEALTH"],
     // plan.md: the ledger; `legionctl dossier check` reports a missing section.
     "plan_sections": [
       "Purpose", "Requested Outcome", "Scope Fence", "Governing Principles", "Instruction Inventory",

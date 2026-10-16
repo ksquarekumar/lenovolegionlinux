@@ -4,6 +4,7 @@
 //! database. A session binds to one dossier at a time and writes only there; reads work on every dossier. The pattern follows the scope-dossier practice of `safecoder dossier`: hash-anchored line edits, numbered
 //! artifacts per class folder, SQLite bindings with a stale rule, and a plan ledger with fixed sections.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Component, Path, PathBuf};
@@ -1063,7 +1064,7 @@ impl Dossiers {
         let old = std::fs::read_to_string(&full).unwrap_or_default();
         let new = with_newline(content);
         let (base, file) = self.split(rel);
-        crate::graph::check_write(&base, &file, &old, &new)?;
+        crate::graph::check_write(&base, &file, (&old, &new), &self.config.immutable_classes)?;
         atomic_write(&base, &full, &new)?;
         self.log(session, "write", rel, (&old, &new))?;
         Ok(full)
@@ -1082,7 +1083,7 @@ impl Dossiers {
         };
         let new = format!("{old}{sep}{}", with_newline(content));
         let (base, file) = self.split(rel);
-        crate::graph::check_write(&base, &file, &old, &new)?;
+        crate::graph::check_write(&base, &file, (&old, &new), &self.config.immutable_classes)?;
         atomic_write(&base, &full, &new)?;
         self.log(session, "append", rel, (&old, &new))?;
         Ok(full)
@@ -1103,7 +1104,9 @@ impl Dossiers {
             "\n"
         };
         let new = format!("{old}{sep}{line}\n");
-        atomic_write(&self.split(rel).0, &full, &new)?;
+        let (base, file) = self.split(rel);
+        crate::graph::check_write(&base, &file, (&old, &new), &self.config.immutable_classes)?;
+        atomic_write(&base, &full, &new)?;
         self.log(session, "append", rel, (&old, &new))
     }
 
@@ -1121,7 +1124,9 @@ impl Dossiers {
             .with_context(|| format!("{rel} no longer has the line '{line}'"))?;
         lines.remove(at);
         let new = with_newline(&lines.join("\n"));
-        atomic_write(&self.split(rel).0, &full, &new)?;
+        let (base, file) = self.split(rel);
+        crate::graph::check_write(&base, &file, (&old, &new), &self.config.immutable_classes)?;
+        atomic_write(&base, &full, &new)?;
         self.log(session, "edit", rel, (&old, &new))
     }
 
@@ -1173,7 +1178,7 @@ impl Dossiers {
         };
         let text: String = file.iter().flat_map(|l| [l.as_str(), "\n"]).collect();
         let (base, inner) = self.split(rel);
-        crate::graph::check_write(&base, &inner, &old, &text)?;
+        crate::graph::check_write(&base, &inner, (&old, &text), &self.config.immutable_classes)?;
         atomic_write(&base, &full, &text)?;
         self.log(session, "edit", rel, (&old, &text))?;
         Ok(file
@@ -1211,7 +1216,7 @@ impl Dossiers {
         );
         let folder_rel = format!("{dossier}/{class}");
         let folder = self.guard_write(session, &folder_rel)?;
-        crate::graph::check_write(&self.root.join(&dossier), "", "", content)?;
+        crate::graph::check_write(&self.root.join(&dossier), "", ("", content), &[])?;
         std::fs::create_dir_all(&folder)?;
         let mut next = std::fs::read_dir(&folder)
             .into_iter()
@@ -1271,12 +1276,29 @@ impl Dossiers {
             }
         };
         let repo = workspace.as_ref().map(|w| w.repo.clone());
-        let changed_after = |path: &str, written: std::time::SystemTime| -> Result<bool> {
-            let Some(repo) = &repo else { return Ok(false) };
-            let last = crate::workspace::git(repo, &["log", "-1", "--format=%ct", "--", path])?;
+        // the last commit that changed the lines of `symbol` (git's function context of the file)
+        let changed_after = |file: &str, symbol: &str, written: std::time::SystemTime| {
+            let Some(repo) = &repo else {
+                return Ok(false);
+            };
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo)
+                .args(["log", "-1", "-s", "--format=%ct"])
+                .arg(format!("-L:{symbol}:{file}"))
+                .output()
+                .context("running git log -L")?;
+            anyhow::ensure!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            let last: u64 = String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse()
+                .with_context(|| format!("no commit of {symbol} in {file}"))?;
             let written = written.duration_since(std::time::UNIX_EPOCH)?.as_secs();
-            // empty: the file has no commit
-            Ok(!last.is_empty() && last.parse::<u64>()? > written)
+            Ok(last > written)
         };
         let dir = self.root.join(dossier);
         let graph = crate::graph::build(&dir);
@@ -1289,6 +1311,141 @@ impl Dossiers {
             findings.extend(self.check_findings(&ws.path));
         }
         findings
+    }
+
+    /// The health audit of `dossier` (todo-156), as one compact block: a count line first, then one keyed line per
+    /// finding, at most `limit`, and how many it left out. Each finding is stale or ambiguous: the findings of
+    /// [`Self::check`] (dangling links, unverified acceptance, content-anchored stale EVIDENCE, plan rows against the
+    /// code plan), plan row ids twice, a status that git contradicts (a row says `not merged` of a commit that the base
+    /// has, by patch id), and orphan artifacts (no link to or from them).
+    #[must_use]
+    pub fn health(&self, dossier: &str, limit: usize) -> Vec<String> {
+        let dir = self.root.join(dossier);
+        let graph = crate::graph::build(&dir);
+        let mut found: Vec<(&str, String)> = self
+            .check(dossier)
+            .into_iter()
+            .map(|f| ("check", f))
+            .collect();
+        let mut seen = BTreeSet::new();
+        for node in graph.nodes.iter().filter(|n| n.file == "plan.md") {
+            if !seen.insert(&node.id) {
+                found.push(("duplicate", format!("{} is a plan row id twice", node.id)));
+            }
+        }
+        let workspace = self
+            .workspaces(Some(dossier))
+            .ok()
+            .and_then(|w| w.into_iter().find(|w| !w.is_folder()));
+        if let Some(ws) = &workspace {
+            for node in graph.nodes.iter().filter(|n| n.file == "plan.md") {
+                let Some(status) = node.status.as_deref().filter(|s| s.contains("not merged"))
+                else {
+                    continue;
+                };
+                for sha in status
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .filter(|w| {
+                        (7..=40).contains(&w.len())
+                            && w.bytes().all(|b| b.is_ascii_hexdigit())
+                            && w.bytes().any(|b| b.is_ascii_digit())
+                    })
+                {
+                    // the base has the commit, or (after a rebase, which keeps the patch id) its change: `-`
+                    let range = format!("{sha}~1");
+                    let git = |args: &[&str]| crate::workspace::git(&ws.repo, args);
+                    if git(&["merge-base", "--is-ancestor", sha, &ws.base]).is_ok()
+                        || git(&["cherry", &ws.base, sha, &range]).is_ok_and(|o| o.starts_with('-'))
+                    {
+                        found.push((
+                            "status-vs-git",
+                            format!("{} says not merged, but {} has {sha}", node.id, ws.base),
+                        ));
+                    }
+                }
+            }
+        }
+        let linked: BTreeSet<&str> = graph
+            .edges
+            .iter()
+            .flat_map(|e| [e.from.as_str(), e.to.as_str()])
+            .collect();
+        for node in graph.nodes.iter().filter(|n| {
+            n.file != "plan.md"
+                && !self
+                    .config
+                    .immutable_classes
+                    .iter()
+                    .any(|c| n.file.starts_with(&format!("{c}/")))
+                && !linked.contains(n.id.as_str())
+        }) {
+            found.push((
+                "orphan",
+                format!("{} ({}) has no link to or from it", node.id, node.file),
+            ));
+        }
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for (kind, _) in &found {
+            *counts.entry(kind).or_default() += 1;
+        }
+        let mut out = vec![format!(
+            "{dossier}: {} findings ({})",
+            found.len(),
+            counts
+                .iter()
+                .map(|(k, n)| format!("{k} {n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )];
+        out.extend(found.iter().take(limit).map(|(k, f)| format!("{k}: {f}")));
+        if found.len() > limit {
+            out.push(format!(
+                "{} more left out (limit {limit}): legionctl dossier health --limit <n>",
+                found.len() - limit
+            ));
+        }
+        out
+    }
+
+    /// The status changes that `session` made in `dossier`, oldest first.
+    ///
+    /// # Errors
+    /// The dossier's database cannot be read.
+    pub fn status_changes_of(
+        &self,
+        dossier: &str,
+        session: &str,
+    ) -> Result<Vec<crate::graph::StatusChange>> {
+        let db = self.home(dossier)?;
+        let mut stmt = db.conn().prepare(
+            "SELECT ts, node, from_status, to_status FROM status_changes WHERE session = ?1 ORDER BY ts, rowid",
+        )?;
+        let rows = stmt.query_map([session], |r| {
+            Ok(crate::graph::StatusChange {
+                ts: r.get(0)?,
+                session: session.to_string(),
+                node: r.get(1)?,
+                from: r.get(2)?,
+                to: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The newest numbered artifact of `class` in `dossier` (`JOURNAL/03-compaction.md`), by its number.
+    #[must_use]
+    pub fn newest(&self, dossier: &str, class: &str) -> Option<String> {
+        std::fs::read_dir(self.root.join(dossier).join(class))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let n: u32 = name.split_once('-')?.0.parse().ok()?;
+                Some((n, name))
+            })
+            .max()
+            .map(|(_, name)| format!("{class}/{name}"))
     }
 
     /// The work graph of `dossier`, or the part around `node` with its status history.

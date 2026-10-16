@@ -1120,6 +1120,87 @@ fn agent_findings() -> Result<Vec<String>> {
     Ok(w)
 }
 
+/// The operator's JOURNAL entry before a compaction of `session`: what it recorded of the session (status changes of
+/// plan rows and artifacts, checkpoints), as links. Immutable (class JOURNAL).
+fn compaction_journal(
+    store: &Dossiers,
+    dossier: &str,
+    session: &str,
+    trigger: &str,
+    health: &str,
+) -> Result<String> {
+    let mut lines = vec![
+        "---".to_string(),
+        "class: JOURNAL".into(),
+        "status: recorded".into(),
+        "---".into(),
+        format!("# Compaction ({trigger}) of session {session}"),
+        String::new(),
+        format!(
+            "The operator's record of this session before the compaction; the session's own entry follows it. \
+             Health: {}.",
+            health
+                .trim_start_matches(&format!("{dossier}/"))
+                .trim_end_matches(".md")
+        ),
+        String::new(),
+        "## Status changes (node: from -> to)".into(),
+    ];
+    let changes = store.status_changes_of(dossier, session)?;
+    lines.extend(changes.iter().map(|c| {
+        format!(
+            "- {}: {} -> {}",
+            c.node,
+            c.from.as_deref().unwrap_or("new"),
+            c.to.as_deref().unwrap_or("none")
+        )
+    }));
+    if changes.is_empty() {
+        lines.push("- none".into());
+    }
+    lines.push(String::new());
+    lines.push("## Checkpoints".into());
+    let (commits, _) = Db::open_default()?.events_page(
+        &legionctl_core::db::EventFilter {
+            kinds: &[legionctl_core::codegraph::COMMIT_EVENT],
+            field: Some(("$.session", session)),
+            naming: None,
+        },
+        0,
+        200,
+    )?;
+    lines.extend(
+        commits
+            .iter()
+            .filter_map(|e| e.payload["commit"].as_str())
+            .map(|c| format!("- {c}")),
+    );
+    if commits.is_empty() {
+        lines.push("- none".into());
+    }
+    Ok(lines.join("\n") + "\n")
+}
+
+/// The line of the session start after a compaction: read the plan and the newest JOURNAL and HEALTH entries first,
+/// then write the session's own entry, every item with its source (todo-156).
+fn after_compaction(store: &Dossiers, dossier: &str) -> String {
+    let newest = |class: &str| {
+        store.newest(dossier, class).map_or_else(
+            || format!("(no {class} entry)"),
+            |f| format!("{dossier}/{f}"),
+        )
+    };
+    format!(
+        "legionctl compaction: the details live in the dossier. Read {dossier}/plan.md, {} and {} first. Then write \
+         your own entry (legionctl dossier add JOURNAL <slug>): state, decisions and open work as links (plan#todo-NN, \
+         MEMORY-n, DESIGN-n, EVIDENCE/..., JOURNAL/NN), never copies; each item names its source. New memories go as \
+         an index plus one file per work area, each linked. JOURNAL and HEALTH entries are immutable: a correction is \
+         a new entry that supersedes one.",
+        newest("JOURNAL"),
+        newest("HEALTH")
+    )
+}
+
 /// What a delegate of a session with dossier `d` reads first (user rule 2026-10-16, MEMORY-14; skill
 /// sessions-and-agents rule 25).
 fn delegation_rule(d: &str) -> String {
@@ -1277,7 +1358,7 @@ fn dossier_nudge(
 fn start_lines(
     resolved: &Resolved,
     store: &Dossiers,
-    session: &str,
+    (session, compacted): (&str, bool),
     active: Option<&str>,
     rebound: Option<String>,
     place: Option<&Place>,
@@ -1290,6 +1371,9 @@ fn start_lines(
         (None, _) if nudge => nudge_line(resolved),
         (None, _) => "legionctl dossier: none".into(),
     }];
+    if let (true, Some(d)) = (compacted, active) {
+        lines.push(after_compaction(store, d));
+    }
     match place.map(|p| (p, &p.workspace)) {
         Some((_, Some(w))) => {
             lines.push(format!(
@@ -2450,7 +2534,7 @@ impl Engine for Operator {
             lines.extend(start_lines(
                 &resolved,
                 &store,
-                &s.0,
+                (&s.0, input.source.as_deref() == Some("compact")),
                 active.as_deref(),
                 rebound,
                 place.as_ref(),
@@ -2666,6 +2750,47 @@ impl Engine for Operator {
         Ok(DossierFindings {
             problems: ws.check(&dossier),
             dossier,
+        })
+    }
+
+    fn dossier_health(&self, _: &Ctx, input: legionctl_api::DossierHealthIn) -> Result<Lines> {
+        let store = dossiers()?;
+        let dossier = match input.dossier {
+            Some(d) => d,
+            None => store
+                .active(session(&input.session)?)?
+                .context("this session has no active dossier; add --dossier <name>")?,
+        };
+        Ok(Lines {
+            lines: store.health(&dossier, usize::try_from(input.limit)?),
+        })
+    }
+
+    fn hooks_compact(&self, _: &Ctx, input: legionctl_api::CompactIn) -> Result<HookReply> {
+        let store = dossiers()?;
+        let session = session(&input.session)?;
+        let Some(dossier) = store.active(session)? else {
+            return Ok(HookReply::default());
+        };
+        let trigger = input.trigger.as_deref().unwrap_or("auto");
+        let health = store.add(
+            session,
+            "HEALTH",
+            "before-compaction",
+            &format!(
+                "---\nclass: HEALTH\nstatus: recorded\n---\n# Health before a compaction ({trigger})\n\n{}\n",
+                store.health(&dossier, 40).join("\n")
+            ),
+        )?;
+        let journal = store.add(
+            session,
+            "JOURNAL",
+            "compaction",
+            &compaction_journal(&store, &dossier, session, trigger, &health)?,
+        )?;
+        Ok(HookReply {
+            text: format!("legionctl: wrote {journal} and {health}"),
+            block: None,
         })
     }
 
