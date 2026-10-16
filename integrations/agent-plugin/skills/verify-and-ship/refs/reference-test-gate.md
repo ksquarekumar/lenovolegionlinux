@@ -28,9 +28,10 @@ Notes do not refuse: a duplicate (another test kills each mutant this test kills
 ## When the gate refuses
 
 1. Give the evidence, and run the checkpoint again.
-2. Or let one test through when it has value that no mutant shows:
-   `legionctl workspace checkpoint "<message>" --accept-test <test> --reason "<why>"`. The reason is kept with the
-   test (`code tests show <test>`) and is an event (`code.tests.accept`). An accept stays for later checkpoints while
+2. Or let a test through when it has value that no mutant shows:
+   `legionctl workspace checkpoint "<message>" --accept-test <test> --reason "<why>"`. Repeat `--accept-test` for
+   more tests, with one `--reason` for all or one per test in the same order; all are accepted or none. The reason is
+   kept with the test (`code tests show <test>`) and is an event (`code.tests.accept`). An accept stays for later checkpoints while
    the test does not change.
 
 ## Commands

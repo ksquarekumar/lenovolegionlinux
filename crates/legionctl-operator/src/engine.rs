@@ -2062,9 +2062,8 @@ impl Engine for Operator {
         let store = dossiers()?;
         let session = session(&input.session)?;
         let ws = store.workspace_of(session, input.repo.get()?, input.topic.as_deref())?;
-        if let Some(test) = &input.accept_test {
-            let reason = input.reason.as_deref().unwrap_or_default();
-            let accepted = store.accept_test(&ws.path, test, reason, session)?;
+        let accepted = store.accept_tests(&ws.path, &input.accept_test, &input.reason, session)?;
+        for (test, (accepted, reason)) in input.accept_test.iter().zip(accepted) {
             Db::open_default()?.record(
                 &ctx.actor,
                 "code.tests.accept",

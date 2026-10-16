@@ -2496,20 +2496,22 @@
           "default": null
         },
         "accept_test": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "A new or changed test that the test gate lets through without a kill or an assertion (with `--reason`).",
-          "default": null
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "A new or changed test that the test gate lets through without a kill or an assertion (with `--reason`); repeat\nit for more tests.",
+          "default": [],
+          "x-option": true
         },
         "reason": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Why the accepted test has value; it is recorded with the test and as an event.",
-          "default": null
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Why the accepted test has value; it is recorded with the test and as an event. One for all accepted tests, or\none per `--accept-test`, in the same order.",
+          "default": [],
+          "x-option": true
         },
         "session": {
           "type": "string",

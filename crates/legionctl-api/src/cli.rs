@@ -33,10 +33,11 @@ enum Kind {
     Path,
     Integer,
     /// A list of strings, or of integers: the last positional arguments; a command line (`x-argv`) takes the rest
-    /// of the line, words with hyphens too.
+    /// of the line, words with hyphens too; `x-option`: a `--name` that repeats.
     List {
         integers: bool,
         argv: bool,
+        option: bool,
     },
     Choice(Vec<String>),
 }
@@ -111,6 +112,7 @@ fn fields(input: &Value) -> Vec<Field<'_>> {
                     Some("array") => Kind::List {
                         integers: schema["items"]["type"] == "integer",
                         argv: prop["x-argv"] == true,
+                        option: prop["x-option"] == true,
                     },
                     _ => Kind::Text,
                 }
@@ -157,9 +159,20 @@ fn argument(field: &Field) -> Arg {
 
 /// A field as `--name` (or the last positional list, or a field the client fills).
 fn argument_named(field: &Field, arg: Arg) -> Arg {
-    if let Kind::List { integers, argv } = field.kind {
+    if let Kind::List {
+        integers,
+        argv,
+        option,
+    } = field.kind
+    {
         // options may follow a plain list; a command line keeps its own options (`gates check push --force`)
-        let mut list = arg.num_args(0..).action(ArgAction::Append);
+        let mut list = if option {
+            arg.long(field.key.replace('_', "-"))
+                .num_args(1)
+                .action(ArgAction::Append)
+        } else {
+            arg.num_args(0..).action(ArgAction::Append)
+        };
         if argv {
             list = list.trailing_var_arg(true).allow_hyphen_values(true);
         }
@@ -200,7 +213,7 @@ fn leaf(op: &OpInfo, word: &str) -> Command {
     let mut fields = fields(&schema);
     // positionals in field order, and a trailing list after all of them
     fields.sort_by_key(|f| match f.kind {
-        Kind::List { .. } => 2,
+        Kind::List { option: false, .. } => 2,
         _ if f.required && f.default.is_none() => 0,
         _ => 1,
     });

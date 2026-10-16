@@ -1743,13 +1743,22 @@ const GATE_TESTS: &str =
 
 /// The test gate of `workspace checkpoint` (design 23, A7): a new test without an assertion and a test that kills no
 /// mutant are refused with their reasons and nothing is committed; an agent's recorded mutation is evidence;
-/// `--accept-test` needs `--reason`, lets one test through, and the reason is kept with the test and is an event.
+/// `workspace checkpoint double` with `flags`.
+fn double_checkpoint<'a>(flags: &[&'a str]) -> Vec<&'a str> {
+    [&["workspace", "checkpoint", "double"][..], flags].concat()
+}
+
+/// `--accept-test` needs `--reason`, repeats (todo-129: one reason per test, or one for all), accepts all or none, and
+/// each reason is kept with its test and is an event.
 #[test]
 fn the_checkpoint_gate_refuses_tests_without_evidence_and_takes_recorded_kills_and_accepts() {
     let agent = GateAgent::start("testgate");
     write(
         &agent.ws.join("tests/t.rs"),
-        &format!("{GATE_TESTS}\n#[test]\nfn only_calls() {{\n    let _ = double(1);\n}}\n"),
+        &format!(
+            "{GATE_TESTS}\n#[test]\nfn only_calls() {{\n    let _ = double(1);\n}}\n\
+             #[test]\nfn also_calls() {{\n    let _ = double(2);\n}}\n"
+        ),
     );
 
     // no evidence: both tests refused with their reasons, nothing committed
@@ -1789,44 +1798,59 @@ fn the_checkpoint_gate_refuses_tests_without_evidence_and_takes_recorded_kills_a
     assert!(why.contains("only_calls"), "{why}");
     assert_eq!(agent.last_commit(), start);
 
-    // --accept-test lets one through; the reason is kept with the test and is an event
-    let reason = "smoke test of the public path; its value is that it links";
-    let why = agent.refused(&[
-        "workspace",
-        "checkpoint",
-        "double",
-        "--accept-test",
-        "only_calls",
-    ]);
+    // --accept-test repeats; each test gets its reason, kept with the test and as an event
+    let (reason, other) = (
+        "smoke test of the public path; its value is that it links",
+        "the second call path; its value is the other argument",
+    );
+    let accepts = |test: &str| -> Value {
+        let shown: Value =
+            serde_json::from_str(&agent.ok(&["code", "tests", "show", test, "--json"])).unwrap();
+        shown["accepts"].clone()
+    };
+    let both = ["--accept-test", "only_calls", "--accept-test", "also_calls"];
+    let why = agent.refused(&double_checkpoint(&both));
     assert!(why.contains("--reason"), "an accept needs a reason: {why}");
-    agent.ok(&[
-        "workspace",
-        "checkpoint",
-        "double",
+    let bad = [
         "--accept-test",
         "only_calls",
-        "--reason",
-        reason,
-    ]);
+        "--accept-test",
+        "no_such_test",
+    ];
+    let why = agent.refused(&double_checkpoint(
+        &[&bad[..], &["--reason", reason]].concat(),
+    ));
+    assert!(why.contains("no_such_test"), "{why}");
+    let none = agent.refused(&["code", "tests", "show", "only_calls"]);
+    assert!(none.contains("nothing is recorded"), "all or none: {none}");
+    agent.ok(&double_checkpoint(
+        &[&both[..], &["--reason", reason, "--reason", other]].concat(),
+    ));
     assert_eq!(agent.last_commit(), "double");
     let events: Value = serde_json::from_str(&agent.ok(&["events", "--json"])).unwrap();
-    let accept = events["items"]
+    let mut accepted: Vec<(String, String)> = events["items"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|e| e["kind"] == "code.tests.accept")
-        .expect("the accept is an event");
+        .filter(|e| e["kind"] == "code.tests.accept")
+        .map(|e| {
+            (
+                e["payload"]["test"].as_str().unwrap().to_string(),
+                e["payload"]["reason"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    accepted.sort();
     assert_eq!(
-        (
-            accept["payload"]["test"].as_str(),
-            accept["payload"]["reason"].as_str()
-        ),
-        (Some("only_calls"), Some(reason))
+        accepted,
+        [
+            ("also_calls".into(), other.into()),
+            ("only_calls".into(), reason.into())
+        ],
+        "each accept is an event with its own reason"
     );
-    let shown: Value =
-        serde_json::from_str(&agent.ok(&["code", "tests", "show", "only_calls", "--json"]))
-            .unwrap();
-    assert_eq!(shown["accepts"][0]["reason"], reason);
+    assert_eq!(accepts("only_calls")[0]["reason"], reason);
+    assert_eq!(accepts("also_calls")[0]["reason"], other);
 }
 
 /// The pre-commit hook (`scripts/test-gate.sh`) through a real `git commit -a` and `git commit <path>`: both commit a

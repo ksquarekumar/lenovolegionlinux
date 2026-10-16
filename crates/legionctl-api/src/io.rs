@@ -132,12 +132,16 @@ pub struct CheckpointIn {
     /// The topic workspace (`workspace open --topic`), from anywhere in the repository.
     #[serde(default)]
     pub topic: Option<String>,
-    /// A new or changed test that the test gate lets through without a kill or an assertion (with `--reason`).
+    /// A new or changed test that the test gate lets through without a kill or an assertion (with `--reason`); repeat
+    /// it for more tests.
     #[serde(default)]
-    pub accept_test: Option<String>,
-    /// Why the accepted test has value; it is recorded with the test and as an event.
+    #[schemars(extend("x-option" = true))]
+    pub accept_test: Vec<String>,
+    /// Why the accepted test has value; it is recorded with the test and as an event. One for all accepted tests, or
+    /// one per `--accept-test`, in the same order.
     #[serde(default)]
-    pub reason: Option<String>,
+    #[schemars(extend("x-option" = true))]
+    pub reason: Vec<String>,
     #[serde(default)]
     pub session: SessionId,
 }

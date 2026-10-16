@@ -631,29 +631,50 @@ impl Dossiers {
         })
     }
 
-    /// Let `test` (as it is in the working tree now) through the gate without evidence, for `reason`; the test's
-    /// `<file>::<libtest name>`.
+    /// Let each of `tests` (as it is in the working tree now) through the gate without evidence: with the one of
+    /// `reasons` for all, or the reason in the same place; all or none (todo-129). Each test's
+    /// `<file>::<libtest name>` with its reason.
     ///
     /// # Errors
-    /// The reason is empty, `dir` is not in a git repository, `test` names no one test, or the database write fails.
-    pub fn accept_test(
+    /// A reason is empty, the counts do not match, `dir` is not in a git repository, a test names no one test, or the
+    /// database write fails.
+    pub fn accept_tests<'r>(
         &self,
         dir: &Path,
-        test: &str,
-        reason: &str,
+        tests: &[String],
+        reasons: &'r [String],
         session: &str,
-    ) -> Result<String> {
+    ) -> Result<Vec<(String, &'r str)>> {
+        if tests.is_empty() && reasons.is_empty() {
+            return Ok(Vec::new());
+        }
         ensure!(
-            !reason.trim().is_empty(),
-            "--accept-test needs --reason <why the test has value>"
+            (reasons.len() == 1 || reasons.len() == tests.len())
+                && reasons.iter().all(|r| !r.trim().is_empty()),
+            "{} --accept-test with {} --reason: --accept-test needs --reason <why the test has value>, one for all \
+             tests or one per test in the same order",
+            tests.len(),
+            reasons.len()
         );
         let found = worktree_tests(&top(dir)?)?;
-        let t = resolve(&found.0, &found.1, test)?;
-        self.writer(dir)?.conn().execute(
-            "INSERT INTO test_accepts (repo, test, file, hash, reason, session, ts) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![repo_key(dir)?, t.name, t.file, t.hash, reason, session, now()],
-        )?;
-        Ok(format!("{}::{}", t.file, t.name))
+        let resolved = tests
+            .iter()
+            .map(|test| resolve(&found.0, &found.1, test))
+            .collect::<Result<Vec<_>>>()?;
+        let repo = repo_key(dir)?;
+        let writer = self.writer(dir)?;
+        let tx = writer.conn().unchecked_transaction()?;
+        let mut out = Vec::new();
+        for (i, t) in resolved.iter().enumerate() {
+            let reason = reasons[if reasons.len() == 1 { 0 } else { i }].as_str();
+            tx.execute(
+                "INSERT INTO test_accepts (repo, test, file, hash, reason, session, ts) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![repo, t.name, t.file, t.hash, reason, session, now()],
+            )?;
+            out.push((format!("{}::{}", t.file, t.name), reason));
+        }
+        tx.commit()?;
+        Ok(out)
     }
 
     /// The review of the new and changed tests of the change set against HEAD on `side`: assertions, kills,
