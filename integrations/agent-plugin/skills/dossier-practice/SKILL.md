@@ -41,6 +41,8 @@ user-invocable: false
     the user and go on without dossier writes; the hooks do not block you. The migration moves every dossier
     (class workspace): run it only when the user says so, `legionctl dossier migrate --dry-run` first, then
     `legionctl dossier migrate`. Your session keeps its dossier after the move.
+25. A delegate reads the plan and the MEMORY and DESIGN that its rows name itself; the lead's prompt is a start, not
+    the whole context (skill sessions-and-agents).
 
 ## Refs
 

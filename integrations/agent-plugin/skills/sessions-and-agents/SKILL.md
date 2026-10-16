@@ -47,6 +47,10 @@ user-invocable: true
 22. A member is an archetype (`main-agent`, `thread-observer`, `ui-composer`) plus its config `agents.configs.<name>`.
     Before you start a team, run `agents check --team <team> --harness claude|codex`.
 23. If `agents check` refuses a field, change the config. Do not drop the field in silence.
+24. When you delegate work (a subagent, a session, a thread member), tell the delegate to read the full dossier plan
+    (`dossier read <dossier>/plan.md`) and the MEMORY and DESIGN files its rows name by itself, not only your prompt.
+    Tell a reviewer or auditor to be adversarial and thorough and to report what it did not check. When you are the
+    delegate, read them yourself first.
 
 ## Refs
 
