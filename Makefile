@@ -54,8 +54,12 @@ rust-lint: ## rustfmt check, clippy (pedantic, from Cargo.toml) with warnings as
 	cargo machete
 	cargo deny check
 
+node_modules: package.json bun.lock
+	bun install --frozen-lockfile
+	touch node_modules
+
 .PHONY: js-lint
-js-lint: ## Biome lint and format check, tsc type check of the GNOME Shell extension
+js-lint: node_modules ## Biome lint and format check, tsc type check of the GNOME Shell extension
 	bun run lint
 	bun run typecheck
 
