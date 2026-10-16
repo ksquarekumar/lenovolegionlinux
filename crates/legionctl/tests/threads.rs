@@ -487,7 +487,7 @@ fn blocks_hold_main_until_acked_and_only_an_observer_of_the_thread_sends_them() 
 /// one with a link gets no hint.
 #[test]
 fn a_delegate_reads_the_dossier_first_and_a_long_message_is_told_to_link_it() {
-    let lab = thread_lab("delegate");
+    let lab = thread_lab("delegation-rule");
     let started = lab.hook("main", &lab.repo, "subagent-start", json!({}));
     let v: Value = serde_json::from_str(&started).unwrap();
     assert_eq!(v["hookSpecificOutput"]["hookEventName"], "SubagentStart");
