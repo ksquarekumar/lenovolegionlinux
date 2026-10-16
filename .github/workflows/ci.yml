@@ -75,11 +75,12 @@ jobs:
           if [ -f ~/rust-image.tar ]; then
             docker load -i ~/rust-image.tar
           else
-            images="$IMAGE $(cat tests/fixtures/ci-images.txt)"
-            for image in $images; do
+            mapfile -t images < tests/fixtures/ci-images.txt
+            images=("$IMAGE" "${images[@]}")
+            for image in "${images[@]}"; do
               for wait in 20 40 80 160; do docker pull "$image" && break; sleep "$wait"; done
             done
-            docker save -o ~/rust-image.tar $images
+            docker save -o ~/rust-image.tar "${images[@]}"
           fi
       - name: Lint, format check, profile validation, tests
         run: make ci
