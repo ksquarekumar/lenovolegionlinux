@@ -686,6 +686,19 @@ fn first_boot(disk: &Path, new: &Path, (iso, memory): (&Path, &str)) -> Result<(
 }
 
 /// QMP of the running Windows VM.
+/// The error says that this operator has no desktop session: no session bus, or no Mutter on it.
+fn no_desktop(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        matches!(
+            c.downcast_ref::<zbus::Error>(),
+            Some(zbus::Error::Address(_) | zbus::Error::InputOutput(_) | zbus::Error::Connection(..))
+        ) || matches!(
+            c.downcast_ref::<zbus::Error>(),
+            Some(zbus::Error::MethodError(name, _, _)) if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown"
+        )
+    })
+}
+
 pub(crate) fn windows_qmp() -> Result<legionctl_core::qmp::Qmp> {
     legionctl_core::qmp::Qmp::connect(&legionctl_core::session::windows_root().join("qmp.sock"))
         .context("no Windows VM runs (legionctl windows vm start)")
@@ -695,7 +708,7 @@ pub(crate) fn windows_qmp() -> Result<legionctl_core::qmp::Qmp> {
 /// no one (on vfio-pci).
 pub(crate) fn nvidia_owner(root: &SysRoot) -> Result<(Vec<String>, GpuOwner)> {
     let group = legionctl_machine::vfio::nvidia_group(root)?;
-    let in_vm = windows_has_gpu(&legionctl_core::session::windows_root().join("qmp.sock"));
+    let in_vm = windows_has_gpu(&legionctl_core::session::windows_root().join("qmp.sock"))?;
     let owner = match legionctl_machine::vfio::driver(root, &group[0])?.as_deref() {
         Some("vfio-pci") if in_vm => GpuOwner::Windows,
         Some("vfio-pci") => GpuOwner::None,
@@ -704,27 +717,35 @@ pub(crate) fn nvidia_owner(root: &SysRoot) -> Result<(Vec<String>, GpuOwner)> {
     Ok((group, owner))
 }
 
-/// Whether the running Windows VM (QMP at `socket`) has the GPU (`gpu give nvidia windows` added `gpu0`).
-fn windows_has_gpu(socket: &Path) -> bool {
-    legionctl_core::qmp::Qmp::connect(socket)
-        .and_then(|mut q| {
-            q.execute(
-                "qom-list",
-                Some(serde_json::json!({"path": "/machine/peripheral"})),
-            )
-        })
-        .is_ok_and(|ids| {
-            ids.as_array()
-                .is_some_and(|ids| ids.iter().any(|i| i["name"] == "gpu0"))
-        })
+/// Whether the running Windows VM (QMP at `socket`) has the GPU (`gpu give nvidia windows` added `gpu0`); false
+/// when no Windows VM runs (no socket).
+///
+/// # Errors
+/// The VM's QMP socket is there but does not answer.
+fn windows_has_gpu(socket: &Path) -> Result<bool> {
+    if !socket.try_exists()? {
+        return Ok(false);
+    }
+    let ids = legionctl_core::qmp::Qmp::connect(socket)?.execute(
+        "qom-list",
+        Some(serde_json::json!({"path": "/machine/peripheral"})),
+    )?;
+    Ok(ids
+        .as_array()
+        .is_some_and(|ids| ids.iter().any(|i| i["name"] == "gpu0")))
 }
 
 /// Whether user unit `unit` is active.
-pub(crate) fn unit_active(unit: &str) -> bool {
-    Command::new("systemctl")
+/// The user unit `unit` is active (`systemctl --user is-active`: exit 0).
+///
+/// # Errors
+/// systemctl does not run.
+pub(crate) fn unit_active(unit: &str) -> Result<bool> {
+    Ok(Command::new("systemctl")
         .args(["--user", "is-active", "-q", unit])
         .status()
-        .is_ok_and(|s| s.success())
+        .context("running systemctl")?
+        .success())
 }
 
 /// A `workspace.pack` job from its input (`repo`, `service`, `as`, `gpu`): at its start, and when a restart cut it off.
@@ -879,13 +900,19 @@ impl Operator {
     fn display_findings(&self) -> Result<Vec<Finding>> {
         let (root, home) = (SysRoot::from_env(), home());
         let mut out = legionctl_machine::graphics::findings(&root, &home)?;
-        if let Ok((monitors, antialiasing)) = self.monitors() {
-            out.extend(crate::display::findings(
+        match self.monitors() {
+            Ok((monitors, antialiasing)) => out.extend(crate::display::findings(
                 &root,
                 &home,
                 &monitors,
                 &antialiasing,
-            )?);
+            )?),
+            // no desktop session: no session bus, or no Mutter on it
+            Err(e) if no_desktop(&e) => {}
+            Err(e) => out.push(Finding::system(
+                "monitors",
+                format!("the monitors cannot be read from Mutter: {e:#}"),
+            )),
         }
         Ok(out)
     }
@@ -1662,7 +1689,10 @@ impl Engine for Operator {
                     .into(),
             );
         }
-        findings.extend(self.display_findings()?.iter().map(ToString::to_string));
+        match self.display_findings() {
+            Ok(found) => findings.extend(found.iter().map(ToString::to_string)),
+            Err(e) => findings.push(format!("the graphics check cannot run: {e:#}")),
+        }
         findings.extend(agent_findings()?);
         Ok(Findings { findings })
     }
@@ -3370,7 +3400,7 @@ impl Engine for Operator {
     fn windows_vm_start(&self, _: &Ctx, _: Empty) -> Result<Lines> {
         let unit = format!("{}.service", legionctl_core::session::WINDOWS_UNIT);
         anyhow::ensure!(
-            !unit_active(&unit),
+            !unit_active(&unit)?,
             "the Windows VM runs already (legionctl windows vm status)"
         );
         // a run that crashed left the host changed: give it back first
@@ -3403,7 +3433,7 @@ impl Engine for Operator {
     fn windows_vm_stop(&self, _: &Ctx, _: Empty) -> Result<Lines> {
         let unit = format!("{}.service", legionctl_core::session::WINDOWS_UNIT);
         let mut lines = Vec::new();
-        if unit_active(&unit) {
+        if unit_active(&unit)? {
             // the unit's stop sends the power button and waits for Windows (legionctl windows-vm-stop)
             output(Command::new("systemctl").args(["--user", "stop", &unit]))?;
             lines.push("Windows shut down".into());
@@ -3458,13 +3488,13 @@ impl Engine for Operator {
     fn windows_vm_view(&self, _: &Ctx, _: Empty) -> Result<Lines> {
         let unit = format!("{}.service", legionctl_core::session::WINDOWS_UNIT);
         anyhow::ensure!(
-            unit_active(&unit),
+            unit_active(&unit)?,
             "the Windows VM does not run (legionctl windows vm start)"
         );
         let dir = legionctl_core::session::windows_root();
         let spice = dir.join("spice.sock");
         // with the GPU, Windows draws on it: Looking Glass shows its frames; else the SPICE display
-        let (viewer, args, shown) = if windows_has_gpu(&dir.join("qmp.sock")) {
+        let (viewer, args, shown) = if windows_has_gpu(&dir.join("qmp.sock"))? {
             let client = which("looking-glass-client").context(
                 "Windows has the GPU, and looking-glass-client is not installed (package looking-glass; Windows needs \
                  the Looking Glass host)",
@@ -3502,7 +3532,7 @@ impl Engine for Operator {
         let dir = legionctl_core::session::windows_root();
         let state =
             std::fs::read_to_string(dir.join("state")).unwrap_or_else(|_| "never started".into());
-        let mut lines = vec![if unit_active(&unit) {
+        let mut lines = vec![if unit_active(&unit)? {
             "running".to_string()
         } else {
             format!(
@@ -3510,7 +3540,7 @@ impl Engine for Operator {
                 state.lines().next().unwrap_or_default()
             )
         }];
-        if unit_active(&unit) {
+        if unit_active(&unit)? {
             lines.extend(state.lines().skip(1).map(String::from));
         }
         Ok(Lines { lines })

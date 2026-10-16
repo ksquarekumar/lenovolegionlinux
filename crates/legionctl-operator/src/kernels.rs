@@ -238,7 +238,9 @@ fn plan(input: &KernelBuildIn) -> Result<(Build, Vec<String>)> {
     let dir = legionctl_core::cache::default_path()
         .with_file_name("kernel-build")
         .join(&package);
-    let lto = kernel::lto(&root, &release)?;
+    let lto = kernel::lto(&root, &release)?.with_context(|| {
+        format!("no build/.config for {release}: install {base}-headers (the build takes its LTO mode from it)")
+    })?;
     let lines = vec![
         format!(
             "clone {REPO} into {} and check out the commit whose {folder}/.SRCINFO is {version} (the installed {base})",

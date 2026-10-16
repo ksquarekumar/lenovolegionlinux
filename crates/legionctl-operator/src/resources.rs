@@ -51,17 +51,17 @@ fn vm(op: &Operator, ctx: &Ctx, root: &SysRoot) -> Result<Vec<Resource>> {
     let mut out = Vec::new();
     if winvm::windows_disk(root)?.is_some() {
         let unit = format!("{}.service", legionctl_core::session::WINDOWS_UNIT);
-        let state = if !unit_active(&unit) {
-            "stopped"
-        } else if windows_qmp()
-            .and_then(|mut q| q.execute("query-status", None))
-            .is_ok_and(|s| s["status"] == "paused")
-        {
-            "paused"
+        let state = if unit_active(&unit)? {
+            match windows_qmp().and_then(|mut q| q.execute("query-status", None)) {
+                Ok(s) if s["status"] == "paused" => "paused".into(),
+                Ok(_) => "running".into(),
+                // the unit runs but QMP does not answer: running, and why its pause state is not known
+                Err(e) => format!("running (QMP does not answer: {e:#})"),
+            }
         } else {
-            "running"
+            "stopped".to_string()
         };
-        let actions = match state {
+        let actions = match state.as_str() {
             "stopped" => vec![action("start", "windows.vm.start", json!({}))?],
             "paused" => vec![
                 action("resume", "windows.vm.resume", json!({}))?,
@@ -76,7 +76,7 @@ fn vm(op: &Operator, ctx: &Ctx, root: &SysRoot) -> Result<Vec<Resource>> {
             "vm",
             "vm:windows".into(),
             "Windows (installed, in a VM)".into(),
-            state.into(),
+            state,
             Vec::new(),
             actions,
         ));
@@ -105,28 +105,35 @@ fn vm(op: &Operator, ctx: &Ctx, root: &SysRoot) -> Result<Vec<Resource>> {
 /// The NVIDIA GPU's owner (when the machine has one) and the GPU that draws the desktop.
 fn gpu(op: &Operator, ctx: &Ctx, root: &SysRoot) -> Result<Vec<Resource>> {
     let mut out = Vec::new();
-    if let Ok((_, owner)) = nvidia_owner(root) {
+    if legionctl_machine::vfio::nvidia_device(root)?.is_some() {
         let name = |o: GpuOwner| match o {
             GpuOwner::Linux => "linux",
             GpuOwner::Windows => "windows",
             GpuOwner::None => "none",
         };
-        let actions = [GpuOwner::Linux, GpuOwner::Windows, GpuOwner::None]
-            .into_iter()
-            .filter(|o| *o != owner)
-            .map(|o| {
-                action(
-                    &format!("give-{}", name(o)),
-                    "gpu.give",
-                    json!({"gpu": "nvidia", "to": o}),
-                )
-            })
-            .collect::<Result<_>>()?;
+        // an owner that cannot be read is the GPU's state, with the cause, and no action
+        let (state, actions) = match nvidia_owner(root) {
+            Ok((_, owner)) => (
+                name(owner).to_string(),
+                [GpuOwner::Linux, GpuOwner::Windows, GpuOwner::None]
+                    .into_iter()
+                    .filter(|o| *o != owner)
+                    .map(|o| {
+                        action(
+                            &format!("give-{}", name(o)),
+                            "gpu.give",
+                            json!({"gpu": "nvidia", "to": o}),
+                        )
+                    })
+                    .collect::<Result<_>>()?,
+            ),
+            Err(e) => (format!("unknown: {e:#}"), Vec::new()),
+        };
         out.push(resource(
             "gpu",
             "gpu:nvidia".into(),
             "NVIDIA GPU".into(),
-            name(owner).into(),
+            state,
             // the list's count of processes not visible comes from the mount scan of the same processes
             mounts::users_of(root, "/dev/nvidia")?.0,
             actions,

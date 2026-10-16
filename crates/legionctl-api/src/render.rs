@@ -1015,7 +1015,10 @@ impl Render for Vec<Sample> {
         self.iter()
             .map(|s| {
                 let gpu = s.gpu.as_ref().map_or("-".into(), |g| {
-                    format!("{} {} {}", g.state, some(g.power_w, " W"), some(g.temp_c, " °C"))
+                    g.error.as_ref().map_or_else(
+                        || format!("{} {} {}", g.state, some(g.power_w, " W"), some(g.temp_c, " °C")),
+                        |e| format!("{} ({e})", g.state),
+                    )
                 });
                 let fans = s.root.fan_rpm.as_ref().map_or("? (root)".into(), |f| {
                     f.values().map(ToString::to_string).collect::<Vec<_>>().join("/")

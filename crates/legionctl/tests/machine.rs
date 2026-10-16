@@ -85,9 +85,15 @@ impl Machine {
         );
         let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        for name in ["cpupower", "systemctl", "nvidia-smi"] {
+        for name in ["cpupower", "nvidia-smi"] {
             Self::script(&bin, name, "exit 0");
         }
+        // as systemctl answers for units that do not run
+        Self::script(
+            &bin,
+            "systemctl",
+            "case $1 in is-active) echo inactive; exit 3;; is-enabled) echo disabled; exit 1;; esac",
+        );
         // a transient unit runs here: units.log gets its program; other options than the daemon's fail it
         Self::script(
             &bin,
@@ -390,7 +396,11 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
         "gnome-extensions",
         "printf 'legionctl-osd@legionctl\\n  Enabled: Yes\\n  State: ERROR\\n'",
     );
-    Machine::script(&bin, "pacman", "[ \"$2\" = lenovolegionlinux-git ]");
+    Machine::script(
+        &bin,
+        "pacman",
+        "[ \"$2\" = lenovolegionlinux-git ] || { echo \"error: package '$2' was not found\" >&2; exit 1; }",
+    );
     // legionctl_wmi and the autoloaded acpi_call are not available for the bore-lto kernel; DKMS built legionctl_wmi
     // only for the other one
     Machine::script(
@@ -1074,7 +1084,11 @@ fn cleanup_plans_to_disable_running_conflicts_and_leaves_packages_to_the_human()
         "if [ \"$1\" = is-active ] && [ \"$2\" = legiond.service ]; then echo active; \
          elif [ \"$1\" = is-active ]; then echo inactive; elif [ \"$1\" = is-enabled ]; then echo disabled; fi",
     );
-    Machine::script(&bin, "pacman", "[ \"$2\" = lenovolegionlinux-git ]");
+    Machine::script(
+        &bin,
+        "pacman",
+        "[ \"$2\" = lenovolegionlinux-git ] || { echo \"error: package '$2' was not found\" >&2; exit 1; }",
+    );
 
     let out = m.ok(&["cleanup", "--dry-run"]);
     let lines: Vec<&str> = out
@@ -3504,6 +3518,83 @@ mod operator_and_daemon {
             Path::new("../../drivers/nvme")
         );
         std::fs::set_permissions(&mounts, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    /// A machine read that fails is the state of that value, with its cause, never a silent default (todo-142 F-26,
+    /// F-29, F-31, F-32, F-34): with the IOMMU off the NVIDIA GPU still has its power state, and its owner is unknown
+    /// with the reason (before, the GPU vanished); a systemctl without a bus is a doctor check that cannot run (before,
+    /// "unknown" counted as disabled); a failing dkms is each kernel's DKMS state; an unreadable layer folder is a
+    /// layer fault (before, no layers); no /proc/meminfo fails the load (before, all memory was free).
+    #[test]
+    fn a_machine_read_that_fails_is_the_state_of_its_value_with_the_cause() {
+        use std::os::unix::fs::PermissionsExt;
+        let m = Machine::new("causes");
+        let _kernel = pci_machine(&m);
+        let root = m.dir.join("root");
+        let bin = m.dir.join("bin");
+        std::fs::remove_file(root.join("sys/bus/pci/devices/0000:01:00.0/iommu_group")).unwrap();
+        Machine::script(
+            &bin,
+            "systemctl",
+            "echo 'Failed to connect to bus: No such file or directory' >&2; exit 1",
+        );
+        Machine::script(&bin, "dkms", "echo 'dkms: broken tree' >&2; exit 3");
+        let layers = root.join("etc/legionctl/configsets");
+        std::fs::create_dir_all(&layers).unwrap();
+        std::fs::set_permissions(&layers, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let op = m.operator();
+        let json = |args: &[&str]| -> Value {
+            serde_json::from_str(&op.ok(&[args, &["--json"]].concat())).unwrap()
+        };
+
+        let gpu = op.ok(&["gpu", "status"]);
+        assert!(gpu.contains("NVIDIA GPU power: "), "{gpu}");
+        let list = json(&["resources", "list"]);
+        let nvidia = list["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "gpu:nvidia")
+            .unwrap_or_else(|| panic!("no gpu:nvidia in {list}"));
+        assert_eq!(
+            nvidia["state"],
+            "unknown: the NVIDIA GPU 0000:01:00.0 has no IOMMU group (is the IOMMU on?)"
+        );
+        assert_eq!(nvidia["actions"], serde_json::json!([]));
+
+        let doctor = String::from_utf8_lossy(&op.cli(&["doctor"]).stdout).to_string();
+        assert!(
+            doctor.contains("- the conflict check cannot run: systemctl is-active ")
+                && doctor
+                    .contains("gave no state: Failed to connect to bus: No such file or directory"),
+            "{doctor}"
+        );
+        let kernels = json(&["kernel", "list"]);
+        assert!(
+            kernels["kernels"][0]["dkms"]
+                .as_array()
+                .unwrap()
+                .contains(&Value::String(
+                    "nvidia: unknown: dkms status failed (exit status: 3): dkms: broken tree"
+                        .into()
+                )),
+            "{kernels}"
+        );
+        let rules = op.ok(&["rules", "list"]);
+        assert!(
+            rules.contains("cannot open the folder (a link is not read)")
+                && rules.contains("Permission denied"),
+            "{rules}"
+        );
+        std::fs::set_permissions(&layers, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        std::fs::remove_file(root.join("proc/meminfo")).unwrap();
+        let out = op.cli(&["load"]);
+        assert!(
+            !out.status.success()
+                && String::from_utf8_lossy(&out.stderr).contains("/proc/meminfo is missing"),
+            "{out:?}"
+        );
     }
 
     /// Reads as the user on the live machine (todo-142, EV-validation-read-ops-r260): status, gpu status, knobs list,

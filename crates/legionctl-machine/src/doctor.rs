@@ -19,7 +19,7 @@ fn quoted(s: &str) -> String {
 
 /// Unit states that mean "not running and not coming back".
 fn unit_quiet(active: &str, enabled: &str) -> bool {
-    active != "active" && ["disabled", "not-found", "masked", "unknown"].contains(&enabled)
+    active != "active" && ["disabled", "not-found", "masked"].contains(&enabled)
 }
 
 fn module_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
@@ -28,7 +28,7 @@ fn module_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
     let kernels = kernel::installed_kernels(root)?;
     for module in &spec.required {
         for k in &kernels {
-            if !kernel::module_available(module, k) {
+            if !kernel::module_available(module, k)? {
                 out.push(format!(
                     "required module {module} is missing for kernel {k}"
                 ));
@@ -43,7 +43,7 @@ fn module_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
         }
     }
     for (module, source) in kernel::autoload_entries(root)? {
-        if !kernel::module_available(&module, &running) {
+        if !kernel::module_available(&module, &running)? {
             out.push(format!(
                 "{source} autoloads {module}, which does not exist for {running} (fails every boot)"
             ));
@@ -54,7 +54,7 @@ fn module_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
             ));
         }
     }
-    let rows = kernel::dkms_status();
+    let rows = kernel::dkms_status()?;
     let mut names: Vec<&String> = rows.iter().map(|r| &r.0).collect();
     names.sort();
     names.dedup();
@@ -91,20 +91,27 @@ pub fn doctor(machine: &Machine) -> Vec<String> {
     check(&mut w, "kernel module", module_warnings(root, profile));
     check(&mut w, "Legion WMI", wmi_warnings(root, profile));
     check(&mut w, "boot image", crate::boot::unbuilt(root));
-    if let Some(reasons) = firmware::logged_throttle_reasons(root)
-        && reasons
-            .iter()
-            .any(|r| ["PROCHOT", "critical temperature"].contains(r))
-    {
-        w.push(format!("CPU throttling logged: {}", reasons.join(", ")));
-    }
+    check(
+        &mut w,
+        "throttle",
+        firmware::logged_throttle_reasons(root).map(|reasons| {
+            reasons
+                .filter(|r| {
+                    r.iter()
+                        .any(|r| ["PROCHOT", "critical temperature"].contains(r))
+                })
+                .map(|r| format!("CPU throttling logged: {}", r.join(", ")))
+                .into_iter()
+                .collect()
+        }),
+    );
     for volume in crate::windows::dirty_ntfs() {
         w.push(format!(
             "NTFS volume {volume} is marked dirty; run chkdsk in Windows (or ntfsfix -d, see docs/design/11-disks.md)"
         ));
     }
     check(&mut w, "GPU", gpu_warnings(machine));
-    w.extend(desktop_warnings());
+    check(&mut w, "desktop", desktop_warnings());
     w
 }
 
@@ -303,18 +310,18 @@ fn wmi_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
 const OSD_EXTENSION: &str = "legionctl-osd@legionctl";
 
 /// Failed system and user units, and the OSD extension when it is not running.
-fn desktop_warnings() -> Vec<String> {
-    let mut w: Vec<String> = system::failed_units(false)
+fn desktop_warnings() -> Result<Vec<String>> {
+    let mut w: Vec<String> = system::failed_units(false)?
         .into_iter()
         .map(|u| format!("unit {u} failed; see systemctl status {u}"))
         .chain(
-            system::failed_units(true)
+            system::failed_units(true)?
                 .into_iter()
                 .map(|u| format!("user unit {u} failed; see systemctl --user status {u}")),
         )
         .collect();
     // ENABLED is the name of ACTIVE before GNOME 45
-    if let Some(state) = system::extension_state(OSD_EXTENSION)
+    if let Some(state) = system::extension_state(OSD_EXTENSION)?
         && !["ACTIVE", "ENABLED"].contains(&state.as_str())
     {
         let fix = if state == "ERROR" || state == "OUT OF DATE" {
@@ -326,15 +333,15 @@ fn desktop_warnings() -> Vec<String> {
             "the OSD extension {OSD_EXTENSION} is {state}; Fn+Q, Fn+R and Fn lock show no OSD ({fix})"
         ));
     }
-    w
+    Ok(w)
 }
 
 /// Units, packages and modules that fight legionctl over the same knobs.
 fn conflict_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
     let mut w = Vec::new();
     for unit in &profile.conflicts.systemd_units {
-        let active = system::unit_state("is-active", unit);
-        let enabled = system::unit_state("is-enabled", unit);
+        let active = system::unit_state("is-active", unit)?;
+        let enabled = system::unit_state("is-enabled", unit)?;
         if !unit_quiet(&active, &enabled) {
             w.push(format!(
                 "conflicting unit {unit}: active={active}, enabled={enabled}"
@@ -342,7 +349,7 @@ fn conflict_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
         }
     }
     for package in &profile.conflicts.packages {
-        if system::package_installed(package) {
+        if system::package_installed(package)? {
             w.push(format!("conflicting package is installed: {package}"));
         }
     }
@@ -410,8 +417,8 @@ fn gpu_warnings(machine: &Machine) -> Result<Vec<String>> {
 
     if services {
         for unit in ["nvidia-powerd.service", "nvidia-persistenced.service"] {
-            let state = system::unit_state("is-active", unit);
-            if !["active", "unknown"].contains(&state.as_str()) {
+            let state = system::unit_state("is-active", unit)?;
+            if state != "active" {
                 w.push(format!("{unit} is not active on AC"));
             }
         }

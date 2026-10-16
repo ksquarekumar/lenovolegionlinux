@@ -9,7 +9,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -19,7 +19,6 @@ use crate::sysroot::SysRoot;
 
 const RAPL_PACKAGE: &str = "/sys/class/powercap/intel-rapl:0/energy_uj";
 const RAPL_RANGE: &str = "/sys/class/powercap/intel-rapl:0/max_energy_range_uj";
-const NVIDIA_VENDOR: &str = "0x10de";
 /// The processes in [`Sample::cpu_energy`].
 const TOP: usize = 5;
 
@@ -262,8 +261,16 @@ pub fn root_sample(root: &SysRoot) -> RootSample {
         .collect();
     RootSample {
         fan_rpm: fan_rpm.ok(),
-        throttle_now: firmware::current_throttle_reasons(root).map(names),
-        throttle_logged: firmware::logged_throttle_reasons(root).map(names),
+        // a failed MSR read is reported by the daemon's state loop, which reads the same register (observe-error:
+        // the journal, doctor and the event stream); the sample leaves the reasons out
+        throttle_now: firmware::current_throttle_reasons(root)
+            .ok()
+            .flatten()
+            .map(names),
+        throttle_logged: firmware::logged_throttle_reasons(root)
+            .ok()
+            .flatten()
+            .map(names),
         sensor_errors,
         ..RootSample::default()
     }
@@ -277,6 +284,8 @@ pub struct GpuSample {
     pub temp_c: Option<f64>,
     pub util_percent: Option<f64>,
     pub clock_mhz: Option<f64>,
+    /// Why the readings are missing while the GPU is active (nvidia-smi failed).
+    pub error: Option<String>,
 }
 
 /// One hwmon channel (`temp1_input` of `hwmon4`), in its unit.
@@ -421,20 +430,10 @@ fn cpu_mhz(root: &SysRoot) -> Result<Option<f64>> {
 
 /// The NVIDIA GPU's runtime power state, and its readings when it is awake.
 fn gpu(root: &SysRoot) -> Result<Option<GpuSample>> {
-    let mut found = None;
-    for d in root.children("/sys/bus/pci/devices", "")? {
-        if root.read(d.join("vendor"))?.as_deref() == Some(NVIDIA_VENDOR)
-            && root
-                .read(d.join("class"))?
-                .is_some_and(|c| c.starts_with("0x03"))
-        {
-            found = Some(d);
-            break;
-        }
-    }
-    let Some(device) = found else {
+    let Some(device) = crate::vfio::nvidia_device(root)? else {
         return Ok(None);
     };
+    let device = Path::new("/sys/bus/pci/devices").join(device);
     let state = root
         .read(device.join("power/runtime_status"))?
         .unwrap_or_else(|| "unknown".into());
@@ -444,26 +443,40 @@ fn gpu(root: &SysRoot) -> Result<Option<GpuSample>> {
         temp_c: None,
         util_percent: None,
         clock_mhz: None,
+        error: None,
     };
-    if sample.state == "active"
-        && let Some(line) = std::process::Command::new("nvidia-smi")
-            .args([
-                "--query-gpu=power.draw,temperature.gpu,utilization.gpu,clocks.sm",
-                "--format=csv,noheader,nounits",
-            ])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-    {
-        let values: Vec<Option<f64>> = line.split(',').map(|v| v.trim().parse().ok()).collect();
-        if let [power, temp, util, clock] = values[..] {
-            (
-                sample.power_w,
-                sample.temp_c,
-                sample.util_percent,
-                sample.clock_mhz,
-            ) = (power, temp, util, clock);
+    if sample.state == "active" {
+        // a failed read is this sample's GPU error, not a failure of the whole sample
+        let read = || -> Result<[Option<f64>; 4]> {
+            let out = std::process::Command::new("nvidia-smi")
+                .args([
+                    "--query-gpu=power.draw,temperature.gpu,utilization.gpu,clocks.sm",
+                    "--format=csv,noheader,nounits",
+                ])
+                .output()
+                .context("running nvidia-smi")?;
+            anyhow::ensure!(
+                out.status.success(),
+                "nvidia-smi failed ({}): {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            // "[N/A]" of a value that the GPU does not report stays unknown
+            let values: Vec<Option<f64>> = line.split(',').map(|v| v.trim().parse().ok()).collect();
+            <[Option<f64>; 4]>::try_from(values)
+                .map_err(|_| anyhow::anyhow!("nvidia-smi gave no four values: {line}"))
+        };
+        match read() {
+            Ok([power, temp, util, clock]) => {
+                (
+                    sample.power_w,
+                    sample.temp_c,
+                    sample.util_percent,
+                    sample.clock_mhz,
+                ) = (power, temp, util, clock);
+            }
+            Err(e) => sample.error = Some(format!("{e:#}")),
         }
     }
     Ok(Some(sample))

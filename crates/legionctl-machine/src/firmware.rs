@@ -2,7 +2,7 @@
 //! controls in [`crate::fan`]; and the package thermal status MSR (read-only).
 
 use std::collections::BTreeMap;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
@@ -87,28 +87,43 @@ pub fn throttle_reasons(value: u64) -> Vec<&'static str> {
 }
 
 /// `IA32_PACKAGE_THERM_STATUS` of CPU 0; `None` without root or the msr module.
-fn package_therm_status(root: &SysRoot) -> Option<u64> {
-    let mut msr = std::fs::File::open(root.path("/dev/cpu/0/msr")).ok()?;
-    msr.seek(SeekFrom::Start(PACKAGE_THERM_STATUS)).ok()?;
+///
+/// # Errors
+/// The MSR is there and may be read, but the read fails.
+fn package_therm_status(root: &SysRoot) -> Result<Option<u64>> {
+    const MSR: &str = "/dev/cpu/0/msr";
+    let mut msr = match std::fs::File::open(root.path(MSR)) {
+        Ok(msr) => msr,
+        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::PermissionDenied) => {
+            return Ok(None);
+        }
+        Err(e) => return Err(e).with_context(|| format!("opening {MSR}")),
+    };
     let mut buf = [0u8; 8];
-    msr.read_exact(&mut buf).ok()?;
-    Some(u64::from_le_bytes(buf))
+    msr.seek(SeekFrom::Start(PACKAGE_THERM_STATUS))
+        .and_then(|_| msr.read_exact(&mut buf))
+        .with_context(|| format!("reading IA32_PACKAGE_THERM_STATUS from {MSR}"))?;
+    Ok(Some(u64::from_le_bytes(buf)))
 }
 
 /// Logged throttle reasons from CPU 0's MSR; `None` without root or the msr module.
-#[must_use]
-pub fn logged_throttle_reasons(root: &SysRoot) -> Option<Vec<&'static str>> {
-    package_therm_status(root).map(throttle_reasons)
+///
+/// # Errors
+/// The MSR read fails.
+pub fn logged_throttle_reasons(root: &SysRoot) -> Result<Option<Vec<&'static str>>> {
+    Ok(package_therm_status(root)?.map(throttle_reasons))
 }
 
 /// Throttle reasons active now: each status bit sits one below its log bit.
-#[must_use]
-pub fn current_throttle_reasons(root: &SysRoot) -> Option<Vec<&'static str>> {
-    package_therm_status(root).map(|value| {
+///
+/// # Errors
+/// The MSR read fails.
+pub fn current_throttle_reasons(root: &SysRoot) -> Result<Option<Vec<&'static str>>> {
+    Ok(package_therm_status(root)?.map(|value| {
         THROTTLE_LOG_BITS
             .iter()
             .filter(|(bit, _)| value >> (bit - 1) & 1 == 1)
             .map(|(_, name)| *name)
             .collect()
-    })
+    }))
 }

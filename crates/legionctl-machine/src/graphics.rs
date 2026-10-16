@@ -179,7 +179,7 @@ fn driver_findings(root: &SysRoot, home: &Path, nvidia: bool, intel: bool) -> Re
     if !(nvidia && intel) {
         return Ok(out);
     }
-    if crate::system::unit_state("is-active", "switcheroo-control.service") != "active" {
+    if crate::system::unit_state("is-active", "switcheroo-control.service")? != "active" {
         out.push(Finding::system(
             "switcheroo",
             "switcheroo-control does not run: GNOME has no \"Launch using Discrete Graphics Card\" (sudo systemctl \

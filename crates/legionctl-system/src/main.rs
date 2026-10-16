@@ -221,7 +221,7 @@ fn observe(root: &SysRoot) -> Result<Observed> {
     Ok(Observed {
         mode: mode(root)?,
         workload: configset::workload(root)?,
-        throttle: firmware::current_throttle_reasons(root)
+        throttle: firmware::current_throttle_reasons(root)?
             .map(|r| r.into_iter().map(String::from).collect()),
         fan: fan_modes(root)?,
     })

@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use anyhow::Context;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -352,10 +353,14 @@ fn sample_io(root: &SysRoot, cgroup: Option<&Path>) -> anyhow::Result<(f64, Opti
 /// # Errors
 /// A `/proc` or cgroup file cannot be read.
 pub fn read_load(root: &SysRoot, thresholds: &Thresholds) -> anyhow::Result<Load> {
-    let load1 = root
+    let loadavg = root
         .read("/proc/loadavg")?
-        .and_then(|t| t.split_whitespace().next()?.parse().ok())
-        .unwrap_or(0.0);
+        .context("/proc/loadavg is missing")?;
+    let load1: f64 = loadavg
+        .split_whitespace()
+        .next()
+        .and_then(|l| l.parse().ok())
+        .with_context(|| format!("/proc/loadavg has no load: {loadavg}"))?;
     let cpus = std::thread::available_parallelism()
         .map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX));
     let cpu = root
@@ -370,17 +375,19 @@ pub fn read_load(root: &SysRoot, thresholds: &Thresholds) -> anyhow::Result<Load
         .read("/proc/pressure/io")?
         .as_deref()
         .and_then(parse_pressure);
-    let meminfo = root.read("/proc/meminfo")?.unwrap_or_default();
-    let bytes = |key| meminfo_kib(&meminfo, key).map_or(0, |kib| kib << 10);
-    let total = bytes("MemTotal");
-    let available = bytes("MemAvailable");
-    // whole MiB keep the ratio exact in an f64
-    let fraction = if total > 0 {
-        f64::from(u32::try_from(available >> 20).unwrap_or(u32::MAX))
-            / f64::from(u32::try_from(total >> 20).unwrap_or(u32::MAX).max(1))
-    } else {
-        1.0
+    let meminfo = root
+        .read("/proc/meminfo")?
+        .context("/proc/meminfo is missing")?;
+    let bytes = |key| -> anyhow::Result<u64> {
+        meminfo_kib(&meminfo, key)
+            .map(|kib| kib << 10)
+            .with_context(|| format!("/proc/meminfo has no {key}"))
     };
+    let total = bytes("MemTotal")?;
+    let available = bytes("MemAvailable")?;
+    // whole MiB keep the ratio exact in an f64
+    let fraction = f64::from(u32::try_from(available >> 20).unwrap_or(u32::MAX))
+        / f64::from(u32::try_from(total >> 20).unwrap_or(u32::MAX).max(1));
     // sample the disks only when I/O pressure could count, so the usual call stays instant ("full" <= "some")
     let io_some = io.as_ref().map_or(0.0, |p| p.some_avg10);
     let io_counts = io_some
@@ -407,7 +414,11 @@ pub fn read_load(root: &SysRoot, thresholds: &Thresholds) -> anyhow::Result<Load
         disks_busy: disks,
         mem_available_fraction: fraction,
     };
-    let (level, reasons) = classify(&sample, thresholds);
+    let (level, mut reasons) = classify(&sample, thresholds);
+    if cpu.is_none() && memory.is_none() && io.is_none() {
+        // a kernel without PSI: the level comes from the load and memory only
+        reasons.push("PSI not available (no /proc/pressure): stalls are not counted".into());
+    }
     Ok(Load {
         level,
         reasons,

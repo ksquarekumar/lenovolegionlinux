@@ -326,13 +326,28 @@ fn memory_finding(
 /// libvirt's daemons and VMs.
 fn vms(status: &mut VirtStatus) {
     // socket-activated daemons exit when idle: the socket being active counts as up
-    let up = |name: &str| {
-        ["service", "socket"].iter().any(|kind| {
-            legionctl_machine::system::unit_state("is-active", &format!("{name}.{kind}"))
+    let up = |name: &str| -> Result<bool> {
+        for kind in ["service", "socket"] {
+            if legionctl_machine::system::unit_state("is-active", &format!("{name}.{kind}"))?
                 == "active"
-        })
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     };
-    let (monolithic, modular) = (up("libvirtd"), up("virtqemud"));
+    let (monolithic, modular) = match up("libvirtd").and_then(|m| Ok((m, up("virtqemud")?))) {
+        Ok(both) => both,
+        Err(e) => {
+            status.capabilities.push(capability(
+                "VMs",
+                "libvirt",
+                false,
+                format!("the libvirt daemons' state cannot be read: {e:#}"),
+            ));
+            return;
+        }
+    };
     let daemons = match (monolithic, modular) {
         (true, false) => "libvirtd",
         (false, true) => "virtqemud",

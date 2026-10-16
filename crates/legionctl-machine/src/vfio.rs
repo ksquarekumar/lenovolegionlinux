@@ -421,20 +421,42 @@ fn systemctl(verb: &str, units: &[String]) -> Result<()> {
 /// The NVIDIA GPU's whole IOMMU group.
 ///
 /// # Errors
-/// No NVIDIA GPU with an IOMMU group.
+/// No NVIDIA GPU, or it has no IOMMU group.
 pub fn nvidia_group(root: &SysRoot) -> Result<Vec<String>> {
-    nvidia(root)?.context("no NVIDIA GPU with an IOMMU group on this machine")
+    let device = nvidia_device(root)?.context("no NVIDIA GPU on this machine")?;
+    let group = iommu_group(root, &device)?.with_context(|| {
+        format!("the NVIDIA GPU {device} has no IOMMU group (is the IOMMU on?)")
+    })?;
+    members(root, &group)
 }
 
-/// The NVIDIA GPU's whole IOMMU group; None without an NVIDIA GPU with an IOMMU group.
+/// The NVIDIA GPU (a display controller of PCI vendor 0x10de), with or without an IOMMU group; None without one.
 ///
 /// # Errors
 /// A device's files cannot be read.
-pub fn nvidia(root: &SysRoot) -> Result<Option<Vec<String>>> {
-    Ok(candidates(root)?
-        .into_iter()
-        .find(|c| c.kind == "gpu" && c.ids.starts_with("10de:"))
-        .map(|c| c.members))
+pub fn nvidia_device(root: &SysRoot) -> Result<Option<String>> {
+    for dir in root.children(PCI, "")? {
+        let Some(device) = name(&dir) else { continue };
+        if root.read(dir.join("vendor"))?.as_deref() == Some("0x10de")
+            && root
+                .read(dir.join("class"))?
+                .is_some_and(|c| c.starts_with("0x03"))
+        {
+            return Ok(Some(device));
+        }
+    }
+    Ok(None)
+}
+
+/// The devices whose users count for the NVIDIA GPU `device`: its IOMMU group, or the device alone without one.
+///
+/// # Errors
+/// A device's files cannot be read.
+pub fn nvidia_devices(root: &SysRoot, device: &str) -> Result<Vec<String>> {
+    match iommu_group(root, device)? {
+        Some(group) => members(root, &group),
+        None => Ok(vec![device.to_string()]),
+    }
 }
 
 /// Take the NVIDIA GPU from Linux: its services stopped, its group bound to vfio-pci for `uid`. Returns what it did
@@ -446,14 +468,17 @@ pub fn release_nvidia(root: &SysRoot, uid: u32) -> Result<(Vec<String>, Vec<Stri
     let group = nvidia_group(root)?;
     let active: Vec<String> = NVIDIA_SERVICES
         .iter()
-        .filter(|s| {
-            std::process::Command::new("systemctl")
+        .map(|s| -> Result<Option<String>> {
+            // is-active: exit 0 active, another exit not active; a systemctl that does not run is an error
+            let active = std::process::Command::new("systemctl")
                 .args(["is-active", "-q", s])
                 .status()
-                .is_ok_and(|st| st.success())
+                .context("running systemctl")?
+                .success();
+            Ok(active.then(|| (*s).to_string()))
         })
-        .map(|s| (*s).to_string())
-        .collect();
+        .filter_map(Result::transpose)
+        .collect::<Result<_>>()?;
     systemctl("stop", &active)?;
     match bind(root, &group, uid) {
         Ok(mut lines) => {

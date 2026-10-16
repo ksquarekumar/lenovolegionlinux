@@ -196,7 +196,7 @@ fn cpu(m: &Machine, wanted: &Merged) -> anyhow::Result<Vec<Knob>> {
 /// The knobs of `gpu power` (so that `undo` may hold it) and of the keyboard light.
 fn parity_knobs(m: &Machine, wanted: &Merged) -> anyhow::Result<Vec<Knob>> {
     let mut knobs = Vec::new();
-    if let Some(device) = crate::vfio::nvidia(m.root)?.and_then(|g| g.into_iter().next()) {
+    if let Some(device) = crate::vfio::nvidia_device(m.root)? {
         let path = crate::gpu::control_path(&device);
         knobs.push(
             Knob::new(

@@ -256,7 +256,7 @@ impl Snapshot {
             rapl: rapl(root)?,
             nvidia_power_limit_w: full.then(system::nvidia_power_limit).flatten(),
             fan_rpm,
-            throttle_reasons: firmware::logged_throttle_reasons(root)
+            throttle_reasons: firmware::logged_throttle_reasons(root)?
                 .map(|r| r.into_iter().map(String::from).collect()),
             package_temp_c: crate::telemetry::cpu_temp(root)?,
             gpu_mode: gpu::mode(&outputs),
@@ -267,8 +267,11 @@ impl Snapshot {
                 .filter(|_| full)
                 .map(|u| UnitState {
                     unit: u.to_string(),
-                    active: system::unit_state("is-active", u),
-                    enabled: system::unit_state("is-enabled", u),
+                    // a state that cannot be read is that unit's state, with the cause
+                    active: system::unit_state("is-active", u)
+                        .unwrap_or_else(|e| format!("unknown: {e:#}")),
+                    enabled: system::unit_state("is-enabled", u)
+                        .unwrap_or_else(|e| format!("unknown: {e:#}")),
                 })
                 .collect(),
             modules: MODULES

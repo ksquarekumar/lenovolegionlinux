@@ -1005,6 +1005,8 @@ wire! {
         temp_c: Option<f64>,
         util_percent: Option<f64>,
         clock_mhz: Option<f64>,
+        /// Why the readings are missing while the GPU is active (nvidia-smi failed).
+        error: Option<String>,
     }
 
     /// Run-queue latency over a sample window: how long woken tasks waited for a CPU. Log2 resolution: a percentile is

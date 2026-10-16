@@ -87,9 +87,15 @@ fn docker() -> [(&'static str, OsString); 1] {
 
 fn operator_with(tag: &str, home: &Path, extra: &[(&str, OsString)]) -> Operator {
     let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integrations/agent-plugin");
-    // an empty machine: no /etc/legionctl unless a test writes one
+    // an empty machine: no /etc/legionctl unless a test writes one; the load and memory that every Linux has
     let root = home.join("root");
-    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(root.join("proc")).unwrap();
+    std::fs::write(root.join("proc/loadavg"), "0.10 0.10 0.10 1/100 100\n").unwrap();
+    std::fs::write(
+        root.join("proc/meminfo"),
+        "MemTotal: 16000000 kB\nMemAvailable: 12000000 kB\n",
+    )
+    .unwrap();
     let mut env = vec![
         ("LEGIONCTL_SYSROOT", root.into()),
         ("HOME", home.into()),

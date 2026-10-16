@@ -7,7 +7,7 @@ use std::path::Path;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 use crate::policy::{Machine, Step};
 use crate::sysroot::SysRoot;
@@ -206,7 +206,9 @@ pub fn render_env(root: &SysRoot, gpu: &str) -> Result<BTreeMap<&'static str, St
                 if name.contains('-') || !["i915", "xe"].contains(&driver(root, &name)?.as_str()) {
                     continue;
                 }
-                let device = root.read(card.join("device/device"))?.unwrap_or_default();
+                let device = root
+                    .read(card.join("device/device"))?
+                    .with_context(|| format!("{} has no device id", card.display()))?;
                 env.insert(
                     "MESA_VK_DEVICE_SELECT",
                     format!("8086:{}!", device.trim_start_matches("0x")),
@@ -275,12 +277,10 @@ pub(crate) fn control_path(device: &str) -> String {
 /// # Errors
 /// The GPU's files cannot be read.
 pub fn nvidia_power(root: &SysRoot) -> Result<Option<NvidiaPower>> {
-    let Some(group) = crate::vfio::nvidia(root)? else {
+    let Some(device) = crate::vfio::nvidia_device(root)? else {
         return Ok(None);
     };
-    let Some(device) = group.first().cloned() else {
-        return Ok(None);
-    };
+    let group = crate::vfio::nvidia_devices(root, &device)?;
     let (users, not_visible) = crate::vfio::users(root, &group, false)?;
     Ok(Some(NvidiaPower {
         runtime_status: root.read(format!(
@@ -301,7 +301,7 @@ pub fn nvidia_power(root: &SysRoot) -> Result<Option<NvidiaPower>> {
 pub fn set_nvidia_power(machine: &Machine, sleep: bool) -> Result<Vec<Step>> {
     let root = machine.root;
     let Some(power) = nvidia_power(root)? else {
-        bail!("this machine has no NVIDIA GPU with an IOMMU group");
+        bail!("this machine has no NVIDIA GPU");
     };
     let driver = crate::vfio::driver(root, &power.device)?;
     if driver.as_deref() != Some("nvidia") {

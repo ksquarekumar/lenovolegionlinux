@@ -262,21 +262,26 @@ struct File {
 fn read_folder(dir: &Path, owner: Option<u32>) -> Vec<(String, Result<String, String>)> {
     use rustix::fs::{FileType, Mode, OFlags};
     let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let Ok(fd) = rustix::fs::open(dir, flags | OFlags::DIRECTORY, Mode::empty()) else {
-        return Vec::new();
+    let folder = |why: String| vec![(dir.display().to_string(), Err(why))];
+    let fd = match rustix::fs::open(dir, flags | OFlags::DIRECTORY, Mode::empty()) {
+        Ok(fd) => fd,
+        Err(rustix::io::Errno::NOENT) => return Vec::new(),
+        Err(e) => return folder(format!("cannot open the folder (a link is not read): {e}")),
     };
-    if let Some(uid) = owner
-        && !rustix::fs::fstat(&fd).is_ok_and(|s| s.st_uid == uid)
-    {
-        return vec![(
-            dir.display().to_string(),
-            Err(format!("the folder does not belong to uid {uid}")),
-        )];
+    if let Some(uid) = owner {
+        match rustix::fs::fstat(&fd) {
+            Ok(s) if s.st_uid == uid => {}
+            Ok(_) => return folder(format!("the folder does not belong to uid {uid}")),
+            Err(e) => return folder(format!("cannot read the folder's owner: {e}")),
+        }
     }
-    let mut names: Vec<String> = std::fs::read_dir(dir)
+    let entries =
+        match std::fs::read_dir(dir).and_then(Iterator::collect::<std::io::Result<Vec<_>>>) {
+            Ok(entries) => entries,
+            Err(e) => return folder(format!("cannot list the folder: {e}")),
+        };
+    let mut names: Vec<String> = entries
         .into_iter()
-        .flatten()
-        .flatten()
         .filter_map(|e| e.file_name().into_string().ok())
         .filter(|n| Path::new(n).extension().is_some_and(|e| e == "jsonc"))
         .collect();

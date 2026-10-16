@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::sysroot::SysRoot;
 
@@ -75,17 +75,20 @@ pub fn installed_kernels(root: &SysRoot) -> Result<Vec<String>> {
 /// # Errors
 /// The release cannot be read.
 pub fn running_kernel(root: &SysRoot) -> Result<String> {
-    Ok(root.read("/proc/sys/kernel/osrelease")?.unwrap_or_default())
+    root.read("/proc/sys/kernel/osrelease")?
+        .context("/proc/sys/kernel/osrelease is missing: the running kernel is unknown")
 }
 
-#[must_use]
-pub fn module_available(name: &str, kernel: &str) -> bool {
-    Command::new("modinfo")
+/// The module `name` exists for `kernel` (`modinfo` finds its file).
+///
+/// # Errors
+/// `modinfo` does not run.
+pub fn module_available(name: &str, kernel: &str) -> Result<bool> {
+    let out = Command::new("modinfo")
         .args(["-k", kernel, "-F", "filename", name])
         .output()
-        .map_or(true, |o| {
-            o.status.success() && !o.stdout.trim_ascii().is_empty()
-        })
+        .context("running modinfo")?;
+    Ok(out.status.success() && !out.stdout.trim_ascii().is_empty())
 }
 
 /// The module `name` is built into `kernel`.
@@ -123,13 +126,22 @@ pub fn parse_dkms_status(text: &str) -> Vec<(String, String, String)> {
         .collect()
 }
 
-#[must_use]
-pub fn dkms_status() -> Vec<(String, String, String)> {
-    Command::new("dkms")
-        .arg("status")
-        .output()
-        .map(|o| parse_dkms_status(&String::from_utf8_lossy(&o.stdout)))
-        .unwrap_or_default()
+/// `dkms status` as (module, kernel, state); empty when DKMS is not installed.
+///
+/// # Errors
+/// `dkms` does not run or fails.
+pub fn dkms_status() -> Result<Vec<(String, String, String)>> {
+    let out = match Command::new("dkms").arg("status").output() {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        out => out.context("running dkms")?,
+    };
+    anyhow::ensure!(
+        out.status.success(),
+        "dkms status failed ({}): {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(parse_dkms_status(&String::from_utf8_lossy(&out.stdout)))
 }
 
 /// The DKMS modules that `kernel list` shows for each kernel.
@@ -211,21 +223,23 @@ fn config(root: &SysRoot, release: &str) -> Result<Option<String>> {
     )
 }
 
-/// The Clang LTO mode of the kernel `release`: `thin`, `full` or `none` (also without the headers); the
-/// `_use_llvm_lto` value of the kernel PKGBUILDs.
+/// The Clang LTO mode of the kernel `release`: `thin`, `full` or `none`; the `_use_llvm_lto` value of the kernel
+/// PKGBUILDs. `None` without the headers (no `build/.config`).
 ///
 /// # Errors
 /// The configuration cannot be read.
-pub fn lto(root: &SysRoot, release: &str) -> Result<&'static str> {
-    let config = config(root, release)?.unwrap_or_default();
+pub fn lto(root: &SysRoot, release: &str) -> Result<Option<&'static str>> {
+    let Some(config) = config(root, release)? else {
+        return Ok(None);
+    };
     let on = |option: &str| config.lines().any(|l| l == format!("{option}=y"));
-    Ok(if on("CONFIG_LTO_CLANG_THIN") {
+    Ok(Some(if on("CONFIG_LTO_CLANG_THIN") {
         "thin"
     } else if on("CONFIG_LTO_CLANG_FULL") {
         "full"
     } else {
         "none"
-    })
+    }))
 }
 
 /// The scheduler and build of the kernel `release`, from its configuration: `bore` or `eevdf`, and `lto`. Empty
@@ -245,7 +259,7 @@ pub fn flavour(root: &SysRoot, release: &str) -> Result<Vec<String>> {
         }
         .to_string(),
     ];
-    if lto(root, release)? != "none" {
+    if lto(root, release)? != Some("none") {
         out.push("lto".into());
     }
     Ok(out)
@@ -286,7 +300,8 @@ pub struct Kernels {
 /// A kernel's files or the boot entries cannot be read.
 pub fn list(root: &SysRoot) -> Result<Kernels> {
     let running = running_kernel(root)?;
-    let dkms = dkms_status();
+    // a dkms failure is the state of each kernel's DKMS modules, not a failure of the list
+    let dkms = dkms_status().map_err(|e| format!("unknown: {e:#}"));
     let default = crate::boot::default_kernel(root)?;
     let images = crate::boot::images(root)?;
     let mut kernels = Vec::new();
@@ -301,15 +316,17 @@ pub fn list(root: &SysRoot) -> Result<Kernels> {
             cmdline: crate::boot::saved_line(root, &package)?,
             dkms: DKMS_MODULES
                 .iter()
-                .map(|m| {
-                    dkms.iter()
+                .map(|m| match &dkms {
+                    Err(e) => format!("{m}: {e}"),
+                    Ok(rows) => rows
+                        .iter()
                         .find(|(module, kernel, _)| {
                             *kernel == release && module.split('/').next() == Some(m)
                         })
                         .map_or_else(
                             || format!("{m}: not built"),
                             |(module, _, state)| format!("{module}: {state}"),
-                        )
+                        ),
                 })
                 .collect(),
             running: release == running,

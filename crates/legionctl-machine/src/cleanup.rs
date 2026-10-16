@@ -23,11 +23,9 @@ pub fn plan(machine: &Machine, opts: Options) -> Result<Vec<Step>> {
     let conflicts = &machine.profile.conflicts;
     let mut steps = Vec::new();
     for unit in &conflicts.systemd_units {
-        let active = system::unit_state("is-active", unit);
-        let enabled = system::unit_state("is-enabled", unit);
-        if active == "active"
-            || !["disabled", "not-found", "masked", "unknown"].contains(&enabled.as_str())
-        {
+        let active = system::unit_state("is-active", unit)?;
+        let enabled = system::unit_state("is-enabled", unit)?;
+        if active == "active" || !["disabled", "not-found", "masked"].contains(&enabled.as_str()) {
             machine.run(&mut steps, &["systemctl", "disable", "--now", unit]);
         }
         steps.push(Step::Try(vec![
@@ -46,12 +44,12 @@ pub fn plan(machine: &Machine, opts: Options) -> Result<Vec<Step>> {
             )));
         }
     }
-    let installed: Vec<&str> = conflicts
-        .packages
-        .iter()
-        .filter(|p| system::package_installed(p))
-        .map(String::as_str)
-        .collect();
+    let mut installed: Vec<&str> = Vec::new();
+    for p in &conflicts.packages {
+        if system::package_installed(p)? {
+            installed.push(p);
+        }
+    }
     if !installed.is_empty() {
         steps.push(Step::Warn(format!(
             "conflicting packages are installed; remove them with: sudo pacman -Rns {}",
