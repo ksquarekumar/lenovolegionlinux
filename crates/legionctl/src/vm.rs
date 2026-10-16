@@ -360,7 +360,10 @@ pub fn forward(port: u16, socket: &Path, agent: &[String]) -> Result<()> {
 }
 
 fn mount(args: &[&str], path: &Path) -> Result<()> {
-    std::fs::create_dir_all(path)?;
+    // a folder mount point is made; a file one (a bind) is there already
+    if !path.exists() {
+        std::fs::create_dir_all(path)?;
+    }
     let out = Command::new("mount").args(args).arg(path).output()?;
     anyhow::ensure!(
         out.status.success(),
@@ -386,6 +389,16 @@ fn mounts(spec: &GuestSpec) -> Result<()> {
                 mount(&["-t", "virtiofs", "-o", options, tag], path)?;
             }
             GuestMount::Empty(path) => mount(&["-t", "tmpfs", "-o", &owner, "tmpfs"], path)?,
+            GuestMount::Bind {
+                from,
+                to,
+                read_only,
+            } => {
+                mount(&["--bind", &from.to_string_lossy()], to)?;
+                if *read_only {
+                    mount(&["-o", "remount,bind,ro"], to)?;
+                }
+            }
             GuestMount::File(path, text) => {
                 std::fs::write(path, text)?;
                 std::os::unix::fs::chown(path, Some(spec.uid), Some(spec.gid))?;

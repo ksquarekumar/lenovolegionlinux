@@ -117,6 +117,13 @@ pub enum GuestMount {
     Empty(PathBuf),
     /// A file written in: the git identity, a writable file's copy.
     File(PathBuf, String),
+    /// A file of an earlier mount over another path: read-only (a git link in the workspace), or writable (a login
+    /// file, through its hard link in a share).
+    Bind {
+        from: PathBuf,
+        to: PathBuf,
+        read_only: bool,
+    },
 }
 
 /// Where a repository's VM disks live: `~/.local/share/legionctl/vm`.
@@ -943,15 +950,29 @@ fn vm_sandbox(
             Mount::Bind(from, to) if from.is_file() => {
                 guest_mounts.push(GuestMount::File(to, std::fs::read_to_string(&from)?));
             }
+            // virtiofs shares only folders: a login file goes through a hard link in a folder of its own
             Mount::Writable(p) if p.is_file() => {
-                guest_mounts.push(GuestMount::File(p.clone(), std::fs::read_to_string(&p)?));
+                let (folder, link) = through(id, guest_mounts.len(), &p)?;
+                guest_mounts.push(share(folder.clone(), folder, false));
+                guest_mounts.push(GuestMount::Bind {
+                    from: link,
+                    to: p,
+                    read_only: false,
+                });
             }
             Mount::Writable(p) => guest_mounts.push(share(p.clone(), p, false)),
             Mount::Bind(from, to) => guest_mounts.push(share(from, to, false)),
             Mount::ReadOnly(from, to) if from.is_dir() => guest_mounts.push(share(from, to, true)),
-            Mount::ReadOnly(from, to) => {
-                guest_mounts.push(GuestMount::File(to, std::fs::read_to_string(&from)?));
-            }
+            // a file at its own path (a git link in the workspace) stays the file, read-only; another is a copy
+            Mount::ReadOnly(from, to) => guest_mounts.push(if from == to {
+                GuestMount::Bind {
+                    from,
+                    to,
+                    read_only: true,
+                }
+            } else {
+                GuestMount::File(to, std::fs::read_to_string(&from)?)
+            }),
             Mount::Empty(p) => guest_mounts.push(GuestMount::Empty(p)),
             Mount::Overlay { folder, .. } => anyhow::bail!(
                 "a plain folder's workspace ({}) cannot run in a VM: use a git repository",
@@ -1006,6 +1027,16 @@ fn vm_sandbox(
         path.to_string_lossy().into_owned(),
         "--".into(),
     ])
+}
+
+/// A folder of its own for the VM's share of login file `p`, and the hard link of `p` in it: the guest binds the link
+/// over the file, and a write in place reaches the real file.
+fn through(id: &str, n: usize, p: &Path) -> Result<(PathBuf, PathBuf)> {
+    let folder = session_home(id).join(format!("through-{n}"));
+    let link = folder.join(p.file_name().context("a login file has no name")?);
+    crate::folder::clear(&folder)?;
+    std::fs::hard_link(p, &link).with_context(|| format!("linking {} for the VM", p.display()))?;
+    Ok((folder, link))
 }
 
 /// The mark beside a VM disk that `workspace pack --as vm --gpu` made: its guest has the NVIDIA driver.
@@ -1288,10 +1319,11 @@ fn home_mounts(mounts: &mut Vec<Mount>, config: &Config, layer: &Path, host: boo
                 std::fs::create_dir_all(own.join(part))?;
             }
             mounts.push(Mount::Overlay {
-                folder: path,
+                folder: path.clone(),
                 upper: own.join("upper"),
                 work: own.join("work"),
             });
+            logins_through(mounts, &path);
             continue;
         }
         if !own.exists() {
@@ -1308,9 +1340,22 @@ fn home_mounts(mounts: &mut Vec<Mount>, config: &Config, layer: &Path, host: boo
                 String::from_utf8_lossy(&out.stderr).trim()
             );
         }
-        mounts.push(Mount::Bind(own, path));
+        mounts.push(Mount::Bind(own, path.clone()));
+        logins_through(mounts, &path);
     }
     Ok(())
+}
+
+/// The agents' login files in a home folder of theirs (`.credentials.json` of Claude Code, `auth.json` of Codex) are
+/// the real files over the session's layer (DESIGN-12 wall 1): a refresh rotates the refresh token, so a session that
+/// wrote it into its layer would leave the spent token in the real file and log the user's own agent out.
+fn logins_through(mounts: &mut Vec<Mount>, folder: &Path) {
+    for (_, file) in LOGINS {
+        let login = folder.join(file);
+        if login.is_file() {
+            mounts.push(Mount::Writable(login));
+        }
+    }
 }
 
 /// What a commit in worktree `workdir` on `branch` writes in the repository's git folder: the objects, the refs and
@@ -1345,19 +1390,13 @@ fn git_mounts(mounts: &mut Vec<Mount>, workdir: &Path, branch: &str) -> Result<(
             mounts.push(Mount::ReadOnly(sub.clone(), sub));
         }
     }
-    for dir in [
-        refs.join("heads").join(folder),
-        common.join("logs/refs/heads").join(folder),
-    ] {
-        std::fs::create_dir_all(&dir)?;
-        mounts.push(Mount::Writable(dir));
-    }
-    // the reflog of the stash, beside the read-only reflogs of the main checkout
-    let stash = common.join("logs/refs/stash");
-    if !stash.exists() {
-        std::fs::write(&stash, "")?;
-    }
-    mounts.push(Mount::Writable(stash));
+    let branches = refs.join("heads").join(folder);
+    std::fs::create_dir_all(&branches)?;
+    mounts.push(Mount::Writable(branches));
+    // the reflogs (a commit and the stash write them; nothing runs from them), as a folder: a VM shares no file
+    let logs = common.join("logs");
+    std::fs::create_dir_all(&logs)?;
+    mounts.push(Mount::Writable(logs));
     mounts.push(Mount::Writable(own.clone()));
     for file in ["commondir", "gitdir", "config.worktree"] {
         let path = own.join(file);

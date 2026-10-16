@@ -140,7 +140,10 @@ Hardened (2026-10-16, EV-review-08, user decision "approve all, do it first"):
   the real files: on the host each folder is an overlay whose writes stay in
   `~/.local/state/legionctl/session-home/<id>/home` (kept for a resume; the transcript for `resume --account` comes
   from there), each file the session's copy; a container or VM gets copies of `writable` and no caches. An account
-  profile stays writable: it is the session's own.
+  profile stays writable: it is the session's own. The login files (`~/.claude/.credentials.json`,
+  `~/.codex/auth.json`) are the real files over the layer (DESIGN-12 wall 1: a refresh rotates the refresh token);
+  a VM gets them through a hard link in a share of their own. In a VM the read-only git links are read-only bind
+  mounts in the guest, and the reflogs are one writable folder (a VM shares only folders).
 - S-4: of the repository's git folder only the objects, `refs/` (but not the folders of other branches, tags and
   remotes), the refs and reflogs folder of the session's branch, the stash reflog and the worktree's own folder are
   writable; config, hooks, info, `commondir`, `gitdir` and the worktree's `.git` stay read-only. `git stash` works;

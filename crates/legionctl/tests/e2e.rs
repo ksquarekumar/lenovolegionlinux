@@ -5375,6 +5375,70 @@ fn jail_files(home: &Path, workspace: &Path) {
     );
 }
 
+/// DESIGN-12 wall 1: a harness that refreshes its login in a session rotates the refresh token, so the new login
+/// must reach the real file, or the user's own Claude Code or Codex keeps a spent token and is logged out. A stand-in
+/// harness rewrites both login files and a settings file: the logins are new in the real home after the session, the
+/// settings write stays in the session's layer.
+#[test]
+fn a_login_refreshed_in_a_session_reaches_the_real_login_files() {
+    let (op, home) = operator("logins");
+    let repo = repository(&home);
+    write(
+        &home.join(".claude/.credentials.json"),
+        "{\"refresh\": \"old\"}",
+    );
+    write(&home.join(".codex/auth.json"), "{\"refresh\": \"old\"}");
+    write(&home.join(".claude/settings.json"), "{}");
+    let refresh = "echo '{\"refresh\": \"new\"}' > ~/.claude/.credentials.json && \
+                   echo '{\"refresh\": \"new\"}' > ~/.codex/auth.json && \
+                   echo '{\"hooks\": \"planted\"}' > ~/.claude/settings.json && echo REFRESHED";
+    write(
+        &home.join(".config/legionctl/session.jsonc"),
+        &json!({"session": {"agents": {"refresh": ["sh", "-c", refresh]}, "scope": false}})
+            .to_string(),
+    );
+    let started = op.run(
+        &repo,
+        &[("HOME", home.to_str().unwrap())],
+        &[
+            "session",
+            "start",
+            "refresh",
+            "--dossier",
+            "logins",
+            "--json",
+        ],
+        "",
+    );
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let out = run_launch(
+        &op,
+        &home,
+        &serde_json::from_slice(&started.stdout).unwrap(),
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("REFRESHED"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for login in [".claude/.credentials.json", ".codex/auth.json"] {
+        assert_eq!(
+            std::fs::read_to_string(home.join(login)).unwrap().trim(),
+            "{\"refresh\": \"new\"}",
+            "{login}: the refreshed login is the user's"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(home.join(".claude/settings.json")).unwrap(),
+        "{}",
+        "the other files stay in the session's layer"
+    );
+}
+
 /// O-1 (EV-review-08): the commands of a repository's config that legionctl runs for a sandboxed agent run in that
 /// session's sandbox, never on the host: its checks (`code checks run`), its test runs (`code tests run`), the user's
 /// commit hook at `workspace checkpoint` (which runs a script of the working tree, as pre-commit does) and a command
