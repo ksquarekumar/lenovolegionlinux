@@ -842,11 +842,18 @@
                 "type": "string"
               },
               "description": "The programs that keep it awake (only the ones the reader may see)."
+            },
+            "not_visible": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0,
+              "description": "Processes whose open files the reader may not see (another user's, or not dumpable): not in `users`."
             }
           },
           "required": [
             "device",
-            "users"
+            "users",
+            "not_visible"
           ],
           "description": "The NVIDIA GPU's runtime power management; none without an NVIDIA GPU."
         }
@@ -1024,6 +1031,13 @@
               "updatable"
             ]
           }
+        },
+        "missing": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Set when fwupd is not installed: what to install (no devices then)."
         }
       },
       "required": [
@@ -1303,6 +1317,12 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "not_visible": {
+                "description": "Processes whose open files the reader may not see (another user's, or not dumpable): not in `users`.",
+                "type": "integer",
+                "format": "uint",
+                "minimum": 0
               }
             },
             "required": [
@@ -1311,7 +1331,8 @@
               "ids",
               "group",
               "members",
-              "users"
+              "users",
+              "not_visible"
             ]
           }
         }
@@ -13167,10 +13188,17 @@
               "actions"
             ]
           }
+        },
+        "not_visible": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "Processes whose open files the reader may not see (another user's, or not dumpable): not in any `users`."
         }
       },
       "required": [
-        "resources"
+        "resources",
+        "not_visible"
       ],
       "title": "ResourceList",
       "$schema": "https://json-schema.org/draft/2020-12/schema"

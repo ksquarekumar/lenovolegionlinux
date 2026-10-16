@@ -845,6 +845,8 @@ wire! {
         driver: Option<String>,
         /// What on the host uses the group now; it can go to a VM only when this is empty.
         users: Vec<String>,
+        /// Processes whose open files the reader may not see (another user's, or not dumpable): not in `users`.
+        not_visible: usize,
     }
 
     /// One layer that sets a knob now (the "because" chain); the last one wins.
@@ -1664,6 +1666,8 @@ wire! {
         control: Option<String>,
         /// The programs that keep it awake (only the ones the reader may see).
         users: Vec<String>,
+        /// Processes whose open files the reader may not see (another user's, or not dumpable): not in `users`.
+        not_visible: usize,
     }
 
     /// A device that fwupd knows.

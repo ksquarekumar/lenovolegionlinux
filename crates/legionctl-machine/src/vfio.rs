@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
-use crate::sysroot::{SysRoot, denied};
+use crate::sysroot::SysRoot;
 
 const PCI: &str = "/sys/bus/pci/devices";
 const VFIO: &str = "vfio-pci";
@@ -128,43 +128,35 @@ fn nodes(root: &SysRoot, device: &str) -> Result<(Vec<String>, Vec<String>)> {
 }
 
 /// Why the group of `devices` cannot go to a VM now, one line each: processes that hold a device node, mounted, swap
-/// or held block devices. Empty when nothing on the host uses it. With `all`, each process must be read (the guard,
-/// as root); without, the processes that the reader may not see are left out (a report as a user).
+/// or held block devices. Empty when nothing on the host uses it. With the number of processes whose files the reader
+/// may not see (another user's, or not dumpable). With `all` (the guard, as root), such a process fails the check; without,
+/// it is counted (a report as a user).
 ///
 /// # Errors
 /// A file that the check needs cannot be read: the host-use check cannot run.
-pub fn users(root: &SysRoot, devices: &[String], all: bool) -> Result<Vec<String>> {
+pub fn users(root: &SysRoot, devices: &[String], all: bool) -> Result<(Vec<String>, usize)> {
     let (mut held_nodes, mut blocks) = (Vec::new(), Vec::new());
     for device in devices {
         let (dn, db) = nodes(root, device)?;
         held_nodes.extend(dn);
         blocks.extend(db);
     }
+    let processes = crate::mounts::processes(root)?;
+    if all && processes.not_visible > 0 {
+        bail!(
+            "{} processes cannot be read: the host-use check cannot run",
+            processes.not_visible
+        );
+    }
     let mut out = Vec::new();
-    for proc in root.children("/proc", "")? {
-        let Some(pid) = name(&proc) else {
-            continue;
-        };
-        if !pid.bytes().all(|b| b.is_ascii_digit()) {
-            continue;
-        }
-        let fds = match root.children(proc.join("fd"), "") {
-            Err(e) if !all && denied(&e) => continue,
-            fds => fds?,
-        };
-        let mut held = None;
-        for fd in fds {
-            if let Some(link) = root.link(&fd)?.map(|l| l.to_string_lossy().into_owned())
-                && held_nodes.contains(&link)
-            {
-                held = Some(link);
-                break;
-            }
-        }
-        if let Some(node) = held {
-            // a process that ended since the listing has no comm
-            let comm = root.read(proc.join("comm"))?.unwrap_or_default();
-            out.push(format!("{comm} (pid {pid}) uses {node}"));
+    for p in processes.visible {
+        if let Some(node) = p
+            .paths
+            .iter()
+            .map(|l| l.to_string_lossy().into_owned())
+            .find(|l| held_nodes.contains(l))
+        {
+            out.push(format!("{} (pid {}) uses {node}", p.program, p.pid));
         }
     }
     for (file, what) in [
@@ -202,7 +194,7 @@ pub fn users(root: &SysRoot, devices: &[String], all: bool) -> Result<Vec<String
             out.push(format!("{block} is held by {by} (device mapper or RAID)"));
         }
     }
-    Ok(out)
+    Ok((out, processes.not_visible))
 }
 
 fn write(root: &SysRoot, path: &Path, value: &str) -> Result<()> {
@@ -247,7 +239,7 @@ pub fn check(root: &SysRoot, devices: &[String]) -> Result<String> {
             asked.join(" ")
         );
     }
-    let users = users(root, devices, true)?;
+    let (users, _) = users(root, devices, true)?;
     if !users.is_empty() {
         bail!(
             "the host uses IOMMU group {group}:\n- {}",
@@ -355,6 +347,8 @@ pub struct Candidate {
     pub driver: Option<String>,
     /// What on the host uses its group now (complete only as root: other users' open files).
     pub users: Vec<String>,
+    /// Processes whose open files the reader may not see (another user's, or not dumpable): not in `users`.
+    pub not_visible: usize,
 }
 
 /// The discrete GPUs (not on i915 or xe) and `NVMe` controllers of this machine that have an IOMMU group, with their
@@ -389,12 +383,14 @@ pub fn candidates(root: &SysRoot) -> Result<Vec<Candidate>> {
                 .trim_start_matches("0x")
                 .to_string())
         };
+        let (users, not_visible) = users(root, &members, false)?;
         out.push(Candidate {
             ids: format!("{}:{}", id("vendor")?, id("device")?),
             device,
             kind: kind.into(),
             group,
-            users: users(root, &members, false)?,
+            users,
+            not_visible,
             members,
             driver,
         });

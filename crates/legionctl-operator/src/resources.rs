@@ -127,7 +127,8 @@ fn gpu(op: &Operator, ctx: &Ctx, root: &SysRoot) -> Result<Vec<Resource>> {
             "gpu:nvidia".into(),
             "NVIDIA GPU".into(),
             name(owner).into(),
-            mounts::users_of(root, "/dev/nvidia")?,
+            // the list's count of processes not visible comes from the mount scan of the same processes
+            mounts::users_of(root, "/dev/nvidia")?.0,
             actions,
         ));
     }
@@ -154,11 +155,13 @@ fn gpu(op: &Operator, ctx: &Ctx, root: &SysRoot) -> Result<Vec<Resource>> {
     Ok(out)
 }
 
-/// Each mount with what uses it; the Windows disk's partitions attach and detach.
-fn disk(root: &SysRoot) -> Result<Vec<Resource>> {
+/// Each mount with what uses it, and the number of processes whose files the reader may not see; the Windows disk's
+/// partitions attach and detach.
+fn disk(root: &SysRoot) -> Result<(Vec<Resource>, usize)> {
     // no Windows disk: no partition to attach or detach
     let windows = winvm::disk_targets(root).unwrap_or_default();
-    mounts::list(root)?
+    let (mounts, not_visible) = mounts::list(root)?;
+    let resources = mounts
         .into_iter()
         .map(|m| {
             let disk = |name: &str| action(name, "windows.disk", json!({"action": name}));
@@ -176,7 +179,8 @@ fn disk(root: &SysRoot) -> Result<Vec<Resource>> {
                 actions,
             ))
         })
-        .collect()
+        .collect::<Result<_>>()?;
+    Ok((resources, not_visible))
 }
 
 /// The configset layers, the held knobs and the saved sets.
@@ -324,10 +328,14 @@ pub fn list(op: &Operator, ctx: &Ctx) -> Result<ResourceList> {
     let root = SysRoot::from_env();
     let mut resources = vm(op, ctx, &root)?;
     resources.extend(gpu(op, ctx, &root)?);
-    resources.extend(disk(&root)?);
+    let (disks, not_visible) = disk(&root)?;
+    resources.extend(disks);
     resources.extend(configset(op, ctx, &root)?);
     resources.extend(session(op, ctx)?);
-    Ok(ResourceList { resources })
+    Ok(ResourceList {
+        resources,
+        not_visible,
+    })
 }
 
 /// The route of an action: its operation and input, from the same list. A dry run of an operation with its own dry

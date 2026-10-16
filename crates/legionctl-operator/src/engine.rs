@@ -1605,8 +1605,15 @@ impl Engine for Operator {
     }
 
     fn firmware_status(&self, _: &Ctx, _: Empty) -> Result<FirmwareDevices> {
-        Ok(FirmwareDevices {
-            devices: fwupd::devices()?.into_wire(),
+        Ok(match fwupd::devices()? {
+            Some(devices) => FirmwareDevices {
+                devices: devices.into_wire(),
+                missing: None,
+            },
+            None => FirmwareDevices {
+                devices: Vec::new(),
+                missing: Some(fwupd::NOT_INSTALLED.into()),
+            },
         })
     }
 

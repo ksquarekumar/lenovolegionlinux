@@ -481,6 +481,8 @@ pub struct GpuPowerIn {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FirmwareDevices {
     pub devices: Vec<FirmwareDevice>,
+    /// Set when fwupd is not installed: what to install (no devices then).
+    pub missing: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1744,6 +1746,8 @@ pub struct ResourceAction {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ResourceList {
     pub resources: Vec<Resource>,
+    /// Processes whose open files the reader may not see (another user's, or not dumpable): not in any `users`.
+    pub not_visible: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

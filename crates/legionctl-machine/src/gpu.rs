@@ -272,6 +272,8 @@ pub struct NvidiaPower {
     pub control: Option<String>,
     /// The programs that keep it awake (only the ones the reader may see).
     pub users: Vec<String>,
+    /// Processes whose open files the reader may not see (another user's, or not dumpable): not in `users`.
+    pub not_visible: usize,
 }
 
 pub(crate) fn control_path(device: &str) -> String {
@@ -289,12 +291,14 @@ pub fn nvidia_power(root: &SysRoot) -> Result<Option<NvidiaPower>> {
     let Some(device) = group.first().cloned() else {
         return Ok(None);
     };
+    let (users, not_visible) = crate::vfio::users(root, &group, false)?;
     Ok(Some(NvidiaPower {
         runtime_status: root.read(format!(
             "/sys/bus/pci/devices/{device}/power/runtime_status"
         ))?,
         control: root.read(control_path(&device))?,
-        users: crate::vfio::users(root, &group, false)?,
+        users,
+        not_visible,
         device,
     }))
 }

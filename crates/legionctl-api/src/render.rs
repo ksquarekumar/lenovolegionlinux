@@ -243,13 +243,24 @@ impl Render for GpuState {
                 or(&p.control)
             ));
             out.extend(p.users.iter().map(|u| format!("  keeps it awake: {u}")));
+            out.extend(not_visible(p.not_visible).map(|n| format!("  {n}")));
         }
         out.join("\n")
     }
 }
 
+/// The line for processes whose files a report as the user may not read; none when it saw all.
+fn not_visible(n: usize) -> Option<String> {
+    (n > 0).then(|| {
+        format!("{n} processes not visible (another user's, or not dumpable): their open files are not checked")
+    })
+}
+
 impl Render for FirmwareDevices {
     fn text(&self) -> String {
+        if let Some(missing) = &self.missing {
+            return missing.clone();
+        }
         if self.devices.is_empty() {
             return "fwupd knows no devices".into();
         }
@@ -477,6 +488,7 @@ impl Render for VfioDevices {
                 if d.users.is_empty() { "free" } else { "in use" }
             ));
             out.extend(d.users.iter().map(|u| format!("  - {u}")));
+            out.extend(not_visible(d.not_visible).map(|n| format!("  {n}")));
         }
         out.join("\n")
     }
@@ -1967,6 +1979,7 @@ impl Render for crate::ResourceList {
                 out.push(format!("    actions: {}", actions.join(", ")));
             }
         }
+        out.extend(not_visible(self.not_visible));
         out.join("\n")
     }
 }

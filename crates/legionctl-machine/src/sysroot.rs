@@ -25,7 +25,8 @@ fn missing(e: &std::io::Error) -> bool {
     matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory)
 }
 
-/// A read that failed because the reader may not see the path (another user's process in `/proc`).
+/// A read that failed because the reader may not see the path (EACCES or EPERM: another user's process in `/proc`, or
+/// one that is not dumpable).
 #[must_use]
 pub fn denied(e: &anyhow::Error) -> bool {
     e.downcast_ref::<std::io::Error>()
@@ -125,7 +126,8 @@ impl SysRoot {
         Ok(exists)
     }
 
-    /// Trimmed file content, like reading a sysfs attribute; None when the file is not there.
+    /// Trimmed file content, like reading a sysfs attribute; None when the file is not there or the
+    /// kernel has no value for it (ENODATA).
     ///
     /// # Errors
     /// The file is there but cannot be read (permission denied, IO error, not UTF-8).
@@ -134,6 +136,8 @@ impl SysRoot {
         let content = match std::fs::read_to_string(self.path(machine_path)) {
             Ok(content) => content,
             Err(e) if missing(&e) => return Ok(None),
+            // ENODATA: the kernel has no value for this attribute (RAPL's peak_power constraint has no time window)
+            Err(e) if e.raw_os_error() == Some(61) => return Ok(None),
             Err(e) => return Err(e).with_context(|| format!("reading {}", machine_path.display())),
         };
         let trimmed = content.trim().to_string();

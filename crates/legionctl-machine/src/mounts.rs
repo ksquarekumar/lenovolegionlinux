@@ -28,11 +28,11 @@ fn unescape(field: &str) -> String {
 }
 
 /// The mounted block devices (sources in `/dev`), then the other fstab entries, mounted when the mount table has their
-/// target; swap is not a mount.
+/// target; swap is not a mount. With the number of processes whose files this reader may not see.
 ///
 /// # Errors
 /// The mount table, fstab or a process's files cannot be read.
-pub fn list(root: &SysRoot) -> Result<Vec<Mount>> {
+pub fn list(root: &SysRoot) -> Result<(Vec<Mount>, usize)> {
     let table = |file: &str| -> Result<Vec<(String, PathBuf, String)>> {
         Ok(root
             .read(file)?
@@ -90,8 +90,11 @@ pub fn list(root: &SysRoot) -> Result<Vec<Mount>> {
         .filter(|m| m.mounted && m.target != Path::new("/"))
         .map(|m| m.target.clone())
         .collect();
-    for (user, paths) in processes(root)? {
-        let mut on: Vec<&PathBuf> = paths
+    let processes = processes(root)?;
+    for p in &processes.visible {
+        let user = format!("{} {}", p.pid, p.program);
+        let mut on: Vec<&PathBuf> = p
+            .paths
             .iter()
             .filter_map(|p| {
                 targets
@@ -108,29 +111,52 @@ pub fn list(root: &SysRoot) -> Result<Vec<Mount>> {
             }
         }
     }
-    Ok(mounts)
+    Ok((mounts, processes.not_visible))
 }
 
-/// `<pid> <program>` of each process with an open file that starts with `prefix` (`/dev/nvidia`).
+/// `<pid> <program>` of each process with an open file that starts with `prefix` (`/dev/nvidia`), and the number of
+/// processes whose files this reader may not see.
 ///
 /// # Errors
 /// A process's files cannot be read.
-pub fn users_of(root: &SysRoot, prefix: &str) -> Result<Vec<String>> {
-    Ok(processes(root)?
+pub fn users_of(root: &SysRoot, prefix: &str) -> Result<(Vec<String>, usize)> {
+    let processes = processes(root)?;
+    let users = processes
+        .visible
         .into_iter()
-        .filter(|(_, paths)| {
-            paths
+        .filter(|p| {
+            p.paths
                 .iter()
-                .any(|p| p.to_string_lossy().starts_with(prefix))
+                .any(|f| f.to_string_lossy().starts_with(prefix))
         })
-        .map(|(user, _)| user)
-        .collect())
+        .map(|p| format!("{} {}", p.pid, p.program))
+        .collect();
+    Ok((users, processes.not_visible))
 }
 
-/// Each process (`<pid> <program>`) with its working folder and its open files. A process of another user, whose
-/// links this process may not read, is not there.
-fn processes(root: &SysRoot) -> Result<Vec<(String, Vec<PathBuf>)>> {
-    let mut out = Vec::new();
+/// A process with files open: its pid, its program, its working folder and its open files.
+pub struct Process {
+    pub pid: String,
+    pub program: String,
+    pub paths: Vec<PathBuf>,
+}
+
+/// The processes that this reader may see, and how many it may not: another user's processes, and the reader's own
+/// that are not dumpable (`systemd --user`), deny their working folder and open files.
+pub struct Processes {
+    pub visible: Vec<Process>,
+    pub not_visible: usize,
+}
+
+/// Each process with its working folder and its open files, as `fuser -m` finds them.
+///
+/// # Errors
+/// `/proc` or a process's files cannot be read for another reason than a denied read.
+pub fn processes(root: &SysRoot) -> Result<Processes> {
+    let mut out = Processes {
+        visible: Vec::new(),
+        not_visible: 0,
+    };
     for dir in root.children("/proc", "")? {
         let Some(pid) = dir.file_name().and_then(|n| n.to_str()).map(String::from) else {
             continue;
@@ -139,21 +165,28 @@ fn processes(root: &SysRoot) -> Result<Vec<(String, Vec<PathBuf>)>> {
             continue;
         }
         let proc = Path::new("/proc").join(&pid);
-        let mut paths: Vec<PathBuf> = match root.link(proc.join("cwd")) {
-            Err(e) if denied(&e) => continue,
-            cwd => cwd?.into_iter().collect(),
+        let files = || -> Result<Vec<PathBuf>> {
+            let mut paths: Vec<PathBuf> = root.link(proc.join("cwd"))?.into_iter().collect();
+            for fd in root.children(proc.join("fd"), "")? {
+                paths.extend(root.link(fd)?);
+            }
+            Ok(paths)
         };
-        let fds = match root.children(proc.join("fd"), "") {
-            Err(e) if denied(&e) => continue,
-            fds => fds?,
+        let paths = match files() {
+            Err(e) if denied(&e) => {
+                out.not_visible += 1;
+                continue;
+            }
+            paths => paths?,
         };
-        for fd in fds {
-            paths.extend(root.link(fd)?);
-        }
-        // a process that ended since the listing has no comm
-        let program = root.read(proc.join("comm"))?.unwrap_or_default();
         if !paths.is_empty() {
-            out.push((format!("{pid} {program}"), paths));
+            // a process that ended since the listing has no comm
+            let program = root.read(proc.join("comm"))?.unwrap_or_default();
+            out.visible.push(Process {
+                pid,
+                program,
+                paths,
+            });
         }
     }
     Ok(out)

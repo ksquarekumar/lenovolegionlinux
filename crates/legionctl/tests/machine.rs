@@ -3403,6 +3403,107 @@ mod operator_and_daemon {
         std::fs::set_permissions(&mounts, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
 
+    /// Reads as the user on the live machine (todo-142, EV-validation-read-ops-r260): status, gpu status, knobs list,
+    /// plan and resources list failed on one value. Now a RAPL constraint whose time window the kernel has no data for
+    /// (ENODATA, PL4 `peak_power`) has no window and keeps its limit; processes whose files the user may not read (the
+    /// user's own `systemd --user`, not dumpable: its fds list but their links are denied; another user's: its fd
+    /// folder is denied) are counted and named as not visible, while a visible process still shows; the daemon's
+    /// host-use guard, which must see every process, refuses with that count.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reads_as_the_user_count_the_processes_they_cannot_see_and_keep_a_value_without_data() {
+        use std::os::unix::fs::PermissionsExt;
+        // a file that the kernel answers with ENODATA (a regular file never does)
+        let no_data = [
+            "/sys/class/powercap/intel-rapl-mmio:0/constraint_2_time_window_us",
+            "/sys/class/powercap/intel-rapl:0/constraint_2_time_window_us",
+            "/sys/power/pm_wakeup_irq",
+        ]
+        .into_iter()
+        .find(|f| std::fs::read(f).is_err_and(|e| e.raw_os_error() == Some(61)))
+        .expect("this host has no file that answers ENODATA: the test needs one");
+        let m = Machine::new("notvisible");
+        let _kernel = pci_machine(&m);
+        let root = m.dir.join("root");
+        let zone = "/sys/class/powercap/intel-rapl-mmio:0";
+        m.set(&format!("{zone}/name"), "package-0");
+        for (i, name, uw) in [
+            (0, "long_term", "140000000"),
+            (1, "short_term", "190000000"),
+            (2, "peak_power", "230000000"),
+        ] {
+            m.set(&format!("{zone}/constraint_{i}_name"), name);
+            m.set(&format!("{zone}/constraint_{i}_power_limit_uw"), uw);
+        }
+        m.set(&format!("{zone}/constraint_0_time_window_us"), "27983872");
+        m.set(&format!("{zone}/constraint_1_time_window_us"), "2440");
+        std::os::unix::fs::symlink(
+            no_data,
+            root.join(&format!("{zone}/constraint_2_time_window_us")[1..]),
+        )
+        .unwrap();
+        let (own, other) = (root.join("proc/4329/fd"), root.join("proc/1/fd"));
+        m.set("/proc/4329/comm", "systemd");
+        m.set("/proc/1/comm", "systemd");
+        for fd in [&own, &other] {
+            std::fs::create_dir_all(fd).unwrap();
+            std::os::unix::fs::symlink("/dev/nvidia0", fd.join("0")).unwrap();
+        }
+        // listed but not searchable: the links are denied; not readable: the folder is denied
+        std::fs::set_permissions(&own, std::fs::Permissions::from_mode(0o444)).unwrap();
+        std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "notvisible");
+        let json = |args: &[&str]| -> Value {
+            serde_json::from_str(&op.ok(&[args, &["--json"]].concat())).unwrap()
+        };
+        let hidden = "2 processes not visible (another user's, or not dumpable)";
+
+        let status = json(&["status"]);
+        let rapl = &status["rapl"][0];
+        assert_eq!(rapl["zone"], "intel-rapl-mmio:0", "{status}");
+        assert_eq!(rapl["constraints"][2]["name"], "peak_power");
+        assert_eq!(rapl["constraints"][2]["limit_w"], 230.0);
+        assert!(rapl["constraints"][2]["window_us"].is_null(), "{rapl}");
+        assert_eq!(rapl["constraints"][0]["window_us"], 27_983_872);
+
+        let gpu = op.ok(&["gpu", "status"]);
+        assert!(
+            gpu.contains("keeps it awake: gnome-shell (pid 4242) uses /dev/dri/card0")
+                && gpu.contains(hidden),
+            "{gpu}"
+        );
+        assert_eq!(json(&["gpu", "status"])["nvidia_power"]["not_visible"], 2);
+        let resources = op.ok(&["resources", "list"]);
+        assert!(resources.contains(hidden), "{resources}");
+        let list = json(&["resources", "list"]);
+        assert_eq!(list["not_visible"], 2, "{list}");
+        let nvidia = list["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "gpu:nvidia")
+            .unwrap_or_else(|| panic!("no gpu:nvidia in {list}"));
+        assert_eq!(nvidia["users"], serde_json::json!([]), "{nvidia}");
+        op.ok(&["knobs", "list"]);
+        op.ok(&["plan"]);
+
+        let out = op.cli(&["vfio", "bind", "0000:06:00.0"]);
+        let text = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success()
+                && text.contains("2 processes cannot be read: the host-use check cannot run"),
+            "{text}"
+        );
+        assert_eq!(
+            m.file("/sys/bus/pci/devices/0000:06:00.0/driver_override"),
+            "(null)",
+            "a refusal writes nothing"
+        );
+        for fd in [&own, &other] {
+            std::fs::set_permissions(fd, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
     /// The recorded machine with its Windows install (note 05): the SK hynix `NVMe` of `pci_machine` holds
     /// `nvme0n1p3` (system, read-only automount, Fast Startup off, not hibernated) and `nvme0n1p4` (data, read-write
     /// automount), the firmware has an `MSDM` table, the Bolt receiver is plugged in; `systemctl` logs its calls and
@@ -8179,15 +8280,21 @@ mod parity {
         );
     }
 
-    /// fwupd (`firmware status`, `firmware update`): a stand-in fwupdmgr with four devices; the status shows the
+    /// fwupd (`firmware status`, `firmware update`): without fwupd the status says so and an update is refused; a
+    /// stand-in fwupdmgr with four devices; the status shows the
     /// upgrade of each, the dry run names the versions and the exact command and runs nothing, a device with no
     /// upgrade and a name of two devices are refused, and the update runs fwupdmgr without a restart and records the
     /// old version.
     #[test]
     fn firmware_updates_come_from_fwupd_with_a_dry_run_first() {
         let m = Machine::new("fwupd");
-        let missing = m.legion(&["firmware", "status"]);
-        refused(&missing, "install fwupd");
+        // no fwupd: its state, not a failure; an update needs it
+        let missing = m.ok(&["firmware", "status"]);
+        assert_eq!(
+            missing.trim(),
+            "fwupd is not installed: install fwupd (pacman -S fwupd)"
+        );
+        refused(&m.legion(&["firmware", "update", "aa11"]), "install fwupd");
         let log = m.dir.join("fwupdmgr.log");
         let devices = r#"{"Devices": [
           {"Name": "SK hynix PC801", "DeviceId": "aa11", "Version": "1.0", "Flags": ["internal", "updatable"],

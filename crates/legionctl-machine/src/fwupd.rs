@@ -21,20 +21,21 @@ pub struct Device {
     pub update_summary: Option<String>,
 }
 
-/// `fwupdmgr <args> --json`; `None` when fwupd has nothing to show (exit status 2).
+/// What to install when fwupd is not there.
+pub const NOT_INSTALLED: &str = "fwupd is not installed: install fwupd (pacman -S fwupd)";
+
+/// `fwupdmgr <args> --json`: `None` when fwupd is not installed, `Null` when it has nothing to show (exit status 2).
 fn fwupdmgr(args: &[&str]) -> Result<Option<Value>> {
     let out = match Command::new("fwupdmgr").args(args).arg("--json").output() {
         Ok(out) => out,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            bail!("fwupdmgr is not installed: install fwupd (pacman -S fwupd)")
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e).context("running fwupdmgr"),
     };
     match out.status.code() {
         Some(0) => Ok(Some(
             serde_json::from_slice(&out.stdout).context("fwupdmgr gave no JSON")?,
         )),
-        Some(2) => Ok(None),
+        Some(2) => Ok(Some(Value::Null)),
         _ => bail!(
             "fwupdmgr {} failed: {}",
             args.join(" "),
@@ -53,42 +54,45 @@ fn has_flag(v: &Value, flag: &str) -> bool {
         .is_some_and(|f| f.iter().any(|x| x == flag))
 }
 
-/// The devices fwupd knows, with the upgrade it can apply to each.
+/// The devices fwupd knows, with the upgrade it can apply to each; `None` when fwupd is not installed.
 ///
 /// # Errors
-/// fwupd is not installed or fails.
-pub fn devices() -> Result<Vec<Device>> {
+/// fwupd fails.
+pub fn devices() -> Result<Option<Vec<Device>>> {
     let Some(all) = fwupdmgr(&["get-devices"])? else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
-    Ok(all["Devices"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|d| {
-            let upgrade = d["Releases"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|r| has_flag(r, "is-upgrade"));
-            Some(Device {
-                id: text(d, "DeviceId")?,
-                name: text(d, "Name").unwrap_or_default(),
-                version: text(d, "Version"),
-                updatable: has_flag(d, "updatable"),
-                update: upgrade.and_then(|r| text(r, "Version")),
-                update_summary: upgrade.and_then(|r| text(r, "Summary")),
+    Ok(Some(
+        all["Devices"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|d| {
+                let upgrade = d["Releases"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|r| has_flag(r, "is-upgrade"));
+                Some(Device {
+                    id: text(d, "DeviceId")?,
+                    name: text(d, "Name").unwrap_or_default(),
+                    version: text(d, "Version"),
+                    updatable: has_flag(d, "updatable"),
+                    update: upgrade.and_then(|r| text(r, "Version")),
+                    update_summary: upgrade.and_then(|r| text(r, "Summary")),
+                })
             })
-        })
-        .collect())
+            .collect(),
+    ))
 }
 
 /// The device `wanted` (its id or its name) and the command that updates it.
 ///
 /// # Errors
-/// No such device, more than one device has the name (two drives of one model), or fwupd has no upgrade for it.
+/// fwupd is not installed, no such device, more than one device has the name (two drives of one model), or fwupd has
+/// no upgrade for it.
 pub fn update_plan(wanted: &str) -> Result<(Device, Vec<String>)> {
-    let devices = devices()?;
+    let devices = devices()?.context(NOT_INSTALLED)?;
     let found: Vec<&Device> = devices
         .iter()
         .filter(|d| d.id == wanted || d.name == wanted)
