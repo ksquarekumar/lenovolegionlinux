@@ -2752,7 +2752,7 @@ impl AcctLab {
             &lab.home.join(".config/legionctl/accounts.jsonc"),
             &json!({"agents": {
                 "configs": {"observer-acct": {"archetype": "thread-observer", "harness": "claude", "account": "work",
-                                              "pace": "on-trigger"}},
+                                              "pace": "on-trigger", "capabilities": ["web-read"]}},
                 "accounts": {"usage_ttl_s": 0, "switch_at": 90, "fallback": {"claude": ["work", "spare"]},
                              "endpoints": {"claude": format!("http://127.0.0.1:{port}/claude"),
                                            "codex": "http://127.0.0.1:1/none"}}}})
@@ -2832,6 +2832,17 @@ fn a_member_runs_under_its_account_and_resumes_under_the_next_at_its_limit() {
     );
     a.wake(1);
     assert_eq!(a.dirs().last(), Some(&a.profile("work")));
+    // its first wake's session has its config's capability set beside its harness set (DESIGN-13)
+    let grant: Value =
+        serde_json::from_str(&lab.ok(main, ws, &["runnables", "show", "1/observer0", "--json"]))
+            .unwrap();
+    let sets: Vec<&str> = grant["sets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(sets, ["claude-code", "web-read"], "{grant:#}");
 
     a.used("tok-w", 95.0);
     a.wake(2);

@@ -257,6 +257,23 @@ fn a_start_that_requests_sets_it_may_not_have_is_refused_with_each_reason() {
         json!([]),
         "a refused start holds nothing"
     );
+    // a headless run takes the same grant (refused before its ACP adapter starts)
+    let run = lab.cli(&[
+        "session",
+        "run",
+        "claude",
+        "hi",
+        "--dossier",
+        "refuse",
+        "--capability",
+        "no-such-set",
+    ]);
+    assert!(!run.status.success(), "{}", text(&run));
+    assert!(
+        text(&run).contains("no-such-set: no such capability set"),
+        "{}",
+        text(&run)
+    );
     // runnables check gives the same reason before any start
     let check: Value =
         serde_json::from_slice(&lab.op.cli(&["runnables", "check", "--json"]).stdout).unwrap();
