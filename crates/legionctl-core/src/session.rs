@@ -1319,7 +1319,7 @@ fn home_mounts(mounts: &mut Vec<Mount>, config: &Config, layer: &Path, host: boo
 /// `gitdir`) stay read-only, so that nothing the agent writes runs when the host's git reads it (S-4).
 fn git_mounts(mounts: &mut Vec<Mount>, workdir: &Path, branch: &str) -> Result<()> {
     let common = git_common_dir(workdir)?;
-    let own = PathBuf::from(crate::workspace::git(
+    let own = PathBuf::from(crate::git::text(
         workdir,
         &["rev-parse", "--absolute-git-dir"],
     )?);
