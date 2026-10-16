@@ -481,6 +481,11 @@ impl LegionApp {
                 };
                 self.move_tab(from, to, cx);
             }
+            _ if self.form_focus.is_focused(window) => {
+                if !self.form_key(event, cx) {
+                    return;
+                }
+            }
             _ if !self.chat_focus.is_focused(window) => return,
             "enter" if alt || shift => self.screen.chat_mut().push('\n'),
             "j" if control => self.screen.chat_mut().push('\n'),
@@ -972,6 +977,7 @@ impl LegionApp {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .track_scroll(&self.body_scroll)
                     .px(S5)
                     .pt(S5)
                     .pb(S4)

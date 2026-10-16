@@ -76,6 +76,7 @@ impl LegionApp {
         // the buttons first: a long plan must not push them out of reach
         let buttons = div()
             .h_flex()
+            .flex_none()
             .gap(S2)
             .child(
                 Button::new("apply")
@@ -101,6 +102,8 @@ impl LegionApp {
                         .child(
                             div()
                                 .v_flex()
+                                .flex_1()
+                                .min_w_0()
                                 .gap(S1)
                                 .child(heading(pending.button.label.clone(), t))
                                 .child(
@@ -201,6 +204,7 @@ impl Render for LegionApp {
             content = content.child(LegionApp::offline(why, &t));
         } else {
             content = content
+                .children(self.form(&t, window, cx))
                 .children(self.pending(&t, cx))
                 .child(self.tab_content(&t, width, cx));
             if let Some(message) = &self.state.message {

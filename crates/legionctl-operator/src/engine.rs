@@ -4152,6 +4152,26 @@ impl Engine for Operator {
         })
     }
 
+    fn ops_list(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::OpsListIn,
+    ) -> Result<Vec<legionctl_api::OpEntry>> {
+        Ok(legionctl_api::OPS
+            .iter()
+            .filter(|op| !op.internal())
+            .map(|op| legionctl_api::OpEntry {
+                name: op.name.to_string(),
+                group: op.name.split('.').next().unwrap_or(op.name).to_string(),
+                class: op.class,
+                summary: op.summary().to_string(),
+                dry_run: (op.input)()["properties"].get("dry_run").is_some(),
+                fields: u32::try_from(legionctl_api::form::fields(op).len()).unwrap_or(u32::MAX),
+            })
+            .filter(|e| input.group.as_ref().is_none_or(|g| *g == e.group))
+            .collect())
+    }
+
     fn facts_set(&self, ctx: &Ctx, input: legionctl_api::FactSetIn) -> Result<Lines> {
         crate::facts::set(ctx, &input)
     }

@@ -2770,3 +2770,20 @@ impl Render for Vec<crate::FactChange> {
             .join("\n")
     }
 }
+
+impl Render for Vec<crate::OpEntry> {
+    fn text(&self) -> String {
+        std::iter::once(format!("{} operations", self.len()))
+            .chain(self.iter().map(|o| {
+                format!(
+                    "{:<28} {:<9} {}{}",
+                    o.name,
+                    format!("{:?}", o.class).to_lowercase(),
+                    o.summary,
+                    if o.dry_run { " (dry run)" } else { "" }
+                )
+            }))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}

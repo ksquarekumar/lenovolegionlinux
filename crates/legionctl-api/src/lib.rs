@@ -12,6 +12,7 @@ pub mod chat;
 pub mod cli;
 #[cfg(feature = "client")]
 pub mod client;
+pub mod form;
 mod io;
 mod render;
 mod wire;
@@ -873,6 +874,9 @@ operations! {
     /// Copy a thread to another account profile: its log, members, messages, watch rules and layout, and its main
     /// session's transcript. The copy records the thread it came from; the original stays and is read-only.
     thread_import / ThreadImport = "thread.import", Workspace, ThreadImportIn => Lines;
+    /// The operation catalog (DESIGN-09 G3): each public operation with its group, class, summary and whether it has a
+    /// dry run; its form comes from its input schema. One line each.
+    ops_list / OpsList = "ops.list", Read, OpsListIn => Vec<OpEntry>;
     /// Add a fact (DESIGN-10): an entity's attribute with a value, where it holds (scope), when (valid time), at
     /// which commits (ref range) and while which code is the same (anchor); it supersedes the open fact of the same
     /// entity, attribute, scope and source. `--corrects <id>` corrects a fact and keeps the old row in the history.

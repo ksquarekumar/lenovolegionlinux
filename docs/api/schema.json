@@ -15806,6 +15806,91 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "ops.list": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "group": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Only the operations of this group (`fan`, `thread`); default all.",
+          "default": null
+        }
+      },
+      "title": "OpsListIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "description": "One operation of the catalog.",
+        "type": "object",
+        "properties": {
+          "name": {
+            "description": "Its dotted name (`fan.curve.set`): the CLI's words, the MCP tool, the button's `op`.",
+            "type": "string"
+          },
+          "group": {
+            "description": "The first word of its name.",
+            "type": "string"
+          },
+          "class": {
+            "description": "What an operation may change, and so which gate applies.",
+            "oneOf": [
+              {
+                "description": "Reads only; no gate.",
+                "type": "string",
+                "const": "read"
+              },
+              {
+                "description": "Changes only the caller's own session: its dossier, its workspace, its hooks. An agent calls these freely.",
+                "type": "string",
+                "const": "session"
+              },
+              {
+                "description": "Changes the user's files and settings or other sessions; when an agent calls it, the operator asks the user\nfirst (a desktop notification, DESIGN/03).",
+                "type": "string",
+                "const": "workspace"
+              },
+              {
+                "description": "Changes the machine; `legionctl-system` asks for polkit approval.",
+                "type": "string",
+                "const": "machine"
+              }
+            ]
+          },
+          "summary": {
+            "description": "The first sentence of its help.",
+            "type": "string"
+          },
+          "dry_run": {
+            "description": "It shows its plan with `dry_run` before it changes anything.",
+            "type": "boolean"
+          },
+          "fields": {
+            "description": "The fields of its form.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "name",
+          "group",
+          "class",
+          "summary",
+          "dry_run",
+          "fields"
+        ]
+      },
+      "title": "Array_of_OpEntry",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "facts.set": {
     "class": "session",
     "internal": false,

@@ -1,0 +1,15 @@
+// Seed (DESIGN-09 G3): every public operation by its group, one line each; a click opens its form, made from its
+// input schema, and runs it with its own approval.
+{
+  "$schema": "../../docs/api/view.schema.json",
+  "name": "operations",
+  "title": "Operations",
+  "intent": "everything legionctl can do",
+  "space": "agents",
+  "widget": "table",
+  "source": { "op": "ops.list" },
+  "columns": ["name", "class", "summary"],
+  "labels": { "name": "Operation", "class": "Class", "summary": "What it does" },
+  "group": { "field": "group", "fold": 0 },
+  "row_actions": [{ "label": "Open", "op": "{row.name}", "input": {} }]
+}

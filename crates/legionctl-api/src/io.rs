@@ -2520,3 +2520,26 @@ pub struct FactsDiffIn {
     #[serde(default)]
     pub to_time: Option<i64>,
 }
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct OpsListIn {
+    /// Only the operations of this group (`fan`, `thread`); default all.
+    #[serde(default)]
+    pub group: Option<String>,
+}
+
+/// One operation of the catalog.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OpEntry {
+    /// Its dotted name (`fan.curve.set`): the CLI's words, the MCP tool, the button's `op`.
+    pub name: String,
+    /// The first word of its name.
+    pub group: String,
+    pub class: crate::Class,
+    /// The first sentence of its help.
+    pub summary: String,
+    /// It shows its plan with `dry_run` before it changes anything.
+    pub dry_run: bool,
+    /// The fields of its form.
+    pub fields: u32,
+}

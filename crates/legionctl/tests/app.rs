@@ -106,6 +106,29 @@ fn unplugged_machine(tag: &'static str) -> Operator {
     op
 }
 
+/// Scroll the tab's body until the element `id` shows.
+fn reveal(cx: &mut VisualTestContext, id: &str) {
+    for _ in 0..60 {
+        let shown = cx.update(|window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find(SharedString::from(id.to_string()))
+                .is_some_and(|e| e.visible())
+        });
+        if shown {
+            return;
+        }
+        cx.update(|window, cx| {
+            window.scroll(
+                "body",
+                gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-200.))),
+                cx,
+            );
+        });
+    }
+    panic!("{id} does not show");
+}
+
 /// A view tab.
 fn view(name: &str) -> Tab {
     Tab::View {
@@ -284,6 +307,107 @@ fn health_and_bench(cx: &mut VisualTestContext, app: &Entity<LegionApp>) {
             "one line per kind, every page"
         );
     });
+}
+
+/// The operation catalog (DESIGN-09 G3): the seed Operations lists each public operation by its group (folded, with
+/// its count); Open on `facts.set` opens its form, made from its input schema (the required fields first, the optional
+/// ones on demand, a choice as buttons). Continue without a required field says which; with them, the session class
+/// asks inline (no dry run), and Apply stores the fact with the user as its source.
+#[gpui_kit::test]
+fn an_operation_of_the_catalog_runs_through_the_form_of_its_input_schema(cx: &mut TestAppContext) {
+    let (op, home, repo) = thread_lab("form");
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
+    let cx = &mut vcx;
+    let click = |cx: &mut VisualTestContext, id: SharedString| {
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click(id, cx);
+        });
+    };
+    click(cx, "space-agents".into());
+    wait(cx, &app, "the views", |a| {
+        a.screen.views.iter().any(|v| v.name == "operations")
+    });
+    click(cx, "nav-operations".into());
+    wait(cx, &app, "the catalog", |a| {
+        shown(a, "operations").is_some_and(|v| !v.rows.is_empty())
+    });
+    let row = app.read_with(cx, |a, _| {
+        let catalog = shown(a, "operations").unwrap();
+        assert!(
+            catalog.rows.len() > 150,
+            "every public operation: {}",
+            catalog.rows.len()
+        );
+        assert!(catalog.rows.iter().all(|r| !r[0].starts_with("internal.")));
+        catalog
+            .rows
+            .iter()
+            .position(|r| r[0] == "facts.set")
+            .unwrap()
+    });
+    reveal(cx, "view-operations-group-facts");
+    click(cx, "view-operations-group-facts".into());
+    reveal(cx, &format!("view-operations-row-{row}-action-0"));
+    click(cx, format!("view-operations-row-{row}-action-0").into());
+    app.read_with(cx, |a, _| {
+        let form = a.state.form.as_ref().unwrap();
+        let required: Vec<&str> = form
+            .fields
+            .iter()
+            .filter(|f| f.required)
+            .map(|f| f.name.as_str())
+            .collect();
+        assert_eq!(required, ["entity", "value"]);
+    });
+    click(cx, "form-submit".into());
+    app.read_with(cx, |a, _| {
+        let why = a
+            .state
+            .form
+            .as_ref()
+            .unwrap()
+            .error
+            .clone()
+            .unwrap_or_default();
+        assert!(why.starts_with("entity is required"), "{why}");
+    });
+    click(cx, "form-field-entity".into());
+    cx.update(|window, cx| window.input("color", cx));
+    click(cx, "form-field-value".into());
+    cx.update(|window, cx| window.input("\"teal\"", cx));
+    click(cx, "form-more".into());
+    click(cx, "form-scope-project".into());
+    click(cx, "form-submit".into());
+    app.read_with(cx, |a, _| {
+        assert!(a.state.form.is_none());
+        let pending = a.state.pending.as_ref().unwrap();
+        assert_eq!(pending.class, legionctl_api::Class::Session);
+        assert!(pending.plan.is_none(), "no dry run: an inline confirm");
+        assert_eq!(pending.button.input["entity"], "color");
+        assert_eq!(pending.button.input["scope"], "project");
+    });
+    click(cx, "apply".into());
+    wait(cx, &app, "the fact", |a| {
+        a.state
+            .message
+            .as_deref()
+            .is_some_and(|m| m.contains("fact"))
+    });
+    let facts: serde_json::Value = serde_json::from_str(&lab_cli(
+        &op,
+        &home,
+        &repo,
+        &["facts", "at", "--entity", "color", "--json"],
+        "",
+    ))
+    .unwrap();
+    assert_eq!(facts[0]["value"], "teal", "{facts}");
+    assert_eq!(
+        (facts[0]["source"].as_str(), facts[0]["scope"].as_str()),
+        (Some("user"), Some("project"))
+    );
+    drop(runtime);
 }
 
 /// The Resources seed (note 22) against the real operator on the recorded machine, without a daemon: it lists the

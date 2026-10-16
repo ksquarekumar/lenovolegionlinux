@@ -285,7 +285,7 @@ pub fn schema() -> Result<(&'static str, Value)> {
 }
 
 /// The seeds that legionctl ships: (name, text).
-const SEEDS: [(&str, &str); 5] = [
+const SEEDS: [(&str, &str); 6] = [
     (
         "machine-now",
         include_str!("../../../config/views/machine-now.jsonc"),
@@ -299,6 +299,10 @@ const SEEDS: [(&str, &str); 5] = [
     (
         "apps-gpu",
         include_str!("../../../config/views/apps-gpu.jsonc"),
+    ),
+    (
+        "operations",
+        include_str!("../../../config/views/operations.jsonc"),
     ),
 ];
 

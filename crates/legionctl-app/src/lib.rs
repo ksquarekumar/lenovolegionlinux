@@ -3,6 +3,7 @@
 //! operation; every button runs an operation with its own approval: a read at once, a change with its plan first.
 
 pub mod activity;
+mod forms;
 pub mod greeter;
 pub mod shell;
 pub mod theme;
@@ -39,9 +40,23 @@ pub struct Pending {
     pub plan: Option<String>,
 }
 
+/// The form of a button's operation (DESIGN-09 G3): its fields from the operation's input schema, the texts, the
+/// field that takes the keys, and why the last Continue did not go on.
+#[derive(Debug, Clone)]
+pub struct Form {
+    pub button: ViewButton,
+    pub fields: Vec<legionctl_api::form::Field>,
+    pub values: std::collections::BTreeMap<String, String>,
+    pub focused: Option<usize>,
+    /// The optional fields show.
+    pub all: bool,
+    pub error: Option<String>,
+}
+
 /// What the app knows besides the screen.
 #[derive(Debug, Default)]
 pub struct State {
+    pub form: Option<Form>,
     pub pending: Option<Pending>,
     /// The last result or error.
     pub message: Option<String>,
@@ -57,6 +72,9 @@ pub struct LegionApp {
     /// The screen: spaces, navigator, tabs, chat bars, threads and views.
     pub screen: thread::Screen,
     chat_focus: FocusHandle,
+    form_focus: FocusHandle,
+    /// The tab body's scroll: a form or a plan shows at its top.
+    body_scroll: gpui_kit::ScrollHandle,
     _refresh: Task<()>,
     _events: Task<()>,
     _follower: Follower,
@@ -99,6 +117,8 @@ impl LegionApp {
             state: State::default(),
             screen: thread::Screen::new(repo),
             chat_focus: cx.focus_handle(),
+            form_focus: cx.focus_handle(),
+            body_scroll: gpui_kit::ScrollHandle::new(),
             _refresh: refresh,
             _events: events,
             _follower: follower,
@@ -297,6 +317,50 @@ impl LegionApp {
                 button.label, button.op
             ));
             cx.notify();
+            return;
+        };
+        // the form or the plan shows at the top of the tab
+        self.body_scroll
+            .set_offset(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)));
+        if legionctl_api::form::needed(info, &button.input) {
+            self.state.pending = None;
+            self.state.form = Some(Form {
+                fields: legionctl_api::form::fields(info),
+                values: legionctl_api::form::texts(&button.input),
+                button,
+                focused: None,
+                all: false,
+                error: None,
+            });
+            cx.notify();
+            return;
+        }
+        self.confirm(button, cx);
+    }
+
+    /// The form's Continue: its input, then the approval of the operation's class.
+    pub fn submit_form(&mut self, cx: &mut Context<Self>) {
+        let Some(form) = self.state.form.as_mut() else {
+            return;
+        };
+        let Some(info) = OPS.iter().find(|o| o.name == form.button.op) else {
+            return;
+        };
+        match legionctl_api::form::input(info, &form.values, &self.screen.repo) {
+            Ok(input) => {
+                let mut button = form.button.clone();
+                button.input = input;
+                self.state.form = None;
+                self.confirm(button, cx);
+            }
+            Err(e) => form.error = Some(format!("{e:#}")),
+        }
+        cx.notify();
+    }
+
+    /// `button` with its whole input, in its class's approval.
+    fn confirm(&mut self, button: ViewButton, cx: &mut Context<Self>) {
+        let Some(info) = OPS.iter().find(|o| o.name == button.op) else {
             return;
         };
         let dry_run = (info.input)()["properties"].get("dry_run").is_some();
