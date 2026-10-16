@@ -15947,6 +15947,53 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "thread.agent": {
+    "class": "session",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The thread's id (`thread list`)."
+        },
+        "agent": {
+          "type": "string",
+          "description": "A name of config `session.acp`."
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in a repository: its config layer applies.",
+          "default": "."
+        }
+      },
+      "required": [
+        "thread",
+        "agent"
+      ],
+      "title": "ThreadAgentIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "thread.peers": {
     "class": "read",
     "internal": false,

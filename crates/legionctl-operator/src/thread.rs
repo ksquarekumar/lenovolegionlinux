@@ -292,6 +292,27 @@ pub fn show(input: &ThreadIdIn) -> Result<ThreadView> {
     Ok(dossiers()?.thread_show(input.thread)?.into_wire())
 }
 
+/// The chat bar's agent of a thread: a name of `session.acp`, else refused with the names.
+pub fn agent(input: &legionctl_api::ThreadAgentIn) -> Result<Lines> {
+    let config = crate::engine::config(Some(&input.repo))?;
+    let names: Vec<&String> = config.config.session.acp.keys().collect();
+    anyhow::ensure!(
+        names.contains(&&input.agent),
+        "no agent {} in session.acp; it has {}",
+        input.agent,
+        names
+            .iter()
+            .map(|n| n.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    dossiers()?.thread_agent(input.thread, &input.agent)?;
+    Ok(lines(vec![format!(
+        "thread {}: the chat bar sends its prompts to {}",
+        input.thread, input.agent
+    )]))
+}
+
 pub fn join(input: &ThreadJoinIn) -> Result<Lines> {
     dossiers()?.thread_join(
         input.thread,

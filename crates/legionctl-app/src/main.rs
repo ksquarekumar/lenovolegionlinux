@@ -4,14 +4,12 @@ use legionctl_api::client::Client;
 use legionctl_app::{AppAssets, LegionApp, Page, theme};
 
 fn main() -> anyhow::Result<()> {
-    let usage =
-        "usage: legionctl-app [now|gpu|health|bench|resources] [--agent <name> [--dossier <name>]]";
+    let usage = "usage: legionctl-app [now|gpu|health|bench|resources] [--dossier <name>]";
     let mut page = Page::Now;
-    let (mut agent, mut dossier) = (None, None);
+    let mut dossier = None;
     let mut args = std::env::args().skip(1);
     while let Some(word) = args.next() {
         match word.as_str() {
-            "--agent" => agent = Some(args.next().ok_or_else(|| anyhow::anyhow!(usage))?),
             "--dossier" => dossier = Some(args.next().ok_or_else(|| anyhow::anyhow!(usage))?),
             _ => page = Page::named(&word).ok_or_else(|| anyhow::anyhow!(usage))?,
         }
@@ -54,13 +52,7 @@ fn main() -> anyhow::Result<()> {
                         theme::adopt(cx);
                     })
                     .detach();
-                cx.new(|cx| {
-                    let app = LegionApp::new(client, handle, page, cx);
-                    match agent {
-                        Some(agent) => app.with_agent(agent, dossier, repo),
-                        None => app,
-                    }
-                })
+                cx.new(|cx| LegionApp::new(client, handle, page, cx).with_runs(dossier, repo))
             })
             .expect("opening the window");
         });

@@ -158,6 +158,7 @@ pub fn log_detail(row: &ThreadLogRow) -> String {
             "pace",
             "view",
             "account",
+            "agent",
         ]
         .iter()
         .find_map(|k| p[k].as_str())

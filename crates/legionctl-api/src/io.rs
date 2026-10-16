@@ -2279,6 +2279,17 @@ pub struct ViewPlaceIn {
     pub repo: ClientPath,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThreadAgentIn {
+    /// The thread's id (`thread list`).
+    pub thread: i64,
+    /// A name of config `session.acp`.
+    pub agent: String,
+    /// A folder in a repository: its config layer applies.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
 /// A view file of a layer.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ViewInfo {

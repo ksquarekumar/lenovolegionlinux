@@ -1344,6 +1344,18 @@ impl Dossiers {
         Ok(())
     }
 
+    /// The agent of the thread's chat bar: a `thread.agent` row of its log.
+    ///
+    /// # Errors
+    /// No such thread, it is read-only, or the database write fails.
+    pub fn thread_agent(&self, thread: i64, agent: &str) -> Result<()> {
+        self.writable(thread)?;
+        let tx = self.begin()?;
+        log(&tx, thread, "", "thread.agent", &json!({"agent": agent}))?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// One thread: its members, messages, rules and log.
     ///
     /// # Errors

@@ -5,7 +5,8 @@
 # window. The app talks to an operator of its own build (the binary next to it) on a private socket, with a home of
 # its own that holds a copy of your operator.db (threads, bench runs); it reads the machine and clicks nothing, so
 # nothing on the machine, in your home or in your desktop settings changes.
-# usage: scripts/app-shots.sh <folder> [app binary] [pages...]; APP_SHOTS_SCHEME='prefer-light' for the light look
+# usage: scripts/app-shots.sh <folder> [app binary] [pages...]; APP_SHOTS_SCHEME='prefer-light' for the light look;
+# APP_SHOTS_CHAT='/agent ' clicks the chat bar and types the text (a-z, 0-9, space, / and -) before the shot
 set -eu
 out=$(realpath -m "${1:?usage: scripts/app-shots.sh <folder> [app binary] [pages...]}")
 app=$(realpath "${2:-target/release/legionctl-app}")
@@ -16,7 +17,7 @@ if [ -z "${APP_SHOTS_WORK:-}" ]; then
   work=$(mktemp -d /var/tmp/app-shots.XXXXXX)
   mkdir -p "$work/config/glib-2.0/settings"
   scheme=${APP_SHOTS_SCHEME:-$(gsettings get org.gnome.desktop.interface color-scheme)}
-  printf "[org/gnome/desktop/interface]\ncolor-scheme=%s\n[org/gnome/desktop/background]\n%s\n" "$scheme" \
+  printf "[org/gnome/desktop/interface]\ncolor-scheme=%s\nenable-hot-corners=false\n[org/gnome/desktop/background]\n%s\n" "$scheme" \
     "picture-options='none'
 primary-color='#3d3846'
 color-shading-type='solid'" >"$work/config/glib-2.0/settings/keyfile"
@@ -63,6 +64,38 @@ time.sleep(1)
 call(session, "org.gnome.Mutter.RemoteDesktop.Session", "Stop")
 EOF
 sleep 1
+# chat <x> <y> <text>: a click at x,y and the text, through Mutter's remote desktop (relative motion: absolute motion
+# needs a screen cast stream; the hot corner is off, so the move to the top left corner opens no overview)
+chat() {
+  python3 -I - "$@" <<'EOF'
+import sys, time
+from gi.repository import Gio, GLib
+x, y, text = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+rd = "org.gnome.Mutter.RemoteDesktop"
+def call(path, iface, method, args=None):
+    return bus.call_sync(rd, path, iface, method, args, None, 0, -1, None)
+session = call("/org/gnome/Mutter/RemoteDesktop", rd, "CreateSession").unpack()[0]
+s = rd + ".Session"
+call(session, s, "Start")
+call(session, s, "NotifyPointerMotionRelative", GLib.Variant("(dd)", (-10000.0, -10000.0)))
+# small steps: pointer acceleration does not change a slow motion
+steps = max(x, y) // 4 + 1
+for _ in range(steps):
+    call(session, s, "NotifyPointerMotionRelative", GLib.Variant("(dd)", (x / steps, y / steps)))
+time.sleep(0.3)
+for pressed in (True, False):
+    call(session, s, "NotifyPointerButton", GLib.Variant("(ib)", (0x110, pressed)))
+time.sleep(1)
+# the new virtual keyboard drops its first key: a Shift first
+for c in "\uffe1" + text:
+    for pressed in (True, False):
+        call(session, s, "NotifyKeyboardKeysym", GLib.Variant("(ub)", (ord(c), pressed)))
+    time.sleep(0.05)
+time.sleep(1)
+call(session, s, "Stop")
+EOF
+}
 # shoot <file>: the whole screen through the portal
 shoot() {
   python3 -I - "$1" <<'EOF'
@@ -99,11 +132,18 @@ for page in "${pages[@]}"; do
   sleep "${wait:-15}"
   wait=7
   shoot "$work/$page.png"
-  kill $pid
-  wait $pid 2>/dev/null || true
   # the window alone: what differs from the empty desktop, below the top bar and its clock
   window=$(magick "$work/$page.png" "$work/desktop.png" -compose difference -composite \
     -fill black -draw 'rectangle 0,0 10000,40' -threshold 2% -trim -format '%wx%h%X%Y' info:)
+  if [ -n "${APP_SHOTS_CHAT:-}" ]; then
+    # the chat bar: the bottom centre of pane 3 (pane 1 is 7% and pane 2 30% of the window)
+    geometry=${window//[x+]/ }
+    read -r w h x y <<<"$geometry"
+    chat $((x + w * 37 / 100 + w * 63 / 200)) $((y + h - 40)) "$APP_SHOTS_CHAT"
+    shoot "$work/$page.png"
+  fi
+  kill $pid
+  wait $pid 2>/dev/null || true
   magick "$work/$page.png" -crop "$window" +repage "$out/$page.png"
   echo "$out/$page.png"
 done

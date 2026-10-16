@@ -1,7 +1,7 @@
 # The thread screen (`legionctl tui` and the app)
 
 `legionctl tui [--thread <id>] [--agent <name>] [--dossier <name>]` shows three panes and a chat bar. The app
-(`legionctl-app [<page>] [--agent <name> [--dossier <name>]]`) shows the same screen. A person and an agent get the
+(`legionctl-app [<page>] [--dossier <name>]`) shows the same screen. A person and an agent get the
 same screen and the same commands.
 
 | Part | Size | What it shows |
@@ -31,9 +31,9 @@ same screen and the same commands.
 | Text | What runs |
 | --- | --- |
 | `/agent:<name> <input>` | The agent's command (ACP): the prompt `/<name> <input>`. The list comes with the agent's first run. |
-| `/fold 1`, `/fold 2`, `/view <name>` | The screen's own commands. |
+| `/fold 1`, `/fold 2`, `/view <name>`, `/agent <name>` (app) | The screen's own commands. |
 | `/<words> [options]` | The operation of the registry with the CLI's words, as `legionctl <words> [options]`. |
-| Other text | A prompt for `--agent`: a headless run (`session run`) that goes on in the ACP session of the run before it. |
+| Other text | A prompt for the agent (`--agent` in the TUI, `/agent` in the app): a headless run (`session run`) that goes on in the ACP session of the run before it. |
 
 The list above the chat bar shows the commands that match the text: the agent's commands first, marked `(agent)`,
 then the screen's, then the registry's with their class.
@@ -47,6 +47,7 @@ then the screen's, then the registry's with their class.
 | Pane 3 | The page, or the view (`views place`, `/view <name> [name=value...]`); the plan of a change shows above it, the output of a command below it. |
 | Fold | `Ctrl+1`, `Ctrl+2` (or `Alt`), the fold button at the top of a pane, `/fold 1`, `/fold 2`. A folded pane is a 24 px rail; click it to open it. |
 | Chat bar | Click it to type. `Shift+Enter` adds a line. |
+| Agent | `/agent <name>` picks the chat bar's agent (a name of config `session.acp`; the list offers each); another name is refused with the names. The pick is a `thread.agent` row of the thread's log (`thread agent <thread> <name>`), so each screen of the thread uses it. A thread with no pick uses config `app.agent` (default `claude`). Other text is a prompt for that agent. |
 | Look | Dark or light as GNOME is set; the colours, sizes and type scale are in `crates/legionctl-app/src/theme.rs`. `make app-shots` takes a screenshot of each page (`scripts/app-shots.sh`). |
 
 ## Views

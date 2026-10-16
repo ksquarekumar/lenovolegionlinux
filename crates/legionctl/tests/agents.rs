@@ -55,6 +55,29 @@ impl Lab {
                 ("LEGIONCTL_PLUGIN", OsString::from(plugin)),
             ],
         );
+        // never the machine's bun (`setup apply` installs the ACP adapters with it): a stand-in that logs each call to
+        // ~/bun.log and keeps its global commands in ~/.cache/.bun/bin, as bun with XDG_CACHE_HOME does; before its
+        // first `add -g` it has no global folder and `pm -g bin` fails as bun 1.x does
+        let bun = home.join(".bun/bin/bun");
+        write(
+            &bun,
+            r#"#!/bin/sh
+echo "$*" >> "$HOME/bun.log"
+global="$HOME/.cache/.bun/bin"
+case "$1 $2" in
+"pm -g")
+  [ -d "$global" ] || { echo "error: No package.json was found for directory \"$HOME/.cache/.bun/install/global\"" >&2; exit 1; }
+  echo "$global" ;;
+"add -g")
+  shift 2
+  mkdir -p "$global"
+  for p in "$@"; do printf '#!/bin/sh\n' > "$global/${p##*/}"; chmod +x "$global/${p##*/}"; done ;;
+*) exit 64 ;;
+esac
+"#,
+        );
+        std::fs::set_permissions(&bun, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
         Lab { op, home, repo }
     }
 
@@ -405,9 +428,10 @@ fn setup_apply_puts_the_users_tool_folders_before_the_user_managers_path_once() 
         String::from_utf8_lossy(&out.stdout).into_owned()
     };
     let home = lab.home.display();
+    // apply installs the ACP adapters of session.acp first: bun's global folder then exists
     let want = format!(
         "# Written by `legionctl setup apply`: the user's tool folders for the systemd user manager (the operator's checks)\n\
-         PATH={home}/.local/bin:{home}/.cargo/bin:$PATH\n"
+         PATH={home}/.local/bin:{home}/.cargo/bin:{home}/.cache/.bun/bin:$PATH\n"
     );
 
     assert_eq!(status(), "missing");
@@ -447,6 +471,110 @@ fn setup_apply_puts_the_users_tool_folders_before_the_user_managers_path_once() 
             "{env}"
         );
     }
+}
+
+/// todo-144: the ACP adapters of `session.acp` (headless runs, the app's chat bar). `setup check` reports each adapter
+/// command that is not on the user manager's PATH (with bun's global folder) as missing, with its package from
+/// `session.acp_packages`; `setup apply` installs each with `bun add -g <package>` once, and puts bun's global folder
+/// (`bun pm -g bin`, not on any PATH by itself) into the environment.d PATH file. An adapter with no package is
+/// refused by apply, with its name.
+#[test]
+fn setup_check_reports_each_missing_acp_adapter_and_apply_installs_it_with_bun_once() {
+    let lab = Lab::new("acp", &shipped_plugin());
+    lab.stand_in_ctx();
+    let adapters = || -> Vec<[String; 4]> {
+        let check: Value = serde_json::from_str(&lab.op.ok(&["setup", "check", "--json"])).unwrap();
+        check["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|i| i["what"].as_str().unwrap().starts_with("ACP adapter "))
+            .map(|i| {
+                ["what", "agent", "status", "path"].map(|k| i[k].as_str().unwrap().to_string())
+            })
+            .collect()
+    };
+    let apply = || lab.op.cli_in(&lab.home, &["setup", "apply"]);
+    let installs = || -> Vec<String> {
+        std::fs::read_to_string(lab.home.join("bun.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.starts_with("add "))
+            .map(String::from)
+            .collect()
+    };
+    let g = lab.home.join(".cache/.bun/bin").display().to_string();
+    let (claude, codex) = ("ACP adapter claude-code-acp", "ACP adapter codex-acp");
+
+    assert_eq!(
+        adapters(),
+        [
+            [
+                claude,
+                "claude",
+                "missing",
+                "@zed-industries/claude-code-acp"
+            ],
+            [codex, "codex", "missing", "@zed-industries/codex-acp"],
+        ]
+        .map(|row| row.map(String::from))
+    );
+    let text = String::from_utf8_lossy(&lab.op.cli(&["setup", "check"]).stdout).into_owned();
+    assert!(
+        text.lines().any(|l| l.starts_with(claude)
+            && l.contains(" missing ")
+            && l.ends_with("@zed-industries/claude-code-acp")),
+        "{text}"
+    );
+
+    let out = apply();
+    let done = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success()
+            && done.contains(&format!(
+                "{claude}: installed @zed-industries/claude-code-acp with bun add -g"
+            ))
+            && done.contains(&format!(
+                "{codex}: installed @zed-industries/codex-acp with bun add -g"
+            )),
+        "{done}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        installs(),
+        [
+            "add -g @zed-industries/claude-code-acp",
+            "add -g @zed-industries/codex-acp"
+        ]
+    );
+    assert_eq!(
+        adapters(),
+        [
+            [claude, "claude", "current", &format!("{g}/claude-code-acp")],
+            [codex, "codex", "current", &format!("{g}/codex-acp")],
+        ]
+        .map(|row| row.map(String::from))
+    );
+    let conf =
+        std::fs::read_to_string(lab.home.join(".config/environment.d/99-legionctl.conf")).unwrap();
+    assert!(conf.contains(&format!(":{g}:$PATH\n")), "{conf}");
+    assert!(
+        !String::from_utf8_lossy(&apply().stdout).contains("ACP adapter"),
+        "installed once"
+    );
+    assert_eq!(installs().len(), 2);
+
+    // an adapter command that no package gives
+    lab.user_config(r#"{"session": {"acp": {"local": ["local-acp"]}}}"#);
+    let why = "missing (no package in session.acp_packages)";
+    assert!(adapters().contains(&["ACP adapter local-acp", "local", why, ""].map(String::from)));
+    let refused = apply();
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        !refused.status.success()
+            && stderr.contains(&format!("ACP adapter local-acp for local: {why}")),
+        "{stderr}"
+    );
 }
 
 #[test]

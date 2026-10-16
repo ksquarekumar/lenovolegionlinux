@@ -1079,16 +1079,19 @@ pub(crate) fn dossiers() -> Result<Dossiers> {
 
 /// The agent side of `doctor`: setup gaps, stale dossier bindings, workspaces that drifted from their record.
 fn agent_findings() -> Result<Vec<String>> {
-    let mut w: Vec<String> = setup::check(&Sources::resolve(&Dirs::from_env(), None)?)
-        .needs_attention()
-        .iter()
-        .map(|i| {
-            format!(
-                "setup: {} for {} is {}; run legionctl setup apply",
-                i.what, i.agent, i.status
-            )
-        })
-        .collect();
+    let mut w: Vec<String> = setup::check(
+        &Sources::resolve(&Dirs::from_env(), None)?,
+        &config(None)?.config.session,
+    )?
+    .needs_attention()
+    .iter()
+    .map(|i| {
+        format!(
+            "setup: {} for {} is {}; run legionctl setup apply",
+            i.what, i.agent, i.status
+        )
+    })
+    .collect();
     if legionctl_core::migrate::pending() {
         w.push(legionctl_core::migrate::state(&Db::open_default()?));
         return Ok(w);
@@ -2245,7 +2248,11 @@ impl Engine for Operator {
     }
 
     fn setup_check(&self, _: &Ctx, _: Empty) -> Result<SetupReport> {
-        Ok(setup::check(&Sources::resolve(&Dirs::from_env(), None)?).into_wire())
+        Ok(setup::check(
+            &Sources::resolve(&Dirs::from_env(), None)?,
+            &config(None)?.config.session,
+        )?
+        .into_wire())
     }
 
     fn setup_apply(&self, _: &Ctx, input: SetupApplyIn) -> Result<Changes> {
@@ -2253,6 +2260,7 @@ impl Engine for Operator {
             lines: setup::apply(
                 input.install_ctx,
                 &Sources::resolve(&Dirs::from_env(), None)?,
+                &config(None)?.config.session,
             )?,
             dry_run: false,
         })
@@ -3991,6 +3999,10 @@ impl Engine for Operator {
 
     fn views_place(&self, _: &Ctx, input: legionctl_api::ViewPlaceIn) -> Result<Lines> {
         crate::views::place(&input)
+    }
+
+    fn thread_agent(&self, _: &Ctx, input: legionctl_api::ThreadAgentIn) -> Result<Lines> {
+        crate::thread::agent(&input)
     }
 
     fn thread_join(&self, _: &Ctx, input: legionctl_api::ThreadJoinIn) -> Result<Lines> {

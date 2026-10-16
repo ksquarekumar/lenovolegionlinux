@@ -875,6 +875,9 @@ operations! {
     views_render / ViewsRender = "views.render", Read, ViewRenderIn => ViewData;
     /// Show a view in pane 3 of a thread's screens: the thread's layout, kept in its log.
     views_place / ViewsPlace = "views.place", Session, ViewPlaceIn => Lines;
+    /// Pick the agent of a thread's chat bar (a name of `session.acp`): the screens send their prompts to it; the
+    /// pick is a row of the thread's log.
+    thread_agent / ThreadAgent = "thread.agent", Session, ThreadAgentIn => Lines;
     /// The sessions that share the caller's dossier, workspace or threads (or the scope given), with their state,
     /// last tool call, declared state and messages they did not ack.
     thread_peers / ThreadPeers = "thread.peers", Read, PeersIn => Vec<Peer>;

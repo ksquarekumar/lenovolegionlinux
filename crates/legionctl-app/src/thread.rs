@@ -20,8 +20,8 @@ use gpui_kit::{
 };
 use legionctl_api::chat::{self, Action, Entry};
 use legionctl_api::{
-    AgentCommand, ClientPath, Empty, RunOutput, SessionIdIn, ThreadIdIn, ThreadLogRow, ThreadView,
-    ViewData, ViewRenderIn, ViewWidget, op,
+    AgentCommand, ClientPath, Empty, ProjectIn, RunOutput, SessionIdIn, ThreadIdIn, ThreadLogRow,
+    ThreadView, ViewData, ViewRenderIn, ViewWidget, op,
 };
 use serde_json::{Value, json};
 
@@ -57,8 +57,10 @@ pub struct Screen {
     pub commands: Vec<AgentCommand>,
     /// The session and the ACP session of the agent's last run: the next prompt goes on in it.
     pub attached: Option<(String, Option<String>)>,
-    /// The chat bar's agent (`--agent`), its dossier, and the repository of its runs.
-    pub agent: Option<String>,
+    /// The agents of config `session.acp`, and `app.agent`: the chat bar's agent where the thread has no pick.
+    pub agents: Vec<String>,
+    pub default_agent: Option<String>,
+    /// The dossier of the chat bar's runs (`--dossier`), and their repository.
     pub dossier: Option<String>,
     pub repo: PathBuf,
     /// The view in pane 3 instead of the page, and its data.
@@ -82,7 +84,8 @@ impl Screen {
             runs: Vec::new(),
             commands: Vec::new(),
             attached: None,
-            agent: None,
+            agents: Vec::new(),
+            default_agent: None,
             dossier: None,
             repo,
             view: None,
@@ -92,9 +95,21 @@ impl Screen {
         }
     }
 
+    /// The chat bar's agent: the thread's newest `/agent` pick (a `thread.agent` row), else `app.agent`.
+    #[must_use]
+    pub fn agent(&self) -> Option<String> {
+        self.thread
+            .iter()
+            .flat_map(|t| t.log.iter().rev())
+            .find(|r| r.kind == "thread.agent")
+            .and_then(|r| r.payload["agent"].as_str().map(String::from))
+            .or_else(|| self.default_agent.clone())
+    }
+
     /// The `/` commands that match the chat bar's text: the agent's first.
     #[must_use]
     pub fn completions(&self) -> Vec<Entry> {
+        let now = self.agent();
         let screen = ["1", "2"]
             .iter()
             .map(|n| (format!("/fold {n}"), format!("Fold or open pane {n}")))
@@ -102,36 +117,55 @@ impl Screen {
                 let name = format!("{p:?}").to_lowercase();
                 (format!("/view {name}"), format!("Show {name} in pane 3"))
             }))
+            .chain(self.agents.iter().map(|a| {
+                let current = if now.as_ref() == Some(a) { ", now" } else { "" };
+                (
+                    format!("/agent {a}"),
+                    format!("Send the prompts to {a} (session.acp{current})"),
+                )
+            }))
             .collect();
         chat::completions(&self.chat, chat::entries(&self.commands, screen))
     }
 }
 
 impl LegionApp {
-    /// Read the newest open thread, and apply a new placement of its view.
+    /// Read the newest open thread and the chat bar's agents (config `session.acp`, `app.agent`), and apply a new
+    /// placement of the thread's view.
     pub(crate) fn read_thread(&mut self, cx: &mut Context<Self>) {
         let client = self.client.clone();
+        let project = ProjectIn {
+            project: ClientPath(self.screen.repo.clone()),
+        };
         let task = self.operator(cx, async move {
+            let config = client.call::<op::ConfigShow>(&project).await?.value;
             let newest = client
                 .call::<op::ThreadList>(&Empty {})
                 .await?
                 .into_iter()
                 .find(|t| t.state == "open");
-            match newest {
-                Some(t) => Ok(Some(
+            let thread = match newest {
+                Some(t) => Some(
                     client
                         .call::<op::ThreadShow>(&ThreadIdIn { thread: t.id })
                         .await?,
-                )),
-                None => Ok(None),
-            }
+                ),
+                None => None,
+            };
+            Ok((thread, config))
         });
         cx.spawn(
             async move |this: WeakEntity<LegionApp>, cx: &mut AsyncApp| {
                 let result = task.await;
                 let _ = this.update(cx, |app, cx| {
                     match result {
-                        Ok(thread) => {
+                        Ok((thread, config)) => {
+                            app.screen.agents = config["session"]["acp"]
+                                .as_object()
+                                .map(|acp| acp.keys().cloned().collect())
+                                .unwrap_or_default();
+                            app.screen.default_agent =
+                                config["app"]["agent"].as_str().map(String::from);
                             app.screen.thread = thread;
                             app.screen.thread_error = None;
                             app.apply_layout(cx);
@@ -262,7 +296,7 @@ impl LegionApp {
         if line.is_empty() {
             return;
         }
-        match chat::action(&line, &self.screen.commands, &["fold", "view"]) {
+        match chat::action(&line, &self.screen.commands, &["fold", "view", "agent"]) {
             Action::Prompt(prompt) => self.prompt(&prompt, line, cx),
             Action::Operation(op, input) => self.start(op.name, input, line, cx),
             Action::Screen(words) => self.screen_command(&words, cx),
@@ -289,18 +323,31 @@ impl LegionApp {
                     self.show_view(shown, cx);
                 }
             }
+            ["agent", name] => match &self.screen.thread {
+                Some(t) => {
+                    let input =
+                        json!({"thread": t.thread.id, "agent": name, "repo": self.screen.repo});
+                    self.start("thread.agent", input, format!("/agent {name}"), cx);
+                }
+                None => {
+                    self.state.message =
+                        Some("no open thread: /agent keeps its pick in a thread's log".into());
+                }
+            },
             _ => {
                 self.state.message =
-                    Some("/fold 1, /fold 2 or /view <name> [name=value...]".into());
+                    Some("/fold 1, /fold 2, /view <name> [name=value...] or /agent <name>".into());
             }
         }
     }
 
     /// `prompt` to the agent as a headless run on the thread's account, in the agent's last ACP session.
     fn prompt(&mut self, prompt: &str, line: String, cx: &mut Context<Self>) {
-        let Some(agent) = self.screen.agent.clone() else {
-            self.state.message =
-                Some("no agent: start the app with --agent <name> (config session.acp)".into());
+        let Some(agent) = self.screen.agent() else {
+            self.state.message = Some(format!(
+                "no agent: pick one with /agent <name> (session.acp: {})",
+                self.screen.agents.join(", ")
+            ));
             return;
         };
         let input = json!({
@@ -433,7 +480,7 @@ fn avatar(name: &str, size: f32) -> Div {
 /// The colour of a log row's kind.
 fn kind_color(kind: &str, t: &Tokens) -> gpui_kit::Hsla {
     match kind {
-        "start" | "end" | "branch" | "import" | "imported" | "place" => t.accent,
+        "start" | "end" | "branch" | "import" | "imported" | "place" | "agent" => t.accent,
         "join" | "checkpoint" | "declare" | "ack" | "wake" => t.ok,
         "rule" | "rule.rm" | "pace" | "teammate" | "backfill" | "compensate" => t.warn,
         "fail" | "lost" | "miss" | "budget" | "cut-off" | "stop" => t.critical,

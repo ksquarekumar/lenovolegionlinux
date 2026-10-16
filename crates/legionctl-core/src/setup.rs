@@ -4,8 +4,11 @@
 //! - Codex: legionctl's MCP server in ~/.codex/config.toml, the plugin's skills linked into ~/.codex/skills, and each
 //!   agent config as a Codex agent in ~/.codex/agents/<name>.toml (instructions, model and effort only).
 //! - Claude Code gets legionctl's MCP server, hooks and skills from the plugin itself.
-//! - The systemd user manager (and so the operator and its checks) gets ~/.local/bin and ~/.cargo/bin before its
-//!   PATH through ~/.config/environment.d/99-legionctl.conf; it reads the file at the next login.
+//! - The systemd user manager (and so the operator and its checks) gets ~/.local/bin, ~/.cargo/bin and bun's global
+//!   folder (`bun pm -g bin`) before its PATH through ~/.config/environment.d/99-legionctl.conf; it reads the file
+//!   at the next login.
+//! - The ACP adapters of `session.acp` (headless runs, the app's chat bar): a missing one is installed with
+//!   `bun add -g` from `session.acp_packages`.
 //!
 //! `check()` only reports; `apply()` changes user-level files and returns what it did.
 
@@ -17,6 +20,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::archetypes::{Sources, written_by_legionctl};
+use crate::config::SessionConfig;
 
 /// ctx names for the agents legionctl sets up.
 pub const AGENTS: [&str; 2] = ["claude-code", "codex"];
@@ -64,6 +68,37 @@ fn tool_bin(name: &str, install_dir: &str) -> Option<PathBuf> {
         .split(':')
         .map(|d| Path::new(d).join(name))
         .find(|p| p.is_file())
+}
+
+/// bun (<https://bun.sh>): its installer puts it in ~/.bun/bin.
+fn bun_bin() -> Option<PathBuf> {
+    tool_bin("bun", ".bun/bin")
+}
+
+/// The folder of bun's global commands (`bun pm -g bin`), when bun is installed and has global packages.
+///
+/// # Errors
+/// bun is installed and `bun pm -g bin` fails for another reason.
+fn bun_global_bin() -> Result<Option<PathBuf>> {
+    let Some(bun) = bun_bin() else {
+        return Ok(None);
+    };
+    let out = Command::new(&bun)
+        .args(["pm", "-g", "bin"])
+        .output()
+        .with_context(|| format!("running {} pm -g bin", bun.display()))?;
+    // bun 1.x before its first `bun add -g`: the global folder has no package.json, so no global command exists
+    if String::from_utf8_lossy(&out.stderr).contains("No package.json was found") {
+        return Ok(None);
+    }
+    ensure!(
+        out.status.success(),
+        "bun pm -g bin: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(Some(PathBuf::from(
+        String::from_utf8_lossy(&out.stdout).trim(),
+    )))
 }
 
 pub(crate) fn ctx_bin() -> Option<PathBuf> {
@@ -247,20 +282,27 @@ fn path_conf() -> PathBuf {
     home().join(".config/environment.d/99-legionctl.conf")
 }
 
-/// The text of `path_conf()`: absolute folders, because environment.d(5) expands only variables (`$PATH`), not `~`.
-fn path_conf_text() -> String {
+/// The folders that `path_conf()` puts before the user manager's PATH.
+fn path_folders() -> Result<Vec<PathBuf>> {
     let home = home();
+    let mut folders = vec![home.join(".local/bin"), home.join(".cargo/bin")];
+    folders.extend(bun_global_bin()?);
+    Ok(folders)
+}
+
+/// The text of `path_conf()`: absolute folders, because environment.d(5) expands only variables (`$PATH`), not `~`.
+fn path_conf_text(folders: &[PathBuf]) -> String {
+    let folders: Vec<String> = folders.iter().map(|f| f.display().to_string()).collect();
     format!(
         "# Written by `legionctl setup apply`: the user's tool folders for the systemd user manager (the operator's checks)\n\
-         PATH={}:{}:$PATH\n",
-        home.join(".local/bin").display(),
-        home.join(".cargo/bin").display()
+         PATH={}:$PATH\n",
+        folders.join(":")
     )
 }
 
-fn path_item() -> Item {
+fn path_item(folders: &[PathBuf]) -> Item {
     let status = match std::fs::read_to_string(path_conf()) {
-        Ok(have) if have == path_conf_text() => "current",
+        Ok(have) if have == path_conf_text(folders) => "current",
         Ok(_) => "outdated",
         Err(_) => "missing",
     };
@@ -272,8 +314,53 @@ fn path_item() -> Item {
     }
 }
 
-#[must_use]
-pub fn check(agents: &Sources) -> Report {
+/// One item per ACP adapter command of `session.acp`: current when the command is in `folders` or on PATH (the user
+/// manager's PATH with `path_conf()`), else missing with its package (`session.acp_packages`) as the path.
+fn acp_items(session: &SessionConfig, folders: &[PathBuf]) -> Vec<Item> {
+    let mut search = folders.to_vec();
+    search.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    let mut items: Vec<Item> = Vec::new();
+    for (agent, argv) in &session.acp {
+        let Some(command) = argv.first() else {
+            continue;
+        };
+        let what = format!("ACP adapter {command}");
+        if let Some(item) = items.iter_mut().find(|i| i.what == what) {
+            item.agent = format!("{},{agent}", item.agent);
+            continue;
+        }
+        let found = if command.contains('/') {
+            Some(PathBuf::from(command)).filter(|p| p.is_file())
+        } else {
+            search.iter().map(|d| d.join(command)).find(|p| p.is_file())
+        };
+        let (status, path) = match found {
+            Some(path) => ("current".to_string(), path.display().to_string()),
+            None => match session.acp_packages.get(command) {
+                Some(package) => ("missing".to_string(), package.clone()),
+                None => (
+                    "missing (no package in session.acp_packages)".to_string(),
+                    String::new(),
+                ),
+            },
+        };
+        items.push(Item {
+            what,
+            agent: agent.clone(),
+            status,
+            path,
+        });
+    }
+    items
+}
+
+/// What is in place and what is not.
+///
+/// # Errors
+/// bun is installed and `bun pm -g bin` fails.
+pub fn check(agents: &Sources, session: &SessionConfig) -> Result<Report> {
     let ctx_version = ctx(&["--version"]).ok().map(|v| v.trim().to_string());
     let mut items = if ctx_version.is_some() {
         ctx_items()
@@ -287,8 +374,10 @@ pub fn check(agents: &Sources) -> Report {
     };
     items.extend(codex_items());
     items.extend(codex_agent_items(agents));
-    items.push(path_item());
-    Report { ctx_version, items }
+    let folders = path_folders()?;
+    items.push(path_item(&folders));
+    items.extend(acp_items(session, &folders));
+    Ok(Report { ctx_version, items })
 }
 
 /// Install ctx with its signed installer (user-level, ~/.local/bin), analytics off, shell rc files untouched.
@@ -310,8 +399,13 @@ fn install_ctx() -> Result<()> {
 ///
 /// # Errors
 /// An agent config that a Codex subagent cannot apply (before any change), a config file, skill link or agent file
-/// cannot be read, parsed or written, or ctx cannot be installed or run.
-pub fn apply(install_missing_ctx: bool, agents: &Sources) -> Result<Vec<String>> {
+/// cannot be read, parsed or written, ctx cannot be installed or run, or a missing ACP adapter has no package, no bun
+/// to install it, or is not there after `bun add -g`.
+pub fn apply(
+    install_missing_ctx: bool,
+    agents: &Sources,
+    session: &SessionConfig,
+) -> Result<Vec<String>> {
     let codex_agents = agents.codex_agents()?;
     let mut done = Vec::new();
     if ctx_bin().is_none() {
@@ -396,13 +490,62 @@ pub fn apply(install_missing_ctx: bool, agents: &Sources) -> Result<Vec<String>>
     }
 
     done.extend(write_codex_agents(&codex_agents)?);
-    if path_item().status != "current" {
+    done.extend(install_acp_adapters(session)?);
+    let folders = path_folders()?;
+    if path_item(&folders).status != "current" {
         let conf = path_conf();
         std::fs::create_dir_all(conf.parent().context("environment.d file has no parent")?)?;
-        std::fs::write(&conf, path_conf_text())?;
+        std::fs::write(&conf, path_conf_text(&folders))?;
         done.push(format!(
             "legionctl PATH: written to {} (active at the next login)",
             conf.display()
+        ));
+    }
+    Ok(done)
+}
+
+/// `bun add -g` for each missing ACP adapter of `session.acp`; one line per adapter.
+fn install_acp_adapters(session: &SessionConfig) -> Result<Vec<String>> {
+    let mut done = Vec::new();
+    for item in acp_items(session, &path_folders()?) {
+        if item.status == "current" {
+            continue;
+        }
+        ensure!(
+            item.status == "missing",
+            "{} for {}: {}",
+            item.what,
+            item.agent,
+            item.status
+        );
+        let bun = bun_bin().with_context(|| {
+            format!(
+                "{} is missing and bun is not installed to install {}",
+                item.what, item.path
+            )
+        })?;
+        let out = Command::new(&bun)
+            .args(["add", "-g", &item.path])
+            .output()
+            .with_context(|| format!("running {} add -g {}", bun.display(), item.path))?;
+        ensure!(
+            out.status.success(),
+            "bun add -g {}: {}",
+            item.path,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        let after = acp_items(session, &path_folders()?);
+        ensure!(
+            after
+                .iter()
+                .any(|i| i.what == item.what && i.status == "current"),
+            "bun add -g {} gave no {}",
+            item.path,
+            item.what.trim_start_matches("ACP adapter ")
+        );
+        done.push(format!(
+            "{}: installed {} with bun add -g",
+            item.what, item.path
         ));
     }
     Ok(done)

@@ -359,8 +359,8 @@ fn write(path: &Path, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 
-/// The operator on the recorded machine with its own HOME (the stand-in ACP agent as `fake` of config session.acp),
-/// a repository, and
+/// The operator on the recorded machine with its own HOME (the stand-in ACP agent as `fake` and `other` of config
+/// session.acp, `fake` the chat bar's agent through config app.agent), a repository, and
 /// thread 1 on dossier port: main0 (session `main`) and observer0 (session `obs`). Returns the operator, HOME and
 /// the repository.
 fn thread_lab(tag: &str) -> (Operator, PathBuf, PathBuf) {
@@ -378,7 +378,12 @@ fn thread_lab(tag: &str) -> (Operator, PathBuf, PathBuf) {
         &home.join(".config/legionctl/app.jsonc"),
         &serde_json::json!({
             "workspace": {"root": home.join("worktrees")},
-            "session": {"acp": {"fake": ["python3", agent]}, "scope": false, "writable": []}
+            "session": {
+                "acp": {"fake": ["python3", agent], "other": ["python3", agent, "other"]},
+                "scope": false,
+                "writable": []
+            },
+            "app": {"agent": "fake"}
         })
         .to_string(),
     );
@@ -463,7 +468,7 @@ fn open_app(
     cx: &mut TestAppContext,
     op: &Operator,
     width: f32,
-    agent: Option<(&Path, &Path)>,
+    runs: Option<(&Path, &Path)>,
 ) -> (
     Entity<LegionApp>,
     VisualTestContext,
@@ -472,7 +477,7 @@ fn open_app(
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let client = Client::at("app", &op.runtime);
     let handle = runtime.handle().clone();
-    let agent = agent.map(|(home, repo)| (home.to_path_buf(), repo.to_path_buf()));
+    let runs = runs.map(|(_, repo)| repo.to_path_buf());
     cx.update(gpui_kit::init);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds {
@@ -485,8 +490,8 @@ fn open_app(
         let (window, _) = gpui_kit::open_window(options, cx, |_, cx| {
             cx.new(|cx| {
                 let app = LegionApp::new(client, handle, Page::Now, cx);
-                match agent {
-                    Some((_, repo)) => app.with_agent("fake".into(), Some("chat".into()), repo),
+                match runs {
+                    Some(repo) => app.with_runs(Some("chat".into()), repo),
                     None => app,
                 }
             })
@@ -675,6 +680,10 @@ fn the_app_chat_bar_offers_the_agents_commands_first_and_runs_a_registry_line(
     let (op, home, repo) = thread_lab("chat");
     let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
     let cx = &mut vcx;
+    // the chat bar's agent (config app.agent) comes with the first read
+    wait(cx, &app, "the chat bar's agent", |a| {
+        a.screen.agent().is_some()
+    });
     cx.update(|window, cx| {
         window.click("chat", cx);
         window.input("hello", cx);
@@ -746,6 +755,102 @@ fn the_app_chat_bar_offers_the_agents_commands_first_and_runs_a_registry_line(
                 && e["payload"]["input"]["prompt"] == "/plan x"),
         "the run by the app: {events}"
     );
+    drop(runtime);
+}
+
+/// todo-144: the chat bar picks its agent. It starts with config app.agent (`fake`); `/agent ` offers each name of
+/// session.acp (the defaults' claude and codex, the lab's fake and other); `/agent nobody` is refused with the names;
+/// `/agent other` is a row of the thread's log, so the pick is the thread's (every screen reads it); the next prompt
+/// runs on `other`, whose answer names it.
+#[gpui_kit::test]
+fn the_app_chat_bar_picks_its_agent_from_session_acp_and_keeps_the_pick_in_the_thread(
+    cx: &mut TestAppContext,
+) {
+    let (op, home, repo) = thread_lab("pick");
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
+    let cx = &mut vcx;
+    wait(cx, &app, "the thread and the agents", |a| {
+        a.screen.thread.is_some() && !a.screen.agents.is_empty()
+    });
+    app.read_with(cx, |a, _| {
+        assert_eq!(a.screen.agent().as_deref(), Some("fake"));
+    });
+    cx.update(|window, cx| {
+        window.click("chat", cx);
+        window.input("/agent ", cx);
+    });
+    app.read_with(cx, |a, _| {
+        let entries: Vec<(String, String)> = a
+            .screen
+            .completions()
+            .into_iter()
+            .map(|e| (e.text, e.about))
+            .collect();
+        assert_eq!(
+            entries,
+            [
+                ("/agent claude", "Send the prompts to claude (session.acp)"),
+                ("/agent codex", "Send the prompts to codex (session.acp)"),
+                ("/agent fake", "Send the prompts to fake (session.acp, now)"),
+                ("/agent other", "Send the prompts to other (session.acp)"),
+            ]
+            .map(|(t, a)| (t.to_string(), a.to_string()))
+        );
+    });
+    cx.update(|window, cx| {
+        window.input("nobody", cx);
+        window.press("enter", cx);
+    });
+    wait(cx, &app, "the refused pick", |a| {
+        a.screen.runs.first().is_some_and(|r| r.1.is_some())
+    });
+    app.read_with(cx, |a, _| {
+        assert_eq!(a.screen.runs[0], ("/agent nobody".to_string(), Some(false)));
+        let why = a.state.message.clone().unwrap_or_default();
+        assert!(
+            why.contains("no agent nobody in session.acp; it has claude, codex, fake, other"),
+            "{why}"
+        );
+        assert_eq!(a.screen.agent().as_deref(), Some("fake"));
+    });
+    cx.update(|window, cx| {
+        window.input("/agent other", cx);
+        window.press("enter", cx);
+    });
+    wait(cx, &app, "the pick in the thread's log", |a| {
+        a.screen.agent().as_deref() == Some("other")
+    });
+    let log: serde_json::Value = serde_json::from_str(&lab_cli(
+        &op,
+        &home,
+        &repo,
+        &["thread", "show", "1", "--json"],
+        "",
+    ))
+    .unwrap();
+    assert!(
+        log["log"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["kind"] == "thread.agent" && r["payload"]["agent"] == "other"),
+        "{log:#}"
+    );
+    cx.update(|window, cx| {
+        window.input("hello", cx);
+        window.press("enter", cx);
+    });
+    wait(cx, &app, "the prompt's run", |a| {
+        a.screen.runs.len() == 3 && a.screen.runs[2].1.is_some()
+    });
+    app.read_with(cx, |a, _| {
+        assert_eq!(a.screen.runs[2], ("hello".to_string(), Some(true)));
+        let answer = a.state.message.clone().unwrap_or_default();
+        assert!(
+            answer.contains("prompt: hello") && answer.contains("agent: other"),
+            "{answer}"
+        );
+    });
     drop(runtime);
 }
 

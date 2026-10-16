@@ -44,6 +44,15 @@ pub struct Config {
     pub agents: AgentsConfig,
     /// The repository's checks (design 23, E2): `<repo>/.legionctl/checks.jsonc`.
     pub checks: crate::checks::ChecksConfig,
+    pub app: AppConfig,
+}
+
+/// The desktop app (`legionctl-app`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AppConfig {
+    /// The chat bar's agent (a `session.acp` name) in a thread that has no `/agent` choice; null: none.
+    pub agent: Option<String>,
 }
 
 /// Agent configs (design 23, B+2): each one is an archetype file plus the fields that it changes.
@@ -342,6 +351,8 @@ pub struct SessionConfig {
     pub resume: BTreeMap<String, Vec<String>>,
     /// Agent name -> the command of its ACP adapter, for headless runs (`session run`).
     pub acp: BTreeMap<String, Vec<String>>,
+    /// ACP adapter command -> the npm package that gives it: `setup apply` installs a missing one with `bun add -g`.
+    pub acp_packages: BTreeMap<String, String>,
     /// Run sessions in a systemd user scope (`legionctl-session-<id>`); off where there is no user systemd.
     pub scope: bool,
     /// Hidden in the sandbox: sockets and folders that would give a way out (a container or VM with the host's

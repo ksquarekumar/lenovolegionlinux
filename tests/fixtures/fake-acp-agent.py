@@ -10,7 +10,8 @@ operator in the middle of one). It can load its sessions (kept in `.fake-acp-ses
 new adapter process finds them): session/load replays the earlier prompts and a REPLAYED line before it answers.
 After session/new and session/load it offers two commands (available_commands_update): /plan <what to plan> and
 /status. In a thread member's session (LEGIONCTL_MEMBER=<thread>/<member>), a prompt runs the script
-$FAKE_ACP_SCRIPTS/<member>.sh instead, with the prompt in FAKE_ACP_PROMPT, and its output lines are the answer. Like the real adapters, it does not end when its input closes: the operator must end the session.
+$FAKE_ACP_SCRIPTS/<member>.sh instead, with the prompt in FAKE_ACP_PROMPT, and its output lines are the answer. A name
+as its first argument ends each answer with the line "agent: <name>" (two session.acp agents in one test). Like the real adapters, it does not end when its input closes: the operator must end the session.
 """
 
 import json
@@ -116,6 +117,8 @@ def prompt(params):
         "PUSH_REFUSED" if (not pushed and "gates.git.deny" in push_output) else "PUSH_NOT_REFUSED",
         "inside: " + where(),
     ]
+    if len(sys.argv) > 1:
+        lines.append(f"agent: {sys.argv[1]}")
     for i, line in enumerate(lines):
         update(session, "agent_message_chunk", content={"type": "text", "text": line + "\n"})
         if i == 0 and text.startswith("WAIT"):

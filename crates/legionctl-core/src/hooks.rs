@@ -208,9 +208,9 @@ fn run_action(config: &Resolved, action: &Action, event: Event) -> String {
             })
         }
         "setup-check" => {
-            crate::archetypes::Sources::resolve(&crate::config::Dirs::from_env(), None).map(
-                |agents| {
-                    let report = setup::check(&agents);
+            crate::archetypes::Sources::resolve(&crate::config::Dirs::from_env(), None)
+                .and_then(|agents| setup::check(&agents, &config.config.session))
+                .map(|report| {
                     let todo = report.needs_attention();
                     if todo.is_empty() {
                         String::new()
@@ -225,8 +225,7 @@ fn run_action(config: &Resolved, action: &Action, event: Event) -> String {
                             names.join(", ")
                         )
                     }
-                },
-            )
+                })
         }
         _ => Command::new("timeout")
             .args([

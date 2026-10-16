@@ -117,6 +117,13 @@
       "claude": ["claude-code-acp"],
       "codex": ["codex-acp"]
     },
+    // ACP adapter command -> its npm package. `legionctl setup check` reports an adapter command of "acp" that is not
+    // on the PATH of the systemd user manager (with bun's global folder, `bun pm -g bin`); `setup apply` installs it
+    // with `bun add -g <package>`.
+    "acp_packages": {
+      "claude-code-acp": "@zed-industries/claude-code-acp",
+      "codex-acp": "@zed-industries/codex-acp"
+    },
     // Each session in its own systemd user scope (legionctl-session-<id>), for limits, pause and stop.
     "scope": true,
     // What legionctl does by itself with sessions; off by default (0). idle_freeze_minutes: freeze an interactive
@@ -280,5 +287,12 @@
       "memory_available_percent": 5,
       "load_per_cpu": 1.5
     }
+  },
+
+  // The desktop app (legionctl-app).
+  "app": {
+    // The chat bar's agent, a name of session.acp, in a thread where nobody picked one with `/agent <name>` (the
+    // pick is a row of the thread's log); null: no agent until a pick.
+    "agent": "claude"
   }
 }

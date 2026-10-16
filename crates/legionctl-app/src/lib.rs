@@ -154,15 +154,9 @@ impl LegionApp {
         app
     }
 
-    /// The chat bar's agent (`session.acp`), the dossier of its runs and their repository.
+    /// The dossier of the chat bar's runs and their repository.
     #[must_use]
-    pub fn with_agent(
-        mut self,
-        agent: String,
-        dossier: Option<String>,
-        repo: std::path::PathBuf,
-    ) -> Self {
-        self.screen.agent = Some(agent);
+    pub fn with_runs(mut self, dossier: Option<String>, repo: std::path::PathBuf) -> Self {
         self.screen.dossier = dossier;
         self.screen.repo = repo;
         self
