@@ -54,24 +54,32 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # the static client builds in the Makefile's RUST_IMAGE; a registry rate limit ("toomanyrequests") failed CI
       # twice (run 38734868166): the image is kept in the cache, and a pull waits and tries again
-      - name: Static build image name
+      # the container tests' images (tests/fixtures/ci-images.txt) too: a pull of python:3.12-slim from the public
+      # registry failed CI five times on 2026-10-16 (runs 38817524143 .. 38939072347, todo-148)
+      - name: Container image names
         id: rustimage
-        run: echo "image=$(sed -n 's/^RUST_IMAGE := //p' Makefile)" >> "$GITHUB_OUTPUT"
-      - name: Cache the static build image
+        run: |
+          image=$(sed -n 's/^RUST_IMAGE := //p' Makefile)
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "key=$(printf '%s\n' "$image" | cat - tests/fixtures/ci-images.txt | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - name: Cache the container images
         id: rustimagecache
         uses: actions/cache@v4
         with:
           path: ~/rust-image.tar
-          key: static-image-${{ steps.rustimage.outputs.image }}
-      - name: Static build image
+          key: container-images-${{ steps.rustimage.outputs.key }}
+      - name: Container images
         env:
           IMAGE: ${{ steps.rustimage.outputs.image }}
         run: |
           if [ -f ~/rust-image.tar ]; then
             docker load -i ~/rust-image.tar
           else
-            for wait in 20 40 80 160; do docker pull "$IMAGE" && break; sleep "$wait"; done
-            docker save -o ~/rust-image.tar "$IMAGE"
+            images="$IMAGE $(cat tests/fixtures/ci-images.txt)"
+            for image in $images; do
+              for wait in 20 40 80 160; do docker pull "$image" && break; sleep "$wait"; done
+            done
+            docker save -o ~/rust-image.tar $images
           fi
       - name: Lint, format check, profile validation, tests
         run: make ci

@@ -3290,7 +3290,14 @@ fn container_repository(home: &Path, (gateway, provider): (u16, u16)) -> PathBuf
     .unwrap();
     write(
         &repo.join("Dockerfile"),
-        "FROM public.ecr.aws/docker/library/python:3.12-slim\n",
+        // the images of the container tests are in one list, which CI caches (todo-148)
+        &format!(
+            "FROM {}\n",
+            include_str!("../../../tests/fixtures/ci-images.txt")
+                .lines()
+                .next()
+                .unwrap()
+        ),
     );
     write(
         &repo.join("ask-gateway.py"),
