@@ -6,7 +6,7 @@
 use anyhow::{Context, Result, bail};
 
 use crate::policy::Step;
-use crate::sysroot::SysRoot;
+use crate::sysroot::{SysRoot, read_file};
 use crate::winvm;
 
 /// greetd's configuration, and the file that was there before ours.
@@ -33,24 +33,29 @@ pub struct GreeterState {
     pub missing: Vec<String>,
 }
 
-#[must_use]
-pub fn state(root: &SysRoot) -> GreeterState {
-    GreeterState {
-        installed: root.read(CONFIG).is_some_and(|c| c.starts_with(MARK)),
-        display_manager: root
-            .link(DISPLAY_MANAGER)
-            .and_then(|p| Some(p.file_name()?.to_string_lossy().into_owned())),
-        kept: root.exists(BEFORE),
-        missing: [
-            ("/usr/bin/greetd", "greetd (pacman -S greetd)"),
-            ("/usr/bin/cage", "cage (pacman -S cage)"),
-            (GREETER, "legionctl-greeter (the legionctl package)"),
-        ]
-        .into_iter()
-        .filter(|(path, _)| !root.exists(path))
-        .map(|(_, what)| what.to_string())
-        .collect(),
+/// The greeter now.
+///
+/// # Errors
+/// greetd's configuration or the display manager link cannot be read.
+pub fn state(root: &SysRoot) -> Result<GreeterState> {
+    let mut missing = Vec::new();
+    for (path, what) in [
+        ("/usr/bin/greetd", "greetd (pacman -S greetd)"),
+        ("/usr/bin/cage", "cage (pacman -S cage)"),
+        (GREETER, "legionctl-greeter (the legionctl package)"),
+    ] {
+        if !root.exists(path)? {
+            missing.push(what.to_string());
+        }
     }
+    Ok(GreeterState {
+        installed: root.read(CONFIG)?.is_some_and(|c| c.starts_with(MARK)),
+        display_manager: root
+            .link(DISPLAY_MANAGER)?
+            .and_then(|p| Some(p.file_name()?.to_string_lossy().into_owned())),
+        kept: root.exists(BEFORE)?,
+        missing,
+    })
 }
 
 fn systemctl(verb: &str, unit: &str) -> Step {
@@ -62,7 +67,7 @@ fn systemctl(verb: &str, unit: &str) -> Step {
 /// # Errors
 /// The greeter is installed already, greetd, cage or the greeter is not installed, or GDM is not the display manager.
 pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
-    let now = state(root);
+    let now = state(root)?;
     if now.installed {
         bail!("legionctl's greeter is installed already ({CONFIG})");
     }
@@ -79,7 +84,7 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
         );
     }
     let mut steps = Vec::new();
-    if let Ok(old) = std::fs::read_to_string(root.path(CONFIG)) {
+    if let Some(old) = read_file(&root.path(CONFIG))? {
         steps.push(Step::Create {
             path: BEFORE.into(),
             content: old,
@@ -103,16 +108,16 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
 /// # Errors
 /// The greeter is not installed, or GDM is not installed.
 pub fn remove_plan(root: &SysRoot) -> Result<Vec<Step>> {
-    if !state(root).installed {
+    if !state(root)?.installed {
         bail!("legionctl's greeter is not installed: {CONFIG} is not legionctl's");
     }
     let unit = format!("/usr/lib/systemd/system/{GDM}");
     anyhow::ensure!(
-        root.exists(&unit),
+        root.exists(&unit)?,
         "GDM is not installed ({unit}): install gdm first, it is the way back"
     );
-    let mut steps = match std::fs::read_to_string(root.path(BEFORE)) {
-        Ok(old) => vec![
+    let mut steps = match read_file(&root.path(BEFORE))? {
+        Some(old) => vec![
             Step::Create {
                 path: CONFIG.into(),
                 content: old,
@@ -121,7 +126,7 @@ pub fn remove_plan(root: &SysRoot) -> Result<Vec<Step>> {
                 path: BEFORE.into(),
             },
         ],
-        Err(_) => vec![Step::Remove {
+        None => vec![Step::Remove {
             path: CONFIG.into(),
         }],
     };
@@ -137,7 +142,7 @@ pub fn remove_plan(root: &SysRoot) -> Result<Vec<Step>> {
 /// No such user, or a system account.
 pub fn person(root: &SysRoot, user: &str) -> Result<u32> {
     let uid: u32 = root
-        .read("/etc/passwd")
+        .read("/etc/passwd")?
         .unwrap_or_default()
         .lines()
         .map(|l| l.split(':').collect::<Vec<_>>())
@@ -169,7 +174,7 @@ pub fn vm_plan(root: &SysRoot, user: &str, uid: u32, action: &str) -> Result<Vec
     Ok(match action {
         "vm-start" => {
             let rule = winvm::autostart_rule(user)?;
-            if root.read(winvm::autostart_file(user)?).as_deref() != Some(rule.trim()) {
+            if root.read(winvm::autostart_file(user)?)?.as_deref() != Some(rule.trim()) {
                 bail!(
                     "the Windows VM of {user} starts before login only with autostart on: its start asks polkit as \
                      {user}, and before login no one can answer"

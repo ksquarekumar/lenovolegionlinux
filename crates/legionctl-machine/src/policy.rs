@@ -11,7 +11,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 use serde_json::Value;
 
@@ -126,16 +126,26 @@ fn quoted(s: &str) -> String {
 }
 
 impl Machine<'_> {
-    pub(crate) fn write(&self, steps: &mut Vec<Step>, path: impl AsRef<Path>, value: &str) {
+    /// A write of `value` to `path` when it has another value now.
+    ///
+    /// # Errors
+    /// `path` cannot be read.
+    pub(crate) fn write(
+        &self,
+        steps: &mut Vec<Step>,
+        path: impl AsRef<Path>,
+        value: &str,
+    ) -> Result<()> {
         let path = path.as_ref();
-        if !self.root.exists(path) {
+        if !self.root.exists(path)? {
             steps.push(Step::Warn(format!("missing path: {}", path.display())));
-        } else if self.root.read(path).as_deref() != Some(value) {
+        } else if self.root.read(path)?.as_deref() != Some(value) {
             steps.push(Step::Write {
                 path: path.display().to_string(),
                 value: value.into(),
             });
         }
+        Ok(())
     }
 
     pub fn run(&self, steps: &mut Vec<Step>, argv: &[&str]) {
@@ -158,29 +168,37 @@ impl Machine<'_> {
         }
     }
 
-    fn cpufreq(&self, steps: &mut Vec<Step>, name: &str, value: Option<&str>) {
+    fn cpufreq(&self, steps: &mut Vec<Step>, name: &str, value: Option<&str>) -> Result<()> {
         if let Some(value) = value {
-            for policy in self.root.children(CPUFREQ, "policy") {
-                self.write(steps, policy.join(name), value);
+            for policy in self.root.children(CPUFREQ, "policy")? {
+                self.write(steps, policy.join(name), value)?;
             }
         }
+        Ok(())
     }
 
     /// The conditions the layers are tested against, for `source` while the policy follows the Fn+Q choice `fnq`.
-    #[must_use]
-    pub fn conditions(&self, source: Source, fnq: Option<&str>) -> Conditions {
-        Conditions {
+    ///
+    /// # Errors
+    /// The workload or the running kernel cannot be read.
+    pub fn conditions(&self, source: Source, fnq: Option<&str>) -> Result<Conditions> {
+        Ok(Conditions {
             power: source,
             fnq: fnq.map(String::from),
-            workload: configset::workload(self.root),
-            kernel: crate::kernel::running_package(self.root),
-        }
+            workload: configset::workload(self.root)?,
+            kernel: crate::kernel::running_package(self.root)?,
+        })
     }
 
     /// The desired state for `source` while the policy follows the Fn+Q choice `fnq` (configsets, note 01).
-    #[must_use]
-    pub fn desired(&self, source: Source, fnq: Option<&str>) -> Merged {
-        configset::merge(self.layers, &self.conditions(source, fnq))
+    ///
+    /// # Errors
+    /// The conditions cannot be read.
+    pub fn desired(&self, source: Source, fnq: Option<&str>) -> Result<Merged> {
+        Ok(configset::merge(
+            self.layers,
+            &self.conditions(source, fnq)?,
+        ))
     }
 
     /// Whether a used layer has a policy for the Fn+Q mode `mode`.
@@ -191,43 +209,51 @@ impl Machine<'_> {
             .any(|l| l.off.is_none() && l.when.get("fnq").map(String::as_str) == Some(mode))
     }
 
-    fn follow_policy(&self, steps: &mut Vec<Step>, firmware_mode: &str, wanted: &Merged) {
+    fn follow_policy(
+        &self,
+        steps: &mut Vec<Step>,
+        firmware_mode: &str,
+        wanted: &Merged,
+    ) -> Result<()> {
         if !self.follows(firmware_mode) {
             steps.push(Step::Warn(format!(
                 "no configset layer for the Fn+Q mode {}; leaving CPU policy alone",
                 quoted(firmware_mode)
             )));
-            return;
+            return Ok(());
         }
         self.power_profile(steps, wanted.text("ppd").as_deref());
         self.cpufreq(
             steps,
             "scaling_governor",
             wanted.text("cpu.governor").as_deref(),
-        );
+        )
     }
 
     /// The first firmware mode of the wanted `platform_profile` (a preference list) that this machine offers.
-    #[must_use]
-    pub fn platform_choice(&self, wanted: &Merged) -> Option<String> {
+    ///
+    /// # Errors
+    /// The firmware mode choices cannot be read.
+    pub fn platform_choice(&self, wanted: &Merged) -> Result<Option<String>> {
         let choices = self
             .root
-            .read(&self.profile.paths.platform_profile_choices)
+            .read(&self.profile.paths.platform_profile_choices)?
             .unwrap_or_default();
         let available: Vec<&str> = choices.split_whitespace().collect();
-        let preference: Vec<String> = match wanted.values.get("platform_profile")? {
-            Value::Array(list) => list.iter().map(profile::text).collect(),
-            one => vec![profile::text(one)],
+        let preference: Vec<String> = match wanted.values.get("platform_profile") {
+            None => return Ok(None),
+            Some(Value::Array(list)) => list.iter().map(profile::text).collect(),
+            Some(one) => vec![profile::text(one)],
         };
-        preference
+        Ok(preference
             .into_iter()
-            .find(|c| available.contains(&c.as_str()))
+            .find(|c| available.contains(&c.as_str())))
     }
 
-    fn firmware_policy(&self, steps: &mut Vec<Step>, wanted: &Merged) {
-        match self.platform_choice(wanted) {
+    fn firmware_policy(&self, steps: &mut Vec<Step>, wanted: &Merged) -> Result<()> {
+        match self.platform_choice(wanted)? {
             Some(chosen) => {
-                self.write(steps, &self.profile.paths.platform_profile, &chosen);
+                self.write(steps, &self.profile.paths.platform_profile, &chosen)?;
                 steps.push(Step::Record {
                     key: Key::Written,
                     value: Some(chosen),
@@ -239,29 +265,31 @@ impl Machine<'_> {
         }
         if let Some(fan_mode) = wanted.text("firmware.fan_mode") {
             match &self.profile.paths.fan_mode {
-                Some(path) => self.write(steps, path, &fan_mode),
+                Some(path) => self.write(steps, path, &fan_mode)?,
                 None => steps.push(Step::Warn("no VPC2004 fan_mode path found".into())),
             }
         }
+        Ok(())
     }
 
-    fn firmware_attributes(&self, steps: &mut Vec<Step>, wanted: &Merged) {
+    fn firmware_attributes(&self, steps: &mut Vec<Step>, wanted: &Merged) -> Result<()> {
         for (name, value) in wanted.under("firmware.") {
             if name == "fan_mode" {
                 continue;
             }
             let base = Path::new(FIRMWARE_ATTRIBUTES).join(&name);
-            if self.root.read(base.join("current_value")).is_none() {
+            if self.root.read(base.join("current_value"))?.is_none() {
                 steps.push(Step::Warn(format!("firmware attribute {name} not found")));
                 continue;
             }
-            let bound = |f: &str| -> i64 {
-                self.root
-                    .read(base.join(f))
+            let bound = |f: &str| -> Result<i64> {
+                Ok(self
+                    .root
+                    .read(base.join(f))?
                     .and_then(|v| v.parse().ok())
-                    .unwrap_or(0)
+                    .unwrap_or(0))
             };
-            let (low, high) = (bound("min_value"), bound("max_value"));
+            let (low, high) = (bound("min_value")?, bound("max_value")?);
             // some attributes publish min=max=0, meaning the firmware does not report a range
             if high != 0 && !value.parse().is_ok_and(|v: i64| (low..=high).contains(&v)) {
                 steps.push(Step::Warn(format!(
@@ -269,23 +297,25 @@ impl Machine<'_> {
                 )));
                 continue;
             }
-            self.write(steps, base.join("current_value"), &value);
+            self.write(steps, base.join("current_value"), &value)?;
         }
+        Ok(())
     }
 
-    fn sysctl(&self, steps: &mut Vec<Step>, wanted: &Merged) {
+    fn sysctl(&self, steps: &mut Vec<Step>, wanted: &Merged) -> Result<()> {
         for (key, value) in wanted.under("sysctl.") {
             self.write(
                 steps,
                 Path::new("/proc/sys").join(key.replace('.', "/")),
                 &value,
-            );
+            )?;
         }
+        Ok(())
     }
 
     /// The CPU knobs. While legionctl follows an Fn+Q choice (`following`), the governor and EPP stay as the Fn+Q
     /// layer and power-profiles-daemon set them.
-    fn cpu_policy(&self, steps: &mut Vec<Step>, wanted: &Merged, following: bool) {
+    fn cpu_policy(&self, steps: &mut Vec<Step>, wanted: &Merged, following: bool) -> Result<()> {
         for (id, path) in [
             (
                 "cpu.ignore_ppc",
@@ -301,7 +331,7 @@ impl Machine<'_> {
             ),
         ] {
             if let Some(value) = wanted.text(id) {
-                self.write(steps, path, &value);
+                self.write(steps, path, &value)?;
             }
         }
         if !following {
@@ -309,17 +339,17 @@ impl Machine<'_> {
                 steps,
                 "scaling_governor",
                 wanted.text("cpu.governor").as_deref(),
-            );
+            )?;
             self.cpufreq(
                 steps,
                 "energy_performance_preference",
                 wanted.text("cpu.epp").as_deref(),
-            );
+            )?;
         }
         if let Some(bias) = wanted.text("cpu.energy_perf_bias") {
-            for dir in self.root.children("/sys/devices/system/cpu", "cpu") {
-                if self.root.exists(dir.join("power/energy_perf_bias")) {
-                    self.write(steps, dir.join("power/energy_perf_bias"), &bias);
+            for dir in self.root.children("/sys/devices/system/cpu", "cpu")? {
+                if self.root.exists(dir.join("power/energy_perf_bias"))? {
+                    self.write(steps, dir.join("power/energy_perf_bias"), &bias)?;
                 }
             }
             if (self.has_command)("cpupower") {
@@ -329,6 +359,7 @@ impl Machine<'_> {
         if wanted.text("cpu.idle_states").as_deref() == Some("enabled") {
             self.run(steps, &["cpupower", "idle-set", "-E"]);
         }
+        Ok(())
     }
 
     fn nvidia(&self, steps: &mut Vec<Step>, wanted: &Merged) {
@@ -350,44 +381,49 @@ impl Machine<'_> {
     }
 
     /// The `OpenRGB` profile, when it is not the one loaded last in this boot.
-    fn rgb(&self, steps: &mut Vec<Step>, wanted: &Merged) {
+    fn rgb(&self, steps: &mut Vec<Step>, wanted: &Merged) -> Result<()> {
         if let Some(profile) = wanted.text("rgb.profile")
-            && self.ledger.get(Key::RgbProfile).as_deref() != Some(profile.as_str())
+            && self.ledger.get(Key::RgbProfile)?.as_deref() != Some(profile.as_str())
         {
             steps.push(Step::Rgb(profile));
         }
+        Ok(())
     }
 
-    #[must_use]
-    pub fn ac_online(&self) -> bool {
-        self.root.read(&self.profile.paths.ac_adapter).as_deref() == Some("1")
+    /// The AC adapter is online.
+    ///
+    /// # Errors
+    /// The AC adapter file cannot be read.
+    pub fn ac_online(&self) -> Result<bool> {
+        Ok(self.root.read(&self.profile.paths.ac_adapter)?.as_deref() == Some("1"))
     }
 
     /// The power source now.
-    #[must_use]
-    pub fn source(&self) -> Source {
-        if self.ac_online() {
+    ///
+    /// # Errors
+    /// The AC adapter file cannot be read.
+    pub fn source(&self) -> Result<Source> {
+        Ok(if self.ac_online()? {
             Source::Ac
         } else {
             Source::Battery
-        }
+        })
     }
 
     /// # Errors
-    /// The DMI identity does not match the profile and `force` is not set.
+    /// The DMI identity cannot be read, or it does not match the profile and `force` is not set.
     pub fn require_supported_machine(&self, force: bool) -> Result<()> {
-        let mismatches: Vec<String> = self
-            .profile
-            .dmi_match
-            .iter()
-            .filter_map(|(key, expected)| {
-                let live = self.root.read(Path::new(DMI).join(key));
-                (live.as_deref() != Some(expected.as_str())).then(|| {
-                    let live = live.map_or("None".into(), |l| quoted(&l));
-                    format!("  {key}: expected {}, got {live}", quoted(expected))
-                })
-            })
-            .collect();
+        let mut mismatches: Vec<String> = Vec::new();
+        for (key, expected) in &self.profile.dmi_match {
+            let live = self.root.read(Path::new(DMI).join(key))?;
+            if live.as_deref() != Some(expected.as_str()) {
+                let live = live.map_or("None".into(), |l| quoted(&l));
+                mismatches.push(format!(
+                    "  {key}: expected {}, got {live}",
+                    quoted(expected)
+                ));
+            }
+        }
         if !mismatches.is_empty() && !force {
             bail!(
                 "DMI profile mismatch; refusing to apply policy for this machine:\n{}\nUse --force only if you intentionally want to override this guard.",
@@ -398,9 +434,9 @@ impl Machine<'_> {
     }
 
     /// The plan with each write to a path the user holds replaced by a note (D1: a hold pauses the policy there).
-    fn without_held(&self, steps: Vec<Step>) -> Vec<Step> {
-        let holds = self.ledger.holds();
-        steps
+    fn without_held(&self, steps: Vec<Step>) -> Result<Vec<Step>> {
+        let holds = self.ledger.holds()?;
+        Ok(steps
             .into_iter()
             .map(|step| match &step {
                 Step::Write { path, .. } => match holds.iter().find(|(p, _)| held_by(p, path)) {
@@ -411,15 +447,16 @@ impl Machine<'_> {
                 },
                 _ => step,
             })
-            .collect()
+            .collect())
     }
 
     /// Plan the policy for `source` (`None`: the current power source); the user's holds stay as they are.
     ///
     /// # Errors
-    /// The machine is not supported (see [`Machine::require_supported_machine`]).
+    /// The machine is not supported (see [`Machine::require_supported_machine`]), or a machine file or the ledger
+    /// cannot be read.
     pub fn apply(&self, source: Option<Source>, opts: Options) -> Result<(Source, Vec<Step>)> {
-        let ac = self.ac_online();
+        let ac = self.ac_online()?;
         let source = source.unwrap_or(if ac { Source::Ac } else { Source::Battery });
         self.require_supported_machine(opts.force)?;
         let mut steps = Vec::new();
@@ -432,7 +469,7 @@ impl Machine<'_> {
             )),
             _ => {}
         }
-        let mut override_mode = self.ledger.get(Key::Override);
+        let mut override_mode = self.ledger.get(Key::Override)?;
         if !opts.reassert && !opts.keep_override {
             // a power-source change, boot or manual apply starts from the layers without a choice again
             if let Some(mode) = override_mode.take() {
@@ -446,17 +483,17 @@ impl Machine<'_> {
                 });
             }
         }
-        let wanted = self.desired(source, override_mode.as_deref());
+        let wanted = self.desired(source, override_mode.as_deref())?;
         if let Some(mode) = &override_mode {
-            self.follow_policy(&mut steps, mode, &wanted);
+            self.follow_policy(&mut steps, mode, &wanted)?;
         } else {
-            self.firmware_policy(&mut steps, &wanted);
+            self.firmware_policy(&mut steps, &wanted)?;
             // intel_pstate refuses EPP writes while the governor is performance, which makes PPD fail; governor first
             self.cpufreq(
                 &mut steps,
                 "scaling_governor",
                 wanted.text("cpu.governor").as_deref(),
-            );
+            )?;
             self.power_profile(&mut steps, wanted.text("ppd").as_deref());
             if opts.reassert {
                 // power-profiles-daemon rewrites EPP on profile changes; reassert wins it back (the governor was
@@ -465,31 +502,31 @@ impl Machine<'_> {
                     &mut steps,
                     "energy_performance_preference",
                     wanted.text("cpu.epp").as_deref(),
-                );
+                )?;
             }
         }
-        self.firmware_attributes(&mut steps, &wanted);
+        self.firmware_attributes(&mut steps, &wanted)?;
         if !opts.reassert {
-            self.sysctl(&mut steps, &wanted);
-            self.cpu_policy(&mut steps, &wanted, override_mode.is_some());
+            self.sysctl(&mut steps, &wanted)?;
+            self.cpu_policy(&mut steps, &wanted, override_mode.is_some())?;
             self.nvidia(&mut steps, &wanted);
-            self.rgb(&mut steps, &wanted);
+            self.rgb(&mut steps, &wanted)?;
         }
-        Ok((source, self.without_held(steps)))
+        Ok((source, self.without_held(steps)?))
     }
 
     /// Plan the reaction to a `platform_profile` change: our own write is ignored, anything else is an Fn+Q choice.
     ///
     /// # Errors
-    /// `platform_profile` is not readable.
+    /// `platform_profile` or the ledger is not readable.
     pub fn follow(&self) -> Result<Vec<Step>> {
-        let Some(current) = self.root.read(&self.profile.paths.platform_profile) else {
-            bail!("platform_profile is not readable");
+        let Some(current) = self.root.read(&self.profile.paths.platform_profile)? else {
+            bail!("platform_profile is missing");
         };
-        let active = self
-            .ledger
-            .get(Key::Override)
-            .or_else(|| self.ledger.get(Key::Written));
+        let active = match self.ledger.get(Key::Override)? {
+            Some(mode) => Some(mode),
+            None => self.ledger.get(Key::Written)?,
+        };
         if active.as_deref() == Some(current.as_str()) {
             return Ok(vec![Step::Info(format!(
                 "platform_profile {} is already the active policy; nothing to follow",
@@ -506,8 +543,8 @@ impl Machine<'_> {
                 value: Some(current.clone()),
             },
         ];
-        let wanted = self.desired(self.source(), Some(&current));
-        self.follow_policy(&mut steps, &current, &wanted);
+        let wanted = self.desired(self.source()?, Some(&current))?;
+        self.follow_policy(&mut steps, &current, &wanted)?;
         Ok(steps)
     }
 }
@@ -624,110 +661,119 @@ pub fn held_by(pattern: &str, path: &str) -> bool {
     }
 }
 
-/// Carry out a plan. Returns the messages to show (writes done, warnings), in order.
-pub fn execute(root: &SysRoot, ledger: &Ledger, steps: &[Step]) -> Vec<String> {
+/// Carry out a plan. Returns the messages to show (writes done, the plan's warnings), in order.
+///
+/// # Errors
+/// A step fails: the steps after it do not run, and the error names the step, its reason and what was done before it.
+pub fn execute(root: &SysRoot, ledger: &Ledger, steps: &[Step]) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for step in steps {
-        match step {
-            Step::Write { path, value } => {
-                let before = root.read(path).unwrap_or_default();
-                if let Err(e) = std::fs::write(root.path(path), format!("{value}\n")) {
-                    out.push(format!("warning: path is not writable: {path} ({e})"));
-                    continue;
-                }
-                // the D-Bus contract (note 13): `undo` reads what a write replaced from this line
-                out.push(format!("wrote {path}: {value} (was {before})"));
-                let after = root.read(path).unwrap_or_default();
-                if after != *value {
-                    out.push(format!(
-                        "warning: {path} read back as {} after writing {}",
-                        quoted(&after),
-                        quoted(value)
-                    ));
-                }
-            }
-            Step::Run(argv) => out.extend(run(Command::new(&argv[0]).args(&argv[1..]), argv)),
-            Step::Unit(argv) => out.extend(run(&mut unit(argv), argv)),
-            Step::Create { path, content } => match std::fs::write(root.path(path), content) {
-                Ok(()) => out.push(format!("wrote {path}")),
-                Err(e) => out.push(format!("warning: could not write {path}: {e}")),
-            },
-            Step::Remove { path } => match std::fs::remove_file(root.path(path)) {
-                Ok(()) => out.push(format!("removed {path}")),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => out.push(format!("warning: could not remove {path}: {e}")),
-            },
-            Step::Try(argv) => {
-                let _ = Command::new(&argv[0]).args(&argv[1..]).output();
-            }
-            Step::Record { key, value } => {
-                if let Err(e) = ledger.set(*key, value.as_deref()) {
-                    out.push(format!("warning: {e:#}"));
-                }
-            }
-            Step::Hold { path, value } => match ledger.hold(path, value.as_deref()) {
-                Ok(()) => out.push(match value {
-                    Some(v) => format!("held {path} at {}", quoted(v)),
-                    None => format!("released {path}"),
-                }),
-                Err(e) => out.push(format!("warning: {e:#}")),
-            },
-            Step::Acpi(call) => out.push(match crate::firmware::acpi_call(root, call) {
-                Ok(reply) => format!("called {call}: {reply}"),
-                Err(e) => format!("warning: firmware call failed: {e:#}"),
-            }),
-            Step::Rgb(profile) => {
-                let before = ledger.get(Key::RgbProfile).unwrap_or_default();
-                out.push(
-                    match crate::rgb::load(profile)
-                        .and_then(|()| ledger.set(Key::RgbProfile, Some(profile)))
-                    {
-                        Ok(()) => format!("loaded the OpenRGB profile {profile} (was {before})"),
-                        Err(e) => {
-                            format!("warning: the OpenRGB profile {profile} was not loaded: {e:#}")
-                        }
-                    },
-                );
-            }
-            Step::FanCurve(levels) => out.extend(fan::write_curve(root, levels)),
-            Step::Fan { key, value } => {
-                if let Err(e) = ledger.set_fan(*key, value.as_deref()) {
-                    out.push(format!("warning: {e:#}"));
-                }
-            }
-            Step::Ec { addr, value } => out.push(match fan::ec_write(root, *addr, *value) {
-                Ok(()) => format!("wrote EC RAM 0x{addr:04X}: {value:#04x}"),
-                Err(e) => format!("warning: EC RAM 0x{addr:04X} was not written: {e:#}"),
-            }),
-            Step::LoaderVar { name, value } => out.push(match loader_var(root, name, value) {
-                Ok(()) => format!("set the EFI variable {name} to {value}"),
-                Err(e) => format!("warning: the EFI variable {name} was not set: {e}"),
-            }),
-            Step::Info(text) => out.push(text.clone()),
-            Step::Warn(text) => out.push(format!("warning: {text}")),
+        if let Err(e) = execute_one(root, ledger, step, &mut out) {
+            let what = describe(step).map_or_else(
+                || format!("{step:?}"),
+                |d| d.strip_prefix("would ").unwrap_or(&d).to_string(),
+            );
+            let done = if out.is_empty() {
+                "nothing".to_string()
+            } else {
+                out.join("; ")
+            };
+            bail!("{what} failed: {e:#}; done before it: {done}");
         }
     }
-    out
+    Ok(out)
 }
 
-/// Run `c` (the program `argv`): a warning with its error output when it fails.
-fn run(c: &mut Command, argv: &[String]) -> Option<String> {
-    match c.output() {
-        Ok(o) if o.status.success() => None,
-        Ok(o) => {
-            let detail = if o.stderr.is_empty() {
-                o.stdout
-            } else {
-                o.stderr
-            };
-            Some(format!(
-                "warning: command failed: {}: {}",
-                argv.join(" "),
-                String::from_utf8_lossy(&detail).trim()
-            ))
+fn execute_one(root: &SysRoot, ledger: &Ledger, step: &Step, out: &mut Vec<String>) -> Result<()> {
+    match step {
+        Step::Write { path, value } => {
+            let before = root.read(path)?.unwrap_or_default();
+            std::fs::write(root.path(path), format!("{value}\n"))
+                .with_context(|| format!("writing {path}"))?;
+            // the D-Bus contract (note 13): `undo` reads what a write replaced from this line
+            out.push(format!("wrote {path}: {value} (was {before})"));
+            let after = root.read(path)?.unwrap_or_default();
+            if after != *value {
+                out.push(format!(
+                    "warning: {path} read back as {} after writing {}",
+                    quoted(&after),
+                    quoted(value)
+                ));
+            }
         }
-        Err(e) => Some(format!("warning: command failed: {}: {e}", argv.join(" "))),
+        Step::Run(argv) => run(Command::new(&argv[0]).args(&argv[1..]), argv)?,
+        Step::Unit(argv) => run(&mut unit(argv), argv)?,
+        Step::Create { path, content } => {
+            std::fs::write(root.path(path), content).with_context(|| format!("writing {path}"))?;
+            out.push(format!("wrote {path}"));
+        }
+        Step::Remove { path } => match std::fs::remove_file(root.path(path)) {
+            Ok(()) => out.push(format!("removed {path}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("removing {path}")),
+        },
+        Step::Try(argv) => {
+            // a try step may fail by design: the step after it does the real work
+            let _ = Command::new(&argv[0]).args(&argv[1..]).output();
+        }
+        Step::Record { key, value } => ledger.set(*key, value.as_deref())?,
+        Step::Hold { path, value } => {
+            ledger.hold(path, value.as_deref())?;
+            out.push(match value {
+                Some(v) => format!("held {path} at {}", quoted(v)),
+                None => format!("released {path}"),
+            });
+        }
+        Step::Acpi(call) => {
+            let reply = crate::firmware::acpi_call(root, call)?;
+            out.push(format!("called {call}: {reply}"));
+        }
+        Step::Rgb(profile) => {
+            let before = ledger.get(Key::RgbProfile)?.unwrap_or_default();
+            crate::rgb::load(profile)?;
+            ledger.set(Key::RgbProfile, Some(profile))?;
+            out.push(format!(
+                "loaded the OpenRGB profile {profile} (was {before})"
+            ));
+        }
+        Step::FanCurve(levels) => out.push(fan::write_curve(root, levels)?),
+        Step::Fan { key, value } => ledger.set_fan(*key, value.as_deref())?,
+        Step::Ec { addr, value } => {
+            fan::ec_write(root, *addr, *value)?;
+            out.push(format!("wrote EC RAM 0x{addr:04X}: {value:#04x}"));
+        }
+        Step::LoaderVar { name, value } => {
+            loader_var(root, name, value)?;
+            out.push(format!("set the EFI variable {name} to {value}"));
+        }
+        Step::Info(text) => out.push(text.clone()),
+        Step::Warn(text) => out.push(format!("warning: {text}")),
     }
+    Ok(())
+}
+
+/// Run `c` (the program `argv`).
+///
+/// # Errors
+/// It cannot start or it fails: its error output.
+fn run(c: &mut Command, argv: &[String]) -> Result<()> {
+    let o = c
+        .output()
+        .with_context(|| format!("starting {}", argv.join(" ")))?;
+    if !o.status.success() {
+        let detail = if o.stderr.is_empty() {
+            o.stdout
+        } else {
+            o.stderr
+        };
+        bail!(
+            "{} exited with {}: {}",
+            argv.join(" "),
+            o.status,
+            String::from_utf8_lossy(&detail).trim()
+        );
+    }
+    Ok(())
 }
 
 /// `argv` as a transient unit with no sandbox: `--pipe` and `--wait` give back its output and exit status.

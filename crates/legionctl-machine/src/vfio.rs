@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
-use crate::sysroot::SysRoot;
+use crate::sysroot::{SysRoot, denied};
 
 const PCI: &str = "/sys/bus/pci/devices";
 const VFIO: &str = "vfio-pci";
@@ -34,11 +34,19 @@ fn device_path(device: &str) -> PathBuf {
     Path::new(PCI).join(device)
 }
 
+fn name(path: &Path) -> Option<String> {
+    path.file_name().map(|n| n.to_string_lossy().into_owned())
+}
+
 /// The driver bound to `device` now, if any.
-#[must_use]
-pub fn driver(root: &SysRoot, device: &str) -> Option<String> {
-    root.link(device_path(device).join("driver"))
-        .and_then(|l| l.file_name().map(|n| n.to_string_lossy().into_owned()))
+///
+/// # Errors
+/// The `driver` link cannot be read.
+pub fn driver(root: &SysRoot, device: &str) -> Result<Option<String>> {
+    Ok(root
+        .link(device_path(device).join("driver"))?
+        .as_deref()
+        .and_then(name))
 }
 
 /// The IOMMU group of `device` and every device in it, sorted.
@@ -46,56 +54,68 @@ pub fn driver(root: &SysRoot, device: &str) -> Option<String> {
 /// # Errors
 /// `device` is not a PCI address of this machine, or it has no IOMMU group (the IOMMU is off).
 pub fn group(root: &SysRoot, device: &str) -> Result<(String, Vec<String>)> {
-    if !valid(device) || !root.exists(device_path(device)) {
+    if !valid(device) || !root.exists(device_path(device))? {
         bail!("{device} is not a PCI device of this machine (see lspci -D)");
     }
-    let group = root
-        .link(device_path(device).join("iommu_group"))
-        .and_then(|l| l.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .with_context(|| {
-            format!("{device} has no IOMMU group: turn on the IOMMU (intel_iommu=on, VT-d in the firmware)")
-        })?;
-    let members = root
-        .children(format!("/sys/kernel/iommu_groups/{group}/devices"), "")
+    let group = iommu_group(root, device)?.with_context(|| {
+        format!(
+            "{device} has no IOMMU group: turn on the IOMMU (intel_iommu=on, VT-d in the firmware)"
+        )
+    })?;
+    Ok((group.clone(), members(root, &group)?))
+}
+
+fn iommu_group(root: &SysRoot, device: &str) -> Result<Option<String>> {
+    Ok(root
+        .link(device_path(device).join("iommu_group"))?
+        .as_deref()
+        .and_then(name))
+}
+
+fn members(root: &SysRoot, group: &str) -> Result<Vec<String>> {
+    Ok(root
+        .children(format!("/sys/kernel/iommu_groups/{group}/devices"), "")?
         .iter()
-        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .collect();
-    Ok((group, members))
+        .filter_map(|p| name(p))
+        .collect())
 }
 
 /// The device nodes of `device` that a host process can hold (DRM nodes, NVIDIA's nodes for an NVIDIA GPU, an `NVMe`
 /// controller), and its block devices (namespaces, partitions). None for an audio function: sound cards are made to
 /// go away while in use.
-fn nodes(root: &SysRoot, device: &str) -> (Vec<String>, Vec<String>) {
+fn nodes(root: &SysRoot, device: &str) -> Result<(Vec<String>, Vec<String>)> {
     let dir = device_path(device);
-    let class = root.read(dir.join("class")).unwrap_or_default();
-    let names = |sub: &str, prefix: &str| -> Vec<String> {
-        root.children(dir.join(sub), prefix)
+    let class = root
+        .read(dir.join("class"))?
+        .with_context(|| format!("{device} has no class: the host-use check cannot run"))?;
+    let names = |sub: &str, prefix: &str| -> Result<Vec<String>> {
+        Ok(root
+            .children(dir.join(sub), prefix)?
             .iter()
-            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .collect()
+            .filter_map(|p| name(p))
+            .collect())
     };
     let (mut nodes, mut blocks): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
     if class.starts_with("0x03") {
         nodes.extend(
-            names("drm", "")
+            names("drm", "")?
                 .into_iter()
                 .map(|n| format!("/dev/dri/{n}")),
         );
-        if root.read(dir.join("vendor")).as_deref() == Some("0x10de") {
+        if root.read(dir.join("vendor"))?.as_deref() == Some("0x10de") {
             nodes.extend(
-                root.children("/dev", "nvidia")
+                root.children("/dev", "nvidia")?
                     .iter()
                     .map(|p| p.to_string_lossy().into_owned()),
             );
         }
     } else if class.starts_with("0x0108") {
-        for controller in names("nvme", "nvme") {
+        for controller in names("nvme", "nvme")? {
             nodes.push(format!("/dev/{controller}"));
-            for namespace in names(&format!("nvme/{controller}"), &format!("{controller}n")) {
+            for namespace in names(&format!("nvme/{controller}"), &format!("{controller}n"))? {
                 blocks.push(format!("/dev/{namespace}"));
                 blocks.extend(
-                    root.children(format!("/sys/block/{namespace}"), &format!("{namespace}p"))
+                    root.children(format!("/sys/block/{namespace}"), &format!("{namespace}p"))?
                         .iter()
                         .filter_map(|p| p.file_name())
                         .map(|n| format!("/dev/{}", n.to_string_lossy())),
@@ -104,38 +124,46 @@ fn nodes(root: &SysRoot, device: &str) -> (Vec<String>, Vec<String>) {
         }
     }
     nodes.extend(blocks.iter().cloned());
-    (nodes, blocks)
+    Ok((nodes, blocks))
 }
 
 /// Why the group of `devices` cannot go to a VM now, one line each: processes that hold a device node, mounted, swap
-/// or held block devices. Empty when nothing on the host uses it.
-#[must_use]
-pub fn users(root: &SysRoot, devices: &[String]) -> Vec<String> {
-    let (nodes, blocks): (Vec<String>, Vec<String>) = devices.iter().map(|d| nodes(root, d)).fold(
-        (Vec::new(), Vec::new()),
-        |(mut n, mut b), (dn, db)| {
-            n.extend(dn);
-            b.extend(db);
-            (n, b)
-        },
-    );
+/// or held block devices. Empty when nothing on the host uses it. With `all`, each process must be read (the guard,
+/// as root); without, the processes that the reader may not see are left out (a report as a user).
+///
+/// # Errors
+/// A file that the check needs cannot be read: the host-use check cannot run.
+pub fn users(root: &SysRoot, devices: &[String], all: bool) -> Result<Vec<String>> {
+    let (mut held_nodes, mut blocks) = (Vec::new(), Vec::new());
+    for device in devices {
+        let (dn, db) = nodes(root, device)?;
+        held_nodes.extend(dn);
+        blocks.extend(db);
+    }
     let mut out = Vec::new();
-    for proc in root.children("/proc", "") {
-        let Some(pid) = proc.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+    for proc in root.children("/proc", "")? {
+        let Some(pid) = name(&proc) else {
             continue;
         };
         if !pid.bytes().all(|b| b.is_ascii_digit()) {
             continue;
         }
-        let held: Vec<String> = root
-            .children(proc.join("fd"), "")
-            .iter()
-            .filter_map(|fd| root.link(fd))
-            .map(|l| l.to_string_lossy().into_owned())
-            .filter(|l| nodes.contains(l))
-            .collect();
-        if let Some(node) = held.first() {
-            let comm = root.read(proc.join("comm")).unwrap_or_default();
+        let fds = match root.children(proc.join("fd"), "") {
+            Err(e) if !all && denied(&e) => continue,
+            fds => fds?,
+        };
+        let mut held = None;
+        for fd in fds {
+            if let Some(link) = root.link(&fd)?.map(|l| l.to_string_lossy().into_owned())
+                && held_nodes.contains(&link)
+            {
+                held = Some(link);
+                break;
+            }
+        }
+        if let Some(node) = held {
+            // a process that ended since the listing has no comm
+            let comm = root.read(proc.join("comm"))?.unwrap_or_default();
             out.push(format!("{comm} (pid {pid}) uses {node}"));
         }
     }
@@ -143,7 +171,11 @@ pub fn users(root: &SysRoot, devices: &[String]) -> Vec<String> {
         ("/proc/self/mounts", "is mounted at"),
         ("/proc/swaps", "is swap"),
     ] {
-        for line in root.read(file).unwrap_or_default().lines() {
+        let table = root
+            .read(file)
+            .and_then(|t| t.with_context(|| format!("{file} is missing")))
+            .with_context(|| format!("cannot read {file}: the host-use check cannot run"))?;
+        for line in table.lines() {
             let mut fields = line.split_whitespace();
             let (Some(source), at) = (fields.next(), fields.next().unwrap_or_default()) else {
                 continue;
@@ -161,7 +193,7 @@ pub fn users(root: &SysRoot, devices: &[String]) -> Vec<String> {
         } else {
             format!("/sys/block/{namespace}/{name}/holders")
         };
-        for holder in root.children(&holders, "") {
+        for holder in root.children(&holders, "")? {
             let by = holder
                 .file_name()
                 .unwrap_or_default()
@@ -170,7 +202,7 @@ pub fn users(root: &SysRoot, devices: &[String]) -> Vec<String> {
             out.push(format!("{block} is held by {by} (device mapper or RAID)"));
         }
     }
-    out
+    Ok(out)
 }
 
 fn write(root: &SysRoot, path: &Path, value: &str) -> Result<()> {
@@ -181,7 +213,7 @@ fn write(root: &SysRoot, path: &Path, value: &str) -> Result<()> {
 /// Wait until `device`'s driver is (or, with `away`, is no longer) `vfio-pci`.
 fn settle(root: &SysRoot, device: &str, away: bool) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(5);
-    while (driver(root, device).as_deref() == Some(VFIO)) == away {
+    while (driver(root, device)?.as_deref() == Some(VFIO)) == away {
         if Instant::now() > deadline {
             bail!(
                 "the kernel did not {} {device} in 5 s (driver now: {})",
@@ -190,7 +222,7 @@ fn settle(root: &SysRoot, device: &str, away: bool) -> Result<()> {
                 } else {
                     "bind vfio-pci to"
                 },
-                driver(root, device).unwrap_or_else(|| "none".into())
+                driver(root, device)?.unwrap_or_else(|| "none".into())
             );
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -215,7 +247,7 @@ pub fn check(root: &SysRoot, devices: &[String]) -> Result<String> {
             asked.join(" ")
         );
     }
-    let users = users(root, devices);
+    let users = users(root, devices, true)?;
     if !users.is_empty() {
         bail!(
             "the host uses IOMMU group {group}:\n- {}",
@@ -231,7 +263,7 @@ pub fn check(root: &SysRoot, devices: &[String]) -> Result<String> {
 /// `check` fails, a sysfs write fails, or the kernel does not bind in time.
 pub fn bind(root: &SysRoot, devices: &[String], uid: u32) -> Result<Vec<String>> {
     let group = check(root, devices)?;
-    if !root.exists("/sys/bus/pci/drivers/vfio-pci") {
+    if !root.exists("/sys/bus/pci/drivers/vfio-pci")? {
         let loaded = std::process::Command::new("modprobe").arg(VFIO).status()?;
         anyhow::ensure!(loaded.success(), "modprobe {VFIO} failed ({loaded})");
     }
@@ -239,7 +271,7 @@ pub fn bind(root: &SysRoot, devices: &[String], uid: u32) -> Result<Vec<String>>
     for device in devices {
         let dir = device_path(device);
         write(root, &dir.join("driver_override"), VFIO)?;
-        if let Some(old) = driver(root, device).filter(|d| d != VFIO) {
+        if let Some(old) = driver(root, device)?.filter(|d| d != VFIO) {
             write(root, &drivers(&old).join("unbind"), device)?;
             lines.push(format!("{device}: {old} -> {VFIO}"));
         }
@@ -267,7 +299,7 @@ pub fn bind(root: &SysRoot, devices: &[String], uid: u32) -> Result<Vec<String>>
 pub fn unbind(root: &SysRoot, devices: &[String]) -> Result<Vec<String>> {
     let mut lines = Vec::new();
     for device in devices {
-        if driver(root, device).as_deref() != Some(VFIO) {
+        if driver(root, device)?.as_deref() != Some(VFIO) {
             bail!("{device} is not on {VFIO}");
         }
         let dir = device_path(device);
@@ -277,7 +309,7 @@ pub fn unbind(root: &SysRoot, devices: &[String]) -> Result<Vec<String>> {
         settle(root, device, true)?;
         lines.push(format!(
             "{device}: {VFIO} -> {}",
-            driver(root, device).unwrap_or_else(|| "none".into())
+            driver(root, device)?.unwrap_or_else(|| "none".into())
         ));
     }
     Ok(lines)
@@ -290,7 +322,7 @@ pub fn unbind(root: &SysRoot, devices: &[String]) -> Result<Vec<String>> {
 /// `pid` is not a process of `uid`, or the limit cannot be set.
 pub fn allow_memlock(root: &SysRoot, pid: u32, uid: u32, bytes: u64) -> Result<String> {
     let status = root
-        .read(format!("/proc/{pid}/status"))
+        .read(format!("/proc/{pid}/status"))?
         .with_context(|| format!("no process {pid}"))?;
     let owner = status
         .lines()
@@ -325,41 +357,49 @@ pub struct Candidate {
     pub users: Vec<String>,
 }
 
-/// The discrete GPUs (not on i915 or xe) and `NVMe` controllers of this machine, with their groups and users.
-#[must_use]
-pub fn candidates(root: &SysRoot) -> Vec<Candidate> {
-    root.children(PCI, "")
-        .iter()
-        .filter_map(|dir| {
-            let device = dir.file_name()?.to_string_lossy().into_owned();
-            let class = root.read(dir.join("class"))?;
-            let driver = driver(root, &device);
-            let kind =
-                if class.starts_with("0x03") && !matches!(driver.as_deref(), Some("i915" | "xe")) {
-                    "gpu"
-                } else if class.starts_with("0x0108") {
-                    "nvme"
-                } else {
-                    return None;
-                };
-            let (group, members) = group(root, &device).ok()?;
-            let id = |f: &str| {
-                root.read(dir.join(f))
-                    .unwrap_or_default()
-                    .trim_start_matches("0x")
-                    .to_string()
-            };
-            Some(Candidate {
-                ids: format!("{}:{}", id("vendor"), id("device")),
-                device,
-                kind: kind.into(),
-                group,
-                users: users(root, &members),
-                members,
-                driver,
-            })
-        })
-        .collect()
+/// The discrete GPUs (not on i915 or xe) and `NVMe` controllers of this machine that have an IOMMU group, with their
+/// groups and users.
+///
+/// # Errors
+/// A device's files cannot be read.
+pub fn candidates(root: &SysRoot) -> Result<Vec<Candidate>> {
+    let mut out = Vec::new();
+    for dir in root.children(PCI, "")? {
+        let Some(device) = name(&dir) else { continue };
+        let Some(class) = root.read(dir.join("class"))? else {
+            continue;
+        };
+        let driver = driver(root, &device)?;
+        let kind = if class.starts_with("0x03") && !matches!(driver.as_deref(), Some("i915" | "xe"))
+        {
+            "gpu"
+        } else if class.starts_with("0x0108") {
+            "nvme"
+        } else {
+            continue;
+        };
+        let Some(group) = iommu_group(root, &device)? else {
+            continue;
+        };
+        let members = members(root, &group)?;
+        let id = |f: &str| -> Result<String> {
+            Ok(root
+                .read(dir.join(f))?
+                .unwrap_or_default()
+                .trim_start_matches("0x")
+                .to_string())
+        };
+        out.push(Candidate {
+            ids: format!("{}:{}", id("vendor")?, id("device")?),
+            device,
+            kind: kind.into(),
+            group,
+            users: users(root, &members, false)?,
+            members,
+            driver,
+        });
+    }
+    Ok(out)
 }
 
 /// NVIDIA's services that hold the GPU's device nodes; stopped while the GPU is not Linux's.
@@ -387,11 +427,18 @@ fn systemctl(verb: &str, units: &[String]) -> Result<()> {
 /// # Errors
 /// No NVIDIA GPU with an IOMMU group.
 pub fn nvidia_group(root: &SysRoot) -> Result<Vec<String>> {
-    candidates(root)
+    nvidia(root)?.context("no NVIDIA GPU with an IOMMU group on this machine")
+}
+
+/// The NVIDIA GPU's whole IOMMU group; None without an NVIDIA GPU with an IOMMU group.
+///
+/// # Errors
+/// A device's files cannot be read.
+pub fn nvidia(root: &SysRoot) -> Result<Option<Vec<String>>> {
+    Ok(candidates(root)?
         .into_iter()
         .find(|c| c.kind == "gpu" && c.ids.starts_with("10de:"))
-        .map(|c| c.members)
-        .context("no NVIDIA GPU with an IOMMU group on this machine")
+        .map(|c| c.members))
 }
 
 /// Take the NVIDIA GPU from Linux: its services stopped, its group bound to vfio-pci for `uid`. Returns what it did

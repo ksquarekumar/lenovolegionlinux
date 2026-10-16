@@ -35,12 +35,18 @@ pub fn address() -> String {
 }
 
 /// Whether the keyboard is on the USB bus.
-#[must_use]
-pub fn keyboard_present(root: &SysRoot) -> bool {
-    root.children("/sys/bus/usb/devices", "").iter().any(|d| {
-        root.read(d.join("idVendor")).as_deref() == Some(KEYBOARD.0)
-            && root.read(d.join("idProduct")).as_deref() == Some(KEYBOARD.1)
-    })
+///
+/// # Errors
+/// A USB device's ids cannot be read.
+pub fn keyboard_present(root: &SysRoot) -> anyhow::Result<bool> {
+    for d in root.children("/sys/bus/usb/devices", "")? {
+        if root.read(d.join("idVendor"))?.as_deref() == Some(KEYBOARD.0)
+            && root.read(d.join("idProduct"))?.as_deref() == Some(KEYBOARD.1)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// A connection to `OpenRGB`'s SDK server.

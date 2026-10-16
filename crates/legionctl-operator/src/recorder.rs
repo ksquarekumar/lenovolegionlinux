@@ -102,7 +102,14 @@ fn battery_sample() -> Option<Value> {
     if newest.is_some_and(|ts| now.saturating_sub(u64::try_from(ts).unwrap_or(0)) < 86_400) {
         return None;
     }
-    let b = legionctl_machine::battery::state(&legionctl_machine::sysroot::SysRoot::from_env());
+    let b = match legionctl_machine::battery::state(&legionctl_machine::sysroot::SysRoot::from_env())
+    {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("recorder: no battery sample: {e:#}");
+            return None;
+        }
+    };
     Some(
         json!({"health_pct": b.health_pct?, "cycle_count": b.cycle_count, "energy_full_wh": b.energy_full_wh}),
     )

@@ -176,7 +176,10 @@ impl Machine {
 
     /// A ledger value, or `<missing>`.
     fn recorded(&self, key: Key) -> String {
-        self.ledger().get(key).unwrap_or_else(|| "<missing>".into())
+        self.ledger()
+            .get(key)
+            .unwrap()
+            .unwrap_or_else(|| "<missing>".into())
     }
 
     fn record(&self, key: Key, value: &str) {
@@ -1310,7 +1313,7 @@ mod daemon_events {
                 .filter(|s| !matches!(s, Step::Run(_) | Step::Try(_)))
                 .cloned()
                 .collect();
-            policy::execute(planner.root, planner.ledger, &files);
+            policy::execute(planner.root, planner.ledger, &files).unwrap();
             lines = steps.iter().filter_map(policy::describe).collect();
         });
         lines
@@ -1576,7 +1579,7 @@ mod daemon_events {
                             }
                         }
                         writeln!(out, "## {name}: knobs").unwrap();
-                        for knob in legionctl_machine::knobs::catalog(p) {
+                        for knob in legionctl_machine::knobs::catalog(p).unwrap() {
                             writeln!(out, "{} = {:?}", knob.id, knob.desired).unwrap();
                         }
                     });
@@ -1628,7 +1631,7 @@ mod daemon_events {
                 .unwrap();
         let root = SysRoot::new(m.dir.join("root"));
         let ledger = m.ledger();
-        let layers = legionctl_machine::configset::load(&root, &profile, &ledger);
+        let layers = legionctl_machine::configset::load(&root, &profile, &ledger).unwrap();
         f(&Planner {
             root: &root,
             profile: &profile,
@@ -2122,6 +2125,9 @@ mod operator_and_daemon {
     #[tokio::test(flavor = "multi_thread")]
     async fn tune_steps_the_firmware_limit_recommends_the_knee_and_restores_it() {
         let m = Machine::new("tune");
+        // the sweep's thermal guard reads the package temperature
+        m.set("/sys/class/hwmon/hwmon9/name", "coretemp");
+        m.set("/sys/class/hwmon/hwmon9/temp1_input", "55000");
         Machine::script(
             &m.dir.join("bin"),
             "stress-ng",
@@ -2242,6 +2248,79 @@ mod operator_and_daemon {
         );
         assert!(!text.lines().any(|l| l.starts_with("80 ")), "{text}");
         assert_eq!(m.file(PL1), "90");
+    }
+
+    /// A ledger that cannot be opened stops the writer (todo-142 F-7): with a `system.db` that is not a database,
+    /// `power apply` fails with the SQLite reason and writes nothing (it cannot know the user's holds), and a reader
+    /// (`knobs list`) fails too. Before, the ledger read as empty and the policy wrote over held values.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_ledger_that_cannot_be_opened_stops_the_policy_before_it_writes() {
+        const EPP: &str = "/sys/devices/system/cpu/cpufreq/policy3/energy_performance_preference";
+        let m = Machine::new("ledger");
+        m.set(EPP, "power");
+        m.set(
+            "/var/lib/legionctl/system.db",
+            "not a database, a user's hold was here",
+        );
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "ledger");
+        let out = op.cli(&["power", "apply", "--source", "ac"]);
+        let why = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{why}");
+        assert!(
+            why.contains("opening /var/lib/legionctl/system.db for writing")
+                && why.contains("not a database"),
+            "{why}"
+        );
+        assert_eq!(m.file(EPP), "power", "nothing written");
+        let read = op.cli(&["knobs", "list"]);
+        let why = String::from_utf8_lossy(&read.stderr);
+        assert!(
+            !read.status.success() && why.contains("system.db") && why.contains("not a database"),
+            "{why}"
+        );
+    }
+
+    /// The thermal guard must work before the sweep starts (todo-142 F-2): a package temperature that cannot be read
+    /// (permission denied) refuses the tune before the first step, with the reason; no limit is written and no
+    /// workload runs. Before, the sweep ran with no guard.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tune_refuses_before_the_first_step_when_the_temperature_cannot_be_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let m = Machine::new("blind");
+        m.set("/sys/class/hwmon/hwmon9/name", "coretemp");
+        m.set("/sys/class/hwmon/hwmon9/temp1_input", "55000");
+        let temp = m.dir.join("root/sys/class/hwmon/hwmon9/temp1_input");
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let ran = m.dir.join("stress-ng-ran");
+        Machine::script(
+            &m.dir.join("bin"),
+            "stress-ng",
+            &format!("touch {}; /usr/bin/sleep 5", ran.display()),
+        );
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "blind");
+        let out = op.cli(&[
+            "tune",
+            "--seconds",
+            "1",
+            "--cooldown-s",
+            "0",
+            "ppt_pl1_spl",
+            "cpu",
+            "60",
+        ]);
+        let text = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{text}");
+        assert!(
+            text.contains(
+                "cannot read the CPU temperature (coretemp): the sweep has no thermal guard"
+            ) && text.contains("Permission denied"),
+            "{text}"
+        );
+        assert_eq!(m.file(PL1), "90", "no step ran");
+        assert!(!ran.exists(), "no workload ran");
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
 
     /// Without BPF permission (a non-root daemon) the daemon runs on, and each eBPF sensor's error reaches the
@@ -3290,6 +3369,38 @@ mod operator_and_daemon {
             driver("0000:01:00.1"),
             Path::new("../../drivers/snd_hda_intel")
         );
+    }
+
+    /// The host-use guard needs the mount table (todo-142 F-1, F-6): when `/proc/self/mounts` cannot be read
+    /// (permission denied), the bind of the `NVMe` controller is refused with the reason, nothing is written, and its
+    /// driver stays; it never reads as "nothing mounted".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_host_use_guard_refuses_when_the_mount_table_cannot_be_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let m = Machine::new("vfio-unread");
+        let _kernel = pci_machine(&m);
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "vfio-unread");
+        let mounts = m.dir.join("root/proc/self/mounts");
+        std::fs::set_permissions(&mounts, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let out = op.cli(&["vfio", "bind", "0000:06:00.0"]);
+        let text = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{text}");
+        assert!(
+            text.contains("cannot read /proc/self/mounts: the host-use check cannot run")
+                && text.contains("Permission denied"),
+            "{text}"
+        );
+        assert_eq!(
+            m.file("/sys/bus/pci/devices/0000:06:00.0/driver_override"),
+            "(null)",
+            "a refusal writes nothing"
+        );
+        assert_eq!(
+            std::fs::read_link(m.dir.join("root/sys/bus/pci/devices/0000:06:00.0/driver")).unwrap(),
+            Path::new("../../drivers/nvme")
+        );
+        std::fs::set_permissions(&mounts, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
 
     /// The recorded machine with its Windows install (note 05): the SK hynix `NVMe` of `pci_machine` holds
@@ -4433,6 +4544,9 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
     #[tokio::test(flavor = "multi_thread")]
     async fn a_tuned_layer_for_one_kernel_applies_only_on_that_kernel() {
         let m = Machine::new("tunekernel");
+        // the sweep's thermal guard reads the package temperature
+        m.set("/sys/class/hwmon/hwmon9/name", "coretemp");
+        m.set("/sys/class/hwmon/hwmon9/temp1_input", "55000");
         Machine::script(
             &m.dir.join("bin"),
             "stress-ng",
@@ -6172,7 +6286,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         assert!(!refused.status.success());
         assert!(
             String::from_utf8_lossy(&refused.stderr)
-                .contains("not rebooting: warning: command failed"),
+                .contains("not rebooting: run: efibootmgr --bootnext 0004 failed: efibootmgr --bootnext 0004 exited with exit status: 1: Could not set BootNext"),
             "{}",
             String::from_utf8_lossy(&refused.stderr)
         );
@@ -6691,7 +6805,7 @@ mod resources {
                 .contains("install the boot takeover first (legionctl boot install)"),
             "{refused:?}"
         );
-        assert!(m.ledger().sets().is_empty(), "nothing saved");
+        assert!(m.ledger().sets().unwrap().is_empty(), "nothing saved");
         assert!(
             !asked
                 .lock()
@@ -6758,7 +6872,7 @@ mod resources {
         );
         let second = daemon(&m, &stand_ins).await;
         wait_for("the set at start", || m.file(SWAPPINESS) == "10");
-        assert!(m.ledger().sets().contains_key("before-boot"));
+        assert!(m.ledger().sets().unwrap().contains_key("before-boot"));
         // the next start without the parameter: the selection before
         drop(second);
         m.set(
@@ -6768,7 +6882,7 @@ mod resources {
         let _third = daemon(&m, &stand_ins).await;
         // the daemon switches back first and drops before-boot after it: wait for both
         wait_for("the selection before at the next start", || {
-            m.file(SWAPPINESS) == "150" && !m.ledger().sets().contains_key("before-boot")
+            m.file(SWAPPINESS) == "150" && !m.ledger().sets().unwrap().contains_key("before-boot")
         });
         assert_eq!(held(&op, "sysctl.vm.swappiness"), Value::Null);
     }
@@ -8042,11 +8156,16 @@ mod parity {
         // the machine is on AC: the AC layer's profile is what the policy wants at the next event
         assert_eq!(knob["knob"]["desired"], "ac-wave");
 
+        // a step that fails fails the apply (todo-142 F-5): exit 1 with the step and its reason, not a warning line
         layer("battery", "missing");
-        let missing = op.ok(&["power", "apply", "--source", "battery"]);
+        let missing = op.cli(&["power", "apply", "--source", "battery"]);
+        let why = String::from_utf8_lossy(&missing.stderr);
+        assert!(!missing.status.success(), "{why}");
         assert!(
-            missing.contains("OpenRGB has no profile missing"),
-            "{missing}"
+            why.contains("load the OpenRGB profile missing failed:")
+                && why.contains("OpenRGB has no profile missing")
+                && why.contains("; done before it: "),
+            "{why}"
         );
         // the daemon also replans on the layer change (on AC: ac-wave again), but never loads a missing profile
         assert!(!loaded.lock().unwrap().iter().any(|p| p == "missing"));

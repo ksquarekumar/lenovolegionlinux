@@ -52,7 +52,14 @@ impl OsdSink<'_> {
 
 /// Tell the user once per reason that the machine daemon is in safe mode (the marker `legionctl-safe` writes).
 async fn safe_mode_notice(session: &zbus::Connection, told: &mut Option<String>) {
-    let reason = legionctl_machine::sysroot::SysRoot::from_env().read("/run/legionctl/safe-mode");
+    let reason =
+        match legionctl_machine::sysroot::SysRoot::from_env().read("/run/legionctl/safe-mode") {
+            Ok(reason) => reason,
+            Err(e) => {
+                eprintln!("operator: the safe mode marker cannot be read: {e:#}");
+                return;
+            }
+        };
     if reason.is_none() || reason == *told {
         *told = reason;
         return;

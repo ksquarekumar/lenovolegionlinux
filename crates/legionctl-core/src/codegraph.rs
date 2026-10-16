@@ -1182,7 +1182,8 @@ pub fn hook(dir: &Path, legionctl: &Path, install: bool) -> Result<Vec<String>> 
     let mut done = Vec::new();
     for name in HOOKS {
         let path = hooks.join(name);
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        // a hook that cannot be read is not written over
+        let text = legionctl_machine::sysroot::read_file(&path)?.unwrap_or_default();
         let others: Vec<&str> = text.lines().filter(|l| !l.ends_with(MARK)).collect();
         let body = if install {
             let start = if others.is_empty() {

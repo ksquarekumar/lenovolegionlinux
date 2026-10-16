@@ -203,30 +203,41 @@ pub fn merge(layers: &[Layer], c: &Conditions) -> Merged {
 }
 
 /// The workloads that run now (the daemon's exec sensor writes them).
-#[must_use]
-pub fn workload(root: &SysRoot) -> BTreeSet<String> {
-    root.read(WORKLOAD)
+///
+/// # Errors
+/// The workload file cannot be read.
+pub fn workload(root: &SysRoot) -> anyhow::Result<BTreeSet<String>> {
+    Ok(root
+        .read(WORKLOAD)?
         .unwrap_or_default()
         .split_whitespace()
         .map(String::from)
-        .collect()
+        .collect())
 }
 
 /// The user of the active local session (logind seat0) and their home, if there is one.
-#[must_use]
-pub fn active_user(root: &SysRoot) -> Option<(u32, String)> {
-    let uid: u32 = root
-        .read(SEAT)?
+///
+/// # Errors
+/// The seat file or `/etc/passwd` cannot be read.
+pub fn active_user(root: &SysRoot) -> anyhow::Result<Option<(u32, String)>> {
+    let Some(uid) = root.read(SEAT)?.and_then(|seat| {
+        seat.lines()
+            .find_map(|l| l.strip_prefix("ACTIVE_UID="))?
+            .parse::<u32>()
+            .ok()
+    }) else {
+        return Ok(None);
+    };
+    let passwd = root
+        .read("/etc/passwd")?
+        .ok_or_else(|| anyhow::anyhow!("/etc/passwd is missing"))?;
+    Ok(passwd
         .lines()
-        .find_map(|l| l.strip_prefix("ACTIVE_UID="))?
-        .parse()
-        .ok()?;
-    let passwd = root.read("/etc/passwd")?;
-    let home = passwd.lines().find_map(|l| {
-        let f: Vec<&str> = l.split(':').collect();
-        (f.get(2)? == &uid.to_string().as_str()).then(|| f.get(5).map(|h| (*h).to_string()))?
-    })?;
-    Some((uid, home))
+        .find_map(|l| {
+            let f: Vec<&str> = l.split(':').collect();
+            (f.get(2)? == &uid.to_string().as_str()).then(|| f.get(5).map(|h| (*h).to_string()))?
+        })
+        .map(|home| (uid, home)))
 }
 
 /// The user's layer folder (machine path).
@@ -333,13 +344,21 @@ fn check(
             "workload" => WORKLOADS.contains(&value.as_str()),
             "kernel" => {
                 // without a machine (`validate`), the installed kernels are not known
-                let installed = root.map(crate::kernel::installed_packages);
-                if installed.as_ref().is_some_and(|k| !k.contains(value)) {
-                    faults.push(format!(
-                        "condition kernel: no installed kernel {value} (installed: {})",
-                        installed.unwrap_or_default().join(", ")
-                    ));
-                    continue;
+                match root.map(crate::kernel::installed_packages) {
+                    Some(Err(e)) => {
+                        faults.push(format!(
+                            "condition kernel: the installed kernels cannot be read: {e:#}"
+                        ));
+                        continue;
+                    }
+                    Some(Ok(installed)) if !installed.contains(value) => {
+                        faults.push(format!(
+                            "condition kernel: no installed kernel {value} (installed: {})",
+                            installed.join(", ")
+                        ));
+                        continue;
+                    }
+                    _ => {}
                 }
                 !value.is_empty()
             }
@@ -457,14 +476,16 @@ pub fn validate(profile: &Profile, dir: &Path) -> Vec<String> {
 
 /// Every layer of `profile` on this machine, in merge order, each checked: one that fails, that is disabled
 /// (`rules disable`) or that is generated and not enabled has the reason in `off`.
-#[must_use]
-pub fn load(root: &SysRoot, profile: &Profile, ledger: &Ledger) -> Vec<Layer> {
+///
+/// # Errors
+/// The active user or the layer states cannot be read.
+pub fn load(root: &SysRoot, profile: &Profile, ledger: &Ledger) -> anyhow::Result<Vec<Layer>> {
     let mut folders = vec![
         (Folder::Shipped, format!("{SHIPPED}/{}", profile.id), None),
         (Folder::Generated, GENERATED.to_string(), None),
         (Folder::System, SYSTEM.to_string(), None),
     ];
-    if let Some((uid, home)) = active_user(root) {
+    if let Some((uid, home)) = active_user(root)? {
         folders.push((Folder::User, user_folder(&home), Some(uid)));
     }
     let mut layers = Vec::new();
@@ -482,7 +503,7 @@ pub fn load(root: &SysRoot, profile: &Profile, ledger: &Ledger) -> Vec<Layer> {
         if layer.off.is_some() {
             continue;
         }
-        layer.off = match (ledger.layer_enabled(&layer.id()), layer.folder) {
+        layer.off = match (ledger.layer_enabled(&layer.id())?, layer.folder) {
             (Some(false), _) => Some("disabled (legionctl rules enable turns it on)".into()),
             (None, Folder::Generated) => Some(format!(
                 "generated: off until `legionctl rules enable {}`",
@@ -492,7 +513,7 @@ pub fn load(root: &SysRoot, profile: &Profile, ledger: &Ledger) -> Vec<Layer> {
         };
     }
     across(&mut layers);
-    layers
+    Ok(layers)
 }
 
 /// The rules between layers, until no more layer drops out: a user layer cannot set a knob that a used `/etc` layer

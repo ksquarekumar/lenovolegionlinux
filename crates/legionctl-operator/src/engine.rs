@@ -284,7 +284,7 @@ fn unmigrated(event: Event) -> Option<HookReply> {
 /// The path of the knob `knob` (an id or a path) on this machine.
 fn knob_path(profile: Option<&ClientPath>, knob: &str) -> Result<String> {
     let plan = Plan::load(path(profile)?)?;
-    Ok(knobs::find(&plan.machine(), knob)
+    Ok(knobs::find(&plan.machine(), knob)?
         .ok_or_else(|| {
             coded(
                 Code::NotFound,
@@ -295,34 +295,34 @@ fn knob_path(profile: Option<&ClientPath>, knob: &str) -> Result<String> {
 }
 
 /// The conditions the layers are tested against now.
-fn conditions(m: &Machine) -> Conditions {
-    let c = m.conditions(
-        m.source(),
+fn machine_conditions(m: &Machine) -> Result<legionctl_machine::configset::Conditions> {
+    m.conditions(
+        m.source()?,
         m.ledger
-            .get(legionctl_machine::ledger::Key::Override)
+            .get(legionctl_machine::ledger::Key::Override)?
             .as_deref(),
-    );
-    Conditions {
+    )
+}
+
+/// The conditions the layers are tested against now.
+fn conditions(m: &Machine) -> Result<Conditions> {
+    let c = machine_conditions(m)?;
+    Ok(Conditions {
         power: c.power.name().into(),
         fnq: c.fnq,
         workload: c.workload.into_iter().collect(),
         kernel: c.kernel,
-    }
+    })
 }
 
 /// A layer with its id and whether it applies now.
-fn rule_state(m: &Machine, layer: &Layer) -> RuleState {
-    let c = m.conditions(
-        m.source(),
-        m.ledger
-            .get(legionctl_machine::ledger::Key::Override)
-            .as_deref(),
-    );
-    RuleState {
+fn rule_state(m: &Machine, layer: &Layer) -> Result<RuleState> {
+    let c = machine_conditions(m)?;
+    Ok(RuleState {
         id: layer.id(),
         active: layer.off.is_none() && layer.applies(&c),
         layer: layer.clone().into_wire(),
-    }
+    })
 }
 
 /// The event id a page cursor stands for (0 without one), and the page length.
@@ -707,7 +707,7 @@ pub(crate) fn windows_qmp() -> Result<legionctl_core::qmp::Qmp> {
 pub(crate) fn nvidia_owner(root: &SysRoot) -> Result<(Vec<String>, GpuOwner)> {
     let group = legionctl_machine::vfio::nvidia_group(root)?;
     let in_vm = windows_has_gpu(&legionctl_core::session::windows_root().join("qmp.sock"));
-    let owner = match legionctl_machine::vfio::driver(root, &group[0]).as_deref() {
+    let owner = match legionctl_machine::vfio::driver(root, &group[0])?.as_deref() {
         Some("vfio-pci") if in_vm => GpuOwner::Windows,
         Some("vfio-pci") => GpuOwner::None,
         _ => GpuOwner::Linux,
@@ -760,11 +760,11 @@ fn core_cpus(class: Option<CoreClass>) -> Result<Option<String>> {
     let cpus = match class {
         None => return Ok(None),
         Some(CoreClass::All) => root
-            .read("/sys/devices/system/cpu/online")
+            .read("/sys/devices/system/cpu/online")?
             .context("no /sys/devices/system/cpu/online")?,
         Some(class) => {
             let key = if class == CoreClass::P { "p" } else { "e" };
-            legionctl_machine::gpu::core_class_cpus(&root, key).with_context(|| {
+            legionctl_machine::gpu::core_class_cpus(&root, key)?.with_context(|| {
                 format!("this CPU has no {key}-core class (/sys/devices/cpu_core, cpu_atom)")
             })?
         }
@@ -815,9 +815,9 @@ impl Plan {
     /// The machine under `root`; without `profile`, the profile installed there.
     fn at(root: SysRoot, profile: Option<&Path>) -> Result<Plan> {
         let installed = root.path(profile::DEFAULT_PATH);
-        let ledger = Ledger::open(&root)?;
+        let ledger = Ledger::read(&root)?;
         let profile = profile::load(Some(profile.unwrap_or(&installed)))?.0;
-        let layers = configset::load(&root, &profile, &ledger);
+        let layers = configset::load(&root, &profile, &ledger)?;
         Ok(Plan {
             root,
             profile,
@@ -834,7 +834,7 @@ impl Plan {
             paths: 0,
             plan: dry_run(&machine.apply(None, Options::default())?.1).lines,
             findings: legionctl_machine::doctor::doctor(&machine),
-            knobs: knobs::catalog(&machine).into_wire(),
+            knobs: knobs::catalog(&machine)?.into_wire(),
             events,
         })
     }
@@ -877,24 +877,24 @@ impl Operator {
             .trim_matches('\'')
             .to_string();
         Ok((
-            crate::display::shown(&SysRoot::from_env(), &state),
+            crate::display::shown(&SysRoot::from_env(), &state)?,
             antialiasing,
         ))
     }
 
     /// The graphics findings, and with a desktop session (Mutter on the session bus) the monitors' findings.
-    fn display_findings(&self) -> Vec<Finding> {
+    fn display_findings(&self) -> Result<Vec<Finding>> {
         let (root, home) = (SysRoot::from_env(), home());
-        let mut out = legionctl_machine::graphics::findings(&root, &home);
+        let mut out = legionctl_machine::graphics::findings(&root, &home)?;
         if let Ok((monitors, antialiasing)) = self.monitors() {
             out.extend(crate::display::findings(
                 &root,
                 &home,
                 &monitors,
                 &antialiasing,
-            ));
+            )?);
         }
-        out
+        Ok(out)
     }
 
     /// The value that `fix` changes, as the change that gives it back.
@@ -1369,19 +1369,19 @@ impl Operator {
             .iter()
             .cloned()
             .collect();
-        let now = self.sample(std::time::Duration::from_millis(250));
+        let now = self.sample(std::time::Duration::from_millis(250))?;
         let fan = self
             .system(async |p| p.fan_status().await)
             .ok()
             .and_then(|json| serde_json::from_str::<fan::FanState>(&json).ok());
         let (profile, _) = profile::load(None)?;
-        Ok(sensors::view(
+        sensors::view(
             &SysRoot::from_env(),
             &now,
             &earlier,
             fan.as_ref(),
             &profile.paths.ac_adapter,
-        ))
+        )
     }
 
     /// The vitals overlay's lines (`overlay`).
@@ -1391,7 +1391,10 @@ impl Operator {
 
     /// One telemetry sample over `window`; the root-only part comes from `legionctl-system`, and stays unknown when
     /// the daemon does not answer.
-    pub fn sample(&self, window: std::time::Duration) -> telemetry::Sample {
+    ///
+    /// # Errors
+    /// A machine file cannot be read.
+    pub fn sample(&self, window: std::time::Duration) -> Result<telemetry::Sample> {
         let root_part = || {
             self.runtime
                 .block_on(async {
@@ -1401,7 +1404,7 @@ impl Operator {
                 })
                 .unwrap_or_default()
         };
-        let sample = telemetry::sample(&SysRoot::from_env(), window, &root_part);
+        let sample = telemetry::sample(&SysRoot::from_env(), window, &root_part)?;
         let mut ring = self
             .ring
             .lock()
@@ -1410,7 +1413,7 @@ impl Operator {
             ring.pop_front();
         }
         ring.push_back(sample.clone());
-        sample
+        Ok(sample)
     }
 }
 
@@ -1523,12 +1526,12 @@ impl Engine for Operator {
             &plan.profile,
             detail,
             &config(None)?.config.load,
-        )
+        )?
         .into_wire())
     }
 
     fn load(&self, _: &Ctx, _: Empty) -> Result<LoadState> {
-        Ok(load::read_load(&SysRoot::from_env(), &config(None)?.config.load).into_wire())
+        Ok(load::read_load(&SysRoot::from_env(), &config(None)?.config.load)?.into_wire())
     }
 
     fn doctor(&self, _: &Ctx, input: ProfileIn) -> Result<Findings> {
@@ -1553,7 +1556,7 @@ impl Engine for Operator {
                     .into(),
             );
         }
-        findings.extend(self.display_findings().iter().map(ToString::to_string));
+        findings.extend(self.display_findings()?.iter().map(ToString::to_string));
         findings.extend(agent_findings()?);
         Ok(Findings { findings })
     }
@@ -1577,12 +1580,12 @@ impl Engine for Operator {
 
     fn gpu_status(&self, _: &Ctx, _: Empty) -> Result<GpuState> {
         let root = SysRoot::from_env();
-        let outputs = gpu::outputs(&root);
+        let outputs = gpu::outputs(&root)?;
         Ok(GpuState {
             mode: gpu::mode(&outputs).into_wire(),
-            desktop_gpu: gpu::desktop_preference(&root).into_wire(),
+            desktop_gpu: gpu::desktop_preference(&root)?.into_wire(),
             outputs: outputs.into_wire(),
-            nvidia_power: gpu::nvidia_power(&root).into_wire(),
+            nvidia_power: gpu::nvidia_power(&root)?.into_wire(),
         })
     }
 
@@ -1650,7 +1653,7 @@ impl Engine for Operator {
 
     fn rgb_status(&self, _: &Ctx, _: Empty) -> Result<RgbState> {
         let address = rgb::address();
-        let keyboard_usb = rgb::keyboard_present(&SysRoot::from_env());
+        let keyboard_usb = rgb::keyboard_present(&SysRoot::from_env())?;
         let mut state = RgbState {
             address: address.clone(),
             keyboard_usb,
@@ -1788,12 +1791,12 @@ impl Engine for Operator {
         let cpus = match cores {
             "all" => None,
             class => Some(
-                gpu::core_class_cpus(&root, class)
+                gpu::core_class_cpus(&root, class)?
                     .context("this CPU does not report performance/efficiency core groups")?,
             ),
         };
         Ok(RunEnv {
-            env: gpu::render_env(&root, gpu)
+            env: gpu::render_env(&root, gpu)?
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v))
                 .collect(),
@@ -2660,9 +2663,9 @@ impl Engine for Operator {
             "--interval-ms must be 100-60000"
         );
         let window = std::time::Duration::from_millis(u64::from(input.interval_ms));
-        Ok((0..input.count)
-            .map(|_| self.sample(window).into_wire())
-            .collect())
+        (0..input.count)
+            .map(|_| Ok(self.sample(window)?.into_wire()))
+            .collect()
     }
 
     fn sensors(&self, _: &Ctx, _: SensorsIn) -> Result<Readings> {
@@ -2882,9 +2885,8 @@ impl Engine for Operator {
 
     fn virt_status(&self, _: &Ctx, _: Empty) -> Result<VirtStatus> {
         let low = config(None)?.config.load.busy.memory_available_percent;
-        Ok(self
-            .runtime
-            .block_on(crate::virt::status(&SysRoot::from_env(), low)))
+        self.runtime
+            .block_on(crate::virt::status(&SysRoot::from_env(), low))
     }
 
     fn virt_tune(&self, _: &Ctx, input: VirtTuneIn) -> Result<Lines> {
@@ -2934,7 +2936,7 @@ impl Engine for Operator {
     }
 
     fn battery_status(&self, _: &Ctx, _: Empty) -> Result<legionctl_api::BatteryState> {
-        let battery = legionctl_machine::battery::state(&SysRoot::from_env());
+        let battery = legionctl_machine::battery::state(&SysRoot::from_env())?;
         let filter = legionctl_core::db::EventFilter {
             kinds: &["battery.sample"],
             ..Default::default()
@@ -3012,7 +3014,7 @@ impl Engine for Operator {
             .collect();
         lines.push(format!("fonts: {antialiasing} antialiasing"));
         lines.extend(
-            crate::display::findings(&SysRoot::from_env(), &home(), &monitors, &antialiasing)
+            crate::display::findings(&SysRoot::from_env(), &home(), &monitors, &antialiasing)?
                 .iter()
                 .map(|f| format!("- {f}")),
         );
@@ -3022,7 +3024,7 @@ impl Engine for Operator {
     fn display_fix(&self, ctx: &Ctx, input: DisplayFixIn) -> Result<Changes> {
         let all = input.finding == "all";
         let found: Vec<Finding> = self
-            .display_findings()
+            .display_findings()?
             .into_iter()
             .filter(|f| all || f.id == input.finding)
             .collect();
@@ -3082,7 +3084,7 @@ impl Engine for Operator {
     }
 
     fn kernel_list(&self, _: &Ctx, _: Empty) -> Result<legionctl_api::Kernels> {
-        Ok(legionctl_machine::kernel::list(&SysRoot::from_env()).into_wire())
+        Ok(legionctl_machine::kernel::list(&SysRoot::from_env())?.into_wire())
     }
 
     fn kernel_default(&self, _: &Ctx, input: legionctl_api::KernelIn) -> Result<Changes> {
@@ -3142,7 +3144,7 @@ impl Engine for Operator {
     }
 
     fn greeter_status(&self, _: &Ctx, _: Empty) -> Result<legionctl_api::GreeterState> {
-        Ok(legionctl_machine::greeter::state(&SysRoot::from_env()).into_wire())
+        Ok(legionctl_machine::greeter::state(&SysRoot::from_env())?.into_wire())
     }
 
     fn greeter_install(&self, _: &Ctx, input: DryRunIn) -> Result<Changes> {
@@ -3367,7 +3369,7 @@ impl Engine for Operator {
             &plan.profile,
             Detail::Full,
             &config(None)?.config.load,
-        );
+        )?;
         let mut recording = plan.decisions(dir, events)?;
         let tree = dir.join("root");
         recording.paths = root.record_into(&tree)?;
@@ -3399,7 +3401,7 @@ impl Engine for Operator {
 
     fn bench_run(&self, ctx: &Ctx, input: BenchIn) -> Result<BenchRun> {
         anyhow::ensure!((1..=600).contains(&input.seconds), "seconds must be 1-600");
-        let knobs = knobs::catalog(&Plan::load(None)?.machine())
+        let knobs = knobs::catalog(&Plan::load(None)?.machine())?
             .into_iter()
             .map(|k| (k.id, k.value))
             .collect();
@@ -3421,8 +3423,12 @@ impl Engine for Operator {
             })
             .collect::<Result<Vec<_>>>()?;
         let mut samples = Vec::new();
-        while runs.iter().any(|(_, r)| !r.is_finished()) {
-            samples.push(self.sample(std::time::Duration::from_secs(1)));
+        let mut failed = None;
+        while failed.is_none() && runs.iter().any(|(_, r)| !r.is_finished()) {
+            match self.sample(std::time::Duration::from_secs(1)) {
+                Ok(s) => samples.push(s),
+                Err(e) => failed = Some(e),
+            }
         }
         let mut scores = bench::Scores::default();
         for (program, run) in runs {
@@ -3441,6 +3447,9 @@ impl Engine for Operator {
                     .push(format!("{program} exited with {}", out.status));
             }
         }
+        if let Some(e) = failed {
+            return Err(e.context("a telemetry sample failed: the run has no summary"));
+        }
         // the log keeps the domain value; the answer is its wire form (bench_run_of)
         let result = bench::BenchResult {
             scenario: input.scenario.into(),
@@ -3450,10 +3459,10 @@ impl Engine for Operator {
             problems: scores.problems,
             summary: bench::summarize(&samples),
             knobs,
-            kernel: legionctl_machine::kernel::running_package(&SysRoot::from_env()),
+            kernel: legionctl_machine::kernel::running_package(&SysRoot::from_env())?,
             release: Some(legionctl_machine::kernel::running_kernel(
                 &SysRoot::from_env(),
-            )),
+            )?),
         };
         let db = Db::open_default()?;
         let id = db.record(&ctx.actor, "bench.result", &serde_json::to_value(&result)?)?;
@@ -3461,7 +3470,7 @@ impl Engine for Operator {
     }
 
     fn tune(&self, _: &Ctx, input: TuneIn) -> Result<TuneReport> {
-        let load = load::read_load(&SysRoot::from_env(), &config(None)?.config.load);
+        let load = load::read_load(&SysRoot::from_env(), &config(None)?.config.load)?;
         anyhow::ensure!(
             input.force || load.level == load::Level::Idle,
             "the machine is not idle ({}); stop other work, or add --force",
@@ -3520,7 +3529,7 @@ impl Engine for Operator {
     }
 
     fn knobs_list(&self, _: &Ctx, input: ProfileIn) -> Result<Knobs> {
-        Ok(knobs::catalog(&Plan::load(path(input.profile.as_ref())?)?.machine()).into_wire())
+        Ok(knobs::catalog(&Plan::load(path(input.profile.as_ref())?)?.machine())?.into_wire())
     }
 
     fn knobs_hold(&self, _: &Ctx, input: KnobHoldIn) -> Result<Changes> {
@@ -3656,7 +3665,7 @@ impl Engine for Operator {
     fn plan(&self, _: &Ctx, _: Empty) -> Result<PlanView> {
         let plan = Plan::load(None)?;
         let m = plan.machine();
-        let knobs = knobs::catalog(&m)
+        let knobs = knobs::catalog(&m)?
             .into_iter()
             .filter(|k| k.desired.is_some())
             .collect::<Vec<_>>()
@@ -3667,7 +3676,7 @@ impl Engine for Operator {
             ..Options::default()
         };
         Ok(PlanView {
-            conditions: conditions(&m),
+            conditions: conditions(&m)?,
             knobs,
             changes: dry_run(&m.apply(None, keep)?.1).lines,
         })
@@ -3677,8 +3686,12 @@ impl Engine for Operator {
         let plan = Plan::load(None)?;
         let m = plan.machine();
         Ok(Rules {
-            conditions: conditions(&m),
-            layers: plan.layers.iter().map(|l| rule_state(&m, l)).collect(),
+            conditions: conditions(&m)?,
+            layers: plan
+                .layers
+                .iter()
+                .map(|l| rule_state(&m, l))
+                .collect::<Result<_>>()?,
         })
     }
 
@@ -3690,7 +3703,7 @@ impl Engine for Operator {
         Ok(RuleDetail {
             text: std::fs::read_to_string(plan.root.path(&layer.file))
                 .with_context(|| format!("reading {}", layer.file))?,
-            layer: rule_state(&m, layer),
+            layer: rule_state(&m, layer)?,
         })
     }
 
@@ -3756,7 +3769,7 @@ impl Engine for Operator {
         let plan = Plan::load(None)?;
         let m = plan.machine();
         let knob = match &input.knob {
-            Some(k) => Some(knobs::find(&m, k).ok_or_else(|| {
+            Some(k) => Some(knobs::find(&m, k)?.ok_or_else(|| {
                 coded(
                     Code::NotFound,
                     format!("no knob {k} on this machine (see legionctl knobs list)"),
@@ -3791,12 +3804,11 @@ impl Engine for Operator {
                 lines.extend(self.system(async |p| p.set_layer(&layer.name, &content).await)?);
             }
             if knob.is_none() {
-                for layer in plan
-                    .layers
-                    .iter()
-                    .filter(|l| m.ledger.layer_enabled(&l.id()).is_some())
-                {
+                for layer in &plan.layers {
                     let id = layer.id();
+                    if m.ledger.layer_enabled(&id)?.is_none() {
+                        continue;
+                    }
                     lines.extend(self.system(async |p| p.set_layer_state(&id, "default").await)?);
                 }
             }
@@ -3807,7 +3819,7 @@ impl Engine for Operator {
             {
                 lines.push(rules::write_own(&layer)?);
             }
-            let held = m.ledger.holds().into_keys().filter(|path| {
+            let held = m.ledger.holds()?.into_keys().filter(|path| {
                 knob.as_ref()
                     .is_none_or(|k| *path == k.path || policy::held_by(&k.path, path))
             });
@@ -3838,8 +3850,8 @@ impl Engine for Operator {
     }
 
     fn rules_sets_switch(&self, _: &Ctx, input: legionctl_api::SetSwitchIn) -> Result<Changes> {
-        let ledger = Ledger::open(&SysRoot::from_env())?;
-        let to = ledger.sets().remove(&input.name).ok_or_else(|| {
+        let ledger = Ledger::read(&SysRoot::from_env())?;
+        let to = ledger.sets()?.remove(&input.name).ok_or_else(|| {
             coded(
                 Code::NotFound,
                 format!(
@@ -3850,7 +3862,7 @@ impl Engine for Operator {
         })?;
         if input.dry_run {
             return Ok(Changes {
-                lines: legionctl_machine::sets::changes(&ledger.selection(), &to),
+                lines: legionctl_machine::sets::changes(&ledger.selection()?, &to),
                 dry_run: true,
             });
         }
@@ -4091,7 +4103,7 @@ impl Engine for Operator {
 
     fn knobs_show(&self, _: &Ctx, input: InspectIn) -> Result<KnobDetail> {
         let plan = Plan::load(path(input.profile.as_ref())?)?;
-        let knob = knobs::find(&plan.machine(), &input.knob).with_context(|| {
+        let knob = knobs::find(&plan.machine(), &input.knob)?.with_context(|| {
             format!(
                 "no knob {} on this machine (see legionctl knobs)",
                 input.knob
@@ -4187,7 +4199,9 @@ impl Engine for Operator {
             .sessions()?
             .into_iter()
             .map(|session| {
-                let state = legionctl_core::session::state(&session.id, session.inside);
+                // one session whose state cannot be read shows why; the others are still listed
+                let state = legionctl_core::session::state(&session.id, session.inside)
+                    .unwrap_or_else(|e| format!("unknown: {e:#}"));
                 SessionState {
                     state,
                     session: session.into_wire(),
@@ -4277,13 +4291,23 @@ impl Engine for Operator {
         let dir = input.project.get()?;
         let deny = config(Some(&input.project))?.config.gates.git.deny;
         // an alias is resolved by the real git outside the sandbox, so the agent cannot hide a denied command
-        let is_alias = |sub: &str| {
-            Command::new("git")
+        let is_alias = |sub: &str| -> Result<bool> {
+            let out = Command::new("git")
                 .arg("-C")
                 .arg(dir)
                 .args(["config", "--get", &format!("alias.{sub}")])
                 .output()
-                .is_ok_and(|o| o.status.success())
+                .context("starting git")?;
+            // git config --get: 0 found, 1 not set, another code an error
+            match out.status.code() {
+                Some(0) => Ok(true),
+                Some(1) => Ok(false),
+                _ => anyhow::bail!(
+                    "git config --get alias.{sub} exited with {}: {}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ),
+            }
         };
         Ok(Guard {
             refusal: legionctl_core::gates::git_refusal(&input.args, &deny, is_alias),

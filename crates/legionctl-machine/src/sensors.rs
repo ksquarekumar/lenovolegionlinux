@@ -2,6 +2,7 @@
 //! source, the state that goes with them (fan controls, firmware mode, workload, power source), and each reading's
 //! history from the earlier samples in the operator's telemetry ring. It takes no reading of its own.
 
+use anyhow::Result;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -127,14 +128,16 @@ fn numbers(s: &Sample) -> Vec<(String, String, f64, String)> {
 
 /// The view of `now`: its numbers with their history in `earlier` (oldest first), then the states. `fan` is the
 /// daemon's fan state (`None` without the daemon); `ac_adapter` is the profile's AC adapter file.
-#[must_use]
+///
+/// # Errors
+/// A machine file cannot be read.
 pub fn view(
     root: &SysRoot,
     now: &Sample,
     earlier: &[Sample],
     fan: Option<&FanState>,
     ac_adapter: &str,
-) -> Vec<Reading> {
+) -> Result<Vec<Reading>> {
     let past: Vec<Vec<(String, String, f64, String)>> = earlier.iter().map(numbers).collect();
     let mut rows: Vec<Reading> = numbers(now)
         .into_iter()
@@ -155,31 +158,31 @@ pub fn view(
             }
         })
         .collect();
-    rows.extend(states(root, now, fan, ac_adapter));
+    rows.extend(states(root, now, fan, ac_adapter)?);
     for r in &mut rows {
-        r.source = device_name(root, &r.source);
+        r.source = device_name(root, &r.source)?;
     }
-    rows
+    Ok(rows)
 }
 
 /// A hwmon device (`hwmon2 nvme`) by what it is: CPU, `NVMe` and its model, memory and its DIMM slot, battery, ...;
 /// another source as it is.
-fn device_name(root: &SysRoot, source: &str) -> String {
+fn device_name(root: &SysRoot, source: &str) -> Result<String> {
     let Some((id, name)) = source
         .split_once(' ')
         .filter(|(id, _)| id.starts_with("hwmon"))
     else {
-        return source.into();
+        return Ok(source.into());
     };
     let dir = std::path::Path::new("/sys/class/hwmon").join(id);
     // the device's own name in sysfs: nvme1, 15-0052
     let node = root
-        .link(dir.join("device"))
+        .link(dir.join("device"))?
         .and_then(|l| Some(l.file_name()?.to_string_lossy().into_owned()));
-    match name {
+    Ok(match name {
         "coretemp" | "k10temp" | "zenpower" => "CPU".into(),
         // shortcut: two drives of one model get one name; add the slot when a machine has that
-        "nvme" => match root.read(dir.join("device/model")) {
+        "nvme" => match root.read(dir.join("device/model"))? {
             Some(model) => format!("NVMe {}", model.replace('_', " ")),
             None => format!("NVMe {}", node.as_deref().unwrap_or(id)),
         },
@@ -197,12 +200,17 @@ fn device_name(root: &SysRoot, source: &str) -> String {
         _ if name.starts_with("iwlwifi") => "Wi-Fi".into(),
         _ if name.starts_with("ucsi_source_psy") => "USB-C".into(),
         _ => source.into(),
-    }
+    })
 }
 
 /// The states that go with the numbers: sleeping devices, the GPU's power state, the root-only readings, the fan
 /// controls, the workload and the power source.
-fn states(root: &SysRoot, now: &Sample, fan: Option<&FanState>, ac_adapter: &str) -> Vec<Reading> {
+fn states(
+    root: &SysRoot,
+    now: &Sample,
+    fan: Option<&FanState>,
+    ac_adapter: &str,
+) -> Result<Vec<Reading>> {
     let mut rows = Vec::new();
     let mut state = |source: &str, name: &str, text: String| rows.push(state(source, name, text));
     for device in &now.hwmon_asleep {
@@ -244,8 +252,8 @@ fn states(root: &SysRoot, now: &Sample, fan: Option<&FanState>, ac_adapter: &str
         "throttle reasons since boot",
         root_only(&now.root.throttle_logged),
     );
-    rows.extend(machine_states(root, fan, ac_adapter));
-    rows
+    rows.extend(machine_states(root, fan, ac_adapter)?);
+    Ok(rows)
 }
 
 /// A state row.
@@ -261,7 +269,11 @@ fn state(source: &str, name: &str, text: String) -> Reading {
 }
 
 /// The fan controls, the workload, the power source and the battery.
-fn machine_states(root: &SysRoot, fan: Option<&FanState>, ac_adapter: &str) -> Vec<Reading> {
+fn machine_states(
+    root: &SysRoot,
+    fan: Option<&FanState>,
+    ac_adapter: &str,
+) -> Result<Vec<Reading>> {
     let mut rows = Vec::new();
     let mut state = |source: &str, name: &str, text: String| rows.push(state(source, name, text));
     match fan {
@@ -296,7 +308,7 @@ fn machine_states(root: &SysRoot, fan: Option<&FanState>, ac_adapter: &str) -> V
             "unknown (needs legionctl-system)".into(),
         ),
     }
-    let kinds = configset::workload(root);
+    let kinds = configset::workload(root)?;
     state(
         "eBPF workload",
         "workload",
@@ -309,13 +321,13 @@ fn machine_states(root: &SysRoot, fan: Option<&FanState>, ac_adapter: &str) -> V
     state(
         "power_supply",
         "power source",
-        match root.read(ac_adapter).as_deref() {
+        match root.read(ac_adapter)?.as_deref() {
             Some("1") => "ac".into(),
             Some(_) => "battery".into(),
             None => "unknown".into(),
         },
     );
-    let b = battery::state(root);
+    let b = battery::state(root)?;
     if let Some(pct) = b.capacity_pct {
         state(
             "power_supply BAT0",
@@ -323,7 +335,7 @@ fn machine_states(root: &SysRoot, fan: Option<&FanState>, ac_adapter: &str) -> V
             format!("{pct} %, {}", b.status.as_deref().unwrap_or("unknown")),
         );
     }
-    rows
+    Ok(rows)
 }
 
 /// The key readings of `rows` in a few short lines, for the vitals overlay: CPU and GPU temperature and power (or the

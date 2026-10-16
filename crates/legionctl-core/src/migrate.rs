@@ -408,7 +408,7 @@ fn live_bindings(old_db: &Path, stale: i64) -> Result<Vec<String>> {
     for row in rows {
         let (session, dossier, updated, scoped, inside) = row?;
         let scoped = scoped.zip(inside);
-        if crate::dossier::live(stale, (&session, updated, scoped), now) {
+        if crate::dossier::live(stale, (&session, updated, scoped), now)? {
             live.push(format!("session {session} holds dossier {dossier}"));
         }
     }

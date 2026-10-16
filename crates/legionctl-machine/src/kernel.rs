@@ -5,17 +5,23 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
 
+use anyhow::Result;
+
 use crate::sysroot::SysRoot;
 
 const MODULES_LOAD_DIRS: [&str; 2] = ["/etc/modules-load.d", "/usr/lib/modules-load.d"];
 
-#[must_use]
-pub fn loaded_modules(root: &SysRoot) -> BTreeSet<String> {
-    root.read("/proc/modules")
+/// The loaded modules.
+///
+/// # Errors
+/// `/proc/modules` cannot be read.
+pub fn loaded_modules(root: &SysRoot) -> Result<BTreeSet<String>> {
+    Ok(root
+        .read("/proc/modules")?
         .unwrap_or_default()
         .lines()
         .filter_map(|l| l.split_whitespace().next().map(String::from))
-        .collect()
+        .collect())
 }
 
 pub fn parse_modules_load(text: &str) -> Vec<String> {
@@ -27,15 +33,17 @@ pub fn parse_modules_load(text: &str) -> Vec<String> {
 }
 
 /// `(module, first modules-load.d file that loads it)`, in the order the files and lines appear.
-#[must_use]
-pub fn autoload_entries(root: &SysRoot) -> Vec<(String, String)> {
+///
+/// # Errors
+/// A modules-load.d file cannot be read.
+pub fn autoload_entries(root: &SysRoot) -> Result<Vec<(String, String)>> {
     let mut entries: Vec<(String, String)> = Vec::new();
     for dir in MODULES_LOAD_DIRS {
-        for conf in root.children(dir, "") {
+        for conf in root.children(dir, "")? {
             if conf.extension().is_none_or(|e| e != "conf") {
                 continue;
             }
-            for module in parse_modules_load(&root.read(&conf).unwrap_or_default()) {
+            for module in parse_modules_load(&root.read(&conf)?.unwrap_or_default()) {
                 let module = module.replace('-', "_");
                 if !entries.iter().any(|(m, _)| *m == module) {
                     entries.push((module, conf.display().to_string()));
@@ -43,21 +51,31 @@ pub fn autoload_entries(root: &SysRoot) -> Vec<(String, String)> {
             }
         }
     }
-    entries
+    Ok(entries)
 }
 
-#[must_use]
-pub fn installed_kernels(root: &SysRoot) -> Vec<String> {
-    root.children("/usr/lib/modules", "")
-        .into_iter()
-        .filter(|k| root.exists(k.join("vmlinuz")))
-        .filter_map(|k| k.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .collect()
+/// The releases in `/usr/lib/modules` that have a kernel image.
+///
+/// # Errors
+/// `/usr/lib/modules` cannot be read.
+pub fn installed_kernels(root: &SysRoot) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for k in root.children("/usr/lib/modules", "")? {
+        if root.exists(k.join("vmlinuz"))?
+            && let Some(name) = k.file_name()
+        {
+            out.push(name.to_string_lossy().into_owned());
+        }
+    }
+    Ok(out)
 }
 
-#[must_use]
-pub fn running_kernel(root: &SysRoot) -> String {
-    root.read("/proc/sys/kernel/osrelease").unwrap_or_default()
+/// The running kernel's release; empty without `/proc`.
+///
+/// # Errors
+/// The release cannot be read.
+pub fn running_kernel(root: &SysRoot) -> Result<String> {
+    Ok(root.read("/proc/sys/kernel/osrelease")?.unwrap_or_default())
 }
 
 #[must_use]
@@ -70,22 +88,26 @@ pub fn module_available(name: &str, kernel: &str) -> bool {
         })
 }
 
-#[must_use]
-pub fn module_builtin(root: &SysRoot, name: &str, kernel: &str) -> bool {
-    root.read(
-        Path::new("/usr/lib/modules")
-            .join(kernel)
-            .join("modules.builtin"),
-    )
-    .unwrap_or_default()
-    .lines()
-    .any(|l| {
-        Path::new(l)
-            .file_name()
-            .and_then(|f| f.to_str())
-            .and_then(|f| f.split(".ko").next())
-            .is_some_and(|m| m.replace('-', "_") == name)
-    })
+/// The module `name` is built into `kernel`.
+///
+/// # Errors
+/// `modules.builtin` cannot be read.
+pub fn module_builtin(root: &SysRoot, name: &str, kernel: &str) -> Result<bool> {
+    Ok(root
+        .read(
+            Path::new("/usr/lib/modules")
+                .join(kernel)
+                .join("modules.builtin"),
+        )?
+        .unwrap_or_default()
+        .lines()
+        .any(|l| {
+            Path::new(l)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .and_then(|f| f.split(".ko").next())
+                .is_some_and(|m| m.replace('-', "_") == name)
+        }))
 }
 
 /// `(module/version, kernel, state)` from `dkms status` lines like `nvidia/580, 7.2.9-cachyos, x86_64: installed`.
@@ -114,66 +136,74 @@ pub fn dkms_status() -> Vec<(String, String, String)> {
 const DKMS_MODULES: [&str; 2] = ["nvidia", "legionctl-wmi"];
 
 /// The package of the kernel `release` (`/usr/lib/modules/<release>/pkgbase`: `linux-cachyos`).
-#[must_use]
-pub fn package(root: &SysRoot, release: &str) -> Option<String> {
+///
+/// # Errors
+/// `pkgbase` cannot be read.
+pub fn package(root: &SysRoot, release: &str) -> Result<Option<String>> {
     root.read(Path::new("/usr/lib/modules").join(release).join("pkgbase"))
 }
 
 /// The package of the running kernel: the `kernel` condition of the configsets.
-#[must_use]
-pub fn running_package(root: &SysRoot) -> Option<String> {
-    package(root, &running_kernel(root))
+///
+/// # Errors
+/// The release or its `pkgbase` cannot be read.
+pub fn running_package(root: &SysRoot) -> Result<Option<String>> {
+    package(root, &running_kernel(root)?)
 }
 
 /// The release (`7.2.9-2-cachyos`) of the installed kernel package `name`.
-#[must_use]
-pub fn release_of(root: &SysRoot, name: &str) -> Option<String> {
-    installed_kernels(root)
-        .into_iter()
-        .find(|r| package(root, r).as_deref() == Some(name))
+///
+/// # Errors
+/// `/usr/lib/modules` cannot be read.
+pub fn release_of(root: &SysRoot, name: &str) -> Result<Option<String>> {
+    for r in installed_kernels(root)? {
+        if package(root, &r)?.as_deref() == Some(name) {
+            return Ok(Some(r));
+        }
+    }
+    Ok(None)
 }
 
 /// The packages of the installed kernels.
-#[must_use]
-pub fn installed_packages(root: &SysRoot) -> Vec<String> {
-    installed_kernels(root)
-        .iter()
-        .filter_map(|r| package(root, r))
-        .collect()
+///
+/// # Errors
+/// `/usr/lib/modules` cannot be read.
+pub fn installed_packages(root: &SysRoot) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for r in installed_kernels(root)? {
+        out.extend(package(root, &r)?);
+    }
+    Ok(out)
 }
 
 /// Every module of the kernel `release`, built in or loadable (DKMS modules too), with `_` for `-`.
-#[must_use]
-pub fn modules(root: &SysRoot, release: &str) -> BTreeSet<String> {
+///
+/// # Errors
+/// A module list of the kernel cannot be read.
+pub fn modules(root: &SysRoot, release: &str) -> Result<BTreeSet<String>> {
     let dir = Path::new("/usr/lib/modules").join(release);
-    let builtin = root
-        .read(dir.join("modules.builtin.modinfo"))
+    let mut out: Vec<String> = root
+        .read(dir.join("modules.builtin.modinfo"))?
         .unwrap_or_default()
         .split('\0')
         .filter_map(|entry| entry.split_once('.').map(|(m, _)| m.to_string()))
-        .collect::<Vec<_>>();
-    let files = ["modules.builtin", "modules.dep"]
-        .iter()
-        .flat_map(|f| {
-            root.read(dir.join(f))
+        .collect();
+    for f in ["modules.builtin", "modules.dep"] {
+        out.extend(
+            root.read(dir.join(f))?
                 .unwrap_or_default()
                 .lines()
                 .filter_map(|l| {
                     let file = l.split(':').next()?.rsplit('/').next()?;
                     Some(file.split(".ko").next()?.to_string())
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    builtin
-        .into_iter()
-        .chain(files)
-        .map(|m| m.replace('-', "_"))
-        .collect()
+                }),
+        );
+    }
+    Ok(out.into_iter().map(|m| m.replace('-', "_")).collect())
 }
 
 /// The configuration of the kernel `release` (`build/.config`, from the headers package).
-fn config(root: &SysRoot, release: &str) -> Option<String> {
+fn config(root: &SysRoot, release: &str) -> Result<Option<String>> {
     root.read(
         Path::new("/usr/lib/modules")
             .join(release)
@@ -183,25 +213,29 @@ fn config(root: &SysRoot, release: &str) -> Option<String> {
 
 /// The Clang LTO mode of the kernel `release`: `thin`, `full` or `none` (also without the headers); the
 /// `_use_llvm_lto` value of the kernel PKGBUILDs.
-#[must_use]
-pub fn lto(root: &SysRoot, release: &str) -> &'static str {
-    let config = config(root, release).unwrap_or_default();
+///
+/// # Errors
+/// The configuration cannot be read.
+pub fn lto(root: &SysRoot, release: &str) -> Result<&'static str> {
+    let config = config(root, release)?.unwrap_or_default();
     let on = |option: &str| config.lines().any(|l| l == format!("{option}=y"));
-    if on("CONFIG_LTO_CLANG_THIN") {
+    Ok(if on("CONFIG_LTO_CLANG_THIN") {
         "thin"
     } else if on("CONFIG_LTO_CLANG_FULL") {
         "full"
     } else {
         "none"
-    }
+    })
 }
 
 /// The scheduler and build of the kernel `release`, from its configuration: `bore` or `eevdf`, and `lto`. Empty
 /// without the headers.
-#[must_use]
-pub fn flavour(root: &SysRoot, release: &str) -> Vec<String> {
-    let Some(config) = config(root, release) else {
-        return Vec::new();
+///
+/// # Errors
+/// The configuration cannot be read.
+pub fn flavour(root: &SysRoot, release: &str) -> Result<Vec<String>> {
+    let Some(config) = config(root, release)? else {
+        return Ok(Vec::new());
     };
     let mut out = vec![
         if config.lines().any(|l| l == "CONFIG_SCHED_BORE=y") {
@@ -211,10 +245,10 @@ pub fn flavour(root: &SysRoot, release: &str) -> Vec<String> {
         }
         .to_string(),
     ];
-    if lto(root, release) != "none" {
+    if lto(root, release)? != "none" {
         out.push("lto".into());
     }
-    out
+    Ok(out)
 }
 
 /// An installed kernel, as `kernel list` shows it.
@@ -247,43 +281,45 @@ pub struct Kernels {
 
 /// Every installed kernel: its package, flavour, image, command line, DKMS modules, and whether it runs and is the
 /// default.
-#[must_use]
-pub fn list(root: &SysRoot) -> Kernels {
-    let running = running_kernel(root);
+///
+/// # Errors
+/// A kernel's files or the boot entries cannot be read.
+pub fn list(root: &SysRoot) -> Result<Kernels> {
+    let running = running_kernel(root)?;
     let dkms = dkms_status();
-    let default = crate::boot::default_kernel(root);
-    let images = crate::boot::images(root);
-    let kernels = installed_kernels(root)
-        .into_iter()
-        .filter_map(|release| {
-            let package = package(root, &release)?;
-            let image = crate::boot::image(&package);
-            Some(Installed {
-                flavour: flavour(root, &release),
-                image: images.contains(&image).then_some(image),
-                cmdline: crate::boot::saved_line(root, &package),
-                dkms: DKMS_MODULES
-                    .iter()
-                    .map(|m| {
-                        dkms.iter()
-                            .find(|(module, kernel, _)| {
-                                *kernel == release && module.split('/').next() == Some(m)
-                            })
-                            .map_or_else(
-                                || format!("{m}: not built"),
-                                |(module, _, state)| format!("{module}: {state}"),
-                            )
-                    })
-                    .collect(),
-                running: release == running,
-                default: default.as_deref() == Some(package.as_str()),
-                package,
-                release,
-            })
-        })
-        .collect();
-    Kernels {
+    let default = crate::boot::default_kernel(root)?;
+    let images = crate::boot::images(root)?;
+    let mut kernels = Vec::new();
+    for release in installed_kernels(root)? {
+        let Some(package) = package(root, &release)? else {
+            continue;
+        };
+        let image = crate::boot::image(&package);
+        kernels.push(Installed {
+            flavour: flavour(root, &release)?,
+            image: images.contains(&image).then_some(image),
+            cmdline: crate::boot::saved_line(root, &package)?,
+            dkms: DKMS_MODULES
+                .iter()
+                .map(|m| {
+                    dkms.iter()
+                        .find(|(module, kernel, _)| {
+                            *kernel == release && module.split('/').next() == Some(m)
+                        })
+                        .map_or_else(
+                            || format!("{m}: not built"),
+                            |(module, _, state)| format!("{module}: {state}"),
+                        )
+                })
+                .collect(),
+            running: release == running,
+            default: default.as_deref() == Some(package.as_str()),
+            package,
+            release,
+        });
+    }
+    Ok(Kernels {
         takeover: default.is_some(),
         kernels,
-    }
+    })
 }

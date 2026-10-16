@@ -31,7 +31,7 @@ pub fn react(machine: &Machine, event: Event) -> Result<Vec<Step>> {
     let mut steps = policy(machine, event)?;
     // the firmware forgets fan max mode in suspend and the fan table outside custom mode
     if matches!(event, Event::Start | Event::Resume | Event::PlatformProfile) {
-        let again = fan::reassert(machine, event != Event::PlatformProfile, &steps);
+        let again = fan::reassert(machine, event != Event::PlatformProfile, &steps)?;
         steps.extend(again);
     }
     Ok(steps)
@@ -53,7 +53,7 @@ fn policy(machine: &Machine, event: Event) -> Result<Vec<Step>> {
                 .1
         }
         Event::PlatformProfile => machine.follow()?,
-        Event::Tick if machine.ac_online() => {
+        Event::Tick if machine.ac_online()? => {
             machine
                 .apply(
                     Some(Source::Ac),

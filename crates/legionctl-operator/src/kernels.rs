@@ -202,11 +202,11 @@ fn plan(input: &KernelBuildIn) -> Result<(Build, Vec<String>)> {
     );
     let package = format!("linux-cachyos-{name}");
     anyhow::ensure!(
-        !kernel::installed_packages(&root).contains(&package),
+        !kernel::installed_packages(&root)?.contains(&package),
         "{package} is an installed kernel already: give another --name"
     );
     let base = &input.base;
-    let release = kernel::release_of(&root, base)
+    let release = kernel::release_of(&root, base)?
         .with_context(|| format!("no installed kernel {base} (see legionctl kernel list)"))?;
     let version = base
         .strip_prefix("linux-cachyos")
@@ -238,7 +238,7 @@ fn plan(input: &KernelBuildIn) -> Result<(Build, Vec<String>)> {
     let dir = legionctl_core::cache::default_path()
         .with_file_name("kernel-build")
         .join(&package);
-    let lto = kernel::lto(&root, &release);
+    let lto = kernel::lto(&root, &release)?;
     let lines = vec![
         format!(
             "clone {REPO} into {} and check out the commit whose {folder}/.SRCINFO is {version} (the installed {base})",
@@ -326,7 +326,7 @@ impl Operator {
         }
         let root = SysRoot::from_env();
         let state = boot::state(&root)?;
-        let default = boot::default_kernel(&root).context(
+        let default = boot::default_kernel(&root)?.context(
             "legionctl's boot entry is not installed: install the boot takeover first (legionctl boot install)",
         )?;
         let mut kernels = state.kernels.clone();
@@ -420,7 +420,7 @@ impl Operator {
     fn series_go(&self, db: &Db, id: i64, mut series: Series) -> Result<()> {
         let root = SysRoot::from_env();
         let expected = series.expected().to_string();
-        let running = kernel::running_package(&root).unwrap_or_else(|| "an unknown kernel".into());
+        let running = kernel::running_package(&root)?.unwrap_or_else(|| "an unknown kernel".into());
         anyhow::ensure!(
             running == expected,
             "{expected} did not start ({running} runs): the series stopped there; the default kernel {} starts at \
@@ -433,7 +433,7 @@ impl Operator {
         // after login the desktop starts its own work: the bench waits for an idle machine (at most 10 min)
         let limits = config(None)?.config.load;
         for _ in 0..IDLE_CHECKS {
-            if load::read_load(&root, &limits).level == load::Level::Idle {
+            if load::read_load(&root, &limits)?.level == load::Level::Idle {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_secs(10));

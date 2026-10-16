@@ -81,10 +81,14 @@ pub async fn run_within(
     let (id, inside) = (launch.id.clone(), launch.inside);
     let out = drive(launch, prompt, (job, input.clone()), (stop, budget)).await;
     // the adapter can outlive its closed stdio, and a container or VM outlives its killed client
-    if session::active(&id, inside)
-        && let Err(e) = session::control(&id, inside, session::Control::Stop)
-    {
-        eprintln!("operator: session {id}: cannot stop it after its run: {e:#}");
+    match session::active(&id, inside) {
+        Ok(true) => {
+            if let Err(e) = session::control(&id, inside, session::Control::Stop) {
+                eprintln!("operator: session {id}: cannot stop it after its run: {e:#}");
+            }
+        }
+        Ok(false) => {}
+        Err(e) => eprintln!("operator: session {id}: not stopped after its run: {e:#}"),
     }
     // the dossier is free at once, also when the run failed in the hold's first minute
     if let Err(e) = dossiers.release(&id) {

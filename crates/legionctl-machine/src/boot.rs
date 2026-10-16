@@ -101,42 +101,49 @@ fn efibootmgr(args: &[&str]) -> Result<String> {
 /// The ESP's mount point and its partition's device (`/dev/nvme1n1p1`). An automount (`x-systemd.automount`, or
 /// the ESP that systemd-gpt-auto-generator gives) is `autofs` in the mount table until a program opens the place, so
 /// each place is opened first.
-fn esp(root: &SysRoot) -> Option<(String, String)> {
+fn esp(root: &SysRoot) -> Result<Option<(String, String)>> {
     const PLACES: [&str; 3] = ["/boot/efi", "/efi", "/boot"];
     for place in PLACES {
+        // the open mounts an automount; whether the place is there shows in the mount table
         drop(std::fs::read_dir(root.path(place)));
     }
-    root.read("/proc/self/mounts")?.lines().find_map(|l| {
-        let f: Vec<&str> = l.split_whitespace().collect();
-        (f.len() > 2 && f[2] == "vfat" && PLACES.contains(&f[1]))
-            .then(|| (f[1].to_string(), f[0].to_string()))
-    })
+    Ok(root
+        .read("/proc/self/mounts")?
+        .unwrap_or_default()
+        .lines()
+        .find_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            (f.len() > 2 && f[2] == "vfat" && PLACES.contains(&f[1]))
+                .then(|| (f[1].to_string(), f[0].to_string()))
+        }))
 }
 
 /// Kernels with an initramfs in `/boot`: `vmlinuz-<name>` and `initramfs-<name>.img`.
-fn kernels(root: &SysRoot) -> Vec<String> {
-    root.children("/boot", "vmlinuz-")
-        .iter()
-        .filter_map(|p| {
-            let name = p
-                .file_name()?
-                .to_string_lossy()
-                .strip_prefix("vmlinuz-")?
-                .to_string();
-            root.exists(format!("/boot/initramfs-{name}.img"))
-                .then_some(name)
-        })
-        .collect()
+fn kernels(root: &SysRoot) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for p in root.children("/boot", "vmlinuz-")? {
+        let Some(name) = p.file_name().and_then(|n| {
+            n.to_string_lossy()
+                .strip_prefix("vmlinuz-")
+                .map(String::from)
+        }) else {
+            continue;
+        };
+        if root.exists(format!("/boot/initramfs-{name}.img"))? {
+            out.push(name);
+        }
+    }
+    Ok(out)
 }
 
 /// The current state.
 ///
 /// # Errors
-/// `efibootmgr` fails (no EFI variables).
+/// `efibootmgr` fails (no EFI variables), or `/boot` or the ESP cannot be read.
 pub fn state(root: &SysRoot) -> Result<BootState> {
     let (entries, order, current, next) = parse_efibootmgr(&efibootmgr(&[])?);
-    let esp_dir = esp(root).map(|(dir, _)| dir);
-    let ukis = images(root);
+    let esp_dir = esp(root)?.map(|(dir, _)| dir);
+    let ukis = images(root)?;
     Ok(BootState {
         ours: entries
             .iter()
@@ -147,7 +154,7 @@ pub fn state(root: &SysRoot) -> Result<BootState> {
         order,
         current,
         next,
-        kernels: kernels(root),
+        kernels: kernels(root)?,
         ukis,
     })
 }
@@ -159,16 +166,18 @@ pub fn image(name: &str) -> String {
 }
 
 /// legionctl's images on the ESP.
-#[must_use]
-pub fn images(root: &SysRoot) -> Vec<String> {
-    esp(root)
-        .map(|(dir, _)| {
-            root.children(Path::new(&dir).join("EFI/Linux"), UKI_PREFIX)
-                .iter()
-                .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                .collect()
-        })
-        .unwrap_or_default()
+///
+/// # Errors
+/// The mount table or the ESP cannot be read.
+pub fn images(root: &SysRoot) -> Result<Vec<String>> {
+    let Some((dir, _)) = esp(root)? else {
+        return Ok(Vec::new());
+    };
+    Ok(root
+        .children(Path::new(&dir).join("EFI/Linux"), UKI_PREFIX)?
+        .iter()
+        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect())
 }
 
 fn loader_conf(name: &str) -> String {
@@ -180,13 +189,20 @@ fn loader_conf(name: &str) -> String {
 }
 
 /// The kernel that legionctl's `loader.conf` starts; `None` when the boot takeover is not installed.
-#[must_use]
-pub fn default_kernel(root: &SysRoot) -> Option<String> {
-    let (esp, _) = esp(root)?;
-    let conf = root
-        .read(Path::new(&esp).join(LOADER))
-        .filter(|c| c.starts_with(LOADER_MARK))?;
-    conf.lines().find_map(|l| {
+///
+/// # Errors
+/// The mount table or `loader.conf` cannot be read.
+pub fn default_kernel(root: &SysRoot) -> Result<Option<String>> {
+    let Some((esp, _)) = esp(root)? else {
+        return Ok(None);
+    };
+    let Some(conf) = root
+        .read(Path::new(&esp).join(LOADER))?
+        .filter(|c| c.starts_with(LOADER_MARK))
+    else {
+        return Ok(None);
+    };
+    Ok(conf.lines().find_map(|l| {
         Some(
             l.strip_prefix("default ")?
                 .trim()
@@ -194,7 +210,7 @@ pub fn default_kernel(root: &SysRoot) -> Option<String> {
                 .strip_suffix(".efi")?
                 .to_string(),
         )
-    })
+    }))
 }
 
 fn line_file(name: &str) -> String {
@@ -206,8 +222,10 @@ fn old_file(name: &str) -> String {
 }
 
 /// The command line of the kernel `name`, the source of its image; `None` until the boot takeover writes it.
-#[must_use]
-pub fn saved_line(root: &SysRoot, name: &str) -> Option<String> {
+///
+/// # Errors
+/// The line file cannot be read.
+pub fn saved_line(root: &SysRoot, name: &str) -> Result<Option<String>> {
     root.read(line_file(name))
 }
 
@@ -225,10 +243,10 @@ pub fn check_line(root: &SysRoot, name: &str, line: &str) -> Result<Vec<String>>
         words.iter().any(|w| w.starts_with("root=")),
         "the command line of {name} has no root=: the kernel would not find the root file system"
     );
-    let release = crate::kernel::release_of(root, name)
+    let release = crate::kernel::release_of(root, name)?
         .with_context(|| format!("no module tree of {name} in /usr/lib/modules"))?;
-    let modules = crate::kernel::modules(root, &release);
-    let running = crate::kernel::running_package(root);
+    let modules = crate::kernel::modules(root, &release)?;
+    let running = crate::kernel::running_package(root)?;
     let mut warnings = Vec::new();
     for word in words {
         let key = word.split('=').next().unwrap_or(word);
@@ -239,7 +257,7 @@ pub fn check_line(root: &SysRoot, name: &str, line: &str) -> Result<Vec<String>>
         if USER_SPACE.contains(&module) || modules.contains(&module_name) {
             continue;
         }
-        if !root.exists(format!("/sys/module/{module_name}")) {
+        if !root.exists(format!("/sys/module/{module_name}"))? {
             bail!(
                 "{word}: {name} ({release}) has no module {module}, built in or loadable; the kernel would ignore it"
             );
@@ -257,8 +275,8 @@ pub fn check_line(root: &SysRoot, name: &str, line: &str) -> Result<Vec<String>>
 /// The running system's kernel line, without what the boot manager adds (`initrd=`, `BOOT_IMAGE=`).
 fn cmdline(root: &SysRoot) -> Result<String> {
     let line = root
-        .read("/proc/cmdline")
-        .context("reading /proc/cmdline")?;
+        .read("/proc/cmdline")?
+        .context("reading /proc/cmdline: no such file")?;
     Ok(line
         .split_whitespace()
         .filter(|w| !w.starts_with("initrd=") && !w.starts_with("BOOT_IMAGE="))
@@ -269,20 +287,24 @@ fn cmdline(root: &SysRoot) -> Result<String> {
 /// The running kernel's name in `/boot` (`linux-cachyos-bore-lto`), from the `initrd=` the boot manager passed.
 fn running_kernel(root: &SysRoot) -> Result<String> {
     let line = root
-        .read("/proc/cmdline")
-        .context("reading /proc/cmdline")?;
-    line.split_whitespace()
-        .find_map(|w| {
-            let image = w.strip_prefix("initrd=")?.rsplit(['\\', '/']).next()?;
-            Some(
-                image
-                    .strip_prefix("initramfs-")?
-                    .strip_suffix(".img")?
-                    .to_string(),
-            )
-        })
-        .or_else(|| kernels(root).into_iter().next())
-        .context("no running kernel in /proc/cmdline and no kernel in /boot")
+        .read("/proc/cmdline")?
+        .context("reading /proc/cmdline: no such file")?;
+    let from_line = line.split_whitespace().find_map(|w| {
+        let image = w.strip_prefix("initrd=")?.rsplit(['\\', '/']).next()?;
+        Some(
+            image
+                .strip_prefix("initramfs-")?
+                .strip_suffix(".img")?
+                .to_string(),
+        )
+    });
+    match from_line {
+        Some(name) => Ok(name),
+        None => kernels(root)?
+            .into_iter()
+            .next()
+            .context("no running kernel in /proc/cmdline and no kernel in /boot"),
+    }
 }
 
 fn text(p: &Path) -> String {
@@ -294,27 +316,30 @@ fn mkdir(root: &SysRoot, dir: impl AsRef<Path>) -> Step {
 }
 
 /// The saved sets with boot entries (`rules sets save --boot`, todo-85).
-fn boot_sets(root: &SysRoot) -> Vec<String> {
-    crate::ledger::Ledger::open(root)
-        .map(|l| l.sets())
-        .unwrap_or_default()
+fn boot_sets(root: &SysRoot) -> Result<Vec<String>> {
+    Ok(crate::ledger::Ledger::read(root)?
+        .sets()?
         .into_iter()
         .filter(|(_, s)| s.boot)
         .map(|(name, _)| name)
-        .collect()
+        .collect())
 }
 
 /// The image `file` (in `EFI/Linux`) of the kernel `name` with `line`: made beside the old one, signed by `ukify` with the MOK key, its
 /// signature checked, and only then put in place of the old one. Each saved set with boot entries is a profile of the
 /// image (a multi-profile UKI): its entry starts the kernel with `line` and `legionctl.set=<set>`; profile 0, the
 /// default entry, has the kernel's own line.
-fn build(root: &SysRoot, esp: &str, name: &str, line: &str, file: &str) -> Vec<Step> {
-    let ucode = ["/boot/intel-ucode.img", "/boot/amd-ucode.img"]
-        .into_iter()
-        .find(|u| root.exists(u));
+fn build(root: &SysRoot, esp: &str, name: &str, line: &str, file: &str) -> Result<Vec<Step>> {
+    let mut ucode = None;
+    for u in ["/boot/intel-ucode.img", "/boot/amd-ucode.img"] {
+        if root.exists(u)? {
+            ucode = Some(u);
+            break;
+        }
+    }
     let target = text(&root.path(Path::new(esp).join("EFI/Linux").join(file)));
     let new = format!("{target}.new");
-    let profiles: Vec<(String, String)> = boot_sets(root)
+    let profiles: Vec<(String, String)> = boot_sets(root)?
         .into_iter()
         .map(|set| (format!("{target}.{set}.profile"), set))
         .collect();
@@ -378,7 +403,7 @@ fn build(root: &SysRoot, esp: &str, name: &str, line: &str, file: &str) -> Vec<S
                 .collect(),
         ));
     }
-    steps
+    Ok(steps)
 }
 
 /// The folders of the images and of the command lines.
@@ -392,7 +417,7 @@ fn image_dirs(root: &SysRoot, esp: &str) -> [Step; 2] {
 /// The command line of the kernel `name`: its own, else the running system's line, which the steps write down as
 /// its own.
 fn line_of(root: &SysRoot, name: &str) -> Result<(String, Vec<Step>)> {
-    if let Some(line) = saved_line(root, name) {
+    if let Some(line) = saved_line(root, name)? {
         return Ok((line, Vec::new()));
     }
     let line = cmdline(root)?;
@@ -406,7 +431,7 @@ fn line_of(root: &SysRoot, name: &str) -> Result<(String, Vec<Step>)> {
 /// Each kernel in `/boot` with its image steps, or why its line fails [`check_line`]. One kernel's failure does not
 /// touch the steps of another kernel.
 fn uki_steps(root: &SysRoot, esp: &str) -> Result<Vec<(String, Result<Vec<Step>>)>> {
-    let names = kernels(root);
+    let names = kernels(root)?;
     anyhow::ensure!(!names.is_empty(), "no kernel with an initramfs in /boot");
     Ok(names
         .into_iter()
@@ -414,7 +439,7 @@ fn uki_steps(root: &SysRoot, esp: &str) -> Result<Vec<(String, Result<Vec<Step>>
             let steps = line_of(root, &name).and_then(|(line, mut steps)| {
                 let warnings = check_line(root, &name, &line)?;
                 steps.extend(warnings.into_iter().map(Step::Warn));
-                steps.extend(build(root, esp, &name, &line, &image(&name)));
+                steps.extend(build(root, esp, &name, &line, &image(&name))?);
                 Ok(steps)
             });
             (name, steps)
@@ -424,12 +449,14 @@ fn uki_steps(root: &SysRoot, esp: &str) -> Result<Vec<(String, Result<Vec<Step>>
 
 /// The kernels whose image the boot takeover cannot make again, each with the reason (a `doctor` finding): their line
 /// fails [`check_line`], so `boot rebuild` (the pacman hook) leaves their old image.
-#[must_use]
-pub fn unbuilt(root: &SysRoot) -> Vec<String> {
-    if default_kernel(root).is_none() {
-        return Vec::new();
+///
+/// # Errors
+/// `/boot` or the ESP cannot be read.
+pub fn unbuilt(root: &SysRoot) -> Result<Vec<String>> {
+    if default_kernel(root)?.is_none() {
+        return Ok(Vec::new());
     }
-    kernels(root)
+    Ok(kernels(root)?
         .into_iter()
         .filter_map(|name| {
             let e = line_of(root, &name)
@@ -440,7 +467,7 @@ pub fn unbuilt(root: &SysRoot) -> Vec<String> {
                  stays: {e:#}; correct its line with legionctl kernel cmdline set {name} \"<line>\""
             ))
         })
-        .collect()
+        .collect())
 }
 
 /// legionctl's firmware entry and the ESP, or why the boot takeover is not there.
@@ -546,13 +573,13 @@ pub fn cmdline_plan(
     startable(state, name)?;
     let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
     let warnings = check_line(root, name, &line)?;
-    let before = saved_line(root, name).with_context(|| {
+    let before = saved_line(root, name)?.with_context(|| {
         format!("no command line of {name} in {LINES} yet (legionctl boot rebuild writes it)")
     })?;
     let trial = trial_image(name);
     // systemd-boot removes the one-time entry at the start that uses it: no one-time entry left means that this start
     // is that start, not one before the trial image was made
-    let tried = root.read(trial_file(name)).as_deref() == Some(line.as_str())
+    let tried = root.read(trial_file(name))?.as_deref() == Some(line.as_str())
         && state.ukis.contains(&trial)
         && loader_var(root, "LoaderEntrySelected").as_deref() == Some(trial.as_str())
         && loader_var(root, "LoaderEntryOneShot").is_none();
@@ -580,7 +607,7 @@ pub fn cmdline_plan(
         ]);
         return Ok(steps);
     }
-    steps.extend(build(root, &esp, name, &line, &trial));
+    steps.extend(build(root, &esp, name, &line, &trial)?);
     steps.extend([
         mkdir(root, LINES),
         Step::Create {
@@ -607,7 +634,7 @@ pub fn cmdline_plan(
 /// No line was changed, or [`cmdline_plan`] fails.
 pub fn undo_plan(root: &SysRoot, state: &BootState, name: &str) -> Result<Vec<Step>> {
     let before = root
-        .read(old_file(name))
+        .read(old_file(name))?
         .with_context(|| format!("no earlier command line of {name} to go back to"))?;
     cmdline_plan(root, state, name, &before)
 }
@@ -658,7 +685,7 @@ pub fn package_plan(root: &SysRoot, name: &str, dir: &Path) -> Result<Vec<Step>>
         "kernel install takes only a kernel of kernel build (linux-cachyos-<name>), not {name}"
     );
     anyhow::ensure!(
-        !crate::kernel::installed_packages(root)
+        !crate::kernel::installed_packages(root)?
             .iter()
             .any(|p| p == name),
         "{name} is an installed kernel already: give the build another --name"
@@ -745,17 +772,17 @@ pub fn package_plan(root: &SysRoot, name: &str, dir: &Path) -> Result<Vec<Step>>
 pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
     let running = running_kernel(root)?;
     let (esp, device) =
-        esp(root).context("no ESP is mounted at /boot/efi, /efi or /boot (vfat)")?;
+        esp(root)?.context("no ESP is mounted at /boot/efi, /efi or /boot (vfat)")?;
     let shim = Path::new(&esp).join("EFI/BOOT/bootx64.efi");
     let manager = Path::new(&esp).join("EFI/BOOT/mmx64.efi");
-    if !root.exists(&shim) || !root.exists(&manager) {
+    if !root.exists(&shim)? || !root.exists(&manager)? {
         bail!(
             "no shim on the ESP ({} and mmx64.efi): legionctl adds systemd-boot only beside a shim chain",
             shim.display()
         );
     }
     for need in [KEY, CERT, SYSTEMD_BOOT] {
-        anyhow::ensure!(root.exists(need), "{need} is missing");
+        anyhow::ensure!(root.exists(need)?, "{need} is missing");
     }
     let ours = Path::new(&esp).join(DIR);
     let mut steps = vec![
@@ -798,11 +825,11 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
     });
     let partition = device.trim_start_matches("/dev/");
     let number = root
-        .read(format!("/sys/class/block/{partition}/partition"))
+        .read(format!("/sys/class/block/{partition}/partition"))?
         .context("the ESP's partition number")?;
     // the partition's sysfs folder is inside its disk's: .../nvme1n1/nvme1n1p1
     let disk = root
-        .link(format!("/sys/class/block/{partition}"))
+        .link(format!("/sys/class/block/{partition}"))?
         .and_then(|p| {
             p.parent()?
                 .file_name()
@@ -900,8 +927,8 @@ pub fn rebuild_plan(root: &SysRoot, state: &BootState) -> Result<Vec<Step>> {
             });
         }
     }
-    if let Some(gone) = default_kernel(root).filter(|d| !state.kernels.contains(d)) {
-        let running = crate::kernel::running_package(root).filter(|r| with_image.contains(r));
+    if let Some(gone) = default_kernel(root)?.filter(|d| !state.kernels.contains(d)) {
+        let running = crate::kernel::running_package(root)?.filter(|r| with_image.contains(r));
         match running.or_else(|| with_image.first().cloned()) {
             Some(next) => steps.push(Step::Create {
                 path: text(&Path::new(&esp).join(LOADER)),
@@ -940,7 +967,7 @@ pub fn remove_plan(root: &SysRoot, state: &BootState) -> Result<Vec<Step>> {
     }));
     let loader = Path::new(&esp).join(LOADER);
     if root
-        .read(&loader)
+        .read(&loader)?
         .is_some_and(|c| c.starts_with(LOADER_MARK))
     {
         steps.push(Step::Remove {

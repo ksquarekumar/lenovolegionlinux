@@ -6,7 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::sysroot::SysRoot;
+use anyhow::Result;
+
+use crate::sysroot::{SysRoot, read_file};
 
 /// A finding: its stable id, what is wrong (with the fix as text), and the fix as changes of the user's own settings
 /// and files (empty: a system change, which stays text).
@@ -50,22 +52,31 @@ pub enum Fix {
 }
 
 /// The loaded GPU drivers (from the DRM cards).
-fn drivers(root: &SysRoot) -> Vec<(String, String)> {
-    root.children("/sys/class/drm", "card")
-        .iter()
-        .filter_map(|c| {
-            let card = c.file_name()?.to_string_lossy().into_owned();
-            let driver = root.link(c.join("device/driver"))?;
-            let driver = driver.file_name()?.to_string_lossy().into_owned();
-            (!card.contains('-')).then_some((card, driver))
-        })
-        .collect()
+fn drivers(root: &SysRoot) -> Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    for c in root.children("/sys/class/drm", "card")? {
+        let Some(card) = c.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        if card.contains('-') {
+            continue;
+        }
+        if let Some(driver) = root
+            .link(c.join("device/driver"))?
+            .and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()))
+        {
+            out.push((card, driver));
+        }
+    }
+    Ok(out)
 }
 
 /// The graphics findings for user `home`; empty when the stack is complete.
-#[must_use]
-pub fn findings(root: &SysRoot, home: &Path) -> Vec<Finding> {
-    let drivers = drivers(root);
+///
+/// # Errors
+/// A machine file cannot be read.
+pub fn findings(root: &SysRoot, home: &Path) -> Result<Vec<Finding>> {
+    let drivers = drivers(root)?;
     let nvidia: Vec<&str> = drivers
         .iter()
         .filter(|(_, d)| d == "nvidia")
@@ -75,22 +86,22 @@ pub fn findings(root: &SysRoot, home: &Path) -> Vec<Finding> {
     let mut out = if nvidia.is_empty() {
         Vec::new()
     } else {
-        nvidia_findings(root, &nvidia)
+        nvidia_findings(root, &nvidia)?
     };
-    out.extend(driver_findings(root, home, !nvidia.is_empty(), intel));
-    out
+    out.extend(driver_findings(root, home, !nvidia.is_empty(), intel)?);
+    Ok(out)
 }
 
 /// The NVIDIA module and its libraries, and modesetting of the NVIDIA `cards`.
-fn nvidia_findings(root: &SysRoot, cards: &[&str]) -> Vec<Finding> {
+fn nvidia_findings(root: &SysRoot, cards: &[&str]) -> Result<Vec<Finding>> {
     let mut out = Vec::new();
     // "NVRM version: NVIDIA UNIX x86_64 Kernel Module  580.178.04  ..."
-    let module = root.read("/proc/driver/nvidia/version").and_then(|v| {
+    let module = root.read("/proc/driver/nvidia/version")?.and_then(|v| {
         let mut words = v.split_whitespace().skip_while(|w| *w != "Module");
         words.nth(1).map(String::from)
     });
     let libraries: Vec<String> = root
-        .children("/usr/lib", "libnvidia-glcore.so.")
+        .children("/usr/lib", "libnvidia-glcore.so.")?
         .iter()
         .filter_map(|p| {
             p.file_name()?
@@ -114,10 +125,11 @@ fn nvidia_findings(root: &SysRoot, cards: &[&str]) -> Vec<Finding> {
     }
     // nvidia-drm makes connectors (card0-DP-1, ...) only with modesetting; its modeset parameter is root-only (0400),
     // and doctor runs as the user
-    if cards
-        .iter()
-        .all(|c| root.children("/sys/class/drm", &format!("{c}-")).is_empty())
-    {
+    let mut connectors = 0;
+    for c in cards {
+        connectors += root.children("/sys/class/drm", &format!("{c}-"))?.len();
+    }
+    if connectors == 0 {
         out.push(Finding::system(
             "nvidia-modeset",
             "nvidia-drm does not do modesetting: Wayland cannot use the NVIDIA GPU (add nvidia-drm.modeset=1 to the \
@@ -125,11 +137,11 @@ fn nvidia_findings(root: &SysRoot, cards: &[&str]) -> Vec<Finding> {
                 .into(),
         ));
     }
-    out
+    Ok(out)
 }
 
 /// Each GPU's Vulkan and EGL drivers; with both GPUs, switcheroo-control and `OpenCL` for the iGPU.
-fn driver_findings(root: &SysRoot, home: &Path, nvidia: bool, intel: bool) -> Vec<Finding> {
+fn driver_findings(root: &SysRoot, home: &Path, nvidia: bool, intel: bool) -> Result<Vec<Finding>> {
     let mut out = Vec::new();
     for (id, needed, file, what) in [
         (
@@ -157,7 +169,7 @@ fn driver_findings(root: &SysRoot, home: &Path, nvidia: bool, intel: bool) -> Ve
             "Mesa's EGL (mesa)",
         ),
     ] {
-        if needed && !root.exists(file) {
+        if needed && !root.exists(file)? {
             out.push(Finding::system(
                 id,
                 format!("{file} is missing: install {what}"),
@@ -165,7 +177,7 @@ fn driver_findings(root: &SysRoot, home: &Path, nvidia: bool, intel: bool) -> Ve
         }
     }
     if !(nvidia && intel) {
-        return out;
+        return Ok(out);
     }
     if crate::system::unit_state("is-active", "switcheroo-control.service") != "active" {
         out.push(Finding::system(
@@ -176,7 +188,7 @@ fn driver_findings(root: &SysRoot, home: &Path, nvidia: bool, intel: bool) -> Ve
         ));
     }
     let icds: Vec<String> = root
-        .children("/etc/OpenCL/vendors", "")
+        .children("/etc/OpenCL/vendors", "")?
         .iter()
         .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .collect();
@@ -208,7 +220,7 @@ fn driver_findings(root: &SysRoot, home: &Path, nvidia: bool, intel: bool) -> Ve
             }],
         });
     }
-    out
+    Ok(out)
 }
 
 /// Apps whose flags file decides Wayland or `XWayland`: the binary, the flags file in `~/.config`, the flag to add.
@@ -243,55 +255,56 @@ pub const FLAGGED_APPS: [(&str, &str, &str); 5] = [
 /// The Electron and Chromium apps of user `home` whose flags file does not suit the scale: at a fractional scale an
 /// app through `XWayland` is blurry (add the Wayland flag); at integer scales `XWayland` is sharper, because Chromium on
 /// Wayland draws its text in grayscale (remove the flag; user report 2026-10-14).
-#[must_use]
-pub fn app_findings(root: &SysRoot, home: &Path, fractional: bool) -> Vec<Finding> {
+///
+/// # Errors
+/// A flags file is there but cannot be read: its fix would write over it.
+pub fn app_findings(root: &SysRoot, home: &Path, fractional: bool) -> Result<Vec<Finding>> {
     let ozone = |l: &str| l.trim_start().starts_with("--ozone-platform");
-    FLAGGED_APPS
-        .iter()
-        .filter(|(binary, _, _)| root.exists(binary))
-        .filter_map(|(binary, file, flag)| {
-            let path = home.join(".config").join(file);
-            let flags = std::fs::read_to_string(&path).unwrap_or_default();
-            let app = file.trim_end_matches("-flags.conf");
-            let wayland = flags.lines().any(ozone);
-            if fractional && !wayland {
-                let sep = if flags.is_empty() || flags.ends_with('\n') {
-                    ""
-                } else {
-                    "\n"
-                };
-                let id = format!("xwayland-{app}");
-                return Some(Finding {
-                    text: format!(
-                        "{binary} draws through XWayland, blurry at this fractional scale: add {flag} on its own \
-                         line to ~/.config/{file} (legionctl display fix {id})"
-                    ),
-                    id,
-                    fixes: vec![Fix::File {
-                        path,
-                        content: Some(format!("{flags}{sep}{flag}\n")),
-                    }],
-                });
-            }
-            if fractional || !wayland {
-                return None;
-            }
-            let kept: String = flags
-                .split_inclusive('\n')
-                .filter(|l| !ozone(l))
-                .collect();
-            let id = format!("wayland-{app}");
-            Some(Finding {
+    let mut out = Vec::new();
+    for (binary, file, flag) in FLAGGED_APPS {
+        if !root.exists(binary)? {
+            continue;
+        }
+        let path = home.join(".config").join(file);
+        let flags = read_file(&path)?.unwrap_or_default();
+        let app = file.trim_end_matches("-flags.conf");
+        let wayland = flags.lines().any(ozone);
+        if fractional && !wayland {
+            let sep = if flags.is_empty() || flags.ends_with('\n') {
+                ""
+            } else {
+                "\n"
+            };
+            let id = format!("xwayland-{app}");
+            out.push(Finding {
                 text: format!(
-                    "{binary} draws on Wayland (~/.config/{file}), where its text is grayscale: at integer scales \
-                     XWayland is sharper, remove the --ozone-platform line (legionctl display fix {id})"
+                    "{binary} draws through XWayland, blurry at this fractional scale: add {flag} on its own \
+                     line to ~/.config/{file} (legionctl display fix {id})"
                 ),
                 id,
                 fixes: vec![Fix::File {
                     path,
-                    content: (!kept.is_empty()).then_some(kept),
+                    content: Some(format!("{flags}{sep}{flag}\n")),
                 }],
-            })
-        })
-        .collect()
+            });
+            continue;
+        }
+        if fractional || !wayland {
+            continue;
+        }
+        let kept: String = flags.split_inclusive('\n').filter(|l| !ozone(l)).collect();
+        let id = format!("wayland-{app}");
+        out.push(Finding {
+            text: format!(
+                "{binary} draws on Wayland (~/.config/{file}), where its text is grayscale: at integer scales \
+                 XWayland is sharper, remove the --ozone-platform line (legionctl display fix {id})"
+            ),
+            id,
+            fixes: vec![Fix::File {
+                path,
+                content: (!kept.is_empty()).then_some(kept),
+            }],
+        });
+    }
+    Ok(out)
 }

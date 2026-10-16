@@ -90,11 +90,10 @@ impl Knob {
 }
 
 /// A per-CPU value as one: the value when every CPU agrees, else `a×n b×m`.
-fn per_cpu(m: &Machine, file: &str) -> (String, Option<String>) {
+fn per_cpu(m: &Machine, file: &str) -> anyhow::Result<(String, Option<String>)> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    let policies = m.root.children(CPUFREQ, "policy");
-    for policy in &policies {
-        if let Some(v) = m.root.read(policy.join(file)) {
+    for policy in m.root.children(CPUFREQ, "policy")? {
+        if let Some(v) = m.root.read(policy.join(file))? {
             *counts.entry(v).or_default() += 1;
         }
     }
@@ -110,22 +109,23 @@ fn per_cpu(m: &Machine, file: &str) -> (String, Option<String>) {
                 .join(" "),
         ),
     };
-    (path, value)
+    Ok((path, value))
 }
 
 /// The values the machine offers in a whitespace-separated list file; empty when it does not publish one.
-fn offered(root: &SysRoot, path: impl AsRef<Path>) -> Vec<String> {
-    root.read(path)
+fn offered(root: &SysRoot, path: impl AsRef<Path>) -> anyhow::Result<Vec<String>> {
+    Ok(root
+        .read(path)?
         .unwrap_or_default()
         .split_whitespace()
         .map(String::from)
-        .collect()
+        .collect())
 }
 
 /// The firmware's tunables (`lenovo-wmi-other`), with their range.
-fn firmware_attributes(m: &Machine, wanted: &Merged) -> Vec<Knob> {
+fn firmware_attributes(m: &Machine, wanted: &Merged) -> anyhow::Result<Vec<Knob>> {
     let mut knobs = Vec::new();
-    for attribute in m.root.children(FIRMWARE_ATTRIBUTES, "") {
+    for attribute in m.root.children(FIRMWARE_ATTRIBUTES, "")? {
         let Some(name) = attribute
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -136,22 +136,22 @@ fn firmware_attributes(m: &Machine, wanted: &Merged) -> Vec<Knob> {
         let mut knob = Knob::new(
             format!("firmware.{name}"),
             attribute.join("current_value").display().to_string(),
-            read("current_value"),
+            read("current_value")?,
             KnobPolicy::Observe,
         )
         .wants(wanted);
-        knob.min = read("min_value");
-        knob.max = read("max_value");
-        knob.choices = read("possible_values")
+        knob.min = read("min_value")?;
+        knob.max = read("max_value")?;
+        knob.choices = read("possible_values")?
             .map(|v| v.split(';').map(String::from).collect())
             .unwrap_or_default();
         knobs.push(knob);
     }
-    knobs
+    Ok(knobs)
 }
 
 /// The CPU's power knobs.
-fn cpu(m: &Machine, wanted: &Merged) -> Vec<Knob> {
+fn cpu(m: &Machine, wanted: &Merged) -> anyhow::Result<Vec<Knob>> {
     let mut knobs = Vec::new();
     for (id, file, choices) in [
         (
@@ -165,9 +165,9 @@ fn cpu(m: &Machine, wanted: &Merged) -> Vec<Knob> {
             "energy_performance_available_preferences",
         ),
     ] {
-        let (path, value) = per_cpu(m, file);
+        let (path, value) = per_cpu(m, file)?;
         let mut knob = Knob::new(id, path, value, KnobPolicy::Observe).wants(wanted);
-        knob.choices = offered(m.root, format!("{CPUFREQ}/policy0/{choices}"));
+        knob.choices = offered(m.root, format!("{CPUFREQ}/policy0/{choices}"))?;
         knobs.push(knob);
     }
     for (id, path) in [
@@ -188,24 +188,21 @@ fn cpu(m: &Machine, wanted: &Merged) -> Vec<Knob> {
             "/sys/devices/system/cpu/cpu0/power/energy_perf_bias",
         ),
     ] {
-        knobs.push(Knob::new(id, path, m.root.read(path), KnobPolicy::Observe).wants(wanted));
+        knobs.push(Knob::new(id, path, m.root.read(path)?, KnobPolicy::Observe).wants(wanted));
     }
-    knobs
+    Ok(knobs)
 }
 
 /// The knobs of `gpu power` (so that `undo` may hold it) and of the keyboard light.
-fn parity_knobs(m: &Machine, wanted: &Merged) -> Vec<Knob> {
+fn parity_knobs(m: &Machine, wanted: &Merged) -> anyhow::Result<Vec<Knob>> {
     let mut knobs = Vec::new();
-    if let Some(device) = crate::vfio::nvidia_group(m.root)
-        .ok()
-        .and_then(|g| g.into_iter().next())
-    {
+    if let Some(device) = crate::vfio::nvidia(m.root)?.and_then(|g| g.into_iter().next()) {
         let path = crate::gpu::control_path(&device);
         knobs.push(
             Knob::new(
                 "nvidia.runtime_pm",
                 &path,
-                m.root.read(&path),
+                m.root.read(&path)?,
                 KnobPolicy::Observe,
             )
             .choices(&RUNTIME_PM),
@@ -215,30 +212,35 @@ fn parity_knobs(m: &Machine, wanted: &Merged) -> Vec<Knob> {
         Knob::new(
             "rgb.profile",
             format!("OpenRGB at {}", crate::rgb::address()),
-            m.ledger.get(Key::RgbProfile),
+            m.ledger.get(Key::RgbProfile)?,
             KnobPolicy::Observe,
         )
         .wants(wanted),
     );
-    knobs
+    Ok(knobs)
 }
 
 /// Every knob, read now.
-#[must_use]
-pub fn catalog(m: &Machine) -> Vec<Knob> {
+///
+/// # Errors
+/// A knob's file or the ledger cannot be read.
+pub fn catalog(m: &Machine) -> anyhow::Result<Vec<Knob>> {
     let paths = &m.profile.paths;
-    let fn_q = m.ledger.get(Key::Override);
-    let wanted = m.desired(m.source(), fn_q.as_deref());
+    let fn_q = m.ledger.get(Key::Override)?;
+    let wanted = m.desired(m.source()?, fn_q.as_deref())?;
     let mut knobs = Vec::new();
 
     let mut profile = Knob::new(
         "platform_profile",
         &paths.platform_profile,
-        m.root.read(&paths.platform_profile),
+        m.root.read(&paths.platform_profile)?,
         KnobPolicy::Follow,
     );
-    profile.choices = offered(m.root, &paths.platform_profile_choices);
-    profile.desired = fn_q.clone().or_else(|| m.platform_choice(&wanted));
+    profile.choices = offered(m.root, &paths.platform_profile_choices)?;
+    profile.desired = match fn_q.clone() {
+        Some(mode) => Some(mode),
+        None => m.platform_choice(&wanted)?,
+    };
     profile.chain = wanted
         .chain
         .get("platform_profile")
@@ -246,11 +248,11 @@ pub fn catalog(m: &Machine) -> Vec<Knob> {
         .unwrap_or_default();
     knobs.push(profile);
 
-    knobs.extend(cpu(m, &wanted));
+    knobs.extend(cpu(m, &wanted)?);
     knobs.push(Knob::new(
         "sched_ext",
         SCHED_EXT,
-        m.root.read(SCHED_EXT),
+        m.root.read(SCHED_EXT)?,
         KnobPolicy::Observe,
     ));
     knobs.push(
@@ -270,20 +272,20 @@ pub fn catalog(m: &Machine) -> Vec<Knob> {
             Knob::new(
                 format!("sysctl.{key}"),
                 &path,
-                m.root.read(&path),
+                m.root.read(&path)?,
                 KnobPolicy::Observe,
             )
             .wants(&wanted),
         );
     }
 
-    knobs.extend(firmware_attributes(m, &wanted));
+    knobs.extend(firmware_attributes(m, &wanted)?);
     if let Some(fan) = &paths.fan_mode {
         knobs.push(
             Knob::new(
                 "firmware.fan_mode",
                 fan,
-                m.root.read(fan),
+                m.root.read(fan)?,
                 KnobPolicy::Observe,
             )
             .wants(&wanted),
@@ -310,8 +312,8 @@ pub fn catalog(m: &Machine) -> Vec<Knob> {
         .choices(&NVIDIA_SERVICES)
         .wants(&wanted),
     );
-    knobs.extend(parity_knobs(m, &wanted));
-    let holds = m.ledger.holds();
+    knobs.extend(parity_knobs(m, &wanted)?);
+    let holds = m.ledger.holds()?;
     for knob in &mut knobs {
         // a hold on the knob's path, or on one CPU's file of a per-CPU knob
         knob.held = holds
@@ -319,7 +321,7 @@ pub fn catalog(m: &Machine) -> Vec<Knob> {
             .find(|(path, _)| crate::policy::held_by(&knob.path, path))
             .map(|(_, value)| value.clone());
     }
-    knobs
+    Ok(knobs)
 }
 
 fn one_of(id: &str, scalar: &str, choices: &[&str]) -> Result<(), String> {
@@ -352,17 +354,25 @@ fn check_firmware(root: Option<&SysRoot>, id: &str, scalar: &str) -> Result<(), 
         return Ok(());
     };
     let base = format!("{FIRMWARE_ATTRIBUTES}/{name}");
-    if !r.exists(format!("{base}/current_value")) {
+    let unreadable = |e: anyhow::Error| format!("{id}: {e:#}");
+    if !r
+        .exists(format!("{base}/current_value"))
+        .map_err(unreadable)?
+    {
         return Err(format!("{id}: the firmware has no attribute {name}"));
     }
-    let bound = |f: &str| {
-        r.read(format!("{base}/{f}"))
-            .and_then(|v| v.parse::<i64>().ok())
+    let bound = |f: &str| -> Result<Option<i64>, String> {
+        Ok(r.read(format!("{base}/{f}"))
+            .map_err(unreadable)?
+            .and_then(|v| v.parse::<i64>().ok()))
     };
-    match (bound("min_value"), bound("max_value")) {
+    match (bound("min_value")?, bound("max_value")?) {
         // min=max=0: the firmware gives no range
         (Some(low), Some(high)) if high != 0 => within(id, scalar, low, high),
-        _ => match r.read(format!("{base}/possible_values")) {
+        _ => match r
+            .read(format!("{base}/possible_values"))
+            .map_err(unreadable)?
+        {
             Some(values) => one_of(id, scalar, &values.split(';').collect::<Vec<_>>()),
             None => Ok(()),
         },
@@ -380,6 +390,7 @@ pub fn check(
     id: &str,
     value: &Value,
 ) -> Result<(), String> {
+    let unreadable = |e: anyhow::Error| format!("{id}: {e:#}");
     let scalar = match value {
         Value::String(s) => s.clone(),
         Value::Number(n) => n.to_string(),
@@ -392,6 +403,8 @@ pub fn check(
         {
             let offered = root
                 .map(|r| offered(r, &profile.paths.platform_profile_choices))
+                .transpose()
+                .map_err(unreadable)?
                 .unwrap_or_default();
             let any = list
                 .iter()
@@ -409,7 +422,11 @@ pub fn check(
         _ => return Err(format!("{id}: {value} is not a text or a number")),
     };
     let published = |file: String| -> Result<(), String> {
-        let o = root.map(|r| offered(r, file)).unwrap_or_default();
+        let o = root
+            .map(|r| offered(r, file))
+            .transpose()
+            .map_err(unreadable)?
+            .unwrap_or_default();
         if o.is_empty() || o.contains(&scalar) {
             Ok(())
         } else {
@@ -435,7 +452,11 @@ pub fn check(
         _ => match id.strip_prefix("sysctl.") {
             Some(key) => {
                 let path = format!("/proc/sys/{}", key.replace('.', "/"));
-                if !key.is_empty() && !key.contains('/') && root.is_none_or(|r| r.exists(&path)) {
+                let there = match root {
+                    Some(r) => r.exists(&path).map_err(unreadable)?,
+                    None => true,
+                };
+                if !key.is_empty() && !key.contains('/') && there {
                     Ok(())
                 } else {
                     Err(format!("{id}: there is no {path}"))
@@ -455,7 +476,7 @@ pub fn hold_plan(
     m: &Machine,
     values: &std::collections::BTreeMap<String, String>,
 ) -> anyhow::Result<Vec<Step>> {
-    let knobs = catalog(m);
+    let knobs = catalog(m)?;
     // besides the knobs, the files the policy itself writes for either power source: only these may be held, since
     // the daemon writes them as root
     let mut policy_files = std::collections::BTreeSet::new();
@@ -512,7 +533,7 @@ pub fn hold_plan(
             for policy in m.root.children(
                 head.trim_end_matches("policy").trim_end_matches('/'),
                 "policy",
-            ) {
+            )? {
                 let file = format!("{}{}", policy.display(), tail);
                 steps.push(Step::Write {
                     path: file,
@@ -534,7 +555,9 @@ pub fn hold_plan(
 }
 
 /// The knob `id` (or its path), if this machine has it.
-#[must_use]
-pub fn find(m: &Machine, id: &str) -> Option<Knob> {
-    catalog(m).into_iter().find(|k| k.id == id || k.path == id)
+///
+/// # Errors
+/// The knobs cannot be read.
+pub fn find(m: &Machine, id: &str) -> anyhow::Result<Option<Knob>> {
+    Ok(catalog(m)?.into_iter().find(|k| k.id == id || k.path == id))
 }

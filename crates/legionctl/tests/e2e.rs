@@ -225,6 +225,115 @@ impl Mcp {
     }
 }
 
+/// The git gate of a session sandbox fails closed (todo-142 F-3): when git cannot tell whether the subcommand is an
+/// alias (here its config cannot be read: exit 128), the gate refuses with the reason and never runs the real git.
+/// Before, a failed check read as "no alias" and the command ran.
+#[test]
+fn the_git_gate_refuses_when_git_cannot_check_for_an_alias() {
+    let (op, home) = operator("gitgate");
+    let repo = repository(&home);
+    stand_in(
+        &home,
+        "git",
+        "#!/bin/sh\ncase \"$*\" in *'config --get alias.'*) echo 'fatal: bad config line 1 in file .git/config' >&2; exit 128;; esac\nexec /usr/bin/git \"$@\"\n",
+    );
+    let gate = home.join("gate");
+    std::fs::create_dir_all(&gate).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_legionctl"), gate.join("git")).unwrap();
+    let ran = home.join("real-git-ran");
+    let real = home.join("real-git");
+    write(&real, &format!("#!/bin/sh\ntouch {}\n", ran.display()));
+    std::fs::set_permissions(&real, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let out = Command::new(gate.join("git"))
+        .args(["status"])
+        .current_dir(&repo)
+        .env_clear()
+        .env("XDG_RUNTIME_DIR", &*op.runtime)
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .env("LEGIONCTL_REAL_GIT", &real)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success()
+            && text.contains("legionctl gate: cannot check git aliases")
+            && text.contains("bad config line 1"),
+        "{text}"
+    );
+    assert!(!ran.exists(), "the real git ran");
+}
+
+/// A user file that cannot be read is not written over (todo-142 F-9): a `.gitignore` in Latin-1 (not UTF-8) where
+/// the dossier link needs its ignore line; `dossier use` fails with the reason and the file keeps every byte. Before,
+/// the failed read gave an empty file, and the write left only legionctl's line.
+#[test]
+fn a_user_file_that_cannot_be_read_is_not_written_over() {
+    let (op, home) = operator("latin1");
+    let repo = repository(&home);
+    let ignore = repo.join(".gitignore");
+    let before = b"target/\n# caf\xe9\n".to_vec();
+    std::fs::write(&ignore, &before).unwrap();
+    let out = op.run(
+        &repo,
+        &[
+            ("HOME", home.to_str().unwrap()),
+            ("LEGIONCTL_SESSION", "s1"),
+        ],
+        &["dossier", "use", "latin"],
+        "",
+    );
+    let text = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success()
+            && text.contains(&format!("reading {}", ignore.display()))
+            && text.contains("valid UTF-8"),
+        "{text}"
+    );
+    assert_eq!(
+        std::fs::read(&ignore).unwrap(),
+        before,
+        "the user's file changed"
+    );
+}
+
+/// A dossier write follows no symlink out of the dossier, also to a file that does not exist yet (todo-142 F-4):
+/// `<dossier>/EVIDENCE` linked to a folder outside, and a link to a folder that is not there, are refused with the
+/// reason, and nothing appears outside. Before, only a path that existed was checked.
+#[test]
+fn a_dossier_write_of_a_new_file_through_a_symlink_out_of_the_dossier_is_refused() {
+    let (op, home) = operator("escape");
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", "s1"),
+    ];
+    let o = op.run(&home, &env, &["dossier", "use", "esc"], "");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let dossier = home.join("agentWorkspaces/esc");
+    let outside = home.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    for (link, to) in [("EVIDENCE", outside.clone()), ("SPIKE", home.join("gone"))] {
+        let at = dossier.join(link);
+        let _ = std::fs::remove_dir_all(&at);
+        std::os::unix::fs::symlink(&to, &at).unwrap();
+    }
+    for (rel, why) in [
+        (
+            "esc/EVIDENCE/new.md",
+            "esc/EVIDENCE/new.md leads out of the dossier",
+        ),
+        ("esc/SPIKE/new.md", "leads to no file"),
+    ] {
+        let o = op.run(&home, &env, &["dossier", "write", rel], "# escaped\n");
+        let text = String::from_utf8_lossy(&o.stderr);
+        assert!(!o.status.success() && text.contains(why), "{rel}: {text}");
+    }
+    assert!(
+        !outside.join("new.md").exists(),
+        "written outside the dossier"
+    );
+    assert!(!home.join("gone").exists(), "a folder outside was made");
+}
+
 /// A misspelled field is refused, not dropped: an agent's `dossier_edit` with `lines` for `content` (as happened on
 /// 2026-10-14) ran as an empty replace and deleted the plan row it was to change. Through the MCP server, as agents
 /// call it: the call fails with the operation's real fields, and the row stays.
@@ -683,10 +792,52 @@ fn dossier_write_guard_and_takeover_work_through_the_claude_code_hooks() {
 }
 
 /// The agent has ended, and its scope with it (the test session ran without one, so its record is marked as
-/// scoped): after the minute of grace, the next session takes the dossier without --steal.
+/// scoped): after the minute of grace, the next session takes the dossier without --steal. Before that, a state that
+/// cannot be read (systemd or Docker does not answer: todo-142 F-8) refuses the bind with the reason and leaves the
+/// dossier to the session that may still run.
 fn ended_scope_frees_the_dossier(op: &Operator, home: &Path, notes: &Path, id: &str) {
     sql(home, "UPDATE sessions SET scoped = 1");
     sql(home, "UPDATE bindings SET updated = updated - 120");
+    let take = || {
+        op.run(
+            notes,
+            &[
+                ("HOME", home.to_str().unwrap()),
+                ("LEGIONCTL_SESSION", "next"),
+            ],
+            &["dossier", "use", "notes"],
+            "",
+        )
+    };
+    stand_in(
+        home,
+        "systemctl",
+        "#!/bin/sh\necho 'Failed to connect to user scope bus via local transport' >&2\nexit 1\n",
+    );
+    let held = take();
+    let why = String::from_utf8_lossy(&held.stderr);
+    assert!(
+        !held.status.success()
+            && why.contains(&format!("cannot read the state of session {id}"))
+            && why.contains("Failed to connect to user scope bus"),
+        "{why}"
+    );
+    sql(home, "UPDATE sessions SET inside = 'container'");
+    stand_in(
+        home,
+        "docker",
+        "#!/bin/sh\necho 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock' >&2\nexit 1\n",
+    );
+    let held = take();
+    let why = String::from_utf8_lossy(&held.stderr);
+    assert!(
+        !held.status.success()
+            && why.contains("docker inspect: Cannot connect to the Docker daemon"),
+        "{why}"
+    );
+    // the scope is gone: systemd says so
+    sql(home, "UPDATE sessions SET inside = 'host'");
+    stand_in(home, "systemctl", "#!/bin/sh\necho inactive\nexit 3\n");
     let next = op.run(
         notes,
         &[
@@ -4674,6 +4825,8 @@ fn gpu_on_request(op: &Operator, home: &Path, repo: &Path) {
 fn a_resumed_session_continues_on_another_account_with_its_transcript() {
     let (op, home) = operator("switch");
     let repo = repository(&home);
+    // the sessions' scopes are gone when a later start asks (no user manager in a test: systemd's answer stands in)
+    stand_in(&home, "systemctl", "#!/bin/sh\necho inactive\nexit 3\n");
     let env = [("HOME", home.to_str().unwrap())];
     let cli = |args: &[&str]| op.run(&repo, &env, args, "");
     // the agent appends a turn to its transcript; the resumed one reads it back and says where it runs
@@ -4806,6 +4959,8 @@ fn account_logins_rest_in_the_keyring_and_come_back_refreshed() {
     };
     let op = env("keyring");
     let repo = repository(&home);
+    // the sessions' scopes are gone when a later start asks (no user manager in a test: systemd's answer stands in)
+    stand_in(&home, "systemctl", "#!/bin/sh\necho inactive\nexit 3\n");
     // the agent prints the login it got, then "refreshes" it
     let probe = "f=\"$CLAUDE_CONFIG_DIR/.credentials.json\"; cat \"$f\"; echo; printf 'r%s' \"$(cat \"$f\")\" > \"$f\"";
     write(
@@ -4869,6 +5024,8 @@ fn account_logins_rest_in_the_keyring_and_come_back_refreshed() {
 fn an_account_profile_gives_the_session_its_own_agent_logins_and_usage() {
     let (op, home) = operator("account");
     let repo = repository(&home);
+    // the sessions' scopes are gone when a later start asks (no user manager in a test: systemd's answer stands in)
+    stand_in(&home, "systemctl", "#!/bin/sh\necho inactive\nexit 3\n");
     // the agent "logs in" and writes a transcript where its variables point; $HOME stays read-only
     let probe = "printf '{}' > \"$CLAUDE_CONFIG_DIR/.credentials.json\" && mkdir -p \"$CLAUDE_CONFIG_DIR/projects/p\" && \
                  printf '%s\\n' \"$1\" > \"$CLAUDE_CONFIG_DIR/projects/p/t.jsonl\" && echo \"CODEX=$CODEX_HOME\"";

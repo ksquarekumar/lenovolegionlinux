@@ -132,7 +132,12 @@ API and the database; no shared mutable state between processes outside SQLite.
 ukify, sbsign and the `efibootmgr` changes need more, so their plans give them as `Step::Unit`, and the step executor
 (`policy::execute`, one path for all of them) runs each as a transient unit with no sandbox: `systemd-run --wait --pipe
 --collect --quiet --unit=legionctl-step-<pid>-<n> -- <argv>`. The argv goes as it is (no shell). The output and the
-exit status come back as for `Step::Run`. The calling method's polkit check comes first, as for each step.
+exit status come back as for `Step::Run`. The calling method's polkit check comes first, as for each step. A step
+that fails stops the plan (todo-142 F-5): the steps after it do not run, and the call fails with the step, its reason
+and the lines done before it (the `wrote <path>: <value> (was <old>)` lines that `undo` reads); only a `Step::Try`
+may fail by design. The ledger has one writer: the daemon opens `system.db` for writing and fails when it cannot
+(locked, corrupt); a reader (a user's status or dry run) reads it read-only, and only a missing file reads as empty
+(todo-142 F-7).
 
 | Path or program | Feature | How it is allowed |
 | --- | --- | --- |

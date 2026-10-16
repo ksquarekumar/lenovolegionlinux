@@ -57,27 +57,12 @@ impl FanKey {
 }
 
 pub struct Ledger {
-    /// `None` when the database does not exist and cannot be created (a user reading before the daemon ever ran).
+    /// `None` when a reader finds no database (the daemon never ran).
     conn: Option<Connection>,
     boot: String,
 }
 
-impl Ledger {
-    /// Open for writing (root), else read-only (a user's status or dry run), else empty.
-    ///
-    /// # Errors
-    /// The boot id is not readable.
-    pub fn open(root: &SysRoot) -> Result<Ledger> {
-        let boot = root.read(BOOT_ID).context("reading the boot id")?;
-        let path = root.path(DB);
-        let writable = path
-            .parent()
-            .is_some_and(|dir| std::fs::create_dir_all(dir).is_ok())
-            .then(|| Connection::open(&path).ok())
-            .flatten()
-            .filter(|c| {
-                c.execute_batch(
-                    "CREATE TABLE IF NOT EXISTS ledger (
+const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS ledger (
                         key     TEXT PRIMARY KEY,
                         value   TEXT NOT NULL,
                         boot_id TEXT NOT NULL
@@ -102,40 +87,87 @@ impl Ledger {
                      CREATE TABLE IF NOT EXISTS sets (
                         name      TEXT PRIMARY KEY,
                         selection TEXT NOT NULL
-                     );",
-                )
-                .is_ok()
-            });
-        let conn = writable
-            .or_else(|| Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok());
-        Ok(Ledger { conn, boot })
+                     );";
+
+impl Ledger {
+    fn boot(root: &SysRoot) -> Result<String> {
+        root.read(BOOT_ID)?
+            .context("reading the boot id: no such file")
     }
 
-    pub fn get(&self, key: Key) -> Option<String> {
-        self.conn
-            .as_ref()?
-            .query_row(
-                "SELECT value FROM ledger WHERE key = ?1 AND boot_id = ?2",
-                params![key.name(), self.boot],
-                |r| r.get(0),
-            )
-            .optional()
-            .ok()
-            .flatten()
+    /// Open for writing: the daemon, the one writer (13-daemon). It makes the database when there is none.
+    ///
+    /// # Errors
+    /// The boot id is not readable, or `system.db` cannot be opened for writing (locked, corrupt, no permission).
+    pub fn open(root: &SysRoot) -> Result<Ledger> {
+        let boot = Ledger::boot(root)?;
+        let path = root.path(DB);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).with_context(|| format!("creating the folder of {DB}"))?;
+        }
+        let conn = Connection::open(&path)
+            .and_then(|c| c.execute_batch(SCHEMA).map(|()| c))
+            .with_context(|| format!("opening {DB} for writing"))?;
+        Ok(Ledger {
+            conn: Some(conn),
+            boot,
+        })
+    }
+
+    /// Open read-only (a user's status or dry run); without a database, the ledger is empty.
+    ///
+    /// # Errors
+    /// The boot id is not readable, or `system.db` is there but cannot be opened.
+    pub fn read(root: &SysRoot) -> Result<Ledger> {
+        let path = root.path(DB);
+        if !path
+            .try_exists()
+            .with_context(|| format!("checking {DB}"))?
+        {
+            return Ok(Ledger {
+                conn: None,
+                boot: String::new(),
+            });
+        }
+        let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("opening {DB} to read"))?;
+        Ok(Ledger {
+            conn: Some(conn),
+            boot: Ledger::boot(root)?,
+        })
+    }
+
+    /// The value of `key` in this boot.
+    ///
+    /// # Errors
+    /// `system.db` cannot be read.
+    pub fn get(&self, key: Key) -> Result<Option<String>> {
+        let Some(conn) = self.conn.as_ref() else {
+            return Ok(None);
+        };
+        conn.query_row(
+            "SELECT value FROM ledger WHERE key = ?1 AND boot_id = ?2",
+            params![key.name(), self.boot],
+            |r| r.get(0),
+        )
+        .optional()
+        .with_context(|| format!("reading {} from {DB}", key.name()))
     }
 
     /// The user's holds: path (a `*` for the CPUs of a per-CPU knob) -> the value it keeps.
-    #[must_use]
-    pub fn holds(&self) -> std::collections::BTreeMap<String, String> {
+    ///
+    /// # Errors
+    /// `system.db` cannot be read.
+    pub fn holds(&self) -> Result<std::collections::BTreeMap<String, String>> {
         let Some(conn) = self.conn.as_ref() else {
-            return std::collections::BTreeMap::new();
+            return Ok(std::collections::BTreeMap::new());
         };
         conn.prepare("SELECT path, value FROM holds")
             .and_then(|mut stmt| {
                 stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
                     .collect::<rusqlite::Result<_>>()
             })
-            .unwrap_or_default()
+            .with_context(|| format!("reading the holds from {DB}"))
     }
 
     /// Keep `path` at `value` against the policy, until released; `None` releases it.
@@ -155,16 +187,18 @@ impl Ledger {
     }
 
     /// Whether the configset layer `id` (`shipped/20-ac`) was turned on or off; `None`: its default.
-    #[must_use]
-    pub fn layer_enabled(&self, id: &str) -> Option<bool> {
-        self.conn
-            .as_ref()?
-            .query_row("SELECT enabled FROM layers WHERE id = ?1", [id], |r| {
-                r.get(0)
-            })
-            .optional()
-            .ok()
-            .flatten()
+    ///
+    /// # Errors
+    /// `system.db` cannot be read.
+    pub fn layer_enabled(&self, id: &str) -> Result<Option<bool>> {
+        let Some(conn) = self.conn.as_ref() else {
+            return Ok(None);
+        };
+        conn.query_row("SELECT enabled FROM layers WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .optional()
+        .with_context(|| format!("reading the state of layer {id} from {DB}"))
     }
 
     /// Turn the configset layer `id` on or off; `None` gives it its default again.
@@ -185,37 +219,47 @@ impl Ledger {
     }
 
     /// The selection now: the layer states and the holds (not a set's `boot`).
-    #[must_use]
-    pub fn selection(&self) -> Selection {
-        let layers = self.conn.as_ref().map_or_else(Default::default, |conn| {
-            conn.prepare("SELECT id, enabled FROM layers")
+    ///
+    /// # Errors
+    /// `system.db` cannot be read.
+    pub fn selection(&self) -> Result<Selection> {
+        let layers = match self.conn.as_ref() {
+            None => std::collections::BTreeMap::default(),
+            Some(conn) => conn
+                .prepare("SELECT id, enabled FROM layers")
                 .and_then(|mut stmt| {
                     stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
                         .collect::<rusqlite::Result<_>>()
                 })
-                .unwrap_or_default()
-        });
-        Selection {
+                .with_context(|| format!("reading the layer states from {DB}"))?,
+        };
+        Ok(Selection {
             layers,
-            holds: self.holds(),
+            holds: self.holds()?,
             boot: false,
-        }
+        })
     }
 
     /// The saved sets by name.
-    #[must_use]
-    pub fn sets(&self) -> std::collections::BTreeMap<String, Selection> {
+    ///
+    /// # Errors
+    /// `system.db` cannot be read, or a set is not valid JSON.
+    pub fn sets(&self) -> Result<std::collections::BTreeMap<String, Selection>> {
         let Some(conn) = self.conn.as_ref() else {
-            return std::collections::BTreeMap::new();
+            return Ok(std::collections::BTreeMap::new());
         };
         conn.prepare("SELECT name, selection FROM sets")
             .and_then(|mut stmt| {
                 stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
                     .collect::<rusqlite::Result<Vec<_>>>()
             })
-            .unwrap_or_default()
+            .with_context(|| format!("reading the sets from {DB}"))?
             .into_iter()
-            .filter_map(|(name, json)| Some((name, serde_json::from_str(&json).ok()?)))
+            .map(|(name, json)| {
+                let set = serde_json::from_str(&json)
+                    .with_context(|| format!("the set {name} in {DB} is not valid"))?;
+                Ok((name, set))
+            })
             .collect()
     }
 
@@ -256,16 +300,19 @@ impl Ledger {
         Ok(())
     }
 
-    #[must_use]
-    pub fn fan(&self, key: FanKey) -> Option<String> {
-        self.conn
-            .as_ref()?
-            .query_row("SELECT value FROM fan WHERE key = ?1", [key.name()], |r| {
-                r.get(0)
-            })
-            .optional()
-            .ok()
-            .flatten()
+    /// The user's fan choice `key`.
+    ///
+    /// # Errors
+    /// `system.db` cannot be read.
+    pub fn fan(&self, key: FanKey) -> Result<Option<String>> {
+        let Some(conn) = self.conn.as_ref() else {
+            return Ok(None);
+        };
+        conn.query_row("SELECT value FROM fan WHERE key = ?1", [key.name()], |r| {
+            r.get(0)
+        })
+        .optional()
+        .with_context(|| format!("reading the fan {} from {DB}", key.name()))
     }
 
     /// `None` removes the choice.

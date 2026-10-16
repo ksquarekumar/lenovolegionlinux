@@ -2,6 +2,8 @@
 //! (old Legion tooling, missing or unwanted kernel modules, DKMS builds, throttling, dirty NTFS volumes, GPU wiring,
 //! failed units, the OSD extension)?
 
+use anyhow::Result;
+
 use crate::gpu;
 use crate::kernel;
 use crate::ledger::Key;
@@ -20,10 +22,10 @@ fn unit_quiet(active: &str, enabled: &str) -> bool {
     active != "active" && ["disabled", "not-found", "masked", "unknown"].contains(&enabled)
 }
 
-fn module_warnings(root: &SysRoot, profile: &Profile) -> Vec<String> {
+fn module_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
     let spec = &profile.kernel_modules;
     let mut out = Vec::new();
-    let kernels = kernel::installed_kernels(root);
+    let kernels = kernel::installed_kernels(root)?;
     for module in &spec.required {
         for k in &kernels {
             if !kernel::module_available(module, k) {
@@ -33,14 +35,14 @@ fn module_warnings(root: &SysRoot, profile: &Profile) -> Vec<String> {
             }
         }
     }
-    let loaded = kernel::loaded_modules(root);
-    let running = kernel::running_kernel(root);
+    let loaded = kernel::loaded_modules(root)?;
+    let running = kernel::running_kernel(root)?;
     for module in &spec.required {
-        if !loaded.contains(module) && !kernel::module_builtin(root, module, &running) {
+        if !loaded.contains(module) && !kernel::module_builtin(root, module, &running)? {
             out.push(format!("required module {module} is not loaded"));
         }
     }
-    for (module, source) in kernel::autoload_entries(root) {
+    for (module, source) in kernel::autoload_entries(root)? {
         if !kernel::module_available(&module, &running) {
             out.push(format!(
                 "{source} autoloads {module}, which does not exist for {running} (fails every boot)"
@@ -66,33 +68,83 @@ fn module_warnings(root: &SysRoot, profile: &Profile) -> Vec<String> {
             }
         }
     }
-    out.extend(wmi_warnings(root, profile));
-    out
+    Ok(out)
+}
+
+/// The findings of one check, or the reason why it cannot run (a finding too: a check that cannot run is never
+/// a pass).
+fn check(w: &mut Vec<String>, name: &str, findings: Result<Vec<String>>) {
+    match findings {
+        Ok(found) => w.extend(found),
+        Err(e) => w.push(format!("the {name} check cannot run: {e:#}")),
+    }
 }
 
 /// Every finding, in a stable order; empty when nothing is wrong.
+#[must_use]
 pub fn doctor(machine: &Machine) -> Vec<String> {
     let (root, profile) = (machine.root, machine.profile);
     let mut w = Vec::new();
-    if let Some(reason) = root.read("/run/legionctl/safe-mode") {
+    check(&mut w, "daemon state", state_warnings(root, profile));
+    check(&mut w, "policy", policy_warnings(machine));
+    check(&mut w, "conflict", conflict_warnings(root, profile));
+    check(&mut w, "kernel module", module_warnings(root, profile));
+    check(&mut w, "Legion WMI", wmi_warnings(root, profile));
+    check(&mut w, "boot image", crate::boot::unbuilt(root));
+    if let Some(reasons) = firmware::logged_throttle_reasons(root)
+        && reasons
+            .iter()
+            .any(|r| ["PROCHOT", "critical temperature"].contains(r))
+    {
+        w.push(format!("CPU throttling logged: {}", reasons.join(", ")));
+    }
+    for volume in crate::windows::dirty_ntfs() {
+        w.push(format!(
+            "NTFS volume {volume} is marked dirty; run chkdsk in Windows (or ntfsfix -d, see docs/design/11-disks.md)"
+        ));
+    }
+    check(&mut w, "GPU", gpu_warnings(machine));
+    w.extend(desktop_warnings());
+    w
+}
+
+/// Written by the daemon while the machine state that it announces cannot be read (the reason).
+pub const OBSERVE_ERROR: &str = "/run/legionctl/observe.error";
+
+/// Safe mode, the daemon's state loop, the workload sensor, and the DMI identity.
+fn state_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
+    let mut w = Vec::new();
+    if let Some(reason) = root.read("/run/legionctl/safe-mode")? {
         w.push(format!("safe mode: {reason}"));
     }
-    if let Some(reason) = root.read(crate::configset::WORKLOAD_ERROR) {
+    if let Some(reason) = root.read(OBSERVE_ERROR)? {
+        w.push(format!(
+            "legionctl-system cannot read the machine state that it announces (mode, workload, fan): {reason}"
+        ));
+    }
+    if let Some(reason) = root.read(crate::configset::WORKLOAD_ERROR)? {
         w.push(format!(
             "the eBPF workload sensor does not run: {reason}; layers with a workload condition never apply"
         ));
     }
-    if !dmi_mismatches(root, profile).is_empty() {
+    if !dmi_mismatches(root, profile)?.is_empty() {
         w.push("DMI does not match this repo profile".into());
     }
+    Ok(w)
+}
 
-    let override_mode = machine.ledger.get(Key::Override);
-    let wanted = machine.desired(machine.source(), override_mode.as_deref());
+/// The machine against its policy: firmware mode, fan mode, governor and EPP, sysctl.
+fn policy_warnings(machine: &Machine) -> Result<Vec<String>> {
+    let (root, profile) = (machine.root, machine.profile);
+    let mut w = Vec::new();
+    let override_mode = machine.ledger.get(Key::Override)?;
+    let wanted = machine.desired(machine.source()?, override_mode.as_deref())?;
     w.extend(crate::configset::findings(machine.layers));
-    let current = root.read(&profile.paths.platform_profile);
-    let expected_mode = override_mode
-        .clone()
-        .or_else(|| machine.platform_choice(&wanted));
+    let current = root.read(&profile.paths.platform_profile)?;
+    let expected_mode = match override_mode.clone() {
+        Some(mode) => Some(mode),
+        None => machine.platform_choice(&wanted)?,
+    };
     if let Some(expected_mode) = &expected_mode
         && current.as_deref() != Some(expected_mode.as_str())
     {
@@ -103,7 +155,7 @@ pub fn doctor(machine: &Machine) -> Vec<String> {
         ));
     }
     if let (Some(path), Some(fan)) = (&profile.paths.fan_mode, wanted.text("firmware.fan_mode")) {
-        let now = root.read(path);
+        let now = root.read(path)?;
         if now.as_deref() != Some(fan.as_str()) {
             w.push(format!(
                 "{path} is {}, expected {}",
@@ -129,7 +181,7 @@ pub fn doctor(machine: &Machine) -> Vec<String> {
         ("energy_performance_preference", "EPP", epp),
     ] {
         if let Some(expected) = expected {
-            let wrong: usize = cpufreq_counts(root, file)
+            let wrong: usize = cpufreq_counts(root, file)?
                 .iter()
                 .filter(|(v, _)| **v != expected)
                 .map(|(_, n)| n)
@@ -144,7 +196,7 @@ pub fn doctor(machine: &Machine) -> Vec<String> {
     }
 
     for (key, value) in wanted.under("sysctl.") {
-        if let Some(now) = root.read(format!("/proc/sys/{}", key.replace('.', "/")))
+        if let Some(now) = root.read(format!("/proc/sys/{}", key.replace('.', "/")))?
             && now != value
         {
             w.push(format!(
@@ -154,30 +206,7 @@ pub fn doctor(machine: &Machine) -> Vec<String> {
             ));
         }
     }
-
-    w.extend(conflict_warnings(root, profile));
-
-    w.extend(module_warnings(root, profile));
-    w.extend(crate::boot::unbuilt(root));
-    if let Some(reasons) = firmware::logged_throttle_reasons(root)
-        && reasons
-            .iter()
-            .any(|r| ["PROCHOT", "critical temperature"].contains(r))
-    {
-        w.push(format!("CPU throttling logged: {}", reasons.join(", ")));
-    }
-    for volume in crate::windows::dirty_ntfs() {
-        w.push(format!(
-            "NTFS volume {volume} is marked dirty; run chkdsk in Windows (or ntfsfix -d, see docs/design/11-disks.md)"
-        ));
-    }
-    w.extend(gpu_warnings(
-        root,
-        profile,
-        wanted.text("nvidia.services").as_deref() == Some("start"),
-    ));
-    w.extend(desktop_warnings());
-    w
+    Ok(w)
 }
 
 /// The Legion WMI driver families: legionctl's module and the upstream drivers it replaces.
@@ -185,18 +214,18 @@ const WMI_FAMILIES: [&str; 2] = ["legionctl_wmi", "lenovo_wmi_"];
 
 /// Two driver families on the Legion WMI devices (todo-143: `legionctl_wmi` autoloaded beside the upstream drivers),
 /// and no `platform_profile` while a Legion WMI driver is loaded.
-fn wmi_warnings(root: &SysRoot, profile: &Profile) -> Vec<String> {
+fn wmi_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
     let mut w = Vec::new();
     let mut loaded = Vec::new();
     let mut bound = Vec::new();
-    for driver in root.children("/sys/bus/wmi/drivers", "") {
+    for driver in root.children("/sys/bus/wmi/drivers", "")? {
         let name = driver.file_name().unwrap().to_string_lossy().into_owned();
         let Some(family) = WMI_FAMILIES.iter().find(|f| name.starts_with(**f)) else {
             continue;
         };
         // a bound device is a link named <GUID>-<instance>; bind, unbind, module and uevent are lower case
         let devices: Vec<String> = root
-            .children(&driver, "")
+            .children(&driver, "")?
             .iter()
             .map(|d| d.file_name().unwrap().to_string_lossy().into_owned())
             .filter(|d| d.len() > 36 && d.as_bytes()[8] == b'-')
@@ -215,14 +244,14 @@ fn wmi_warnings(root: &SysRoot, profile: &Profile) -> Vec<String> {
             drivers.join("; ")
         ));
     }
-    if !loaded.is_empty() && !root.exists(&profile.paths.platform_profile) {
+    if !loaded.is_empty() && !root.exists(&profile.paths.platform_profile)? {
         w.push(format!(
             "{} is missing while {} is loaded: legionctl cannot set the power mode",
             profile.paths.platform_profile,
             loaded.join(", ")
         ));
     }
-    w
+    Ok(w)
 }
 
 const OSD_EXTENSION: &str = "legionctl-osd@legionctl";
@@ -255,7 +284,7 @@ fn desktop_warnings() -> Vec<String> {
 }
 
 /// Units, packages and modules that fight legionctl over the same knobs.
-fn conflict_warnings(root: &SysRoot, profile: &Profile) -> Vec<String> {
+fn conflict_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
     let mut w = Vec::new();
     for unit in &profile.conflicts.systemd_units {
         let active = system::unit_state("is-active", unit);
@@ -271,7 +300,7 @@ fn conflict_warnings(root: &SysRoot, profile: &Profile) -> Vec<String> {
             w.push(format!("conflicting package is installed: {package}"));
         }
     }
-    let loaded = kernel::loaded_modules(root);
+    let loaded = kernel::loaded_modules(root)?;
     for module in &profile.conflicts.modules {
         if loaded.contains(module) {
             w.push(format!("conflicting module is loaded: {module}"));
@@ -279,26 +308,33 @@ fn conflict_warnings(root: &SysRoot, profile: &Profile) -> Vec<String> {
     }
     if loaded.contains("thinkpad_acpi")
         && root
-            .read("/proc/acpi/ibm/fan")
+            .read("/proc/acpi/ibm/fan")?
             .is_some_and(|f| f.contains("status:\t\tenabled"))
     {
         w.push(
             "thinkpad_acpi fan control appears enabled; this is not trusted on this machine".into(),
         );
     }
-    w
+    Ok(w)
 }
 
 /// Desktop GPU wiring, and NVIDIA power where the layers start its services (on AC).
-fn gpu_warnings(root: &SysRoot, profile: &Profile, services: bool) -> Vec<String> {
+fn gpu_warnings(machine: &Machine) -> Result<Vec<String>> {
+    let (root, profile) = (machine.root, machine.profile);
+    let fn_q = machine.ledger.get(Key::Override)?;
+    let services = machine
+        .desired(machine.source()?, fn_q.as_deref())?
+        .text("nvidia.services")
+        .as_deref()
+        == Some("start");
     let mut w = Vec::new();
-    let outputs = gpu::outputs(root);
+    let outputs = gpu::outputs(root)?;
     let external_on_nvidia = outputs
         .iter()
         .any(|o| o.connected && o.driver == "nvidia" && !o.connector.starts_with("eDP"));
     if gpu::mode(&outputs) == gpu::GpuMode::Hybrid
         && external_on_nvidia
-        && gpu::desktop_preference(root) != gpu::DesktopGpu::Nvidia
+        && gpu::desktop_preference(root)? != gpu::DesktopGpu::Nvidia
     {
         w.push(
             "an external display runs on NVIDIA but the desktop may be drawn on Intel; try `legionctl gpu primary nvidia`"
@@ -306,7 +342,7 @@ fn gpu_warnings(root: &SysRoot, profile: &Profile, services: bool) -> Vec<String
         );
     }
 
-    if let Some(power) = gpu::nvidia_power(root)
+    if let Some(power) = gpu::nvidia_power(root)?
         && power.control.as_deref() == Some("on")
     {
         w.push(
@@ -316,7 +352,7 @@ fn gpu_warnings(root: &SysRoot, profile: &Profile, services: bool) -> Vec<String
         );
     }
     if root
-        .read("/proc/driver/nvidia/params")
+        .read("/proc/driver/nvidia/params")?
         .is_some_and(|p| p.lines().any(|l| l.trim() == "DynamicPowerManagement: 0"))
     {
         w.push(
@@ -346,5 +382,5 @@ fn gpu_warnings(root: &SysRoot, profile: &Profile, services: bool) -> Vec<String
             ));
         }
     }
-    w
+    Ok(w)
 }

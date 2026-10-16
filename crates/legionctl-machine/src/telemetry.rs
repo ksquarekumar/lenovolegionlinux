@@ -9,6 +9,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use anyhow::Result;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -97,18 +98,16 @@ fn cpu_list(text: &str) -> Vec<usize> {
 }
 
 /// Per-CPU histograms summed per CPU class: `performance` and `efficiency` cores, or `all` on a CPU without classes.
-#[must_use]
-pub fn by_class(root: &SysRoot, per_cpu: &[Vec<u64>]) -> BTreeMap<String, Vec<u64>> {
-    let classes: Vec<(&str, Vec<usize>)> =
-        [("performance", "cpu_core"), ("efficiency", "cpu_atom")]
-            .into_iter()
-            .filter_map(|(name, dir)| {
-                Some((
-                    name,
-                    cpu_list(&root.read(format!("/sys/devices/{dir}/cpus"))?),
-                ))
-            })
-            .collect();
+///
+/// # Errors
+/// A CPU class list cannot be read.
+pub fn by_class(root: &SysRoot, per_cpu: &[Vec<u64>]) -> Result<BTreeMap<String, Vec<u64>>> {
+    let mut classes: Vec<(&str, Vec<usize>)> = Vec::new();
+    for (name, dir) in [("performance", "cpu_core"), ("efficiency", "cpu_atom")] {
+        if let Some(cpus) = root.read(format!("/sys/devices/{dir}/cpus"))? {
+            classes.push((name, cpu_list(&cpus)));
+        }
+    }
     let mut out: BTreeMap<String, Vec<u64>> = BTreeMap::new();
     for (cpu, hist) in per_cpu.iter().enumerate() {
         let class = classes
@@ -121,7 +120,7 @@ pub fn by_class(root: &SysRoot, per_cpu: &[Vec<u64>]) -> BTreeMap<String, Vec<u6
             sum[bucket] += n;
         }
     }
-    out
+    Ok(out)
 }
 
 fn percentile(hist: &[u64], count: u64, share: f64) -> u64 {
@@ -254,11 +253,19 @@ fn session_memory_pressure(root: &SysRoot) -> BTreeMap<String, Pressure> {
 #[must_use]
 pub fn root_sample(root: &SysRoot) -> RootSample {
     let names = |r: Vec<&str>| r.into_iter().map(String::from).collect();
+    let fan_rpm = firmware::fan_rpm(root)
+        .map(|f| f.map(|f| f.iter().map(|(n, v)| ((*n).to_string(), *v)).collect()));
+    let sensor_errors = fan_rpm
+        .as_ref()
+        .err()
+        .map(|e| ("fan_rpm".to_string(), format!("{e:#}")))
+        .into_iter()
+        .collect();
     RootSample {
-        fan_rpm: firmware::fan_rpm(root)
-            .map(|f| f.iter().map(|(n, v)| ((*n).to_string(), *v)).collect()),
+        fan_rpm: fan_rpm.ok().flatten(),
         throttle_now: firmware::current_throttle_reasons(root).map(names),
         throttle_logged: firmware::logged_throttle_reasons(root).map(names),
+        sensor_errors,
         ..RootSample::default()
     }
 }
@@ -297,21 +304,21 @@ const KINDS: [(&str, f64, &str, &str); 6] = [
 
 /// Every channel of every hwmon device, and the devices not read because they sleep: a read of a sleeping device's
 /// sensor wakes it (the NVIDIA GPU's), its runtime power state alone does not.
-fn hwmon(root: &SysRoot) -> (Vec<Channel>, Vec<String>) {
+fn hwmon(root: &SysRoot) -> Result<(Vec<Channel>, Vec<String>)> {
     let (mut channels, mut asleep) = (Vec::new(), Vec::new());
-    for dir in root.children("/sys/class/hwmon", "hwmon") {
+    for dir in root.children("/sys/class/hwmon", "hwmon")? {
         let id = dir
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-        let device = format!("{id} {}", root.read(dir.join("name")).unwrap_or_default());
+        let device = format!("{id} {}", root.read(dir.join("name"))?.unwrap_or_default());
         if root
-            .read(dir.join("device/power/runtime_status"))
+            .read(dir.join("device/power/runtime_status"))?
             .is_some_and(|s| s != "active" && s != "unsupported")
         {
             asleep.push(device);
             continue;
         }
-        for file in root.children(&dir, "") {
+        for file in root.children(&dir, "")? {
             let file = file
                 .file_name()
                 .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
@@ -328,13 +335,13 @@ fn hwmon(root: &SysRoot) -> (Vec<Channel>, Vec<String>) {
                 continue;
             };
             if let Some(raw) = root
-                .read(dir.join(&file))
+                .read(dir.join(&file))?
                 .and_then(|v| v.parse::<f64>().ok())
             {
                 channels.push(Channel {
                     device: device.clone(),
                     name: root
-                        .read(dir.join(format!("{stem}_label")))
+                        .read(dir.join(format!("{stem}_label")))?
                         .unwrap_or_else(|| stem.into()),
                     value: raw / divisor,
                     unit: (*unit).into(),
@@ -342,7 +349,7 @@ fn hwmon(root: &SysRoot) -> (Vec<Channel>, Vec<String>) {
             }
         }
     }
-    (channels, asleep)
+    Ok((channels, asleep))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -375,8 +382,8 @@ pub struct Sample {
     pub root: RootSample,
 }
 
-fn read_f64(root: &SysRoot, path: &str) -> Option<f64> {
-    root.read(path)?.parse().ok()
+fn read_f64(root: &SysRoot, path: &str) -> Result<Option<f64>> {
+    Ok(root.read(path)?.and_then(|v| v.parse().ok()))
 }
 
 /// Joules per second from two RAPL readings, across a counter wrap.
@@ -389,39 +396,48 @@ fn watts(before: f64, after: f64, range: Option<f64>, window: Duration) -> Optio
     Some(delta / 1e6 / window.as_secs_f64())
 }
 
-fn cpu_temp(root: &SysRoot) -> Option<f64> {
-    root.children("/sys/class/hwmon", "hwmon")
-        .into_iter()
-        .find(|h| root.read(h.join("name")).as_deref() == Some("coretemp"))
-        .and_then(|h| root.read(h.join("temp1_input")))
-        .and_then(|t| t.parse::<f64>().ok())
-        .map(|m| m / 1000.0)
+/// The package temperature (`coretemp`'s `temp1`), in °C.
+///
+/// # Errors
+/// A hwmon device's files cannot be read.
+pub fn cpu_temp(root: &SysRoot) -> Result<Option<f64>> {
+    let Some(h) = firmware::hwmon(root, "coretemp")? else {
+        return Ok(None);
+    };
+    Ok(read_f64(root, &h.join("temp1_input").to_string_lossy())?.map(|m| m / 1000.0))
 }
 
-fn cpu_mhz(root: &SysRoot) -> Option<f64> {
-    let khz: Vec<f64> = root
-        .children("/sys/devices/system/cpu/cpufreq", "policy")
-        .iter()
-        .filter_map(|p| root.read(p.join("scaling_cur_freq"))?.parse().ok())
-        .collect();
-    (!khz.is_empty()).then(|| {
+fn cpu_mhz(root: &SysRoot) -> Result<Option<f64>> {
+    let mut khz: Vec<f64> = Vec::new();
+    for p in root.children("/sys/devices/system/cpu/cpufreq", "policy")? {
+        khz.extend(read_f64(
+            root,
+            &p.join("scaling_cur_freq").to_string_lossy(),
+        )?);
+    }
+    Ok((!khz.is_empty()).then(|| {
         khz.iter().sum::<f64>() / f64::from(u32::try_from(khz.len()).unwrap_or(u32::MAX)) / 1000.0
-    })
+    }))
 }
 
 /// The NVIDIA GPU's runtime power state, and its readings when it is awake.
-fn gpu(root: &SysRoot) -> Option<GpuSample> {
-    let device = root
-        .children("/sys/bus/pci/devices", "")
-        .into_iter()
-        .find(|d| {
-            root.read(d.join("vendor")).as_deref() == Some(NVIDIA_VENDOR)
-                && root
-                    .read(d.join("class"))
-                    .is_some_and(|c| c.starts_with("0x03"))
-        })?;
+fn gpu(root: &SysRoot) -> Result<Option<GpuSample>> {
+    let mut found = None;
+    for d in root.children("/sys/bus/pci/devices", "")? {
+        if root.read(d.join("vendor"))?.as_deref() == Some(NVIDIA_VENDOR)
+            && root
+                .read(d.join("class"))?
+                .is_some_and(|c| c.starts_with("0x03"))
+        {
+            found = Some(d);
+            break;
+        }
+    }
+    let Some(device) = found else {
+        return Ok(None);
+    };
     let state = root
-        .read(device.join("power/runtime_status"))
+        .read(device.join("power/runtime_status"))?
         .unwrap_or_else(|| "unknown".into());
     let mut sample = GpuSample {
         state,
@@ -451,47 +467,55 @@ fn gpu(root: &SysRoot) -> Option<GpuSample> {
             ) = (power, temp, util, clock);
         }
     }
-    Some(sample)
+    Ok(Some(sample))
 }
 
 /// One sample over `window` (the package power is the mean over it); `root_part` reads `legionctl-system`'s part,
 /// at the start and at the end of the window.
-#[must_use]
-pub fn sample(root: &SysRoot, window: Duration, root_part: &dyn Fn() -> RootSample) -> Sample {
+///
+/// # Errors
+/// A machine file cannot be read.
+pub fn sample(
+    root: &SysRoot,
+    window: Duration,
+    root_part: &dyn Fn() -> RootSample,
+) -> Result<Sample> {
     let first = root_part();
-    let before = read_f64(root, RAPL_PACKAGE);
+    let before = read_f64(root, RAPL_PACKAGE)?;
     std::thread::sleep(window);
-    let after = read_f64(root, RAPL_PACKAGE);
+    let after = read_f64(root, RAPL_PACKAGE)?;
     let mut last = root_part();
     let runq_latency = first
         .runq
         .zip(last.runq.take())
         .map(|(a, b)| latency(&a, &b));
     let io_latency = first.io.zip(last.io.take()).map(|(a, b)| latency(&a, &b));
+    let range = read_f64(root, RAPL_RANGE)?;
     let package_w = before
         .zip(after)
-        .and_then(|(b, a)| watts(b, a, read_f64(root, RAPL_RANGE), window));
+        .and_then(|(b, a)| watts(b, a, range, window));
     let cpu_energy = first
         .processes
         .zip(last.processes.take())
         .map(|(a, b)| cpu_energy(&a, &b, package_w));
-    let psi = |name: &str| {
-        root.read(format!("/proc/pressure/{name}"))
+    let psi = |name: &str| -> Result<Option<Pressure>> {
+        Ok(root
+            .read(format!("/proc/pressure/{name}"))?
             .as_deref()
-            .and_then(parse_pressure)
+            .and_then(parse_pressure))
     };
-    let (hwmon, hwmon_asleep) = hwmon(root);
-    Sample {
+    let (hwmon, hwmon_asleep) = hwmon(root)?;
+    Ok(Sample {
         ts_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
         package_w,
-        cpu_temp_c: cpu_temp(root),
-        cpu_mhz: cpu_mhz(root),
-        gpu: gpu(root),
-        cpu_pressure: psi("cpu"),
-        memory_pressure: psi("memory"),
-        io_pressure: psi("io"),
+        cpu_temp_c: cpu_temp(root)?,
+        cpu_mhz: cpu_mhz(root)?,
+        gpu: gpu(root)?,
+        cpu_pressure: psi("cpu")?,
+        memory_pressure: psi("memory")?,
+        io_pressure: psi("io")?,
         runq_latency,
         cpu_energy,
         io_latency,
@@ -499,7 +523,7 @@ pub fn sample(root: &SysRoot, window: Duration, root_part: &dyn Fn() -> RootSamp
         hwmon,
         hwmon_asleep,
         root: last,
-    }
+    })
 }
 
 /// A label value in `OpenMetrics` text.

@@ -150,18 +150,18 @@ fn libvirt_vms() -> Vec<VirtInstance> {
 }
 
 /// KVM, IOMMU, VFIO and binfmt from the kernel.
-fn kernel(root: &SysRoot) -> Vec<VirtCapability> {
-    let modules = legionctl_machine::kernel::loaded_modules(root);
+fn kernel(root: &SysRoot) -> Result<Vec<VirtCapability>> {
+    let modules = legionctl_machine::kernel::loaded_modules(root)?;
     let kvm =
-        root.exists("/dev/kvm") && (modules.contains("kvm_intel") || modules.contains("kvm_amd"));
-    let iommu = !root.children("/sys/class/iommu", "").is_empty();
+        root.exists("/dev/kvm")? && (modules.contains("kvm_intel") || modules.contains("kvm_amd"));
+    let iommu = !root.children("/sys/class/iommu", "")?.is_empty();
     let binfmt: Vec<String> = root
-        .children("/proc/sys/fs/binfmt_misc", "")
+        .children("/proc/sys/fs/binfmt_misc", "")?
         .iter()
         .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .filter(|n| n != "register" && n != "status")
         .collect();
-    vec![
+    Ok(vec![
         capability(
             "Hardware virtualization",
             "KVM",
@@ -185,7 +185,7 @@ fn kernel(root: &SysRoot) -> Vec<VirtCapability> {
         capability(
             "Device passthrough",
             "VFIO",
-            root.exists("/dev/vfio"),
+            root.exists("/dev/vfio")?,
             "/dev/vfio".into(),
         ),
         capability(
@@ -194,18 +194,18 @@ fn kernel(root: &SysRoot) -> Vec<VirtCapability> {
             !binfmt.is_empty(),
             binfmt.join(", "),
         ),
-    ]
+    ])
 }
 
 /// Docker's capabilities, findings and containers.
-async fn containers(root: &SysRoot, status: &mut VirtStatus) {
+async fn containers(root: &SysRoot, status: &mut VirtStatus) -> Result<()> {
     let (version, info) = match (docker("/version").await, docker("/info").await) {
         (Ok(v), Ok(i)) => (v, i),
         (Err(e), _) | (_, Err(e)) => {
             status
                 .capabilities
                 .push(capability("Containers", "Docker", false, format!("{e:#}")));
-            return;
+            return Ok(());
         }
     };
     let root_dir = info["DockerRootDir"].as_str().unwrap_or("?");
@@ -227,7 +227,7 @@ async fn containers(root: &SysRoot, status: &mut VirtStatus) {
         nvidia,
         runtime.into(),
     ));
-    if info["CgroupDriver"] != "systemd" && root.exists("/run/systemd/system") {
+    if info["CgroupDriver"] != "systemd" && root.exists("/run/systemd/system")? {
         status.findings.push(format!(
             "Docker uses the {} cgroup driver on a systemd host; the systemd driver is the supported setup",
             info["CgroupDriver"].as_str().unwrap_or("?")
@@ -261,6 +261,7 @@ async fn containers(root: &SysRoot, status: &mut VirtStatus) {
             state: c["State"].as_str().unwrap_or("").into(),
         });
     }
+    Ok(())
 }
 
 /// A running container's memory as `docker stats` counts it: the cgroup's use without its inactive page cache.
@@ -281,10 +282,19 @@ async fn container_memory(id: &str) -> Option<u64> {
 }
 
 /// Host memory is low (below `low_percent` available, the `load.busy` limit): name what the guests hold.
-fn memory_finding(root: &SysRoot, instances: &[VirtInstance], low_percent: f64) -> Option<String> {
-    let meminfo = root.read("/proc/meminfo")?;
-    let total = legionctl_machine::load::meminfo_kib(&meminfo, "MemTotal")? * 1024;
-    let available = legionctl_machine::load::meminfo_kib(&meminfo, "MemAvailable")? * 1024;
+fn memory_finding(
+    root: &SysRoot,
+    instances: &[VirtInstance],
+    low_percent: f64,
+) -> Result<Option<String>> {
+    let Some(meminfo) = root.read("/proc/meminfo")? else {
+        return Ok(None);
+    };
+    let kib = |key: &str| {
+        legionctl_machine::load::meminfo_kib(&meminfo, key)
+            .with_context(|| format!("/proc/meminfo has no {key}"))
+    };
+    let (total, available) = (kib("MemTotal")? * 1024, kib("MemAvailable")? * 1024);
     let mut holders: Vec<(&str, u64)> = instances
         .iter()
         .filter_map(|i| Some((i.name.as_str(), i.memory_bytes?)))
@@ -294,7 +304,7 @@ fn memory_finding(root: &SysRoot, instances: &[VirtInstance], low_percent: f64) 
     let mib = |bytes: u64| f64::from(u32::try_from(bytes >> 20).unwrap_or(u32::MAX));
     let low = mib(available) * 100.0 < low_percent * mib(total);
     if !low || holders.is_empty() {
-        return None;
+        return Ok(None);
     }
     holders.sort_by_key(|h| std::cmp::Reverse(h.1));
     let held: u64 = holders.iter().map(|(_, b)| b).sum();
@@ -303,14 +313,14 @@ fn memory_finding(root: &SysRoot, instances: &[VirtInstance], low_percent: f64) 
         .iter()
         .map(|(name, bytes)| format!("{name} {}", human(*bytes)))
         .collect();
-    Some(format!(
+    Ok(Some(format!(
         "memory is low ({} of {} available); guests hold {}: {}. Pause or stop one: legionctl virt act \
          pause <name>",
         human(available),
         human(total),
         human(held),
         list.join(", ")
-    ))
+    )))
 }
 
 /// libvirt's daemons and VMs.
@@ -345,9 +355,12 @@ fn vms(status: &mut VirtStatus) {
 
 /// The status of every capability, the instances, and what is wrong; `low_percent` is the share of memory
 /// available below which memory counts as low.
-pub async fn status(root: &SysRoot, low_percent: f64) -> VirtStatus {
+///
+/// # Errors
+/// A kernel file cannot be read.
+pub async fn status(root: &SysRoot, low_percent: f64) -> Result<VirtStatus> {
     let mut status = VirtStatus {
-        capabilities: kernel(root),
+        capabilities: kernel(root)?,
         instances: Vec::new(),
         findings: Vec::new(),
     };
@@ -356,7 +369,7 @@ pub async fn status(root: &SysRoot, low_percent: f64) -> VirtStatus {
             .findings
             .push("no KVM: VMs run without hardware virtualization (slow)".into());
     }
-    containers(root, &mut status).await;
+    containers(root, &mut status).await?;
     let clis = docker_clis();
     if clis.len() > 1 {
         let list: Vec<String> = clis.iter().map(|p| p.display().to_string()).collect();
@@ -368,8 +381,8 @@ pub async fn status(root: &SysRoot, low_percent: f64) -> VirtStatus {
     vms(&mut status);
     status
         .findings
-        .extend(memory_finding(root, &status.instances, low_percent));
-    status
+        .extend(memory_finding(root, &status.instances, low_percent)?);
+    Ok(status)
 }
 
 /// The containers of compose project `project`, with their health when they have a check.

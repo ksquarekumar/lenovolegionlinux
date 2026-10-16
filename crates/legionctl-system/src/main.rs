@@ -45,7 +45,7 @@ use legionctl_machine::policy::{self, Machine, Options, Source, Step};
 use legionctl_machine::react::{Event, react};
 use legionctl_machine::sysroot::SysRoot;
 use legionctl_machine::{
-    battery, boot, cleanup, configset, fan, firmware, gpu, greeter, knobs, profile, sets,
+    battery, boot, cleanup, configset, doctor, fan, firmware, gpu, greeter, knobs, profile, sets,
     telemetry, tune, vfio, windows, winvm,
 };
 use tokio::io::unix::AsyncFd;
@@ -72,7 +72,7 @@ fn safe(root: &SysRoot) -> Result<()> {
     }
     let (profile, _) = profile::load(None)?;
     let choices = root
-        .read(&profile.paths.platform_profile_choices)
+        .read(&profile.paths.platform_profile_choices)?
         .unwrap_or_default();
     let mut done = Vec::new();
     if choices.split_whitespace().any(|c| c == "balanced") {
@@ -156,7 +156,7 @@ fn ppd_current() -> Option<String> {
 fn on_machine<T>(root: &SysRoot, f: impl FnOnce(&Machine) -> Result<T>) -> Result<T> {
     let (profile, _) = profile::load(None)?;
     let ledger = Ledger::open(root)?;
-    let layers = configset::load(root, &profile, &ledger);
+    let layers = configset::load(root, &profile, &ledger)?;
     f(&Machine {
         root,
         profile: &profile,
@@ -172,7 +172,7 @@ fn carry_out(
     root: &SysRoot,
     plan: impl FnOnce(&Machine) -> Result<Vec<Step>>,
 ) -> Result<Vec<String>> {
-    on_machine(root, |m| Ok(policy::execute(root, m.ledger, &plan(m)?)))
+    on_machine(root, |m| policy::execute(root, m.ledger, &plan(m)?))
 }
 
 /// What the session shows about the firmware mode: the mode, whether it is the user's Fn+Q choice, and the power
@@ -184,18 +184,21 @@ struct ModeState {
     source: &'static str,
 }
 
-fn mode(root: &SysRoot) -> Option<ModeState> {
-    let (profile, _) = profile::load(None).ok()?;
-    let mode = root.read(&profile.paths.platform_profile)?;
-    Some(ModeState {
-        fn_q_choice: Ledger::open(root).ok()?.get(Key::Override).as_deref() == Some(mode.as_str()),
-        source: if root.read(&profile.paths.ac_adapter).as_deref() == Some("1") {
+/// The firmware mode now; `None` without `platform_profile`.
+fn mode(root: &SysRoot) -> Result<Option<ModeState>> {
+    let (profile, _) = profile::load(None)?;
+    let Some(mode) = root.read(&profile.paths.platform_profile)? else {
+        return Ok(None);
+    };
+    Ok(Some(ModeState {
+        fn_q_choice: Ledger::open(root)?.get(Key::Override)?.as_deref() == Some(mode.as_str()),
+        source: if root.read(&profile.paths.ac_adapter)?.as_deref() == Some("1") {
             "ac"
         } else {
             "battery"
         },
         mode,
-    })
+    }))
 }
 
 /// The state other tools follow, as last announced.
@@ -219,14 +222,14 @@ impl Observed {
     }
 }
 
-fn observe(root: &SysRoot) -> Observed {
-    Observed {
-        mode: mode(root),
-        workload: configset::workload(root),
+fn observe(root: &SysRoot) -> Result<Observed> {
+    Ok(Observed {
+        mode: mode(root)?,
+        workload: configset::workload(root)?,
         throttle: firmware::current_throttle_reasons(root)
             .map(|r| r.into_iter().map(String::from).collect()),
-        fan_max: Ledger::open(root).is_ok_and(|l| l.fan(FanKey::Max).is_some()),
-    }
+        fan_max: Ledger::open(root)?.fan(FanKey::Max)?.is_some(),
+    })
 }
 
 /// What other tools heard last, and each throttle reason's starts per workload kind active then (reason -> kind ->
@@ -340,8 +343,8 @@ async fn settled(
     announced: &Mutex<Announced>,
     tuning: &AtomicBool,
     source_planned: bool,
-) -> Observed {
-    let now = observe(root);
+) -> Option<Observed> {
+    let now = observed(root)?;
     let last = source(
         &announced
             .lock()
@@ -350,10 +353,50 @@ async fn settled(
     );
     let changed = matches!((source(&now), last), (Some(a), Some(b)) if a != b);
     if source_planned || tuning.load(Ordering::SeqCst) || !changed {
-        return now;
+        return Some(now);
     }
     plan(root, emitter, Event::PowerSource).await;
-    observe(root)
+    observed(root)
+}
+
+/// The state that other tools follow cannot be read: a background loop error (user decision Q1), so a journal entry
+/// and an open `doctor` finding until a read works again.
+fn observe_failed(root: &SysRoot, e: &anyhow::Error) {
+    let reason = format!("{e:#}");
+    journal(
+        root,
+        "observe-error",
+        &format!("the machine state cannot be read: {reason}"),
+        &[("REASON", reason.replace('\n', " "))],
+    );
+    let marker = root.path(doctor::OBSERVE_ERROR);
+    if let Err(e) = marker
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&marker, &reason))
+    {
+        eprintln!("cannot write {}: {e}", doctor::OBSERVE_ERROR);
+    }
+}
+
+/// The state now; when it cannot be read, [`observe_failed`] reports why. A read that works closes the `doctor`
+/// finding.
+fn observed(root: &SysRoot) -> Option<Observed> {
+    match observe(root) {
+        Ok(now) => {
+            match std::fs::remove_file(root.path(doctor::OBSERVE_ERROR)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    eprintln!("cannot remove {}: {e}", doctor::OBSERVE_ERROR);
+                }
+                _ => {}
+            }
+            Some(now)
+        }
+        Err(e) => {
+            observe_failed(root, &e);
+            None
+        }
+    }
 }
 
 /// Compare the state other tools follow with the last one announced; each difference is one signal and one journal
@@ -365,7 +408,9 @@ async fn announce(
     tuning: &AtomicBool,
     source_planned: bool,
 ) {
-    let now = settled(root, emitter, announced, tuning, source_planned).await;
+    let Some(now) = settled(root, emitter, announced, tuning, source_planned).await else {
+        return;
+    };
     let (before, throttle_entry) = {
         let mut a = announced.lock().unwrap_or_else(PoisonError::into_inner);
         (a.update(&now), a.throttle_entry())
@@ -508,23 +553,10 @@ async fn plan(root: &SysRoot, emitter: &SignalEmitter<'_>, event: Event) {
     }
 }
 
-/// Carry out a boot plan step by step, stopping at the first failure: a later step (a firmware entry) must not follow a
-/// failed one (an unsigned loader).
+/// Carry out a plan that does not need the policy's machine (boot, greeter, disk): it stops at the first failure, so a
+/// later step (a firmware entry) never follows a failed one (an unsigned loader).
 fn boot_steps(root: &SysRoot, steps: &[Step]) -> Result<Vec<String>> {
-    let ledger = Ledger::open(root)?;
-    let mut lines = Vec::new();
-    for step in steps {
-        let done = policy::execute(root, &ledger, std::slice::from_ref(step));
-        // a warning of the plan is a line, not a failed step
-        if let Some(failure) = done
-            .iter()
-            .find(|l| l.starts_with("warning") && !matches!(step, Step::Warn(_)))
-        {
-            anyhow::bail!("{failure}\ndone before it:\n- {}", lines.join("\n- "));
-        }
-        lines.extend(done);
-    }
-    Ok(lines)
+    policy::execute(root, &Ledger::open(root)?, steps)
 }
 
 /// A mode that runs once and ends, instead of the daemon: `--safe` (the safe-mode unit), `--boot-rebuild` (the pacman
@@ -540,12 +572,15 @@ fn one_shot(root: &SysRoot) -> Option<Result<()>> {
         Some("--safe") => Some(safe(root)),
         Some("--boot-rebuild") => Some(boot_rebuild(root).map(print)),
         Some("--remove-check") => Some(remove_check(root)),
-        Some("--greeter-remove") if greeter::state(root).installed => Some(
-            greeter::remove_plan(root)
-                .and_then(|plan| boot_steps(root, &plan))
-                .map(print),
-        ),
-        Some("--greeter-remove") => Some(Ok(())),
+        Some("--greeter-remove") => Some(greeter::state(root).and_then(|state| {
+            if state.installed {
+                greeter::remove_plan(root)
+                    .and_then(|plan| boot_steps(root, &plan))
+                    .map(print)
+            } else {
+                Ok(())
+            }
+        })),
         _ => None,
     }
 }
@@ -556,14 +591,14 @@ fn one_shot(root: &SysRoot) -> Option<Result<()>> {
 fn remove_check(root: &SysRoot) -> Result<()> {
     let mut reasons = Vec::new();
     let state = boot::state(root)?;
-    if state.ours.is_some() || boot::default_kernel(root).is_some() {
+    if state.ours.is_some() || boot::default_kernel(root)?.is_some() {
         reasons.push(
             "the boot takeover is installed: without legionctl its kernel images are not made again after a kernel \
              update. Run `legionctl boot remove` first"
                 .to_string(),
         );
     }
-    if greeter::state(root).installed
+    if greeter::state(root)?.installed
         && let Err(e) = greeter::remove_plan(root)
     {
         reasons.push(format!(
@@ -591,7 +626,7 @@ fn gpu_release(root: &SysRoot, uid: u32) -> Result<Vec<String>> {
 fn gpu_return(root: &SysRoot) -> Result<Vec<String>> {
     let ledger = Ledger::open(root)?;
     let services: Vec<String> = ledger
-        .get(Key::GpuServices)
+        .get(Key::GpuServices)?
         .unwrap_or_default()
         .split_whitespace()
         .map(String::from)
@@ -618,7 +653,7 @@ fn greeter_act(root: &SysRoot, user: &str, action: &str) -> Result<Vec<String>> 
 /// stop); refused while the Windows VM has the disk.
 fn windows_disk(root: &SysRoot, attach: bool) -> Result<Vec<String>> {
     anyhow::ensure!(
-        Ledger::open(root)?.get(Key::WindowsVm).is_none(),
+        Ledger::open(root)?.get(Key::WindowsVm)?.is_none(),
         "the Windows VM has the disk now"
     );
     boot_steps(root, &winvm::disk_plan(root, attach)?)
@@ -632,10 +667,10 @@ fn save_set(root: &SysRoot, name: &str, boot: bool) -> Result<Vec<String>> {
         boot::takeover(&boot::state(root)?)?;
     }
     let ledger = Ledger::open(root)?;
-    let had_boot = ledger.sets().get(name).is_some_and(|s| s.boot);
+    let had_boot = ledger.sets()?.get(name).is_some_and(|s| s.boot);
     let selection = sets::Selection {
         boot,
-        ..ledger.selection()
+        ..ledger.selection()?
     };
     ledger.save_set(name, Some(&selection))?;
     let mut lines = vec![format!(
@@ -654,7 +689,7 @@ fn save_set(root: &SysRoot, name: &str, boot: bool) -> Result<Vec<String>> {
 fn remove_set(root: &SysRoot, name: &str) -> Result<Vec<String>> {
     let ledger = Ledger::open(root)?;
     let set = ledger
-        .sets()
+        .sets()?
         .remove(name)
         .with_context(|| format!("no saved set {name}"))?;
     ledger.save_set(name, None)?;
@@ -669,17 +704,17 @@ fn remove_set(root: &SysRoot, name: &str) -> Result<Vec<String>> {
 /// its holds are written, and the layers apply. The selection before is kept as `previous` (the undo).
 fn switch_set(root: &SysRoot, name: &str) -> Result<Vec<String>> {
     let ledger = Ledger::open(root)?;
-    let to = ledger.sets().remove(name).with_context(|| {
+    let to = ledger.sets()?.remove(name).with_context(|| {
         format!("no saved set {name} (legionctl resources list shows the sets)")
     })?;
     // its holds are checked before anything changes
     on_machine(root, |m| knobs::hold_plan(m, &to.holds))?;
-    let now = ledger.selection();
+    let now = ledger.selection()?;
     ledger.save_set(sets::PREVIOUS, Some(&now))?;
     let mut lines = sets::changes(&now, &to);
     lines.extend(carry_out(root, |m| {
         Ok(m.ledger
-            .holds()
+            .holds()?
             .into_keys()
             .filter(|path| !to.holds.contains_key(path))
             .map(|path| Step::Hold { path, value: None })
@@ -696,8 +731,8 @@ fn switch_set(root: &SysRoot, name: &str) -> Result<Vec<String>> {
 /// parameter goes back to it.
 fn boot_set(root: &SysRoot) -> Result<Vec<String>> {
     let ledger = Ledger::open(root)?;
-    let line = root.read("/proc/cmdline").unwrap_or_default();
-    let saved = ledger.sets();
+    let line = root.read("/proc/cmdline")?.unwrap_or_default();
+    let saved = ledger.sets()?;
     match sets::chosen(&line) {
         Some(name) => {
             anyhow::ensure!(
@@ -705,7 +740,7 @@ fn boot_set(root: &SysRoot) -> Result<Vec<String>> {
                 "no saved set {name}: the selection stays"
             );
             if !saved.contains_key(sets::BEFORE_BOOT) {
-                ledger.save_set(sets::BEFORE_BOOT, Some(&ledger.selection()))?;
+                ledger.save_set(sets::BEFORE_BOOT, Some(&ledger.selection()?))?;
             }
             switch_set(root, name)
         }
@@ -965,8 +1000,11 @@ fn root_part(
         .episodes
         .clone();
     let errors = &mut part.sensor_errors;
-    part.runq = read("run-queue", &meters.runq, runq::Runq::per_cpu, errors)
-        .map(|per_cpu| telemetry::by_class(root, &per_cpu));
+    part.runq = read("run-queue", &meters.runq, runq::Runq::per_cpu, errors).and_then(|per_cpu| {
+        telemetry::by_class(root, &per_cpu)
+            .map_err(|e| errors.insert("run-queue".into(), format!("{e:#}")))
+            .ok()
+    });
     part.processes = read("power", &meters.power, power::Power::processes, errors);
     part.io = read("block I/O", &meters.block, block::Block::per_disk, errors);
     part.thermal_trips = read(
@@ -1129,7 +1167,7 @@ impl System1 {
         // the hold on the path, and the holds on the files it covers (one CPU's file of a per-CPU knob)
         let mut lines = carry_out(&self.root, |m| {
             Ok(m.ledger
-                .holds()
+                .holds()?
                 .into_keys()
                 .filter(|held| *held == path || policy::held_by(&path, held))
                 .map(|held| policy::Step::Hold {
@@ -1197,7 +1235,11 @@ impl System1 {
         authorize(conn, &header, "org.legionctl.windows.vm").await?;
         let uid = caller_uid(conn, &header).await?;
         let ledger = Ledger::open(&self.root).map_err(|e| failed(&e))?;
-        if ledger.get(Key::WindowsVm).is_some() {
+        if ledger
+            .get(Key::WindowsVm)
+            .map_err(|e| failed(&e))?
+            .is_some()
+        {
             return Err(zbus::fdo::Error::Failed(
                 "a Windows VM runs already (legionctl windows vm stop)".into(),
             ));
@@ -1252,7 +1294,7 @@ impl System1 {
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.windows.vm").await?;
         let ledger = Ledger::open(&self.root).map_err(|e| failed(&e))?;
-        let Some(kept) = ledger.get(Key::WindowsVm) else {
+        let Some(kept) = ledger.get(Key::WindowsVm).map_err(|e| failed(&e))? else {
             return Ok(vec!["no Windows VM ran".into()]);
         };
         let record: winvm::Record =
@@ -1363,7 +1405,8 @@ impl System1 {
             return Ok(lines);
         };
         let ledger = Ledger::open(&self.root).map_err(|e| failed(&e))?;
-        Ok([lines, policy::execute(&self.root, &ledger, &[restart])].concat())
+        let restarted = policy::execute(&self.root, &ledger, &[restart]).map_err(|e| failed(&e))?;
+        Ok([lines, restarted].concat())
     }
 
     /// The greeter in place of GDM (todo-83): `install` or `remove`.
@@ -1460,9 +1503,10 @@ impl System1 {
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.rules").await?;
         let had_boot = Ledger::open(&self.root)
-            .ok()
-            .and_then(|l| l.sets().get(&name).map(|s| s.boot))
-            .unwrap_or(false);
+            .and_then(|l| l.sets())
+            .map_err(|e| failed(&e))?
+            .get(&name)
+            .is_some_and(|s| s.boot);
         if (action == "save" && boot) || (action != "switch" && had_boot) {
             authorize(conn, &header, "org.legionctl.boot").await?;
         }
@@ -1636,12 +1680,8 @@ impl System1 {
             .map_err(|e| failed(&e))?;
         let ledger = Ledger::open(&self.root).map_err(|e| failed(&e))?;
         let (boot_next, reboot) = steps.split_at(1);
-        let mut lines = policy::execute(&self.root, &ledger, boot_next);
-        if let Some(warning) = lines.iter().find(|l| l.starts_with("warning")) {
-            return Err(zbus::fdo::Error::Failed(format!(
-                "not rebooting: {warning}"
-            )));
-        }
+        let mut lines = policy::execute(&self.root, &ledger, boot_next)
+            .map_err(|e| zbus::fdo::Error::Failed(format!("not rebooting: {e:#}")))?;
         lines.push(format!(
             "BootNext set: {}",
             boot_next
@@ -1651,7 +1691,7 @@ impl System1 {
         ));
         // the signal goes out before the reboot takes the bus down
         self.tell(&emitter, "RebootWindows", &lines).await?;
-        lines.extend(policy::execute(&self.root, &ledger, reboot));
+        lines.extend(policy::execute(&self.root, &ledger, reboot).map_err(|e| failed(&e))?);
         Ok(lines)
     }
 
@@ -1660,7 +1700,7 @@ impl System1 {
     async fn fan_status(&self) -> zbus::fdo::Result<String> {
         let root = self.root.clone();
         // off the bus thread: the firmware call waits while a sample's calls run
-        let state = tokio::task::spawn_blocking(move || on_machine(&root, |m| Ok(fan::state(m))))
+        let state = tokio::task::spawn_blocking(move || on_machine(&root, fan::state))
             .await
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
             .map_err(|e| failed(&e))?;
@@ -1793,7 +1833,8 @@ impl System1 {
         let root = self.root.clone();
         let list = tokio::task::spawn_blocking(move || vfio::candidates(&root))
             .await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
+            .map_err(|e| failed(&e))?;
         serde_json::to_string(&list).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
@@ -1890,9 +1931,17 @@ fn watch_fn_keys(root: SysRoot, presses: tokio::sync::mpsc::UnboundedSender<()>)
     std::thread::spawn(move || {
         let mut debounce = Debounce::default();
         loop {
-            let Some(device) = keys::find_device(&root, FN_KEYS_DEVICE) else {
-                std::thread::sleep(REOPEN);
-                continue;
+            let device = match keys::find_device(&root, FN_KEYS_DEVICE) {
+                Ok(Some(device)) => device,
+                Ok(None) => {
+                    std::thread::sleep(REOPEN);
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!("Fn keys: cannot look for {FN_KEYS_DEVICE}: {e:#}");
+                    std::thread::sleep(REOPEN);
+                    continue;
+                }
             };
             let mut file = match std::fs::File::open(root.path(&device)) {
                 Ok(f) => f,
@@ -2123,7 +2172,14 @@ async fn run(root: SysRoot) -> Result<()> {
     let watchers = Arc::new(Mutex::new(BTreeMap::new()));
     let monitor = udev_monitor()?;
     // announce later changes only; the session asks for the current state when it starts
-    let announced = Arc::new(Mutex::new(Announced::new(observe(&root))));
+    // nothing announced yet when the state cannot be read: the first read that works announces each state
+    let first = observed(&root).unwrap_or(Observed {
+        mode: None,
+        workload: BTreeSet::new(),
+        throttle: None,
+        fan_max: false,
+    });
+    let announced = Arc::new(Mutex::new(Announced::new(first)));
     let bus = serve(System1 {
         root: root.clone(),
         tuning: tuning.clone(),

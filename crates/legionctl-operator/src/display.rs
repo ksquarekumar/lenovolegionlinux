@@ -207,19 +207,38 @@ pub struct Shown {
 }
 
 /// The physical size (cm) from the EDID of `connector` (bytes 21 and 22), when the monitor reports one.
-fn edid_size(root: &legionctl_machine::sysroot::SysRoot, connector: &str) -> Option<(f64, f64)> {
-    let card = root
-        .children("/sys/class/drm", "card")
+fn edid_size(
+    root: &legionctl_machine::sysroot::SysRoot,
+    connector: &str,
+) -> anyhow::Result<Option<(f64, f64)>> {
+    use anyhow::Context;
+    let Some(card) = root
+        .children("/sys/class/drm", "card")?
         .into_iter()
-        .find(|c| c.to_string_lossy().ends_with(&format!("-{connector}")))?;
-    let edid = std::fs::read(root.path(card.join("edid"))).ok()?;
-    let (w, h) = (*edid.get(21)?, *edid.get(22)?);
-    (w > 0 && h > 0).then(|| (f64::from(w), f64::from(h)))
+        .find(|c| c.to_string_lossy().ends_with(&format!("-{connector}")))
+    else {
+        return Ok(None);
+    };
+    let edid = match std::fs::read(root.path(card.join("edid"))) {
+        Ok(edid) => edid,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("reading the EDID of {connector}")),
+    };
+    Ok(edid
+        .get(21)
+        .zip(edid.get(22))
+        .filter(|(w, h)| **w > 0 && **h > 0)
+        .map(|(w, h)| (f64::from(*w), f64::from(*h))))
 }
 
 /// The active monitors of Mutter's `state`.
-#[must_use]
-pub fn shown(root: &legionctl_machine::sysroot::SysRoot, state: &State) -> Vec<Shown> {
+///
+/// # Errors
+/// A monitor's EDID cannot be read.
+pub fn shown(
+    root: &legionctl_machine::sysroot::SysRoot,
+    state: &State,
+) -> anyhow::Result<Vec<Shown>> {
     let (_, monitors, logical, _) = state;
     let mut out = Vec::new();
     for l in logical {
@@ -251,7 +270,7 @@ pub fn shown(root: &legionctl_machine::sysroot::SysRoot, state: &State) -> Vec<S
             let colors = prop("supported-color-modes")
                 .and_then(|v| Vec::<u32>::try_from(v).ok())
                 .unwrap_or_default();
-            let ppi = edid_size(root, &spec.0).map(|(w, h)| {
+            let ppi = edid_size(root, &spec.0)?.map(|(w, h)| {
                 let pixels = f64::from(current.1).hypot(f64::from(current.2));
                 pixels / (w.hypot(h) / 2.54)
             });
@@ -277,20 +296,22 @@ pub fn shown(root: &legionctl_machine::sysroot::SysRoot, state: &State) -> Vec<S
             });
         }
     }
-    out
+    Ok(out)
 }
 
 /// What makes the picture worse than it can be: an external monitor below its highest rate, Electron/Chromium apps
 /// whose flags file does not suit the scale (`app_findings`), and grayscale antialiasing where subpixel is sharper
 /// (integer scales at normal density; grayscale helps only at fractional or high-density scales: user report
 /// 2026-10-14).
-#[must_use]
+///
+/// # Errors
+/// A flags file cannot be read.
 pub fn findings(
     root: &legionctl_machine::sysroot::SysRoot,
     home: &std::path::Path,
     monitors: &[Shown],
     antialiasing: &str,
-) -> Vec<Finding> {
+) -> anyhow::Result<Vec<Finding>> {
     let mut out: Vec<Finding> = monitors
         .iter()
         .filter(|m| !m.builtin && m.max_refresh - m.refresh > 0.5)
@@ -310,12 +331,12 @@ pub fn findings(
         })
         .collect();
     if monitors.is_empty() {
-        return out;
+        return Ok(out);
     }
     let fractional = monitors.iter().any(|m| m.scale.fract() != 0.0);
     out.extend(legionctl_machine::graphics::app_findings(
         root, home, fractional,
-    ));
+    )?);
     let sharp_subpixel = monitors
         .iter()
         .all(|m| m.scale.fract() == 0.0 && m.ppi.is_none_or(|p| p < 160.0));
@@ -333,7 +354,7 @@ pub fn findings(
                 .into(),
         });
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]

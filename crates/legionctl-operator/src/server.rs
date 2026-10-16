@@ -265,14 +265,14 @@ async fn metrics(
     let sample =
         tokio::task::spawn_blocking(move || operator.sample(std::time::Duration::from_millis(250)))
             .await;
-    match sample {
+    match sample.map_err(anyhow::Error::from).and_then(|s| s) {
         Ok(s) => (
             StatusCode::OK,
             op_metrics() + &legionctl_machine::telemetry::openmetrics(&s),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("sampling failed: {e}\n"),
+            format!("sampling failed: {e:#}\n"),
         ),
     }
 }

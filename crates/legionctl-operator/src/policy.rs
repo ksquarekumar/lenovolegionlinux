@@ -74,8 +74,14 @@ fn freeze_idle() -> Result<Vec<(String, u32)>> {
     )?;
     let mut frozen = Vec::new();
     for session in Dossiers::open(&resolved.config.dossier)?.sessions()? {
-        if state(&session.id, session.inside) != "active" {
-            continue;
+        match state(&session.id, session.inside) {
+            Ok(s) if s == "active" => {}
+            Ok(_) => continue,
+            Err(e) => {
+                // this session is not frozen; the others still are
+                eprintln!("operator: idle freeze: {e:#}");
+                continue;
+            }
         }
         let filter = EventFilter {
             kinds: &["internal.hooks.run"],
@@ -139,7 +145,7 @@ fn offload(operator: &std::sync::Arc<crate::engine::Operator>) -> Result<Vec<(St
     let load = legionctl_machine::load::read_load(
         &legionctl_machine::sysroot::SysRoot::from_env(),
         &resolved.config.load,
-    );
+    )?;
     let db = Db::open_default()?;
     let mut told = Vec::new();
     if memory_pressed(&load, &resolved.config.load.busy) {

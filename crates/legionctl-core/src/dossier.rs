@@ -460,7 +460,7 @@ impl Dossiers {
                 return Ok(out);
             }
             Some((holder, holder_tool, updated)) => {
-                let stale = !self.live(&holder, updated, now);
+                let stale = !self.live(&holder, updated, now)?;
                 if !(stale || steal) {
                     return Err(crate::error::coded(
                         crate::error::Code::Conflict,
@@ -561,12 +561,12 @@ impl Dossiers {
         })?;
         let mut locks: Vec<Lock> = rows.collect::<Result<_, _>>()?;
         for lock in &mut locks {
-            lock.stale = !self.live(&lock.session, lock.updated, now);
+            lock.stale = !self.live(&lock.session, lock.updated, now)?;
         }
         Ok(locks)
     }
 
-    fn live(&self, session: &str, updated: i64, now: i64) -> bool {
+    fn live(&self, session: &str, updated: i64, now: i64) -> Result<bool> {
         let scoped: Option<(bool, String)> = self
             .db
             .conn()
@@ -575,9 +575,7 @@ impl Dossiers {
                 [session],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .optional()
-            .ok()
-            .flatten();
+            .optional()?;
         live(self.stale_after(), (session, updated, scoped), now)
     }
 
@@ -878,10 +876,34 @@ impl Dossiers {
             "{rel}: '{dossier}' is not a dossier name"
         );
         let full = self.root.join(rel);
-        // a symlink inside the dossier must not lead out of it
-        if let Ok(real) = full.canonicalize() {
-            let base = self.root.join(&dossier).canonicalize()?;
-            ensure!(real.starts_with(&base), "{rel} leads out of the dossier");
+        // a symlink inside the dossier must not lead out of it, also on the way to a file that does not exist yet
+        let mut at = self.root.join(&dossier);
+        let base = match at.canonicalize() {
+            Ok(base) => base,
+            Err(e)
+                if e.kind() == std::io::ErrorKind::NotFound && at.symlink_metadata().is_err() =>
+            {
+                return Ok((dossier, full));
+            }
+            Err(e) => {
+                return Err(e).with_context(|| format!("{rel}: resolving the dossier {dossier}"));
+            }
+        };
+        for part in &parts[1..] {
+            at.push(part);
+            match at.symlink_metadata() {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+                Err(e) => {
+                    return Err(e).with_context(|| format!("{rel}: reading {}", at.display()));
+                }
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    let target = at.canonicalize().with_context(|| {
+                        format!("{rel}: the link {} leads to no file", at.display())
+                    })?;
+                    ensure!(target.starts_with(&base), "{rel} leads out of the dossier");
+                }
+                Ok(_) => {}
+            }
         }
         Ok((dossier, full))
     }
@@ -1351,20 +1373,21 @@ pub(crate) fn real(path: &Path) -> PathBuf {
 /// seconds (each hook call and dossier write refreshes it), and for a session legionctl started in a scope
 /// (`scoped`: the session row's scoped and inside), that scope still runs. A minute of grace covers the time between
 /// the bind and the client's `systemd-run`.
+///
+/// # Errors
+/// The scope's state cannot be read: the session may run, so it is not taken as gone.
 pub(crate) fn live(
     stale_after: i64,
     (session, updated, scoped): (&str, i64, Option<(bool, String)>),
     now: i64,
-) -> bool {
+) -> Result<bool> {
     if now - updated > stale_after {
-        return false;
+        return Ok(false);
     }
     match scoped {
-        Some((true, inside)) => {
-            now - updated <= 60
-                || crate::session::active(session, crate::session::Inside::from_db(&inside))
-        }
-        _ => true,
+        Some((true, inside)) => Ok(now - updated <= 60
+            || crate::session::active(session, crate::session::Inside::from_db(&inside))?),
+        _ => Ok(true),
     }
 }
 

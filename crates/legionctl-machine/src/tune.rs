@@ -98,7 +98,7 @@ pub fn check(root: &SysRoot, spec: &TuneSpec) -> Result<()> {
     ensure!(spec.cooldown_s <= 600, "cooldown_s must be 0-600");
     ensure!(!spec.workloads.is_empty(), "no workload");
     let bound = |f: &str| -> Result<u32> {
-        root.read(attribute_file(&spec.attribute, f))
+        root.read(attribute_file(&spec.attribute, f))?
             .with_context(|| format!("{} has no {f}", spec.attribute))?
             .parse()
             .with_context(|| format!("{} {f} is not a number", spec.attribute))
@@ -117,22 +117,43 @@ pub fn check(root: &SysRoot, spec: &TuneSpec) -> Result<()> {
         );
     }
     ensure!(
-        root.read(AC).as_deref() == Some("1"),
+        root.read(AC)?.as_deref() == Some("1"),
         "tuning runs on AC only"
     );
+    // the thermal guard must work before the first step
+    temp_limit(root)?;
+    crate::telemetry::cpu_temp(root)
+        .and_then(|t| t.context("no coretemp sensor"))
+        .context("cannot read the CPU temperature (coretemp): the sweep has no thermal guard")?;
     Ok(())
 }
 
-/// Why a step must stop now: the power source changed, or the CPU is hotter than the firmware's own limit.
+/// The firmware's own CPU temperature limit.
+fn temp_limit(root: &SysRoot) -> Result<f64> {
+    root.read(attribute_file("cpu_temp", "current_value"))?
+        .and_then(|v| v.parse().ok())
+        .context("cannot read the firmware CPU temperature limit (cpu_temp): the sweep has no thermal guard")
+}
+
+/// Why a step must stop now: the power source changed or cannot be read, the CPU is hotter than the firmware's own
+/// limit, or the temperature or the limit cannot be read.
 fn danger(root: &SysRoot, sample: &Sample) -> Option<String> {
-    if root.read(AC).as_deref() != Some("1") {
-        return Some("the machine left AC".into());
+    match root.read(AC) {
+        Ok(ac) if ac.as_deref() == Some("1") => {}
+        Ok(_) => return Some("the machine left AC".into()),
+        Err(e) => {
+            return Some(format!(
+                "cannot read the power source: {e:#}: the sweep stops"
+            ));
+        }
     }
-    let limit: f64 = root
-        .read(attribute_file("cpu_temp", "current_value"))?
-        .parse()
-        .ok()?;
-    let temp = sample.cpu_temp_c?;
+    let limit = match temp_limit(root) {
+        Ok(limit) => limit,
+        Err(e) => return Some(format!("{e:#}: the sweep stops")),
+    };
+    let Some(temp) = sample.cpu_temp_c else {
+        return Some("cannot read the CPU temperature: the sweep stops".into());
+    };
     (temp > limit)
         .then(|| format!("CPU at {temp:.0} °C, above the firmware limit of {limit:.0} °C"))
 }
@@ -261,20 +282,22 @@ pub fn run(
     root: &SysRoot,
     spec: &TuneSpec,
     workload: &Workload,
-    sample: &dyn Fn() -> Sample,
+    sample: &dyn Fn() -> Result<Sample>,
 ) -> Result<TuneReport> {
     check(root, spec)?;
     let kernel = if spec.per_kernel {
-        Some(crate::kernel::running_package(root).context(
+        Some(crate::kernel::running_package(root)?.context(
             "the running kernel has no package (/usr/lib/modules/<release>/pkgbase): no layer for it",
         )?)
     } else {
         None
     };
     let path = attribute_file(&spec.attribute, "current_value");
-    let original = root.read(&path).context("reading the current value")?;
+    let original = root
+        .read(&path)?
+        .context("reading the current value: no such file")?;
     let ledger = crate::ledger::Ledger::open(root)?;
-    let set = |value: &str| {
+    let set = |value: &str| -> Result<()> {
         policy::execute(
             root,
             &ledger,
@@ -282,7 +305,10 @@ pub fn run(
                 path: path.clone(),
                 value: value.into(),
             }],
-        )
+        )?;
+        let now = root.read(&path)?.unwrap_or_default();
+        ensure!(now == value, "{path} reads {now} after the write");
+        Ok(())
     };
     let mut steps = Vec::new();
     let mut aborted = None;
@@ -290,9 +316,8 @@ pub fn run(
         if i > 0 {
             std::thread::sleep(Duration::from_secs(u64::from(spec.cooldown_s)));
         }
-        let lines = set(&value.to_string());
-        if let Some(warning) = lines.iter().find(|l| l.starts_with("warning")) {
-            aborted = Some(format!("writing {value}: {warning}"));
+        if let Err(e) = set(&value.to_string()) {
+            aborted = Some(format!("writing {value}: {e:#}"));
             break;
         }
         let (done, stop) = step(root, spec, *value, workload, sample);
@@ -302,7 +327,7 @@ pub fn run(
             break;
         }
     }
-    set(&original);
+    set(&original).context("writing the original value back")?;
     let (recommended, reason) = recommend(spec.scenario, &steps);
     let file = format!(
         "/var/lib/legionctl/tune/{}-{}.json",
@@ -338,16 +363,21 @@ pub fn run(
 fn tuned(root: &SysRoot, attribute: &str, value: u32, kernel: Option<&str>) -> Result<()> {
     let name = kernel.map_or_else(|| "tuned".to_string(), |k| format!("tuned-{k}"));
     let file = root.path(format!("{}/50-{name}.jsonc", crate::configset::GENERATED));
-    let mut set = std::fs::read(&file)
+    // a layer that cannot be read or parsed is not written over: it can hold the values of earlier sweeps
+    let mut set = match crate::sysroot::read_file(&file)? {
+        None => serde_json::Map::new(),
+        Some(text) => serde_json::from_reader::<_, serde_json::Value>(
+            json_comments::StripComments::new(text.as_bytes()),
+        )
         .ok()
-        .and_then(|bytes| {
-            serde_json::from_reader::<_, serde_json::Value>(json_comments::StripComments::new(
-                bytes.as_slice(),
-            ))
-            .ok()
-        })
         .and_then(|layer| layer.get("set")?.as_object().cloned())
-        .unwrap_or_default();
+        .with_context(|| {
+            format!(
+                "{} is not a configset layer: it stays as it is",
+                file.display()
+            )
+        })?,
+    };
     set.insert(format!("firmware.{attribute}"), value.into());
     let mut when = serde_json::json!({ "power": "ac" });
     if let Some(kernel) = kernel {
@@ -372,7 +402,7 @@ fn step(
     spec: &TuneSpec,
     value: u32,
     workload: &Workload,
-    sample: &dyn Fn() -> Sample,
+    sample: &dyn Fn() -> Result<Sample>,
 ) -> (TuneStep, Option<String>) {
     let mut samples = Vec::new();
     let mut stop = None;
@@ -388,10 +418,13 @@ fn step(
         while runs.iter().any(|(_, r)| !r.is_finished()) {
             let s = sample();
             if stop.is_none() {
-                stop = danger(root, &s);
+                stop = match &s {
+                    Ok(s) => danger(root, s),
+                    Err(e) => Some(format!("a telemetry sample failed: {e:#}: the sweep stops")),
+                };
                 cancel.store(stop.is_some(), Ordering::Relaxed);
             }
-            samples.push(s);
+            samples.extend(s);
         }
         for (argv, run) in runs {
             let program = argv[0].rsplit('/').next().unwrap_or_default();

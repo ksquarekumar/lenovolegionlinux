@@ -249,26 +249,36 @@ const CGROUPS: &str = "/sys/fs/cgroup";
 /// The cgroup that explains the I/O stall and its "some" pressure: from the root, go down to the child that stalls
 /// most while it has at least 90% of its parent's pressure (values read moments apart differ a little). `None` when
 /// no single cgroup below the root explains it.
-fn stall_cgroup(root: &SysRoot) -> Option<(PathBuf, f64)> {
-    let pressure = |cgroup: &PathBuf| {
-        root.read(cgroup.join("io.pressure"))
+fn stall_cgroup(root: &SysRoot) -> anyhow::Result<Option<(PathBuf, f64)>> {
+    let pressure = |cgroup: &PathBuf| -> anyhow::Result<Option<f64>> {
+        Ok(root
+            .read(cgroup.join("io.pressure"))?
             .as_deref()
             .and_then(parse_pressure)
-            .map(|p| p.some_avg10)
+            .map(|p| p.some_avg10))
     };
     let mut path = PathBuf::from(CGROUPS);
-    let mut some = pressure(&path)?;
-    while let Some((child, child_some)) = root
-        .children(&path, "")
-        .into_iter()
-        .filter_map(|c| pressure(&c).map(|p| (c, p)))
-        .max_by(|a, b| a.1.total_cmp(&b.1))
-        .filter(|(_, p)| *p >= 0.9 * some)
-    {
-        path = child;
-        some = child_some;
+    let Some(mut some) = pressure(&path)? else {
+        return Ok(None);
+    };
+    loop {
+        let mut best: Option<(PathBuf, f64)> = None;
+        for c in root.children(&path, "")? {
+            if let Some(p) = pressure(&c)?
+                && best.as_ref().is_none_or(|(_, b)| p > *b)
+            {
+                best = Some((c, p));
+            }
+        }
+        match best.filter(|(_, p)| *p >= 0.9 * some) {
+            Some((child, child_some)) => {
+                path = child;
+                some = child_some;
+            }
+            None => break,
+        }
     }
-    (path != Path::new(CGROUPS)).then_some((path, some))
+    Ok((path != Path::new(CGROUPS)).then_some((path, some)))
 }
 
 /// `docker/09bd9c9baa5f (77%)`: the path below the cgroup root, container ids cut to 12 characters as `docker ps`
@@ -291,21 +301,24 @@ fn cgroup_name(path: &Path, some: f64) -> String {
 }
 
 /// Read and write operations a cgroup has done on every device, from its `io.stat`.
-fn cgroup_ios(root: &SysRoot, cgroup: &Path) -> Option<u64> {
-    let stat = root.read(cgroup.join("io.stat"))?;
-    Some(
+fn cgroup_ios(root: &SysRoot, cgroup: Option<&Path>) -> anyhow::Result<Option<u64>> {
+    let Some(cgroup) = cgroup else {
+        return Ok(None);
+    };
+    Ok(root.read(cgroup.join("io.stat"))?.map(|stat| {
         stat.split_whitespace()
             .filter_map(|f| f.strip_prefix("rios=").or_else(|| f.strip_prefix("wios=")))
             .filter_map(|n| n.parse::<u64>().ok())
-            .sum(),
-    )
+            .sum()
+    }))
 }
 
 /// Over one short window: the busiest whole disk's share of it (from `io_ticks`, ms spent doing I/O, in
 /// /proc/diskstats), and how many I/O operations `cgroup` did in it.
-fn sample_io(root: &SysRoot, cgroup: Option<&Path>) -> (f64, Option<u64>) {
-    let ticks = || -> Vec<(String, u64)> {
-        root.read("/proc/diskstats")
+fn sample_io(root: &SysRoot, cgroup: Option<&Path>) -> anyhow::Result<(f64, Option<u64>)> {
+    let ticks = || -> anyhow::Result<Vec<(String, u64)>> {
+        Ok(root
+            .read("/proc/diskstats")?
             .unwrap_or_default()
             .lines()
             .filter_map(|l| {
@@ -315,12 +328,12 @@ fn sample_io(root: &SysRoot, cgroup: Option<&Path>) -> (f64, Option<u64>) {
                     || name.starts_with("sd") && !name.ends_with(|c: char| c.is_ascii_digit());
                 whole.then(|| Some((name.to_string(), f.get(12)?.parse().ok()?)))?
             })
-            .collect()
+            .collect())
     };
     let window = Duration::from_millis(100);
-    let before = (ticks(), cgroup.and_then(|c| cgroup_ios(root, c)));
+    let before = (ticks()?, cgroup_ios(root, cgroup)?);
     std::thread::sleep(window);
-    let busy = ticks()
+    let busy = ticks()?
         .iter()
         .filter_map(|(name, t)| {
             let (_, b) = before.0.iter().find(|(n, _)| n == name)?;
@@ -329,31 +342,35 @@ fn sample_io(root: &SysRoot, cgroup: Option<&Path>) -> (f64, Option<u64>) {
         .fold(0.0, f64::max);
     let ios = before
         .1
-        .zip(cgroup.and_then(|c| cgroup_ios(root, c)))
+        .zip(cgroup_ios(root, cgroup)?)
         .map(|(b, a)| a.saturating_sub(b));
-    (busy, ios)
+    Ok((busy, ios))
 }
 
-pub fn read_load(root: &SysRoot, thresholds: &Thresholds) -> Load {
+/// The load now, with its level against `thresholds`.
+///
+/// # Errors
+/// A `/proc` or cgroup file cannot be read.
+pub fn read_load(root: &SysRoot, thresholds: &Thresholds) -> anyhow::Result<Load> {
     let load1 = root
-        .read("/proc/loadavg")
+        .read("/proc/loadavg")?
         .and_then(|t| t.split_whitespace().next()?.parse().ok())
         .unwrap_or(0.0);
     let cpus = std::thread::available_parallelism()
         .map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX));
     let cpu = root
-        .read("/proc/pressure/cpu")
+        .read("/proc/pressure/cpu")?
         .as_deref()
         .and_then(parse_pressure);
     let memory = root
-        .read("/proc/pressure/memory")
+        .read("/proc/pressure/memory")?
         .as_deref()
         .and_then(parse_pressure);
     let io = root
-        .read("/proc/pressure/io")
+        .read("/proc/pressure/io")?
         .as_deref()
         .and_then(parse_pressure);
-    let meminfo = root.read("/proc/meminfo").unwrap_or_default();
+    let meminfo = root.read("/proc/meminfo")?.unwrap_or_default();
     let bytes = |key| meminfo_kib(&meminfo, key).map_or(0, |kib| kib << 10);
     let total = bytes("MemTotal");
     let available = bytes("MemAvailable");
@@ -373,9 +390,9 @@ pub fn read_load(root: &SysRoot, thresholds: &Thresholds) -> Load {
             .min(thresholds.overloaded.io_pressure);
     // I/O pressure that one cgroup explains while it does no I/O itself is iowait without disk work (a VM's
     // threads, seen here: WinBoat); it does not count even when another process uses a disk at that moment
-    let source = io_counts.then(|| stall_cgroup(root)).flatten();
+    let source = if io_counts { stall_cgroup(root)? } else { None };
     let (busy, source_ios) = if io_counts {
-        sample_io(root, source.as_ref().map(|s| s.0.as_path()))
+        sample_io(root, source.as_ref().map(|s| s.0.as_path()))?
     } else {
         (0.0, None)
     };
@@ -391,7 +408,7 @@ pub fn read_load(root: &SysRoot, thresholds: &Thresholds) -> Load {
         mem_available_fraction: fraction,
     };
     let (level, reasons) = classify(&sample, thresholds);
-    Load {
+    Ok(Load {
         level,
         reasons,
         load1,
@@ -404,7 +421,7 @@ pub fn read_load(root: &SysRoot, thresholds: &Thresholds) -> Load {
         io_stall_source: source
             .filter(|_| phantom || disks * 100.0 < thresholds.disk_busy_percent)
             .map(|(path, some)| cgroup_name(&path, some)),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -469,7 +486,7 @@ mod tests {
             .unwrap();
         }
         let root = SysRoot::new(&dir);
-        let (path, some) = stall_cgroup(&root).unwrap();
+        let (path, some) = stall_cgroup(&root).unwrap().unwrap();
         assert_eq!(cgroup_name(&path, some), "docker/09bd9c9baa5f (77%)");
         // the container did no I/O in the window: its stall is not load, whatever the disks do
         std::fs::write(
@@ -477,6 +494,6 @@ mod tests {
             "259:6 rios=44630 wios=13264\n",
         )
         .unwrap();
-        assert_eq!(sample_io(&root, Some(&path)).1, Some(0));
+        assert_eq!(sample_io(&root, Some(&path)).unwrap().1, Some(0));
     }
 }

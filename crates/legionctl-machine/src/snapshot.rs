@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use anyhow::Result;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -107,154 +108,156 @@ pub struct Snapshot {
     pub load: Load,
 }
 
-#[must_use]
-pub fn dmi_mismatches(root: &SysRoot, profile: &Profile) -> Vec<DmiMismatch> {
-    profile
-        .dmi_match
-        .iter()
-        .filter_map(|(key, expected)| {
-            let actual = root.read(Path::new(DMI).join(key));
-            (actual.as_deref() != Some(expected.as_str())).then(|| DmiMismatch {
+/// The DMI keys of `profile` that this machine does not match.
+///
+/// # Errors
+/// A DMI file cannot be read.
+pub fn dmi_mismatches(root: &SysRoot, profile: &Profile) -> Result<Vec<DmiMismatch>> {
+    let mut out = Vec::new();
+    for (key, expected) in &profile.dmi_match {
+        let actual = root.read(Path::new(DMI).join(key))?;
+        if actual.as_deref() != Some(expected.as_str()) {
+            out.push(DmiMismatch {
                 key: key.clone(),
                 expected: expected.clone(),
                 actual,
-            })
-        })
-        .collect()
+            });
+        }
+    }
+    Ok(out)
 }
 
-#[must_use]
-pub fn cpufreq_counts(root: &SysRoot, file: &str) -> BTreeMap<String, usize> {
+/// How many CPU policies have each value of the cpufreq `file`.
+///
+/// # Errors
+/// A policy's file cannot be read.
+pub fn cpufreq_counts(root: &SysRoot, file: &str) -> Result<BTreeMap<String, usize>> {
     let mut counts = BTreeMap::new();
-    for policy in root.children(CPUFREQ, "policy") {
-        if let Some(value) = root.read(policy.join(file)) {
+    for policy in root.children(CPUFREQ, "policy")? {
+        if let Some(value) = root.read(policy.join(file))? {
             *counts.entry(value).or_default() += 1;
         }
     }
-    counts
+    Ok(counts)
 }
 
-fn rapl(root: &SysRoot) -> Vec<RaplZone> {
-    root.children(POWERCAP, "intel-rapl")
-        .into_iter()
-        .filter(|z| {
-            z.file_name()
-                .is_some_and(|n| n.to_string_lossy().matches(':').count() == 1)
-                && root.read(z.join("name")).as_deref() == Some("package-0")
-        })
-        .map(|z| RaplZone {
-            zone: z
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
-            constraints: (0..)
-                .map_while(|i| {
-                    let name = root.read(z.join(format!("constraint_{i}_name")))?;
-                    Some(RaplConstraint {
-                        name,
-                        limit_w: root
-                            .read(z.join(format!("constraint_{i}_power_limit_uw")))
-                            .and_then(|v| v.parse::<f64>().ok())
-                            .map(|uw| uw / 1e6),
-                        window_us: root
-                            .read(z.join(format!("constraint_{i}_time_window_us")))
-                            .and_then(|v| v.parse().ok()),
-                    })
-                })
-                .collect(),
-        })
-        .collect()
+fn rapl(root: &SysRoot) -> Result<Vec<RaplZone>> {
+    let mut zones = Vec::new();
+    for z in root.children(POWERCAP, "intel-rapl")? {
+        let Some(zone) = z.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        if zone.matches(':').count() != 1
+            || root.read(z.join("name"))?.as_deref() != Some("package-0")
+        {
+            continue;
+        }
+        let mut constraints = Vec::new();
+        for i in 0.. {
+            let Some(name) = root.read(z.join(format!("constraint_{i}_name")))? else {
+                break;
+            };
+            constraints.push(RaplConstraint {
+                name,
+                limit_w: root
+                    .read(z.join(format!("constraint_{i}_power_limit_uw")))?
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .map(|uw| uw / 1e6),
+                window_us: root
+                    .read(z.join(format!("constraint_{i}_time_window_us")))?
+                    .and_then(|v| v.parse().ok()),
+            });
+        }
+        zones.push(RaplZone { zone, constraints });
+    }
+    Ok(zones)
 }
 
 /// USB-C power delivery is online. It gives less than the barrel adapter, so the battery policy applies (issue 41).
-fn usb_c_online(root: &SysRoot) -> bool {
-    root.children("/sys/class/power_supply", "ucsi-source-psy-")
-        .iter()
-        .any(|p| root.read(p.join("online")).as_deref() == Some("1"))
-}
-
-fn package_temp(root: &SysRoot) -> Option<f64> {
-    root.children("/sys/class/hwmon", "hwmon")
-        .into_iter()
-        .find(|h| root.read(h.join("name")).as_deref() == Some("coretemp"))
-        .and_then(|h| root.read(h.join("temp1_input")))
-        .and_then(|t| t.parse::<f64>().ok())
-        .map(|millideg| millideg / 1000.0)
+fn usb_c_online(root: &SysRoot) -> Result<bool> {
+    for p in root.children("/sys/class/power_supply", "ucsi-source-psy-")? {
+        if root.read(p.join("online"))?.as_deref() == Some("1") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 impl Snapshot {
+    /// The machine now.
+    ///
+    /// # Errors
+    /// A machine file or the ledger cannot be read.
     pub fn read(
         root: &SysRoot,
         profile: &Profile,
         detail: Detail,
         thresholds: &Thresholds,
-    ) -> Snapshot {
+    ) -> Result<Snapshot> {
         let full = detail == Detail::Full;
-        let outputs = gpu::outputs(root);
-        let loaded = kernel::loaded_modules(root);
-        let firmware_limits = root
-            .children(FIRMWARE_ATTRIBUTES, "")
-            .into_iter()
-            .filter_map(|a| {
-                Some((
-                    a.file_name()?.to_string_lossy().into_owned(),
-                    root.read(a.join("current_value"))?,
-                ))
-            })
-            .collect();
-        Snapshot {
+        let outputs = gpu::outputs(root)?;
+        let loaded = kernel::loaded_modules(root)?;
+        let mut firmware_limits = BTreeMap::new();
+        for a in root.children(FIRMWARE_ATTRIBUTES, "")? {
+            if let Some(name) = a.file_name().map(|n| n.to_string_lossy().into_owned())
+                && let Some(value) = root.read(a.join("current_value"))?
+            {
+                firmware_limits.insert(name, value);
+            }
+        }
+        let mut firmware_versions = BTreeMap::new();
+        for k in [
+            "bios_version",
+            "bios_release",
+            "ec_firmware_release",
+            "board_name",
+        ] {
+            firmware_versions.insert(k.to_string(), root.read(Path::new(DMI).join(k))?);
+        }
+        let mut cpu_settings = BTreeMap::new();
+        for (k, p) in [
+            ("no_turbo", "/sys/devices/system/cpu/intel_pstate/no_turbo"),
+            (
+                "max_perf_pct",
+                "/sys/devices/system/cpu/intel_pstate/max_perf_pct",
+            ),
+            ("ignore_ppc", "/sys/module/processor/parameters/ignore_ppc"),
+        ] {
+            cpu_settings.insert(k.to_string(), root.read(p)?);
+        }
+        let power_source = match root.read(&profile.paths.ac_adapter)?.as_deref() {
+            Some("1") => "ac".into(),
+            Some("0") if usb_c_online(root)? => "usb-c".into(),
+            Some("0") => "battery".into(),
+            _ => "unknown".into(),
+        };
+        let fan_rpm = if full { firmware::fan_rpm(root)? } else { None };
+        Ok(Snapshot {
             profile_id: profile.id.clone(),
-            dmi_mismatches: dmi_mismatches(root, profile),
-            firmware_versions: [
-                "bios_version",
-                "bios_release",
-                "ec_firmware_release",
-                "board_name",
-            ]
-            .into_iter()
-            .map(|k| (k.to_string(), root.read(Path::new(DMI).join(k))))
-            .collect(),
-            power_source: match root.read(&profile.paths.ac_adapter).as_deref() {
-                Some("1") => "ac".into(),
-                Some("0") if usb_c_online(root) => "usb-c".into(),
-                Some("0") => "battery".into(),
-                _ => "unknown".into(),
-            },
-            platform_profile: root.read(&profile.paths.platform_profile),
+            dmi_mismatches: dmi_mismatches(root, profile)?,
+            firmware_versions,
+            power_source,
+            platform_profile: root.read(&profile.paths.platform_profile)?,
             platform_profile_choices: root
-                .read(&profile.paths.platform_profile_choices)
+                .read(&profile.paths.platform_profile_choices)?
                 .unwrap_or_default()
                 .split_whitespace()
                 .map(String::from)
                 .collect(),
-            fn_q_override: Ledger::open(root).ok().and_then(|l| l.get(Key::Override)),
-            cpu_settings: [
-                ("no_turbo", "/sys/devices/system/cpu/intel_pstate/no_turbo"),
-                (
-                    "max_perf_pct",
-                    "/sys/devices/system/cpu/intel_pstate/max_perf_pct",
-                ),
-                ("ignore_ppc", "/sys/module/processor/parameters/ignore_ppc"),
-            ]
-            .into_iter()
-            .map(|(k, p)| (k.to_string(), root.read(p)))
-            .collect(),
-            governors: cpufreq_counts(root, "scaling_governor"),
-            energy_performance_preference: cpufreq_counts(root, "energy_performance_preference"),
+            fn_q_override: Ledger::read(root)?.get(Key::Override)?,
+            cpu_settings,
+            governors: cpufreq_counts(root, "scaling_governor")?,
+            energy_performance_preference: cpufreq_counts(root, "energy_performance_preference")?,
             firmware_limits,
-            rapl: rapl(root),
+            rapl: rapl(root)?,
             nvidia_power_limit_w: full.then(system::nvidia_power_limit).flatten(),
-            fan_rpm: full
-                .then(|| firmware::fan_rpm(root))
-                .flatten()
-                .map(|fans| fans.iter().map(|(n, v)| (n.to_string(), *v)).collect()),
+            fan_rpm: fan_rpm.map(|fans| fans.iter().map(|(n, v)| (n.to_string(), *v)).collect()),
             throttle_reasons: firmware::logged_throttle_reasons(root)
                 .map(|r| r.into_iter().map(String::from).collect()),
-            package_temp_c: package_temp(root),
+            package_temp_c: crate::telemetry::cpu_temp(root)?,
             gpu_mode: gpu::mode(&outputs),
             outputs,
-            desktop_gpu: gpu::desktop_preference(root),
+            desktop_gpu: gpu::desktop_preference(root)?,
             units: UNITS
                 .iter()
                 .filter(|_| full)
@@ -268,7 +271,7 @@ impl Snapshot {
                 .iter()
                 .map(|m| (m.to_string(), loaded.contains(*m)))
                 .collect(),
-            load: read_load(root, thresholds),
-        }
+            load: read_load(root, thresholds)?,
+        })
     }
 }

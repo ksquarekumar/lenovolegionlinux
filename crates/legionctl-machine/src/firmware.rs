@@ -68,11 +68,24 @@ pub fn acpi_call(root: &SysRoot, call: &str) -> Result<String> {
 }
 
 /// The hwmon device of the `legionctl-wmi` module (docs/design/08-kernel.md, sysfs ABI), when it is loaded.
-#[must_use]
-pub fn legionctl_wmi(root: &SysRoot) -> Option<std::path::PathBuf> {
-    root.children("/sys/class/hwmon", "hwmon")
-        .into_iter()
-        .find(|h| root.read(h.join("name")).as_deref() == Some(LEGIONCTL_WMI))
+///
+/// # Errors
+/// A hwmon device's name cannot be read.
+pub fn legionctl_wmi(root: &SysRoot) -> Result<Option<std::path::PathBuf>> {
+    hwmon(root, LEGIONCTL_WMI)
+}
+
+/// The hwmon device named `name`, if there is one.
+///
+/// # Errors
+/// A hwmon device's name cannot be read.
+pub fn hwmon(root: &SysRoot, name: &str) -> Result<Option<std::path::PathBuf>> {
+    for h in root.children("/sys/class/hwmon", "hwmon")? {
+        if root.read(h.join("name"))?.as_deref() == Some(name) {
+            return Ok(Some(h));
+        }
+    }
+    Ok(None)
 }
 
 /// The `name` of the `legionctl-wmi` module's hwmon device.
@@ -80,15 +93,23 @@ pub const LEGIONCTL_WMI: &str = "legionctl_wmi";
 
 /// Fan RPM from the firmware: the `legionctl-wmi` module's hwmon when it is loaded, else `acpi_call`; `None` without
 /// root or `acpi_call`.
-#[must_use]
-pub fn fan_rpm(root: &SysRoot) -> Option<[(&'static str, u64); 2]> {
+///
+/// # Errors
+/// The `legionctl-wmi` hwmon device's files cannot be read.
+pub fn fan_rpm(root: &SysRoot) -> Result<Option<[(&'static str, u64); 2]>> {
     let [(n1, c1), (n2, c2)] = FAN_CALL;
-    if let Some(hwmon) = legionctl_wmi(root) {
-        let read = |fan: &str| root.read(hwmon.join(format!("{fan}_input")))?.parse().ok();
-        return Some([(n1, read(n1)?), (n2, read(n2)?)]);
+    if let Some(hwmon) = legionctl_wmi(root)? {
+        let read = |fan: &str| -> Result<Option<u64>> {
+            Ok(root
+                .read(hwmon.join(format!("{fan}_input")))?
+                .and_then(|v| v.parse().ok()))
+        };
+        return Ok(read(n1)?
+            .zip(read(n2)?)
+            .map(|(r1, r2)| [(n1, r1), (n2, r2)]));
     }
     let read = |call| parse_acpi_call(&acpi_call(root, call).ok()?);
-    Some([(n1, read(c1)?), (n2, read(c2)?)])
+    Ok(read(c1).zip(read(c2)).map(|(r1, r2)| [(n1, r1), (n2, r2)]))
 }
 
 const PACKAGE_THERM_STATUS: u64 = 0x1B1;

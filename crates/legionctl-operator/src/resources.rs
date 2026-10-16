@@ -127,7 +127,7 @@ fn gpu(op: &Operator, ctx: &Ctx, root: &SysRoot) -> Result<Vec<Resource>> {
             "gpu:nvidia".into(),
             "NVIDIA GPU".into(),
             name(owner).into(),
-            mounts::users_of(root, "/dev/nvidia"),
+            mounts::users_of(root, "/dev/nvidia")?,
             actions,
         ));
     }
@@ -158,7 +158,7 @@ fn gpu(op: &Operator, ctx: &Ctx, root: &SysRoot) -> Result<Vec<Resource>> {
 fn disk(root: &SysRoot) -> Result<Vec<Resource>> {
     // no Windows disk: no partition to attach or detach
     let windows = winvm::disk_targets(root).unwrap_or_default();
-    mounts::list(root)
+    mounts::list(root)?
         .into_iter()
         .map(|m| {
             let disk = |name: &str| action(name, "windows.disk", json!({"action": name}));
@@ -219,9 +219,9 @@ fn configset(op: &Operator, ctx: &Ctx, root: &SysRoot) -> Result<Vec<Resource>> 
             )?],
         ));
     }
-    let ledger = legionctl_machine::ledger::Ledger::open(root)?;
+    let ledger = legionctl_machine::ledger::Ledger::read(root)?;
     for (name, set) in ledger
-        .sets()
+        .sets()?
         .into_iter()
         .filter(|(n, _)| n != sets::BEFORE_BOOT)
     {

@@ -18,12 +18,18 @@ pub const EVENT_SIZE: usize = 24;
 pub const FN_R_QUIET: Duration = Duration::from_millis(400);
 
 /// `/dev/input/eventN` of the device named `name`, if present.
-#[must_use]
-pub fn find_device(root: &SysRoot, name: &str) -> Option<PathBuf> {
-    root.children("/sys/class/input", "event")
-        .into_iter()
-        .find(|e| root.read(e.join("device/name")).as_deref() == Some(name))
-        .and_then(|e| Some(PathBuf::from("/dev/input").join(e.file_name()?)))
+///
+/// # Errors
+/// An input device's name cannot be read.
+pub fn find_device(root: &SysRoot, name: &str) -> anyhow::Result<Option<PathBuf>> {
+    for e in root.children("/sys/class/input", "event")? {
+        if root.read(e.join("device/name"))?.as_deref() == Some(name)
+            && let Some(file) = e.file_name()
+        {
+            return Ok(Some(PathBuf::from("/dev/input").join(file)));
+        }
+    }
+    Ok(None)
 }
 
 /// Whether a buffer of raw input events contains an Fn+R key-down.

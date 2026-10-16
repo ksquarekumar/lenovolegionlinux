@@ -135,7 +135,8 @@ fn ignore(dir: &Path) -> Result<Vec<String>> {
 }
 
 fn append_line(file: &Path, line: &str) -> Result<()> {
-    let text = std::fs::read_to_string(file).unwrap_or_default();
+    // a file that cannot be read is not written over
+    let text = legionctl_machine::sysroot::read_file(file)?.unwrap_or_default();
     let sep = if text.is_empty() || text.ends_with('\n') {
         ""
     } else {

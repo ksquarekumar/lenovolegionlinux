@@ -38,27 +38,41 @@ pub struct Record {
 }
 
 /// The block device name (`nvme0n1p3`) of a mount source (`/dev/...`, `UUID=...`, `PARTUUID=...`).
-fn block(root: &SysRoot, source: &str) -> Option<String> {
+fn block(root: &SysRoot, source: &str) -> Result<Option<String>> {
     let link = if let Some((kind, id)) = source.split_once('=') {
         let dir = match kind {
             "UUID" => "uuid",
             "PARTUUID" => "partuuid",
             "LABEL" => "label",
-            _ => return None,
+            _ => return Ok(None),
         };
-        root.link(format!("/dev/disk/by-{dir}/{id}"))?
+        let Some(link) = root.link(format!("/dev/disk/by-{dir}/{id}"))? else {
+            return Ok(None);
+        };
+        link
     } else {
         PathBuf::from(source)
     };
-    Some(link.file_name()?.to_string_lossy().into_owned())
+    Ok(link.file_name().map(|n| n.to_string_lossy().into_owned()))
 }
 
 /// The PCI address of the `NVMe` controller of block device `name` (`nvme0n1p3` -> `nvme0`).
-fn controller(root: &SysRoot, name: &str) -> Option<String> {
-    let rest = name.strip_prefix("nvme")?;
+fn controller(root: &SysRoot, name: &str) -> Result<Option<String>> {
+    let Some(rest) = name.strip_prefix("nvme") else {
+        return Ok(None);
+    };
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    root.link(format!("/sys/class/nvme/nvme{digits}/device"))
-        .and_then(|l| l.file_name().map(|n| n.to_string_lossy().into_owned()))
+    Ok(root
+        .link(format!("/sys/class/nvme/nvme{digits}/device"))?
+        .and_then(|l| l.file_name().map(|n| n.to_string_lossy().into_owned())))
+}
+
+/// The `NVMe` controller of the mount source `source`, if it is on one.
+fn source_controller(root: &SysRoot, source: &str) -> Result<Option<String>> {
+    match block(root, source)? {
+        Some(b) => controller(root, &b),
+        None => Ok(None),
+    }
 }
 
 /// The `NVMe` controller that holds the Windows volume.
@@ -69,14 +83,12 @@ pub fn windows_disk(root: &SysRoot) -> Result<String> {
     let (source, target) = windows::volume(root).context(
         "no Windows volume: no NTFS entry of the mount table or /etc/fstab holds Windows\\System32\\config\\SYSTEM",
     )?;
-    block(root, &source)
-        .and_then(|b| controller(root, &b))
-        .with_context(|| {
-            format!(
-                "the Windows volume {source} ({}) is not on an NVMe controller",
-                target.display()
-            )
-        })
+    source_controller(root, &source)?.with_context(|| {
+        format!(
+            "the Windows volume {source} ({}) is not on an NVMe controller",
+            target.display()
+        )
+    })
 }
 
 /// The systemd unit name of a mount point (`/mnt/windows-system` -> `mnt-windows\x2dsystem`), as `systemd-escape --path`.
@@ -102,22 +114,21 @@ fn unit_name(target: &Path) -> String {
 }
 
 /// The fstab mount points of NTFS (or any) partitions on the `NVMe` controller `disk`.
-fn fstab_targets(root: &SysRoot, disk: &str) -> Vec<PathBuf> {
-    root.read("/etc/fstab")
-        .unwrap_or_default()
-        .lines()
-        .filter(|l| !l.trim_start().starts_with('#'))
-        .filter_map(|l| {
-            let mut fields = l.split_whitespace();
-            let source = fields.next()?;
-            let target = fields.next()?;
-            (block(root, source)
-                .and_then(|b| controller(root, &b))
-                .as_deref()
-                == Some(disk))
-            .then(|| PathBuf::from(target.replace("\\040", " ")))
-        })
-        .collect()
+fn fstab_targets(root: &SysRoot, disk: &str) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for l in root.read("/etc/fstab")?.unwrap_or_default().lines() {
+        if l.trim_start().starts_with('#') {
+            continue;
+        }
+        let mut fields = l.split_whitespace();
+        let (Some(source), Some(target)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        if source_controller(root, source)?.as_deref() == Some(disk) {
+            out.push(PathBuf::from(target.replace("\\040", " ")));
+        }
+    }
+    Ok(out)
 }
 
 /// The mount points of the Windows disk's partitions in `/etc/fstab`: what `disk_plan` attaches and detaches.
@@ -125,7 +136,7 @@ fn fstab_targets(root: &SysRoot, disk: &str) -> Vec<PathBuf> {
 /// # Errors
 /// No Windows disk.
 pub fn disk_targets(root: &SysRoot) -> Result<Vec<PathBuf>> {
-    Ok(fstab_targets(root, &windows_disk(root)?))
+    fstab_targets(root, &windows_disk(root)?)
 }
 
 /// The steps that give the Windows disk's partitions to Linux (`attach`: their automounts started) or take them away
@@ -135,7 +146,7 @@ pub fn disk_targets(root: &SysRoot) -> Result<Vec<PathBuf>> {
 /// No Windows disk, or no fstab entry on it.
 pub fn disk_plan(root: &SysRoot, attach: bool) -> Result<Vec<Step>> {
     let disk = windows_disk(root)?;
-    let units: Vec<String> = fstab_targets(root, &disk)
+    let units: Vec<String> = fstab_targets(root, &disk)?
         .iter()
         .flat_map(|target| {
             let unit = unit_name(target);
@@ -190,18 +201,23 @@ fn usb_nodes(root: &SysRoot, ids: &[String]) -> Result<Vec<String>> {
             let (vendor, product) = id
                 .split_once(':')
                 .with_context(|| format!("{id} is not vendor:product"))?;
-            root.children("/sys/bus/usb/devices", "")
-                .iter()
-                .find(|d| {
-                    root.read(d.join("idVendor")).as_deref() == Some(vendor)
-                        && root.read(d.join("idProduct")).as_deref() == Some(product)
-                })
-                .and_then(|d| {
-                    let bus: u32 = root.read(d.join("busnum"))?.parse().ok()?;
-                    let dev: u32 = root.read(d.join("devnum"))?.parse().ok()?;
-                    Some(format!("/dev/bus/usb/{bus:03}/{dev:03}"))
-                })
-                .with_context(|| format!("no USB device {id} is plugged in (lsusb)"))
+            for d in root.children("/sys/bus/usb/devices", "")? {
+                if root.read(d.join("idVendor"))?.as_deref() == Some(vendor)
+                    && root.read(d.join("idProduct"))?.as_deref() == Some(product)
+                {
+                    let number = |f: &str| -> Result<u32> {
+                        root.read(d.join(f))?
+                            .and_then(|v| v.parse().ok())
+                            .with_context(|| format!("USB device {id} has no {f}"))
+                    };
+                    return Ok(format!(
+                        "/dev/bus/usb/{:03}/{:03}",
+                        number("busnum")?,
+                        number("devnum")?
+                    ));
+                }
+            }
+            bail!("no USB device {id} is plugged in (lsusb)")
         })
         .collect()
 }
@@ -244,7 +260,7 @@ pub fn begin(root: &SysRoot, uid: u32, ask: &Ask) -> Result<(Vec<String>, Record
     let mut record = Record::default();
     let mut lines = Vec::new();
     let done = (|| -> Result<()> {
-        for target in fstab_targets(root, &disk) {
+        for target in fstab_targets(root, &disk)? {
             let unit = unit_name(&target);
             record.automounts.push(format!("{unit}.automount"));
             systemctl(

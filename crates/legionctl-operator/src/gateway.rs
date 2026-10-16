@@ -323,7 +323,8 @@ async fn send(
     Ok(request.send().await?)
 }
 
-/// Why `name` cannot serve `bare` now: its key needs the gateway token, or a money budget is used.
+/// Why `name` cannot serve `bare` now: its key needs the gateway token, or a money budget is used. `Err`: the budget
+/// cannot be read, so the call cannot be held to it (19-gateway: never too little).
 fn blocked(
     config: &GatewayConfig,
     account: &GatewayAccount,
@@ -331,31 +332,36 @@ fn blocked(
     bare: &str,
     headers: &HeaderMap,
     token: &str,
-) -> Option<String> {
+) -> Result<Option<String>, String> {
     if account.keyring
         && headers
             .get("x-legionctl-token")
             .and_then(|v| v.to_str().ok())
             != Some(token)
     {
-        return Some(format!(
+        return Ok(Some(format!(
             "{name}: this account's key needs the gateway token (x-legionctl-token)"
-        ));
+        )));
     }
-    let budget = config.budgets.get(&format!("{name}/{bare}"))?;
-    let db = Db::open_default().ok()?;
-    [
+    let Some(budget) = config.budgets.get(&format!("{name}/{bare}")) else {
+        return Ok(None);
+    };
+    let unreadable =
+        |e: anyhow::Error| format!("the budget for {name}/{bare} cannot be read: {e:#}");
+    let db = Db::open_default().map_err(unreadable)?;
+    for (period, limit, seconds) in [
         ("day", budget.day_usd, 86_400),
         ("30 days", budget.month_usd, 30 * 86_400),
-    ]
-    .into_iter()
-    .find_map(|(period, limit, seconds)| {
-        let limit = limit?;
-        let spent = db.gateway_spent(name, bare, seconds).unwrap_or(0.0);
-        (spent >= limit).then(|| {
-            format!("{name}/{bare}: the budget of ${limit:.2} per {period} is used (${spent:.2})")
-        })
-    })
+    ] {
+        let Some(limit) = limit else { continue };
+        let spent = db.gateway_spent(name, bare, seconds).map_err(unreadable)?;
+        if spent >= limit {
+            return Ok(Some(format!(
+                "{name}/{bare}: the budget of ${limit:.2} per {period} is used (${spent:.2})"
+            )));
+        }
+    }
+    Ok(None)
 }
 
 /// The kept answer for `key`, recorded as a cached call of `model`; `label` is the cache header (hit, semantic).
@@ -433,9 +439,13 @@ async fn call(State(gw): State<Gateway>, api: Api, headers: HeaderMap, body: Byt
     let mut refusals = Vec::new();
     for (name, bare, direction) in accounts {
         let account = &config.accounts[&name];
-        if let Some(why) = blocked(&config, account, &name, &bare, &headers, &gw.token) {
-            refusals.push(why);
-            continue;
+        match blocked(&config, account, &name, &bare, &headers, &gw.token) {
+            Ok(None) => {}
+            Ok(Some(why)) => {
+                refusals.push(why);
+                continue;
+            }
+            Err(why) => return refuse(StatusCode::INTERNAL_SERVER_ERROR, &why),
         }
         request["model"] = Value::String(bare.clone());
         let body = match provider_body(direction, &request) {
@@ -459,10 +469,8 @@ async fn call(State(gw): State<Gateway>, api: Api, headers: HeaderMap, body: Byt
         .await
         {
             Ok(r) => r,
-            Err(e) => {
-                refusals.push(format!("{name}: {e:#}"));
-                continue;
-            }
+            // failover is for a rate limit only (19-gateway): this call fails, with its reason
+            Err(e) => return refuse(StatusCode::BAD_GATEWAY, &format!("{name}: {e:#}")),
         };
         let status = upstream.status().as_u16();
         if status == 429 && !explicit {
@@ -552,8 +560,9 @@ async fn cached(
         return Err((key, None));
     };
     // the embedding account is held to the same rules as any account: its key needs the token, its budget counts
-    if let Some(why) = config.accounts.get(&semantic.account).and_then(|account| {
-        blocked(
+    if let Some(account) = config.accounts.get(&semantic.account) {
+        // a budget that cannot be read skips the cache too (user decision Q2/Q3: a miss, with the reason)
+        if let Some(why) = blocked(
             config,
             account,
             &semantic.account,
@@ -561,9 +570,11 @@ async fn cached(
             headers,
             &gw.token,
         )
-    }) {
-        eprintln!("operator: semantic cache skipped: {why}");
-        return Err((key, None));
+        .unwrap_or_else(Some)
+        {
+            eprintln!("operator: semantic cache skipped: {why}");
+            return Err((key, None));
+        }
     }
     let (vector, row) = match crate::semantic::embed(
         &gw.http,

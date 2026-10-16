@@ -210,54 +210,70 @@ fn container_name(id: &str) -> String {
 }
 
 /// The state of session `id` where it runs: active, frozen (paused), inactive (also when it is gone), or the scope's
-/// own word; unknown without systemd.
-#[must_use]
-pub fn state(id: &str, inside: Inside) -> String {
+/// own word.
+///
+/// # Errors
+/// docker or systemctl cannot tell: the state is not known, and a caller must not take the session as gone.
+pub fn state(id: &str, inside: Inside) -> Result<String> {
+    let why =
+        |what: &str, e: &str| anyhow::anyhow!("cannot read the state of session {id}: {what}: {e}");
     // a VM's runner (legionctl vm, QEMU and virtiofsd) is in the session's scope, like a host session
     if inside == Inside::Container {
-        let status = std::process::Command::new("docker")
+        let out = std::process::Command::new("docker")
             .args(["inspect", "-f", "{{.State.Status}}", &container_name(id)])
             .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-        return match status.as_deref() {
-            Some("running") => "active",
-            Some("paused") => "frozen",
+            .map_err(|e| why("docker", &e.to_string()))?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if !out.status.success() {
+            // a container that is gone is inactive; any other failure (the daemon is down) is not known
+            let lower = stderr.to_lowercase();
+            if lower.contains("no such object") || lower.contains("no such container") {
+                return Ok("inactive".into());
+            }
+            return Err(why("docker inspect", stderr.trim()));
+        }
+        return Ok(match String::from_utf8_lossy(&out.stdout).trim() {
+            "running" => "active",
+            "paused" => "frozen",
             _ => "inactive",
         }
-        .into();
+        .into());
     }
     let unit = format!("legionctl-session-{id}.scope");
-    let systemctl = |args: &[&str]| {
-        std::process::Command::new("systemctl")
+    let systemctl = |args: &[&str]| -> Result<String> {
+        let out = std::process::Command::new("systemctl")
             .arg("--user")
             .args(args)
             .arg(&unit)
             .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .ok()
-            .filter(|s| !s.is_empty())
-    };
-    match systemctl(&["is-active"]).as_deref() {
-        Some("active")
-            if systemctl(&["show", "--property=FreezerState", "--value"]).as_deref()
-                == Some("frozen") =>
-        {
-            "frozen".into()
+            .map_err(|e| why("systemctl", &e.to_string()))?;
+        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        // is-active exits non-zero for an inactive unit and still prints its state; no word is a failure
+        if text.is_empty() {
+            return Err(why(
+                &format!("systemctl --user {}", args.join(" ")),
+                String::from_utf8_lossy(&out.stderr).trim(),
+            ));
         }
-        Some(state) => state.into(),
-        None => "unknown".into(),
+        Ok(text)
+    };
+    let state = systemctl(&["is-active"])?;
+    if state == "active" && systemctl(&["show", "--property=FreezerState", "--value"])? == "frozen"
+    {
+        return Ok("frozen".into());
     }
+    Ok(state)
 }
 
 /// Whether session `id` still runs (a paused one is frozen, and still runs).
-#[must_use]
-pub fn active(id: &str, inside: Inside) -> bool {
-    matches!(
-        state(id, inside).as_str(),
+///
+/// # Errors
+/// Its state cannot be read ([`state`]).
+pub fn active(id: &str, inside: Inside) -> Result<bool> {
+    Ok(matches!(
+        state(id, inside)?.as_str(),
         "active" | "frozen" | "activating" | "reloading"
-    )
+    ))
 }
 
 /// What `control` does to a running session.
@@ -1016,12 +1032,20 @@ impl Dossiers {
     /// # Errors
     /// The keyring or the sessions table fails.
     pub fn settle_logins(&self) -> Result<()> {
-        let live: Vec<String> = self
-            .sessions()?
-            .into_iter()
-            .filter(|s| active(&s.id, s.inside))
-            .filter_map(|s| s.account)
-            .collect();
+        let mut live: Vec<String> = Vec::new();
+        let scoped: Vec<(String, String, String)> = self
+            .db()
+            .prepare(
+                "SELECT id, account, inside FROM sessions WHERE scoped = 1 AND account IS NOT NULL",
+            )?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        for (id, account, inside) in scoped {
+            // a state that cannot be read keeps the login files where they are: the session may run
+            if active(&id, Inside::from_db(&inside))? {
+                live.push(account);
+            }
+        }
         for entry in std::fs::read_dir(accounts_root())
             .into_iter()
             .flatten()

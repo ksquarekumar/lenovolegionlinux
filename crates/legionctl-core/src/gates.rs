@@ -51,13 +51,18 @@ fn has_flag(arg: &str, flag: &str) -> bool {
 pub fn git_refusal(
     args: &[String],
     deny: &[String],
-    is_alias: impl Fn(&str) -> bool,
+    is_alias: impl Fn(&str) -> anyhow::Result<bool>,
 ) -> Option<String> {
     let (sub, rest) = split(args)?;
-    if is_alias(sub) {
-        return Some(format!(
-            "git aliases are refused in a legionctl sandbox ('{sub}'); use the command itself"
-        ));
+    match is_alias(sub) {
+        Ok(true) => {
+            return Some(format!(
+                "git aliases are refused in a legionctl sandbox ('{sub}'); use the command itself"
+            ));
+        }
+        Ok(false) => {}
+        // the gate cannot see what the command runs: it refuses
+        Err(e) => return Some(format!("legionctl gate: cannot check git aliases: {e:#}")),
     }
     deny.iter().find_map(|rule| {
         let mut words = rule.split_whitespace();
@@ -90,7 +95,7 @@ mod tests {
         .to_vec();
         let refused = |line: &str| {
             let args: Vec<String> = line.split_whitespace().map(String::from).collect();
-            git_refusal(&args, &deny, |sub| sub == "p").is_some()
+            git_refusal(&args, &deny, |sub| Ok(sub == "p")).is_some()
         };
         // global options before the subcommand do not hide it
         assert!(refused("-C /repo -c user.name=x push origin main"));

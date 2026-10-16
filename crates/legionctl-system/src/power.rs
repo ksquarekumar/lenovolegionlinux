@@ -45,12 +45,12 @@ impl Power {
         .context("three maps")?;
         let mut cpus: Array<MapData, [u8; 16]> = Array::try_from(cpus)?;
         // the tracepoint gives each change only; a CPU without cpufreq keeps 0 (by time alone)
-        for policy in root.children("/sys/devices/system/cpu", "cpu") {
+        for policy in root.children("/sys/devices/system/cpu", "cpu")? {
             let (Some(cpu), Some(khz)) = (
                 policy
                     .file_name()
                     .and_then(|n| n.to_str()?.strip_prefix("cpu")?.parse::<u32>().ok()),
-                root.read(policy.join("cpufreq/scaling_cur_freq"))
+                root.read(policy.join("cpufreq/scaling_cur_freq"))?
                     .and_then(|k| k.parse::<u32>().ok()),
             ) else {
                 continue;

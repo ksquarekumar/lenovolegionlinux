@@ -36,7 +36,7 @@ pub fn plan(machine: &Machine, opts: Options) -> Result<Vec<Step>> {
             unit.clone(),
         ]));
     }
-    let loaded = kernel::loaded_modules(machine.root);
+    let loaded = kernel::loaded_modules(machine.root)?;
     for module in conflicts.modules.iter().filter(|m| loaded.contains(*m)) {
         if opts.unload_modules {
             machine.run(&mut steps, &["modprobe", "-r", module]);

@@ -3,7 +3,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::sysroot::SysRoot;
+use anyhow::Result;
+
+use crate::sysroot::{SysRoot, denied};
 
 /// One mount point.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,10 +29,13 @@ fn unescape(field: &str) -> String {
 
 /// The mounted block devices (sources in `/dev`), then the other fstab entries, mounted when the mount table has their
 /// target; swap is not a mount.
-#[must_use]
-pub fn list(root: &SysRoot) -> Vec<Mount> {
-    let table = |file: &str| -> Vec<(String, PathBuf, String)> {
-        root.read(file)
+///
+/// # Errors
+/// The mount table, fstab or a process's files cannot be read.
+pub fn list(root: &SysRoot) -> Result<Vec<Mount>> {
+    let table = |file: &str| -> Result<Vec<(String, PathBuf, String)>> {
+        Ok(root
+            .read(file)?
             .unwrap_or_default()
             .lines()
             .filter(|l| !l.trim_start().starts_with('#'))
@@ -44,10 +49,10 @@ pub fn list(root: &SysRoot) -> Vec<Mount> {
                     )
                 })
             })
-            .collect()
+            .collect())
     };
     // an automount point is no mount: its file system mounts at the first access
-    let table_now: Vec<(String, PathBuf, String)> = table("/proc/self/mounts")
+    let table_now: Vec<(String, PathBuf, String)> = table("/proc/self/mounts")?
         .into_iter()
         .filter(|(_, _, fstype)| fstype != "autofs")
         .collect();
@@ -67,7 +72,7 @@ pub fn list(root: &SysRoot) -> Vec<Mount> {
         })
         .collect();
     mounts.extend(
-        table("/etc/fstab")
+        table("/etc/fstab")?
             .into_iter()
             .filter(|(_, target, _)| !mounted.iter().any(|(_, t, _)| t == target))
             .map(|(source, target, fstype)| Mount {
@@ -85,7 +90,7 @@ pub fn list(root: &SysRoot) -> Vec<Mount> {
         .filter(|m| m.mounted && m.target != Path::new("/"))
         .map(|m| m.target.clone())
         .collect();
-    for (user, paths) in processes(root) {
+    for (user, paths) in processes(root)? {
         let mut on: Vec<&PathBuf> = paths
             .iter()
             .filter_map(|p| {
@@ -103,13 +108,15 @@ pub fn list(root: &SysRoot) -> Vec<Mount> {
             }
         }
     }
-    mounts
+    Ok(mounts)
 }
 
 /// `<pid> <program>` of each process with an open file that starts with `prefix` (`/dev/nvidia`).
-#[must_use]
-pub fn users_of(root: &SysRoot, prefix: &str) -> Vec<String> {
-    processes(root)
+///
+/// # Errors
+/// A process's files cannot be read.
+pub fn users_of(root: &SysRoot, prefix: &str) -> Result<Vec<String>> {
+    Ok(processes(root)?
         .into_iter()
         .filter(|(_, paths)| {
             paths
@@ -117,28 +124,37 @@ pub fn users_of(root: &SysRoot, prefix: &str) -> Vec<String> {
                 .any(|p| p.to_string_lossy().starts_with(prefix))
         })
         .map(|(user, _)| user)
-        .collect()
+        .collect())
 }
 
 /// Each process (`<pid> <program>`) with its working folder and its open files. A process of another user, whose
 /// links this process may not read, is not there.
-fn processes(root: &SysRoot) -> Vec<(String, Vec<PathBuf>)> {
-    root.children("/proc", "")
-        .into_iter()
-        .filter_map(|dir| {
-            let pid = dir.file_name()?.to_str()?.to_string();
-            if !pid.bytes().all(|b| b.is_ascii_digit()) {
-                return None;
-            }
-            let proc = Path::new("/proc").join(&pid);
-            let mut paths: Vec<PathBuf> = root.link(proc.join("cwd")).into_iter().collect();
-            paths.extend(
-                root.children(proc.join("fd"), "")
-                    .iter()
-                    .filter_map(|fd| root.link(fd)),
-            );
-            let program = root.read(proc.join("comm")).unwrap_or_default();
-            (!paths.is_empty()).then(|| (format!("{pid} {program}"), paths))
-        })
-        .collect()
+fn processes(root: &SysRoot) -> Result<Vec<(String, Vec<PathBuf>)>> {
+    let mut out = Vec::new();
+    for dir in root.children("/proc", "")? {
+        let Some(pid) = dir.file_name().and_then(|n| n.to_str()).map(String::from) else {
+            continue;
+        };
+        if !pid.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let proc = Path::new("/proc").join(&pid);
+        let mut paths: Vec<PathBuf> = match root.link(proc.join("cwd")) {
+            Err(e) if denied(&e) => continue,
+            cwd => cwd?.into_iter().collect(),
+        };
+        let fds = match root.children(proc.join("fd"), "") {
+            Err(e) if denied(&e) => continue,
+            fds => fds?,
+        };
+        for fd in fds {
+            paths.extend(root.link(fd)?);
+        }
+        // a process that ended since the listing has no comm
+        let program = root.read(proc.join("comm"))?.unwrap_or_default();
+        if !paths.is_empty() {
+            out.push((format!("{pid} {program}"), paths));
+        }
+    }
+    Ok(out)
 }

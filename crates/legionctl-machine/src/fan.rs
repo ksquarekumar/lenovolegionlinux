@@ -109,7 +109,7 @@ fn control<'a>(m: &'a Machine) -> Result<&'a FanControl> {
     )
 }
 
-fn mode(m: &Machine) -> Option<String> {
+fn mode(m: &Machine) -> Result<Option<String>> {
     m.root.read(&m.profile.paths.platform_profile)
 }
 
@@ -133,7 +133,7 @@ pub fn require_verified(m: &Machine) -> Result<()> {
 }
 
 fn require_custom(m: &Machine, what: &str) -> Result<()> {
-    let now = mode(m);
+    let now = mode(m)?;
     ensure!(
         now.as_deref() == Some(CUSTOM),
         "{what} works in custom mode only, and the mode is now {}: the firmware resets the fan table in the other \
@@ -182,13 +182,20 @@ pub fn read_curve(root: &SysRoot) -> Result<[u8; POINTS]> {
 }
 
 /// The user's curve from the ledger.
-fn chosen(m: &Machine) -> Option<[u8; POINTS]> {
-    let kept = m.ledger.fan(FanKey::Curve)?;
-    let levels: Vec<u8> = kept
+fn chosen(m: &Machine) -> Result<Option<[u8; POINTS]>> {
+    let Some(kept) = m.ledger.fan(FanKey::Curve)? else {
+        return Ok(None);
+    };
+    let levels = kept
         .split_whitespace()
-        .filter_map(|l| l.parse().ok())
-        .collect();
-    validate(&levels).ok()
+        .map(str::parse)
+        .collect::<Result<Vec<u8>, _>>()
+        .map_err(anyhow::Error::from)
+        .and_then(|levels| validate(&levels))
+        .with_context(|| {
+            format!("the saved fan curve '{kept}' is not valid (legionctl fan curve reset)")
+        })?;
+    Ok(Some(levels))
 }
 
 /// Plan `fan curve set`: check the levels, then the mode; write the table and keep it as the user's curve.
@@ -219,7 +226,7 @@ pub fn reset_curve(m: &Machine) -> Result<Vec<Step>> {
         key: FanKey::Curve,
         value: None,
     }];
-    if mode(m).as_deref() == Some(CUSTOM) {
+    if mode(m)?.as_deref() == Some(CUSTOM) {
         steps.push(Step::FanCurve(default));
     } else {
         steps.push(Step::Info(format!(
@@ -292,78 +299,86 @@ pub fn lock(m: &Machine, on: bool) -> Result<Vec<Step>> {
 
 /// What the daemon sets again after an event: fan max mode (after resume and at start, `with_max`), and the user's
 /// curve (else the default) when the machine is in custom mode after `plan`.
-#[must_use]
-pub fn reassert(m: &Machine, with_max: bool, plan: &[Step]) -> Vec<Step> {
+///
+/// # Errors
+/// The firmware mode cannot be read.
+pub fn reassert(m: &Machine, with_max: bool, plan: &[Step]) -> Result<Vec<Step>> {
     let Some(fan) = m.profile.fan.as_ref() else {
-        return vec![];
+        return Ok(vec![]);
     };
     let mut steps = Vec::new();
-    if with_max && m.ledger.fan(FanKey::Max).is_some() {
+    if with_max && m.ledger.fan(FanKey::Max)?.is_some() {
         steps.push(Step::Acpi(max_call(true)));
     }
-    let after = plan
-        .iter()
-        .rev()
-        .find_map(|s| match s {
-            Step::Write { path, value } if *path == m.profile.paths.platform_profile => {
-                Some(value.clone())
-            }
-            _ => None,
-        })
-        .or_else(|| mode(m));
-    if after.as_deref() == Some(CUSTOM)
-        && curve_refusal(m).is_none()
-        && let Some(curve) = chosen(m).or_else(|| validate(&fan.default_curve).ok())
-    {
+    let planned = plan.iter().rev().find_map(|s| match s {
+        Step::Write { path, value } if *path == m.profile.paths.platform_profile => {
+            Some(value.clone())
+        }
+        _ => None,
+    });
+    let after = match planned {
+        Some(value) => Some(value),
+        None => mode(m)?,
+    };
+    if after.as_deref() == Some(CUSTOM) && curve_refusal(m).is_none() {
+        let curve = match chosen(m)? {
+            Some(curve) => curve,
+            None => validate(&fan.default_curve).context("the profile's fan.default_curve")?,
+        };
         steps.push(Step::FanCurve(curve));
     }
-    steps
+    Ok(steps)
 }
 
 /// The fan controls now.
-#[must_use]
-pub fn state(m: &Machine) -> FanState {
+///
+/// # Errors
+/// The firmware mode cannot be read.
+pub fn state(m: &Machine) -> Result<FanState> {
     let curve =
         curve_refusal(m).map_or_else(|| read_curve(m.root), |why| Err(anyhow::anyhow!(why)));
-    FanState {
-        mode: mode(m),
+    Ok(FanState {
+        mode: mode(m)?,
         curve_error: curve.as_ref().err().map(|e| format!("{e:#}")),
         curve: curve.ok().map(Vec::from),
-        chosen: chosen(m).map(Vec::from),
+        chosen: chosen(m)?.map(Vec::from),
         default_curve: m
             .profile
             .fan
             .as_ref()
             .map(|f| f.default_curve.clone())
             .unwrap_or_default(),
-        max: m.ledger.fan(FanKey::Max).is_some(),
+        max: m.ledger.fan(FanKey::Max)?.is_some(),
         fan1_rpm: RPM[0].to_vec(),
         fan2_rpm: RPM[1].to_vec(),
         ec_fan_lock_verified: lock_refusal(m).is_none(),
-    }
+    })
 }
 
-/// Write the table and read it back; the lines say what the firmware has after.
-#[must_use]
-pub fn write_curve(root: &SysRoot, levels: &[u8; POINTS]) -> Vec<String> {
-    let before = read_curve(root).map_or_else(|_| "unknown".into(), |c| text(&c));
-    if let Err(e) = acpi_call(root, &set_table_call(levels)) {
-        return vec![format!("warning: the fan curve was not written: {e:#}")];
-    }
-    match read_curve(root) {
-        Ok(after) if after == *levels => {
-            vec![format!("fan curve is now {} (was {before})", text(levels))]
-        }
-        Ok(after) => vec![format!(
-            "warning: the fan curve read back as {} after writing {}",
-            text(&after),
+/// Write the table and read it back; the line says what the firmware has after.
+///
+/// # Errors
+/// The call fails, or the table does not read back as written.
+pub fn write_curve(root: &SysRoot, levels: &[u8; POINTS]) -> Result<String> {
+    let before = read_curve(root).context("reading the fan curve before the write")?;
+    acpi_call(root, &set_table_call(levels)).context("writing the fan curve")?;
+    let after = read_curve(root).with_context(|| {
+        format!(
+            "the fan curve {} was written but cannot be read back",
             text(levels)
-        )],
-        Err(e) => vec![format!(
-            "warning: the fan curve {} was written but cannot be read back: {e:#}",
-            text(levels)
-        )],
-    }
+        )
+    })?;
+    ensure!(
+        after == *levels,
+        "the fan curve read back as {} after writing {}",
+        text(&after),
+        text(levels)
+    );
+    Ok(format!(
+        "fan curve is now {} (was {})",
+        text(levels),
+        text(&before)
+    ))
 }
 
 /// The port writes of one EC RAM byte: the address high byte (index 0x11), low byte (0x10), then the value (0x12).

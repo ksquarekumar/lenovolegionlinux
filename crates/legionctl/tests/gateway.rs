@@ -99,12 +99,15 @@ fn setup(tag: &str) -> Setup {
     let log = home.join("provider.log");
     let provider = provider::provider(provider_port, &log);
     let base = |prefix: &str| format!("http://127.0.0.1:{provider_port}/{prefix}");
+    // nothing listens there: a network error, not a rate limit
+    let down = format!("http://127.0.0.1:{}/ok", free_port());
     std::fs::write(
         home.join(".config/legionctl/gateway.jsonc"),
         json!({"gateway": {
             "port": port,
             "accounts": {
                 "limited": {"provider": "anthropic", "base_url": base("limited")},
+                "down": {"provider": "anthropic", "base_url": down},
                 "main": {"provider": "anthropic", "base_url": base("ok")},
                 "keyed": {"provider": "anthropic", "base_url": base("ok"), "keyring": true},
                 // keyring accounts of each API: a caller of the other API reaches them translated
@@ -114,7 +117,7 @@ fn setup(tag: &str) -> Setup {
                 "emb": {"provider": "openai", "base_url": base("ok")}
             },
             "semantic": {"account": "emb", "model": "embed-x", "threshold": 0.99},
-            "pool": {"claude-x": ["limited", "main"], "*": ["main"]},
+            "pool": {"claude-x": ["limited", "main"], "claude-down": ["down", "main"], "*": ["main"]},
             // 10 tokens in and 5 out at these prices cost $2: one call uses the day
             "prices": {
                 "claude-y": {"input": 100_000.0, "output": 200_000.0},
@@ -285,6 +288,43 @@ fn the_gateway_refuses_over_budget_without_token_and_across_apis() {
         costs,
         [0.0, 2.0],
         "the 429 costs nothing; the call costs its tokens"
+    );
+}
+
+/// Failover is for a rate limit only (19-gateway; todo-142 F-10, F-11): an account that cannot be reached fails the
+/// call at once with 502 and its reason, and the next account of the pool is not used; a budget that cannot be read
+/// (here its usage table is gone) fails the call with 500 and the reason, and the provider is not called. Before, a
+/// network error moved on to the next account, and an unreadable budget had no limit.
+#[test]
+fn the_gateway_fails_at_once_on_an_error_that_is_no_rate_limit() {
+    let s = setup("gw-fail");
+    let messages = |body: &Value| post(s.port, "/v1/messages", &CALLER, body);
+    let (status, _, body) = messages(&ask("claude-down", "hi"));
+    assert!(
+        status == 502 && body.contains("down: ") && body.contains("Connection refused"),
+        "{status} {body}"
+    );
+    let db = s.home.join(".local/state/legionctl/operator.db");
+    let dropped = std::process::Command::new("python3")
+        .args([
+            "-c",
+            "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.execute('DROP TABLE gateway_usage'); c.commit()",
+        ])
+        .arg(&db)
+        .output()
+        .unwrap();
+    assert!(dropped.status.success(), "{dropped:?}");
+    let (status, _, body) = messages(&ask("main/claude-y", "one"));
+    assert!(
+        status == 500
+            && body.contains("the budget for main/claude-y cannot be read")
+            && body.contains("no such table: gateway_usage"),
+        "{status} {body}"
+    );
+    assert_eq!(
+        provider_calls(&s.log),
+        Vec::<String>::new(),
+        "no account was called"
     );
 }
 

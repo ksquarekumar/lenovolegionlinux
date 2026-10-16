@@ -65,9 +65,16 @@ impl Folders {
 
     /// Watch the layer folder of the user in front now (the user changes; the folder can appear later).
     fn follow_user(&mut self) {
-        let wanted = configset::active_user(&self.root)
-            .map(|(_, home)| self.root.path(configset::user_folder(&home)))
-            .filter(|dir| dir.is_dir());
+        let wanted = match configset::active_user(&self.root) {
+            Ok(user) => user
+                .map(|(_, home)| self.root.path(configset::user_folder(&home)))
+                .filter(|dir| dir.is_dir()),
+            Err(e) => {
+                // the watch stays as it is until the user can be read again
+                eprintln!("configsets: the user in front cannot be read: {e:#}");
+                return;
+            }
+        };
         if wanted.as_ref() == self.user.as_ref().map(|(dir, _)| dir) {
             return;
         }

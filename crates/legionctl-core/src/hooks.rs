@@ -195,18 +195,16 @@ pub fn remove_action(config: &Resolved, id: &str) -> Result<()> {
 fn run_action(config: &Resolved, action: &Action, event: Event) -> String {
     let result: Result<String> = match action.id.as_str() {
         "reminders" => Ok(reminders::emit(config, event)),
-        "load" => Ok(load::brief(&load::read_load(
-            &SysRoot::from_env(),
-            &config.config.load,
-        ))),
-        "load-if-busy" => {
-            let l = load::read_load(&SysRoot::from_env(), &config.config.load);
-            Ok(if l.level >= load::Level::Busy {
+        "load" => {
+            load::read_load(&SysRoot::from_env(), &config.config.load).map(|l| load::brief(&l))
+        }
+        "load-if-busy" => load::read_load(&SysRoot::from_env(), &config.config.load).map(|l| {
+            if l.level >= load::Level::Busy {
                 load::brief(&l)
             } else {
                 String::new()
-            })
-        }
+            }
+        }),
         "setup-check" => {
             crate::archetypes::Sources::resolve(&crate::config::Dirs::from_env(), None)
                 .and_then(|agents| setup::check(&agents, &config.config.session))
