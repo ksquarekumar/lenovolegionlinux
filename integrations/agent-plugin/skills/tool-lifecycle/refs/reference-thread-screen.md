@@ -72,12 +72,15 @@ repository's `.legionctl/views/`, the user's `~/.config/legionctl/views/`, the s
 | Field | Content |
 | --- | --- |
 | `name`, `title`, `intent`, `space`, `params` | a-z, 0-9 and `-`; the words; the intent it answers ("the machine now"); the navigator's space (machine, work, agents); parameters `string` or `integer`. |
-| `widget` | `table`, `tree`, `gauge`, `sparkline`, `markdown`, `diff`, `list`, `stack`, `stat` or `chart`. |
+| `widget` | `table`, `tree`, `gauge`, `sparkline`, `markdown`, `diff`, `list`, `stack`, `stat`, `chart`, `graph`, `form` or `timeline`. |
 | `source` | `op` (a read operation), `input` (`{param}` in a string is the value), `path` (`$`, `$.a.0.b`, `$.[name=x].value`), `all` (read every page of a paged answer). |
 | `columns`, `labels`, `formats` | Table fields (`a.b`; `a\|b` the first that is not null); header and button words; `ago`, `time`, `int`, `1dp`, `count`, `join`. |
 | `group`, `levels`, `filter`, `last` | Rows in groups (a field, or rules `prefix`/`any` with `rest`; `labels`, `order`, `fold`); state colours of a number column (`warn`, `critical`, `when`); rows with these values; the newest N rows first. |
 | `unit`, `warn`, `critical`, `note`, `missing`, `trend` | A stat's unit, limits, note (`{field}` of the answer), the cause when the value is missing, and a path to its trend. |
 | `x`, `y`, `series` | A chart's fields: one line per series value (a chart never mixes kinds), x as time with `formats.x = time`. |
-| `views` | The views of a stack: by name (`name`, `params`) or written in place. |
+| `node`, `expand`, `select`, `highlight`, `edges` | A graph: its nodes' fields (`id`, `label`, `kind`, `count`, `state` with `states`, `children` in the data, `leaf`); the parameter that a click on a node sets to read its children (the same view read with it); the parameter that a click on a leaf sets (the stack's other parts read it); marks from a second read source (`source`, `fields`, `label`); edges in the answer (`path`, `from`, `to`, `kind`). Seeds: `code-graph` (the code tree with counts, what changed since a ref marked, what uses the selected symbol) and `plan-graph` (features, work items and units in their state colours), both in the Work space. |
+| `form` | A form widget: the button (`label`, `op`, `input`) whose form it opens. |
+| `defaults`, `missing` | A parameter's value when none is given; the text of a part while one of its parameters is empty (its source is not read). |
+| `views` | The views of a stack: by name (`name`, `params`, with `{param}` of the stack) or written in place (they get the stack's parameters that they declare). |
 | `actions`, `row_actions` | Buttons: `label`, `op` (a public operation, or `{item.op}`), `input` (`{row.x}`, `{item.x}`, a whole `"{item.input}"`), `each` (one button per item of a row's array field). A button runs its operation with its own approval: a read at once, a change with its dry run first, else an inline confirm; polkit asks for the machine. |
 | `refresh` | `events` (kinds after which the view reads again, `thread.*`; also after `views.save`) and `every` (seconds, for live values). A refresh reads the data, never the spec. |

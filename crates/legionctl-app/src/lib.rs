@@ -4,6 +4,7 @@
 
 pub mod activity;
 mod forms;
+mod graph;
 pub mod greeter;
 pub mod shell;
 pub mod theme;

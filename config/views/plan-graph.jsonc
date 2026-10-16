@@ -1,0 +1,27 @@
+// Seed (DESIGN-09 G4, todo-141): the plan of the repository (planning/): features, their work items and their
+// units, each in the colour of its state: what the plan says (planned, in progress, done) and what the code has
+// (a unit done, missing, still there).
+{
+  "$schema": "../../docs/api/view.schema.json",
+  "name": "plan-graph",
+  "title": "Plan: features, work items and units",
+  "intent": "the plan of this repository, planned and actual",
+  "space": "work",
+  "widget": "graph",
+  "source": { "op": "code.plan.status", "input": { "build": true }, "path": "$.features" },
+  "node": {
+    "id": "id|key",
+    "label": "title|text|key",
+    "kind": "status|state",
+    "state": "status|state",
+    "states": {
+      "done": "ok",
+      "in-progress": "warn",
+      "still there": "warn",
+      "missing": "critical",
+      "unknown prefix": "critical"
+    },
+    "children": "work_items|units"
+  },
+  "refresh": { "events": ["code.*", "workspace.checkpoint"] }
+}

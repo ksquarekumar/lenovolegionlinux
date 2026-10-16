@@ -2518,6 +2518,102 @@ fn view_rows(v: &crate::ViewData, line: impl Fn(&[String]) -> String) -> Vec<Str
     out
 }
 
+/// A chart in one line per series: its points, range, last value and trend.
+fn chart_text(v: &crate::ViewData) -> Vec<String> {
+    std::iter::once(format!("{} series", v.series.len()))
+        .chain(v.series.iter().map(|s| {
+            let ys: Vec<f64> = s.points.iter().map(|p| p.1).collect();
+            let (low, high) = ys
+                .iter()
+                .fold((f64::MAX, f64::MIN), |(l, h), y| (l.min(*y), h.max(*y)));
+            format!(
+                "{}: {} points, {low:.0} to {high:.0}, last {:.0} {}",
+                if s.name.is_empty() { "-" } else { &s.name },
+                s.points.len(),
+                ys.last().copied().unwrap_or_default(),
+                sparkline(&ys)
+            )
+        }))
+        .collect()
+}
+
+/// A graph: its counts, its nodes two levels deep (counts below), its edges.
+fn graph_text(v: &crate::ViewData) -> Vec<String> {
+    {
+        fn lines(nodes: &[crate::ViewNode], depth: usize, out: &mut Vec<String>) {
+            for n in nodes {
+                let count = n.count.map_or_else(String::new, |c| format!(" ({c})"));
+                let mark = if n.marked { "* " } else { "" };
+                let state = if n.state.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", n.state)
+                };
+                out.push(format!(
+                    "{}{mark}{}{count} {}{state}",
+                    "  ".repeat(depth),
+                    n.label,
+                    n.kind
+                ));
+                // two levels, counts below them (MEMORY-14: counts first)
+                if depth < 1 {
+                    lines(&n.children, depth + 1, out);
+                }
+            }
+        }
+        let marked = if v.legend.is_empty() {
+            String::new()
+        } else {
+            format!("; * {}", v.legend)
+        };
+        let mut out = vec![format!(
+            "{} nodes, {} edges{marked}",
+            v.nodes.len(),
+            v.edges.len()
+        )];
+        lines(&v.nodes, 0, &mut out);
+        out.extend(
+            v.edges
+                .iter()
+                .map(|e| format!("{} -{}-> {}", e.from, e.kind, e.to)),
+        );
+        out
+    }
+}
+
+/// A form: its operation and fields (* required).
+fn form_text(v: &crate::ViewData) -> Vec<String> {
+    v.actions
+        .iter()
+        .filter_map(|b| crate::OPS.iter().find(|o| o.name == b.op))
+        .map(|op| {
+            let fields: Vec<String> = crate::form::fields(op)
+                .into_iter()
+                .map(|f| {
+                    if f.required {
+                        format!("{}*", f.name)
+                    } else {
+                        f.name
+                    }
+                })
+                .collect();
+            format!("form of {}: {}", op.name, fields.join(", "))
+        })
+        .collect()
+}
+
+/// A timeline: its count, then each event with its date.
+fn timeline_text(v: &crate::ViewData) -> Vec<String> {
+    std::iter::once(format!("{} events", v.rows.len()))
+        .chain(v.rows.iter().map(|r| {
+            let at = r[0]
+                .parse::<i64>()
+                .map_or_else(|_| r[0].clone(), legionctl_core::views::utc);
+            format!("{at} {} {}: {}", r[1], r[2], r[3])
+        }))
+        .collect()
+}
+
 impl Render for crate::ViewData {
     /// The terminal form of a view (DESIGN-09 Rule 1): counts and the point first, one line each.
     fn text(&self) -> String {
@@ -2565,22 +2661,11 @@ impl Render for crate::ViewData {
                     String::new()
                 }
             )],
-            crate::ViewWidget::Chart => std::iter::once(format!("{} series", self.series.len()))
-                .chain(self.series.iter().map(|s| {
-                    let ys: Vec<f64> = s.points.iter().map(|p| p.1).collect();
-                    let (low, high) = ys
-                        .iter()
-                        .fold((f64::MAX, f64::MIN), |(l, h), y| (l.min(*y), h.max(*y)));
-                    format!(
-                        "{}: {} points, {low:.0} to {high:.0}, last {:.0} {}",
-                        if s.name.is_empty() { "-" } else { &s.name },
-                        s.points.len(),
-                        ys.last().copied().unwrap_or_default(),
-                        sparkline(&ys)
-                    )
-                }))
-                .collect(),
+            crate::ViewWidget::Chart => chart_text(self),
             crate::ViewWidget::Stack => self.parts.iter().map(Render::text).collect(),
+            crate::ViewWidget::Graph => graph_text(self),
+            crate::ViewWidget::Form => form_text(self),
+            crate::ViewWidget::Timeline => timeline_text(self),
         };
         let actions = self
             .actions
@@ -2588,6 +2673,9 @@ impl Render for crate::ViewData {
             .map(|a| format!("[{}] {} {}", a.label, a.op, a.input))
             .collect::<Vec<_>>();
         let mut out = vec![head];
+        if self.widget != crate::ViewWidget::Stat && !self.note.is_empty() {
+            out.push(self.note.clone());
+        }
         out.extend(body);
         if !actions.is_empty() {
             out.push(format!("actions: {}", actions.join("; ")));
@@ -2785,5 +2873,30 @@ impl Render for Vec<crate::OpEntry> {
             }))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+}
+
+impl Render for crate::CodeTree {
+    fn text(&self) -> String {
+        let at = if self.prefix.is_empty() {
+            "."
+        } else {
+            &self.prefix
+        };
+        std::iter::once(format!(
+            "{at}: {} symbols in {} entries (tree {})",
+            self.total,
+            self.items.len(),
+            self.tree
+        ))
+        .chain(self.items.iter().map(|i| {
+            if i.symbol {
+                format!("  {:<10} {}  line {}", i.kind, i.path, i.line.unwrap_or(0))
+            } else {
+                format!("  {:<6} {:>6}  {}", i.kind, i.count, i.path)
+            }
+        }))
+        .collect::<Vec<_>>()
+        .join("\n")
     }
 }

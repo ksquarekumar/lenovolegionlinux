@@ -1907,6 +1907,22 @@ pub struct GraphImpactIn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GraphTreeIn {
+    /// A folder or a file of the repository ("": its top): the level under it.
+    #[serde(default)]
+    pub prefix: String,
+    /// The ref; HEAD when not given.
+    #[serde(default = "head", rename = "ref")]
+    pub rev: String,
+    /// Make the graph of the ref when it has none.
+    #[serde(default)]
+    pub build: bool,
+    /// A folder in the repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GraphChangesIn {
     /// Two or more refs: the changes from each to the next. One ref: from its first parent. None: HEAD's last
     /// commit. With --three-way: `<base> <ours> <theirs>`.

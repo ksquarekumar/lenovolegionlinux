@@ -410,6 +410,143 @@ fn an_operation_of_the_catalog_runs_through_the_form_of_its_input_schema(cx: &mu
     drop(runtime);
 }
 
+/// git in the lab's repository as the user.
+fn lab_git(home: &Path, repo: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .env("HOME", home)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The lab's repository with the ctx stand-in: src/lib.rs (add, two) and tools/x.rs on main, then on branch work
+/// a commit that changes two.
+fn graph_repo(home: &Path, repo: &Path) {
+    std::os::unix::fs::symlink(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ctx-standin"),
+        home.join(".local/bin/ctx"),
+    )
+    .unwrap();
+    write(
+        &repo.join("Cargo.toml"),
+        "[package]\nname = \"fx\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(
+        &repo.join("src/lib.rs"),
+        "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\npub fn two() -> i32 {\n    add(1, 1)\n}\n",
+    );
+    write(&repo.join("tools/x.rs"), "pub fn x() -> i32 {\n    1\n}\n");
+    lab_git(home, repo, &["add", "."]);
+    lab_git(home, repo, &["commit", "--quiet", "-m", "lib"]);
+    lab_git(home, repo, &["checkout", "--quiet", "-b", "work"]);
+    write(
+        &repo.join("src/lib.rs"),
+        "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\npub fn two() -> i32 {\n    add(2, 0)\n}\n",
+    );
+    lab_git(home, repo, &["commit", "--quiet", "-am", "two adds 2"]);
+}
+
+/// The code graph seed (DESIGN-09 G4, todo-141) on a repository with the ctx stand-in: on branch work, the commit
+/// after main changes `two`. The tree's top has the folder src with its symbol count, marked as changed since main
+/// (tools is not); a click on src reads its level (src/lib.rs, marked), a click on the file its symbols (two is
+/// marked, add is not); a click on add selects it, and the stack's other part reads what uses it: two.
+#[gpui_kit::test]
+fn the_code_graph_seed_opens_levels_on_click_marks_changes_and_shows_what_uses_a_selected_symbol(
+    cx: &mut TestAppContext,
+) {
+    let (op, home, repo) = thread_lab("graph");
+    graph_repo(&home, &repo);
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
+    let cx = &mut vcx;
+    let click = |cx: &mut VisualTestContext, id: &str| {
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click(SharedString::from(id.to_string()), cx);
+        });
+    };
+    click(cx, "space-work");
+    wait(cx, &app, "the views", |a| {
+        a.screen.views.iter().any(|v| v.name == "code-graph")
+    });
+    click(cx, "nav-code-graph");
+    wait(cx, &app, "the tree", |a| {
+        shown(a, "code-tree").is_some_and(|v| !v.nodes.is_empty())
+    });
+    app.read_with(cx, |a, _| {
+        let tree = shown(a, "code-tree").unwrap();
+        let top: Vec<(&str, Option<u64>, bool)> = tree
+            .nodes
+            .iter()
+            .map(|n| (n.id.as_str(), n.count, n.marked))
+            .collect();
+        assert!(top.contains(&("src", Some(2), true)), "{top:?}");
+        assert!(top.contains(&("tools", Some(1), false)), "{top:?}");
+        assert_eq!(tree.legend, "changed since main");
+        let impact = shown(a, "code-impact").unwrap();
+        assert_eq!(
+            impact.note,
+            "Click a symbol in the tree to see what uses it"
+        );
+    });
+    click(cx, "node-code-tree:src");
+    wait(cx, &app, "src's level", |a| {
+        a.screen.lazy.contains_key("code-tree:src")
+    });
+    app.read_with(cx, |a, _| {
+        let level = a.screen.lazy["code-tree:src"].as_ref().unwrap();
+        assert_eq!(level.len(), 1, "{level:?}");
+        assert_eq!(
+            (level[0].id.as_str(), level[0].marked),
+            ("src/lib.rs", true)
+        );
+    });
+    click(cx, "node-code-tree:src/lib.rs");
+    wait(cx, &app, "the file's symbols", |a| {
+        a.screen.lazy.contains_key("code-tree:src/lib.rs")
+    });
+    let add = app.read_with(cx, |a, _| {
+        let symbols = a.screen.lazy["code-tree:src/lib.rs"].as_ref().unwrap();
+        let marks: Vec<(&str, bool, bool)> = symbols
+            .iter()
+            .map(|n| (n.label.as_str(), n.marked, n.leaf))
+            .collect();
+        assert!(
+            marks.contains(&("two", true, true)) && marks.contains(&("add", false, true)),
+            "{marks:?}"
+        );
+        symbols
+            .iter()
+            .find(|n| n.label == "add")
+            .unwrap()
+            .id
+            .clone()
+    });
+    click(cx, &format!("node-code-tree:{add}"));
+    wait(cx, &app, "what uses add", |a| {
+        shown(a, "code-impact").is_some_and(|v| !v.rows.is_empty())
+    });
+    app.read_with(cx, |a, _| {
+        assert!(
+            a.tab()
+                .is_some_and(|t| t.key().contains(&format!("key={add}")))
+        );
+        let impact = shown(a, "code-impact").unwrap();
+        assert!(
+            impact.rows.iter().any(|r| r[0].ends_with("two")),
+            "{:?}",
+            impact.rows
+        );
+    });
+    drop(runtime);
+}
+
 /// The Resources seed (note 22) against the real operator on the recorded machine, without a daemon: it lists the
 /// configset layers in their group with their actions, which come with the data (each action names its operation);
 /// a click shows the route first (rules.disable is a machine operation with no dry run, so the tab asks inline and
@@ -699,8 +836,12 @@ fn thread_lab(tag: &str) -> (Operator, PathBuf, PathBuf) {
         .parent()
         .unwrap()
         .to_path_buf();
+    // the home's own tools (a test puts the ctx stand-in there) come first
+    std::fs::create_dir_all(home.join(".local/bin")).unwrap();
     let path = std::env::join_paths(
-        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        [home.join(".local/bin"), bin]
+            .into_iter()
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
     )
     .unwrap();
     recorded_machine(&home.join("root"));

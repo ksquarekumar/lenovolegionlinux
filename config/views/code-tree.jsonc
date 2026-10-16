@@ -1,0 +1,22 @@
+// Seed (DESIGN-09 G4, todo-141): the code of the repository at HEAD as a tree, counts first: folders and files with
+// the number of symbols in each; a click opens a folder or a file (the level is read then), a click on a symbol
+// selects it. What changed since a ref is marked.
+{
+  "$schema": "../../docs/api/view.schema.json",
+  "name": "code-tree",
+  "title": "Folders, files and their symbols",
+  "intent": "the folders and files of this repository",
+  "params": { "prefix": "string", "since": "string", "key": "string" },
+  "defaults": { "prefix": "", "since": "main", "key": "" },
+  "widget": "graph",
+  "source": { "op": "code.graph.tree", "input": { "prefix": "{prefix}", "build": true }, "path": "$.items" },
+  "node": { "id": "path", "label": "name", "kind": "kind", "count": "count", "leaf": "symbol" },
+  "expand": "prefix",
+  "select": "key",
+  "highlight": {
+    "source": { "op": "code.graph.changes", "input": { "refs": ["{since}", "HEAD"], "build": true }, "path": "$.0.entities" },
+    "fields": ["key", "file"],
+    "label": "changed since {since}"
+  },
+  "refresh": { "events": ["code.graph.*", "workspace.checkpoint"] }
+}

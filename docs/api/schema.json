@@ -13716,6 +13716,106 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "code.graph.tree": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "prefix": {
+          "type": "string",
+          "description": "A folder or a file of the repository (\"\": its top): the level under it.",
+          "default": ""
+        },
+        "ref": {
+          "type": "string",
+          "description": "The ref; HEAD when not given.",
+          "default": "HEAD"
+        },
+        "build": {
+          "type": "boolean",
+          "description": "Make the graph of the ref when it has none.",
+          "default": false
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in the repository.",
+          "default": "."
+        }
+      },
+      "title": "GraphTreeIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "tree": {
+          "type": "string"
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "total": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The symbols under the prefix."
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "description": "One entry of a level of the code tree: a folder, a file or a symbol, with the symbols under it.",
+            "type": "object",
+            "properties": {
+              "path": {
+                "description": "A folder or file path, or a symbol's stable key.",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "kind": {
+                "description": "folder, file, or the symbol's kind.",
+                "type": "string"
+              },
+              "count": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "symbol": {
+                "type": "boolean"
+              },
+              "line": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64"
+              }
+            },
+            "required": [
+              "path",
+              "name",
+              "kind",
+              "count",
+              "symbol"
+            ]
+          }
+        }
+      },
+      "required": [
+        "tree",
+        "prefix",
+        "total",
+        "items"
+      ],
+      "description": "One level of the code tree, counts first.",
+      "title": "CodeTree",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "code.graph.changes": {
     "class": "read",
     "internal": false,
@@ -16745,6 +16845,9 @@
               "stack",
               "stat",
               "chart",
+              "graph",
+              "form",
+              "timeline",
               null
             ]
           },
@@ -16971,7 +17074,10 @@
             "list",
             "stack",
             "stat",
-            "chart"
+            "chart",
+            "graph",
+            "form",
+            "timeline"
           ],
           "description": "A widget of the closed set of a view (design 23, C4)."
         },
@@ -17185,6 +17291,103 @@
             "format": "uint32",
             "minimum": 0
           }
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "description": "A node of a graph view.",
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "count": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "uint64",
+                "minimum": 0
+              },
+              "state": {
+                "description": "ok, warn, critical, or empty.",
+                "type": "string"
+              },
+              "marked": {
+                "type": "boolean"
+              },
+              "leaf": {
+                "type": "boolean"
+              },
+              "children": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/ViewNode"
+                }
+              }
+            },
+            "required": [
+              "id",
+              "label",
+              "kind",
+              "state",
+              "marked",
+              "leaf",
+              "children"
+            ]
+          },
+          "description": "graph: its nodes and edges, the parameters a click sets (expand: the children; select: the leaf), and\nwhat a mark means."
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "description": "An edge of a graph view.",
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "from",
+              "to",
+              "kind"
+            ]
+          }
+        },
+        "expand": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "select": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "legend": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "The parameters it was read with."
         }
       },
       "required": [
@@ -17209,11 +17412,65 @@
         "row_actions",
         "refresh",
         "version",
-        "versions"
+        "versions",
+        "nodes",
+        "edges",
+        "legend",
+        "params"
       ],
       "description": "A view with its data in the shape of its widget.",
       "title": "ViewData",
-      "$schema": "https://json-schema.org/draft/2020-12/schema"
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "ViewNode": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "count": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "state": {
+              "type": "string",
+              "description": "ok, warn, critical, or empty."
+            },
+            "marked": {
+              "type": "boolean"
+            },
+            "leaf": {
+              "type": "boolean"
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ViewNode"
+              }
+            }
+          },
+          "required": [
+            "id",
+            "label",
+            "kind",
+            "state",
+            "marked",
+            "leaf",
+            "children"
+          ],
+          "description": "A node of a graph view."
+        }
+      }
     }
   },
   "views.place": {

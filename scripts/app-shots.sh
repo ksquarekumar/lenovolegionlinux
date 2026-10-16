@@ -141,7 +141,10 @@ for monitor in ${APP_SHOTS_MONITOR:-1366x768 1920x1080 2560x1600}; do
   shoot "$work/desktop.png"
   wait=15
   for page in "${pages[@]}"; do
-    XDG_RUNTIME_DIR=$work/run WAYLAND_DISPLAY=$wayland DISPLAY='' "$app" "$page" >"$out/$monitor-$page.log" 2>&1 &
+    # a page is a view, with its parameters after spaces: "code-graph key=rust:.:add"
+    read -r -a words <<<"$page"
+    page=${words[0]}
+    XDG_RUNTIME_DIR=$work/run WAYLAND_DISPLAY=$wayland DISPLAY='' "$app" "${words[@]}" >"$out/$monitor-$page.log" 2>&1 &
     pid=$!
     # the first answers of the operator (the first page also starts it), and the portal's dark/light choice
     sleep "$wait"

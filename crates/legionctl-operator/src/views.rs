@@ -12,7 +12,7 @@ use legionctl_api::{
     ViewRenderIn, ViewSaveIn, ViewTextIn, ViewVersionIn, ViewsListIn,
 };
 use legionctl_core::facts::{self, New, Scope};
-use legionctl_core::views::{Part, Placed, Rendered, View, Widget};
+use legionctl_core::views::{Part, Placed, Rendered, Source, View, Widget};
 use serde_json::Value;
 
 use crate::engine::dossiers;
@@ -36,7 +36,12 @@ fn params(words: &[String]) -> Result<BTreeMap<String, String>> {
 /// The checks that need the registry and the other views: a stack's views exist, a source is a read operation, a
 /// button names a public operation.
 fn check(view: &View, repo: Option<&Path>) -> Result<()> {
-    for action in view.actions.iter().chain(&view.row_actions) {
+    for action in view
+        .actions
+        .iter()
+        .chain(&view.row_actions)
+        .chain(&view.form)
+    {
         // `{item.op}`: the operation comes with the data (a resource's actions)
         if !action.op.starts_with('{') {
             OPS.iter()
@@ -48,6 +53,20 @@ fn check(view: &View, repo: Option<&Path>) -> Result<()> {
                     )
                 })?;
         }
+    }
+    if let Some(h) = &view.highlight {
+        let op = OPS
+            .iter()
+            .find(|op| op.name == h.source.op && !op.internal())
+            .with_context(|| format!("no operation {}", h.source.op))?;
+        ensure!(
+            op.class == Class::Read,
+            "{} is not a read operation: a highlight reads only",
+            op.name
+        );
+    }
+    if view.widget == Widget::Form {
+        return Ok(());
     }
     if view.widget == Widget::Stack {
         for part in &view.views {
@@ -298,12 +317,27 @@ struct Pass<'a> {
 
 impl Pass<'_> {
     /// The answer of `source` with `input`; every page when the source asks for all.
-    fn answer(&mut self, view: &View, mut input: Value) -> Result<Value> {
-        let source = view.source.as_ref().context("a view needs a source")?;
+    fn answer(&mut self, source: &Source, mut input: Value) -> Result<Value> {
         let op = OPS
             .iter()
             .find(|op| op.name == source.op)
             .with_context(|| format!("no operation {}", source.op))?;
+        // a path field resolves against the render's folder, as a client resolves it against its own: a given one,
+        // and one whose default is the client's folder (".")
+        if let Some(map) = input.as_object_mut() {
+            let schema = (op.input)();
+            for (name, prop) in schema["properties"].as_object().into_iter().flatten() {
+                let given = map.get(name).and_then(Value::as_str).map(String::from);
+                let here = prop["default"] == ".";
+                if prop["format"] == "path" && (given.is_some() || here) {
+                    let path = self.repo.join(given.unwrap_or_default());
+                    map.insert(
+                        name.clone(),
+                        Value::from(path.to_string_lossy().into_owned()),
+                    );
+                }
+            }
+        }
         // the same checks as a call from outside: known fields, and a session's own id in its session fields
         crate::server::known_fields(op, &input).map_err(|e| anyhow::anyhow!(e.message))?;
         crate::server::own_session(op, &self.ctx.principal, &mut input);
@@ -362,11 +396,34 @@ impl Pass<'_> {
             out.error = None;
             for part in &view.views {
                 out.parts.push(match part {
-                    Part::Inline(inline) => self.render(inline, &BTreeMap::new(), depth + 1),
+                    // an inline part gets the stack's parameters that it declares
+                    Part::Inline(inline) => {
+                        let inherited = values
+                            .iter()
+                            .filter(|(k, _)| inline.params.contains_key(*k))
+                            .map(|(k, v)| {
+                                (
+                                    k.clone(),
+                                    v.as_str().map_or_else(|| v.to_string(), String::from),
+                                )
+                            })
+                            .collect();
+                        self.render(inline, &inherited, depth + 1)
+                    }
                     Part::Placed(placed) => match version(&placed.name, self.repo)
                         .and_then(|v| legionctl_core::views::find(&placed.name, v, Some(self.repo)))
                     {
-                        Ok(inner) => self.render(&inner, &placed.params, depth + 1),
+                        Ok(inner) => {
+                            // a placed part's parameters may name the stack's: `{since}`
+                            let filled = placed
+                                .params
+                                .iter()
+                                .map(|(k, v)| {
+                                    (k.clone(), legionctl_core::views::fill_text(v, &values))
+                                })
+                                .collect();
+                            self.render(&inner, &filled, depth + 1)
+                        }
                         Err(e) => {
                             let mut failed = Rendered::failed(view, format!("{e:#}"));
                             failed.name.clone_from(&placed.name);
@@ -378,8 +435,52 @@ impl Pass<'_> {
             }
             return out;
         }
-        let answer = view.input(given).and_then(|input| self.answer(view, input));
-        Rendered::of(view, &values, answer)
+        let text = |v: &Value| v.as_str().map_or_else(|| v.to_string(), String::from);
+        let given: BTreeMap<String, String> =
+            values.iter().map(|(k, v)| (k.clone(), text(v))).collect();
+        // a parameter that is empty: the part says what it waits for, and reads nothing
+        if let Some(waits) = view
+            .missing
+            .as_ref()
+            .filter(|_| view.widget != Widget::Stat && given.values().any(String::is_empty))
+        {
+            let mut out = Rendered::of(view, &values, Ok(Value::Null));
+            out.error = None;
+            out.note.clone_from(waits);
+            out.params = given;
+            return out;
+        }
+        let answer = match &view.source {
+            Some(source) => view
+                .input(&given)
+                .and_then(|input| self.answer(source, input)),
+            None => Ok(Value::Null),
+        };
+        let mut out = Rendered::of(view, &values, answer);
+        out.params.clone_from(&given);
+        if let (Some(h), None) = (&view.highlight, &out.error) {
+            let input = legionctl_core::views::fill_values(&h.source.input, &values);
+            match self
+                .answer(&h.source, input)
+                .and_then(|a| legionctl_core::views::pick(&a, &h.source.path))
+            {
+                Ok(items) => {
+                    let marks: Vec<String> = items
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .flat_map(|i| {
+                            h.fields
+                                .iter()
+                                .filter_map(|f| i[f].as_str().map(String::from))
+                        })
+                        .collect();
+                    out.mark(&marks, legionctl_core::views::fill_text(&h.label, &values));
+                }
+                Err(e) => out.legend = format!("no marks: {e:#}"),
+            }
+        }
+        out
     }
 }
 

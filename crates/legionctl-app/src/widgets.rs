@@ -193,6 +193,9 @@ impl LegionApp {
             ViewWidget::Stat => stat(data, t),
             ViewWidget::Table | ViewWidget::List => self.table(data, t, cx, top),
             ViewWidget::Chart => chart(data, t),
+            ViewWidget::Graph => self.graph(data, top, t, cx),
+            ViewWidget::Form => Self::form_widget(data, t, cx),
+            ViewWidget::Timeline => Self::timeline(data, t),
             ViewWidget::Tree => framed(
                 data,
                 top,
@@ -364,13 +367,14 @@ impl LegionApp {
             }
         }
         if data.rows.is_empty() {
-            body = body.child(
-                div()
-                    .py(S2)
-                    .text_size(T_SM)
-                    .text_color(t.muted)
-                    .child("Nothing to show"),
-            );
+            // a part that waits for a parameter says for what
+            body = body.child(div().py(S2).text_size(T_SM).text_color(t.muted).child(
+                if data.note.is_empty() {
+                    "Nothing to show".to_string()
+                } else {
+                    data.note.clone()
+                },
+            ));
         }
         framed(data, top, t, body.test_support().into_any_element())
     }

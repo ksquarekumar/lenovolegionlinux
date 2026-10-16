@@ -40,6 +40,14 @@ pub enum Widget {
     /// An array of objects as lines over time: `x` (seconds since the epoch, or any number), `y`, one chart per value
     /// of `series` (a chart never mixes kinds), with axes.
     Chart,
+    /// Nodes (an array of objects, `node` says their fields) as a tree with counts, children in the data or read
+    /// on a click (`expand`), a click on a leaf sets a parameter (`select`), marks from a second source
+    /// (`highlight`), and the edges of a node (`edges`).
+    Graph,
+    /// The form of an operation (`form`), made from its input schema; it runs with the operation's approval.
+    Form,
+    /// An array of events: the `columns` are the time (seconds since the epoch), the actor, the kind and the text.
+    Timeline,
 }
 
 impl Widget {
@@ -56,6 +64,9 @@ impl Widget {
             Widget::Stack => "stack",
             Widget::Stat => "stat",
             Widget::Chart => "chart",
+            Widget::Graph => "graph",
+            Widget::Form => "form",
+            Widget::Timeline => "timeline",
         }
     }
 }
@@ -185,6 +196,54 @@ pub struct Action {
     pub each: Option<String>,
 }
 
+/// The fields of a graph's node objects (`a|b`: the first that is not null, so that levels may differ).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NodeFields {
+    /// Its id: unique among the nodes; the value `expand` and `select` take.
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// A number beside it (its children's count when not given).
+    #[serde(default)]
+    pub count: Option<String>,
+    /// Its state, and the colour of each state word (`{"done": "ok", "missing": "critical"}`).
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub states: BTreeMap<String, String>,
+    /// The field that holds its children in the data.
+    #[serde(default)]
+    pub children: Option<String>,
+    /// The field that is true for a leaf (no children to read).
+    #[serde(default)]
+    pub leaf: Option<String>,
+}
+
+/// Marks on a graph's nodes: a node whose id is a value of these fields of the second source's items (a folder:
+/// a value under it).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Highlight {
+    pub source: Source,
+    pub fields: Vec<String>,
+    /// What a mark means (`{param}` of the view).
+    pub label: String,
+}
+
+/// The edges of a graph in the same answer.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Edges {
+    /// The path of the edges in the answer (`$.edges`).
+    pub path: String,
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub kind: Option<String>,
+}
+
 /// One view file: `<layer>/views/<name>.jsonc`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -205,6 +264,9 @@ pub struct View {
     /// The parameters and their types.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, Param>,
+    /// A parameter's value when none is given.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub defaults: BTreeMap<String, String>,
     pub widget: Widget,
     /// Every widget but `stack` has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -247,7 +309,8 @@ pub struct View {
     /// stat: the line under the value; `{field}` is a value of the source's whole answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
-    /// stat: the text when the value is missing: its cause, with `{field}` of the answer.
+    /// stat: the text when the value is missing: its cause, with `{field}` of the answer; another widget: the text
+    /// while a parameter is empty (its source is not read: "Select a symbol").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub missing: Option<String>,
     /// stat: a path of the answer to an array of numbers: the trend under the value.
@@ -260,7 +323,24 @@ pub struct View {
     pub y: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub series: Option<String>,
-    /// stack: the views it holds.
+    /// graph: its nodes' fields, the parameter that a click on a node with children to read sets (the same view
+    /// read with it gives the children), the parameter that a click on a leaf sets (a stack's other parts read it),
+    /// the marks, the edges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<NodeFields>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expand: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub select: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<Highlight>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edges: Option<Edges>,
+    /// form: the operation and the values it starts with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub form: Option<Action>,
+    /// stack: the views it holds; an inline view gets the stack's parameters that it declares, a placed view its
+    /// `params` with `{param}` of the stack.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub views: Vec<Part>,
     /// Buttons of the view.
@@ -285,7 +365,7 @@ pub fn schema() -> Result<(&'static str, Value)> {
 }
 
 /// The seeds that legionctl ships: (name, text).
-const SEEDS: [(&str, &str); 6] = [
+const SEEDS: [(&str, &str); 9] = [
     (
         "machine-now",
         include_str!("../../../config/views/machine-now.jsonc"),
@@ -303,6 +383,18 @@ const SEEDS: [(&str, &str); 6] = [
     (
         "operations",
         include_str!("../../../config/views/operations.jsonc"),
+    ),
+    (
+        "code-tree",
+        include_str!("../../../config/views/code-tree.jsonc"),
+    ),
+    (
+        "code-graph",
+        include_str!("../../../config/views/code-graph.jsonc"),
+    ),
+    (
+        "plan-graph",
+        include_str!("../../../config/views/plan-graph.jsonc"),
     ),
 ];
 
@@ -367,6 +459,18 @@ fn fill(value: &Value, values: &BTreeMap<String, Value>) -> Value {
     }
 }
 
+/// `value` with the parameters' values in its strings (a highlight's input).
+#[must_use]
+pub fn fill_values(value: &Value, values: &BTreeMap<String, Value>) -> Value {
+    fill(value, values)
+}
+
+/// `template` with each `{param}` as text (a placed part's parameter, a highlight's words).
+#[must_use]
+pub fn fill_text(template: &str, values: &BTreeMap<String, Value>) -> String {
+    text(template, values)
+}
+
 /// `template` with each `{name}` as text; a hole with no value stays as it is.
 fn text(template: &str, values: &BTreeMap<String, Value>) -> String {
     let mut out = String::new();
@@ -410,6 +514,10 @@ impl View {
         match (self.widget, &self.source) {
             (Widget::Stack, Some(_)) => bail!("a stack has views, not a source"),
             (Widget::Stack, None) => ensure!(!self.views.is_empty(), "a stack needs views"),
+            (Widget::Form, None) => {
+                ensure!(self.form.is_some(), "a form needs its form (op, input)");
+            }
+            (Widget::Form, Some(_)) => bail!("a form has its form, not a source"),
             (_, None) => bail!("a {} needs a source", self.widget.as_str()),
             (_, Some(source)) => {
                 ensure!(self.views.is_empty(), "only a stack has views");
@@ -433,6 +541,24 @@ impl View {
             self.widget != Widget::Chart || (self.x.is_some() && self.y.is_some()),
             "a chart needs x and y"
         );
+        ensure!(
+            self.widget != Widget::Graph || self.node.is_some(),
+            "a graph needs node (its fields)"
+        );
+        ensure!(
+            self.widget != Widget::Timeline || self.columns.len() == 4,
+            "a timeline's columns are its time, actor, kind and text"
+        );
+        for name in [&self.expand, &self.select]
+            .into_iter()
+            .flatten()
+            .chain(self.defaults.keys())
+        {
+            ensure!(
+                self.params.contains_key(name),
+                "{name} is not a parameter of the view"
+            );
+        }
         for part in &self.views {
             if let Part::Inline(view) = part {
                 view.check()
@@ -454,6 +580,7 @@ impl View {
         for (name, kind) in &self.params {
             let given = params
                 .get(name)
+                .or_else(|| self.defaults.get(name))
                 .with_context(|| format!("view {} needs the parameter {name}", self.name))?;
             let value = match kind {
                 Param::String => Value::from(given.as_str()),
@@ -704,6 +831,38 @@ pub struct Rendered {
     /// The version that shows (0: the seed) and the saved versions.
     pub version: u32,
     pub versions: Vec<u32>,
+    /// graph: its nodes and edges, the parameters a click sets, and what a mark means.
+    pub nodes: Vec<Node>,
+    pub edges: Vec<Edge>,
+    pub expand: Option<String>,
+    pub select: Option<String>,
+    pub legend: String,
+    /// The parameters it was read with (a graph's click keeps them).
+    pub params: BTreeMap<String, String>,
+}
+
+/// A node of a graph.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Node {
+    pub id: String,
+    pub label: String,
+    pub kind: String,
+    pub count: Option<u64>,
+    /// ok, warn, critical, or empty.
+    pub state: String,
+    /// A mark of the highlight.
+    pub marked: bool,
+    /// No children to read.
+    pub leaf: bool,
+    pub children: Vec<Node>,
+}
+
+/// An edge of a graph.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Edge {
+    pub from: String,
+    pub to: String,
+    pub kind: String,
 }
 
 /// A JSON value as one cell: a string as it is, anything else as JSON.
@@ -885,6 +1044,46 @@ fn tree(value: &Value, depth: usize, key: &str, out: &mut Vec<Vec<String>>) {
     }
 }
 
+/// A graph node of an item, with its children in the data.
+fn node(fields: &NodeFields, item: &Value) -> Node {
+    let children: Vec<Node> = fields
+        .children
+        .as_ref()
+        .and_then(|c| field(item, c).as_array())
+        .map(|items| items.iter().map(|i| node(fields, i)).collect())
+        .unwrap_or_default();
+    let state = fields
+        .state
+        .as_ref()
+        .map(|s| cell(field(item, s)))
+        .unwrap_or_default();
+    Node {
+        id: cell(field(item, &fields.id)),
+        label: cell(field(item, &fields.label)),
+        kind: fields
+            .kind
+            .as_ref()
+            .map(|k| cell(field(item, k)))
+            .unwrap_or_default(),
+        count: fields
+            .count
+            .as_ref()
+            .and_then(|c| field(item, c).as_u64())
+            .filter(|c| *c > 0)
+            .or_else(|| {
+                (!children.is_empty()).then(|| u64::try_from(children.len()).unwrap_or(u64::MAX))
+            }),
+        state: fields.states.get(&state).cloned().unwrap_or_default(),
+        marked: false,
+        leaf: fields
+            .leaf
+            .as_ref()
+            .is_some_and(|l| field(item, l) == &Value::Bool(true))
+            || (fields.children.is_some() && children.is_empty()),
+        children,
+    }
+}
+
 impl Rendered {
     /// An empty view of `view` with `error`.
     #[must_use]
@@ -920,6 +1119,12 @@ impl Rendered {
             every: view.refresh.every,
             version: 0,
             versions: Vec::new(),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            expand: view.expand.clone(),
+            select: view.select.clone(),
+            legend: String::new(),
+            params: BTreeMap::new(),
         }
     }
 
@@ -929,10 +1134,66 @@ impl Rendered {
         let mut out = Rendered::failed(view, String::new());
         out.error = None;
         out.actions = buttons(&view.actions, &view.labels, values);
+        if let Some(form) = &view.form {
+            out.actions = buttons(std::slice::from_ref(form), &view.labels, values);
+        }
+        if matches!(view.widget, Widget::Stack | Widget::Form) {
+            return out;
+        }
         if let Err(e) = answer.and_then(|answer| out.shape(view, values, &answer)) {
             out.error = Some(format!("{e:#}"));
         }
         out
+    }
+
+    /// The rows of a table or list: cells, state colours, each row's buttons, groups.
+    fn rows_of(&mut self, view: &View, values: &BTreeMap<String, Value>, items: &[Value]) {
+        for item in items {
+            let format = |c: &String| view.formats.get(c).map(String::as_str);
+            self.rows.push(if view.widget == Widget::Table {
+                view.columns
+                    .iter()
+                    .map(|c| shown(field(item, c), format(c)))
+                    .collect()
+            } else if item.is_object() && !view.columns.is_empty() {
+                vec![
+                    view.columns
+                        .iter()
+                        .map(|c| shown(field(item, c), format(c)))
+                        .collect::<Vec<_>>()
+                        .join(" · "),
+                ]
+            } else {
+                vec![cell(item)]
+            });
+            if !view.levels.is_empty() {
+                self.marks.push(
+                    view.columns
+                        .iter()
+                        .map(|c| {
+                            view.levels
+                                .iter()
+                                .find(|l| l.column == *c && matches(item, &l.when))
+                                .and_then(|l| {
+                                    field(item, c)
+                                        .as_f64()
+                                        .map(|v| level(v, l.warn, l.critical).to_string())
+                                })
+                                .unwrap_or_default()
+                        })
+                        .collect(),
+                );
+            }
+            if !view.row_actions.is_empty() {
+                let mut values = values.clone();
+                values.insert("row".into(), item.clone());
+                self.row_actions
+                    .push(buttons(&view.row_actions, &view.labels, &values));
+            }
+        }
+        if let Some(group) = &view.group {
+            self.group(group, items);
+        }
     }
 
     fn shape(
@@ -963,55 +1224,7 @@ impl Rendered {
             Ok(items)
         };
         match view.widget {
-            Widget::Table | Widget::List => {
-                let items = array()?;
-                for item in &items {
-                    let format = |c: &String| view.formats.get(c).map(String::as_str);
-                    self.rows.push(if view.widget == Widget::Table {
-                        view.columns
-                            .iter()
-                            .map(|c| shown(field(item, c), format(c)))
-                            .collect()
-                    } else if item.is_object() && !view.columns.is_empty() {
-                        vec![
-                            view.columns
-                                .iter()
-                                .map(|c| shown(field(item, c), format(c)))
-                                .collect::<Vec<_>>()
-                                .join(" · "),
-                        ]
-                    } else {
-                        vec![cell(item)]
-                    });
-                    if !view.levels.is_empty() {
-                        self.marks.push(
-                            view.columns
-                                .iter()
-                                .map(|c| {
-                                    view.levels
-                                        .iter()
-                                        .find(|l| l.column == *c && matches(item, &l.when))
-                                        .and_then(|l| {
-                                            field(item, c)
-                                                .as_f64()
-                                                .map(|v| level(v, l.warn, l.critical).to_string())
-                                        })
-                                        .unwrap_or_default()
-                                })
-                                .collect(),
-                        );
-                    }
-                    if !view.row_actions.is_empty() {
-                        let mut values = values.clone();
-                        values.insert("row".into(), item.clone());
-                        self.row_actions
-                            .push(buttons(&view.row_actions, &view.labels, &values));
-                    }
-                }
-                if let Some(group) = &view.group {
-                    self.group(group, &items);
-                }
-            }
+            Widget::Table | Widget::List => self.rows_of(view, values, &array()?),
             Widget::Tree => tree(&data, 0, "", &mut self.rows),
             Widget::Gauge => {
                 self.numbers = vec![
@@ -1037,7 +1250,23 @@ impl Rendered {
                     .to_string();
             }
             Widget::Chart => self.chart(view, &array()?)?,
-            Widget::Stack | Widget::Stat => bail!("a stack has no source"),
+            Widget::Graph => self.graph(view, answer, &array()?)?,
+            Widget::Timeline => {
+                for item in &array()? {
+                    let at = |i: usize| field(item, &view.columns[i]);
+                    self.rows.push(vec![
+                        at(0)
+                            .as_i64()
+                            .map_or_else(|| cell(at(0)), |t| t.to_string()),
+                        shown(at(1), None),
+                        shown(at(2), None),
+                        shown(at(3), None),
+                    ]);
+                }
+            }
+            Widget::Stack | Widget::Stat | Widget::Form => {
+                bail!("a {} has no source", view.widget.as_str())
+            }
         }
         Ok(())
     }
@@ -1125,6 +1354,45 @@ impl Rendered {
                 None => Err(e),
             },
         }
+    }
+
+    /// The nodes of a graph (with their children in the data) and its edges.
+    fn graph(&mut self, view: &View, answer: &Value, items: &[Value]) -> Result<()> {
+        let fields = view
+            .node
+            .as_ref()
+            .context("a graph needs node (its fields)")?;
+        self.nodes = items.iter().map(|i| node(fields, i)).collect();
+        if let Some(edges) = &view.edges {
+            self.edges = pick(answer, &edges.path)?
+                .as_array()
+                .with_context(|| format!("a graph's edges are an array at {}", edges.path))?
+                .iter()
+                .map(|e| Edge {
+                    from: cell(field(e, &edges.from)),
+                    to: cell(field(e, &edges.to)),
+                    kind: edges
+                        .kind
+                        .as_ref()
+                        .map(|k| cell(field(e, k)))
+                        .unwrap_or_default(),
+                })
+                .collect();
+        }
+        Ok(())
+    }
+
+    /// Mark the nodes (and their children) whose id is one of `values`, or a folder above one.
+    pub fn mark(&mut self, values: &[String], legend: String) {
+        fn walk(nodes: &mut [Node], values: &[String]) {
+            for n in nodes {
+                let folder = format!("{}/", n.id);
+                n.marked = values.iter().any(|v| *v == n.id || v.starts_with(&folder));
+                walk(&mut n.children, values);
+            }
+        }
+        walk(&mut self.nodes, values);
+        self.legend = legend;
     }
 
     fn chart(&mut self, view: &View, items: &[Value]) -> Result<()> {

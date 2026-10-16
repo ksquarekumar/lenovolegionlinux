@@ -1251,3 +1251,104 @@ pub fn hook(dir: &Path, legionctl: &Path, install: bool) -> Result<Vec<String>> 
     }
     Ok(done)
 }
+
+/// One entry of a level of the code tree.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TreeItem {
+    /// A folder or file path, or a symbol's stable key.
+    pub path: String,
+    /// Its last part, or the symbol's name.
+    pub name: String,
+    /// folder, file, or the symbol's kind (function, struct, ...).
+    pub kind: String,
+    /// The symbols under it (a symbol: 0).
+    pub count: u64,
+    /// A symbol: nothing under it to read.
+    pub symbol: bool,
+    pub line: Option<i64>,
+}
+
+/// One level of the code tree of `rev`: counts first (MEMORY-14).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Tree {
+    pub tree: String,
+    /// The folder or file of this level ("" is the repository's top).
+    pub prefix: String,
+    /// The symbols under the prefix.
+    pub total: u64,
+    pub items: Vec<TreeItem>,
+}
+
+/// One level of the code tree at `rev` (its snapshot is made when `build`): under a folder, its folders and files
+/// with the number of symbols in each; under a file, its symbols in file order.
+///
+/// # Errors
+/// No graph for the ref (without `build`), or the snapshot cannot be read.
+pub fn tree(dir: &Path, prefix: &str, rev: &str, build: bool) -> Result<Tree> {
+    let (tree, db) = snapshot_for(dir, rev, build)?;
+    let prefix = prefix.trim_matches('/').to_string();
+    let all = nodes(&db)?;
+    let mut symbols: Vec<(&String, &Node)> = all
+        .iter()
+        .filter(|(_, n)| n.file == prefix && n.kind != "file" && n.kind != "module")
+        .collect();
+    if !symbols.is_empty() {
+        symbols.sort_by_key(|(_, n)| (n.line, n.label.clone()));
+        let items: Vec<TreeItem> = symbols
+            .into_iter()
+            .map(|(key, n)| TreeItem {
+                path: key.clone(),
+                name: n.label.clone(),
+                kind: n.kind.clone(),
+                count: 0,
+                symbol: true,
+                line: n.line,
+            })
+            .collect();
+        return Ok(Tree {
+            tree,
+            total: u64::try_from(items.len()).unwrap_or(u64::MAX),
+            prefix,
+            items,
+        });
+    }
+    let under = if prefix.is_empty() {
+        String::new()
+    } else {
+        format!("{prefix}/")
+    };
+    let mut levels: BTreeMap<String, (bool, u64)> = BTreeMap::new();
+    let mut total = 0;
+    for n in all
+        .values()
+        .filter(|n| n.file.starts_with(&under) && n.kind != "file" && n.kind != "module")
+    {
+        let rest = &n.file[under.len()..];
+        let (part, file) = match rest.split_once('/') {
+            Some((folder, _)) => (folder, false),
+            None => (rest, true),
+        };
+        let entry = levels.entry(part.to_string()).or_insert((file, 0));
+        entry.1 += 1;
+        total += 1;
+    }
+    let mut items: Vec<TreeItem> = levels
+        .into_iter()
+        .map(|(part, (file, count))| TreeItem {
+            path: format!("{under}{part}"),
+            name: part,
+            kind: if file { "file" } else { "folder" }.into(),
+            count,
+            symbol: false,
+            line: None,
+        })
+        .collect();
+    // folders first, then files, each by name
+    items.sort_by(|a, b| (a.kind == "file", &a.name).cmp(&(b.kind == "file", &b.name)));
+    Ok(Tree {
+        tree,
+        prefix,
+        total,
+        items,
+    })
+}

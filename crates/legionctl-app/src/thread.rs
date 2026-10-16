@@ -74,6 +74,9 @@ pub struct Screen {
     pub views: Vec<legionctl_api::ViewInfo>,
     /// The groups whose fold the user changed (`<view>:<group>`).
     pub toggled: BTreeSet<String>,
+    /// The graph nodes that are open (`<view>:<node>`), and the children read for them.
+    pub opened: BTreeSet<String>,
+    pub lazy: BTreeMap<String, Result<Vec<legionctl_api::ViewNode>, String>>,
     /// The log id of the newest `views.place` that this screen applied, and whether it read the threads once.
     pub placed: i64,
     pub seen: bool,
@@ -117,6 +120,8 @@ impl Screen {
             rendered_at: BTreeMap::new(),
             views: Vec::new(),
             toggled: BTreeSet::new(),
+            opened: BTreeSet::new(),
+            lazy: BTreeMap::new(),
             placed: 0,
             seen: false,
             events: 0,

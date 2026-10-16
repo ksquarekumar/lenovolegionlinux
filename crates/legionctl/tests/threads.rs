@@ -1058,6 +1058,51 @@ fn a_view_cannot_bind_a_change_operation_or_a_widget_outside_the_set() {
     repository_layer_first(&lab, members);
 }
 
+/// The timeline and form widgets (DESIGN-09 G4) in their terminal form, which agents and the CLI read: a thread's
+/// log as a timeline (its events, the actor and kind of each), and the form of an operation with its required
+/// fields; a form that names no operation is refused at save.
+#[test]
+fn a_timeline_and_a_form_view_render_their_terminal_form() {
+    let lab = thread_lab("widgets");
+    let save = |text: &str| {
+        lab.op.run(
+            &lab.repo,
+            &[
+                ("HOME", lab.home.to_str().unwrap()),
+                ("LEGIONCTL_SESSION", "main"),
+            ],
+            &["views", "save"],
+            text,
+        )
+    };
+    let timeline = r#"{"name": "log", "params": {"thread": "integer"}, "widget": "timeline",
+        "source": {"op": "thread.show", "input": {"thread": "{thread}"}, "path": "$.log"},
+        "columns": ["at", "member", "kind", "payload.archetype|payload.title"]}"#;
+    assert!(save(timeline).status.success());
+    let text = lab.ok("main", &lab.repo, &["views", "render", "log", "thread=1"]);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[1], "3 events", "{text}");
+    assert!(
+        lines[2].ends_with(" main0 thread.start: port the parser"),
+        "{text}"
+    );
+    assert!(
+        lines[4].ends_with(" observer0 thread.join: thread-observer"),
+        "{text}"
+    );
+    assert!(lines[2].starts_with("20"), "a date, not seconds: {text}");
+
+    let form = r#"{"name": "remember", "widget": "form", "form": {"label": "Keep a fact", "op": "facts.set"}}"#;
+    assert!(save(form).status.success());
+    let text = lab.ok("main", &lab.repo, &["views", "render", "remember"]);
+    assert!(
+        text.contains("form of facts.set: entity*, attribute, value*"),
+        "{text}"
+    );
+    let refused = save(&form.replace("facts.set", "facts.sett"));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("names no operation facts.sett"));
+}
+
 /// A view in the repository's layer hides the user's view of that name, and lists first.
 fn repository_layer_first(lab: &Lab, members: &str) {
     let run = |args: &[&str], stdin: &str| {

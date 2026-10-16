@@ -821,6 +821,9 @@ operations! {
     code_graph_query / CodeGraphQuery = "code.graph.query", Read, GraphQueryIn => CodeNodes;
     /// What depends on a symbol (by its stable key) in the code graph of a ref.
     code_graph_impact / CodeGraphImpact = "code.graph.impact", Read, GraphImpactIn => CodeNodes;
+    /// One level of the code tree of a ref (DESIGN-09 G4, counts first): the folders and files under a folder with
+    /// the number of symbols in each, or the symbols of a file in file order.
+    code_graph_tree / CodeGraphTree = "code.graph.tree", Read, GraphTreeIn => CodeTree;
     /// The changes between refs by stable key: added, removed, modified and moved symbols and files, each with the
     /// commits that touched it, and each commit with its checkpoint, session, plan rows and ctx provenance.
     code_graph_changes / CodeGraphChanges = "code.graph.changes", Read, GraphChangesIn => Vec<ChangeSet>;

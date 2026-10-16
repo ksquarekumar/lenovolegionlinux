@@ -1,0 +1,25 @@
+// Seed (DESIGN-09 G4, todo-141): the code graph of the repository at HEAD: the tree of folders, files and symbols
+// with what changed since a ref marked, and what uses the selected symbol (its callers, one level).
+{
+  "$schema": "../../docs/api/view.schema.json",
+  "name": "code-graph",
+  "title": "Code graph",
+  "intent": "the code graph of this repository",
+  "space": "work",
+  "params": { "key": "string", "since": "string" },
+  "defaults": { "key": "", "since": "main" },
+  "widget": "stack",
+  "views": [
+    { "name": "code-tree", "params": { "since": "{since}", "key": "{key}" } },
+    {
+      "name": "code-impact",
+      "title": "What uses the selected symbol (callers, one level)",
+      "widget": "table",
+      "params": { "key": "string" },
+      "source": { "op": "code.graph.impact", "input": { "key": "{key}", "depth": 1, "build": true }, "path": "$.nodes" },
+      "columns": ["key", "kind", "file", "line"],
+      "labels": { "key": "Symbol", "kind": "Kind", "file": "File", "line": "Line" },
+      "missing": "Click a symbol in the tree to see what uses it"
+    }
+  ]
+}

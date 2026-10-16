@@ -42,6 +42,13 @@
         "$ref": "#/$defs/Param"
       }
     },
+    "defaults": {
+      "description": "A parameter's value when none is given.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
     "widget": {
       "$ref": "#/$defs/Widget"
     },
@@ -147,7 +154,7 @@
       ]
     },
     "missing": {
-      "description": "stat: the text when the value is missing: its cause, with `{field}` of the answer.",
+      "description": "stat: the text when the value is missing: its cause, with `{field}` of the answer; another widget: the text\nwhile a parameter is empty (its source is not read: \"Select a symbol\").",
       "type": [
         "string",
         "null"
@@ -179,8 +186,62 @@
         "null"
       ]
     },
+    "node": {
+      "description": "graph: its nodes' fields, the parameter that a click on a node with children to read sets (the same view\nread with it gives the children), the parameter that a click on a leaf sets (a stack's other parts read it),\nthe marks, the edges.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NodeFields"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "expand": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "select": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "highlight": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Highlight"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "edges": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Edges"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "form": {
+      "description": "form: the operation and the values it starts with.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Action"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "views": {
-      "description": "stack: the views it holds.",
+      "description": "stack: the views it holds; an inline view gets the stack's parameters that it declares, a placed view its\n`params` with `{param}` of the stack.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/Part"
@@ -273,6 +334,21 @@
           "description": "An array of objects as lines over time: `x` (seconds since the epoch, or any number), `y`, one chart per value\nof `series` (a chart never mixes kinds), with axes.",
           "type": "string",
           "const": "chart"
+        },
+        {
+          "description": "Nodes (an array of objects, `node` says their fields) as a tree with counts, children in the data or read\non a click (`expand`), a click on a leaf sets a parameter (`select`), marks from a second source\n(`highlight`), and the edges of a node (`edges`).",
+          "type": "string",
+          "const": "graph"
+        },
+        {
+          "description": "The form of an operation (`form`), made from its input schema; it runs with the operation's approval.",
+          "type": "string",
+          "const": "form"
+        },
+        {
+          "description": "An array of events: the `columns` are the time (seconds since the epoch), the actor, the kind and the text.",
+          "type": "string",
+          "const": "timeline"
         }
       ]
     },
@@ -418,35 +494,122 @@
         "critical"
       ]
     },
-    "Part": {
-      "description": "A part of a stack: a view by name, or a view written in place.",
-      "anyOf": [
-        {
-          "$ref": "#/$defs/Placed"
-        },
-        {
-          "$ref": "#"
-        }
-      ]
-    },
-    "Placed": {
-      "description": "A view in a stack, or on a thread: its name and its parameters.",
+    "NodeFields": {
+      "description": "The fields of a graph's node objects (`a|b`: the first that is not null, so that levels may differ).",
       "type": "object",
       "properties": {
-        "name": {
+        "id": {
+          "description": "Its id: unique among the nodes; the value `expand` and `select` take.",
           "type": "string"
         },
-        "params": {
+        "label": {
+          "type": "string"
+        },
+        "kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "count": {
+          "description": "A number beside it (its children's count when not given).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "state": {
+          "description": "Its state, and the colour of each state word (`{\"done\": \"ok\", \"missing\": \"critical\"}`).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "states": {
           "type": "object",
           "additionalProperties": {
             "type": "string"
           },
           "default": {}
+        },
+        "children": {
+          "description": "The field that holds its children in the data.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "leaf": {
+          "description": "The field that is true for a leaf (no children to read).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         }
       },
       "additionalProperties": false,
       "required": [
-        "name"
+        "id",
+        "label"
+      ]
+    },
+    "Highlight": {
+      "description": "Marks on a graph's nodes: a node whose id is a value of these fields of the second source's items (a folder:\na value under it).",
+      "type": "object",
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "label": {
+          "description": "What a mark means (`{param}` of the view).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "fields",
+        "label"
+      ]
+    },
+    "Edges": {
+      "description": "The edges of a graph in the same answer.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "The path of the edges in the answer (`$.edges`).",
+          "type": "string"
+        },
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "from",
+        "to"
       ]
     },
     "Action": {
@@ -478,6 +641,37 @@
       "required": [
         "label",
         "op"
+      ]
+    },
+    "Part": {
+      "description": "A part of a stack: a view by name, or a view written in place.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Placed"
+        },
+        {
+          "$ref": "#"
+        }
+      ]
+    },
+    "Placed": {
+      "description": "A view in a stack, or on a thread: its name and its parameters.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
       ]
     },
     "Refresh": {

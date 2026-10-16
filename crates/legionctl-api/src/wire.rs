@@ -1239,6 +1239,27 @@ wire! {
         nodes: Vec<CodeNode>,
     }
 
+    /// One entry of a level of the code tree: a folder, a file or a symbol, with the symbols under it.
+    struct CodeTreeItem from core::codegraph::TreeItem {
+        /// A folder or file path, or a symbol's stable key.
+        path: String,
+        name: String,
+        /// folder, file, or the symbol's kind.
+        kind: String,
+        count: u64,
+        symbol: bool,
+        line: Option<i64>,
+    }
+
+    /// One level of the code tree, counts first.
+    struct CodeTree from core::codegraph::Tree {
+        tree: String,
+        prefix: String,
+        /// The symbols under the prefix.
+        total: u64,
+        items: Vec<CodeTreeItem>,
+    }
+
     /// One entity that changed between two refs.
     struct EntityChange from core::codegraph::EntityChange {
         key: String,
@@ -1431,6 +1452,9 @@ wire_enum! {
         Stack,
         Stat,
         Chart,
+        Graph,
+        Form,
+        Timeline,
     }
 }
 
@@ -1494,6 +1518,35 @@ wire! {
         /// The version that shows (0: the seed) and the versions there are.
         version: u32,
         versions: Vec<u32>,
+        /// graph: its nodes and edges, the parameters a click sets (expand: the children; select: the leaf), and
+        /// what a mark means.
+        nodes: Vec<ViewNode>,
+        edges: Vec<ViewEdge>,
+        expand: Option<String>,
+        select: Option<String>,
+        legend: String,
+        /// The parameters it was read with.
+        params: BTreeMap<String, String>,
+    }
+
+    /// A node of a graph view.
+    struct ViewNode from core::views::Node {
+        id: String,
+        label: String,
+        kind: String,
+        count: Option<u64>,
+        /// ok, warn, critical, or empty.
+        state: String,
+        marked: bool,
+        leaf: bool,
+        children: Vec<ViewNode>,
+    }
+
+    /// An edge of a graph view.
+    struct ViewEdge from core::views::Edge {
+        from: String,
+        to: String,
+        kind: String,
     }
 }
 

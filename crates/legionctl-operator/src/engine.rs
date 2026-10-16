@@ -4082,6 +4082,20 @@ impl Engine for Operator {
         crate::code::impact(&input)
     }
 
+    fn code_graph_tree(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::GraphTreeIn,
+    ) -> Result<legionctl_api::CodeTree> {
+        Ok(legionctl_core::codegraph::tree(
+            input.repo.get()?,
+            &input.prefix,
+            &input.rev,
+            input.build,
+        )?
+        .into_wire())
+    }
+
     fn code_graph_changes(
         &self,
         _: &Ctx,
