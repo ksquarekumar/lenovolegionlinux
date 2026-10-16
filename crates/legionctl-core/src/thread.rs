@@ -1441,24 +1441,6 @@ impl Dossiers {
         Ok(())
     }
 
-    /// A failed usage read of `member`'s account at its wake: a `thread.account` row with the error (the member
-    /// runs on its account).
-    ///
-    /// # Errors
-    /// The database write fails.
-    pub fn thread_account_unread(&self, thread: i64, member: &str, error: &str) -> Result<()> {
-        let tx = self.begin()?;
-        log(
-            &tx,
-            thread,
-            member,
-            "thread.account",
-            &json!({"error": error}),
-        )?;
-        tx.commit()?;
-        Ok(())
-    }
-
     /// A row of the conversation in `thread`'s log: the user's prompt (`thread.say`), the agent's answer
     /// (`thread.answer`) or why the run failed (`thread.fail`).
     ///

@@ -2709,9 +2709,9 @@ struct AcctLab {
 }
 
 impl AcctLab {
-    fn new() -> AcctLab {
+    fn new(tag: &str) -> AcctLab {
         let home = Scratch::new(format!(
-            "/var/tmp/legionctl-thread-acctx-{}",
+            "/var/tmp/legionctl-thread-{tag}x-{}",
             std::process::id()
         ));
         let answers = home.join("usage");
@@ -2725,7 +2725,7 @@ impl AcctLab {
         )
         .unwrap();
         let pool = pool_with(
-            "acct",
+            tag,
             "fake",
             &[("PATH", keyring::keyring_path(&home, &path))],
         );
@@ -2780,7 +2780,7 @@ impl AcctLab {
     fn used(&self, token: &str, five: f64) {
         write(
             &self.answers.join(format!("{token}.json")),
-            &json!({"body": {"five_hour": {"utilization": five}, "seven_day": {"utilization": 1.0}}}).to_string(),
+            &json!({"body": {"limits": [{"kind": "session", "percent": five}, {"kind": "weekly_all", "percent": 1.0}]}}).to_string(),
         );
     }
 
@@ -2823,7 +2823,7 @@ impl AcctLab {
 /// member stops (V1).
 #[test]
 fn a_member_runs_under_its_account_and_resumes_under_the_next_at_its_limit() {
-    let a = AcctLab::new();
+    let a = AcctLab::new("acct");
     let Pool { lab, main, ws } = &a.pool;
     a.used("tok-w", 50.0);
     assert_eq!(
@@ -2913,4 +2913,33 @@ fn no_account_under_the_limit_stops_the_member(a: &AcctLab) {
         view["messages"]
     );
     assert_eq!(a.dirs().len(), 3, "no wake ran on an account at its limit");
+}
+
+/// A wake whose member's account usage cannot be read fails with the reason (S2 V3, user decision 2026-10-17): with
+/// work's answer in another shape, observer0's wake does not run on work, it fails, and main0 gets the cause.
+#[test]
+fn a_wake_fails_when_its_account_usage_cannot_be_read() {
+    let a = AcctLab::new("acctread");
+    let Pool { lab, main, ws } = &a.pool;
+    write(
+        &a.answers.join("tok-w.json"),
+        &json!({"body": {"five_hour": {"utilization": 10.0}, "seven_day": {"utilization": 1.0}}})
+            .to_string(),
+    );
+    lab.edit(main, ws, &ws.join("tests/lexer1.rs"));
+    until("observer0 failed", || {
+        Lab::member(&lab.show(main, 1), "observer0")["state"] == "failed"
+    });
+    let view = lab.show(main, 1);
+    let why = "the usage of account work cannot be read: the answer has no list limits";
+    assert!(
+        view["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["to"] == "main0" && m["body"].as_str().unwrap().contains(why)),
+        "{:#}",
+        view["messages"]
+    );
+    assert!(a.dirs().is_empty(), "no wake ran: {:?}", a.dirs());
 }

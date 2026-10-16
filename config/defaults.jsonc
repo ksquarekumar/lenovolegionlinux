@@ -275,9 +275,9 @@
     // their refresh tokens) and keeps each answer, or its error, for "usage_ttl_s" seconds. "fallback": agent
     // (claude, codex) -> account profiles in order; none: no switch. With a list, an operator member whose account
     // has a window at "switch_at" percent or more continues on the first account of the list that is under it
-    // (session resume --account), with a thread note; when no account is under it, the wake fails with the reason.
-    // Only the defaults, /etc/legionctl and the user layer apply: a repository cannot send a token elsewhere or pick
-    // an account.
+    // (session resume --account), with a thread note; when no account is under it, or its use cannot be read, the
+    // wake fails with the reason. Only the defaults, /etc/legionctl and the user layer apply: a repository cannot
+    // send a token elsewhere or pick an account.
     "accounts": {
       "usage_ttl_s": 300,
       "switch_at": 90,

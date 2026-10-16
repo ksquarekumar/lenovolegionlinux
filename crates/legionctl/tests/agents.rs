@@ -738,7 +738,7 @@ esac
 
 /// An account usage lab: the stand-in usage endpoint of both providers (`usage_ttl_s` 3600) and four profiles:
 /// work (Claude in its profile, Codex at rest in the keyring), spare (both in its profile), old (an expired Claude
-/// token, a Codex token the provider refuses) and changed (an answer of a changed shape). `files` are the login
+/// token, a Codex token the provider refuses) and changed (answers of another shape). `files` are the login
 /// files as written.
 struct UsageLab {
     lab: Lab,
@@ -776,6 +776,7 @@ impl UsageLab {
             ("old", "claude", claude("tok-old", "1000")),
             ("old", "codex", codex("tok-oldx")),
             ("changed", "claude", claude("tok-changed", soon)),
+            ("changed", "codex", codex("tok-changedx")),
         ] {
             let file = if agent == "claude" {
                 ".credentials.json"
@@ -804,9 +805,9 @@ impl UsageLab {
         };
         u.answer(
             "tok-work",
-            &json!({"body": {
-            "five_hour": {"utilization": 42.0, "resets_at": "2026-10-17T05:00:00.512+00:00"},
-            "seven_day": {"utilization": 7.5, "resets_at": null}}}),
+            &json!({"body": {"limits": [
+            {"kind": "session", "percent": 42.0, "resets_at": "2026-10-17T05:00:00.512+00:00"},
+            {"kind": "weekly_all", "percent": 7.5, "resets_at": null}]}}),
         );
         u.answer(
             "tok-spare",
@@ -825,12 +826,16 @@ impl UsageLab {
             "x-codex-secondary-window-minutes": "10080"}}),
         );
         u.answer(
+            "tok-changedx",
+            &json!({"body": {"rate_limit": {"primary_window": {"used_percent": 5.0, "window_minutes": 300}}}}),
+        );
+        u.answer(
             "tok-oldx",
             &json!({"status": 401, "body": {"error": "token expired"}}),
         );
         u.answer(
             "tok-changed",
-            &json!({"body": {"five_hour": {"used": 3}, "seven_day": {"utilization": 1.0}}}),
+            &json!({"body": {"five_hour": {"utilization": 3.0}, "seven_day": {"utilization": 1.0}}}),
         );
         u
     }
@@ -880,10 +885,10 @@ fn windows(usage: &Value, account: &str, agent: &str) -> Value {
 
 /// `agents accounts usage` reads each logged-in agent of each profile from its provider (both stand-ins) with the
 /// profile's own token, the way the agents' own clients ask (S1 of planning/features/accounts.jsonc): Claude's
-/// top-level windows and its `limits[]` form, Codex's body (a reached limit counts as 100%) and its rate-limit
-/// headers only (V3); a login at rest in the keyring counts. An expired Claude token is "login needed" and is never
-/// sent (V1); a refused token is "login needed" too; a changed answer is that account's error with the field, no zero
-/// use (V2). No token is printed, no login file or keyring entry changes. The answers are kept with their fetch time;
+/// `limits[]` (its top-level windows are not read), Codex's `rate_limit` (a reached limit counts as 100%); a login at
+/// rest in the keyring counts. An expired Claude token is "login needed" and is never
+/// sent (V1); a refused token is "login needed" too; another answer shape (Claude's top-level windows only, Codex's rate-limit
+/// headers only, a window without its length) is that account's error with the field, no zero use (V2, V3). No token is printed, no login file or keyring entry changes. The answers are kept with their fetch time;
 /// `--fresh` reads again; the seed view shows them by account.
 #[test]
 fn account_usage_comes_from_each_provider_read_only_and_a_changed_answer_is_an_error() {
@@ -891,7 +896,7 @@ fn account_usage_comes_from_each_provider_read_only_and_a_changed_answer_is_an_e
     let usage = u.read(&[]);
     assert_eq!(
         usage.as_array().unwrap().len(),
-        7,
+        8,
         "each logged-in agent once: {usage:#}"
     );
     assert_eq!(
@@ -903,19 +908,13 @@ fn account_usage_comes_from_each_provider_read_only_and_a_changed_answer_is_an_e
         windows(&usage, "spare", "claude"),
         json!([{"name": "5h", "used_percent": 3.0, "resets_at": 1_792_233_000_i64},
                {"name": "7d", "used_percent": 80.0, "resets_at": null}]),
-        "limits[] is the source where it has the window"
+        "only limits[]: the top-level windows are not read"
     );
     assert_eq!(
         windows(&usage, "work", "codex"),
         json!([{"name": "5h", "used_percent": 100.0, "resets_at": 1_800_000_000_i64},
                {"name": "7d", "used_percent": 20.0, "resets_at": null}]),
         "a reached limit counts the fuller window as 100%"
-    );
-    assert_eq!(
-        windows(&usage, "spare", "codex"),
-        json!([{"name": "5h", "used_percent": 12.5, "resets_at": 1_800_000_600_i64},
-               {"name": "7d", "used_percent": 61.0, "resets_at": null}]),
-        "the rate-limit headers when the body has no rate_limit"
     );
     for (account, agent, text) in [
         (
@@ -924,11 +923,13 @@ fn account_usage_comes_from_each_provider_read_only_and_a_changed_answer_is_an_e
             "login needed: the access token of account old expired",
         ),
         ("old", "codex", "login needed: http://127.0.0.1"),
+        ("changed", "claude", "the answer has no list limits"),
         (
             "changed",
-            "claude",
-            "five_hour: the answer has no number utilization",
+            "codex",
+            "rate_limit.primary_window: the answer has no number limit_window_seconds",
         ),
+        ("spare", "codex", "the answer has no object rate_limit"),
     ] {
         let r = row(&usage, account, agent);
         let error = r["error"].as_str().unwrap_or_default();
@@ -1002,7 +1003,7 @@ fn each_call_is_the_agents_own_and_reads_only(u: &UsageLab, usage: &Value) {
 fn the_answer_is_kept_until_fresh(u: &UsageLab, usage: &Value) {
     u.answer(
         "tok-work",
-        &json!({"body": {"five_hour": {"utilization": 88.0}, "seven_day": {"utilization": 9.0}}}),
+        &json!({"body": {"limits": [{"kind": "session", "percent": 88.0}, {"kind": "weekly_all", "percent": 9.0}]}}),
     );
     let again = u.read(&["--account", "work"]);
     assert_eq!(
@@ -1017,7 +1018,7 @@ fn the_answer_is_kept_until_fresh(u: &UsageLab, usage: &Value) {
         "== work (2) ==",
         "claude | 5h | 88 | 7d | 9 | no value | now",
         "codex | 5h | 100 | 7d | 20 | no value | now",
-        "claude | no value | no value | no value | no value | five_hour: the answer has no number utilization | now",
+        "claude | no value | no value | no value | no value | the answer has no list limits | now",
     ] {
         assert!(seed.lines().any(|l| l == line), "{line} missing:\n{seed}");
     }

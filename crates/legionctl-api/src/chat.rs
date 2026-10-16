@@ -141,14 +141,9 @@ pub fn log_detail(row: &ThreadLogRow) -> String {
         return rule_sentence(p);
     }
     if row.kind == "thread.account" {
-        return match (
-            p["account"].as_str(),
-            p["why"].as_str(),
-            p["error"].as_str(),
-        ) {
-            (Some(account), Some(why), _) => format!("account {account}: {why}"),
-            (Some(account), None, _) => format!("account {account}"),
-            (None, _, Some(error)) => format!("usage check failed: {error}"),
+        return match (p["account"].as_str(), p["why"].as_str()) {
+            (Some(account), Some(why)) => format!("account {account}: {why}"),
+            (Some(account), None) => format!("account {account}"),
             _ => p.to_string(),
         };
     }

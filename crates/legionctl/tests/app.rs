@@ -2225,7 +2225,7 @@ fn accounts_lab() -> (Operator, PathBuf, PathBuf, common::process::Kill) {
         );
         write(
             &answers.join(format!("{token}.json")),
-            &serde_json::json!({"body": {"five_hour": {"utilization": five}, "seven_day": {"utilization": 8.0}}})
+            &serde_json::json!({"body": {"limits": [{"kind": "session", "percent": five}, {"kind": "weekly_all", "percent": 8.0}]}})
                 .to_string(),
         );
     }

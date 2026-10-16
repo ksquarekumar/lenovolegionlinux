@@ -165,37 +165,30 @@ fn percent(v: &Value, field: &str) -> Result<f64> {
         .with_context(|| format!("the answer has no number {field}"))
 }
 
-/// Claude's windows from `/api/oauth/usage` (clauth `windows_from_raw`): `limits[]` (`session` is 5h, `weekly_all`
-/// 7d) where it has the window, else the top-level `five_hour` / `seven_day` object.
+/// Claude's windows from `/api/oauth/usage` (clauth `windows_from_raw`): `limits[]`, where `session` is 5h and
+/// `weekly_all` 7d. No other field is read.
 ///
 /// # Errors
-/// A window is in neither place, or its percent is not a number.
+/// The answer has no `limits` list, no `session` or `weekly_all` entry, or its `percent` is not a number.
 pub fn claude_windows(body: &Value) -> Result<Vec<Window>> {
-    let limits = body["limits"].as_array().map_or(&[][..], Vec::as_slice);
-    [
-        ("5h", "session", "five_hour"),
-        ("7d", "weekly_all", "seven_day"),
-    ]
-    .into_iter()
-    .map(|(name, kind, top)| {
-        let (used, resets) = match limits.iter().position(|l| l["kind"] == kind) {
-            Some(i) => (
-                percent(&limits[i], "percent").with_context(|| format!("limits[{i}] ({kind})"))?,
-                &limits[i]["resets_at"],
-            ),
-            None if body[top].is_object() => (
-                percent(&body[top], "utilization").with_context(|| top.to_string())?,
-                &body[top]["resets_at"],
-            ),
-            None => bail!("the answer has no {kind} limit and no {top} window"),
-        };
-        Ok(Window {
-            name: name.into(),
-            used_percent: used,
-            resets_at: resets.as_str().and_then(iso_seconds),
+    let limits = body["limits"]
+        .as_array()
+        .context("the answer has no list limits")?;
+    [("5h", "session"), ("7d", "weekly_all")]
+        .into_iter()
+        .map(|(name, kind)| {
+            let i = limits
+                .iter()
+                .position(|l| l["kind"] == kind)
+                .with_context(|| format!("the answer has no limits[] entry of kind {kind}"))?;
+            Ok(Window {
+                name: name.into(),
+                used_percent: percent(&limits[i], "percent")
+                    .with_context(|| format!("limits[{i}] ({kind})"))?,
+                resets_at: limits[i]["resets_at"].as_str().and_then(iso_seconds),
+            })
         })
-    })
-    .collect()
+        .collect()
 }
 
 /// A window's name from its length: `5h`, `7d`, `90m`.
@@ -208,72 +201,39 @@ fn length(seconds: i64) -> String {
 }
 
 /// Codex's windows from `/backend-api/wham/usage` (clauth `map_usage`): `rate_limit.primary_window` and
-/// `secondary_window`, named by their length; when `limit_reached`, the fuller one counts as 100%. An answer with
-/// no `rate_limit` takes Codex's rate-limit headers (`x-codex-<primary|secondary>-used-percent`, `-window-minutes`,
-/// `-reset-at`) from `header`.
+/// `secondary_window` (null when the plan has none), named by `limit_window_seconds`; when `limit_reached`, the
+/// fuller one counts as 100%.
 ///
 /// # Errors
-/// The answer has neither, or a window has no number `used_percent`.
-pub fn codex_windows(
-    body: &Value,
-    header: &dyn Fn(&str) -> Option<String>,
-    now: i64,
-) -> Result<Vec<Window>> {
-    let mut out = Vec::new();
+/// The answer has no object `rate_limit`, no window, or a window without a number `used_percent` or
+/// `limit_window_seconds`.
+pub fn codex_windows(body: &Value) -> Result<Vec<Window>> {
     let limit = &body["rate_limit"];
-    if limit.is_object() {
-        for slot in ["primary_window", "secondary_window"] {
-            let w = &limit[slot];
-            if w.is_null() {
-                continue;
-            }
-            let seconds = w["limit_window_seconds"].as_i64().unwrap_or(0);
-            let resets_at = match (w["reset_at"].as_i64(), w["reset_after_seconds"].as_i64()) {
-                (Some(at), _) if at > 0 => Some(at),
-                (_, Some(after)) if after > 0 => Some(now + after),
-                _ => None,
-            };
-            out.push(Window {
-                name: if seconds > 0 {
-                    length(seconds)
-                } else {
-                    slot.replace("_window", "")
-                },
-                used_percent: percent(w, "used_percent")
-                    .with_context(|| format!("rate_limit.{slot}"))?,
-                resets_at,
-            });
+    anyhow::ensure!(limit.is_object(), "the answer has no object rate_limit");
+    let mut out = Vec::new();
+    for slot in ["primary_window", "secondary_window"] {
+        let w = &limit[slot];
+        if w.is_null() {
+            continue;
         }
-        if limit["limit_reached"] == true
-            && let Some(full) = out
-                .iter_mut()
-                .max_by(|a, b| a.used_percent.total_cmp(&b.used_percent))
-        {
-            full.used_percent = full.used_percent.max(100.0);
-        }
-    } else {
-        for slot in ["primary", "secondary"] {
-            let Some(used) = header(&format!("x-codex-{slot}-used-percent")) else {
-                continue;
-            };
-            let used: f64 = used
-                .trim()
-                .parse()
-                .with_context(|| format!("x-codex-{slot}-used-percent is not a number"))?;
-            let minutes: Option<i64> = header(&format!("x-codex-{slot}-window-minutes"))
-                .and_then(|m| m.trim().parse().ok());
-            out.push(Window {
-                name: minutes.map_or_else(|| slot.to_string(), |m| length(m * 60)),
-                used_percent: used,
-                resets_at: header(&format!("x-codex-{slot}-reset-at"))
-                    .and_then(|t| t.trim().parse().ok()),
-            });
-        }
+        let seconds = w["limit_window_seconds"].as_i64().with_context(|| {
+            format!("rate_limit.{slot}: the answer has no number limit_window_seconds")
+        })?;
+        out.push(Window {
+            name: length(seconds),
+            used_percent: percent(w, "used_percent")
+                .with_context(|| format!("rate_limit.{slot}"))?,
+            resets_at: w["reset_at"].as_i64().filter(|at| *at > 0),
+        });
     }
-    anyhow::ensure!(
-        !out.is_empty(),
-        "the answer has no rate_limit window and no x-codex-primary-used-percent header"
-    );
+    if limit["limit_reached"] == true
+        && let Some(full) = out
+            .iter_mut()
+            .max_by(|a, b| a.used_percent.total_cmp(&b.used_percent))
+    {
+        full.used_percent = full.used_percent.max(100.0);
+    }
+    anyhow::ensure!(!out.is_empty(), "the answer has no rate_limit window");
     Ok(out)
 }
 

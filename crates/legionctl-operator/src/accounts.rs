@@ -25,7 +25,7 @@ pub fn config() -> Result<Config> {
 }
 
 /// One GET of `agent`'s usage endpoint with `login`'s token, as its agent's client sends it.
-async fn fetch(url: &str, agent: &str, login: &Login, now: i64) -> Result<Vec<accounts::Window>> {
+async fn fetch(url: &str, agent: &str, login: &Login) -> Result<Vec<accounts::Window>> {
     static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     let http = HTTP.get_or_init(reqwest::Client::new);
     let mut request = http
@@ -68,16 +68,10 @@ async fn fetch(url: &str, agent: &str, login: &Login, now: i64) -> Result<Vec<ac
     }
     let body: serde_json::Value =
         serde_json::from_str(&text).with_context(|| format!("the answer of {url} is not JSON"))?;
-    let header = |name: &str| {
-        headers
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .map(String::from)
-    };
     if agent == "claude" {
         accounts::claude_windows(&body)
     } else {
-        accounts::codex_windows(&body, &header, now)
+        accounts::codex_windows(&body)
     }
 }
 
@@ -103,7 +97,7 @@ pub fn usage_of(
     };
     let now = now_ms();
     let read = accounts::login(account, agent, now)
-        .and_then(|login| runtime.block_on(fetch(url, agent, &login, now / 1000)));
+        .and_then(|login| runtime.block_on(fetch(url, agent, &login)));
     let usage = AccountUsage {
         account: account.into(),
         agent: agent.into(),
@@ -147,8 +141,6 @@ pub fn usage(
 pub enum Decision {
     /// It runs on its account (none: the home's logins).
     Stay,
-    /// The usage of its account cannot be read: this check fails (it is reported), and the member runs on its account.
-    Unread(String),
     /// Its account is at its limit: it continues on `to`.
     Move { to: String, why: String },
 }
@@ -158,8 +150,8 @@ pub enum Decision {
 /// agent has no list, or that runs on the home's logins, stays.
 ///
 /// # Errors
-/// Its account is at its limit and every other listed account is too or cannot be read (the wake fails with this
-/// reason), or the config or the cache fails.
+/// The usage of its account cannot be read, or its account is at its limit and every other listed account is too or
+/// cannot be read (the wake fails with this reason), or the config or the cache fails.
 pub fn decide(
     runtime: &tokio::runtime::Handle,
     (agent, account): (&str, Option<&str>),
@@ -175,9 +167,7 @@ pub fn decide(
     };
     let now = usage_of(runtime, &config, (account, agent), false)?;
     if let Some(error) = now.error {
-        return Ok(Decision::Unread(format!(
-            "the usage of account {account} cannot be read: {error}"
-        )));
+        bail!("the usage of account {account} cannot be read: {error}");
     }
     let Some(full) = now.at_limit(*switch_at) else {
         return Ok(Decision::Stay);
