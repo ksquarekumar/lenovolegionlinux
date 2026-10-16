@@ -68,9 +68,14 @@ for bench and tune.
 | Navigator | the views of the space (in Work: New chat and your chats, newest first); drag its edge to change its width |
 | Tabs | each tab is one view (a seed, yours, or a composed one), or a chat |
 | Chat bar | `/` lists the commands; in a chat, other text is a message to the agent; in a view, it is an intent; `/change <words>` changes the tab's view |
+| Feedback | the title bar's Feedback or `/feedback <note>`: your note, the tab's state and a screenshot of the window that you pick go to the dossier as `feedbacks/<NNNN>-<slug>/` (it cannot change after) |
 
 A chat keeps its conversation in a dossier. Choose one with `/dossier use <name>`, or make one with `/dossier create
 <name>` (the title bar shows it; a click opens the Dossiers view).
+
+Keys: Up and Down in the chat bar show the lines that you sent before (also after a restart). PageUp, PageDown, Home
+and End scroll the tab. Tab with nothing to complete goes to the tab, where Up and Down scroll; Tab goes back. Select
+text with the mouse and copy it with Ctrl+C; the copy button of a table row or an error copies it whole.
 
 Pick the agent of the chat bar with `/agent claude` or `/agent codex` (the names of config `session.acp`). The pick
 is a row of the thread's log, so every app window on the thread uses the same agent. With no pick, config `app.agent` applies

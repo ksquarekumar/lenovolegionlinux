@@ -3,7 +3,7 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{Disableable as _, StyledExt as _, TitleBar};
+use gpui_kit::component::{Disableable as _, Sizable as _, StyledExt as _, TitleBar};
 use gpui_kit::{
     Context, Div, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     Styled as _, Window, div, px,
@@ -12,6 +12,7 @@ use legionctl_api::Class;
 
 use crate::LegionApp;
 use crate::theme::{R_SM, S1, S2, S3, S5, T_SM, Tokens, card, heading, icon};
+use crate::widgets::text;
 
 gpui_kit::assets::icon_assets!(
     Extra,
@@ -125,7 +126,11 @@ impl LegionApp {
                         .children(if empty {
                             vec![div().child("Nothing: the machine is already in this state")]
                         } else {
-                            lines.into_iter().map(|l| div().child(l)).collect()
+                            lines
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, l)| div().child(text(format!("line-{i}"), l)))
+                                .collect()
                         }),
                 ),
         )
@@ -146,7 +151,7 @@ impl LegionApp {
                 div()
                     .text_size(T_SM)
                     .text_color(t.text2)
-                    .child(why.to_string()),
+                    .child(text("why", why.to_string())),
             )
             .child(
                 div()
@@ -191,6 +196,17 @@ impl Render for LegionApp {
                 .child(div().min_w_0().truncate().text_color(t.text2).child(place))
                 .child(div().flex_1())
                 .child(self.place(&t, cx))
+                .child(
+                    Button::new("feedback")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::MessageSquare)
+                        .label("Feedback")
+                        .tooltip(
+                            "Keep a note with this tab's state and a screenshot in the dossier",
+                        )
+                        .on_click(cx.listener(|app, _, window, cx| app.ask_feedback(window, cx))),
+                )
                 .child(self.status(&t)),
         );
         // the tab's content width: the window less the rail, the navigator and the tab's padding

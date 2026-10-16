@@ -3,6 +3,7 @@
 //! operation; every button runs an operation with its own approval: a read at once, a change with its plan first.
 
 pub mod activity;
+mod feedback;
 mod forms;
 mod graph;
 pub mod greeter;

@@ -252,6 +252,10 @@ impl Screen {
                 "/change ".to_string(),
                 "Change the view of this tab (a new version; undo goes back)".to_string(),
             )))
+            .chain(std::iter::once((
+                "/feedback ".to_string(),
+                "Keep a note with this tab's state and a screenshot in the dossier".to_string(),
+            )))
             .chain(self.agents.iter().map(|a| {
                 let current = if now.as_ref() == Some(a) { ", now" } else { "" };
                 (
@@ -569,11 +573,14 @@ impl LegionApp {
         match chat::action(
             &line,
             &self.screen.commands,
-            &["view", "agent", "change", "chat"],
+            &["view", "agent", "change", "chat", "feedback"],
             &self.screen.repo,
         ) {
             Action::Prompt(prompt) => self.prompt(&prompt, line, cx),
             Action::Operation(op, input) => self.start(op.name, input, line, cx),
+            Action::Screen(words) if words[0] == "feedback" => {
+                self.feedback(line.trim_start_matches("/feedback").trim(), cx);
+            }
             Action::Screen(words) if words[0] == "change" => {
                 self.change(&words[1..].join(" "), line, cx);
             }
@@ -1382,7 +1389,7 @@ impl LegionApp {
                                     .min_w_0()
                                     .text_size(T_SM)
                                     .text_color(t.text2)
-                                    .child(chat::log_detail(r)),
+                                    .child(crate::widgets::text("detail", chat::log_detail(r))),
                             )
                             .child(
                                 div()
@@ -1413,12 +1420,14 @@ impl LegionApp {
                                 .test_support(),
                         )
                         .when(open, |d| {
-                            d.child(
-                                div()
-                                    .text_size(T_XS)
-                                    .text_color(t.text2)
-                                    .children(more.lines().map(|l| div().child(l.to_string()))),
-                            )
+                            d.child(div().text_size(T_XS).text_color(t.text2).children(
+                                more.lines().enumerate().map(|(i, l)| {
+                                    div().child(crate::widgets::text(
+                                        format!("line-{i}"),
+                                        l.to_string(),
+                                    ))
+                                }),
+                            ))
                         })
                     }),
             )

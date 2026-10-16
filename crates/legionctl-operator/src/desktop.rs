@@ -126,3 +126,92 @@ pub async fn question(summary: &str, body: &str) -> Result<Option<bool>> {
     // no answer within the time is no decision (None): the caller says so
     answer.unwrap_or(Ok(None))
 }
+
+const PORTAL: &str = "org.freedesktop.portal.Desktop";
+
+/// A screenshot through the desktop portal (`org.freedesktop.portal.Screenshot`, interactive: the user picks the
+/// window in the desktop's dialog): the PNG's bytes. The portal's file is removed once read.
+///
+/// # Errors
+/// There is no session bus or portal, the user cancels, or no answer comes within the time.
+pub async fn screenshot() -> Result<Vec<u8>> {
+    let bus = zbus::Connection::session()
+        .await
+        .context("no session bus for the screenshot")?;
+    let token = format!(
+        "legionctl{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
+    );
+    let sender = bus
+        .unique_name()
+        .context("the session bus gave no name")?
+        .trim_start_matches(':')
+        .replace('.', "_");
+    let handle = format!("/org/freedesktop/portal/desktop/request/{sender}/{token}");
+    // listen before the call, so a fast answer is not lost
+    let rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .interface("org.freedesktop.portal.Request")?
+        .member("Response")?
+        .path(handle.as_str())?
+        .build();
+    let mut answers = zbus::MessageStream::for_match_rule(rule, &bus, None).await?;
+    let options = std::collections::HashMap::from([
+        ("handle_token", zbus::zvariant::Value::from(token.as_str())),
+        ("interactive", zbus::zvariant::Value::from(true)),
+    ]);
+    bus.call_method(
+        Some(PORTAL),
+        "/org/freedesktop/portal/desktop",
+        Some("org.freedesktop.portal.Screenshot"),
+        "Screenshot",
+        &("", options),
+    )
+    .await
+    .context("no desktop screenshot portal")?;
+    let signal = tokio::time::timeout(WAIT, answers.next())
+        .await
+        .context("the screenshot portal gave no answer in time")?
+        .context("the screenshot portal's signals ended before an answer")??;
+    let (code, results): (
+        u32,
+        std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+    ) = signal.body().deserialize()?;
+    anyhow::ensure!(
+        code == 0,
+        "the screenshot was cancelled (portal answer {code})"
+    );
+    let uri: String = results
+        .get("uri")
+        .context("the screenshot portal's answer has no uri")?
+        .try_clone()?
+        .try_into()?;
+    let path = file_path(&uri)?;
+    let png = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+    Ok(png)
+}
+
+/// The path of a `file://` URI, with its percent escapes decoded.
+fn file_path(uri: &str) -> Result<std::path::PathBuf> {
+    let rest = uri
+        .strip_prefix("file://")
+        .with_context(|| format!("{uri} is not a file URI"))?;
+    let mut bytes = Vec::with_capacity(rest.len());
+    let mut it = rest.bytes();
+    while let Some(b) = it.next() {
+        if b == b'%' {
+            let hex = [it.next(), it.next()];
+            let hex: Option<Vec<u8>> = hex.into_iter().collect();
+            let byte = hex
+                .and_then(|h| u8::from_str_radix(std::str::from_utf8(&h).ok()?, 16).ok())
+                .with_context(|| format!("{uri} has a bad escape"))?;
+            bytes.push(byte);
+        } else {
+            bytes.push(b);
+        }
+    }
+    Ok(<std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec(bytes).into())
+}

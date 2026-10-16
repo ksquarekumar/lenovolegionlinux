@@ -1306,6 +1306,56 @@ impl Dossiers {
         }
     }
 
+    /// A new feedback entry `<dossier>/feedbacks/<NNNN>-<slug>/` that holds `files` (name, content), each made once
+    /// (the class `feedbacks` is immutable). Returns its path relative to the dossier root.
+    ///
+    /// # Errors
+    /// The dossier does not exist, the slug or a file name is not valid, or a file cannot be written.
+    pub fn feedback(&self, dossier: &str, slug: &str, files: &[(&str, &[u8])]) -> Result<String> {
+        ensure!(
+            valid_name(dossier) && self.root.join(dossier).join("plan.md").is_file(),
+            "there is no dossier {dossier} (legionctl dossier list)"
+        );
+        ensure!(
+            valid_name(slug),
+            "slug must be a-z, 0-9 and '-', starting with a letter or digit"
+        );
+        let folder = self.root.join(dossier).join("feedbacks");
+        std::fs::create_dir_all(&folder)?;
+        let mut next = std::fs::read_dir(&folder)?
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                name.split_once('-')?.0.parse::<u32>().ok()
+            })
+            .max()
+            .unwrap_or(0)
+            + 1;
+        // a feedback at the same time takes the same number: make the folder exclusively and move on
+        let (name, entry) = loop {
+            let name = format!("{next:04}-{slug}");
+            match std::fs::create_dir(folder.join(&name)) {
+                Ok(()) => break (name.clone(), folder.join(name)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => next += 1,
+                Err(e) => return Err(e.into()),
+            }
+        };
+        for (file, content) in files {
+            ensure!(
+                !file.is_empty() && !file.contains('/') && !file.starts_with('.'),
+                "'{file}' is not a file name"
+            );
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(entry.join(file))?
+                .write_all(content)?;
+        }
+        let rel = format!("{dossier}/feedbacks/{name}");
+        self.log("user", "add", &format!("{rel}/note.md"), ("", ""))?;
+        Ok(rel)
+    }
+
     /// Ledger findings: a missing `plan.md`, a missing section, or a plan table row that does not parse.
     #[must_use]
     pub fn check(&self, dossier: &str) -> Vec<String> {

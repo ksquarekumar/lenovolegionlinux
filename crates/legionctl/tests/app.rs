@@ -5,6 +5,8 @@
 mod common;
 #[path = "common/keyring.rs"]
 mod keyring;
+#[path = "common/portal.rs"]
+mod portal;
 #[path = "common/usage.rs"]
 mod usage;
 
@@ -981,6 +983,11 @@ fn write(path: &Path, text: &str) {
 /// thread 1 on dossier port: main0 (session `main`) and observer0 (session `obs`). Returns the operator, HOME and
 /// the repository.
 fn thread_lab(tag: &str) -> (Operator, PathBuf, PathBuf) {
+    thread_lab_on(tag, &[])
+}
+
+/// [`thread_lab`] with more environment for the operator.
+fn thread_lab_on(tag: &str, env: &[(&str, std::ffi::OsString)]) -> (Operator, PathBuf, PathBuf) {
     let home = Scratch::new(format!(
         "/var/tmp/legionctl-app-{tag}-{}",
         std::process::id()
@@ -1040,19 +1047,18 @@ fn thread_lab(tag: &str) -> (Operator, PathBuf, PathBuf) {
     )
     .unwrap();
     recorded_machine(&home.join("root"));
-    let mut op = Operator::start(
-        &format!("ap-{tag}"),
-        &[
-            ("LEGIONCTL_SYSROOT", home.join("root").into()),
-            ("HOME", home.as_os_str().to_owned()),
-            ("PATH", path),
-            // the stand-in composer answers an intent with the view of <first word>.jsonc there
-            ("FAKE_ACP_VIEWS", home.join("fake-views").into()),
-            // a WAIT prompt holds until the test makes this file (a chat's folder is an overlay: its lower
-            // folder's new files need not show)
-            ("FAKE_ACP_RELEASE", home.join("release").into()),
-        ],
-    );
+    let mut lab_env = vec![
+        ("LEGIONCTL_SYSROOT", home.join("root").into()),
+        ("HOME", home.as_os_str().to_owned()),
+        ("PATH", path),
+        // the stand-in composer answers an intent with the view of <first word>.jsonc there
+        ("FAKE_ACP_VIEWS", home.join("fake-views").into()),
+        // a WAIT prompt holds until the test makes this file (a chat's folder is an overlay: its lower
+        // folder's new files need not show)
+        ("FAKE_ACP_RELEASE", home.join("release").into()),
+    ];
+    lab_env.extend(env.iter().cloned());
+    let mut op = Operator::start(&format!("ap-{tag}"), &lab_env);
     // the user's dossier of the app's chats and runs, made and chosen as the user does (no session)
     for args in [
         &["dossier", "create", "chat"][..],
@@ -1477,6 +1483,188 @@ fn the_chat_bar_recalls_its_lines_after_a_restart_and_the_keyboard_scrolls_the_t
         window.press("up", cx);
     });
     app.read_with(cx, |a, _| assert_eq!(a.screen.chat(), "hello"));
+    drop(runtime);
+}
+
+/// A private session bus in its own folder: the folder, the bus process and its address.
+fn private_bus(tag: &str) -> (Scratch, common::process::Kill, String) {
+    let dir = Scratch::new(format!("/var/tmp/lc-{tag}-bus-{}", std::process::id()));
+    let path = dir.join("bus");
+    let bus = common::process::Kill::spawn(
+        std::process::Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--nopidfile"])
+            .arg(format!("--address=unix:path={}", path.display())),
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !path.exists() {
+        assert!(Instant::now() < deadline, "the private bus");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let address = format!("unix:path={}", path.display());
+    (dir, bus, address)
+}
+
+/// A mouse selection across the element `id`, then Ctrl+C: what the clipboard has (it had "-" before).
+fn select_and_copy(cx: &mut VisualTestContext, id: &'static str) -> Option<String> {
+    cx.update(|_, cx| cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("-".into())));
+    let cell = cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.find(id).bounds()
+    });
+    let y = cell.origin.y + cell.size.height / 2.;
+    let (from, to) = (
+        point(cell.origin.x + px(1.), y),
+        point(cell.origin.x + cell.size.width - px(1.), y),
+    );
+    // the selection reads the text's place in each frame: a frame after each step
+    let plain = gpui_kit::Modifiers::default();
+    cx.simulate_mouse_down(from, gpui_kit::MouseButton::Left, plain);
+    cx.update(TestWindowExt::render_frame);
+    cx.simulate_mouse_move(to, Some(gpui_kit::MouseButton::Left), plain);
+    cx.update(TestWindowExt::render_frame);
+    cx.simulate_mouse_up(to, gpui_kit::MouseButton::Left, plain);
+    cx.update(|window, cx| window.press("ctrl-c", cx));
+    cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text()))
+}
+
+/// The files of the feedback entry `entry` of the test below: `first` is the first row of its view.
+fn feedback_entry(entry: &Path, first: &str, png: &[u8]) {
+    let note = std::fs::read_to_string(entry.join("note.md")).unwrap();
+    for line in [
+        "class: feedbacks",
+        "immutable: true",
+        "daemon: does not answer",
+        "space: Machine",
+        "tab: view:resources:",
+        "view: resources version 0",
+        "links: [state.json, screenshot.png]",
+        "# Feedback\n\nFans row is wrong\n",
+    ] {
+        assert!(note.contains(line), "{line} in {note}");
+    }
+    assert!(
+        note.contains("\noperator: ") && note.contains("\napp: ") && note.contains("\ntime: 20"),
+        "{note}"
+    );
+    let state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(entry.join("state.json")).unwrap()).unwrap();
+    assert_eq!(state["view"]["name"], "resources", "{state}");
+    assert_eq!(
+        state["view"]["rows"][0][0],
+        first.split('\t').next().unwrap()
+    );
+    assert!(
+        state["events"].as_array().is_some_and(|e| !e.is_empty()),
+        "{state}"
+    );
+    assert_eq!(std::fs::read(entry.join("screenshot.png")).unwrap(), png);
+}
+
+/// todo-168: the text on display is selectable and copyable, and the user's feedback becomes an immutable dossier
+/// entry that agents read. A table row's copy button puts its cells on the clipboard. `/feedback <note>` (and the
+/// title bar's Feedback, which puts `/feedback ` in the chat bar) asks the desktop portal for a screenshot (the user
+/// picks the window: interactive), and keeps feedbacks/0001-<slug>/ in the chat bar thread's dossier: note.md with
+/// its front matter (time, the app, operator and daemon builds, space, tab, view and version, links), state.json (the
+/// tab's view with its data and the last events) and screenshot.png (the portal's picture; its file is removed). The
+/// call is the event feedback.new; a later write to the entry (its state.json) is refused.
+#[gpui_kit::test]
+fn copy_puts_a_row_on_the_clipboard_and_feedback_keeps_the_note_state_and_screenshot_in_the_dossier(
+    cx: &mut TestAppContext,
+) {
+    const PNG: &[u8] = b"\x89PNG stand-in picture";
+    let (bus_dir, _bus, address) = private_bus("feedback");
+    let bus_runtime = tokio::runtime::Runtime::new().unwrap();
+    let (_portal, asked) = bus_runtime.block_on(portal::screenshots(&address, &bus_dir, PNG));
+    let (op, home, repo) = thread_lab_on(
+        "feedback",
+        &[("DBUS_SESSION_BUS_ADDRESS", address.clone().into())],
+    );
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
+    let cx = &mut vcx;
+    cx.update(|window, cx| window.click("nav-resources", cx));
+    wait(cx, &app, "the resources rows", |a| {
+        a.screen
+            .view()
+            .is_some_and(|v| v.name == "resources" && !v.rows.is_empty())
+    });
+    let first = app.read_with(cx, |a, _| a.screen.view().unwrap().rows[0].join("\t"));
+    let selected = select_and_copy(cx, "view-resources-row-0-cell-1");
+    let state = app.read_with(cx, |a, _| a.screen.view().unwrap().rows[0][1].clone());
+    assert_eq!(
+        selected.as_deref(),
+        Some(state.as_str()),
+        "the selected text"
+    );
+    cx.update(|window, cx| window.click("view-resources-row-0-copy", cx));
+    let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text()));
+    assert_eq!(copied.as_deref(), Some(first.as_str()), "the row's cells");
+
+    cx.update(|window, cx| window.click("feedback", cx));
+    app.read_with(cx, |a, _| assert_eq!(a.screen.chat(), "/feedback "));
+    cx.update(|window, cx| {
+        window.input("Fans row is wrong", cx);
+        window.press("enter", cx);
+    });
+    wait(cx, &app, "the feedback", |a| {
+        a.state
+            .message
+            .as_deref()
+            .is_some_and(|m| m.starts_with("feedback kept in"))
+    });
+    let (dossier, shown) = app.read_with(cx, |a, _| {
+        (
+            a.screen
+                .thread
+                .as_ref()
+                .map(|t| t.thread.dossier.clone())
+                .or(a.screen.dossier.clone())
+                .unwrap(),
+            a.state.message.clone().unwrap(),
+        )
+    });
+    let rel = format!("{dossier}/feedbacks/0001-fans-row-is-wrong");
+    assert_eq!(shown, format!("feedback kept in {rel}"));
+    let entry = home.join("agentWorkspaces").join(&rel);
+    feedback_entry(&entry, &first, PNG);
+    let asked = asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1);
+    assert!(asked[0].0, "the user picks the window");
+    assert!(!asked[0].1.exists(), "the portal's file is removed");
+    let events: serde_json::Value =
+        serde_json::from_str(&op.ok(&["events", "--limit", "1000", "--json"])).unwrap();
+    assert!(
+        events["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["kind"] == "feedback.new"
+                && e["actor"] == "app"
+                && e["payload"]["input"]["note"] == "Fans row is wrong"),
+        "{events}"
+    );
+    // an agent session on the entry's dossier
+    let agent = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", "reader"),
+    ];
+    let used = op.run(&repo, &agent, &["dossier", "use", &dossier], "");
+    assert!(used.status.success(), "{used:?}");
+    let refused = op.run(
+        &repo,
+        &agent,
+        &[
+            "dossier",
+            "write",
+            "--overwrite",
+            &format!("{rel}/state.json"),
+        ],
+        "{}\n",
+    );
+    assert!(
+        !refused.status.success()
+            && String::from_utf8_lossy(&refused.stderr).contains("immutable once written"),
+        "{refused:?}"
+    );
     drop(runtime);
 }
 

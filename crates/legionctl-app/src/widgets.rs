@@ -3,6 +3,7 @@
 //! button of a view runs its operation through [`LegionApp::act`], with the operation's own approval.
 
 use gpui_kit::assets::IconName;
+use gpui_kit::base::SelectableText;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::chart::LineChart;
@@ -11,8 +12,9 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Disableable as _, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, Context, Div, FontWeight, Hsla, InteractiveElement as _, IntoElement,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled, div, px, relative,
+    AnyElement, ClipboardItem, Context, Div, ElementId, FontWeight, Hsla, InteractiveElement as _,
+    IntoElement, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled, div,
+    px, relative,
 };
 use legionctl_api::{ViewButton, ViewData, ViewWidget};
 
@@ -23,6 +25,23 @@ use crate::theme::{
 
 /// The narrowest stat card; the cards share the width evenly (U9).
 const STAT_WIDTH: f32 = 200.;
+
+/// Text that the user can select with the mouse and copy with Ctrl+C (todo-168); `id` is unique among its siblings.
+// shortcut: gpui-base 0.7.3 selects nothing in a text cut with an ellipsis (a long table cell); the row's copy button
+// and the cell's tooltip have it whole; upgrade when the kit selects elided text
+pub(crate) fn text(id: impl Into<SharedString>, text: impl Into<SharedString>) -> SelectableText {
+    SelectableText::new(ElementId::Name(id.into()), text)
+}
+
+/// A button that puts `what` on the clipboard.
+pub(crate) fn copy_button(id: impl Into<SharedString>, tip: &'static str, what: String) -> Button {
+    Button::new(ElementId::Name(id.into()))
+        .ghost()
+        .xsmall()
+        .icon(IconName::Copy)
+        .tooltip(tip)
+        .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(what.clone())))
+}
 
 /// The colour of a state word.
 fn mark(state: &str, t: &Tokens) -> Hsla {
@@ -182,7 +201,17 @@ impl LegionApp {
                         .text_size(T_SM)
                         .text_color(t.critical)
                         .child(icon(IconName::CircleX, px(16.), t.critical))
-                        .child(format!("cannot read the view: {error}")),
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(text("error", format!("cannot read the view: {error}"))),
+                        )
+                        .child(copy_button(
+                            format!("view-{}-error-copy", data.name),
+                            "Copy the error",
+                            error.clone(),
+                        )),
                 )
                 .test_support()
                 .into_any_element();
@@ -209,7 +238,7 @@ impl LegionApp {
                         div()
                             .id(id(&format!("row-{i}")))
                             .whitespace_nowrap()
-                            .child(r.join(" "))
+                            .child(text("row", r.join(" ")))
                             .test_support()
                     }))
                     .test_support()
@@ -231,7 +260,9 @@ impl LegionApp {
                 data,
                 top,
                 t,
-                TextView::markdown(id("markdown"), data.text.clone()).into_any_element(),
+                TextView::markdown(id("markdown"), data.text.clone())
+                    .selectable(true)
+                    .into_any_element(),
             ),
             ViewWidget::Diff => framed(
                 data,
@@ -242,8 +273,8 @@ impl LegionApp {
                     .v_flex()
                     .text_size(T_XS)
                     .font_family("monospace")
-                    .children(data.text.lines().map(|l| {
-                        let line = div().child(l.to_string());
+                    .children(data.text.lines().enumerate().map(|(i, l)| {
+                        let line = div().child(text(format!("line-{i}"), l.to_string()));
                         if l.starts_with('+') {
                             line.text_color(t.ok)
                         } else if l.starts_with('-') {
@@ -311,6 +342,8 @@ impl LegionApp {
                 t,
             )
             .when(with_buttons, |r| r.child(div().w(px(BUTTONS)).flex_none()))
+            // the width of the rows' copy button
+            .child(div().w(px(COPY)).flex_none())
         });
         let line = |i: usize| -> AnyElement {
             let cells = &data.rows[i];
@@ -341,7 +374,13 @@ impl LegionApp {
                         })),
                 );
             }
-            r.test_support().into_any_element()
+            r.child(copy_button(
+                format!("{id}-copy"),
+                "Copy the row",
+                cells.join("\t"),
+            ))
+            .test_support()
+            .into_any_element()
         };
         let mut body = div()
             .id(SharedString::from(format!(
@@ -453,6 +492,8 @@ fn framed(data: &ViewData, top: bool, t: &Tokens, body: AnyElement) -> AnyElemen
 
 /// The width of a table's buttons column: the same on each row, so that the cells line up (U7).
 const BUTTONS: f32 = 240.;
+/// The width of a row's copy button.
+const COPY: f32 = 20.;
 
 /// One row of cells: the first wider, the rest even; in a table a long value truncates (a path in its middle) and its
 /// tooltip has it whole (U12); a list's row wraps.
@@ -481,7 +522,8 @@ fn row(base: Div, id: &str, cells: &[String], marks: &[String], wrap: bool, t: &
                         .tooltip(move |window, cx| Tooltip::new(whole.clone()).build(window, cx))
                 })
                 .when_some(color, Styled::text_color)
-                .child(c.clone())
+                .child(text("text", c.clone()))
+                .test_support()
         }))
 }
 
@@ -498,7 +540,7 @@ fn stat(data: &ViewData, t: &Tokens) -> AnyElement {
                 .text_size(T_XS)
                 .text_color(t.muted)
                 .truncate()
-                .child(data.title.clone()),
+                .child(text("title", data.title.clone())),
         )
         .child(
             div()
@@ -516,13 +558,13 @@ fn stat(data: &ViewData, t: &Tokens) -> AnyElement {
                         .font_features(theme::tabular())
                         .text_color(if data.level.is_empty() { t.text } else { color })
                         .whitespace_nowrap()
-                        .child(data.text.clone()),
+                        .child(text("value", data.text.clone())),
                 )
                 .child(
                     div()
                         .text_size(T_SM)
                         .text_color(t.muted)
-                        .child(data.unit.clone()),
+                        .child(text("unit", data.unit.clone())),
                 ),
         )
         .child(
@@ -535,7 +577,12 @@ fn stat(data: &ViewData, t: &Tokens) -> AnyElement {
                 .when(missing, |d| {
                     d.child(icon(IconName::TriangleAlert, px(12.), t.warn))
                 })
-                .child(div().flex_1().min_w_0().child(data.note.clone())),
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(text("note", data.note.clone())),
+                ),
         )
         .when(data.numbers.len() > 1, |c| {
             let points: Vec<(String, f64)> = data
@@ -660,14 +707,14 @@ fn gauge(data: &ViewData, t: &Tokens) -> AnyElement {
         .child(
             div()
                 .text_size(T_XS)
-                .child(format!("{value} / {}", data.max)),
+                .child(text("value", format!("{value} / {}", data.max))),
         )
         .test_support()
         .into_any_element()
 }
 
 /// The message under a tab: the result of the last action, or why it failed.
-pub(crate) fn message(text: &str, t: &Tokens) -> Div {
+pub(crate) fn message(message: &str, t: &Tokens) -> Div {
     card(t)
         .gap(S1)
         .text_size(T_SM)
@@ -679,7 +726,17 @@ pub(crate) fn message(text: &str, t: &Tokens) -> Div {
                 .text_color(t.muted)
                 .text_size(T_XS)
                 .child(icon(IconName::Info, px(14.), t.muted))
-                .child("Last result"),
+                .child(div().flex_1().child("Last result"))
+                .child(copy_button(
+                    "message-copy",
+                    "Copy the result",
+                    message.to_string(),
+                )),
         )
-        .children(text.lines().map(|l| div().child(l.to_string())))
+        .children(
+            message
+                .lines()
+                .enumerate()
+                .map(|(i, l)| div().child(text(format!("line-{i}"), l.to_string()))),
+        )
 }

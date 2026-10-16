@@ -12473,6 +12473,67 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "feedback.new": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "note": {
+          "type": "string",
+          "description": "What the user says."
+        },
+        "dossier": {
+          "type": "string",
+          "description": "The dossier of the entry."
+        },
+        "about": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "What the app showed, for the note's front matter (space, tab, view, version, app build); the operator adds the\ntime and the builds of the operator and the daemon.",
+          "default": {}
+        },
+        "state": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The app's state as JSON (the tab's view, its data, errors): state.json, with the operator's last events.",
+          "default": null
+        },
+        "screenshot": {
+          "type": "boolean",
+          "description": "Ask the desktop for a screenshot (the user picks the window): screenshot.png.",
+          "default": false
+        }
+      },
+      "required": [
+        "note",
+        "dossier"
+      ],
+      "title": "FeedbackIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "dossier.check": {
     "class": "read",
     "internal": false,

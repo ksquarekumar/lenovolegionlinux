@@ -100,7 +100,7 @@
     },
     // Artifacts of these classes cannot change once written (as front matter immutable: true): a correction is a new
     // entry whose front matter supersedes the old one.
-    "immutable_classes": ["JOURNAL", "HEALTH"],
+    "immutable_classes": ["JOURNAL", "HEALTH", "feedbacks"],
     // plan.md: the ledger; `legionctl dossier check` reports a missing section.
     "plan_sections": [
       "Purpose", "Requested Outcome", "Scope Fence", "Governing Principles", "Instruction Inventory",

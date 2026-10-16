@@ -794,6 +794,10 @@ operations! {
     dossier_edit / DossierEdit = "dossier.edit", Session, DossierEditIn => Lines;
     /// Create the next numbered artifact <CLASS>/NN-<slug>.md in this session's dossier (content from stdin).
     dossier_add / DossierAdd = "dossier.add", Session, DossierAddIn => Lines;
+    /// Keep the user's feedback on the app as an immutable entry feedbacks/<NNNN>-<slug>/ of a dossier: note.md (the
+    /// note with its front matter: time, builds, what the app showed), state.json, and screenshot.png (the window
+    /// that the user picks in the desktop's screenshot dialog). Its event feedback.new is for the agents.
+    feedback_new / FeedbackNew = "feedback.new", Workspace, FeedbackIn => Lines;
     /// Ledger findings for a dossier (default: this session's): a missing plan.md or plan section.
     dossier_check / DossierCheck = "dossier.check", Read, DossierCheckIn => DossierFindings;
     /// The dossier's health audit in one compact block: a count line, then one keyed line per finding (stale or

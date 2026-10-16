@@ -872,6 +872,24 @@ pub struct DossierAddIn {
     pub session: SessionId,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FeedbackIn {
+    /// What the user says.
+    pub note: String,
+    /// The dossier of the entry.
+    pub dossier: String,
+    /// What the app showed, for the note's front matter (space, tab, view, version, app build); the operator adds the
+    /// time and the builds of the operator and the daemon.
+    #[serde(default)]
+    pub about: std::collections::BTreeMap<String, String>,
+    /// The app's state as JSON (the tab's view, its data, errors): state.json, with the operator's last events.
+    #[serde(default)]
+    pub state: Option<String>,
+    /// Ask the desktop for a screenshot (the user picks the window): screenshot.png.
+    #[serde(default)]
+    pub screenshot: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct DossierGraphIn {
     /// Dossier; default: this session's.

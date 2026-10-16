@@ -1094,6 +1094,9 @@ impl Operator {
     }
 }
 
+/// The events that a feedback's state.json keeps: the newest.
+const FEEDBACK_EVENTS: u32 = 50;
+
 pub(crate) fn dossiers() -> Result<Dossiers> {
     Dossiers::open(&config(None)?.config.dossier)
 }
@@ -2926,6 +2929,78 @@ impl Engine for Operator {
             &input.content.0,
         )?;
         Ok(Lines { lines })
+    }
+
+    fn feedback_new(&self, _: &Ctx, input: legionctl_api::FeedbackIn) -> Result<Lines> {
+        let store = dossiers()?;
+        let now = legionctl_core::facts::now_ms() / 1000;
+        let daemon = match self.system(async |p| p.version().await) {
+            Ok(v) if v == legionctl_machine::interface_version() => format!("{v} (matches)"),
+            Ok(v) => format!(
+                "{v} (this operator: {}; restart both)",
+                legionctl_machine::interface_version()
+            ),
+            Err(e) => format!("does not answer: {e:#}"),
+        };
+        let screenshot = if input.screenshot {
+            Some(self.runtime.block_on(crate::desktop::screenshot())?)
+        } else {
+            None
+        };
+        let mut head = vec![
+            "class: feedbacks".to_string(),
+            "immutable: true".to_string(),
+            format!("time: {}", legionctl_core::views::utc(now)),
+            format!(
+                "operator: {} api {}",
+                env!("CARGO_PKG_VERSION"),
+                legionctl_api::api_fingerprint()
+            ),
+            format!("daemon: {daemon}"),
+        ];
+        head.extend(
+            input
+                .about
+                .iter()
+                .map(|(k, v)| format!("{k}: {}", v.replace('\n', " "))),
+        );
+        // the app's state, and the operator's last events
+        let mut state: serde_json::Value = match &input.state {
+            Some(text) => serde_json::from_str(text).context("the state must be JSON")?,
+            None => serde_json::json!({}),
+        };
+        let db = Db::open_default()?;
+        let after = db
+            .last_event_id()?
+            .saturating_sub(i64::from(FEEDBACK_EVENTS));
+        let (events, _) = db.events_page(&EventFilter::default(), after, FEEDBACK_EVENTS)?;
+        state["events"] = serde_json::to_value(events.into_wire())?;
+        let state = serde_json::to_string_pretty(&state)?;
+        let mut files: Vec<(&str, &[u8])> = vec![("state.json", state.as_bytes())];
+        if let Some(png) = &screenshot {
+            files.push(("screenshot.png", png));
+        }
+        let links: Vec<&str> = files.iter().map(|(name, _)| *name).collect();
+        head.push(format!("links: [{}]", links.join(", ")));
+        let note = format!(
+            "---\n{}\n---\n# Feedback\n\n{}\n",
+            head.join("\n"),
+            input.note.trim()
+        );
+        files.insert(0, ("note.md", note.as_bytes()));
+        let slug: String = input
+            .note
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .take(5)
+            .map(str::to_ascii_lowercase)
+            .collect::<Vec<_>>()
+            .join("-");
+        let slug = if slug.is_empty() { "note".into() } else { slug };
+        let rel = store.feedback(&input.dossier, &slug, &files)?;
+        Ok(Lines {
+            lines: vec![format!("feedback kept in {rel}")],
+        })
     }
 
     fn dossier_add(&self, _: &Ctx, input: DossierAddIn) -> Result<Lines> {
