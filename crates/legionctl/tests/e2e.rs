@@ -93,6 +93,8 @@ fn operator_with(tag: &str, home: &Path, extra: &[(&str, OsString)]) -> Operator
     let root = home.join("root");
     std::fs::create_dir_all(root.join("proc")).unwrap();
     std::fs::write(root.join("proc/loadavg"), "0.10 0.10 0.10 1/100 100\n").unwrap();
+    std::fs::create_dir_all(root.join("sys/devices/system/cpu")).unwrap();
+    std::fs::write(root.join("sys/devices/system/cpu/online"), "0-3\n").unwrap();
     std::fs::write(
         root.join("proc/meminfo"),
         "MemTotal: 16000000 kB\nMemAvailable: 12000000 kB\n",

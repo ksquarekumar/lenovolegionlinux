@@ -361,8 +361,15 @@ pub fn read_load(root: &SysRoot, thresholds: &Thresholds) -> anyhow::Result<Load
         .next()
         .and_then(|l| l.parse().ok())
         .with_context(|| format!("/proc/loadavg has no load: {loadavg}"))?;
-    let cpus = std::thread::available_parallelism()
-        .map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX));
+    // the machine's CPUs, not this process's share of them: the load average counts the whole machine
+    let online = root
+        .read("/sys/devices/system/cpu/online")?
+        .context("/sys/devices/system/cpu/online is missing")?;
+    let cpus = u32::try_from(crate::telemetry::cpu_list(&online).len())?;
+    anyhow::ensure!(
+        cpus > 0,
+        "/sys/devices/system/cpu/online lists no CPU: {online}"
+    );
     let cpu = root
         .read("/proc/pressure/cpu")?
         .as_deref()

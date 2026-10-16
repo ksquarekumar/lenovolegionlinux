@@ -83,7 +83,7 @@ pub struct Latency {
 }
 
 /// CPU numbers in a kernel list (`0-15,24`).
-fn cpu_list(text: &str) -> Vec<usize> {
+pub(crate) fn cpu_list(text: &str) -> Vec<usize> {
     text.split(',')
         .filter_map(|part| {
             let (a, b) = part
