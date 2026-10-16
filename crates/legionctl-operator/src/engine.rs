@@ -4200,8 +4200,12 @@ impl Engine for Operator {
         crate::views::check_text(&input)
     }
 
-    fn views_save(&self, _: &Ctx, input: legionctl_api::ViewSaveIn) -> Result<Lines> {
-        crate::views::save(&input)
+    fn views_save(&self, ctx: &Ctx, input: legionctl_api::ViewSaveIn) -> Result<Lines> {
+        crate::views::save(ctx, &input)
+    }
+
+    fn views_version(&self, ctx: &Ctx, input: legionctl_api::ViewVersionIn) -> Result<Lines> {
+        crate::views::version_op(ctx, &input)
     }
 
     fn views_render(

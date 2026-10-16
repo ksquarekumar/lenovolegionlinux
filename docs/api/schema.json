@@ -16658,7 +16658,28 @@
               "diff",
               "list",
               "stack",
+              "stat",
+              "chart",
               null
+            ]
+          },
+          "title": {
+            "description": "Its words, the intent it answers and the navigator's space that lists it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "intent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
             ]
           },
           "error": {
@@ -16760,6 +16781,52 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "views.version": {
+    "class": "session",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The view's name (`views list`)."
+        },
+        "to": {
+          "type": "string",
+          "description": "undo, redo, reset (to the pinned version, else the seed), pin (reset goes back to the version that shows), or\na version number."
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in a repository: its layer comes first.",
+          "default": "."
+        }
+      },
+      "required": [
+        "name",
+        "to"
+      ],
+      "title": "ViewVersionIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "views.render": {
     "class": "read",
     "internal": false,
@@ -16797,6 +16864,16 @@
         "name": {
           "type": "string"
         },
+        "title": {
+          "type": "string",
+          "description": "The tab's words, and the intent the view answers."
+        },
+        "intent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "widget": {
           "type": "string",
           "enum": [
@@ -16807,7 +16884,9 @@
             "markdown",
             "diff",
             "list",
-            "stack"
+            "stack",
+            "stat",
+            "chart"
           ],
           "description": "A widget of the closed set of a view (design 23, C4)."
         },
@@ -16815,7 +16894,8 @@
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "table: the header words."
         },
         "rows": {
           "type": "array",
@@ -16827,13 +16907,45 @@
           },
           "description": "table: cells; list and tree: one cell per row."
         },
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The group of each row (empty: no groups), and the groups in their order."
+        },
+        "group_order": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "fold": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "description": "A group with more rows than this starts folded."
+        },
+        "marks": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": "table: each cell's state: \"\", ok, warn, critical."
+        },
         "numbers": {
           "type": "array",
           "items": {
             "type": "number",
             "format": "double"
           },
-          "description": "gauge: the value; sparkline: the values."
+          "description": "gauge: the value; sparkline: the values; stat: its trend."
         },
         "max": {
           "type": "number",
@@ -16842,7 +16954,63 @@
         },
         "text": {
           "type": "string",
-          "description": "markdown and diff."
+          "description": "markdown and diff; stat: the value."
+        },
+        "unit": {
+          "type": "string",
+          "description": "stat: the unit, the note (or the cause of a missing value) and the state (ok, warn, critical, missing)."
+        },
+        "note": {
+          "type": "string"
+        },
+        "level": {
+          "type": "string"
+        },
+        "series": {
+          "type": "array",
+          "items": {
+            "description": "One line of a chart: (x, y) points; x is seconds since the epoch when the chart's x is a time.",
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "points": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "prefixItems": [
+                    {
+                      "type": "number",
+                      "format": "double"
+                    },
+                    {
+                      "type": "number",
+                      "format": "double"
+                    }
+                  ],
+                  "minItems": 2,
+                  "maxItems": 2
+                }
+              },
+              "labels": {
+                "description": "Each point's x as it shows.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "name",
+              "points",
+              "labels"
+            ]
+          },
+          "description": "chart: its lines (one per kind), and whether x is a time."
+        },
+        "x_time": {
+          "type": "boolean"
         },
         "parts": {
           "type": "array",
@@ -16850,6 +17018,52 @@
             "$ref": "#"
           },
           "description": "stack: its views."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "description": "A button of a view: the operation it runs with this input, with its normal approval.",
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "op": {
+                "type": "string"
+              },
+              "input": true
+            },
+            "required": [
+              "label",
+              "op",
+              "input"
+            ]
+          },
+          "description": "The view's buttons, and each row's."
+        },
+        "row_actions": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "description": "A button of a view: the operation it runs with this input, with its normal approval.",
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "op": {
+                  "type": "string"
+                },
+                "input": true
+              },
+              "required": [
+                "label",
+                "op",
+                "input"
+              ]
+            }
+          }
         },
         "error": {
           "type": [
@@ -16863,19 +17077,54 @@
           "items": {
             "type": "string"
           },
-          "description": "The event kinds after which the view reads again (`*` at the end matches any rest)."
+          "description": "The event kinds after which the view reads again (`*` at the end matches any rest), and its live period."
+        },
+        "every": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version that shows (0: the seed) and the versions there are."
+        },
+        "versions": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
         }
       },
       "required": [
         "name",
+        "title",
         "widget",
         "columns",
         "rows",
+        "groups",
+        "group_order",
+        "marks",
         "numbers",
         "max",
         "text",
+        "unit",
+        "note",
+        "level",
+        "series",
+        "x_time",
         "parts",
-        "refresh"
+        "actions",
+        "row_actions",
+        "refresh",
+        "version",
+        "versions"
       ],
       "description": "A view with its data in the shape of its widget.",
       "title": "ViewData",

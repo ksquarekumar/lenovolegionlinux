@@ -1,0 +1,48 @@
+// Seed (DESIGN-09): the CPU score of each kind of run over time (one line per kind: a chart never mixes kinds), and
+// the newest runs.
+{
+  "$schema": "../../docs/api/view.schema.json",
+  "name": "bench",
+  "title": "Bench",
+  "intent": "how fast is the machine",
+  "space": "machine",
+  "widget": "stack",
+  "views": [
+    {
+      "name": "bench-cpu",
+      "title": "CPU score (bogo ops/s) over time, by kind of run",
+      "widget": "chart",
+      "source": { "op": "bench.list", "input": { "limit": 1000 }, "path": "$.items", "all": true },
+      "x": "at",
+      "y": "scores.cpu bogo ops/s",
+      "series": "label",
+      "formats": { "at": "time" }
+    },
+    {
+      "name": "bench-runs",
+      "title": "Runs, newest first",
+      "widget": "table",
+      "source": { "op": "bench.list", "input": { "limit": 1000 }, "path": "$.items", "all": true },
+      "last": 200,
+      "columns": ["id", "label", "scores.cpu bogo ops/s", "scores.gpu Gflop/s", "summary.package_w_mean", "at"],
+      "labels": {
+        "id": "Run",
+        "label": "Kind",
+        "scores.cpu bogo ops/s": "CPU ops/s",
+        "scores.gpu Gflop/s": "GPU Gflop/s",
+        "summary.package_w_mean": "Power (W)",
+        "at": "When"
+      },
+      "formats": {
+        "scores.cpu bogo ops/s": "int",
+        "scores.gpu Gflop/s": "int",
+        "summary.package_w_mean": "int",
+        "at": "ago"
+      }
+    }
+  ],
+  "actions": [
+    { "label": "Run a 30 s CPU bench", "op": "bench.run", "input": { "scenario": "cpu", "seconds": 30, "label": "app" } }
+  ],
+  "refresh": { "events": ["bench.*"] }
+}

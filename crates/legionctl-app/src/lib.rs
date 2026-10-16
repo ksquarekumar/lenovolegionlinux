@@ -1,116 +1,53 @@
-//! `legionctl-app` (DESIGN-09): the rail of the spaces, the navigator of the space, and tabs: machine pages, threads
-//! and views that agents make, each tab with its chat bar. Every value comes from an operation; every change is an
-//! operation that shows its plan first (a dry run), and the daemon asks polkit when it is applied.
+//! `legionctl-app` (DESIGN-09): the rail of the spaces, the navigator of the space, and tabs: views (the shipped
+//! seeds and the views that agents make) and threads, each tab with its chat bar. Every value comes from a view's read
+//! operation; every button runs an operation with its own approval: a read at once, a change with its plan first.
 
 pub mod activity;
 pub mod greeter;
-mod pages;
-pub use pages::AppAssets;
 pub mod shell;
 pub mod theme;
 pub mod thread;
+mod widgets;
+mod window;
+pub use window::AppAssets;
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::{AppContext, AsyncApp, Context, FocusHandle, Task, WeakEntity};
 use legionctl_api::client::Client;
-use legionctl_api::{
-    Acted, BenchIn, BenchRun, Changes, DesktopGpu, Empty, EventRow, FanState, Findings,
-    GpuPrimaryIn, GpuState, MonitorIn, PageIn, PowerApplyIn, PowerSource, ProfileIn, Reading,
-    Render as _, ResourceActIn, ResourceList, Sample, Scenario, SensorsIn, SetupApplyIn, Snapshot,
-    StatusIn, op,
-};
-use serde::{Deserialize, Serialize};
+use legionctl_api::{Class, EventRow, EventsIn, OPS, ViewButton, op};
+use serde_json::Value;
 
 pub use shell::{Space, Tab};
 
-/// How often the glance values refresh.
+/// How often the screen checks the operator and the live views.
 const REFRESH: Duration = Duration::from_secs(2);
 /// How often the screen takes the events that the stream gave.
 const EVENTS: Duration = Duration::from_millis(100);
+/// The view of the first start.
+pub const FIRST: &str = "machine-now";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Page {
-    Now,
-    Gpu,
-    Health,
-    Bench,
-    Resources,
-}
-
-impl Page {
-    pub const ALL: [Page; 5] = [
-        Page::Now,
-        Page::Gpu,
-        Page::Health,
-        Page::Bench,
-        Page::Resources,
-    ];
-
-    /// The page a command-line word names: now, gpu, health, bench, resources.
-    #[must_use]
-    pub fn named(word: &str) -> Option<Page> {
-        Page::ALL.into_iter().find(|p| p.word() == word)
-    }
-
-    #[must_use]
-    pub fn word(self) -> &'static str {
-        match self {
-            Page::Now => "now",
-            Page::Gpu => "gpu",
-            Page::Health => "health",
-            Page::Bench => "bench",
-            Page::Resources => "resources",
-        }
-    }
-
-    pub(crate) fn title(self) -> &'static str {
-        match self {
-            Page::Now => "Machine now",
-            Page::Gpu => "Apps and GPU",
-            Page::Health => "Health",
-            Page::Bench => "Bench",
-            Page::Resources => "Resources",
-        }
-    }
-}
-
-/// A change waiting for the user: the plan the operator showed, and how to apply it.
+/// A button's change waiting for the user: its operation's class, and the plan of its dry run when it has one.
 #[derive(Debug, Clone)]
-pub enum Pending {
-    Policy(Changes),
-    DesktopGpu(DesktopGpu, Changes),
-    /// A resource's action (id, action): its dry run, or its route when its operation has no dry run.
-    Resource(String, String, Acted),
-    /// `setup apply` for the setup findings it fixes (it has no dry run: the findings are its plan).
-    Setup(Vec<String>),
+pub struct Pending {
+    pub button: ViewButton,
+    pub class: Class,
+    /// The operation has a dry run: Apply runs it with `dry_run` false.
+    pub dry_run: bool,
+    /// The dry run's text; none when the operation has no dry run (an inline confirm of the operation and input).
+    pub plan: Option<String>,
 }
 
-/// What the app knows; each field is `None` until its first answer.
+/// What the app knows besides the screen.
 #[derive(Debug, Default)]
 pub struct State {
-    pub status: Option<Snapshot>,
-    pub sample: Option<Sample>,
-    /// `None` also when the daemon cannot say (it is not running).
-    pub fan: Option<FanState>,
-    pub gpu: Option<GpuState>,
-    pub findings: Option<Vec<String>>,
-    pub runs: Option<Vec<BenchRun>>,
-    pub resources: Option<ResourceList>,
-    pub sensors: Option<Vec<Reading>>,
     pub pending: Option<Pending>,
-    /// The last result or error, in one line.
+    /// The last result or error.
     pub message: Option<String>,
     /// The operator does not answer: the app shows how to start it.
     pub offline: Option<String>,
     pub busy: bool,
-    /// The sensor groups the user folded.
-    pub folded_groups: BTreeSet<String>,
-    /// The list of the missing setup items is open.
-    pub setup_open: bool,
 }
 
 pub struct LegionApp {
@@ -136,7 +73,7 @@ impl Drop for Follower {
 
 impl LegionApp {
     /// The app on `client`; `open` is a tab to show at the start (the command line's), besides the tabs that the
-    /// layout facts keep.
+    /// layout facts keep; `repo` is the folder whose repository layer of views and config applies.
     pub fn new(
         client: Client,
         runtime: tokio::runtime::Handle,
@@ -168,6 +105,7 @@ impl LegionApp {
         };
         app.read_layout(open, cx);
         app.read_thread(cx);
+        app.read_views(cx);
         app
     }
 
@@ -230,35 +168,23 @@ impl LegionApp {
         (task, Follower(follower))
     }
 
-    /// The glance values, and the data of the tab that shows.
+    /// Whether the operator answers (one event read), the live view of the tab, and the Activity's slow parts.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let client = self.client.clone();
         let task = self.operator(cx, async move {
-            let status = client
-                .call::<op::Status>(&StatusIn {
-                    profile: None,
-                    fast: true,
+            client
+                .call::<op::EventsOp>(&EventsIn {
+                    cursor: None,
+                    limit: 1,
                 })
-                .await?;
-            let sample = client
-                .call::<op::Monitor>(&MonitorIn {
-                    count: 1,
-                    interval_ms: 500,
-                })
-                .await?
-                .pop();
-            let fan = client.call::<op::FanStatus>(&Empty {}).await.ok();
-            anyhow::Ok((status, sample, fan))
+                .await
         });
         cx.spawn(
             async move |this: WeakEntity<LegionApp>, cx: &mut AsyncApp| {
                 let result = task.await;
                 let _ = this.update(cx, |app, cx| {
                     match result {
-                        Ok((status, sample, fan)) => {
-                            app.state.status = Some(status);
-                            app.state.sample = sample;
-                            app.state.fan = fan;
+                        Ok(_) => {
                             app.state.offline = None;
                             app.screen.updated = Some(std::time::Instant::now());
                         }
@@ -269,17 +195,30 @@ impl LegionApp {
             },
         )
         .detach();
-        self.load_tab(cx);
+        // a live view reads its data again; its spec stays (a refresh never regenerates a view)
+        let key = self.tab_key();
+        let due = self
+            .screen
+            .view()
+            .and_then(|v| v.every)
+            .is_some_and(|every| {
+                self.screen
+                    .rendered_at
+                    .get(&key)
+                    .is_none_or(|at| at.elapsed() >= Duration::from_secs(u64::from(every)))
+            });
+        if due {
+            self.render_view(cx);
+        }
         if self.screen.ticks.is_multiple_of(15) {
             self.load_space(cx);
         }
         self.screen.ticks += 1;
     }
 
-    /// The data of the tab that shows: its page's operation, its view, or its thread.
+    /// The data of the tab that shows: its view (once; then its refresh), or its thread.
     pub(crate) fn load_tab(&mut self, cx: &mut Context<Self>) {
         match self.tab().cloned() {
-            Some(Tab::Page { page }) => self.load_page(page, cx),
             Some(Tab::View { .. }) if !self.screen.view_data.contains_key(&self.tab_key()) => {
                 self.render_view(cx);
             }
@@ -291,65 +230,6 @@ impl LegionApp {
     /// The key of the tab that shows.
     pub(crate) fn tab_key(&self) -> String {
         self.tab().map(Tab::key).unwrap_or_default()
-    }
-
-    fn load_page(&mut self, page: Page, cx: &mut Context<Self>) {
-        let client = self.client.clone();
-        match page {
-            Page::Now => {
-                let task = self.operator(cx, async move {
-                    client
-                        .call::<op::Sensors>(&SensorsIn { watch: false })
-                        .await
-                });
-                self.finish(cx, task, |app, readings| app.state.sensors = Some(readings));
-            }
-            Page::Gpu => {
-                let task =
-                    self.operator(
-                        cx,
-                        async move { client.call::<op::GpuStatus>(&Empty {}).await },
-                    );
-                self.finish(cx, task, |app, gpu| app.state.gpu = Some(gpu));
-            }
-            Page::Health => {
-                let task = self.operator(cx, async move {
-                    client
-                        .call::<op::Doctor>(&ProfileIn { profile: None })
-                        .await
-                });
-                self.finish(cx, task, |app, f: Findings| {
-                    app.state.findings = Some(f.findings);
-                });
-            }
-            Page::Bench => {
-                // every page, so the newest runs are there too
-                let task = self.operator(cx, async move {
-                    let mut runs = Vec::new();
-                    let mut cursor = None;
-                    loop {
-                        let page = client
-                            .call::<op::BenchList>(&PageIn {
-                                cursor,
-                                limit: 1000,
-                            })
-                            .await?;
-                        runs.extend(page.items);
-                        match page.next {
-                            Some(next) => cursor = Some(next),
-                            None => break Ok(runs),
-                        }
-                    }
-                });
-                self.finish(cx, task, |app, runs| app.state.runs = Some(runs));
-            }
-            Page::Resources => {
-                let task = self.operator(cx, async move {
-                    client.call::<op::ResourcesList>(&Empty {}).await
-                });
-                self.finish(cx, task, |app, list| app.state.resources = Some(list));
-            }
-        }
     }
 
     /// Run an operator call. It blocks a background thread of GPUI's executor on the app's tokio runtime, so that
@@ -397,115 +277,92 @@ impl LegionApp {
         .detach();
     }
 
-    /// Open a page as a tab.
-    pub fn open(&mut self, page: Page, cx: &mut Context<Self>) {
-        self.open_tab(Tab::Page { page }, cx);
-    }
-
-    /// What the power policy would change now (dry run).
-    pub fn preview_policy(&mut self, cx: &mut Context<Self>) {
-        let client = self.client.clone();
-        let task = self.operator(cx, async move {
-            client
-                .call::<op::PowerApply>(&PowerApplyIn {
-                    source: PowerSource::Auto,
-                    dry_run: true,
-                })
-                .await
-        });
-        self.finish(cx, task, |app, changes| {
-            app.state.pending = Some(Pending::Policy(changes));
-        });
-    }
-
-    /// What choosing `choice` for the desktop GPU would change (dry run).
-    pub fn preview_desktop_gpu(&mut self, choice: DesktopGpu, cx: &mut Context<Self>) {
-        let client = self.client.clone();
-        let task = self.operator(cx, async move {
-            client
-                .call::<op::GpuPrimary>(&GpuPrimaryIn {
-                    choice,
-                    release_nvidia: false,
-                    dry_run: true,
-                })
-                .await
-        });
-        self.finish(cx, task, move |app, changes| {
-            app.state.pending = Some(Pending::DesktopGpu(choice, changes));
-        });
-    }
-
-    /// What the action `action` of the resource `id` would do: its operation's dry run, or its route.
-    pub fn preview_resource(&mut self, id: String, action: String, cx: &mut Context<Self>) {
-        let client = self.client.clone();
-        let input = ResourceActIn {
-            id: id.clone(),
-            action: action.clone(),
-            dry_run: true,
-        };
-        let task = self.operator(
+    /// Open a view as a tab.
+    pub fn open_view(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.open_tab(
+            Tab::View {
+                name: name.to_string(),
+                params: Vec::new(),
+            },
             cx,
-            async move { client.call::<op::ResourcesAct>(&input).await },
         );
-        self.finish(cx, task, move |app, acted| {
-            app.state.pending = Some(Pending::Resource(id, action, acted));
-        });
     }
 
-    /// Apply the pending change; the daemon asks polkit.
-    pub fn apply(&mut self, cx: &mut Context<Self>) {
-        let Some(pending) = self.state.pending.take() else {
+    /// A view's button: a read runs at once; a change with a dry run shows its plan first; a change without one
+    /// asks inline with its operation and input. Apply runs it; for the machine, polkit asks.
+    pub fn act(&mut self, button: ViewButton, cx: &mut Context<Self>) {
+        let Some(info) = OPS.iter().find(|o| o.name == button.op && !o.internal()) else {
+            self.state.message = Some(format!(
+                "the button {} names no operation {}",
+                button.label, button.op
+            ));
+            cx.notify();
             return;
         };
+        let dry_run = (info.input)()["properties"].get("dry_run").is_some();
+        let class = info.class;
+        if class == Class::Read {
+            self.state.pending = None;
+            self.run(button, false, cx);
+            return;
+        }
+        if !dry_run {
+            self.state.pending = Some(Pending {
+                button,
+                class,
+                dry_run,
+                plan: None,
+            });
+            cx.notify();
+            return;
+        }
         let client = self.client.clone();
-        let changed = |changes: Changes| {
-            if changes.lines.is_empty() {
-                "nothing to change".to_string()
-            } else {
-                changes.lines.join("; ")
-            }
-        };
+        let mut input = button.input.clone();
+        input["dry_run"] = Value::Bool(true);
+        let name = info.name;
         let task = self.operator(cx, async move {
-            Ok(match pending {
-                Pending::Policy(_) => changed(
-                    client
-                        .call::<op::PowerApply>(&PowerApplyIn {
-                            source: PowerSource::Auto,
-                            dry_run: false,
-                        })
-                        .await?,
-                ),
-                Pending::DesktopGpu(choice, _) => changed(
-                    client
-                        .call::<op::GpuPrimary>(&GpuPrimaryIn {
-                            choice,
-                            release_nvidia: false,
-                            dry_run: false,
-                        })
-                        .await?,
-                ),
-                Pending::Setup(_) => changed(
-                    client
-                        .call::<op::SetupApply>(&SetupApplyIn { install_ctx: false })
-                        .await?,
-                ),
-                Pending::Resource(id, action, _) => client
-                    .call::<op::ResourcesAct>(&ResourceActIn {
-                        id,
-                        action,
-                        dry_run: false,
-                    })
-                    .await?
-                    .text(),
-            })
+            let value = client.call_value(name, &input).await?;
+            legionctl_api::render(name, value).map(|(text, _)| text)
         });
-        self.finish(cx, task, |app, message| app.state.message = Some(message));
+        self.finish(cx, task, move |app, plan| {
+            app.state.pending = Some(Pending {
+                button,
+                class,
+                dry_run,
+                plan: Some(plan),
+            });
+        });
     }
 
-    /// The setup findings as the plan of `setup apply`.
-    pub fn preview_setup(&mut self, items: Vec<String>, cx: &mut Context<Self>) {
-        self.state.pending = Some(Pending::Setup(items));
-        cx.notify();
+    /// Run `button`'s operation; its text is the message, and the tab's view reads again.
+    fn run(&mut self, button: ViewButton, dry_run: bool, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+        let mut input = button.input;
+        if dry_run {
+            input["dry_run"] = Value::Bool(false);
+        }
+        let op = button.op;
+        let task = self.operator(cx, async move {
+            let value = client.call_value(&op, &input).await?;
+            legionctl_api::render(&op, value).map(|(text, _)| text)
+        });
+        self.finish(cx, task, |app, text: String| {
+            app.state.message = Some(if text.trim().is_empty() {
+                "done".into()
+            } else {
+                text
+            });
+        });
+        let key = self.tab_key();
+        self.screen.view_data.remove(&key);
+        self.load_tab(cx);
+    }
+
+    /// Apply the pending action.
+    pub fn apply(&mut self, cx: &mut Context<Self>) {
+        if let Some(pending) = self.state.pending.take() {
+            self.run(pending.button, pending.dry_run, cx);
+        }
     }
 
     pub fn discard(&mut self, cx: &mut Context<Self>) {
@@ -513,21 +370,23 @@ impl LegionApp {
         cx.notify();
     }
 
-    /// A short CPU bench; the list refreshes after it.
-    pub fn bench(&mut self, seconds: u32, cx: &mut Context<Self>) {
+    /// Show another version of the view `name` (undo, redo, reset, pin); the tab reads it again.
+    pub fn version(&mut self, name: &str, to: &str, cx: &mut Context<Self>) {
         let client = self.client.clone();
-        let task = self.operator(cx, async move {
-            client
-                .call::<op::BenchRunOp>(&BenchIn {
-                    scenario: Scenario::Cpu,
-                    seconds,
-                    label: Some("app".into()),
-                })
-                .await
-        });
-        self.finish(cx, task, |app, run: BenchRun| {
-            app.state.message = Some(format!("bench run {} done", run.id));
-            app.state.runs.get_or_insert_with(Vec::new).push(run);
+        let input = legionctl_api::ViewVersionIn {
+            name: name.to_string(),
+            to: to.to_string(),
+            repo: legionctl_api::ClientPath(self.screen.repo.clone()),
+        };
+        let task = self.operator(
+            cx,
+            async move { client.call::<op::ViewsVersion>(&input).await },
+        );
+        self.finish_with(cx, task, |app, lines, cx| {
+            app.state.message = Some(lines.lines.join("\n"));
+            let key = app.tab_key();
+            app.screen.view_data.remove(&key);
+            app.load_tab(cx);
         });
     }
 }

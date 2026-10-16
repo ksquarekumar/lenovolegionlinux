@@ -1,0 +1,75 @@
+// Seed (DESIGN-09): the machine at a glance. The firmware mode, the CPU and GPU power and temperature, the fans, then
+// every sensor by its source, with the temperatures in their state colour; the power policy's plan on demand.
+{
+  "$schema": "../../docs/api/view.schema.json",
+  "name": "machine-now",
+  "title": "Machine now",
+  "intent": "the machine now",
+  "space": "machine",
+  "widget": "stack",
+  "views": [
+    {
+      "name": "mode",
+      "title": "Firmware mode",
+      "widget": "stat",
+      "source": { "op": "status", "input": { "fast": true }, "path": "$.platform_profile" },
+      "note": "on {power_source}",
+      "missing": "No firmware mode: the kernel offers no platform_profile now (Health says why)"
+    },
+    {
+      "name": "cpu-power",
+      "title": "CPU power",
+      "widget": "stat",
+      "source": { "op": "sensors", "path": "$.[name=CPU package power].value" },
+      "unit": "W",
+      "formats": { "value": "int" },
+      "trend": "$.[name=CPU package power].history",
+      "note": "package"
+    },
+    {
+      "name": "cpu-temperature",
+      "title": "CPU temperature",
+      "widget": "stat",
+      "source": { "op": "sensors", "path": "$.[name=Package id 0].value" },
+      "unit": "°C",
+      "warn": 85,
+      "critical": 95,
+      "formats": { "value": "int" },
+      "trend": "$.[name=Package id 0].history",
+      "note": "package, warning at 85 °C"
+    },
+    {
+      "name": "gpu-power",
+      "title": "GPU power",
+      "widget": "stat",
+      "source": { "op": "sensors", "path": "$.[name=GPU power].value" },
+      "unit": "W",
+      "formats": { "value": "int" },
+      "trend": "$.[name=GPU power].history",
+      "note": "NVIDIA",
+      "missing": "The NVIDIA GPU sleeps"
+    },
+    {
+      "name": "fans",
+      "title": "Fans",
+      "widget": "stat",
+      "source": { "op": "monitor", "input": { "count": 1, "interval_ms": 200 }, "path": "$.0.root.fan_rpm" },
+      "unit": "rpm",
+      "formats": { "value": "join" },
+      "missing": "No fan speed: legionctl-system does not answer"
+    },
+    {
+      "name": "sensors",
+      "title": "Sensors",
+      "widget": "table",
+      "source": { "op": "sensors" },
+      "columns": ["name", "value|text", "unit"],
+      "labels": { "name": "Sensor", "value|text": "Value", "unit": "Unit" },
+      "formats": { "value|text": "1dp" },
+      "group": { "field": "source", "order": ["CPU", "RAPL", "nvidia-smi", "fans"], "fold": 8 },
+      "levels": [{ "column": "value|text", "warn": 85, "critical": 95, "when": { "unit": "°C" } }]
+    }
+  ],
+  "actions": [{ "label": "Check the power policy", "op": "power.apply", "input": { "source": "auto" } }],
+  "refresh": { "every": 2 }
+}

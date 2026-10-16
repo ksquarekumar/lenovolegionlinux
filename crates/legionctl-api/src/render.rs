@@ -2497,38 +2497,102 @@ pub fn sparkline(values: &[f64]) -> String {
         .collect()
 }
 
+/// The rows of a table or list, by group when it has groups: `== group (count) ==` before each group's rows.
+fn view_rows(v: &crate::ViewData, line: impl Fn(&[String]) -> String) -> Vec<String> {
+    let mut out = Vec::new();
+    if v.groups.is_empty() {
+        out.extend(v.rows.iter().map(|r| line(r)));
+        return out;
+    }
+    for group in &v.group_order {
+        let rows: Vec<&Vec<String>> = v
+            .rows
+            .iter()
+            .zip(&v.groups)
+            .filter(|(_, g)| *g == group)
+            .map(|(r, _)| r)
+            .collect();
+        out.push(format!("== {group} ({}) ==", rows.len()));
+        out.extend(rows.into_iter().map(|r| line(r)));
+    }
+    out
+}
+
 impl Render for crate::ViewData {
+    /// The terminal form of a view (DESIGN-09 Rule 1): counts and the point first, one line each.
     fn text(&self) -> String {
-        let head = format!("{} ({})", self.name, self.widget);
+        let head = format!("{} ({}, version {})", self.title, self.widget, self.version);
         if let Some(error) = &self.error {
             return format!("{head}: cannot read: {error}");
         }
-        let body = match self.widget {
-            crate::ViewWidget::Table => std::iter::once(self.columns.join(" | "))
-                .chain(self.rows.iter().map(|r| r.join(" | ")))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            crate::ViewWidget::List | crate::ViewWidget::Tree => self
-                .rows
-                .iter()
-                .map(|r| r.join(" "))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            crate::ViewWidget::Gauge => format!(
+        let body: Vec<String> = match self.widget {
+            crate::ViewWidget::Table => std::iter::once(format!(
+                "{} rows: {}",
+                self.rows.len(),
+                self.columns.join(" | ")
+            ))
+            .chain(view_rows(self, |r| r.join(" | ")))
+            .collect(),
+            crate::ViewWidget::List | crate::ViewWidget::Tree => {
+                std::iter::once(format!("{} rows", self.rows.len()))
+                    .chain(view_rows(self, |r| r.join(" ")))
+                    .collect()
+            }
+            crate::ViewWidget::Gauge => vec![format!(
                 "{} / {}",
                 self.numbers.first().copied().unwrap_or_default(),
                 self.max
-            ),
-            crate::ViewWidget::Sparkline => sparkline(&self.numbers),
-            crate::ViewWidget::Markdown | crate::ViewWidget::Diff => self.text.clone(),
-            crate::ViewWidget::Stack => self
-                .parts
-                .iter()
-                .map(Render::text)
-                .collect::<Vec<_>>()
-                .join("\n\n"),
+            )],
+            crate::ViewWidget::Sparkline => vec![sparkline(&self.numbers)],
+            crate::ViewWidget::Markdown | crate::ViewWidget::Diff => vec![self.text.clone()],
+            crate::ViewWidget::Stat => vec![format!(
+                "{} {}{}{}{}",
+                self.text,
+                self.unit,
+                if self.level.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", self.level)
+                },
+                if self.note.is_empty() {
+                    String::new()
+                } else {
+                    format!(" - {}", self.note)
+                },
+                if self.numbers.len() > 1 {
+                    format!(" {}", sparkline(&self.numbers))
+                } else {
+                    String::new()
+                }
+            )],
+            crate::ViewWidget::Chart => std::iter::once(format!("{} series", self.series.len()))
+                .chain(self.series.iter().map(|s| {
+                    let ys: Vec<f64> = s.points.iter().map(|p| p.1).collect();
+                    let (low, high) = ys
+                        .iter()
+                        .fold((f64::MAX, f64::MIN), |(l, h), y| (l.min(*y), h.max(*y)));
+                    format!(
+                        "{}: {} points, {low:.0} to {high:.0}, last {:.0} {}",
+                        if s.name.is_empty() { "-" } else { &s.name },
+                        s.points.len(),
+                        ys.last().copied().unwrap_or_default(),
+                        sparkline(&ys)
+                    )
+                }))
+                .collect(),
+            crate::ViewWidget::Stack => self.parts.iter().map(Render::text).collect(),
         };
-        format!("{head}\n{body}")
+        let actions = self
+            .actions
+            .iter()
+            .map(|a| format!("[{}] {} {}", a.label, a.op, a.input))
+            .collect::<Vec<_>>();
+        let mut out = vec![head];
+        out.extend(body);
+        if !actions.is_empty() {
+            out.push(format!("actions: {}", actions.join("; ")));
+        }
+        out.join("\n")
     }
 
     /// A view, or a view of its stack, that cannot read.
@@ -2550,10 +2614,13 @@ impl Render for Vec<crate::ViewInfo> {
                     (None, None) => String::new(),
                 };
                 format!(
-                    "{:<24} {:<10} {what}  {}",
+                    "{:<24} {:<10} {what}  {}{}",
                     v.name,
                     v.layer,
-                    v.file.display()
+                    v.title.as_deref().unwrap_or_default(),
+                    v.intent
+                        .as_deref()
+                        .map_or_else(String::new, |i| format!(" (intent: {i})"))
                 )
             })
             .collect::<Vec<_>>()

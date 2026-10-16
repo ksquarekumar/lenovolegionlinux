@@ -1,14 +1,14 @@
 use gpui_kit::component::{Theme, TitleBar};
 use gpui_kit::{AppContext, Bounds, WindowBounds, WindowOptions, px, size};
 use legionctl_api::client::Client;
-use legionctl_app::{AppAssets, LegionApp, Page, Tab, theme};
+use legionctl_app::{AppAssets, LegionApp, Tab, theme};
 
 /// The window's decoration around its content (the kit's client-side shadow, 20 px on each side), so that the content
 /// gets the size asked for (U3).
 const DECORATION: f32 = 40.;
 
 fn main() -> anyhow::Result<()> {
-    let usage = "usage: legionctl-app [now|gpu|health|bench|resources|<view>] [--dossier <name>]";
+    let usage = "usage: legionctl-app [<view>] [--dossier <name>]";
     let mut open = None;
     let mut dossier = None;
     let mut args = std::env::args().skip(1);
@@ -17,12 +17,9 @@ fn main() -> anyhow::Result<()> {
             "--dossier" => dossier = Some(args.next().ok_or_else(|| anyhow::anyhow!(usage))?),
             w if w.starts_with('-') => anyhow::bail!(usage),
             w => {
-                open = Some(match Page::named(w) {
-                    Some(page) => Tab::Page { page },
-                    None => Tab::View {
-                        name: w.to_string(),
-                        params: Vec::new(),
-                    },
+                open = Some(Tab::View {
+                    name: w.to_string(),
+                    params: Vec::new(),
                 });
             }
         }

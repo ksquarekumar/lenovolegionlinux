@@ -54,19 +54,29 @@ then the screen's, then the registry's with their class.
 ## Views
 
 A view is a JSONC file (schema `docs/api/view.schema.json`) that binds one widget to a read operation. The
-`ui-composer` and a person make the same views.
+`ui-composer` and a person make the same views; the app draws only views (DESIGN-09). Layers, highest first: the
+repository's `.legionctl/views/`, the user's `~/.config/legionctl/views/`, the seeds that legionctl ships
+(`config/views/`: `machine-now`, `health`, `resources`, `bench`, `apps-gpu`). Each save is a version
+(`views/.history/<name>/<n>.jsonc`; the seed is version 0); the version that shows is the fact `view:<name>`
+`version` (`facts at --entity view:<name>`).
 
 | Command | What it does |
 | --- | --- |
-| `views check < file.jsonc` | Check the format, a widget of the closed set, a read operation as the source, the parameters. |
-| `views save [--repo <dir>] < file.jsonc` | Check, then save into `~/.config/legionctl/views/` (or the repository's `.legionctl/views/`). The screens that show the view read it again. |
-| `views list`, `views render <name> [name=value...]` | The view files of both layers; one view with its data, as text. |
-| `views place <thread> <name> [name=value...]` | Show the view in pane 3 of the thread's screens (a `views.place` row of its log). |
+| `views check < file.jsonc` | Check the format, a widget of the closed set, a read operation as the source, the operations of the buttons, the parameters. |
+| `views save [--repo <dir>] < file.jsonc` | Check, then save as the next version into `~/.config/legionctl/views/` (or the repository's `.legionctl/views/`); that version shows. |
+| `views version <name> undo\|redo\|reset\|pin\|<n>` | Show another version: reset goes to the pinned version, else the seed; pin keeps the version that shows as the one reset goes to. |
+| `views list`, `views render <name> [name=value...]` | The views of the layers and the seeds (title, intent); one view with its data, as text (counts first, one line each). |
+| `views place <thread> <name> [name=value...]` | Open the view as a tab of the thread's screens (a `views.place` row of its log). |
 
 | Field | Content |
 | --- | --- |
-| `name`, `params` | a-z, 0-9 and `-`; parameters with the type `string` or `integer`. |
-| `widget` | `table`, `tree`, `gauge`, `sparkline`, `markdown`, `diff`, `list` or `stack`. |
-| `source` | `op` (a read operation), `input` (`{param}` in a string is the value), `path` (`$` or `$.a.0.b`). |
-| `columns`, `max`, `views` | Table and list fields; the full gauge; the views of a stack (`name`, `params`). |
-| `refresh.events` | Event kinds after which the view reads again (`thread.*`); also after each `views.save`. |
+| `name`, `title`, `intent`, `space`, `params` | a-z, 0-9 and `-`; the words; the intent it answers ("the machine now"); the navigator's space (machine, work, agents); parameters `string` or `integer`. |
+| `widget` | `table`, `tree`, `gauge`, `sparkline`, `markdown`, `diff`, `list`, `stack`, `stat` or `chart`. |
+| `source` | `op` (a read operation), `input` (`{param}` in a string is the value), `path` (`$`, `$.a.0.b`, `$.[name=x].value`), `all` (read every page of a paged answer). |
+| `columns`, `labels`, `formats` | Table fields (`a.b`; `a\|b` the first that is not null); header and button words; `ago`, `time`, `int`, `1dp`, `count`, `join`. |
+| `group`, `levels`, `filter`, `last` | Rows in groups (a field, or rules `prefix`/`any` with `rest`; `labels`, `order`, `fold`); state colours of a number column (`warn`, `critical`, `when`); rows with these values; the newest N rows first. |
+| `unit`, `warn`, `critical`, `note`, `missing`, `trend` | A stat's unit, limits, note (`{field}` of the answer), the cause when the value is missing, and a path to its trend. |
+| `x`, `y`, `series` | A chart's fields: one line per series value (a chart never mixes kinds), x as time with `formats.x = time`. |
+| `views` | The views of a stack: by name (`name`, `params`) or written in place. |
+| `actions`, `row_actions` | Buttons: `label`, `op` (a public operation, or `{item.op}`), `input` (`{row.x}`, `{item.x}`, a whole `"{item.input}"`), `each` (one button per item of a row's array field). A button runs its operation with its own approval: a read at once, a change with its dry run first, else an inline confirm; polkit asks for the machine. |
+| `refresh` | `events` (kinds after which the view reads again, `thread.*`; also after `views.save`) and `every` (seconds, for live values). A refresh reads the data, never the spec. |

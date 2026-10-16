@@ -1,0 +1,37 @@
+// Seed (DESIGN-09): what the machine has and what uses it, by kind; each row has the actions of its state, and each
+// action shows its plan first.
+{
+  "$schema": "../../docs/api/view.schema.json",
+  "name": "resources",
+  "title": "Resources",
+  "intent": "what uses the machine's resources",
+  "space": "machine",
+  "widget": "table",
+  "source": { "op": "resources.list", "path": "$.resources" },
+  "columns": ["name", "state", "users"],
+  "labels": {
+    "name": "Resource",
+    "state": "State",
+    "users": "Users",
+    "give-windows": "Give to Windows",
+    "give-linux": "Give to Linux",
+    "give-none": "Free it",
+    "intel": "Intel",
+    "nvidia": "NVIDIA",
+    "auto": "Let GNOME choose"
+  },
+  "formats": { "users": "count" },
+  "group": {
+    "field": "group",
+    "labels": {
+      "gpu": "GPUs",
+      "vm": "Virtual machines and containers",
+      "disk": "Disks",
+      "session": "Agent sessions",
+      "configset": "Configuration layers"
+    },
+    "order": ["gpu", "vm", "disk", "session", "configset"]
+  },
+  "row_actions": [{ "label": "{item.name}", "op": "{item.op}", "input": "{item.input}", "each": "actions" }],
+  "refresh": { "events": ["resources.*", "rules.*", "virt.*", "session.*", "vfio.*"], "every": 10 }
+}

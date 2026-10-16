@@ -14,13 +14,33 @@
       "description": "a-z, 0-9 and '-': the file is `<name>.jsonc`.",
       "type": "string"
     },
+    "title": {
+      "description": "The tab's and the navigator's words; default the name.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "intent": {
+      "description": "What the view answers, in the user's words (\"the machine now\"): an intent finds it.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "space": {
+      "description": "The navigator's space that lists it: machine, work or agents.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "params": {
       "description": "The parameters and their types.",
       "type": "object",
       "additionalProperties": {
         "$ref": "#/$defs/Param"
-      },
-      "default": {}
+      }
     },
     "widget": {
       "$ref": "#/$defs/Widget"
@@ -34,16 +54,60 @@
         {
           "type": "null"
         }
-      ],
-      "default": null
+      ]
     },
     "columns": {
-      "description": "table: the field of each cell (required); list: the fields of an object item.",
+      "description": "table: the field of each cell (required; `a.b` is a field of a field, `a|b` the first that is not null); list: the\nfields of an object item.",
       "type": "array",
       "items": {
         "type": "string"
-      },
-      "default": []
+      }
+    },
+    "labels": {
+      "description": "The words of a column's header (`{\"result.label\": \"Kind\"}`) and of a button's label (`{\"give-windows\": \"Give it\nto Windows\"}`).",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "formats": {
+      "description": "How a column's or a stat's value shows: `ago`, `time` (seconds since the epoch), `int`, `1dp`, `count` (an\narray's length), `join` (an array or object's values with \" / \").",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "group": {
+      "description": "table and list: rows in groups, each with its count.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Group"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "levels": {
+      "description": "table: the state colours of number columns.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Level"
+      }
+    },
+    "filter": {
+      "description": "table and list: only the rows whose fields have these values.",
+      "type": "object",
+      "additionalProperties": true
+    },
+    "last": {
+      "description": "table and list: only the last this many rows, newest first.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint",
+      "minimum": 0
     },
     "max": {
       "description": "gauge: the value of a full gauge (default 100).",
@@ -51,16 +115,90 @@
         "number",
         "null"
       ],
-      "format": "double",
-      "default": null
+      "format": "double"
+    },
+    "unit": {
+      "description": "stat: the unit after the value.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "warn": {
+      "description": "stat: the limits of its state colour.",
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    },
+    "critical": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    },
+    "note": {
+      "description": "stat: the line under the value; `{field}` is a value of the source's whole answer.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "missing": {
+      "description": "stat: the text when the value is missing: its cause, with `{field}` of the answer.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "trend": {
+      "description": "stat: a path of the answer to an array of numbers: the trend under the value.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "x": {
+      "description": "chart: the x field (seconds since the epoch show as times), the y field, and the series field.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "y": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "series": {
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "views": {
       "description": "stack: the views it holds.",
       "type": "array",
       "items": {
-        "$ref": "#/$defs/Placed"
-      },
-      "default": []
+        "$ref": "#/$defs/Part"
+      }
+    },
+    "actions": {
+      "description": "Buttons of the view.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Action"
+      }
+    },
+    "row_actions": {
+      "description": "table and list: buttons of each row.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Action"
+      }
     },
     "refresh": {
       "$ref": "#/$defs/Refresh",
@@ -122,9 +260,19 @@
           "const": "list"
         },
         {
-          "description": "Other views by name, top to bottom.",
+          "description": "Other views, top to bottom: by name, or inline.",
           "type": "string",
           "const": "stack"
+        },
+        {
+          "description": "One value with its unit, its state against `warn` and `critical`, a note and a trend.",
+          "type": "string",
+          "const": "stat"
+        },
+        {
+          "description": "An array of objects as lines over time: `x` (seconds since the epoch, or any number), `y`, one chart per value\nof `series` (a chart never mixes kinds), with axes.",
+          "type": "string",
+          "const": "chart"
         }
       ]
     },
@@ -141,14 +289,144 @@
           "default": null
         },
         "path": {
-          "description": "The part of the answer to show: `$`, or `$.field.0.field` (a number is an array index).",
+          "description": "The part of the answer to show: `$`, or `$.field.0.field` (a number is an array index; `[field=value]` is the\nfirst item of an array whose field has that value).",
           "type": "string",
           "default": "$"
+        },
+        "all": {
+          "description": "The operation answers in pages (`items`, `next`): read every page; the answer is `{items}`.",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false,
       "required": [
         "op"
+      ]
+    },
+    "Group": {
+      "description": "Rows in groups: by a field's value, or by rules on a row's text (the first rule that matches).",
+      "type": "object",
+      "properties": {
+        "field": {
+          "description": "The field whose value is the group.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "rules": {
+          "description": "Rules on the row's text (a string row, or the field's value): the group of the first rule that matches.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Rule"
+          },
+          "default": []
+        },
+        "rest": {
+          "description": "The group of a row that no rule matches.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "labels": {
+          "description": "The words of a group value (`{\"vm\": \"Virtual machines\"}`).",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "order": {
+          "description": "The groups first in this order; others after them.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "fold": {
+          "description": "A group with more rows than this starts folded (its count shows).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "Rule": {
+      "type": "object",
+      "properties": {
+        "group": {
+          "type": "string"
+        },
+        "prefix": {
+          "description": "The text starts with this.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "any": {
+          "description": "The text has one of these words (any case).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "group"
+      ]
+    },
+    "Level": {
+      "description": "The state colour of a number column: ok below `warn`, warn below `critical`, critical above.",
+      "type": "object",
+      "properties": {
+        "column": {
+          "type": "string"
+        },
+        "warn": {
+          "type": "number",
+          "format": "double"
+        },
+        "critical": {
+          "type": "number",
+          "format": "double"
+        },
+        "when": {
+          "description": "Only rows whose fields have these values (`{\"unit\": \"°C\"}`).",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "column",
+        "warn",
+        "critical"
+      ]
+    },
+    "Part": {
+      "description": "A part of a stack: a view by name, or a view written in place.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Placed"
+        },
+        {
+          "$ref": "#"
+        }
       ]
     },
     "Placed": {
@@ -171,6 +449,37 @@
         "name"
       ]
     },
+    "Action": {
+      "description": "A button that runs an operation with its normal approval: no confirm for a read, the plan first when the\noperation has a dry run, an inline confirm for a change of the session or the workspace, polkit for the machine.",
+      "type": "object",
+      "properties": {
+        "label": {
+          "description": "The words on the button; `{row.field}` and `{item.field}` are a row's and an item's values.",
+          "type": "string"
+        },
+        "op": {
+          "description": "The operation (`power.apply`), or `{item.op}`.",
+          "type": "string"
+        },
+        "input": {
+          "description": "The operation's input: `{param}`, `{row.field}`, `{item.field}` in strings; a whole `\"{item.input}\"` is the value.",
+          "default": null
+        },
+        "each": {
+          "description": "A row action: one button per item of this array field of the row.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "op"
+      ]
+    },
     "Refresh": {
       "type": "object",
       "properties": {
@@ -181,6 +490,15 @@
             "type": "string"
           },
           "default": []
+        },
+        "every": {
+          "description": "Read the source again each this many seconds (live values); a refresh reads the data, never the spec.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
         }
       },
       "additionalProperties": false

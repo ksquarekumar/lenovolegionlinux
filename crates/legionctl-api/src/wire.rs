@@ -1429,29 +1429,71 @@ wire_enum! {
         Diff,
         List,
         Stack,
+        Stat,
+        Chart,
     }
 }
 
 wire! {
+    /// A button of a view: the operation it runs with this input, with its normal approval.
+    struct ViewButton from core::views::Button {
+        label: String,
+        op: String,
+        input: Value,
+    }
+
+    /// One line of a chart: (x, y) points; x is seconds since the epoch when the chart's x is a time.
+    struct ViewSeries from core::views::Series {
+        name: String,
+        points: Vec<(f64, f64)>,
+        /// Each point's x as it shows.
+        labels: Vec<String>,
+    }
+
     /// A view with its data in the shape of its widget.
     struct ViewData from core::views::Rendered {
         name: String,
+        /// The tab's words, and the intent the view answers.
+        title: String,
+        intent: Option<String>,
         widget: ViewWidget,
+        /// table: the header words.
         columns: Vec<String>,
         /// table: cells; list and tree: one cell per row.
         rows: Vec<Vec<String>>,
-        /// gauge: the value; sparkline: the values.
+        /// The group of each row (empty: no groups), and the groups in their order.
+        groups: Vec<String>,
+        group_order: Vec<String>,
+        /// A group with more rows than this starts folded.
+        fold: Option<usize>,
+        /// table: each cell's state: "", ok, warn, critical.
+        marks: Vec<Vec<String>>,
+        /// gauge: the value; sparkline: the values; stat: its trend.
         numbers: Vec<f64>,
         /// gauge: the value of a full gauge.
         max: f64,
-        /// markdown and diff.
+        /// markdown and diff; stat: the value.
         text: String,
+        /// stat: the unit, the note (or the cause of a missing value) and the state (ok, warn, critical, missing).
+        unit: String,
+        note: String,
+        level: String,
+        /// chart: its lines (one per kind), and whether x is a time.
+        series: Vec<ViewSeries>,
+        x_time: bool,
         /// stack: its views.
         parts: Vec<ViewData>,
+        /// The view's buttons, and each row's.
+        actions: Vec<ViewButton>,
+        row_actions: Vec<Vec<ViewButton>>,
         /// The source failed, or its answer does not fit the widget.
         error: Option<String>,
-        /// The event kinds after which the view reads again (`*` at the end matches any rest).
+        /// The event kinds after which the view reads again (`*` at the end matches any rest), and its live period.
         refresh: Vec<String>,
+        every: Option<u32>,
+        /// The version that shows (0: the seed) and the versions there are.
+        version: u32,
+        versions: Vec<u32>,
     }
 }
 

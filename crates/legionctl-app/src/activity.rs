@@ -6,9 +6,8 @@ use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::{AnyElement, Context, IntoElement, StatefulInteractiveElement as _};
 use legionctl_api::{EventRow, Job, PageIn, ProfileIn, op};
 
-use crate::shell::Tab;
+use crate::LegionApp;
 use crate::theme::Tokens;
-use crate::{LegionApp, Page};
 
 /// The newest events the screen keeps.
 const KEPT: usize = 50;
@@ -127,9 +126,7 @@ impl LegionApp {
                     false,
                     t,
                 )
-                .on_click(cx.listener(|app, _, _, cx| {
-                    app.open_tab(Tab::Page { page: Page::Health }, cx);
-                }))
+                .on_click(cx.listener(|app, _, _, cx| app.open_view("health", cx)))
                 .test_support()
                 .into_any_element()
             })),

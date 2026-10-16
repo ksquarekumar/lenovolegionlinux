@@ -9,13 +9,15 @@ use std::time::{Duration, Instant};
 
 use common::Operator;
 use common::scratch::Scratch;
+use gpui_kit::SharedString;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
     AppContext, Bounds, Entity, TestAppContext, VisualTestContext, WindowBounds, WindowHandle,
     WindowOptions, point, px, size,
 };
+use legionctl_api::ViewData;
 use legionctl_api::client::Client;
-use legionctl_app::{LegionApp, Page, Pending, Space, Tab};
+use legionctl_app::{LegionApp, Space, Tab};
 
 const FIXTURE: &str = "../../tests/fixtures/sysroot-82wq-2026-10-12";
 const PROFILE: &str = "../../profiles/lenovo-82wq-legion-pro-7-16irx8h.json";
@@ -104,8 +106,36 @@ fn unplugged_machine(tag: &'static str) -> Operator {
     op
 }
 
+/// A view tab.
+fn view(name: &str) -> Tab {
+    Tab::View {
+        name: name.into(),
+        params: Vec::new(),
+    }
+}
+
+/// The view of the tab that shows, or the part `name` of its stack.
+fn part<'a>(data: &'a ViewData, name: &str) -> Option<&'a ViewData> {
+    if data.name == name {
+        return Some(data);
+    }
+    data.parts.iter().find_map(|p| part(p, name))
+}
+
+/// The part `name` of the view that the tab shows, once it has read.
+fn shown(a: &LegionApp, name: &str) -> Option<ViewData> {
+    a.screen.view().and_then(|v| part(v, name)).cloned()
+}
+
+/// The seeds (DESIGN-09 G2) show the old pages' data through the one renderer, on the recorded machine unplugged
+/// with the AC policy still applied: Machine now has the firmware mode and the power source in its stat and the
+/// sensors by source with the temperatures' state; its button "Check the power policy" is a machine action, so it shows
+/// its plan (the dry run: the battery policy's writes, one line for the governor of 32 CPUs) and Apply asks the daemon
+/// exactly as the CLI does: without the system bus it is refused, the tab says why, and the event log names the app.
+/// Health groups doctor's findings with their counts; Bench reads every page of the runs (1001, past the first 1000)
+/// and shows the newest first, and one chart per kind of run.
 #[gpui_kit::test]
-fn the_app_shows_the_machine_previews_the_policy_reports_a_refused_apply_and_lists_findings(
+fn the_seed_views_show_the_machine_and_a_generated_machine_button_asks_as_the_cli(
     cx: &mut TestAppContext,
 ) {
     let op = unplugged_machine("app");
@@ -113,60 +143,71 @@ fn the_app_shows_the_machine_previews_the_policy_reports_a_refused_apply_and_lis
     let cx = &mut vcx;
 
     // the glance: unplugged, firmware still in the AC mode
-    wait(cx, &app, "the status", |a| a.state.status.is_some());
+    wait(cx, &app, "the machine now", |a| {
+        shown(a, "sensors").is_some_and(|s| !s.rows.is_empty())
+    });
     app.read_with(cx, |a, _| {
-        let status = a.state.status.as_ref().unwrap();
-        assert_eq!(status.power_source, "battery");
-        assert_eq!(status.platform_profile.as_deref(), Some("max-power"));
+        let mode = shown(a, "mode").unwrap();
+        assert_eq!(
+            (mode.text.as_str(), mode.note.as_str()),
+            ("max-power", "on battery"),
+            "{mode:?}"
+        );
+        let sensors = shown(a, "sensors").unwrap();
+        let source = sensors
+            .rows
+            .iter()
+            .position(|r| r[0] == "power source")
+            .unwrap_or_else(|| panic!("{sensors:?}"));
+        assert_eq!(sensors.groups[source], "power_supply", "grouped by source");
+        assert_eq!(
+            sensors.rows[source][1], "battery",
+            "a reading's text where it has no number"
+        );
     });
 
-    // preview: the battery policy's writes, shown before anything changes
-    cx.update(|window, cx| window.click("preview-policy", cx));
-    wait(cx, &app, "the policy preview", |a| {
-        a.state.pending.is_some()
+    // the button: a machine action shows its plan first
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("view-machine-now-action-0", cx);
+    });
+    wait(cx, &app, "the policy's plan", |a| {
+        a.state.pending.as_ref().is_some_and(|p| p.plan.is_some())
     });
     app.read_with(cx, |a, _| {
-        let Some(Pending::Policy(changes)) = &a.state.pending else {
-            panic!("{:?}", a.state.pending)
-        };
-        assert!(changes.dry_run);
-        assert!(
-            changes
-                .lines
-                .iter()
-                .any(|l| l.contains("platform-profile-0/profile: balanced")),
-            "{changes:?}"
-        );
+        let pending = a.state.pending.as_ref().unwrap();
+        assert_eq!(pending.class, legionctl_api::Class::Machine);
+        let plan = pending.plan.as_deref().unwrap();
+        assert!(plan.contains("platform-profile-0/profile: balanced"), "{plan}");
         // one line for the governor of all 32 CPUs, not 32 lines
         let governor = "would write /sys/devices/system/cpu/cpufreq/policy*/scaling_governor: powersave (32 CPUs)";
-        assert!(changes.lines.iter().any(|l| l == governor), "{changes:?}");
+        assert!(plan.lines().any(|l| l.contains(governor)), "{plan}");
     });
+    let before = op.ok(&["events"]);
+    assert!(
+        !before
+            .lines()
+            .any(|l| l.contains(" app ") && l.contains("power.apply") && !l.contains("dry")),
+        "{before}"
+    );
 
-    // apply: no daemon on this bus, so the operator refuses; the app says why and keeps running
-    cx.update(|window, cx| window.click("apply", cx));
+    // apply: no daemon on this bus, so the operator refuses, as for the CLI; the app says why and keeps running
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("apply", cx);
+    });
     wait(cx, &app, "the apply result", |a| {
-        a.state.message.is_some() && !a.state.busy
+        a.state.message.is_some() && a.state.pending.is_none()
     });
     app.read_with(cx, |a, _| {
-        assert!(a.state.pending.is_none());
         let message = a.state.message.as_deref().unwrap();
         assert!(message.contains("system bus"), "{message}");
     });
-
-    // the Health tab: doctor's findings for this machine
-    cx.update(|window, cx| window.click("nav-health", cx));
-    wait(cx, &app, "the findings", |a| a.state.findings.is_some());
-    app.read_with(cx, |a, _| {
-        assert_eq!(a.tab(), Some(&Tab::Page { page: Page::Health }));
-        let findings = a.state.findings.as_ref().unwrap();
-        assert!(
-            findings
-                .iter()
-                .any(|f| f == "platform_profile is 'max-power', expected 'balanced'"),
-            "{findings:?}"
-        );
-    });
-    // the operator's event log names the app as the actor of the refused change
+    let cli = op.cli(&["power", "apply"]);
+    assert!(
+        String::from_utf8_lossy(&cli.stderr).contains("system bus"),
+        "the CLI gets the same refusal"
+    );
     let events = op.ok(&["events"]);
     assert!(
         events
@@ -175,14 +216,41 @@ fn the_app_shows_the_machine_previews_the_policy_reports_a_refused_apply_and_lis
         "{events}"
     );
 
-    // the Bench tab: every run in the log, also past its first page (1000), so the newest is there
+    health_and_bench(cx, &app);
+    drop(runtime);
+}
+
+/// Health groups doctor's findings; Bench reads every page of the runs, the newest first, one chart per kind.
+fn health_and_bench(cx: &mut VisualTestContext, app: &Entity<LegionApp>) {
+    // Health: doctor's findings in groups with their counts
+    cx.update(|window, cx| window.click("nav-health", cx));
+    wait(cx, app, "the findings", |a| {
+        shown(a, "health").is_some_and(|h| !h.rows.is_empty())
+    });
+    app.read_with(cx, |a, _| {
+        let health = shown(a, "health").unwrap();
+        let at = health
+            .rows
+            .iter()
+            .position(|r| r[0] == "platform_profile is 'max-power', expected 'balanced'")
+            .unwrap_or_else(|| panic!("{health:?}"));
+        assert_eq!(health.groups[at], "To check");
+        assert_eq!(
+            health.groups.len(),
+            health.rows.len(),
+            "each finding is in a group"
+        );
+    });
+
+    // Bench: every page of the runs, the newest first, one chart per kind
     let db = std::env::temp_dir().join(format!(
         "legionctl-app-{}/home/.local/state/legionctl/operator.db",
         std::process::id()
     ));
     let runs = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1001) \
                 INSERT INTO events (ts, actor, kind, payload) SELECT 1700000000 + i, 'cli', 'bench.result', \
-                json_object('scenario', 'cpu', 'label', 'run-' || i, 'seconds', 5, 'scores', json_object(), \
+                json_object('scenario', 'cpu', 'label', CASE WHEN i % 2 = 0 THEN 'app' ELSE 'live-cpu' END, \
+                'seconds', 5, 'scores', json_object('cpu bogo ops/s', 1000 + i), \
                 'problems', json_array(), 'summary', json_object('samples', 1, 'throttle', json_array()), \
                 'knobs', json_object()) FROM n";
     let stored = std::process::Command::new("sqlite3")
@@ -192,22 +260,39 @@ fn the_app_shows_the_machine_previews_the_policy_reports_a_refused_apply_and_lis
         .unwrap();
     assert!(stored.success());
     cx.update(|window, cx| window.click("nav-bench", cx));
-    wait(cx, &app, "the runs", |a| a.state.runs.is_some());
-    app.read_with(cx, |a, _| {
-        assert_eq!(a.tab(), Some(&Tab::Page { page: Page::Bench }));
-        let runs = a.state.runs.as_ref().unwrap();
-        assert_eq!(runs.len(), 1001);
-        assert_eq!(runs[1000].result.label.as_deref(), Some("run-1001"));
+    wait(cx, app, "the runs", |a| {
+        shown(a, "bench-runs").is_some_and(|b| !b.rows.is_empty())
     });
-    drop(runtime);
+    app.read_with(cx, |a, _| {
+        let runs = shown(a, "bench-runs").unwrap();
+        assert_eq!(runs.rows.len(), 200, "the newest 200");
+        assert_eq!(
+            runs.rows[0][1], "live-cpu",
+            "run 1001 first: {:?}",
+            runs.rows[0]
+        );
+        assert_eq!(runs.rows[0][2], "2001", "{:?}", runs.rows[0]);
+        let chart = shown(a, "bench-cpu").unwrap();
+        let kinds: Vec<(&str, usize)> = chart
+            .series
+            .iter()
+            .map(|s| (s.name.as_str(), s.points.len()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [("live-cpu", 501), ("app", 500)],
+            "one line per kind, every page"
+        );
+    });
 }
 
-/// The Resources page (note 22) against the real operator on the recorded machine, without a daemon: it lists the
-/// configset layers with their actions; a click on an action shows its route first (rules.disable has no dry run of
-/// its own, so nothing runs), and Apply runs the routed operation as a call of its own: the operator refuses it
-/// without the system bus, the page says why, and the event log names `rules.disable` with the app as its actor.
+/// The Resources seed (note 22) against the real operator on the recorded machine, without a daemon: it lists the
+/// configset layers in their group with their actions, which come with the data (each action names its operation);
+/// a click shows the route first (rules.disable is a machine operation with no dry run, so the tab asks inline and
+/// nothing runs), and Apply runs it as a call of its own: the operator refuses it without the system bus, the tab
+/// says why, and the event log names `rules.disable` with the app as its actor.
 #[gpui_kit::test]
-fn the_resources_page_lists_the_resources_and_an_action_click_calls_its_operation(
+fn the_resources_seed_lists_the_resources_and_a_row_action_runs_its_operation(
     cx: &mut TestAppContext,
 ) {
     let op = unplugged_machine("resources");
@@ -217,48 +302,51 @@ fn the_resources_page_lists_the_resources_and_an_action_click_calls_its_operatio
         window.render_frame(cx);
         window.click("nav-resources", cx);
     });
-    wait(cx, &app, "the resources", |a| a.state.resources.is_some());
-    app.read_with(cx, |a, _| {
-        let list = &a.state.resources.as_ref().unwrap().resources;
-        let ac = list
+    wait(cx, &app, "the resources", |a| {
+        shown(a, "resources").is_some_and(|r| !r.rows.is_empty())
+    });
+    let row = app.read_with(cx, |a, _| {
+        let list = shown(a, "resources").unwrap();
+        let row = list
+            .row_actions
             .iter()
-            .find(|r| r.id == "layer:shipped/20-ac")
+            .position(|b| {
+                b.iter()
+                    .any(|b| b.input == serde_json::json!({"layer": "shipped/20-ac"}))
+            })
             .unwrap_or_else(|| panic!("{list:?}"));
-        assert_eq!(ac.group, "configset");
-        let actions: Vec<(&str, &str)> = ac
-            .actions
+        assert_eq!(list.groups[row], "Configuration layers");
+        let actions: Vec<(&str, &str)> = list.row_actions[row]
             .iter()
-            .map(|a| (a.name.as_str(), a.op.as_str()))
+            .map(|b| (b.label.as_str(), b.op.as_str()))
             .collect();
         assert_eq!(actions, [("disable", "rules.disable")]);
+        row
     });
 
+    let id = format!("view-resources-row-{row}-action-0");
     cx.update(|window, cx| {
         window.render_frame(cx);
-        window.click("layer:shipped/20-ac/disable", cx);
+        // the group of the layers is open (a short group)
+        window.click(SharedString::from(id), cx);
     });
-    wait(cx, &app, "the route", |a| a.state.pending.is_some());
     app.read_with(cx, |a, _| {
-        let Some(Pending::Resource(id, action, acted)) = &a.state.pending else {
-            panic!("{:?}", a.state.pending)
-        };
-        assert_eq!(
-            (id.as_str(), action.as_str()),
-            ("layer:shipped/20-ac", "disable")
-        );
-        assert_eq!(acted.op, "rules.disable");
-        assert_eq!(acted.input, serde_json::json!({"layer": "shipped/20-ac"}));
+        let pending = a.state.pending.as_ref().unwrap();
+        assert_eq!(pending.button.op, "rules.disable");
         assert!(
-            !acted.run && acted.output.is_none(),
-            "a dry run runs nothing: {acted:?}"
+            pending.plan.is_none(),
+            "no dry run: an inline confirm of the operation and its input"
         );
     });
     let before = op.ok(&["events"]);
     assert!(!before.contains("rules.disable"), "{before}");
 
-    cx.update(|window, cx| window.click("apply", cx));
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("apply", cx);
+    });
     wait(cx, &app, "the apply result", |a| {
-        a.state.message.is_some() && !a.state.busy
+        a.state.message.is_some() && a.state.pending.is_none()
     });
     app.read_with(cx, |a, _| {
         let message = a.state.message.as_deref().unwrap();
@@ -270,6 +358,99 @@ fn the_resources_page_lists_the_resources_and_an_action_click_calls_its_operatio
             .lines()
             .any(|l| l.contains(" app ") && l.contains("rules.disable")),
         "{events}"
+    );
+    drop(runtime);
+}
+
+/// Views persist as versions (DESIGN-09 G2): a saved change of the Health seed is version 1 and shows; Undo shows
+/// the seed (version 0), Redo version 1 again; Pin keeps version 1 as the one Reset goes back to; after a version 2,
+/// Reset shows version 1; each step is a fact `view:health` `version` of the user, and a data refresh does not change
+/// the version.
+#[gpui_kit::test]
+fn a_view_keeps_its_versions_and_the_tab_undoes_redoes_pins_and_resets_them(
+    cx: &mut TestAppContext,
+) {
+    let (op, home, repo) = thread_lab("versions");
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
+    let cx = &mut vcx;
+    let seed = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/views/health.jsonc"),
+    )
+    .unwrap();
+    let save = |title: &str| {
+        lab_cli(
+            &op,
+            &home,
+            &repo,
+            &["views", "save"],
+            &seed.replace("\"title\": \"Health\"", &format!("\"title\": \"{title}\"")),
+        );
+    };
+    save("Health, mine");
+    cx.update(|window, cx| window.click("nav-health", cx));
+    let version = |a: &LegionApp| a.screen.view().map(|v| (v.version, v.title.clone()));
+    wait(cx, &app, "version 1", |a| {
+        version(a) == Some((1, "Health, mine".into()))
+    });
+    app.read_with(cx, |a, _| {
+        assert_eq!(a.screen.view().unwrap().versions, [0, 1]);
+    });
+    let click = |cx: &mut VisualTestContext, id: &'static str| {
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click(id, cx);
+        });
+    };
+    click(cx, "view-undo");
+    wait(cx, &app, "the seed", |a| {
+        version(a) == Some((0, "Health".into()))
+    });
+    click(cx, "view-redo");
+    wait(cx, &app, "version 1 again", |a| {
+        version(a) == Some((1, "Health, mine".into()))
+    });
+    click(cx, "view-pin");
+    wait(cx, &app, "the pin", |a| {
+        a.state
+            .message
+            .as_deref()
+            .is_some_and(|m| m.contains("pinned"))
+    });
+    save("Health, two");
+    wait(cx, &app, "version 2", |a| {
+        version(a) == Some((2, "Health, two".into()))
+    });
+    click(cx, "view-reset");
+    wait(cx, &app, "the pinned version", |a| {
+        version(a) == Some((1, "Health, mine".into()))
+    });
+    let facts: serde_json::Value = serde_json::from_str(&lab_cli(
+        &op,
+        &home,
+        &repo,
+        &[
+            "facts",
+            "at",
+            "--entity",
+            "view:health",
+            "--winners",
+            "--json",
+        ],
+        "",
+    ))
+    .unwrap();
+    let shown_version = facts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["attribute"] == "version")
+        .unwrap();
+    assert_eq!(
+        (
+            shown_version["value"].as_u64(),
+            shown_version["source"].as_str()
+        ),
+        (Some(1), Some("user"))
     );
     drop(runtime);
 }
@@ -446,7 +627,7 @@ fn lab_cli(op: &Operator, home: &Path, repo: &Path, args: &[&str], stdin: &str) 
     String::from_utf8(out.stdout).unwrap()
 }
 
-/// The app in a headless window of `width` x 700 against `op` with the Now page as its tab, and its entity; `runs`
+/// The app in a headless window of `width` x 700 against `op` with the seed Machine now as its tab, and its entity; `runs`
 /// is the repository of the chat bar's runs (dossier `chat`).
 fn open_app(
     cx: &mut TestAppContext,
@@ -474,14 +655,8 @@ fn open_app(
     let window: WindowHandle<gpui_kit::base::Root> = cx.update(|cx| {
         let (window, _) = gpui_kit::open_window(options, cx, |_, cx| {
             cx.new(|cx| {
-                LegionApp::new(
-                    client,
-                    handle,
-                    Some(Tab::Page { page: Page::Now }),
-                    repo,
-                    cx,
-                )
-                .with_dossier(dossier)
+                LegionApp::new(client, handle, Some(view("machine-now")), repo, cx)
+                    .with_dossier(dossier)
             })
         })
         .unwrap();
@@ -534,7 +709,7 @@ fn the_app_rail_navigator_and_tab_have_their_sizes_and_the_chat_bar_never_covers
     let (app, mut vcx, runtime) = open_app(cx, &op, 1000., None);
     let cx = &mut vcx;
     wait(cx, &app, "the layout and the sensors", |a| {
-        a.screen.restored && a.state.sensors.is_some()
+        a.screen.restored && shown(a, "sensors").is_some()
     });
     let (xr, wr, _) = place(cx, "rail");
     let (xn, wn, _) = place(cx, "navigator");
@@ -648,13 +823,7 @@ fn tabs_the_space_and_the_navigator_width_persist_across_an_app_restart(cx: &mut
         cx.update(|window, cx| window.click("tab-close-0", cx));
         cx.update(|window, cx| window.drag_to("tab-1", "tab-0", cx));
         app.read_with(cx, |a, _| {
-            assert_eq!(
-                a.screen.tabs,
-                [
-                    Tab::Page { page: Page::Bench },
-                    Tab::Page { page: Page::Health }
-                ]
-            );
+            assert_eq!(a.screen.tabs, [view("bench"), view("health")]);
             assert_eq!(a.screen.active, 0, "the moved tab stays active");
         });
         let (edge, to) = (56. + 1200. * 0.3, 56. + 1200. * 0.25);
@@ -680,11 +849,7 @@ fn tabs_the_space_and_the_navigator_width_persist_across_an_app_restart(cx: &mut
             );
         });
     }
-    let want = [
-        Tab::Page { page: Page::Bench },
-        Tab::Thread { id: 1 },
-        Tab::Page { page: Page::Health },
-    ];
+    let want = [view("bench"), Tab::Thread { id: 1 }, view("health")];
     // the facts reach the operator: the user's
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {

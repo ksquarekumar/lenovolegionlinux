@@ -2349,8 +2349,24 @@ pub struct ViewInfo {
     pub file: std::path::PathBuf,
     /// The widget; none when the file is not a view.
     pub widget: Option<ViewWidget>,
+    /// Its words, the intent it answers and the navigator's space that lists it.
+    pub title: Option<String>,
+    pub intent: Option<String>,
+    pub space: Option<String>,
     /// Why the file is not a view.
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ViewVersionIn {
+    /// The view's name (`views list`).
+    pub name: String,
+    /// undo, redo, reset (to the pinned version, else the seed), pin (reset goes back to the version that shows), or
+    /// a version number.
+    pub to: String,
+    /// A folder in a repository: its layer comes first.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

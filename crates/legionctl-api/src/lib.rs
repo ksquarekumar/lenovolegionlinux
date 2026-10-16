@@ -890,9 +890,11 @@ operations! {
     views_list / ViewsList = "views.list", Read, ViewsListIn => Vec<ViewInfo>;
     /// Check a view file: the format, a widget of the closed set, a read operation as its source, its parameters.
     views_check / ViewsCheck = "views.check", Read, ViewTextIn => Lines;
-    /// Check a view file and save it into the user's layer, or the repository's (`--repo`); a saved view replaces the
-    /// view of the same name, and the screens that show it read it again.
+    /// Check a view file and save it into the user's layer, or the repository's (`--repo`), as the next version of the
+    /// view of that name; that version shows, and the screens that show the view read it again.
     views_save / ViewsSave = "views.save", Workspace, ViewSaveIn => Lines;
+    /// Show another version of a view: undo, redo, reset (to the pinned version, else the seed), pin, or a number.
+    views_version / ViewsVersion = "views.version", Session, ViewVersionIn => Lines;
     /// A view with its data in the shape of its widget; the text is for agents and terminals.
     views_render / ViewsRender = "views.render", Read, ViewRenderIn => ViewData;
     /// Show a view in pane 3 of a thread's screens: the thread's layout, kept in its log.

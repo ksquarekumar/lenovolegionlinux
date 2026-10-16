@@ -980,12 +980,12 @@ fn a_view_cannot_bind_a_change_operation_or_a_widget_outside_the_set() {
             stdin,
         )
     };
-    let chart = r#"{"name": "load", "widget": "chart", "source": {"op": "status"}}"#;
+    let chart = r#"{"name": "load", "widget": "piechart", "source": {"op": "status"}}"#;
     let change = r#"{"name": "power", "widget": "tree", "source": {"op": "power.apply", "input": {"source": "auto"}}}"#;
     for (view, why) in [
         (
             chart,
-            "unknown variant `chart`, expected one of `table`, `tree`, `gauge`, `sparkline`, `markdown`, `diff`, `list`, `stack`",
+            "unknown variant `piechart`, expected one of `table`, `tree`, `gauge`, `sparkline`, `markdown`, `diff`, `list`, `stack`, `stat`, `chart`",
         ),
         (
             change,
@@ -1030,7 +1030,7 @@ fn a_view_cannot_bind_a_change_operation_or_a_widget_outside_the_set() {
     );
     assert_eq!(
         text,
-        "members (table)\nname | archetype\nmain0 | main-agent\nobserver0 | thread-observer"
+        "members (table, version 1)\n2 rows: name | archetype\nmain0 | main-agent\nobserver0 | thread-observer"
     );
     let missing = run(&["views", "render", "members"], "");
     assert_eq!(
@@ -1040,7 +1040,7 @@ fn a_view_cannot_bind_a_change_operation_or_a_widget_outside_the_set() {
         ),
         (
             false,
-            "members (table): cannot read: view members needs the parameter thread"
+            "members (table, version 1): cannot read: view members needs the parameter thread"
         )
     );
 
@@ -1055,7 +1055,22 @@ fn a_view_cannot_bind_a_change_operation_or_a_widget_outside_the_set() {
     assert_eq!(placed["payload"]["view"], "members");
     assert_eq!(placed["payload"]["params"], json!({"thread": "1"}));
 
-    // the repository's layer comes first
+    repository_layer_first(&lab, members);
+}
+
+/// A view in the repository's layer hides the user's view of that name, and lists first.
+fn repository_layer_first(lab: &Lab, members: &str) {
+    let run = |args: &[&str], stdin: &str| {
+        lab.op.run(
+            &lab.repo,
+            &[
+                ("HOME", lab.home.to_str().unwrap()),
+                ("LEGIONCTL_SESSION", "main"),
+            ],
+            args,
+            stdin,
+        )
+    };
     let shared = members.replace(r#"["name", "archetype"]"#, r#"["name"]"#);
     let out = run(&["views", "save", "--repo", "."], &shared);
     assert!(
@@ -1068,10 +1083,17 @@ fn a_view_cannot_bind_a_change_operation_or_a_widget_outside_the_set() {
         &lab.repo,
         &["views", "render", "members", "thread=1"],
     );
-    assert_eq!(text, "members (table)\nname\nmain0\nobserver0");
+    assert_eq!(
+        text,
+        "members (table, version 1)\n2 rows: name\nmain0\nobserver0"
+    );
     let listed = lab.json("main", &["views", "list"]);
-    assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
-    assert_eq!(listed[0]["layer"], "repository");
+    let layers = listed.as_array().unwrap().iter().map(|v| &v["layer"]);
+    assert_eq!(layers.filter(|l| *l != "seed").count(), 1, "{listed}");
+    assert_eq!(
+        listed[0]["layer"], "repository",
+        "the saved view before the seeds"
+    );
 }
 
 /// What observer0 does at a wake (the stand-in ACP agent runs it with the wake prompt): it records its environment,

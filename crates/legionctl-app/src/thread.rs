@@ -10,7 +10,6 @@ use std::path::PathBuf;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::StyledExt as _;
-use gpui_kit::component::text::TextView;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -21,16 +20,16 @@ use gpui_kit::{
 use legionctl_api::chat::{self, Action, Entry};
 use legionctl_api::{
     AgentCommand, ClientPath, EventRow, ProjectIn, RunOutput, SessionIdIn, ThreadIdIn, ThreadInfo,
-    ThreadLogRow, ThreadView, ViewData, ViewRenderIn, ViewWidget, op,
+    ThreadLogRow, ThreadView, ViewData, ViewRenderIn, op,
 };
 use serde_json::{Value, json};
 
+use crate::LegionApp;
 use crate::activity::Activity;
 use crate::shell::{Drag, Space, Tab};
 use crate::theme::{
     R_LG, R_MD, R_SM, S1, S2, S3, S4, S5, T_MD, T_SM, T_XS, Tokens, badge, card, icon,
 };
-use crate::{LegionApp, Page};
 
 /// What the screen knows; the operator holds the rest (C6: a restart reads it again).
 #[derive(Debug)]
@@ -68,8 +67,13 @@ pub struct Screen {
     /// The dossier of the chat bar's runs (`--dossier`), and their repository.
     pub dossier: Option<String>,
     pub repo: PathBuf,
-    /// The data of each view tab (by its key).
+    /// The data of each view tab (by its key), and when it was read.
     pub view_data: BTreeMap<String, ViewData>,
+    pub rendered_at: BTreeMap<String, std::time::Instant>,
+    /// The views of `views.list`: the navigator's entries.
+    pub views: Vec<legionctl_api::ViewInfo>,
+    /// The groups whose fold the user changed (`<view>:<group>`).
+    pub toggled: BTreeSet<String>,
     /// The log id of the newest `views.place` that this screen applied, and whether it read the threads once.
     pub placed: i64,
     pub seen: bool,
@@ -110,6 +114,9 @@ impl Screen {
             dossier: None,
             repo,
             view_data: BTreeMap::new(),
+            rendered_at: BTreeMap::new(),
+            views: Vec::new(),
+            toggled: BTreeSet::new(),
             placed: 0,
             seen: false,
             events: 0,
@@ -156,13 +163,13 @@ impl Screen {
     #[must_use]
     pub fn completions(&self) -> Vec<Entry> {
         let now = self.agent();
-        let screen = Page::ALL
+        let screen = self
+            .views
             .iter()
-            .map(|p| {
-                let name = p.word();
+            .map(|v| {
                 (
-                    format!("/view {name}"),
-                    format!("Open {} in a tab", p.title()),
+                    format!("/view {}", v.name),
+                    format!("Open {} in a tab", v.title.as_deref().unwrap_or(&v.name)),
                 )
             })
             .chain(self.agents.iter().map(|a| {
@@ -191,7 +198,7 @@ impl LegionApp {
             .iter()
             .filter_map(|t| match t {
                 Tab::Thread { id } => Some(*id),
-                _ => None,
+                Tab::View { .. } => None,
             })
             .collect();
         let current = match self.tab() {
@@ -298,6 +305,9 @@ impl LegionApp {
                 .await
         });
         self.finish(cx, task, move |app, data| {
+            app.screen
+                .rendered_at
+                .insert(key.clone(), std::time::Instant::now());
             app.screen.view_data.insert(key, data);
         });
     }
@@ -314,6 +324,12 @@ impl LegionApp {
             .collect();
         for key in refreshed {
             self.screen.view_data.remove(&key);
+        }
+        if rows
+            .iter()
+            .any(|r| r.kind == "views.save" || r.kind == "views.version")
+        {
+            self.read_views(cx);
         }
         self.screen.activity.take(rows);
         self.read_thread(cx);
@@ -387,12 +403,9 @@ impl LegionApp {
     fn screen_command(&mut self, words: &[String], cx: &mut Context<Self>) {
         match words.iter().map(String::as_str).collect::<Vec<_>>()[..] {
             ["view", name, ..] => {
-                let tab = match Page::named(name) {
-                    Some(page) => Tab::Page { page },
-                    None => Tab::View {
-                        name: name.to_string(),
-                        params: words[2..].to_vec(),
-                    },
+                let tab = Tab::View {
+                    name: name.to_string(),
+                    params: words[2..].to_vec(),
                 };
                 self.open_tab(tab, cx);
             }
@@ -988,142 +1001,16 @@ impl LegionApp {
     }
 
     /// The content of the tab that shows.
-    pub(crate) fn tab_content(&self, t: &Tokens, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn tab_content(&self, t: &Tokens, width: f32, cx: &mut Context<Self>) -> Div {
         match self.tab().cloned() {
             None => div()
                 .text_color(t.muted)
                 .child("No tab: pick an entry in the navigator, or type an intent below"),
-            Some(Tab::Page { page }) => self.page(page, t, cx),
             Some(Tab::Thread { id }) => self.thread_tab(id, t, cx),
             Some(Tab::View { .. }) => match self.screen.view() {
-                Some(data) => widget(data, cx),
+                Some(data) => div().child(self.view_tab(data, width, t, cx)),
                 None => div().text_color(t.muted).child("reading the view…"),
             },
         }
     }
-}
-
-/// A view's widget, or the error in its frame (C6).
-fn widget(data: &ViewData, cx: &Context<LegionApp>) -> Div {
-    let t = Tokens::of(cx);
-    let frame = card(&t).child(
-        div()
-            .text_size(T_MD)
-            .font_semibold()
-            .child(data.name.clone()),
-    );
-    if let Some(error) = &data.error {
-        return frame.child(
-            div()
-                .text_sm()
-                .text_color(t.critical)
-                .child(format!("cannot read the view: {error}")),
-        );
-    }
-    let id = |part: &str| SharedString::from(format!("view-{}-{part}", data.name));
-    let body: AnyElement = match data.widget {
-        ViewWidget::Table => div()
-            .id(id("table"))
-            .v_flex()
-            .text_sm()
-            .child(cells(&data.columns, cx).font_semibold())
-            .children(
-                data.rows
-                    .iter()
-                    .enumerate()
-                    .map(|(i, r)| cells(r, cx).id(id(&format!("row-{i}"))).test_support()),
-            )
-            .test_support()
-            .into_any_element(),
-        ViewWidget::List | ViewWidget::Tree => div()
-            .id(id(data.widget.to_string().as_str()))
-            .v_flex()
-            .text_sm()
-            .children(data.rows.iter().enumerate().map(|(i, r)| {
-                div()
-                    .id(id(&format!("row-{i}")))
-                    .whitespace_nowrap()
-                    .child(r.join(" "))
-                    .test_support()
-            }))
-            .test_support()
-            .into_any_element(),
-        ViewWidget::Gauge => gauge(data, id("gauge"), cx),
-        ViewWidget::Sparkline => div()
-            .id(id("sparkline"))
-            .text_lg()
-            .child(legionctl_api::sparkline(&data.numbers))
-            .test_support()
-            .into_any_element(),
-        ViewWidget::Markdown => {
-            TextView::markdown(id("markdown"), data.text.clone()).into_any_element()
-        }
-        ViewWidget::Diff => div()
-            .id(id("diff"))
-            .v_flex()
-            .text_xs()
-            .children(data.text.lines().map(|l| {
-                let line = div().child(l.to_string());
-                if l.starts_with('+') {
-                    line.text_color(t.ok)
-                } else if l.starts_with('-') {
-                    line.text_color(t.critical)
-                } else {
-                    line
-                }
-            }))
-            .test_support()
-            .into_any_element(),
-        ViewWidget::Stack => div()
-            .id(id("stack"))
-            .v_flex()
-            .gap_2()
-            .children(data.parts.iter().map(|p| widget(p, cx)))
-            .test_support()
-            .into_any_element(),
-    };
-    frame.child(body)
-}
-
-/// A gauge: a bar filled to the value's part of `max`, and the numbers.
-fn gauge(data: &ViewData, id: SharedString, cx: &Context<LegionApp>) -> AnyElement {
-    let t = Tokens::of(cx);
-    let value = data.numbers.first().copied().unwrap_or_default();
-    let ratio = value / data.max;
-    let percent = (1..=100u16)
-        .take_while(|i| f64::from(*i) <= ratio * 100.0)
-        .count();
-    let fraction = f32::from(u16::try_from(percent).unwrap_or(100)) / 100.;
-    div()
-        .id(id)
-        .v_flex()
-        .gap_1()
-        .child(
-            div().h(px(8.)).w_full().rounded_md().bg(t.raised).child(
-                div()
-                    .h_full()
-                    .w(relative(fraction))
-                    .rounded_md()
-                    .bg(t.accent),
-            ),
-        )
-        .child(div().text_xs().child(format!("{value} / {}", data.max)))
-        .test_support()
-        .into_any_element()
-}
-
-/// One row of a table: a cell of equal width for each value.
-fn cells(values: &[String], cx: &Context<LegionApp>) -> Div {
-    let t = Tokens::of(cx);
-    let n = u16::try_from(values.len().max(1)).unwrap_or(u16::MAX);
-    div()
-        .h_flex()
-        .border_b_1()
-        .border_color(t.border)
-        .children(values.iter().map(|v| {
-            div()
-                .w(relative(1. / f32::from(n)))
-                .truncate()
-                .child(v.clone())
-        }))
 }

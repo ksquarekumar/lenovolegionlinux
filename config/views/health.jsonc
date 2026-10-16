@@ -1,0 +1,24 @@
+// Seed (DESIGN-09): doctor's findings by severity, each group with its count: what failed first, then what to check,
+// then the agent setup items with the button that installs them.
+{
+  "$schema": "../../docs/api/view.schema.json",
+  "name": "health",
+  "title": "Health",
+  "intent": "what is wrong with the machine",
+  "space": "machine",
+  "widget": "list",
+  "source": { "op": "doctor", "path": "$.findings" },
+  "group": {
+    "rules": [
+      { "group": "Agent setup", "prefix": "setup: " },
+      {
+        "group": "Failures",
+        "any": ["failed", "error", "cannot", "does not answer", "does not run", "not loaded", "no platform", "mixed", "safe mode"]
+      }
+    ],
+    "rest": "To check",
+    "order": ["Failures", "To check", "Agent setup"]
+  },
+  "actions": [{ "label": "Install the missing agent setup", "op": "setup.apply", "input": {} }],
+  "refresh": { "every": 60 }
+}

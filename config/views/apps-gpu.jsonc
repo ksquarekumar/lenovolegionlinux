@@ -1,0 +1,34 @@
+// Seed (DESIGN-09): the GPU that draws the desktop and the displays. A choice of GPU is a change for the next login:
+// each button shows its plan first.
+{
+  "$schema": "../../docs/api/view.schema.json",
+  "name": "apps-gpu",
+  "title": "Apps and GPU",
+  "intent": "which GPU draws the desktop",
+  "space": "machine",
+  "widget": "stack",
+  "views": [
+    {
+      "name": "desktop-gpu",
+      "title": "The GPU that draws the desktop",
+      "widget": "stat",
+      "source": { "op": "gpu.status", "path": "$.desktop_gpu" },
+      "note": "GNOME reads it at the next login; the displays are in {mode} mode"
+    },
+    {
+      "name": "displays",
+      "title": "Connected displays",
+      "widget": "table",
+      "source": { "op": "gpu.status", "path": "$.outputs" },
+      "filter": { "connected": true },
+      "columns": ["connector", "card", "driver"],
+      "labels": { "connector": "Display", "card": "Card", "driver": "Driver" }
+    }
+  ],
+  "actions": [
+    { "label": "Draw the desktop on NVIDIA", "op": "gpu.primary", "input": { "choice": "nvidia" } },
+    { "label": "Draw the desktop on Intel", "op": "gpu.primary", "input": { "choice": "intel" } },
+    { "label": "Let GNOME choose", "op": "gpu.primary", "input": { "choice": "auto" } }
+  ],
+  "refresh": { "events": ["gpu.*", "display.*"] }
+}

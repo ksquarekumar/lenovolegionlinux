@@ -17,8 +17,8 @@ use legionctl_api::{FactSetIn, FactsAtIn, op};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::LegionApp;
 use crate::theme::{R_SM, S1, S2, S3, T_SM, T_XS, Tokens, badge, icon};
-use crate::{LegionApp, Page};
 
 /// The rail's width.
 pub const RAIL: f32 = 56.;
@@ -79,9 +79,6 @@ fn now_ms() -> i64 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Tab {
-    Page {
-        page: Page,
-    },
     View {
         name: String,
         #[serde(default)]
@@ -97,7 +94,6 @@ impl Tab {
     #[must_use]
     pub fn key(&self) -> String {
         match self {
-            Tab::Page { page } => format!("page:{}", page.word()),
             Tab::View { name, params } => format!("view:{name}:{}", params.join(",")),
             Tab::Thread { id } => format!("thread:{id}"),
         }
@@ -175,7 +171,7 @@ impl LegionApp {
                 app.open_tab(tab, cx);
             }
             if app.screen.tabs.is_empty() {
-                app.open_tab(Tab::Page { page: Page::Now }, cx);
+                app.open_view(crate::FIRST, cx);
             }
             app.load_tab(cx);
         });
@@ -488,22 +484,7 @@ impl LegionApp {
     fn navigator_entries(&self, t: &Tokens, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let active = self.tab().cloned();
         match self.screen.space {
-            Space::Machine => crate::pages::PAGES
-                .iter()
-                .map(|(page, glyph)| {
-                    let tab = Tab::Page { page: *page };
-                    let selected = active.as_ref() == Some(&tab);
-                    Self::nav_entry(
-                        format!("nav-{}", page.word()),
-                        (*glyph, page.title().to_string(), None),
-                        selected,
-                        t,
-                    )
-                    .on_click(cx.listener(move |app, _, _, cx| app.open_tab(tab.clone(), cx)))
-                    .test_support()
-                    .into_any_element()
-                })
-                .collect(),
+            Space::Machine => self.view_entries("machine", t, cx),
             Space::Work => {
                 let mut out = vec![Self::nav_section("Threads", t)];
                 if self.screen.threads.is_empty() {
@@ -527,6 +508,8 @@ impl LegionApp {
                     .test_support()
                     .into_any_element()
                 }));
+                out.push(Self::nav_section("Views", t));
+                out.extend(self.view_entries("work", t, cx));
                 out
             }
             Space::Agents => {
@@ -552,10 +535,77 @@ impl LegionApp {
                     .test_support()
                     .into_any_element()
                 }));
+                out.push(Self::nav_section("Views that agents made", t));
+                out.extend(self.view_entries("agents", t, cx));
                 out
             }
             Space::Activity => self.activity_entries(t, cx),
         }
+    }
+
+    /// The views that the navigator lists (`views.list`): the seeds and the saved views with their space.
+    pub(crate) fn read_views(&mut self, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+        let input = legionctl_api::ViewsListIn {
+            repo: legionctl_api::ClientPath(self.screen.repo.clone()),
+        };
+        let task = self.operator(
+            cx,
+            async move { client.call::<op::ViewsList>(&input).await },
+        );
+        self.finish(cx, task, |app, views| app.screen.views = views);
+    }
+
+    /// The navigator's entries of the views of `space` (a view with no space is the agents'); a view whose file is
+    /// not a view shows why.
+    fn view_entries(&self, space: &str, t: &Tokens, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let active = self.tab().cloned();
+        let listed: Vec<&legionctl_api::ViewInfo> = self
+            .screen
+            .views
+            .iter()
+            .filter(|v| v.space.as_deref().unwrap_or("agents") == space)
+            .collect();
+        if listed.is_empty() {
+            return vec![Self::nav_note(
+                "No view yet: ask for one in the chat bar",
+                t,
+            )];
+        }
+        listed
+            .into_iter()
+            .map(|v| {
+                let tab = Tab::View {
+                    name: v.name.clone(),
+                    params: Vec::new(),
+                };
+                let selected = active.as_ref() == Some(&tab);
+                let value = match (&v.error, v.layer.as_str()) {
+                    (Some(_), _) => Some(("not a view".to_string(), t.critical)),
+                    (None, "seed") => None,
+                    (None, layer) => Some((layer.to_string(), t.muted)),
+                };
+                let glyph = match v.widget {
+                    Some(legionctl_api::ViewWidget::Chart) => IconName::ChartLine,
+                    Some(legionctl_api::ViewWidget::Table) => IconName::Boxes,
+                    Some(legionctl_api::ViewWidget::List) => IconName::HeartPulse,
+                    _ => IconName::LayoutDashboard,
+                };
+                Self::nav_entry(
+                    format!("nav-{}", v.name),
+                    (
+                        glyph,
+                        v.title.clone().unwrap_or_else(|| v.name.clone()),
+                        value,
+                    ),
+                    selected,
+                    t,
+                )
+                .on_click(cx.listener(move |app, _, _, cx| app.open_tab(tab.clone(), cx)))
+                .test_support()
+                .into_any_element()
+            })
+            .collect()
     }
 
     pub(crate) fn nav_note(text: &str, t: &Tokens) -> AnyElement {
@@ -652,12 +702,16 @@ impl LegionApp {
     /// A tab's name in the user's words.
     pub(crate) fn tab_title(&self, tab: &Tab) -> String {
         match tab {
-            Tab::Page { page } => page.title().to_string(),
             Tab::View { name, .. } => self
                 .screen
                 .view_data
                 .get(&tab.key())
-                .map_or_else(|| name.clone(), |d| d.name.clone()),
+                .map(|d| d.title.clone())
+                .or_else(|| {
+                    let listed = self.screen.views.iter().find(|v| v.name == *name)?;
+                    listed.title.clone()
+                })
+                .unwrap_or_else(|| name.clone()),
             Tab::Thread { id } => self
                 .screen
                 .threads

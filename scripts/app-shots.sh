@@ -6,7 +6,7 @@
 # /usr/lib/legionctl) on a private socket, with a home of its own that holds a copy of your operator.db (threads,
 # bench runs); it reads the machine and clicks nothing, so nothing on the machine, in your home or in your desktop
 # settings changes. Each monitor size gets its own shell; the shots are <folder>/<monitor>-<page>.png.
-# usage: scripts/app-shots.sh <folder> [app binary] [pages...]; APP_SHOTS_SCHEME='prefer-light' for the light look;
+# usage: scripts/app-shots.sh <folder> [app binary] [views...]; APP_SHOTS_SCHEME='prefer-light' for the light look;
 # APP_SHOTS_MONITOR='1920x1080' for other monitor sizes (default: 1366x768 1920x1080 2560x1600);
 # APP_SHOTS_CHAT='/agent ' clicks the chat bar and types the text (a-z, 0-9, space, / and -) before the shot
 set -eu
@@ -14,7 +14,7 @@ out=$(realpath -m "${1:?usage: scripts/app-shots.sh <folder> [app binary] [pages
 app=$(realpath "${2:-target/release/legionctl-app}")
 shift $(($# < 2 ? $# : 2))
 pages=("$@")
-[ ${#pages[@]} -gt 0 ] || pages=(now gpu health bench resources)
+[ ${#pages[@]} -gt 0 ] || pages=(machine-now health resources bench apps-gpu)
 if [ -z "${APP_SHOTS_WORK:-}" ]; then
   work=$(mktemp -d /var/tmp/app-shots.XXXXXX)
   mkdir -p "$work/config/glib-2.0/settings"
