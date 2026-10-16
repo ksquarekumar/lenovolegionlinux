@@ -1174,7 +1174,10 @@ fn every_change_is_audited_with_its_outcome_and_errors_have_codes() {
 }
 
 /// `legionctl trace` follows the operator's event stream: what happened before it started stays out, and a change
-/// made while it runs shows at once (no polling in the client).
+/// made while it runs shows at once (no polling in the client). The latency is from the end of the call that wrote
+/// the event (the event is in the log when the call returns) to the line, each line stamped when it arrives, so a busy
+/// machine that starts the CLI slowly does not count (todo-133). The stream may connect late: the test makes changes
+/// until the first line comes.
 #[test]
 fn trace_shows_each_change_as_it_happens() {
     let (op, home) = operator("trace");
@@ -1190,6 +1193,7 @@ fn trace_shows_each_change_as_it_happens() {
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
+        std::time::Instant::now()
     };
     use_dossier("before");
     let mut trace = Kill::spawn(
@@ -1204,28 +1208,29 @@ fn trace_shows_each_change_as_it_happens() {
     let out = BufReader::new(trace.stdout.take().unwrap());
     std::thread::spawn(move || {
         for line in out.lines().map_while(Result::ok) {
-            if lines.send(line).is_err() {
+            if lines.send((std::time::Instant::now(), line)).is_err() {
                 break;
             }
         }
     });
-    // the stream starts at the newest event; give it a moment to connect
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let started = std::time::Instant::now();
-    use_dossier("during");
-    let line = seen
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .expect("trace showed nothing");
+    let mut written = Vec::new();
+    let (arrived, line) = loop {
+        assert!(written.len() < 20, "trace showed nothing");
+        written.push(use_dossier(&format!("during{}", written.len())));
+        if let Ok(seen) = seen.recv_timeout(std::time::Duration::from_millis(500)) {
+            break seen;
+        }
+    };
     drop(trace);
-    assert!(
-        line.contains("dossier.use") && line.contains("during"),
-        "{line}"
-    );
     assert!(!line.contains("before"), "the backlog stays out: {line}");
+    let n = (0..written.len())
+        .rev()
+        .find(|n| line.contains("dossier.use") && line.contains(&format!("during{n}")))
+        .unwrap_or_else(|| panic!("{line}"));
+    let latency = arrived.saturating_duration_since(written[n]);
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(2),
-        "{:?}",
-        started.elapsed()
+        latency < std::time::Duration::from_millis(1500),
+        "{latency:?} from the event to its line"
     );
 }
 
