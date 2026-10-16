@@ -1461,14 +1461,14 @@ impl Operator {
         let now = self.sample(std::time::Duration::from_millis(250))?;
         let fan = self
             .system(async |p| p.fan_status().await)
-            .ok()
-            .and_then(|json| serde_json::from_str::<fan::FanState>(&json).ok());
+            .and_then(|json| Ok(serde_json::from_str::<fan::FanState>(&json)?))
+            .map_err(|e| format!("{e:#}"));
         let (profile, _) = profile::load(None)?;
         sensors::view(
             &SysRoot::from_env(),
             &now,
             &earlier,
-            fan.as_ref(),
+            fan.as_ref().map_err(String::as_str),
             &profile.paths.ac_adapter,
         )
     }

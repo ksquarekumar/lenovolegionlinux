@@ -25,10 +25,9 @@ const UNITS: [&str; 4] = [
     "nvidia-powerd.service",
     "nvidia-persistenced.service",
 ];
-const MODULES: [&str; 6] = [
+const MODULES: [&str; 5] = [
     "ideapad_laptop",
-    "lenovo_wmi_gamezone",
-    "lenovo_wmi_events",
+    "legionctl_wmi",
     "thinkpad_acpi",
     "legion_laptop",
     "lenovo_legion",
@@ -93,7 +92,7 @@ pub struct Snapshot {
     /// Package RAPL zones (MSR and MMIO) with their limits; read for watts, never written.
     pub rapl: Vec<RaplZone>,
     pub nvidia_power_limit_w: Option<String>,
-    /// Firmware fan RPM (needs root).
+    /// Fan RPM from the `legionctl-wmi` module's hwmon device; `None` without the module.
     pub fan_rpm: Option<BTreeMap<String, u64>>,
     /// Throttle reasons logged since boot (needs root).
     pub throttle_reasons: Option<Vec<String>>,
@@ -231,7 +230,12 @@ impl Snapshot {
             Some("0") => "battery".into(),
             _ => "unknown".into(),
         };
-        let fan_rpm = if full { firmware::fan_rpm(root)? } else { None };
+        // unknown without the legionctl-wmi module; doctor names the missing module
+        let fan_rpm = if full && firmware::hwmon(root, firmware::LEGIONCTL_WMI)?.is_some() {
+            Some(firmware::fan_rpm(root)?)
+        } else {
+            None
+        };
         Ok(Snapshot {
             profile_id: profile.id.clone(),
             dmi_mismatches: dmi_mismatches(root, profile)?,
@@ -251,7 +255,7 @@ impl Snapshot {
             firmware_limits,
             rapl: rapl(root)?,
             nvidia_power_limit_w: full.then(system::nvidia_power_limit).flatten(),
-            fan_rpm: fan_rpm.map(|fans| fans.iter().map(|(n, v)| (n.to_string(), *v)).collect()),
+            fan_rpm,
             throttle_reasons: firmware::logged_throttle_reasons(root)
                 .map(|r| r.into_iter().map(String::from).collect()),
             package_temp_c: crate::telemetry::cpu_temp(root)?,

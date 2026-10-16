@@ -69,9 +69,12 @@ pub enum Step {
         path: String,
         value: Option<String>,
     },
-    /// A firmware method through `acpi_call`.
-    Acpi(String),
-    /// Write the fan table and read it back.
+    /// A file of the `legionctl-wmi` module's hwmon device (found by its name when the step runs), read back.
+    Hwmon {
+        file: &'static str,
+        value: u8,
+    },
+    /// Write the fan table through the module and read it back.
     FanCurve([u8; fan::POINTS]),
     /// A user's fan choice; `None` removes it.
     Fan {
@@ -631,7 +634,9 @@ pub fn describe(step: &Step) -> Option<String> {
             value: Some(v),
         } => Some(format!("would hold {path} at {}", quoted(v))),
         Step::Hold { path, value: None } => Some(format!("would release {path}")),
-        Step::Acpi(call) => Some(format!("would call {call}")),
+        Step::Hwmon { file, value } => Some(format!(
+            "would write {value} to {file} of hwmon legionctl_wmi"
+        )),
         Step::Rgb(profile) => Some(format!("would load the OpenRGB profile {profile}")),
         Step::Ppd(profile) => Some(format!(
             "would set the power-profiles-daemon profile {profile}"
@@ -640,9 +645,9 @@ pub fn describe(step: &Step) -> Option<String> {
             Some(format!("would set the EFI variable {name} to {value}"))
         }
         Step::FanCurve(levels) => Some(format!(
-            "would set the fan curve to {}: call {}, then read it back",
-            fan::text(levels),
-            fan::set_table_call(levels)
+            "would set the fan curve to {}: write the changed points of pwm1_auto_point1_pwm .. pwm1_auto_point10_pwm \
+             of hwmon legionctl_wmi (point 10 down, then point 1 up), then read it back",
+            fan::text(levels)
         )),
         Step::Ec { addr, value } => Some(format!(
             "would write EC RAM 0x{addr:04X}: {value:#04x}, through port I/O: {}",
@@ -741,10 +746,7 @@ fn execute_one(root: &SysRoot, ledger: &Ledger, step: &Step, out: &mut Vec<Strin
                 None => format!("released {path}"),
             });
         }
-        Step::Acpi(call) => {
-            let reply = crate::firmware::acpi_call(root, call)?;
-            out.push(format!("called {call}: {reply}"));
-        }
+        Step::Hwmon { file, value } => out.push(fan::write_hwmon(root, file, *value)?),
         Step::Rgb(profile) => {
             let before = ledger.get(Key::RgbProfile)?.unwrap_or_default();
             crate::rgb::load(profile)?;

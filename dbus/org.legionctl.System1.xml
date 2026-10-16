@@ -210,7 +210,8 @@
       <arg type="as" direction="out"/>
     </method>
     <!--
-     The fan controls as JSON (`fan::FanState`): the firmware's fan table, the user's curve, fan max mode.
+     The fan controls as JSON (`fan::FanState`): the firmware's fan table, the user's curve, fan max mode, full
+     speed.
      Read-only, so polkit is not asked.
      -->
     <method name="FanStatus">
@@ -350,10 +351,11 @@
       <arg name="reasons" type="as"/>
     </signal>
     <!--
-     Fan max mode was turned on or off.
+     Fan max mode or full speed was turned on or off (the `legionctl-wmi` module's state).
      -->
     <signal name="FanModeChanged">
       <arg name="max" type="b"/>
+      <arg name="full_speed" type="b"/>
     </signal>
     <!--
      The hash of the interface this daemon was built from; the operator compares it with its own.

@@ -31,8 +31,9 @@ pub struct Profile {
 pub struct FanControl {
     /// The curve when the user has none: written at each entry to custom mode and by `fan curve reset`.
     pub default_curve: Vec<u8>,
-    /// The fan table calls (`WMAB` 5/6) and full speed (`WMAE` 18) are verified on this firmware (todo-17); until
-    /// then legionctl makes none of them, also not the automatic write at custom-mode entry.
+    /// The fan table and full-speed writes through `legionctl_wmi` are verified on this firmware (the user's first
+    /// live write, todo-17 step 4); until then legionctl makes none of them, also not the automatic write at
+    /// custom-mode entry.
     #[serde(default)]
     pub curve_verified: bool,
     /// The EC fan lock (a raw EC write) is verified for this EC; until then it is refused.

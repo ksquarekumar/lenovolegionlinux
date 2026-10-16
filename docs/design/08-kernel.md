@@ -8,9 +8,8 @@ after every kernel update, and repairs what it can (load, rebuild through DKMS, 
 | Module | Source | State | Needed for | Status |
 | --- | --- | --- | --- | --- |
 | `ideapad_laptop` | in-tree | loaded | Fn keys (`Ideapad extra buttons`), `fn_lock`, `conservation_mode`, `camera_power` | required |
-| `lenovo_wmi_gamezone`, `lenovo_wmi_other`, `lenovo_wmi_capdata`, `lenovo_wmi_events`, `lenovo_wmi_hotkey_utilities` | in-tree | loaded | `platform_profile`, firmware power limits (`ppt_*`), Fn+Q events, mute LEDs | **replaced** by `legionctl_wmi` (below); the package blacklists them |
-| `legionctl_wmi` | DKMS, this repository (`kernel/legionctl-wmi`) | loaded after the first live load (the user's) | the same ABI as the five drivers above, and the fan table, fan max mode and full speed | required |
-| `acpi_call` | DKMS 1.2.2 (both kernels built) | loaded, autoloaded | firmware fan RPM through `\_SB_.GZFD.WMAE` | required (fan) |
+| `lenovo_wmi_gamezone`, `lenovo_wmi_other`, `lenovo_wmi_capdata`, `lenovo_wmi_events`, `lenovo_wmi_hotkey_utilities` | in-tree | not loaded (blacklisted by the opt-in, 2026-10-16) | `platform_profile`, firmware power limits (`ppt_*`), Fn+Q events, mute LEDs | **replaced** by `legionctl_wmi` (below) |
+| `legionctl_wmi` | DKMS, this repository (`kernel/legionctl-wmi`) | loaded at each start (the user's opt-in `/etc/modprobe.d/legionctl-wmi.conf`, 2026-10-16) | the same ABI as the five drivers above, the fan RPM, fan table, fan max mode and full speed | required: `doctor` reports it not loaded, a missing opt-in and a Legion WMI device it does not have |
 | `msr` | built-in | n/a | throttle reasons (`IA32_*THERM_STATUS`), turbostat | required |
 | `intel_rapl_msr`, `processor_thermal_rapl` | in-tree | loaded | RAPL energy counters (watts) | required |
 | `nvidia`, `nvidia_modeset`, `nvidia_drm`, `nvidia_uvm` | DKMS 580.178.04 (both kernels built) | loaded | dGPU, external outputs (DP-3 is wired to NVIDIA) | required |
@@ -52,7 +51,7 @@ after every kernel update, and repairs what it can (load, rebuild through DKMS, 
   - a single owned autoload file `/usr/lib/modules-load.d/legion.conf` for what the configset needs; foreign
     autoload files are reported, never edited silently.
 - A pacman hook (`/usr/share/libalpm/hooks/90-legion-modules.hook`, `PostTransaction` on `usr/lib/modules/*`)
-  runs the check after kernel or DKMS updates, so a kernel upgrade that breaks `acpi_call` or `nvidia` is
+  runs the check after kernel or DKMS updates, so a kernel upgrade that breaks `legionctl_wmi` or `nvidia` is
   reported before the next reboot instead of after it. DKMS's own hooks still do the building.
 - Secure Boot is on (user mode): DKMS modules must be signed with an enrolled key. The check verifies
   `modinfo -F signer` for out-of-tree modules and reports unsigned ones.
@@ -318,14 +317,13 @@ verified.
 
 `kernel/legionctl-wmi/` is a DKMS kernel module (GPL-2.0, kernel coding style, `checkpatch --strict` clean). It owns
 the whole Legion WMI of this laptop (82WQ, BIOS KWCN54WW). It replaces `lenovo_wmi_gamezone`, `lenovo_wmi_other`,
-`lenovo_wmi_capdata`, `lenovo_wmi_events` and `lenovo_wmi_hotkey_utilities`. After the daemon switch (a later part),
-it also replaces the fan calls through `acpi_call`, and the daemon then uses sysfs only. Until that switch, the daemon
-continues to use `acpi_call` for the fans.
+`lenovo_wmi_capdata`, `lenovo_wmi_events` and `lenovo_wmi_hotkey_utilities`, and the fan calls that went through
+`acpi_call` before the switch part (below). The daemon uses its sysfs only.
 
 ### Why our own module
 
-- The upstream drivers give no fan table, no fan max mode and no full speed. Today these go through `acpi_call`,
-  which lets root call any ACPI method. The module makes only the calls below, checks each value in the kernel and
+- The upstream drivers give no fan table, no fan max mode and no full speed. Before the switch these went through
+  `acpi_call`, which lets root call any ACPI method. The module makes only the calls below, checks each value in the kernel and
   sets again what the firmware forgets (after resume, and on each entry to custom mode).
 - One owner: after the switch, the module is the only writer of the GameZone, Other Mode and fan methods. It makes
   one call at a time.
@@ -398,7 +396,7 @@ through `platform_profile` and on each Fn+Q into custom mode: the last table wri
   `platform_profile`, and the daemon could not set the power mode. `legionctl doctor` now reports a mixed bind (the
   bound devices under `/sys/bus/wmi/drivers` of both driver families) and a missing `platform_profile` while a Legion
   WMI driver is loaded.
-- Secure Boot is on: DKMS must sign the module with the enrolled key, as for `acpi_call` and `nvidia`.
+- Secure Boot is on: DKMS must sign the module with the enrolled key, as for `nvidia`.
 - Test (`crates/legionctl/tests/e2e.rs`, `the_legionctl_wmi_module_gives_the_legion_wmi_through_sysfs`, also in the
   CI VM step): a Debian VM with the generic 7.x kernel builds the module with DKMS. A stand-in of the firmware
   (`tests/fixtures/legionctl-wmi/ssdt.asl`: the same GUIDs, object ids and buffer layouts) is an ACPI table that
@@ -412,7 +410,8 @@ through `platform_profile` and on each Fn+Q into custom mode: the last table wri
 
 ### First live load (the user's, todo-17 gate)
 
-The daemon continues to use `acpi_call` for the fans until the switch part. The first load on this machine is the
+Steps 1-3 and 6 are done (2026-10-16, EVIDENCE/validation/29; the opt-in is installed). Step 4 is open: the first
+live writes are the user's, and no agent or test writes the real firmware. The first load on this machine is the
 user's:
 
 1. Build and install the package (`make package install-package`). Do not restart yet. Make sure that DKMS built
@@ -433,5 +432,26 @@ user's:
    This file has the same name as the package's `/usr/lib/modprobe.d/legionctl-wmi.conf` and replaces it: the
    blacklist moves from `legionctl_wmi` to the upstream drivers. Restart, and
    `lsmod | grep -E 'legionctl_wmi|lenovo_wmi'` shows `legionctl_wmi` only; `legionctl doctor` reports no mixed bind.
-   The switch part then moves the profile and the daemon to the module (no acpi_call). To go back for good: remove
-   the file in `/etc` and restart (the `/usr/lib` file then stops the autoload of `legionctl_wmi` again).
+   The switch part (below) moved the daemon to the module. To go back for good: remove the file in `/etc` and restart
+   (the `/usr/lib` file then stops the autoload of `legionctl_wmi` again); the fan commands then fail with
+   `legionctl_wmi is not loaded: see docs/design/08-kernel.md`.
+
+### The switch part (todo-79 part 2, 2026-10-16)
+
+- The daemon and the operator read and write the firmware through the module's sysfs only. The hwmon device is found
+  by its name `legionctl_wmi`, never by a fixed `hwmonN`. The platform profile and the firmware attributes keep their
+  paths (the module gives the upstream ABI).
+- Fan RPM (status, monitor, sensors, `/v1/metrics`, bench), the fan table, fan max mode and full speed come from the
+  hwmon files; the fan writes go through the same files (02-platform, Fan control, says the order and the rules).
+- `acpi_call` is gone: no code path, no package dependency, not in the profile's required modules. Without the module
+  each fan command fails with `legionctl_wmi is not loaded: see docs/design/08-kernel.md`; there is no other path.
+- `doctor`: `legionctl_wmi` not loaded (the required module check), the opt-in file missing, a Legion WMI device of
+  the six that `legionctl_wmi` does not have, a mixed bind, a missing `platform_profile`.
+- More readings: full speed in `fan status`, `sensors` and the `FanModeChanged(max, full_speed)` signal and
+  `fan-mode` journal entry; fan max mode as the module reports it. Not yet: the firmware temperatures (todo-93: the
+  sensor ids need the read-only WMI probe).
+- Tests: the recorded tree of this machine (`tests/fixtures/sysfs-legionctl-wmi-82wq-2026-10-16`, read-only: hwmon9,
+  `lenovo-wmi-other-0`, `platform-profile-0`, the WMI driver binds, `/proc/modules`, the opt-in) is the firmware of
+  the e2e tests (`crates/legionctl/tests/machine.rs`).
+- The `acpi_call` package is still installed on this machine (`/usr/lib/modules-load.d/acpi_call.conf` loads it).
+  legionctl does not use it; the user can remove it (`sudo pacman -Rns acpi_call-dkms`).

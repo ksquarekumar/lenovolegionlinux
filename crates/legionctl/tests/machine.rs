@@ -13,6 +13,12 @@ use common::Operator;
 use common::scratch::Scratch;
 
 const FIXTURE: &str = "../../tests/fixtures/sysroot-82wq-2026-10-12";
+/// The `legionctl_wmi` module's tree of this machine, recorded read-only after the user's opt-in (todo-79): its hwmon
+/// device (hwmon9), firmware attributes, platform profile, WMI driver binds, `/proc/modules` and the opt-in file. It
+/// goes over [`FIXTURE`].
+const WMI_FIXTURE: &str = "../../tests/fixtures/sysfs-legionctl-wmi-82wq-2026-10-16";
+/// The recorded module's hwmon device.
+const WMI_HWMON: &str = "/sys/class/hwmon/hwmon9";
 const PROFILE: &str = "../../profiles/lenovo-82wq-legion-pro-7-16irx8h.json";
 const INSTALLED_PROFILE: &str =
     "usr/share/legionctl/profiles/lenovo-82wq-legion-pro-7-16irx8h.json";
@@ -60,6 +66,10 @@ impl Machine {
         );
         copy_tree(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE),
+            &dir.join("root"),
+        );
+        copy_tree(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join(WMI_FIXTURE),
             &dir.join("root"),
         );
         let installed = dir.join("root").join(INSTALLED_PROFILE);
@@ -184,114 +194,30 @@ impl Machine {
     }
 }
 
-/// A stand-in for the `acpi_call` module at the machine's `/proc/acpi/call` (a FIFO): a call is written, then the
-/// reply read. It records each call and answers as this firmware does: `Fan_Get_Table` returns its table (u32 FSFL,
-/// FSS0-FSS9 as u32, FSSA), `Fan_Set_Table` keeps the bytes at 0x06 + 2·i, other calls return 0x0.
-///
-/// Another test's spawn copies the FIFO ends open in this process into its child until the child's exec. An end that
-/// the stand-in closes can thus live on in a copy alone: the caller's call or the stand-in's reply went to that copy,
-/// the pipe dropped it at the copy's close, and the caller and the stand-in each waited for the other's open forever
-/// (the hang under load). So the stand-in keeps its read end open all the time, and closes its write end only after
-/// the caller read the whole reply, or after 10 s with the reply removed (the caller is gone).
-#[derive(Clone)]
-struct AcpiCall {
-    calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    table: std::sync::Arc<std::sync::Mutex<[u8; 10]>>,
-}
-
-impl AcpiCall {
-    fn start(m: &Machine, table: [u8; 10]) -> AcpiCall {
-        use rustix::fs::{Mode, OFlags};
-        let path = m.dir.join("root/proc/acpi/call");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        assert!(
-            std::process::Command::new("mkfifo")
-                .arg(&path)
-                .status()
-                .unwrap()
-                .success()
-        );
-        let acpi = AcpiCall {
-            calls: std::sync::Arc::default(),
-            table: std::sync::Arc::new(std::sync::Mutex::new(table)),
-        };
-        let firmware = acpi.clone();
-        // the open does not wait for a writer
-        let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC;
-        let mut reader =
-            std::fs::File::from(rustix::fs::open(&path, flags, Mode::empty()).unwrap());
-        std::thread::spawn(move || {
-            loop {
-                let call = Self::take_call(&mut reader);
-                let reply = firmware.answer(&call);
-                // the open does not wait: the read end is open
-                let mut writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-                std::io::Write::write_all(&mut writer, reply.as_bytes()).unwrap();
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-                while rustix::io::ioctl_fionread(&writer).unwrap() > 0
-                    && std::time::Instant::now() < deadline
-                {
-                    std::thread::sleep(std::time::Duration::from_millis(2));
-                }
-                if rustix::io::ioctl_fionread(&writer).unwrap() > 0 {
-                    // the caller is gone (a stopped daemon): its reply goes, so the next caller gets its own
-                    let mut gone = Vec::new();
-                    let _ = std::io::Read::read_to_end(&mut reader, &mut gone);
-                } else {
-                    // counted once the caller took the reply and before its end of file: a test that waits for a
-                    // call sees it when the caller's call returns, and stops the daemon after the call
-                    firmware.calls.lock().unwrap().push(call);
-                }
-                drop(writer);
-            }
-        });
-        acpi
+/// The recorded `legionctl_wmi` hwmon device as the test's firmware: plain files, so the module's own refusals
+/// (`EBUSY`, `EINVAL`, `EIO`) are not here; the VM test of the module checks them (e2e.rs,
+/// `the_legionctl_wmi_module_gives_the_legion_wmi_through_sysfs`).
+impl Machine {
+    fn hwmon_file(&self, file: &str) -> String {
+        self.file(&format!("{WMI_HWMON}/{file}"))
     }
 
-    /// The next call: the bytes up to the caller's close.
-    fn take_call(reader: &mut std::fs::File) -> String {
-        let mut call = Vec::new();
-        loop {
-            match std::io::Read::read_to_end(reader, &mut call) {
-                // the end of a call: its writer closed
-                Ok(_) if !call.is_empty() => {
-                    return String::from_utf8(call).unwrap().trim().to_string();
-                }
-                // no writer yet
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(e) => panic!("reading a call: {e}"),
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-    }
-
-    fn answer(&self, call: &str) -> String {
-        if call == "\\_SB_.GZFD.WMAB 0 5" {
-            let mut bytes = [0u8; 48];
-            for (i, level) in self.table.lock().unwrap().iter().enumerate() {
-                bytes[4 + 4 * i] = *level;
-            }
-            let bytes: Vec<String> = bytes.iter().map(|b| format!("0x{b:02x}")).collect();
-            format!("{{{}}}", bytes.join(", "))
-        } else if let Some(hex) = call.strip_prefix("\\_SB_.GZFD.WMAB 0 6 b") {
-            let mut table = self.table.lock().unwrap();
-            for (i, level) in table.iter_mut().enumerate() {
-                let at = 2 * (0x06 + 2 * i);
-                *level = u8::from_str_radix(&hex[at..at + 2], 16).unwrap();
-            }
-            "0x0".into()
-        } else {
-            "0x0".into()
-        }
-    }
-
-    fn calls(&self) -> Vec<String> {
-        self.calls.lock().unwrap().clone()
-    }
-
+    /// The fan table in the module's `pwm1_auto_point*_pwm` files.
     fn table(&self) -> [u8; 10] {
-        *self.table.lock().unwrap()
+        std::array::from_fn(|i| {
+            self.hwmon_file(&format!("pwm1_auto_point{}_pwm", i + 1))
+                .parse()
+                .unwrap()
+        })
+    }
+
+    fn set_table(&self, levels: [u8; 10]) {
+        for (i, level) in levels.iter().enumerate() {
+            self.set(
+                &format!("{WMI_HWMON}/pwm1_auto_point{}_pwm", i + 1),
+                &level.to_string(),
+            );
+        }
     }
 }
 
@@ -329,23 +255,17 @@ fn refuses_to_apply_on_a_machine_that_is_not_this_model() {
     );
 }
 
-/// todo-143, the first boot with the DKMS module (2026-10-16): udev loaded `legionctl_wmi` by modalias beside the
-/// upstream drivers. The WMI driver tree is recorded from that boot (`tests/fixtures/sysfs-wmi-mixed-82wq-2026-10-16`;
-/// the 887B54E3 bind of `lenovo_wmi_gamezone` is from the boot log, it was unloaded before the recording); the machine
-/// had no `platform_profile`. Doctor names the mixed bind with its devices and the missing profile; with the upstream
-/// drivers only and the profile in place, or with no Legion WMI driver, it names neither.
+/// The Legion WMI driver state after the switch to `legionctl_wmi` (todo-79, todo-143). The recorded machine after the
+/// user's opt-in (`legionctl_wmi` on all six devices) has no finding. The first boot with the DKMS module (2026-10-16,
+/// recorded in `tests/fixtures/sysfs-wmi-mixed-82wq-2026-10-16`; the 887B54E3 bind of `lenovo_wmi_gamezone` is from the
+/// boot log): doctor names the mixed bind, the devices that `legionctl_wmi` does not have and the missing profile. Back
+/// on the upstream drivers without the opt-in: doctor names the missing module and the missing opt-in (the fan
+/// controls need `legionctl_wmi`; there is no other path), and a missing profile without a Legion WMI driver is not
+/// the profile finding.
 #[test]
 fn doctor_reports_a_mixed_legion_wmi_bind_and_a_missing_platform_profile() {
     let m = Machine::new("wmi-mixed");
     let root = m.dir.join("root");
-    copy_tree(
-        &Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/sysfs-wmi-mixed-82wq-2026-10-16"),
-        &root,
-    );
-    let profile = root.join("sys/class/platform-profile/platform-profile-0/profile");
-    let recorded = std::fs::read_to_string(&profile).unwrap();
-    std::fs::remove_file(&profile).unwrap();
     let doctor = |m: &Machine| -> Vec<String> {
         let out = m.legion(&["doctor"]);
         String::from_utf8(out.stdout)
@@ -355,6 +275,18 @@ fn doctor_reports_a_mixed_legion_wmi_bind_and_a_missing_platform_profile() {
             .map(String::from)
             .collect()
     };
+    assert_eq!(doctor(&m), Vec::<String>::new());
+
+    let drivers = root.join("sys/bus/wmi/drivers");
+    std::fs::remove_dir_all(&drivers).unwrap();
+    copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/sysfs-wmi-mixed-82wq-2026-10-16"),
+        &root,
+    );
+    let profile = root.join("sys/class/platform-profile/platform-profile-0/profile");
+    let recorded = std::fs::read_to_string(&profile).unwrap();
+    std::fs::remove_file(&profile).unwrap();
     assert_eq!(
         doctor(&m),
         [
@@ -362,22 +294,41 @@ fn doctor_reports_a_mixed_legion_wmi_bind_and_a_missing_platform_profile() {
              (92549549-4BDE-4F06-AC04-CE8BF898DBAA-5, DC2A8805-3A8C-41BA-A6F7-092E0089CD3B-8); lenovo_wmi_gamezone \
              (887B54E3-DDDC-4B2C-8B88-68A26A8835D0-4); neither side has all of them (see docs/design/08-kernel.md, \
              First live load)",
+            "- legionctl_wmi is loaded but does not have the Legion WMI devices 887B54E3-DDDC-4B2C-8B88-68A26A8835D0, \
+             7A8F5407-CB67-4D6E-B547-39B3BE018154, D320289E-8FEA-41E0-86F9-911D83151B5F, \
+             CE6C0974-0407-4F50-88BA-4FC3B6559AD8: the fan, power mode and firmware attribute files of these devices \
+             are missing (see docs/design/08-kernel.md, What it binds)",
             "- /sys/class/platform-profile/platform-profile-0/profile is missing while legionctl_wmi, \
              legionctl_wmi_gamezone, lenovo_wmi_gamezone is loaded: legionctl cannot set the power mode",
         ]
     );
 
-    // the upstream drivers only, with their profile: the healthy machine
-    let drivers = root.join("sys/bus/wmi/drivers");
+    // back on the upstream drivers, with their profile and without the opt-in
     std::fs::remove_dir_all(drivers.join("legionctl_wmi")).unwrap();
     std::fs::remove_dir_all(drivers.join("legionctl_wmi_gamezone")).unwrap();
+    std::fs::remove_file(root.join("etc/modprobe.d/legionctl-wmi.conf")).unwrap();
+    let modules = std::fs::read_to_string(root.join("proc/modules")).unwrap();
+    std::fs::write(
+        root.join("proc/modules"),
+        modules
+            .lines()
+            .filter(|l| !l.starts_with("legionctl_wmi "))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .unwrap();
     std::fs::write(&profile, recorded).unwrap();
-    assert_eq!(doctor(&m), Vec::<String>::new());
+    let upstream = [
+        "- required module legionctl_wmi is not loaded",
+        "- /etc/modprobe.d/legionctl-wmi.conf is missing: legionctl_wmi does not load at start, and the fan controls \
+         fail without it (see docs/design/08-kernel.md, First live load, step 6)",
+    ];
+    assert_eq!(doctor(&m), upstream);
 
     // no Legion WMI driver: a missing profile is not this finding
     std::fs::remove_dir_all(drivers.join("lenovo_wmi_gamezone")).unwrap();
     std::fs::remove_file(&profile).unwrap();
-    assert_eq!(doctor(&m), Vec::<String>::new());
+    assert_eq!(doctor(&m), upstream);
 }
 
 #[test]
@@ -403,16 +354,17 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
         "printf 'legionctl-osd@legionctl\\n  Enabled: Yes\\n  State: ERROR\\n'",
     );
     Machine::script(&bin, "pacman", "[ \"$2\" = lenovolegionlinux-git ]");
-    // acpi_call is not available for the bore-lto kernel, and DKMS built it only for the other one
+    // legionctl_wmi and the autoloaded acpi_call are not available for the bore-lto kernel; DKMS built legionctl_wmi
+    // only for the other one
     Machine::script(
         &bin,
         "modinfo",
-        "if [ \"$5\" = acpi_call ] && [ \"$2\" = 7.2.9-2-cachyos-bore-lto ]; then exit 1; fi; echo /m/$5.ko",
+        "if [ \"$5\" = legionctl_wmi -o \"$5\" = acpi_call ] && [ \"$2\" = 7.2.9-2-cachyos-bore-lto ]; then exit 1; fi; echo /m/$5.ko",
     );
     Machine::script(
         &bin,
         "dkms",
-        "echo 'acpi_call/1.2.2, 7.2.9-2-cachyos, x86_64: installed'",
+        "echo 'legionctl-wmi/0.1.0, 7.2.9-2-cachyos, x86_64: installed'",
     );
     Machine::script(
         &bin,
@@ -453,9 +405,9 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
             "- 32 cpufreq policies are not using EPP 'balance_power'",
             "- conflicting unit legiond.service: active=active, enabled=disabled",
             "- conflicting package is installed: lenovolegionlinux-git",
-            "- required module acpi_call is missing for kernel 7.2.9-2-cachyos-bore-lto",
+            "- required module legionctl_wmi is missing for kernel 7.2.9-2-cachyos-bore-lto",
             "- /etc/modules-load.d/acpi.conf autoloads acpi_call, which does not exist for 7.2.9-2-cachyos-bore-lto (fails every boot)",
-            "- DKMS module acpi_call/1.2.2 is not built for kernel 7.2.9-2-cachyos-bore-lto",
+            "- DKMS module legionctl-wmi/0.1.0 is not built for kernel 7.2.9-2-cachyos-bore-lto",
             "- NTFS volume nvme0n1p3 is marked dirty; run chkdsk in Windows (or ntfsfix -d, see docs/design/11-disks.md)",
             "- an external display runs on NVIDIA but the desktop may be drawn on Intel; try `legionctl gpu primary nvidia`",
             "- unit tlp.service failed; see systemctl status tlp.service",
@@ -1397,24 +1349,26 @@ mod daemon_events {
     }
 
     /// The EC resets the fan table outside custom mode, and custom mode runs the fans at ~6,000 rpm until a table is
-    /// written: each entry to custom mode writes the profile's default curve, or the user's curve when there is one.
+    /// written; the module sets again only a table written since it loaded. So each entry to custom mode writes the
+    /// profile's default curve, or the user's curve when there is one, through the module's hwmon files. Without the
+    /// module the entry warns and the rest of the plan goes on.
     #[test]
     fn entering_custom_mode_writes_the_users_fan_curve_or_the_default() {
         let m = Machine::new("customentry");
-        let acpi = AcpiCall::start(&m, [9; 10]);
-        // the shipped profile: the table calls are not verified (todo-17), so custom mode gets no automatic write
+        m.set_table([9; 10]);
+        // the shipped profile: the table writes are not verified (todo-17), so custom mode gets no automatic write
         m.set(PROFILE_PATH, "custom");
         react_and_write(&m, Event::PlatformProfile);
-        assert_eq!(acpi.calls(), Vec::<String>::new());
+        assert_eq!(m.table(), [9; 10]);
         m.verify_fan_calls();
         // Fn+Q to performance: not custom, the table is not touched
         m.set(PROFILE_PATH, "performance");
         react_and_write(&m, Event::PlatformProfile);
-        assert_eq!(acpi.calls(), Vec::<String>::new());
+        assert_eq!(m.table(), [9; 10]);
 
         m.set(PROFILE_PATH, "custom");
         let lines = react_and_write(&m, Event::PlatformProfile);
-        assert_eq!(acpi.table(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "{lines:?}");
+        assert_eq!(m.table(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "{lines:?}");
 
         m.ledger()
             .set_fan(
@@ -1426,7 +1380,22 @@ mod daemon_events {
         react_and_write(&m, Event::PlatformProfile);
         m.set(PROFILE_PATH, "custom");
         react_and_write(&m, Event::PlatformProfile);
-        assert_eq!(acpi.table(), [2, 2, 2, 3, 3, 4, 6, 8, 9, 10]);
+        assert_eq!(m.table(), [2, 2, 2, 3, 3, 4, 6, 8, 9, 10]);
+
+        // no module: a warning with the reason, and the mode is still followed
+        std::fs::remove_dir_all(m.dir.join("root").join(&WMI_HWMON[1..])).unwrap();
+        m.set(PROFILE_PATH, "performance");
+        react_and_write(&m, Event::PlatformProfile);
+        m.set(PROFILE_PATH, "custom");
+        let lines = react_and_write(&m, Event::PlatformProfile);
+        assert!(
+            lines.contains(
+                &"warning: the fan controls are not set again: legionctl_wmi is not loaded: see \
+                  docs/design/08-kernel.md"
+                    .to_string()
+            ),
+            "{lines:?}"
+        );
     }
 
     #[test]
@@ -2021,8 +1990,8 @@ mod operator_and_daemon {
         let mut bytes = vec![0u8; 0x1B1 + 8];
         bytes[0x1B1] = 0b11;
         std::fs::write(&msr, bytes).unwrap();
-        m.set("/sys/class/hwmon/hwmon9/name", "coretemp");
-        m.set("/sys/class/hwmon/hwmon9/temp1_input", "55000");
+        m.set("/sys/class/hwmon/hwmon8/name", "coretemp");
+        m.set("/sys/class/hwmon/hwmon8/temp1_input", "55000");
         // one CPU left behind by an earlier tool; the AC policy puts it back
         m.set(
             "/sys/devices/system/cpu/cpufreq/policy3/energy_performance_preference",
@@ -2119,8 +2088,8 @@ mod operator_and_daemon {
     async fn tune_steps_the_firmware_limit_recommends_the_knee_and_restores_it() {
         let m = Machine::new("tune");
         // the sweep's thermal guard reads the package temperature
-        m.set("/sys/class/hwmon/hwmon9/name", "coretemp");
-        m.set("/sys/class/hwmon/hwmon9/temp1_input", "55000");
+        m.set("/sys/class/hwmon/hwmon8/name", "coretemp");
+        m.set("/sys/class/hwmon/hwmon8/temp1_input", "55000");
         Machine::script(
             &m.dir.join("bin"),
             "stress-ng",
@@ -2208,8 +2177,8 @@ mod operator_and_daemon {
         let m = Machine::new("hot");
         let (_stand_ins, _asked, _processes) = start(&m).await;
         let op = on_bus(&m, "hot");
-        m.set("/sys/class/hwmon/hwmon9/name", "coretemp");
-        m.set("/sys/class/hwmon/hwmon9/temp1_input", "105000");
+        m.set("/sys/class/hwmon/hwmon8/name", "coretemp");
+        m.set("/sys/class/hwmon/hwmon8/temp1_input", "105000");
         Machine::script(&m.dir.join("bin"), "stress-ng", "/usr/bin/sleep 30");
         let started = std::time::Instant::now();
         let hot = op.cli(&[
@@ -2281,9 +2250,9 @@ mod operator_and_daemon {
     async fn tune_refuses_before_the_first_step_when_the_temperature_cannot_be_read() {
         use std::os::unix::fs::PermissionsExt;
         let m = Machine::new("blind");
-        m.set("/sys/class/hwmon/hwmon9/name", "coretemp");
-        m.set("/sys/class/hwmon/hwmon9/temp1_input", "55000");
-        let temp = m.dir.join("root/sys/class/hwmon/hwmon9/temp1_input");
+        m.set("/sys/class/hwmon/hwmon8/name", "coretemp");
+        m.set("/sys/class/hwmon/hwmon8/temp1_input", "55000");
+        let temp = m.dir.join("root/sys/class/hwmon/hwmon8/temp1_input");
         std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o000)).unwrap();
         let ran = m.dir.join("stress-ng-ran");
         Machine::script(
@@ -4701,8 +4670,8 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
     async fn a_tuned_layer_for_one_kernel_applies_only_on_that_kernel() {
         let m = Machine::new("tunekernel");
         // the sweep's thermal guard reads the package temperature
-        m.set("/sys/class/hwmon/hwmon9/name", "coretemp");
-        m.set("/sys/class/hwmon/hwmon9/temp1_input", "55000");
+        m.set("/sys/class/hwmon/hwmon8/name", "coretemp");
+        m.set("/sys/class/hwmon/hwmon8/temp1_input", "55000");
         Machine::script(
             &m.dir.join("bin"),
             "stress-ng",
@@ -7086,16 +7055,14 @@ mod resources {
     }
 }
 
-/// Fan control through the CLI, the operator and the daemon, against the `acpi_call` stand-in: what reaches the
-/// firmware, byte for byte, and what never does.
+/// Fan control through the CLI, the operator and the daemon, against the recorded `legionctl_wmi` hwmon device: what
+/// reaches the module's files, in which order, and what never does.
 mod fan_control {
     use super::daemon_process::{daemon, start, wait_for};
     use super::operator_and_daemon::on_bus;
     use super::resources::{kinds_after, last_event};
     use super::*;
     use serde_json::Value;
-
-    const GET_TABLE: &str = "\\_SB_.GZFD.WMAB 0 5";
 
     /// stdout and stderr of a CLI call, and whether it succeeded.
     fn run(op: &Operator, args: &[&str]) -> (bool, String) {
@@ -7123,6 +7090,31 @@ mod fan_control {
             .unwrap();
     }
 
+    /// A resume with a governor drift, so that its repair is an event; returns when the event is there. `file` of the
+    /// module is read-only meanwhile: a write to it fails the repair, and no event comes.
+    async fn resume_without_a_write_to(
+        m: &Machine,
+        op: &Operator,
+        stand_ins: &zbus::Connection,
+        file: &str,
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+        let path = m.dir.join("root").join(&WMI_HWMON[1..]).join(file);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let before = last_event(op);
+        m.set(
+            "/sys/devices/system/cpu/cpufreq/policy3/scaling_governor",
+            "powersave",
+        );
+        resume(stand_ins).await;
+        wait_for("the resume repair", || {
+            kinds_after(op, before)
+                .iter()
+                .any(|k| k == "machine.resume")
+        });
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
     /// Custom mode as the daemon knows it after the user entered it (the Fn+Q choice in the ledger).
     fn enter_custom(m: &Machine) {
         m.set(PROFILE_PATH, "custom");
@@ -7135,14 +7127,34 @@ mod fan_control {
         run(op, &[&["fan", "curve", "set"][..], levels].concat())
     }
 
+    /// The point writes of a result line (`writes 10:10 9:8 ...`), each applied to `table` in order: every table
+    /// between them must be one the module takes (each level 1-10, at least the point's minimum, not lower than the
+    /// point before), else the module refuses that write on the real machine. Returns the last table.
+    fn replay(text: &str, mut table: [u8; 10]) -> [u8; 10] {
+        let writes = text
+            .split("writes ")
+            .nth(1)
+            .and_then(|w| w.split(')').next())
+            .unwrap_or_else(|| panic!("no writes in {text}"));
+        for write in writes.split(' ') {
+            let (point, level) = write.split_once(':').unwrap();
+            table[point.parse::<usize>().unwrap() - 1] = level.parse().unwrap();
+            let minimum = [1, 1, 1, 1, 1, 1, 1, 1, 3, 5];
+            assert!(
+                table
+                    .iter()
+                    .zip(minimum)
+                    .all(|(l, min)| (min..=10).contains(l))
+                    && table.windows(2).all(|w| w[0] <= w[1]),
+                "the module refuses the table {table:?} after the write {write} of {writes}"
+            );
+        }
+        table
+    }
+
     /// Outside custom mode and for invalid levels a curve is refused with the reason, and nothing reaches the
-    /// firmware; ends in custom mode.
-    async fn refused_curves(
-        m: &Machine,
-        op: &Operator,
-        stand_ins: &zbus::Connection,
-        acpi: &AcpiCall,
-    ) {
+    /// module; ends in custom mode.
+    async fn refused_curves(m: &Machine, op: &Operator, stand_ins: &zbus::Connection) {
         let set = |levels: &[&str]| set(op, levels);
         // max-power: refused with the reason and the way into custom mode
         let (ok, text) = set(&CURVE);
@@ -7156,10 +7168,11 @@ mod fan_control {
         );
 
         enter_custom(m);
-        // the shipped profile does not mark the table calls verified (todo-17): no call, the reason
+        // the shipped profile does not mark the table writes verified (todo-17 step 4 is the user's): the reason
         let (ok, text) = set(&CURVE);
         assert!(
-            !ok && text.contains("not verified on this firmware") && text.contains("todo-17"),
+            !ok && text.contains("not verified on this firmware")
+                && text.contains("First live load, step 4"),
             "{text}"
         );
         m.verify_fan_calls();
@@ -7194,42 +7207,39 @@ mod fan_control {
             .await
             .unwrap_err();
         assert!(refused.to_string().contains("point 1 is 0"), "{refused}");
-        assert_eq!(
-            acpi.calls(),
-            Vec::<String>::new(),
-            "nothing reached the firmware"
-        );
+        assert_eq!(m.table(), [4; 10], "nothing reached the module");
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_fan_curve_is_checked_written_byte_for_byte_read_back_and_written_again_after_resume()
-    {
+    async fn a_fan_curve_is_checked_written_point_by_point_read_back_and_written_again_after_resume()
+     {
         let m = Machine::new("fancurve");
-        let acpi = AcpiCall::start(&m, [4; 10]);
+        m.set_table([4; 10]);
         let (stand_ins, asked, _processes) = start(&m).await;
         let op = on_bus(&m, "fancurve");
-        refused_curves(&m, &op, &stand_ins, &acpi).await;
+        refused_curves(&m, &op, &stand_ins).await;
 
-        // the write: Fan_Set_Table with a 0x40-byte buffer, FSS0-FSS9 at 0x06 + 2·i; then the table is read back
+        // the dry run (its flag before the levels) checks and shows the write, and writes nothing
+        let (ok, text) = set(&op, &[&["--dry-run"][..], &CURVE].concat());
+        assert!(
+            ok && text.contains(
+                "would set the fan curve to 1 1 2 2 3 4 5 6 8 10: write the changed points of pwm1_auto_point1_pwm"
+            ),
+            "{text}"
+        );
+        assert_eq!(m.table(), [4; 10]);
+
+        // the write: points up from the top, then down from the bottom, each table between them valid; read back
         let (ok, text) = set(&op, &CURVE);
         assert!(ok, "{text}");
         assert!(
-            text.contains("fan curve is now 1 1 2 2 3 4 5 6 8 10 (was 4 4 4 4 4 4 4 4 4 4)"),
+            text.contains(
+                "fan curve is now 1 1 2 2 3 4 5 6 8 10 (was 4 4 4 4 4 4 4 4 4 4; writes "
+            ),
             "{text}"
         );
-        let buffer = format!(
-            "{}0100010002000200030004000500060008000a00{}",
-            "0".repeat(12),
-            "0".repeat(76)
-        );
-        assert_eq!(
-            acpi.calls(),
-            [
-                GET_TABLE.to_string(),
-                format!("\\_SB_.GZFD.WMAB 0 6 b{buffer}"),
-                GET_TABLE.into()
-            ]
-        );
+        assert_eq!(replay(&text, [4; 10]), [1, 1, 2, 2, 3, 4, 5, 6, 8, 10]);
+        assert_eq!(m.table(), [1, 1, 2, 2, 3, 4, 5, 6, 8, 10]);
         assert!(
             asked
                 .lock()
@@ -7247,95 +7257,78 @@ mod fan_control {
         let text = op.ok(&["fan", "status"]);
         assert!(text.contains("   9:  8  3500 / 3600 rpm"), "{text}");
 
-        // the dry run (its flag before the levels) checks and shows the call, and calls nothing
-        let calls = acpi.calls().len();
-        let (ok, text) = set(&op, &[&["--dry-run"][..], &CURVE].concat());
-        assert!(
-            ok && text.contains(&format!(
-                "call \\_SB_.GZFD.WMAB 0 6 b{buffer}, then read it back"
-            )),
-            "{text}"
-        );
-        assert_eq!(acpi.calls().len(), calls);
-
         // suspend: the EC lost the table; after resume the daemon writes the user's curve again
-        *acpi.table.lock().unwrap() = [5; 10];
+        m.set_table([5; 10]);
         resume(&stand_ins).await;
         wait_for("the curve after resume", || {
-            acpi.table() == [1, 1, 2, 2, 3, 4, 5, 6, 8, 10]
+            m.table() == [1, 1, 2, 2, 3, 4, 5, 6, 8, 10]
         });
 
         // reset: the profile's default curve, and no user curve
         let (ok, text) = run(&op, &["fan", "curve", "reset"]);
         assert!(ok, "{text}");
-        assert_eq!(acpi.table(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        assert_eq!(
+            replay(&text, [1, 1, 2, 2, 3, 4, 5, 6, 8, 10]),
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
+        assert_eq!(m.table(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
         let status: Value = serde_json::from_str(&op.ok(&["fan", "status", "--json"])).unwrap();
         assert_eq!(status["chosen"], Value::Null);
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn fan_max_mode_is_set_again_after_resume_and_restart_and_the_ec_lock_is_refused() {
-        const ON: &str = "\\_SB_.GZFD.WMAA 0 13 b01";
+    async fn fan_max_mode_is_set_again_at_start_full_speed_follows_and_the_ec_lock_is_refused() {
         let m = Machine::new("fanmax");
         m.verify_fan_calls();
-        let acpi = AcpiCall::start(&m, [4; 10]);
         let (stand_ins, _asked, (_bus, first)) = start(&m).await;
         let op = on_bus(&m, "fanmax");
-        let max_calls = || acpi.calls().iter().filter(|c| *c == ON).count();
 
         let (ok, text) = run(&op, &["fan", "max", "on"]);
-        assert!(ok, "{text}");
-        assert_eq!(acpi.calls(), [ON]);
+        assert!(
+            ok && text.contains("set fan_max_mode of hwmon legionctl_wmi to 1 (was 0)"),
+            "{text}"
+        );
+        assert_eq!(m.hwmon_file("fan_max_mode"), "1");
         let status: Value = serde_json::from_str(&op.ok(&["fan", "status", "--json"])).unwrap();
         assert_eq!(status["max"], true);
 
-        // the firmware forgets it in suspend
-        resume(&stand_ins).await;
-        wait_for("fan max mode after resume", || max_calls() == 2);
-        // and the daemon sets it at start (system.db keeps it)
+        // after resume the module set it again itself: the daemon reads it and does not write
+        resume_without_a_write_to(&m, &op, &stand_ins, "fan_max_mode").await;
+        // a new module (the next start) has it off: the daemon sets it at start (system.db keeps it)
+        m.set(&format!("{WMI_HWMON}/fan_max_mode"), "0");
+        // the status is the module's state, not the kept choice
+        let status: Value = serde_json::from_str(&op.ok(&["fan", "status", "--json"])).unwrap();
+        assert_eq!(status["max"], false);
         drop(first);
         let _second = daemon(&m, &stand_ins).await;
-        wait_for("fan max mode at start", || max_calls() == 3);
+        wait_for("fan max mode at start", || {
+            m.hwmon_file("fan_max_mode") == "1"
+        });
 
         let (ok, text) = run(&op, &["fan", "max", "off"]);
         assert!(ok, "{text}");
-        assert_eq!(acpi.calls().last().unwrap(), "\\_SB_.GZFD.WMAA 0 13 b00");
-        // off stays off after resume: wait for the whole resume repair (its record comes after its last step), then
-        // no fan max call
-        let calls = acpi.calls().len();
-        let before = last_event(&op);
-        m.set(
-            "/sys/devices/system/cpu/cpufreq/policy3/scaling_governor",
-            "powersave",
-        );
-        resume(&stand_ins).await;
-        wait_for("the resume repair", || {
-            kinds_after(&op, before)
-                .iter()
-                .any(|k| k == "machine.resume")
-        });
+        assert_eq!(m.hwmon_file("fan_max_mode"), "0");
+        // off stays off after resume, with no write
+        resume_without_a_write_to(&m, &op, &stand_ins, "fan_max_mode").await;
         assert_eq!(
             m.file("/sys/devices/system/cpu/cpufreq/policy3/scaling_governor"),
             "performance"
         );
-        assert_eq!(acpi.calls().len(), calls);
 
-        // full speed: custom mode only; Other Method 18, feature 0x04020000, value 1 or 0
+        // full speed: custom mode only; pwm1_enable 0 (full speed) and 2 (the table)
         let (ok, text) = run(&op, &["fan", "clean", "on"]);
         assert!(
             !ok && text.contains("full speed works in custom mode only"),
             "{text}"
         );
+        assert_eq!(m.hwmon_file("pwm1_enable"), "2");
         enter_custom(&m);
         assert!(run(&op, &["fan", "clean", "on"]).0);
+        assert_eq!(m.hwmon_file("pwm1_enable"), "0");
+        let status: Value = serde_json::from_str(&op.ok(&["fan", "status", "--json"])).unwrap();
+        assert_eq!(status["full_speed"], true);
         assert!(run(&op, &["fan", "clean", "off"]).0);
-        assert_eq!(
-            acpi.calls()[calls..],
-            [
-                "\\_SB_.GZFD.WMAE 0 18 b0000020401000000",
-                "\\_SB_.GZFD.WMAE 0 18 b0000020400000000"
-            ]
-        );
+        assert_eq!(m.hwmon_file("pwm1_enable"), "2");
 
         // the EC fan lock: refused while the profile does not mark it verified; nothing opens /dev/port
         let (ok, text) = run(&op, &["fan", "lock", "on"]);
@@ -7353,6 +7346,42 @@ mod fan_control {
             "{text}"
         );
         assert_eq!(m.file("/dev/port"), "<missing>");
+    }
+
+    /// No `legionctl_wmi` (not loaded, or the user went back to the upstream drivers): each fan command fails with
+    /// the reason and the document, nothing is written, and the views say why the fans are unknown. No other path
+    /// to the firmware is tried.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn without_legionctl_wmi_each_fan_command_fails_with_the_reason() {
+        const WHY: &str = "legionctl_wmi is not loaded: see docs/design/08-kernel.md";
+        let m = Machine::new("nowmi");
+        m.verify_fan_calls();
+        std::fs::remove_dir_all(m.dir.join("root").join(&WMI_HWMON[1..])).unwrap();
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "nowmi");
+        for args in [
+            &["fan", "status"][..],
+            &["fan", "max", "on"],
+            &["fan", "max", "on", "--dry-run"],
+            &["fan", "clean", "on"],
+            &["fan", "curve", "reset"],
+            &[&["fan", "curve", "set"][..], &CURVE].concat(),
+            &[&["fan", "curve", "set", "--dry-run"][..], &CURVE].concat(),
+        ] {
+            let (ok, text) = run(&op, args);
+            assert!(!ok && text.contains(WHY), "{args:?}: {text}");
+        }
+        let rows: Value = serde_json::from_str(&op.ok(&["sensors", "--json"])).unwrap();
+        let fans = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["name"] == "fan controls")
+            .unwrap();
+        assert!(fans["text"].as_str().unwrap().contains(WHY), "{fans}");
+        let monitor: Value =
+            serde_json::from_str(&op.ok(&["monitor", "--interval-ms", "100", "--json"])).unwrap();
+        assert_eq!(monitor[0]["fan_rpm"], Value::Null, "{monitor}");
     }
 }
 
@@ -7509,8 +7538,6 @@ mod sensors_and_events {
     async fn sensors_merge_every_source_with_units_and_ring_history_and_never_wake_a_sleeping_gpu()
     {
         let m = Machine::new("sensors");
-        m.verify_fan_calls();
-        let acpi = AcpiCall::start(&m, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
         let (reads, smi) = sensor_machine(&m);
         let (_stand_ins, _asked, _processes) = start(&m).await;
         let op = on_bus(&m, "sensors");
@@ -7540,9 +7567,9 @@ mod sensors_and_events {
             ("NVMe CT4000P3PSSD8", "Composite", 49.85, "°C"),
             ("memory DIMM 2", "temp1", 56.0, "°C"),
             ("NVMe SKHynix HFS001TEJ9X115N", "curr1", 1.5, "A"),
-            // the firmware's fan RPM through the daemon's acpi_call (the stand-in answers 0)
-            ("firmware acpi_call", "fan1", 0.0, "RPM"),
-            ("firmware acpi_call", "fan2", 0.0, "RPM"),
+            // the fan RPM from the recorded legionctl_wmi hwmon device
+            ("fans", "fan1", 5100.0, "RPM"),
+            ("fans", "fan2", 5100.0, "RPM"),
             (
                 "cgroup PSI",
                 "memory pressure of session psi1, some avg10",
@@ -7584,6 +7611,7 @@ mod sensors_and_events {
             ("MSR", "throttle reasons now", "thermal"),
             ("legionctl-system", "firmware mode", "max-power"),
             ("legionctl-system", "fan max mode", "off"),
+            ("legionctl-system", "fan full speed", "off"),
             ("legionctl-system", "fan table", "1 2 3 4 5 6 7 8 9 10"),
             ("power_supply", "power source", "ac"),
             ("eBPF workload", "workload", "none"),
@@ -7598,7 +7626,7 @@ mod sensors_and_events {
             "a sleeping device's sensor was read"
         );
 
-        legionctl_wmi_is_the_fan_source(&m, &op, &acpi);
+        fans_follow_the_module(&m, &op);
 
         // the text groups by source, with the range of the history
         let text = op.ok(&["sensors"]);
@@ -7613,7 +7641,7 @@ mod sensors_and_events {
         for line in [
             "legionctl_hwmon_celsius{device=\"hwmon0 coretemp\",sensor=\"Package id 0\"} 70",
             "legionctl_hwmon_watts{device=\"hwmon1 BAT0\",sensor=\"power1\"} 12.5",
-            "legionctl_hwmon_rpm{device=\"hwmon4 legionctl_wmi\",sensor=\"fan1\"} 2200",
+            "legionctl_hwmon_rpm{device=\"hwmon9 legionctl_wmi\",sensor=\"fan1\"} 2200",
             "legionctl_throttle_active{reason=\"thermal\"} 1",
             "legionctl_session_memory_pressure_some_percent{session=\"psi1\"} 12.5",
         ] {
@@ -7622,43 +7650,19 @@ mod sensors_and_events {
         assert_eq!(*reads.lock().unwrap(), Vec::<PathBuf>::new());
     }
 
-    /// With the `legionctl-wmi` module loaded, its hwmon is the fan source: no firmware rows, and the daemon makes no
-    /// more `acpi_call` RPM calls.
-    fn legionctl_wmi_is_the_fan_source(m: &Machine, op: &Operator, acpi: &AcpiCall) {
+    /// The fans speed up: the next view reads the module's hwmon device again, and the daemon's fan RPM (monitor,
+    /// bench) is the module's too.
+    fn fans_follow_the_module(m: &Machine, op: &Operator) {
         let json = |args: &[&str]| -> Value {
             serde_json::from_str(&op.ok(&[args, &["--json"]].concat())).unwrap()
         };
-        let hwmon_rows = |rows: &Value, device: &str| {
-            rows.as_array()
-                .unwrap()
-                .iter()
-                .filter(|r| r["source"] == device)
-                .count()
-        };
-        // the legionctl-wmi module loaded: its hwmon is the fan source, and the daemon calls acpi_call no more for RPM
-        let rpm_calls = || {
-            acpi.calls()
-                .iter()
-                .filter(|c| c.starts_with("\\_SB_.GZFD.WMAE 0 17"))
-                .count()
-        };
-        let before = rpm_calls();
-        assert!(before > 0, "{:?}", acpi.calls());
-        hwmon(
-            m,
-            4,
-            "legionctl_wmi",
-            &[("fan1_input", "2200"), ("fan2_input", "2400")],
-        );
+        m.set(&format!("{WMI_HWMON}/fan1_input"), "2200");
         let rows = json(&["sensors"]);
         assert_eq!(row(&rows, "fans", "fan1")["value"], 2200.0);
-        assert_eq!(row(&rows, "fans", "fan2")["unit"], "RPM");
-        assert_eq!(hwmon_rows(&rows, "firmware acpi_call"), 0, "{rows:#}");
-        assert_eq!(rpm_calls(), before, "{:?}", acpi.calls());
         let monitor = json(&["monitor", "--interval-ms", "100"]);
         assert_eq!(
             monitor[0]["fan_rpm"],
-            serde_json::json!({"fan1": 2200, "fan2": 2400})
+            serde_json::json!({"fan1": 2200, "fan2": 5100})
         );
     }
 
@@ -7739,7 +7743,7 @@ mod sensors_and_events {
                         serde_json::json!(s.body().deserialize::<(String, bool, String)>().unwrap())
                     }
                     "FanModeChanged" => {
-                        serde_json::json!(s.body().deserialize::<(bool,)>().unwrap().0)
+                        serde_json::json!(s.body().deserialize::<(bool, bool)>().unwrap())
                     }
                     _ => continue,
                 };
@@ -7777,7 +7781,11 @@ mod sensors_and_events {
                     "throttle",
                     "throttling: thermal (changes since the last entry: 1)"
                 ],
-                ["legionctl-system", "fan-mode", "fan max mode on"],
+                [
+                    "legionctl-system",
+                    "fan-mode",
+                    "fan max mode on, full speed off"
+                ],
                 [
                     "legionctl-system",
                     "throttle",
@@ -7803,13 +7811,18 @@ mod sensors_and_events {
             event(&entries[4], &["LEGIONCTL_REASONS", "LEGIONCTL_WORKLOAD"]),
             ["thermal", "build"]
         );
-        assert_eq!(event(&entries[5], &["LEGIONCTL_FAN_MAX"]), ["on"]);
+        assert_eq!(
+            event(
+                &entries[5],
+                &["LEGIONCTL_FAN_MAX", "LEGIONCTL_FAN_FULL_SPEED"]
+            ),
+            ["on", "off"]
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn each_change_other_tools_follow_is_one_signal_and_one_journal_entry() {
         let m = Machine::new("events-out");
-        let _acpi = AcpiCall::start(&m, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
         let entries = journal(&m);
         let (stand_ins, _asked, _processes) = start(&m).await;
         let system = zbus::Proxy::new(
@@ -7872,8 +7885,9 @@ mod sensors_and_events {
         // it stops with no event: the daemon looks each second while throttled (not at the 30 s tick)
         msr(&m, 0b10);
         wait(6);
-        // fan max mode through the daemon's method
+        // fan max mode through the daemon's method: announced as the module reports it
         let _: Vec<String> = system.call("SetFanMax", &(true,)).await.unwrap();
+        assert_eq!(m.hwmon_file("fan_max_mode"), "1");
         wait(7);
         // one more resume changes nothing that other tools follow: nothing more is announced
         resume().await;
@@ -7900,7 +7914,7 @@ mod sensors_and_events {
                 ),
                 ("ThrottleChanged", &serde_json::json!(["thermal"])),
                 ("ThrottleChanged", &serde_json::json!([])),
-                ("FanModeChanged", &serde_json::json!(true)),
+                ("FanModeChanged", &serde_json::json!([true, false])),
             ],
             "{signals:?}"
         );
@@ -7912,7 +7926,6 @@ mod sensors_and_events {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_power_source_change_without_its_event_is_announced_after_its_policy() {
         let m = Machine::new("late-source");
-        let _acpi = AcpiCall::start(&m, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
         let entries = journal(&m);
         let (stand_ins, _asked, _processes) = start(&m).await;
         let system = zbus::Proxy::new(
@@ -7971,7 +7984,6 @@ mod sensors_and_events {
     #[tokio::test(flavor = "multi_thread")]
     async fn throttling_that_flaps_gives_two_journal_entries_and_every_signal() {
         let m = Machine::new("throttle-flaps");
-        let _acpi = AcpiCall::start(&m, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
         msr(&m, 0b00);
         let entries = journal(&m);
         let (stand_ins, _asked, _processes) = start(&m).await;
@@ -8497,12 +8509,10 @@ mod parity {
         let _kernel = pci_machine(&m);
         let gpu = "/sys/bus/pci/devices/0000:01:00.0/power/runtime_status";
         m.set(gpu, "suspended");
-        m.set("/sys/class/hwmon/hwmon9/name", "coretemp");
-        m.set("/sys/class/hwmon/hwmon9/temp1_input", "71000");
-        m.set("/sys/class/hwmon/hwmon9/temp1_label", "Package id 0");
-        m.set("/sys/class/hwmon/hwmon10/name", "legion");
-        m.set("/sys/class/hwmon/hwmon10/fan1_input", "2400");
-        m.set("/sys/class/hwmon/hwmon10/fan2_input", "2600");
+        m.set("/sys/class/hwmon/hwmon8/name", "coretemp");
+        m.set("/sys/class/hwmon/hwmon8/temp1_input", "71000");
+        m.set("/sys/class/hwmon/hwmon8/temp1_label", "Package id 0");
+        // the fans: the recorded legionctl_wmi device
         Machine::script(&m.dir.join("bin"), "nvidia-smi", "echo '42.4, 51, 3, 1200'");
         let (_stand_ins, _asked, _processes) = start(&m).await;
         let address = format!("unix:path={}", m.dir.join("bus").display());
@@ -8546,7 +8556,7 @@ mod parity {
         assert!(
             first.starts_with("CPU  71 °C  ")
                 && first.contains("\nGPU  asleep (D3cold)\n")
-                && first.contains("\nFans 2400 / 2600 RPM\n")
+                && first.contains("\nFans 5100 / 5100 RPM\n")
                 && first.ends_with("max-power on ac"),
             "{first}"
         );

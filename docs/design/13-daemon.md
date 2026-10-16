@@ -103,8 +103,8 @@ Not yet: the kernel prerequisite checks as a boot step (they are `doctor` checks
 
 ## Kernel and eBPF toolkit
 
-- Kernel modules and DKMS through the 08-kernel inventory; `acpi_call` use (fan RPM, future WMI calls) only inside
-  `legionctl-system`, serialized, because `/proc/acpi/call` has one shared result buffer.
+- Kernel modules and DKMS through the 08-kernel inventory. The firmware's WMI only through the `legionctl_wmi`
+  module's sysfs (fans, platform profile, firmware attributes); the module makes one call at a time. No `acpi_call`.
 - eBPF programs (aya) loaded by `legionctl-system` and pinned under `/sys/fs/bpf/legionctl/`, so they keep running across daemon
   restarts and are reattached, not reloaded.
 - Firmware attributes, platform_profile, RAPL, cpufreq and sysctl through the actuator layer (01-core).
@@ -144,7 +144,7 @@ may fail by design. The ledger has one writer: the daemon opens `system.db` for 
 | Path or program | Feature | How it is allowed |
 | --- | --- | --- |
 | `/sys` (platform_profile, firmware attributes, cpufreq, hwmon, battery, vfio bind, `/sys/fs/bpf/legionctl`), `/sys/firmware/efi/efivars` (`LoaderEntryOneShot`, `chattr -i`) | power, fan, battery, GPU, VFIO, eBPF pins, `kernel try`, `kernel cmdline` | `ProtectSystem=strict` keeps `/sys`, `/proc` and `/dev` writable; the unit has no `ProtectKernelTunables=` and no `PrivateDevices=` |
-| `/proc/acpi/call`, `/dev/port`, `/dev/vfio/*` | firmware calls, EC byte, VFIO | as above |
+| `/dev/port`, `/dev/vfio/*` | EC byte, VFIO | as above |
 | `/sys/bus/pci/devices/<NVIDIA GPU>/power/control` | `gpu power` | as `/sys` above |
 | OpenRGB's SDK server (TCP `127.0.0.1:6742`, `LEGIONCTL_OPENRGB`) | knob `rgb.profile` | a connection, not a path: the unit does not limit the network |
 | `/run/legionctl` (safe-mode, workload) | safe mode, workload sensor | `RuntimeDirectory=legionctl` |

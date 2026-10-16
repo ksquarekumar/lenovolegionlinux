@@ -212,24 +212,45 @@ fn policy_warnings(machine: &Machine) -> Result<Vec<String>> {
 /// The Legion WMI driver families: legionctl's module and the upstream drivers it replaces.
 const WMI_FAMILIES: [&str; 2] = ["legionctl_wmi", "lenovo_wmi_"];
 
+/// The opt-in that makes udev load `legionctl_wmi` in place of the upstream drivers (todo-143).
+const OPT_IN: &str = "/etc/modprobe.d/legionctl-wmi.conf";
+
+/// The Legion WMI devices that `legionctl_wmi` binds (docs/design/08-kernel.md, What it binds).
+const LEGION_WMI_GUIDS: [&str; 6] = [
+    "887B54E3-DDDC-4B2C-8B88-68A26A8835D0",
+    "DC2A8805-3A8C-41BA-A6F7-092E0089CD3B",
+    "7A8F5407-CB67-4D6E-B547-39B3BE018154",
+    "92549549-4BDE-4F06-AC04-CE8BF898DBAA",
+    "D320289E-8FEA-41E0-86F9-911D83151B5F",
+    "CE6C0974-0407-4F50-88BA-4FC3B6559AD8",
+];
+
 /// Two driver families on the Legion WMI devices (todo-143: `legionctl_wmi` autoloaded beside the upstream drivers),
-/// and no `platform_profile` while a Legion WMI driver is loaded.
+/// a Legion WMI device that a loaded `legionctl_wmi` does not have, and no `platform_profile` while a Legion WMI
+/// driver is loaded. A `legionctl_wmi` that is not loaded is the kernel module check's finding (the profile requires
+/// it).
 fn wmi_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
     let mut w = Vec::new();
     let mut loaded = Vec::new();
     let mut bound = Vec::new();
+    let mut ours = Vec::new();
     for driver in root.children("/sys/bus/wmi/drivers", "")? {
         let name = driver.file_name().unwrap().to_string_lossy().into_owned();
         let Some(family) = WMI_FAMILIES.iter().find(|f| name.starts_with(**f)) else {
             continue;
         };
         // a bound device is a link named <GUID>-<instance>; bind, unbind, module and uevent are lower case
-        let devices: Vec<String> = root
-            .children(&driver, "")?
-            .iter()
-            .map(|d| d.file_name().unwrap().to_string_lossy().into_owned())
-            .filter(|d| d.len() > 36 && d.as_bytes()[8] == b'-')
-            .collect();
+        let mut devices = Vec::new();
+        for d in root.children(&driver, "")? {
+            let name = d.file_name().unwrap().to_string_lossy().into_owned();
+            // read as a link, so that a recording (`record`) keeps the bound device
+            if name.len() > 36 && name.as_bytes()[8] == b'-' && root.link(&d)?.is_some() {
+                devices.push(name);
+            }
+        }
+        if *family == WMI_FAMILIES[0] {
+            ours.extend(devices.iter().map(|d| d[..36].to_string()));
+        }
         if !devices.is_empty() {
             bound.push((*family, format!("{name} ({})", devices.join(", "))));
         }
@@ -242,6 +263,24 @@ fn wmi_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
             "the Legion WMI devices are bound to legionctl_wmi and to the upstream lenovo_wmi drivers: {}; neither \
              side has all of them (see docs/design/08-kernel.md, First live load)",
             drivers.join("; ")
+        ));
+    }
+    let missing: Vec<&str> = LEGION_WMI_GUIDS
+        .into_iter()
+        .filter(|g| !ours.iter().any(|d| d == g))
+        .collect();
+    let ours_loaded = loaded.iter().any(|d| d.starts_with(WMI_FAMILIES[0]));
+    if !ours_loaded && !root.exists(OPT_IN)? {
+        w.push(format!(
+            "{OPT_IN} is missing: legionctl_wmi does not load at start, and the fan controls fail without it (see \
+             docs/design/08-kernel.md, First live load, step 6)"
+        ));
+    }
+    if ours_loaded && !missing.is_empty() {
+        w.push(format!(
+            "legionctl_wmi is loaded but does not have the Legion WMI devices {}: the fan, power mode and firmware \
+             attribute files of these devices are missing (see docs/design/08-kernel.md, What it binds)",
+            missing.join(", ")
         ));
     }
     if !loaded.is_empty() && !root.exists(&profile.paths.platform_profile)? {

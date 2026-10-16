@@ -6,7 +6,7 @@
 
 | Area | LLL | legionctl |
 | --- | --- | --- |
-| Machine control | out-of-tree `legion_laptop` module, EC access, Python GUI/CLI | in-tree drivers (`lenovo_wmi_*`, `ideapad_laptop`), WMI through `acpi_call`, one daemon (`legionctl-system`); feature map in 10-gap |
+| Machine control | out-of-tree `legion_laptop` module, EC access, Python GUI/CLI | `legionctl_wmi` (our DKMS module, the Legion WMI through sysfs, 08-kernel) and `ideapad_laptop`, one daemon (`legionctl-system`); feature map in 10-gap |
 | Policy | presets applied on AC/battery | layered configsets, reconciler, ownership ledger, events (01-core) |
 | Agents | none | operator: sessions, tools, skills, MCP, model gateway, Claude/Codex accounts and quotas (12, 14) |
 | Developers and superusers | sysfs files and a GUI | the tools below |
@@ -47,7 +47,8 @@ and its source. It takes one telemetry sample (the same `sample()` as `monitor`)
 | Source | Rows |
 | --- | --- |
 | `hwmonN <name>` | Each channel of each `/sys/class/hwmon` device: `temp*` (°C), `fan*` (RPM), `power*` (W), `in*` (V), `curr*` (A), `freq*` (MHz); the label, else the channel name. A device whose `device/power/runtime_status` is not `active` (or `unsupported`) is not read, because a read wakes it: the row says `asleep`. |
-| `firmware acpi_call` | Fan RPM from `legionctl-system`. When the `legionctl-wmi` module is loaded, its hwmon device `legionctl_wmi` (`fan1_input`, `fan2_input`) is the fan source: the daemon reads it in place of `acpi_call`, and the view shows its hwmon rows only. No code change is necessary. |
+| `fans` | Fan RPM: the hwmon device `legionctl_wmi` of our module (`fan1_input`, `fan2_input`; found by its name, the number changes). Without the module the fan rows are not there, and the state row `fan controls` says `legionctl_wmi is not loaded: see docs/design/08-kernel.md`. |
+| `legionctl-system` | The fan state that the module reports: firmware mode, fan max mode, full speed, the fan table. Not yet: the firmware temperatures (GPU, heatsink) as hwmon channels: they need the sensor ids of the read-only WMI probe (todo-93). |
 | `nvidia-smi`, `PCI runtime PM` | The NVIDIA GPU's power, temperature, utilization and clock only while it is `active`; else only its runtime state. legionctl never wakes it. |
 | `RAPL`, `cpufreq`, `PSI`, `eBPF runq` | Package power, mean CPU clock, pressure, run-queue latency p99 per CPU class. |
 | `MSR`, `legionctl-system`, `eBPF workload`, `power_supply` | Throttle reasons now and since boot; the firmware mode, fan max mode and the fan table; the workloads that run; the power source and the battery. |
@@ -77,7 +78,7 @@ structured journal entry (through the journal's native socket, `/run/systemd/jou
 | Power source | `PowerSourceChanged(source s)` | `power-source` | `LEGIONCTL_SOURCE` (`ac`, `battery`) |
 | Workloads that run (eBPF) | `WorkloadChanged(kinds as)` | `workload` | `LEGIONCTL_WORKLOAD` (`build,game`, or `none`) |
 | Throttling starts, changes or stops (MSR) | `ThrottleChanged(reasons as)`; empty: stopped | `throttle` | `LEGIONCTL_REASONS` (empty: stopped), `LEGIONCTL_WORKLOAD` (the kinds active then, or `none`), `LEGIONCTL_CHANGES` (the throttle changes since the last entry) |
-| Fan max mode | `FanModeChanged(max b)` | `fan-mode` | `LEGIONCTL_FAN_MAX` (`on`, `off`) |
+| Fan max mode or full speed (as the `legionctl_wmi` module reports them; also a write by another tool, seen at the next look) | `FanModeChanged(max b, full_speed b)` | `fan-mode` | `LEGIONCTL_FAN_MAX`, `LEGIONCTL_FAN_FULL_SPEED` (`on`, `off`) |
 
 The throttle entry has hysteresis (todo-126): a start after no throttling is written at once, and another change only
 after it held for 5 s; the signal and `throttle_episodes` still have each change. Each entry has

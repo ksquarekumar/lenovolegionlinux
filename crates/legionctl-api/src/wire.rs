@@ -983,7 +983,7 @@ wire! {
         /// Package RAPL zones (MSR and MMIO) with their limits; read for watts, never written.
         rapl: Vec<RaplZone>,
         nvidia_power_limit_w: Option<String>,
-        /// Firmware fan RPM (needs root).
+        /// Fan RPM from the `legionctl-wmi` module's hwmon device; `None` without the module.
         fan_rpm: Option<BTreeMap<String, u64>>,
         /// Throttle reasons logged since boot (needs root).
         throttle_reasons: Option<Vec<String>>,
@@ -1058,7 +1058,7 @@ wire! {
     /// One row of `legionctl sensors`: a number with its unit, or a state as text.
     struct Reading from machine::sensors::Reading {
         /// Where it comes from: a hwmon device by what it is (`CPU`, `NVMe <model>`, `memory DIMM 0`, `battery`),
-        /// `RAPL`, `nvidia-smi`, `firmware acpi_call`, `eBPF runq`, ...
+        /// `RAPL`, `nvidia-smi`, `eBPF runq`, ...
         source: String,
         name: String,
         value: Option<f64>,
@@ -1153,8 +1153,10 @@ wire! {
         chosen: Option<Vec<u8>>,
         /// The profile's curve, used when you have none.
         default_curve: Vec<u8>,
-        /// Fan max mode as `legionctl-system` set it (the firmware does not report it).
+        /// Fan max mode as the `legionctl-wmi` module reports it.
         max: bool,
+        /// Full speed (dust cleaning) is on.
+        full_speed: bool,
         /// RPM of fan 1 at each level 1-10.
         fan1_rpm: Vec<u32>,
         /// RPM of fan 2 at each level 1-10.

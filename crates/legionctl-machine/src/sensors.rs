@@ -7,7 +7,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::fan::{FanState, text};
-use crate::firmware::LEGIONCTL_WMI;
 use crate::sysroot::SysRoot;
 use crate::telemetry::Sample;
 use crate::{battery, configset};
@@ -16,7 +15,7 @@ use crate::{battery, configset};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Reading {
     /// Where it comes from: a hwmon device by what it is (`CPU`, `NVMe <model>`, `memory DIMM 0`, `battery`), `RAPL`,
-    /// `nvidia-smi`, `firmware acpi_call`, `eBPF runq`, ...
+    /// `nvidia-smi`, `eBPF runq`, ...
     pub source: String,
     pub name: String,
     pub value: Option<f64>,
@@ -113,21 +112,11 @@ fn numbers(s: &Sample) -> Vec<(String, String, f64, String)> {
             "%",
         );
     }
-    // the legionctl-wmi module's hwmon has the fan RPM in place of acpi_call (it is in the hwmon rows above)
-    if !s
-        .hwmon
-        .iter()
-        .any(|c| c.device.ends_with(&format!(" {LEGIONCTL_WMI}")))
-    {
-        for (fan, rpm) in s.root.fan_rpm.iter().flatten() {
-            add("firmware acpi_call", fan, Some(float(*rpm)), "RPM");
-        }
-    }
     out
 }
 
 /// The view of `now`: its numbers with their history in `earlier` (oldest first), then the states. `fan` is the
-/// daemon's fan state (`None` without the daemon); `ac_adapter` is the profile's AC adapter file.
+/// daemon's fan state, or why it cannot be read; `ac_adapter` is the profile's AC adapter file.
 ///
 /// # Errors
 /// A machine file cannot be read.
@@ -135,7 +124,7 @@ pub fn view(
     root: &SysRoot,
     now: &Sample,
     earlier: &[Sample],
-    fan: Option<&FanState>,
+    fan: Result<&FanState, &str>,
     ac_adapter: &str,
 ) -> Result<Vec<Reading>> {
     let past: Vec<Vec<(String, String, f64, String)>> = earlier.iter().map(numbers).collect();
@@ -208,7 +197,7 @@ fn device_name(root: &SysRoot, source: &str) -> Result<String> {
 fn states(
     root: &SysRoot,
     now: &Sample,
-    fan: Option<&FanState>,
+    fan: Result<&FanState, &str>,
     ac_adapter: &str,
 ) -> Result<Vec<Reading>> {
     let mut rows = Vec::new();
@@ -271,23 +260,21 @@ fn state(source: &str, name: &str, text: String) -> Reading {
 /// The fan controls, the workload, the power source and the battery.
 fn machine_states(
     root: &SysRoot,
-    fan: Option<&FanState>,
+    fan: Result<&FanState, &str>,
     ac_adapter: &str,
 ) -> Result<Vec<Reading>> {
     let mut rows = Vec::new();
     let mut state = |source: &str, name: &str, text: String| rows.push(state(source, name, text));
     match fan {
-        Some(f) => {
+        Ok(f) => {
+            let on = |on: bool| if on { "on" } else { "off" }.to_string();
             state(
                 "legionctl-system",
                 "firmware mode",
                 f.mode.clone().unwrap_or_else(|| "unknown".into()),
             );
-            state(
-                "legionctl-system",
-                "fan max mode",
-                if f.max { "on" } else { "off" }.into(),
-            );
+            state("legionctl-system", "fan max mode", on(f.max));
+            state("legionctl-system", "fan full speed", on(f.full_speed));
             state(
                 "legionctl-system",
                 "fan table",
@@ -302,10 +289,10 @@ fn machine_states(
                 ),
             );
         }
-        None => state(
+        Err(why) => state(
             "legionctl-system",
             "fan controls",
-            "unknown (needs legionctl-system)".into(),
+            format!("unknown: {why}"),
         ),
     }
     let kinds = configset::workload(root)?;

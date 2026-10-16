@@ -8,7 +8,7 @@ LenovoLegionLinux's `model_kwcn` entry and the in-tree drivers. Every new firmwa
 | --- | --- | --- | --- |
 | Power modes Quiet / Balance / Performance / Extreme (max-power) | done: `platform_profile`, Fn+Q follow, PPD sync, OSD | `lenovo_wmi_gamezone` | — |
 | Custom mode with CPU/GPU power limits | blocked: custom mode accepts `ppt_*` (enforcement measured) but runs the fans at ~6,000 rpm until a fan table is written; policy uses the firmware modes' built-in limits; no RAPL writes | `lenovo-wmi-other` firmware attributes (`ppt_*`, `gpu_*`); verify writability in `custom` | high |
-| Fan speed readout | done (validated) | Other Method 17, feature 0x04030001/2 via `acpi_call` | — |
+| Fan speed readout | done (validated) | Other Method 17, feature 0x04030001/2 via the `legionctl_wmi` hwmon (`fan1_input`, `fan2_input`; `acpi_call` before 2026-10-16) | — |
 | Custom fan curve | built (`legionctl fan curve`), fixture-tested; live use waits for todo-17 | FAN_METHOD `WMAB` 5/6, levels 1–10, speed-only, custom mode only (02-platform, Fan control) | medium |
 | Fan full speed (dust cleaning) | built (`legionctl fan clean`), fixture-tested; live use waits for todo-17 | Other Method `SetFeatureValue` 0x04020000, custom mode only | low |
 | Fan max mode (extreme cooling) | built (`legionctl fan max`), set again after resume and at start | GameZone `WMAA(0, 0x0D)`; measured here: fans at 6,000–6,100 rpm at any load (normal maximum 5,100), GPU +10 % power at its temperature limit | medium |

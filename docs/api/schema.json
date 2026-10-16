@@ -183,7 +183,7 @@
             "format": "uint64",
             "minimum": 0
           },
-          "description": "Firmware fan RPM (needs root)."
+          "description": "Fan RPM from the `legionctl-wmi` module's hwmon device; `None` without the module."
         },
         "throttle_reasons": {
           "type": [
@@ -5134,7 +5134,7 @@
         "type": "object",
         "properties": {
           "source": {
-            "description": "Where it comes from: a hwmon device by what it is (`CPU`, `NVMe <model>`, `memory DIMM 0`, `battery`),\n`RAPL`, `nvidia-smi`, `firmware acpi_call`, `eBPF runq`, ...",
+            "description": "Where it comes from: a hwmon device by what it is (`CPU`, `NVMe <model>`, `memory DIMM 0`, `battery`),\n`RAPL`, `nvidia-smi`, `eBPF runq`, ...",
             "type": "string"
           },
           "name": {
@@ -6469,7 +6469,11 @@
         },
         "max": {
           "type": "boolean",
-          "description": "Fan max mode as `legionctl-system` set it (the firmware does not report it)."
+          "description": "Fan max mode as the `legionctl-wmi` module reports it."
+        },
+        "full_speed": {
+          "type": "boolean",
+          "description": "Full speed (dust cleaning) is on."
         },
         "fan1_rpm": {
           "type": "array",
@@ -6497,6 +6501,7 @@
       "required": [
         "default_curve",
         "max",
+        "full_speed",
         "fan1_rpm",
         "fan2_rpm",
         "ec_fan_lock_verified"

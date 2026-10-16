@@ -22,21 +22,20 @@
     "ac_adapter": "/sys/class/power_supply/ADP0/online",
     "platform_profile": "/sys/class/platform-profile/platform-profile-0/profile",
     "platform_profile_choices": "/sys/class/platform-profile/platform-profile-0/choices",
-    "fan_mode": "/sys/devices/pci0000:00/0000:00:1f.0/PNP0C09:00/VPC2004:00/fan_mode",
-    "wmi_other_method": "\\_SB_.GZFD.WMAE"
+    "fan_mode": "/sys/devices/pci0000:00/0000:00:1f.0/PNP0C09:00/VPC2004:00/fan_mode"
   },
   "observations": {
-    "vpc2004_fan_mode": "Writing 4 succeeds at sysfs level but immediately reads back as 0 on this machine, so it is status-only until DKMS fan support is added.",
+    "vpc2004_fan_mode": "Writing 4 succeeds at sysfs level but immediately reads back as 0 on this machine, so it is status-only; fan control goes through the legionctl_wmi hwmon.",
     "thinkpad_acpi_fan": "Reports 4 RPM and is not trusted as Legion fan telemetry."
   },
   "capabilities": [
     {
       "id": "fn_q_power_mode",
       "name": "Fn+Q power mode switch",
-      "status": "source-derived; live firmware profile surface present",
-      "current_owner": "firmware platform_profile plus legionctl policy reassertion",
-      "planned_owner": "WMI event listener after DKMS/event surface is proven",
-      "notes": "Hardware toggles Lenovo thermal/power mode. This package currently enforces max-power on AC and low-power/balanced on battery, but does not yet consume Fn+Q WMI events."
+      "status": "built; the live Fn+Q check is the user's (todo-17 step 4)",
+      "current_owner": "legionctl_wmi (WMI event 0xE7 gives a platform_profile change notice) and legionctl-system (follows the Fn+Q choice)",
+      "planned_owner": "legionctl_wmi (WMI event 0xE7 gives a platform_profile change notice) and legionctl-system (follows the Fn+Q choice)",
+      "notes": "Hardware toggles Lenovo thermal/power mode. legionctl_wmi turns the firmware's mode event into a platform_profile notice; legionctl-system keeps the choice as the Fn+Q override and sets the fan table again on entry to custom mode."
     },
     {
       "id": "fn_r_refresh_rate",
@@ -65,17 +64,17 @@
     {
       "id": "fan_telemetry",
       "name": "Real fan RPM/temperature telemetry",
-      "status": "missing locally",
-      "current_owner": "none; thinkpad_acpi fan data is ignored",
-      "planned_owner": "read-only DKMS hwmon import",
-      "notes": "Bolekjar hwmon reads CPU/GPU/SYS fan RPM and temperatures via Legion WMI methods. This is the first DKMS target."
+      "status": "fan RPM built (legionctl_wmi hwmon); firmware temperatures wait for the WMI probe (todo-93)",
+      "current_owner": "legionctl_wmi hwmon (fan1_input, fan2_input); thinkpad_acpi fan data is ignored",
+      "planned_owner": "legionctl_wmi hwmon temperature channels (todo-93)",
+      "notes": "Bolekjar hwmon reads CPU/GPU/SYS fan RPM and temperatures via Legion WMI methods; the sensor ids of this firmware are not known yet."
     },
     {
       "id": "fan_control",
       "name": "Fan max/full-speed and fan curve control",
-      "status": "built; WMI call strings not yet verified live (todo-17)",
-      "current_owner": "firmware automatic fan controller",
-      "planned_owner": "legionctl fan (legionctl-system through acpi_call)",
+      "status": "built; the first live writes are the user's (todo-17 step 4), then fan.curve_verified",
+      "current_owner": "legionctl fan (legionctl-system through the legionctl_wmi hwmon)",
+      "planned_owner": "legionctl fan (legionctl-system through the legionctl_wmi hwmon)",
       "notes": "VPC2004 fan_mode is ineffective here. Fan curve (custom mode only), fan max mode and full speed go through WMI; the EC fan lock stays refused until fan.ec_fan_lock_verified is true."
     },
     {
@@ -150,10 +149,7 @@
   "kernel_modules": {
     "required": [
       "ideapad_laptop",
-      "lenovo_wmi_gamezone",
-      "lenovo_wmi_other",
-      "lenovo_wmi_events",
-      "acpi_call",
+      "legionctl_wmi",
       "msr",
       "intel_rapl_msr",
       "i915",

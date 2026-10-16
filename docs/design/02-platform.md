@@ -73,13 +73,11 @@ There is no fan hwmon on this machine (`thinkpad_acpi`, which reported a bogus f
 gpu-burn (GPU 60 → 70 °C); readings move with load in the firmware's 100 rpm steps. The firmware publishes RPM
 through the Lenovo "Other Method" WMI interface, `GetFeatureValue` (method 17) with feature `0x04030001`/`0x04030002`
 (value = FANS × 100), the path LenovoLegionLinux uses for this model (`model_kwcn`, `ACCESS_METHOD_WMI3`). The WMI
-object is `AE` on `PNP0C14:02` = `\_SB_.GZFD.WMAE`. `acpi_call` lets root call it read-only:
-`echo '\_SB_.GZFD.WMAE 0 17 b01000304' > /proc/acpi/call; cat /proc/acpi/call`. legionctl-system polls it as a
-sensor (2 s). This is the only fan source; a failed read reports the RPM as unknown.
-
-The in-tree `lenovo_wmi_other` module has `expose_all_fans` and `relax_fan_constraint` parameters. If a kernel
-update makes it register a fan hwmon on this model without them, that hwmon replaces the acpi_call path in the
-same change (check on each kernel update).
+object is `AE` on `PNP0C14:02` = `\_SB_.GZFD.WMAE`. Since 2026-10-16 (todo-79, the switch part) our module
+`legionctl_wmi` makes this call and gives the RPM as `fan1_input` and `fan2_input` of its hwmon device
+`legionctl_wmi` (found by its name; the number changes from start to start). This is the only fan source: without
+the module the fan commands fail with `legionctl_wmi is not loaded: see docs/design/08-kernel.md`, and the views show
+the RPM as unknown with that reason. `acpi_call` is not used any more.
 
 ## Fan control (from LenovoLegionLinux `model_kwcn`, source HEAD 6cf67c3)
 
@@ -92,46 +90,52 @@ same change (check on each kernel update).
 | FAN_METHOD ids 1–4 | — | Not implemented by this firmware; never called. |
 | EC fan lock (EC 0xC4AB over port I/O) | raw EC write: 0x08 locks, 0x00 releases; through `/dev/port`, index 0x4E / data 0x4F (LLL `ecram_portio_write`) | Not validated for this EC; an incorrect write can stop fan control. Built, but refused unless the profile sets `fan.ec_fan_lock_verified` (false in the shipped profile). |
 
-### What is built (todo-77, 2026-10-14)
+### What is built (todo-77, 2026-10-14; through `legionctl_wmi` since todo-79, 2026-10-16)
 
 `legionctl fan status | curve set <10 levels> | curve reset | max on|off | clean on|off | lock on|off`, each with
-`--dry-run` for the changes. The CLI and the operator only
-plan and check; `legionctl-system` calls the firmware through `/proc/acpi/call` (one call at a time: the file keeps
-one reply for all callers), after polkit `org.legionctl.fan` (`org.legionctl.fan.lock` for the EC lock, no kept
-authorization). D-Bus: `FanStatus`, `SetFanCurve`, `ResetFanCurve`, `SetFanMax`, `SetFanFullSpeed`, `SetFanLock`.
+`--dry-run` for the changes. The CLI and the operator only plan and check; `legionctl-system` writes the files of the
+`legionctl_wmi` hwmon device (08-kernel, sysfs ABI) after polkit `org.legionctl.fan` (`org.legionctl.fan.lock` for the
+EC lock, no kept authorization). D-Bus: `FanStatus`, `SetFanCurve`, `ResetFanCurve`, `SetFanMax`, `SetFanFullSpeed`,
+`SetFanLock`. The module makes the firmware calls above (Fan_Get_Table, Fan_Set_Table, WMAA 0x0D, SetFeatureValue
+0x04020000) and nothing else; the VM test of the module checks each call byte for byte against a stand-in SSDT.
 
-| Call | `acpi_call` string |
+| Control | File of hwmon `legionctl_wmi` |
 | --- | --- |
-| Fan_Get_Table | `\_SB_.GZFD.WMAB 0 5` (no input, as the kernel's WMI calls it); reply: u32 FSFL, then FSS0–FSS9 as u32 (LLL `WMIFanTableRead`) |
-| Fan_Set_Table | `\_SB_.GZFD.WMAB 0 6 b<0x40 bytes in hex>`, level i at byte 0x06 + 2·i |
-| Fan max mode | `\_SB_.GZFD.WMAA 0 13 b01` / `b00` |
-| Full speed | `\_SB_.GZFD.WMAE 0 18 b0000020401000000` / `...00000000` (feature id, then the value, u32 little endian) |
+| Fan table | `pwm1_auto_point1_pwm` .. `pwm1_auto_point10_pwm` (levels 1–10) |
+| Full speed | `pwm1_enable`: 0 full speed, 2 the table |
+| Fan max mode | `fan_max_mode`: 1 on, 0 off (the state that the module set; the firmware has no read) |
+| Fan RPM | `fan1_input`, `fan2_input` |
 
-- **Checks before any write**: 10 levels, each 1–10, not below the point's minimum, not lower than the point
-  before; the operator checks before polkit asks, and the daemon checks again. A curve write or full speed outside
-  custom mode is refused with the mode and how to enter custom mode.
-- **Read back**: each curve write reads the table before and after; a different table is a warning in the result.
+- **Checks before any write**: the same rules as the module: 10 levels, each 1–10, not below the point's minimum,
+  not lower than the point before; the operator checks before polkit asks, and the daemon checks again. A curve write
+  or full speed outside custom mode is refused with the mode and how to enter custom mode.
+- **Point by point**: the module takes one point per write and refuses a write that makes the table invalid. The
+  daemon writes the changed points in two passes: from point 10 down the higher of the old and the new level, then
+  from point 1 up the new level; each table between them is valid. The result line lists the writes in order
+  (`writes 10:10 9:8 ... 5:3`), then the daemon reads the table back.
 - **Kept state**: the user's curve and fan max mode are in `system.db` (table `fan`), across restarts and reboots.
-- **Again after events**: at start and after resume, fan max mode when on; at start, after resume and at each
-  `platform_profile` change, the user's curve (else the default) when the mode after the event is custom.
+- **Again after events**: the module sets fan max mode again after resume, and the last table written through sysfs
+  and full speed on each entry to custom mode. The daemon adds what a new module does not have: at start, fan max mode
+  when the user has it on and the module has it off; at start, after resume and at each `platform_profile` change,
+  the user's curve (else the default) when the mode after the event is custom (the read-back makes a second write a
+  no-op). Without the module, the event's plan has a warning and goes on.
+- **No module**: each fan command fails with `legionctl_wmi is not loaded: see docs/design/08-kernel.md`; no other
+  path to the firmware is tried.
 - **Default curve**: the profile's `fan.default_curve`, `1 2 3 4 5 6 7 8 9 10` (each point at its own level, 1,700 to
   5,100 rpm). It is not the table read at custom-mode entry: the EC resets the table in the other modes, and custom
   mode runs the fans at ~6,000 rpm until a table is written, so that read is not a sane default. `fan curve reset`
   forgets the user's curve and writes the default (in custom mode; otherwise at the next custom-mode entry).
-- **Tests** (fixture sysroot, private bus): a FIFO at `/proc/acpi/call` stands in for `acpi_call`, records each call
-  and answers `Fan_Get_Table` with its table (`crates/legionctl/tests/machine.rs`, `fan_control` and
-  `entering_custom_mode_writes_the_users_fan_curve_or_the_default`).
+- **Tests** (`crates/legionctl/tests/machine.rs`, `fan_control` and
+  `entering_custom_mode_writes_the_users_fan_curve_or_the_default`): the recorded `legionctl_wmi` tree of this machine
+  (`tests/fixtures/sysfs-legionctl-wmi-82wq-2026-10-16`, read-only) is the firmware. Its files are plain files: the
+  module's own refusals are checked in the module's VM test (08-kernel).
 
-**Live use waits for todo-17**: the WMAB and WMAE 18 strings above are from the LLL source, not yet called on this
-machine (WMAA 0x0D was write-tested on 2026-10-12). Until the profile sets `fan.curve_verified` (false in the
-shipped profile), legionctl makes none of these calls: `curve set`, `curve reset` and `clean` are refused with the
-reason (their dry runs show the calls), `fan status` does not read the table, and custom mode gets no automatic
-write (e2e: the shipped profile makes no call; mutation-checked). To verify, with the user, in custom mode: read the
-table once by hand as root (`echo '\_SB_.GZFD.WMAB 0 5' > /proc/acpi/call; cat /proc/acpi/call`: FSFL, then 10
-levels 1–10); then, with `curve_verified` set in the repository's profile and a new package, `legionctl fan curve set
---dry-run <levels>`, `legionctl fan curve set <levels>` and watch `legionctl monitor` (RPM moves to the ladder of the
-new levels); `legionctl fan clean on` then `off`. Do not set `fan.ec_fan_lock_verified` until the EC lock is proven
-on this EC.
+**The first live writes are the user's (todo-17 step 4, 08-kernel, First live load).** Until the profile sets
+`fan.curve_verified` (false in the shipped profile), legionctl makes no table or full-speed write: `curve set`,
+`curve reset` and `clean` are refused with the reason (their dry runs show the writes), and custom mode gets no
+automatic write. The reads (`fan status`, the table, the RPM) work. Fan max mode is not gated (WMAA 0x0D was
+write-tested on 2026-10-12). After step 4 is right, the profile in the repository sets `fan.curve_verified` to true
+(a new package). Do not set `fan.ec_fan_lock_verified` until the EC lock is proven on this EC.
 ## GPU mode, primary GPU and per-app pinning
 
 - **Detect** (no root): which DRM card drives each connected output (`/sys/class/drm/card*-*/status` plus the card's
@@ -140,8 +144,9 @@ on this EC.
   PM state (`/sys/bus/pci/devices/0000:01:00.0/power/runtime_status`).
 - **Toggle**: primary GPU via the udev tag (applies at next login; OSD/UI offers "log out now"). MUX hybrid vs
   discrete-only is a firmware setting; the in-tree drivers on this kernel expose no MUX control (LenovoLegionLinux
-  writes it through a GameZone WMI method). Plan: read-only detection first, then a WMI write through
-  `acpi_call` only after validating the method on this BIOS, always followed by a reboot prompt.
+  writes it through a GameZone WMI method). Plan: read-only detection first, then a WMI write as a new
+  `legionctl_wmi` call (todo-79, Windows parity) only after validating the method on this BIOS, always followed by a
+  reboot prompt.
 - **Pin apps to a GPU** (hybrid mode): a desktop-entry override in `~/.local/share/applications/` that sets
   `PrefersNonDefaultGPU=true` (GNOME launches it on the other GPU through switcheroo-control), or for explicit
   control an `Exec` prefix: NVIDIA via PRIME offload (`__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia

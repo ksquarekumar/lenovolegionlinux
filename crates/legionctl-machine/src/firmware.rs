@@ -1,85 +1,24 @@
-//! Firmware calls that need root: the Lenovo WMI methods through `acpi_call` (fan RPM here, from the `legionctl-wmi`
-//! hwmon once that module is loaded; the fan controls in
-//! [`crate::fan`]), and the package thermal status MSR (read-only).
+//! The firmware through the `legionctl-wmi` module's sysfs (docs/design/08-kernel.md, sysfs ABI): fan RPM here, the fan
+//! controls in [`crate::fan`]; and the package thermal status MSR (read-only).
 
+use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom};
-use std::sync::{Mutex, PoisonError};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 
 use crate::sysroot::SysRoot;
 
-const ACPI_CALL: &str = "/proc/acpi/call";
-/// `\_SB_.GZFD.WMAE`, `GetFeatureValue` (method 17); feature 0x04030001/2 is fan 1/2 RPM.
-const FAN_CALL: [(&str, &str); 2] = [
-    ("fan1", "\\_SB_.GZFD.WMAE 0 17 b01000304"),
-    ("fan2", "\\_SB_.GZFD.WMAE 0 17 b02000304"),
-];
-/// `/proc/acpi/call` keeps one reply for all callers, so a call and its reply must not mix with another call.
-static ONE_CALL: Mutex<()> = Mutex::new(());
-
-/// The bytes of an `acpi_call` buffer reply `{0x.., ...}`; `None` for any other reply.
-#[must_use]
-pub fn parse_acpi_buffer(text: &str) -> Option<Vec<u8>> {
-    let inner = text
-        .trim()
-        .trim_end_matches('\0')
-        .trim()
-        .strip_prefix('{')?
-        .strip_suffix('}')?;
-    Some(
-        inner
-            .split(',')
-            .filter_map(|b| u8::from_str_radix(b.trim().trim_start_matches("0x"), 16).ok())
-            .collect(),
-    )
-}
-
-/// An `acpi_call` reply: `0x...` or a byte buffer `{0x.., ...}` (first 4 bytes, little endian); `None` for errors.
-#[must_use]
-pub fn parse_acpi_call(text: &str) -> Option<u64> {
-    let text = text.trim().trim_end_matches('\0').trim();
-    if let Some(hex) = text.strip_prefix("0x") {
-        return u64::from_str_radix(hex, 16).ok();
-    }
-    Some(
-        parse_acpi_buffer(text)?
-            .iter()
-            .take(4)
-            .rev()
-            .fold(0, |acc, b| acc << 8 | u64::from(*b)),
-    )
-}
-
-/// Call an ACPI method through `acpi_call` and return its reply.
-///
-/// # Errors
-/// `acpi_call` is not there or not writable (no root), or the method failed (`Error: ...`).
-pub fn acpi_call(root: &SysRoot, call: &str) -> Result<String> {
-    let _one = ONE_CALL.lock().unwrap_or_else(PoisonError::into_inner);
-    std::fs::write(root.path(ACPI_CALL), call).with_context(|| format!("calling {call}"))?;
-    let reply = std::fs::read_to_string(root.path(ACPI_CALL))
-        .with_context(|| format!("reading the reply to {call}"))?;
-    let reply = reply.trim().trim_end_matches('\0').trim();
-    if reply.starts_with("Error") || reply == "not called" {
-        bail!("{call}: {reply}");
-    }
-    Ok(reply.to_string())
-}
-
-/// The hwmon device of the `legionctl-wmi` module (docs/design/08-kernel.md, sysfs ABI), when it is loaded.
-///
-/// # Errors
-/// A hwmon device's name cannot be read.
-pub fn legionctl_wmi(root: &SysRoot) -> Result<Option<std::path::PathBuf>> {
-    hwmon(root, LEGIONCTL_WMI)
-}
+/// The `name` of the `legionctl-wmi` module's hwmon device.
+pub const LEGIONCTL_WMI: &str = "legionctl_wmi";
+/// Why a fan read or write fails when the module's hwmon device is not there.
+pub const LEGIONCTL_WMI_MISSING: &str = "legionctl_wmi is not loaded: see docs/design/08-kernel.md";
 
 /// The hwmon device named `name`, if there is one.
 ///
 /// # Errors
 /// A hwmon device's name cannot be read.
-pub fn hwmon(root: &SysRoot, name: &str) -> Result<Option<std::path::PathBuf>> {
+pub fn hwmon(root: &SysRoot, name: &str) -> Result<Option<PathBuf>> {
     for h in root.children("/sys/class/hwmon", "hwmon")? {
         if root.read(h.join("name"))?.as_deref() == Some(name) {
             return Ok(Some(h));
@@ -88,28 +27,45 @@ pub fn hwmon(root: &SysRoot, name: &str) -> Result<Option<std::path::PathBuf>> {
     Ok(None)
 }
 
-/// The `name` of the `legionctl-wmi` module's hwmon device.
-pub const LEGIONCTL_WMI: &str = "legionctl_wmi";
-
-/// Fan RPM from the firmware: the `legionctl-wmi` module's hwmon when it is loaded, else `acpi_call`; `None` without
-/// root or `acpi_call`.
+/// The hwmon device of the `legionctl-wmi` module, found by its name (the number changes from start to start).
 ///
 /// # Errors
-/// The `legionctl-wmi` hwmon device's files cannot be read.
-pub fn fan_rpm(root: &SysRoot) -> Result<Option<[(&'static str, u64); 2]>> {
-    let [(n1, c1), (n2, c2)] = FAN_CALL;
-    if let Some(hwmon) = legionctl_wmi(root)? {
-        let read = |fan: &str| -> Result<Option<u64>> {
-            Ok(root
-                .read(hwmon.join(format!("{fan}_input")))?
-                .and_then(|v| v.parse().ok()))
-        };
-        return Ok(read(n1)?
-            .zip(read(n2)?)
-            .map(|(r1, r2)| [(n1, r1), (n2, r2)]));
+/// The module is not loaded ([`LEGIONCTL_WMI_MISSING`]), or a hwmon device's name cannot be read.
+pub fn legionctl_wmi(root: &SysRoot) -> Result<PathBuf> {
+    match hwmon(root, LEGIONCTL_WMI)? {
+        Some(h) => Ok(h),
+        None => bail!(LEGIONCTL_WMI_MISSING),
     }
-    let read = |call| parse_acpi_call(&acpi_call(root, call).ok()?);
-    Ok(read(c1).zip(read(c2)).map(|(r1, r2)| [(n1, r1), (n2, r2)]))
+}
+
+/// One number of the module's hwmon device (`fan1_input`, `pwm1_enable`, ...).
+///
+/// # Errors
+/// The file is not there or not a number.
+pub fn read_number(root: &SysRoot, hwmon: &std::path::Path, file: &str) -> Result<u64> {
+    let path = hwmon.join(file);
+    let text = root
+        .read(&path)?
+        .with_context(|| format!("{} is missing", path.display()))?;
+    text.parse()
+        .with_context(|| format!("{} is '{text}', not a number", path.display()))
+}
+
+/// Fan RPM of fan 1 and fan 2 from the module's hwmon device.
+///
+/// # Errors
+/// The module is not loaded ([`LEGIONCTL_WMI_MISSING`]), or a fan file cannot be read.
+pub fn fan_rpm(root: &SysRoot) -> Result<BTreeMap<String, u64>> {
+    let hwmon = legionctl_wmi(root)?;
+    ["fan1", "fan2"]
+        .into_iter()
+        .map(|fan| {
+            Ok((
+                fan.to_string(),
+                read_number(root, &hwmon, &format!("{fan}_input"))?,
+            ))
+        })
+        .collect()
 }
 
 const PACKAGE_THERM_STATUS: u64 = 0x1B1;

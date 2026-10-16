@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use legionctl_machine::keys::{self, Debounce, EVENT_SIZE, FN_KEYS_DEVICE};
-use legionctl_machine::ledger::{FanKey, Key, Ledger};
+use legionctl_machine::ledger::{Key, Ledger};
 use legionctl_machine::policy::{self, Machine, Options, Source, Step};
 use legionctl_machine::react::{Event, react};
 use legionctl_machine::sysroot::SysRoot;
@@ -198,7 +198,8 @@ struct Observed {
     workload: BTreeSet<String>,
     /// Throttle reasons active now; `None` without the msr module.
     throttle: Option<Vec<String>>,
-    fan_max: bool,
+    /// Fan max mode and full speed as the `legionctl-wmi` module reports them; `None` without the module.
+    fan: Option<(bool, bool)>,
 }
 
 impl Observed {
@@ -218,8 +219,17 @@ fn observe(root: &SysRoot) -> Result<Observed> {
         workload: configset::workload(root)?,
         throttle: firmware::current_throttle_reasons(root)
             .map(|r| r.into_iter().map(String::from).collect()),
-        fan_max: Ledger::open(root)?.fan(FanKey::Max)?.is_some(),
+        fan: fan_modes(root)?,
     })
+}
+
+/// Fan max mode and full speed from the `legionctl-wmi` module; `None` without the module (doctor names it).
+fn fan_modes(root: &SysRoot) -> Result<Option<(bool, bool)>> {
+    let Some(hwmon) = firmware::hwmon(root, firmware::LEGIONCTL_WMI)? else {
+        return Ok(None);
+    };
+    let read = |file| firmware::read_number(root, &hwmon, file);
+    Ok(Some((read(fan::MAX_MODE)? == 1, read(fan::ENABLE)? == 0)))
 }
 
 /// What other tools heard last, and each throttle reason's starts per workload kind active then (reason -> kind ->
@@ -483,19 +493,33 @@ async fn announce(
             System1::throttle_changed(emitter, reasons).await,
         );
     }
-    if now.fan_max != before.fan_max {
-        let on = if now.fan_max { "on" } else { "off" };
-        journal(
-            root,
-            "fan-mode",
-            &format!("fan max mode {on}"),
-            &[("FAN_MAX", on.into())],
-        );
-        sent(
-            "FanModeChanged",
-            System1::fan_mode_changed(emitter, now.fan_max).await,
-        );
+    if now.fan != before.fan
+        && let Some(fan) = now.fan
+    {
+        announce_fan(root, emitter, fan).await;
     }
+}
+
+/// Fan max mode and full speed as the module reports them, to the journal and as a signal.
+async fn announce_fan(
+    root: &SysRoot,
+    emitter: &SignalEmitter<'_>,
+    (max, full_speed): (bool, bool),
+) {
+    let on = |on: bool| if on { "on" } else { "off" };
+    journal(
+        root,
+        "fan-mode",
+        &format!("fan max mode {}, full speed {}", on(max), on(full_speed)),
+        &[
+            ("FAN_MAX", on(max).into()),
+            ("FAN_FULL_SPEED", on(full_speed).into()),
+        ],
+    );
+    sent(
+        "FanModeChanged",
+        System1::fan_mode_changed(emitter, max, full_speed).await,
+    );
 }
 
 /// One event: its plan, then the announcement of what other tools follow when it differs from the last one announced.
@@ -1683,7 +1707,8 @@ impl System1 {
         Ok(lines)
     }
 
-    /// The fan controls as JSON (`fan::FanState`): the firmware's fan table, the user's curve, fan max mode.
+    /// The fan controls as JSON (`fan::FanState`): the firmware's fan table, the user's curve, fan max mode, full
+    /// speed.
     /// Read-only, so polkit is not asked.
     async fn fan_status(&self) -> zbus::fdo::Result<String> {
         let root = self.root.clone();
@@ -1908,9 +1933,13 @@ impl System1 {
     #[zbus(signal)]
     async fn throttle_changed(emitter: &SignalEmitter<'_>, reasons: &[String]) -> zbus::Result<()>;
 
-    /// Fan max mode was turned on or off.
+    /// Fan max mode or full speed was turned on or off (the `legionctl-wmi` module's state).
     #[zbus(signal)]
-    async fn fan_mode_changed(emitter: &SignalEmitter<'_>, max: bool) -> zbus::Result<()>;
+    async fn fan_mode_changed(
+        emitter: &SignalEmitter<'_>,
+        max: bool,
+        full_speed: bool,
+    ) -> zbus::Result<()>;
 }
 
 /// Read the Fn-key device on a thread (blocking reads) and send one message per debounced Fn+R press. The device is
@@ -2165,7 +2194,7 @@ async fn run(root: SysRoot) -> Result<()> {
         mode: None,
         workload: BTreeSet::new(),
         throttle: None,
-        fan_max: false,
+        fan: None,
     });
     let announced = Arc::new(Mutex::new(Announced::new(first)));
     let bus = serve(System1 {

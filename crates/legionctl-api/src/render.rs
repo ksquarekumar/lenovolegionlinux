@@ -105,7 +105,7 @@ impl Render for Snapshot {
                 .map_or("?".into(), |t| format!("{t:.0} °C")),
             s.fan_rpm
                 .as_ref()
-                .map_or("unknown (needs root)".into(), |f| {
+                .map_or("unknown (legionctl_wmi is not loaded)".into(), |f| {
                     f.values()
                         .map(|r| format!("{r} rpm"))
                         .collect::<Vec<_>>()

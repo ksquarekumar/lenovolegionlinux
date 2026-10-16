@@ -253,8 +253,7 @@ fn session_memory_pressure(root: &SysRoot) -> BTreeMap<String, Pressure> {
 #[must_use]
 pub fn root_sample(root: &SysRoot) -> RootSample {
     let names = |r: Vec<&str>| r.into_iter().map(String::from).collect();
-    let fan_rpm = firmware::fan_rpm(root)
-        .map(|f| f.map(|f| f.iter().map(|(n, v)| ((*n).to_string(), *v)).collect()));
+    let fan_rpm = firmware::fan_rpm(root);
     let sensor_errors = fan_rpm
         .as_ref()
         .err()
@@ -262,7 +261,7 @@ pub fn root_sample(root: &SysRoot) -> RootSample {
         .into_iter()
         .collect();
     RootSample {
-        fan_rpm: fan_rpm.ok().flatten(),
+        fan_rpm: fan_rpm.ok(),
         throttle_now: firmware::current_throttle_reasons(root).map(names),
         throttle_logged: firmware::logged_throttle_reasons(root).map(names),
         sensor_errors,
