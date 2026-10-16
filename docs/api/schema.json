@@ -8035,6 +8035,13 @@
                 ],
                 "format": "uint64",
                 "minimum": 0
+              },
+              "memory_unknown": {
+                "description": "Why `memory_bytes` is not known while it runs.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [

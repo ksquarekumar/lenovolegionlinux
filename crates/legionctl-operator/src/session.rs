@@ -110,7 +110,14 @@ pub async fn run(
     let mut check = tokio::time::interval(std::time::Duration::from_secs(30));
     let mut vitals = tokio::time::interval(std::time::Duration::from_secs(2));
     let mut overlay_shown = false;
-    let mut rate = display::built_in_rate(&mutter).await;
+    // a Mutter that does not answer is said in the log; the OSD then has no rate to compare
+    let rated = |rate: Result<Option<String>>| {
+        rate.unwrap_or_else(|e| {
+            eprintln!("operator: the built-in panel's rate cannot be read from Mutter: {e:#}");
+            None
+        })
+    };
+    let mut rate = rated(display::built_in_rate(&mutter).await);
     eprintln!(
         "operator: session module running (built-in panel at {} Hz)",
         rate.as_deref().unwrap_or("?")
@@ -127,7 +134,7 @@ pub async fn run(
                 }
             }
             Some(_) = monitors.next() => {
-                let now = display::built_in_rate(&mutter).await;
+                let now = rated(display::built_in_rate(&mutter).await);
                 if let (Some(before), Some(after)) = (&rate, &now)
                     && before != after
                 {

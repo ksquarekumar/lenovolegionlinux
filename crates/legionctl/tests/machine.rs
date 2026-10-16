@@ -704,6 +704,81 @@ fn virt_machine(
     (m, docker, op)
 }
 
+/// `virt status` says why a value is unknown instead of a stand-in value (todo-142 F-81, F-84, user decision Q4): a
+/// running VM without `balloon.rss` has no memory, with the reason (before, the balloon size, a target); virsh that
+/// fails is a finding with its message (before, no VMs); a `DOCKER_HOST` that is not unix:// is Docker down with the
+/// reason (before, the default socket, maybe another daemon).
+#[test]
+fn virt_status_says_why_a_vm_memory_libvirt_or_docker_is_unknown() {
+    let (m, _docker, op) = virt_machine("virtwhy", 20);
+    let bin = m.dir.join("bin");
+    let virsh = |domstats: &str, list: &str| {
+        Machine::script(
+            &bin,
+            "virsh",
+            &format!(
+                "case \"$4\" in list) {list};; \
+                 domstats) printf \"Domain: 'lab'\\n  {domstats}\\n\\n\";; esac"
+            ),
+        );
+    };
+    virsh(
+        "balloon.current=4194304",
+        "printf ' Id   Name    State\\n---------------------\\n 3    lab     running\\n'",
+    );
+    let status: serde_json::Value =
+        serde_json::from_str(&op.ok(&["virt", "status", "--json"])).unwrap();
+    let lab = status["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["name"] == "lab")
+        .unwrap_or_else(|| panic!("no lab in {status}"));
+    assert!(lab["memory_bytes"].is_null(), "{lab}");
+    assert!(
+        lab["memory_unknown"]
+            .as_str()
+            .is_some_and(|w| w.starts_with("libvirt gives no balloon.rss")),
+        "{lab}"
+    );
+
+    virsh(
+        "",
+        "echo 'error: failed to connect to the hypervisor' >&2; exit 1",
+    );
+    // a finding makes the exit status 1, as doctor's
+    let status = String::from_utf8_lossy(&op.cli(&["virt", "status"]).stdout).to_string();
+    assert!(
+        status.contains(
+            "- libvirt's VMs cannot be listed: virsh list --all: error: failed to connect to the hypervisor"
+        ),
+        "{status}"
+    );
+
+    let tcp = Operator::start(
+        "virtwhy-tcp",
+        &[
+            ("PATH", bin.into()),
+            ("HOME", m.dir.join("home").into()),
+            ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+            ("DOCKER_HOST", "tcp://127.0.0.1:2375".into()),
+        ],
+    );
+    let status: serde_json::Value =
+        serde_json::from_str(&tcp.ok(&["virt", "status", "--json"])).unwrap();
+    let docker = status["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["provider"] == "Docker")
+        .unwrap_or_else(|| panic!("no Docker in {status}"));
+    assert_eq!(docker["up"], false);
+    assert_eq!(
+        docker["detail"],
+        "DOCKER_HOST tcp://127.0.0.1:2375: only unix:// is supported"
+    );
+}
+
 /// `virt status` on the recorded machine (no /dev/kvm in the recording) with a stand-in Docker Engine API and stand-in
 /// systemctl and virsh: each capability up or down, `WinBoat` recognized by its image, and the findings (no KVM, the
 /// cgroupfs driver, both libvirt daemons).
@@ -739,11 +814,13 @@ fn virt_status_reads_docker_libvirt_and_the_kernel() {
         status["instances"],
         serde_json::json!([
             {"kind": "container", "name": "WinBoat", "image": "ghcr.io/dockur/windows:6.05", "state": "running",
-             "consumer": "WinBoat", "memory_bytes": 16_u64 << 30},
+             "consumer": "WinBoat", "memory_bytes": 16_u64 << 30, "memory_unknown": null},
             {"kind": "container", "name": "db", "image": "postgres:17", "state": "exited",
-             "consumer": null, "memory_bytes": null},
-            {"kind": "vm", "name": "win11", "image": "", "state": "shut off", "consumer": null, "memory_bytes": null},
-            {"kind": "vm", "name": "lab", "image": "", "state": "running", "consumer": null, "memory_bytes": 2_u64 << 30}
+             "consumer": null, "memory_bytes": null, "memory_unknown": null},
+            {"kind": "vm", "name": "win11", "image": "", "state": "shut off", "consumer": null, "memory_bytes": null,
+             "memory_unknown": null},
+            {"kind": "vm", "name": "lab", "image": "", "state": "running", "consumer": null, "memory_bytes": 2_u64 << 30,
+             "memory_unknown": null}
         ])
     );
     assert_eq!(

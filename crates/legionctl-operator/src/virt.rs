@@ -11,11 +11,45 @@ use legionctl_api::{VirtCapability, VirtInstance, VirtKind, VirtStatus};
 use legionctl_machine::sysroot::SysRoot;
 use serde_json::Value;
 
-fn docker_socket() -> PathBuf {
-    std::env::var("DOCKER_HOST")
-        .ok()
-        .and_then(|h| h.strip_prefix("unix://").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("/var/run/docker.sock"))
+/// Docker's socket: `DOCKER_HOST` (unix:// only), else `/var/run/docker.sock`.
+///
+/// # Errors
+/// `DOCKER_HOST` names another transport (`tcp://`, `ssh://`): the operator would talk to a different daemon.
+fn docker_socket() -> Result<PathBuf> {
+    match std::env::var("DOCKER_HOST") {
+        Ok(host) => host
+            .strip_prefix("unix://")
+            .map(PathBuf::from)
+            .with_context(|| format!("DOCKER_HOST {host}: only unix:// is supported")),
+        Err(_) => Ok(PathBuf::from("/var/run/docker.sock")),
+    }
+}
+
+/// Every container (any state); `None` when Docker is not there (no socket file).
+///
+/// # Errors
+/// The socket is there but Docker does not answer, or its answer is not a list.
+async fn container_list() -> Result<Option<Vec<Value>>> {
+    if !docker_socket()?.try_exists()? {
+        return Ok(None);
+    }
+    let list = docker("/containers/json?all=1").await?;
+    list.as_array()
+        .cloned()
+        .map(Some)
+        .with_context(|| format!("Docker's container list is not a list: {list}"))
+}
+
+/// Whether a container of this name exists (any state); false without Docker.
+///
+/// # Errors
+/// As [`container_list`].
+async fn is_container(name: &str) -> Result<bool> {
+    Ok(container_list().await?.unwrap_or_default().iter().any(|c| {
+        c["Names"][0]
+            .as_str()
+            .is_some_and(|n| n.trim_start_matches('/') == name)
+    }))
 }
 
 /// One GET on the Docker Engine API.
@@ -24,7 +58,7 @@ pub async fn docker(path: &str) -> Result<Value> {
 }
 
 async fn request(method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
-    let socket = docker_socket();
+    let socket = docker_socket()?;
     let stream = tokio::net::UnixStream::connect(&socket)
         .await
         .with_context(|| format!("Docker does not answer on {}", socket.display()))?;
@@ -83,70 +117,82 @@ fn docker_clis() -> Vec<PathBuf> {
     found
 }
 
-/// Resident memory of each running VM, from `virsh domstats --balloon` (KiB): `balloon.rss`, else the balloon size.
-fn vm_memory() -> std::collections::BTreeMap<String, u64> {
-    let Ok(out) = std::process::Command::new("virsh")
-        .args([
-            "-c",
-            "qemu:///system",
-            "--readonly",
-            "domstats",
-            "--balloon",
-            "--list-running",
-        ])
+/// `virsh -c qemu:///system --readonly <args>`; `None` when virsh is not installed.
+///
+/// # Errors
+/// virsh fails (libvirtd down, no permission): with its message.
+fn virsh_read(args: &[&str]) -> Result<Option<String>> {
+    let out = match std::process::Command::new("virsh")
+        .args(["-c", "qemu:///system", "--readonly"])
+        .args(args)
         .output()
-    else {
-        return std::collections::BTreeMap::new();
+    {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        out => out.context("running virsh")?,
     };
-    let mut memory = std::collections::BTreeMap::new();
-    let mut domain = String::new();
-    // "Domain: 'win11'" then indented "balloon.rss=16384000" lines
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        if let Some(name) = line.strip_prefix("Domain: ") {
-            domain = name.trim_matches('\'').to_string();
-        } else if let Some((key, value)) = line.trim().split_once('=') {
-            let Ok(kib) = value.parse::<u64>() else {
-                continue;
-            };
-            match key {
-                "balloon.rss" => {
-                    memory.insert(domain.clone(), kib * 1024);
-                }
-                "balloon.current" => {
-                    memory.entry(domain.clone()).or_insert(kib * 1024);
-                }
-                _ => {}
-            }
-        }
-    }
-    memory
+    anyhow::ensure!(
+        out.status.success(),
+        "virsh {}: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
 }
 
-fn libvirt_vms() -> Vec<VirtInstance> {
-    let Ok(out) = std::process::Command::new("virsh")
-        .args(["-c", "qemu:///system", "--readonly", "list", "--all"])
-        .output()
-    else {
-        return Vec::new();
+/// Resident memory of each running VM, from `virsh domstats --balloon` (KiB): `balloon.rss` only (user decision Q4:
+/// the balloon size is a target, not what the VM holds).
+fn vm_memory() -> Result<std::collections::BTreeMap<String, u64>> {
+    let mut memory = std::collections::BTreeMap::new();
+    let Some(text) = virsh_read(&["domstats", "--balloon", "--list-running"])? else {
+        return Ok(memory);
     };
-    let memory = vm_memory();
+    let mut domain = String::new();
+    // "Domain: 'win11'" then indented "balloon.rss=16384000" lines
+    for line in text.lines() {
+        if let Some(name) = line.strip_prefix("Domain: ") {
+            domain = name.trim_matches('\'').to_string();
+        } else if let Some(kib) = line.trim().strip_prefix("balloon.rss=") {
+            let kib: u64 = kib
+                .parse()
+                .with_context(|| format!("virsh domstats: balloon.rss={kib} of {domain}"))?;
+            memory.insert(domain.clone(), kib * 1024);
+        }
+    }
+    Ok(memory)
+}
+
+/// libvirt's VMs; none without virsh.
+///
+/// # Errors
+/// virsh fails.
+fn libvirt_vms() -> Result<Vec<VirtInstance>> {
+    let Some(list) = virsh_read(&["list", "--all"])? else {
+        return Ok(Vec::new());
+    };
+    let memory = vm_memory()?;
     // " Id   Name   State" then a rule, then "-    win11   shut off"
-    String::from_utf8_lossy(&out.stdout)
+    Ok(list
         .lines()
         .skip(2)
         .filter_map(|line| {
             let mut parts = line.split_whitespace();
             let (_, name) = (parts.next()?, parts.next()?);
+            let state = parts.collect::<Vec<_>>().join(" ");
+            let memory_bytes = memory.get(name).copied();
             Some(VirtInstance {
                 kind: VirtKind::Vm,
                 name: name.into(),
                 image: String::new(),
-                state: parts.collect::<Vec<_>>().join(" "),
+                memory_unknown: (state == "running" && memory_bytes.is_none()).then(|| {
+                    "libvirt gives no balloon.rss (no virtio-balloon driver in the guest, or no stats period)"
+                        .into()
+                }),
+                state,
                 consumer: None,
-                memory_bytes: memory.get(name).copied(),
+                memory_bytes,
             })
         })
-        .collect()
+        .collect())
 }
 
 /// KVM, IOMMU, VFIO and binfmt from the kernel.
@@ -233,20 +279,28 @@ async fn containers(root: &SysRoot, status: &mut VirtStatus) -> Result<()> {
             info["CgroupDriver"].as_str().unwrap_or("?")
         ));
     }
-    let list = docker("/containers/json?all=1")
-        .await
-        .ok()
-        .and_then(|v| v.as_array().cloned())
-        .unwrap_or_default();
+    let list = match container_list().await {
+        Ok(list) => list.unwrap_or_default(),
+        Err(e) => {
+            status
+                .findings
+                .push(format!("Docker's containers cannot be listed: {e:#}"));
+            Vec::new()
+        }
+    };
     for c in list {
         let image = c["Image"].as_str().unwrap_or("").to_string();
-        let memory_bytes = if c["State"] == "running" {
-            container_memory(c["Id"].as_str().unwrap_or_default()).await
+        let (memory_bytes, memory_unknown) = if c["State"] == "running" {
+            match container_memory(c["Id"].as_str().unwrap_or_default()).await {
+                Ok(bytes) => (Some(bytes), None),
+                Err(e) => (None, Some(format!("{e:#}"))),
+            }
         } else {
-            None
+            (None, None)
         };
         status.instances.push(VirtInstance {
             memory_bytes,
+            memory_unknown,
             kind: VirtKind::Container,
             name: c["Names"][0]
                 .as_str()
@@ -265,20 +319,24 @@ async fn containers(root: &SysRoot, status: &mut VirtStatus) -> Result<()> {
 }
 
 /// A running container's memory as `docker stats` counts it: the cgroup's use without its inactive page cache.
-async fn container_memory(id: &str) -> Option<u64> {
+///
+/// # Errors
+/// Docker gives no stats or no usage.
+async fn container_memory(id: &str) -> Result<u64> {
     let stats = docker(&format!(
         "/containers/{id}/stats?stream=false&one-shot=true"
     ))
-    .await
-    .ok()?;
+    .await?;
     let memory = &stats["memory_stats"];
-    let usage = memory["usage"].as_u64()?;
+    let usage = memory["usage"]
+        .as_u64()
+        .with_context(|| format!("Docker's stats have no memory usage: {memory}"))?;
     // cgroup v2 names it inactive_file, v1 total_inactive_file
     let cache = memory["stats"]["inactive_file"]
         .as_u64()
         .or_else(|| memory["stats"]["total_inactive_file"].as_u64())
         .unwrap_or(0);
-    Some(usage.saturating_sub(cache))
+    Ok(usage.saturating_sub(cache))
 }
 
 /// Host memory is low (below `low_percent` available, the `load.busy` limit): name what the guests hold.
@@ -365,7 +423,12 @@ fn vms(status: &mut VirtStatus) {
             .findings
             .push("libvirtd and the modular virtqemud both run; use one of them".into());
     }
-    status.instances.extend(libvirt_vms());
+    match libvirt_vms() {
+        Ok(vms) => status.instances.extend(vms),
+        Err(e) => status
+            .findings
+            .push(format!("libvirt's VMs cannot be listed: {e:#}")),
+    }
 }
 
 /// The status of every capability, the instances, and what is wrong; `low_percent` is the share of memory
@@ -444,16 +507,7 @@ pub async fn project_containers(project: &str) -> Result<Vec<legionctl_api::Serv
 /// # Errors
 /// No container or VM has this name, or the provider refuses.
 pub async fn act(action: &str, name: &str) -> Result<String> {
-    let containers = docker("/containers/json?all=1")
-        .await
-        .ok()
-        .and_then(|v| v.as_array().cloned())
-        .unwrap_or_default();
-    if containers.iter().any(|c| {
-        c["Names"][0]
-            .as_str()
-            .is_some_and(|n| n.trim_start_matches('/') == name)
-    }) {
+    if is_container(name).await? {
         request("POST", &format!("/containers/{name}/{action}"), None).await?;
         return Ok(format!("container {name}: {action}"));
     }
@@ -465,7 +519,7 @@ pub async fn act(action: &str, name: &str) -> Result<String> {
         other => anyhow::bail!("unknown action {other}"),
     };
     anyhow::ensure!(
-        libvirt_vms().iter().any(|v| v.name == name),
+        libvirt_vms()?.iter().any(|v| v.name == name),
         "no container or VM named {name}"
     );
     let out = tokio::process::Command::new("virsh")
@@ -479,21 +533,6 @@ pub async fn act(action: &str, name: &str) -> Result<String> {
         String::from_utf8_lossy(&out.stderr).trim()
     );
     Ok(format!("vm {name}: {action}"))
-}
-
-/// Whether a container of this name exists (any state).
-async fn is_container(name: &str) -> bool {
-    docker("/containers/json?all=1")
-        .await
-        .ok()
-        .and_then(|v| v.as_array().cloned())
-        .unwrap_or_default()
-        .iter()
-        .any(|c| {
-            c["Names"][0]
-                .as_str()
-                .is_some_and(|n| n.trim_start_matches('/') == name)
-        })
 }
 
 async fn virsh(args: &[&str]) -> Result<String> {
@@ -524,7 +563,7 @@ pub async fn tune(
     apply: bool,
 ) -> Result<Vec<String>> {
     let mut plan = Vec::new();
-    if is_container(name).await {
+    if is_container(name).await? {
         let mut update = serde_json::Map::new();
         if let Some(cpus) = cpus {
             plan.push(format!("container {name}: CPUs {cpus}"));
@@ -550,7 +589,7 @@ pub async fn tune(
         return Ok(plan);
     }
     anyhow::ensure!(
-        libvirt_vms().iter().any(|v| v.name == name),
+        libvirt_vms()?.iter().any(|v| v.name == name),
         "no container or VM named {name}"
     );
     if let Some(cpus) = cpus {
@@ -601,7 +640,10 @@ pub struct ContainerSpec {
 /// The name is taken, the GPU is asked without the NVIDIA runtime, or Docker refuses (a missing image: no pull).
 pub async fn create(spec: &ContainerSpec, apply: bool) -> Result<Vec<String>> {
     let name = &spec.name;
-    anyhow::ensure!(!is_container(name).await, "a container named {name} exists");
+    anyhow::ensure!(
+        !is_container(name).await?,
+        "a container named {name} exists"
+    );
     let mut plan = vec![format!("container {name}: image {}", spec.image)];
     let mut host = serde_json::Map::new();
     if let Some(cpus) = &spec.cpus {

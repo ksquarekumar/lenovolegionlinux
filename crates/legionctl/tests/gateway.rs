@@ -487,7 +487,7 @@ fn an_anthropic_caller_reaches_an_openai_model_translated() {
 /// with the name (before, skipped in silence); a tool call whose arguments are not JSON is an error in the caller's
 /// API (before, it ran with `{}`); a stream cut before its end ends with an error event (before, a complete answer);
 /// an `OpenAI` stream passed through asks for its usage, so the call is counted (before, $0); a cache that cannot be
-/// opened is a miss that goes upstream, one `cache.error` event and a doctor finding until the cache works again.
+/// opened is a miss that goes upstream, one `operator.fault` event and a doctor finding until the cache works again.
 #[test]
 fn the_gateway_says_what_it_cannot_translate_or_count_and_reports_a_broken_cache() {
     let s = setup("gw-says");
@@ -569,10 +569,10 @@ fn the_gateway_says_what_it_cannot_translate_or_count_and_reports_a_broken_cache
         .as_array()
         .unwrap()
         .iter()
-        .filter(|e| e["kind"] == "cache.error")
+        .filter(|e| e["kind"] == "operator.fault")
         .collect();
     assert_eq!(errors.len(), 1, "one event for one reason: {logged}");
-    assert_eq!(errors[0]["payload"]["cache"], "gateway");
+    assert_eq!(errors[0]["payload"]["fault"], "cache-gateway");
     let doctor = s.op.cli(&["doctor"]);
     assert!(
         String::from_utf8_lossy(&doctor.stdout)

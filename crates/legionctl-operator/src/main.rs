@@ -3,12 +3,12 @@
 //! (Fn+R, OSD).
 
 mod acp;
-mod cachefault;
 mod code;
 mod desktop;
 mod display;
 mod engine;
 mod facts;
+mod faults;
 mod gateway;
 mod kernels;
 mod policy;
@@ -104,6 +104,12 @@ fn main() -> Result<()> {
     ended
 }
 
+/// The fault of log retention that did not run.
+const RETENTION: &str = "old log rows are not removed (events.keep_days)";
+
+/// The fault of a job that a restart cut off and that does not go on (its row stays `running`).
+pub(crate) const JOBS: &str = "jobs that a restart cut off are not resumed";
+
 /// The operator until SIGTERM, or until a module fails.
 async fn run() -> Result<()> {
     // while it runs: no process of another build steps the schema of a database it reads (todo-122)
@@ -121,9 +127,13 @@ async fn run() -> Result<()> {
         let days = legionctl_core::config::resolve(&legionctl_core::config::Dirs::from_env(), None)
             .map(|r| r.config.events.keep_days);
         match days.and_then(|days| legionctl_core::db::Db::open_default()?.prune(days)) {
-            Ok(0) => {}
-            Ok(rows) => eprintln!("operator: {rows} old log rows removed (events.keep_days)"),
-            Err(e) => eprintln!("operator: old log rows not removed: {e:#}"),
+            Ok(rows) => {
+                faults::works("retention");
+                if rows > 0 {
+                    eprintln!("operator: {rows} old log rows removed (events.keep_days)");
+                }
+            }
+            Err(e) => faults::failed("retention", RETENTION, &e),
         }
         // account logins left in profiles (a new login, a session that ended) go into the keyring; the dossier
         // registry reads the folders (a folder renamed by hand keeps its rows); both wait for the dossier migration
@@ -137,18 +147,24 @@ async fn run() -> Result<()> {
                         }
                         store.settle_logins()
                     });
-            if let Err(e) = settled {
-                eprintln!("operator: dossier registry or account logins not done: {e:#}");
+            match settled {
+                Ok(()) => faults::works("registry"),
+                Err(e) => faults::failed(
+                    "registry",
+                    "the dossier registry or the account logins are not settled",
+                    &e,
+                ),
             }
         }
     })
     .await;
     if let Err(e) = pruned {
-        eprintln!("operator: old log rows not removed: {e}");
+        faults::failed("start", "the start's upkeep stopped", &e.into());
     }
     // the long operations a restart cut off go on in the background
-    if let Err(e) = operator.resume_jobs("running") {
-        eprintln!("operator: jobs not resumed: {e:#}");
+    match operator.resume_jobs("running") {
+        Ok(()) => faults::works("jobs"),
+        Err(e) => faults::failed("jobs", JOBS, &e),
     }
     // after the cut-off wakes kept their ACP sessions: each member with a wake due wakes
     if !legionctl_core::migrate::pending() {

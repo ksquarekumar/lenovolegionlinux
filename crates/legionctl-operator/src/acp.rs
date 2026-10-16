@@ -109,20 +109,21 @@ struct Live {
     /// The answer's token limit, and the signal when the answer reaches it.
     limit: Option<u64>,
     over: Arc<tokio::sync::Notify>,
+    /// The first event that could not be logged: the run fails with it at its end (its audit is not whole).
+    unlogged: Option<String>,
 }
 
 impl Live {
-    fn record(&self, kind: &str, mut payload: serde_json::Value) {
+    fn record(&mut self, kind: &str, mut payload: serde_json::Value) {
         payload["session"] = self.session.clone().into();
-        if let Err(e) = self.db.record("acp", kind, &payload) {
-            eprintln!(
-                "operator: session {}: cannot log a {kind} event: {e:#}",
-                self.session
-            );
+        if let Err(e) = self.db.record("acp", kind, &payload)
+            && self.unlogged.is_none()
+        {
+            self.unlogged = Some(format!("a {kind} event could not be logged: {e:#}"));
         }
     }
 
-    /// Allow `request` once, and log it.
+    /// Allow `request` (once when the agent offers it), and log the option chosen.
     fn allow(&mut self, request: &RequestPermissionRequest) -> RequestPermissionResponse {
         let call = &request.tool_call;
         let title = call
@@ -131,15 +132,21 @@ impl Live {
             .clone()
             .unwrap_or_else(|| call.tool_call_id.to_string());
         let kind = call.fields.kind.unwrap_or_default();
+        let offered = |kind| request.options.iter().find(|o| o.kind == kind);
+        // the log names the option the run chose: once, else always (the agent offers no once), else none
+        let (allow, decision) = match offered(PermissionOptionKind::AllowOnce) {
+            Some(o) => (Some(o), "allow_once"),
+            None => match offered(PermissionOptionKind::AllowAlways) {
+                Some(o) => (Some(o), "allow_always"),
+                None => (None, "cancelled: no allow option offered"),
+            },
+        };
         self.record(
             "session.permission",
-            serde_json::json!({ "tool": title, "decision": "allow_once" }),
+            serde_json::json!({ "tool": title, "decision": decision }),
         );
         self.permissions
-            .push(format!("{title} ({kind:?}): allowed"));
-        let offered = |kind| request.options.iter().find(|o| o.kind == kind);
-        let allow = offered(PermissionOptionKind::AllowOnce)
-            .or_else(|| offered(PermissionOptionKind::AllowAlways));
+            .push(format!("{title} ({kind:?}): {decision}"));
         RequestPermissionResponse::new(allow.map_or(RequestPermissionOutcome::Cancelled, |o| {
             RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(o.option_id.clone()))
         }))
@@ -248,6 +255,7 @@ async fn drive(
         permissions: Vec::new(),
         limit: budget.tokens,
         over: over.clone(),
+        unlogged: None,
     }));
     let (asks, updates) = (live.clone(), live.clone());
     let client = Client
@@ -295,9 +303,11 @@ async fn drive(
                     .await?
                     .session_id;
                 input["acp"] = acp.to_string().into();
-                if let Err(e) = lock(&live).db.job_input(job, &input) {
-                    eprintln!("operator: session {id}: cannot keep its ACP session id: {e:#}");
-                }
+                // without it a resume starts a new ACP session, without the history
+                lock(&live)
+                    .db
+                    .job_input(job, &input)
+                    .context("keeping the ACP session id")?;
                 acp
             };
             // the run's model (the ui-composer's: config views.composer_models); an agent that refuses it fails the run
@@ -331,6 +341,9 @@ async fn drive(
         done = client => { done?; None }
     };
     let live = lock(&live);
+    if let Some(why) = &live.unlogged {
+        anyhow::bail!("the run's audit is not whole: {why}");
+    }
     // an answer that came in whole within one poll reached its limit too
     let reached = reached.or_else(|| budget.reached(&live.text, started.elapsed().as_secs()));
     Ok((live.output(id, job, started)?, reached))

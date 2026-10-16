@@ -163,7 +163,7 @@ impl Events {
     /// `each` gets every event as it comes, until the stream ends.
     ///
     /// # Errors
-    /// The stream breaks, or an event is not JSON.
+    /// The stream breaks, an event is not JSON, or the operator ends it with an `error` event (it cannot read its log).
     pub async fn each(mut self, mut each: impl FnMut(Value)) -> Result<()> {
         // server-sent events: blocks end with an empty line; the event is the `data:` line
         let mut bytes = Vec::new();
@@ -173,11 +173,17 @@ impl Events {
             }
             while let Some(end) = bytes.windows(2).position(|w| w == b"\n\n") {
                 let block: Vec<u8> = bytes.drain(..end + 2).collect();
-                for data in String::from_utf8_lossy(&block)
-                    .lines()
-                    .filter_map(|l| l.strip_prefix("data:"))
-                {
-                    each(serde_json::from_str(data.trim())?);
+                let block = String::from_utf8_lossy(&block);
+                let error = block.lines().any(|l| l.trim() == "event: error");
+                for data in block.lines().filter_map(|l| l.strip_prefix("data:")) {
+                    let value: Value = serde_json::from_str(data.trim())?;
+                    if error {
+                        anyhow::bail!(
+                            "the event stream ended: {}",
+                            value["error"].as_str().unwrap_or_default()
+                        );
+                    }
+                    each(value);
                 }
             }
         }

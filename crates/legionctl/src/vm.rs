@@ -303,6 +303,36 @@ pub async fn relay(socket: &Path) -> Result<()> {
 /// `legionctl forward <port> <socket> -- <agent>` (a session's container): while the agent runs, each connection to
 /// 127.0.0.1:`port` goes to `socket` (the host's gateway, in the mounted runtime folder). Ends with the agent's status.
 ///
+/// The connection of a relay's listener; a listener that fails ends the relay process, with the reason (the agent
+/// behind it would see only resets).
+fn accepted<S, A>(relay: &str, accepted: std::io::Result<(S, A)>) -> S {
+    match accepted {
+        Ok((stream, _)) => stream,
+        Err(e) => {
+            eprintln!("{relay}: accepting a connection: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// One relayed connection: `caller` both ways to `target`; a target that does not answer, or a copy that breaks, is
+/// said on stderr with `what`.
+async fn pipe<C, T>(what: &str, mut caller: C, target: std::io::Result<T>)
+where
+    C: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let copied = match target {
+        Ok(mut target) => tokio::io::copy_bidirectional(&mut caller, &mut target)
+            .await
+            .map(|_| ()),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = copied {
+        eprintln!("{what}: {e}");
+    }
+}
+
 /// # Errors
 /// The port is taken, or the agent cannot start.
 pub fn forward(port: u16, socket: &Path, agent: &[String]) -> Result<()> {
@@ -312,16 +342,12 @@ pub fn forward(port: u16, socket: &Path, agent: &[String]) -> Result<()> {
         .with_context(|| format!("port {port}"))?;
     let socket = socket.to_path_buf();
     runtime.spawn(async move {
-        while let Ok((mut caller, _)) = listener.accept().await {
+        loop {
+            let caller = accepted("forward", listener.accept().await);
             let socket = socket.clone();
             tokio::spawn(async move {
-                // a failed connect ends the caller's connection; the reason goes to the agent's stderr
-                match tokio::net::UnixStream::connect(&socket).await {
-                    Ok(mut gateway) => {
-                        let _ = tokio::io::copy_bidirectional(&mut caller, &mut gateway).await;
-                    }
-                    Err(e) => eprintln!("legionctl forward: {}: {e}", socket.display()),
-                }
+                let gateway = tokio::net::UnixStream::connect(&socket).await;
+                pipe(&format!("forward: {}", socket.display()), caller, gateway).await;
             });
         }
     });
@@ -397,11 +423,11 @@ fn session() -> Result<()> {
     let listener = runtime.block_on(async { tokio::net::UnixListener::bind(&spec.socket) })?;
     std::os::unix::fs::chown(&spec.socket, Some(spec.uid), Some(spec.gid))?;
     runtime.spawn(async move {
-        while let Ok((mut agent, _)) = listener.accept().await {
+        loop {
+            let agent = accepted("relay", listener.accept().await);
             tokio::spawn(async move {
-                if let Ok(mut host) = tokio::net::TcpStream::connect(OPERATOR).await {
-                    let _ = tokio::io::copy_bidirectional(&mut agent, &mut host).await;
-                }
+                let host = tokio::net::TcpStream::connect(OPERATOR).await;
+                pipe(&format!("relay: the operator at {OPERATOR}"), agent, host).await;
             });
         }
     });
@@ -409,11 +435,11 @@ fn session() -> Result<()> {
         // the gateway at 127.0.0.1:<port>, as on the host: each connection goes to the host's gateway socket
         let gateway = runtime.block_on(tokio::net::TcpListener::bind(("127.0.0.1", port)))?;
         runtime.spawn(async move {
-            while let Ok((mut agent, _)) = gateway.accept().await {
+            loop {
+                let agent = accepted("relay", gateway.accept().await);
                 tokio::spawn(async move {
-                    if let Ok(mut host) = tokio::net::TcpStream::connect(GATEWAY).await {
-                        let _ = tokio::io::copy_bidirectional(&mut agent, &mut host).await;
-                    }
+                    let host = tokio::net::TcpStream::connect(GATEWAY).await;
+                    pipe(&format!("relay: the gateway at {GATEWAY}"), agent, host).await;
                 });
             }
         });

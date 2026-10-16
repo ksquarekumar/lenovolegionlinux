@@ -113,32 +113,37 @@ fn opt(value: &str) -> String {
     value.replace(',', ",,")
 }
 
-fn smbios() -> Vec<String> {
-    let dmi = |f: &str| {
-        std::fs::read_to_string(format!("/sys/class/dmi/id/{f}"))
-            .map(|v| opt(v.trim()))
-            .unwrap_or_default()
+/// The host's SMBIOS identity for the VM (Windows' activation checks it).
+///
+/// # Errors
+/// A DMI file cannot be read: an empty identity would break the activation.
+fn smbios() -> Result<Vec<String>> {
+    let dmi = |f: &str| -> Result<String> {
+        let path = format!("/sys/class/dmi/id/{f}");
+        Ok(opt(std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {path}"))?
+            .trim()))
     };
-    vec![
+    Ok(vec![
         "-smbios".into(),
         format!(
             "type=1,manufacturer={},product={},version={},family={}",
-            dmi("sys_vendor"),
-            dmi("product_name"),
-            dmi("product_version"),
-            dmi("product_family")
+            dmi("sys_vendor")?,
+            dmi("product_name")?,
+            dmi("product_version")?,
+            dmi("product_family")?
         ),
         "-smbios".into(),
         format!(
             "type=2,manufacturer={},product={}",
-            dmi("board_vendor"),
-            dmi("board_name")
+            dmi("board_vendor")?,
+            dmi("board_name")?
         ),
-    ]
+    ])
 }
 
 /// The QEMU command of the VM in `dir`; with shares, its memory is shareable (virtiofs needs that).
-fn qemu_args(dir: &Path, config: &WindowsVmConfig, devices: &[String]) -> Vec<String> {
+fn qemu_args(dir: &Path, config: &WindowsVmConfig, devices: &[String]) -> Result<Vec<String>> {
     let machine = if config.shares.is_empty() {
         "q35,accel=kvm,smm=off".to_string()
     } else {
@@ -227,19 +232,20 @@ fn qemu_args(dir: &Path, config: &WindowsVmConfig, devices: &[String]) -> Vec<St
             "ivshmem-plain,memdev=lg".into(),
         ]);
     }
-    args.extend(smbios());
+    args.extend(smbios()?);
     for device in devices {
         args.extend(["-device".into(), format!("vfio-pci,host={device}")]);
     }
     for id in &config.usb {
-        if let Some((vendor, product)) = id.split_once(':') {
-            args.extend([
-                "-device".into(),
-                format!("usb-host,bus=xhci.0,vendorid=0x{vendor},productid=0x{product}"),
-            ]);
-        }
+        let (vendor, product) = id
+            .split_once(':')
+            .with_context(|| format!("windows.vm.usb {id}: not <vendor>:<product>"))?;
+        args.extend([
+            "-device".into(),
+            format!("usb-host,bus=xhci.0,vendorid=0x{vendor},productid=0x{product}"),
+        ]);
     }
-    args
+    Ok(args)
 }
 
 /// Wait until `path` exists (a socket a child makes), or the child ends.
@@ -285,7 +291,7 @@ fn boot(
             .context("starting swtpm")?,
     );
     wait_for(&tpm_socket, &mut tpm.0, "swtpm")?;
-    let args = qemu_args(dir, config, &begun.devices);
+    let args = qemu_args(dir, config, &begun.devices)?;
     let mut command = Command::new(&args[0]);
     command.args(&args[1..]);
     let shares: Vec<(String, std::path::PathBuf, bool)> = config
@@ -332,12 +338,12 @@ fn boot(
 /// QMP refuses, or the runner does not end.
 pub fn stop() -> Result<()> {
     let socket = legionctl_core::session::windows_root().join("qmp.sock");
-    let runner = std::env::var("MAINPID").ok().filter(|p| !p.is_empty());
-    let alive = || {
-        runner
-            .as_ref()
-            .is_some_and(|p| Path::new("/proc").join(p).exists())
-    };
+    // systemd sets it for ExecStop; without it the stop would return before the runner gave the GPU back
+    let runner = std::env::var("MAINPID")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .context("MAINPID is not set: windows-vm-stop runs as the unit's ExecStop")?;
+    let alive = || Path::new("/proc").join(&runner).exists();
     let mut qmp = legionctl_core::qmp::Qmp::connect(&socket)?;
     qmp.execute("system_powerdown", None)?;
     for (limit, last) in [

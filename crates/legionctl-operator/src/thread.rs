@@ -265,8 +265,12 @@ fn acp_wake(
         let id = launch.id.clone();
         let db = Db::open_default()?;
         db.issue_token(&launch.id, &token)?;
-        let extra: Vec<String> =
-            serde_json::from_value(w.fields["instructions"].clone()).unwrap_or_default();
+        // no instructions field: none; a field that is not a list of texts fails the wake (never a wake without them)
+        let extra: Vec<String> = match &w.fields["instructions"] {
+            serde_json::Value::Null => Vec::new(),
+            value => serde_json::from_value(value.clone())
+                .map_err(|e| anyhow::anyhow!("member {member} instructions: {e}"))?,
+        };
         let instructions = Sources::resolve(&Dirs::from_env(), Some(&w.workdir))?
             .instructions(w.archetype.as_str(), &extra)?;
         let prompt = match escalated {

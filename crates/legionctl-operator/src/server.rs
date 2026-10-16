@@ -227,11 +227,15 @@ async fn events(
         None => 0,
     };
     let stream = futures_util::stream::unfold(
-        (start, std::collections::VecDeque::new()),
-        |(mut last, mut pending): (
+        (start, std::collections::VecDeque::new(), false),
+        |(mut last, mut pending, ended): (
             i64,
             std::collections::VecDeque<legionctl_core::db::EventRow>,
+            bool,
         )| async move {
+            if ended {
+                return None;
+            }
             loop {
                 if let Some(row) = pending.pop_front() {
                     last = row.id;
@@ -239,10 +243,10 @@ async fn events(
                     let event = axum::response::sse::Event::default()
                         .id(row.id.to_string())
                         .data(serde_json::to_string(&row).unwrap_or_default());
-                    return Some((Ok(event), (last, pending)));
+                    return Some((Ok(event), (last, pending, false)));
                 }
                 // shortcut: a new event reaches the stream within 250 ms (it reads the log), wake it from Db::record if that is slow
-                let rows = tokio::task::spawn_blocking(move || {
+                let read = tokio::task::spawn_blocking(move || {
                     Db::open_default()?.events_page(
                         &legionctl_core::db::EventFilter::default(),
                         last,
@@ -250,10 +254,18 @@ async fn events(
                     )
                 })
                 .await
-                .ok()
-                .and_then(Result::ok)
-                .map(|(rows, _)| rows)
-                .unwrap_or_default();
+                .map_err(anyhow::Error::from)
+                .and_then(|page| page);
+                // a log that cannot be read ends the stream with the reason, never silence that looks like no events
+                let rows = match read {
+                    Ok((rows, _)) => rows,
+                    Err(e) => {
+                        let event = axum::response::sse::Event::default()
+                            .event("error")
+                            .data(serde_json::json!({"error": format!("{e:#}")}).to_string());
+                        return Some((Ok(event), (last, pending, true)));
+                    }
+                };
                 if rows.is_empty() {
                     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                 }

@@ -44,8 +44,15 @@ pub async fn run(ready: crate::Ready) -> Result<()> {
         let mut hourly = tokio::time::interval(std::time::Duration::from_hours(1));
         loop {
             hourly.tick().await;
-            if let Ok(Some(sample)) = tokio::task::spawn_blocking(battery_sample).await {
-                tokio::task::spawn_blocking(move || record("battery.sample", &sample));
+            match tokio::task::spawn_blocking(battery_sample).await {
+                Ok(Ok(sample)) => {
+                    crate::faults::works("battery");
+                    if let Some(sample) = sample {
+                        tokio::task::spawn_blocking(move || record("battery.sample", &sample));
+                    }
+                }
+                Ok(Err(e)) => crate::faults::failed("battery", BATTERY, &e),
+                Err(e) => crate::faults::failed("battery", BATTERY, &e.into()),
             }
         }
     });
@@ -82,37 +89,32 @@ pub async fn run(ready: crate::Ready) -> Result<()> {
 }
 
 /// A battery sample when the last one is a day old or there is none.
-fn battery_sample() -> Option<Value> {
+/// The fault of a daily battery sample that cannot be taken (user decision Q1).
+const BATTERY: &str = "the daily battery sample (the trend in battery status) is not taken";
+
+/// A battery sample when the last one is a day old or there is none; `None` when one is not due, or the battery
+/// reports no health.
+///
+/// # Errors
+/// The event log or the battery cannot be read.
+fn battery_sample() -> Result<Option<Value>> {
     let filter = legionctl_core::db::EventFilter {
         kinds: &["battery.sample"],
         ..Default::default()
     };
-    let db = Db::open_default().ok()?;
+    let db = Db::open_default()?;
     // one a day: the page holds every sample of years
-    let newest = db
-        .events_page(&filter, 0, 1000)
-        .ok()?
-        .0
-        .last()
-        .map(|e| e.ts);
+    let newest = db.events_page(&filter, 0, 1000)?.0.last().map(|e| e.ts);
     let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)?
         .as_secs();
     if newest.is_some_and(|ts| now.saturating_sub(u64::try_from(ts).unwrap_or(0)) < 86_400) {
-        return None;
+        return Ok(None);
     }
-    let b = match legionctl_machine::battery::state(&legionctl_machine::sysroot::SysRoot::from_env())
-    {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("recorder: no battery sample: {e:#}");
-            return None;
-        }
-    };
-    Some(
-        json!({"health_pct": b.health_pct?, "cycle_count": b.cycle_count, "energy_full_wh": b.energy_full_wh}),
-    )
+    let b = legionctl_machine::battery::state(&legionctl_machine::sysroot::SysRoot::from_env())?;
+    Ok(b.health_pct.map(|health| {
+        json!({"health_pct": health, "cycle_count": b.cycle_count, "energy_full_wh": b.energy_full_wh})
+    }))
 }
 
 /// `ApplyPower` -> `apply-power`: the daemon's cause as an event kind.

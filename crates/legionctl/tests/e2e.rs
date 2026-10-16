@@ -908,12 +908,23 @@ fn dossier_write_guard_and_takeover_work_through_the_claude_code_hooks() {
     as_session("s1", &["dossier", "use", "port"], "");
     as_session("s1", &["dossier", "add", "MEMORY", "intake"], "# Intake\n");
 
-    // a call without an absolute path (an outdated client) is refused, not stored with a relative place
+    // hook input without its cwd, or with a relative one (an outdated client), is refused, never stored with a
+    // made-up place (todo-142 F-91: before, a missing cwd became ".")
     let refused = op.run(
         &home,
         &[],
         &["hook", "session-start"],
         &json!({"session_id": "s5"}).to_string(),
+    );
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("the hook input has no cwd"),
+        "{refused:?}"
+    );
+    let refused = op.run(
+        &home,
+        &[],
+        &["hook", "session-start"],
+        &json!({"session_id": "s5", "cwd": "."}).to_string(),
     );
     assert!(
         String::from_utf8_lossy(&refused.stderr).contains("is not absolute"),
@@ -3180,7 +3191,11 @@ fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
     ] {
         assert!(text.contains(expected), "{expected} missing:\n{text}");
     }
-    assert_eq!(run["permissions"], json!(["git push (Execute): allowed"]));
+    // the option the run chose is logged (todo-142 F-69)
+    assert_eq!(
+        run["permissions"],
+        json!(["git push (Execute): allow_once"])
+    );
     let workspace = home.join("worktrees/repo/port");
     assert_eq!(
         git(&home, &workspace, &["log", "-1", "--format=%s"]),

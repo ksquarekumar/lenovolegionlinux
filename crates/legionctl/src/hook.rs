@@ -53,7 +53,12 @@ async fn answer(event: &str, input: &Value) -> Result<Option<Answer>> {
         .filter(|s| !s.is_empty())
         .or_else(|| input["session_id"].as_str().map(String::from))
         .map(SessionId);
-    let project = ClientPath(input["cwd"].as_str().map_or_else(|| ".".into(), Into::into));
+    let project = ClientPath(
+        input["cwd"]
+            .as_str()
+            .context("the hook input has no cwd")?
+            .into(),
+    );
     let run = |event: Event| HookRunIn {
         event,
         project: project.clone(),
@@ -238,12 +243,13 @@ async fn post_tool(
 }
 
 pub fn run(event: &str) -> Result<()> {
-    let input: Value = serde_json::from_reader(std::io::stdin()).unwrap_or(Value::Null);
     let runtime = tokio::runtime::Runtime::new()?;
-    match runtime
-        .block_on(answer(event, &input))
-        .context("legionctl hook")
-    {
+    // a hook error never stops the agent (23-agent-network): it is said on stderr, and the hook ends with 0
+    let answered = serde_json::from_reader::<_, Value>(std::io::stdin())
+        .context("stdin is not the hook's JSON")
+        .and_then(|input| runtime.block_on(answer(event, &input)))
+        .context("legionctl hook");
+    match answered {
         Ok(Some(Answer::Out(text))) if !text.is_empty() => println!("{text}"),
         Ok(Some(Answer::KeepWorking(text))) => {
             eprintln!("{text}");

@@ -17,13 +17,28 @@ use crate::Ready;
 const CHECK: Duration = Duration::from_secs(10);
 
 pub async fn run(ready: Ready, operator: std::sync::Arc<crate::engine::Operator>) -> Result<()> {
-    let desktop = zbus::Connection::session().await.ok();
+    let (mut desktop, mut told) = (None, false);
     ready.set();
     let mut tick = tokio::time::interval(CHECK);
     loop {
         tick.tick().await;
+        // no desktop session (a login comes later, or a machine without one): the notices are events only; it
+        // connects at the first tick that finds the session bus, and says once that it has none
+        if desktop.is_none() {
+            match zbus::Connection::session().await {
+                Ok(bus) => desktop = Some(bus),
+                Err(e) if !told => {
+                    eprintln!("operator: no session bus yet, so no desktop notices: {e}");
+                    told = true;
+                }
+                Err(_) => {}
+            }
+        }
         let engine = operator.clone();
         let offloads = tokio::task::spawn_blocking(move || offload(&engine)).await?;
+        if offloads.is_ok() {
+            crate::faults::works("offload");
+        }
         match (offloads, &desktop) {
             (Ok(notices), Some(bus)) => {
                 for (summary, body) in notices {
@@ -35,9 +50,12 @@ pub async fn run(ready: Ready, operator: std::sync::Arc<crate::engine::Operator>
                 }
             }
             (Ok(_), None) => {}
-            (Err(e), _) => eprintln!("operator: the offload policy failed: {e:#}"),
+            (Err(e), _) => crate::faults::failed("offload", "the offload policy failed", &e),
         }
         let frozen = tokio::task::spawn_blocking(freeze_idle).await?;
+        if frozen.is_ok() {
+            crate::faults::works("freeze");
+        }
         match (frozen, &desktop) {
             (Ok(sessions), Some(bus)) => {
                 for (id, minutes) in sessions {
@@ -54,7 +72,7 @@ pub async fn run(ready: Ready, operator: std::sync::Arc<crate::engine::Operator>
                 }
             }
             (Ok(_), None) => {}
-            (Err(e), _) => eprintln!("operator: the session policy failed: {e:#}"),
+            (Err(e), _) => crate::faults::failed("freeze", "the idle freeze policy failed", &e),
         }
     }
 }

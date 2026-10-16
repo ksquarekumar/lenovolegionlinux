@@ -1285,7 +1285,7 @@ fn rebind(
                 *active = Some(last);
                 line
             }
-            Err(e) => format!("legionctl: the last dossier here could not be bound: {e}"),
+            Err(e) => format!("legionctl: the last dossier here cannot be bound: {e}"),
         },
     ))
 }
@@ -1423,8 +1423,14 @@ fn start_lines(
                 w.branch,
                 w.base
             ));
-            let drift = store.workspace_status(w).map(|s| s.drift).unwrap_or_default();
-            lines.extend(drift.into_iter().map(|d| format!("legionctl workspace drift: {d}")));
+            match store.workspace_status(w) {
+                Ok(s) => lines.extend(
+                    s.drift
+                        .into_iter()
+                        .map(|d| format!("legionctl workspace drift: {d}")),
+                ),
+                Err(e) => lines.push(format!("legionctl workspace drift unknown: {e:#}")),
+            }
         }
         Some((p, None)) if resolved.config.workspace.nudge => lines.push(format!(
             "legionctl: no workspace for {} yet. Before code changes, open one with the legionctl MCP tool \
@@ -1504,10 +1510,11 @@ impl Operator {
             .cloned()
             .collect();
         let now = self.sample(std::time::Duration::from_millis(250))?;
+        // a daemon that does not answer is the fan rows' state, with the reason
         let fan = self
             .system(async |p| p.fan_status().await)
             .and_then(|json| Ok(serde_json::from_str::<fan::FanState>(&json)?))
-            .map_err(|e| format!("{e:#}"));
+            .map_err(|e| format!("legionctl-system does not answer: {e:#}"));
         let (profile, _) = profile::load(None)?;
         sensors::view(
             &SysRoot::from_env(),
@@ -1573,7 +1580,7 @@ impl Operator {
             std::thread::spawn(move || {
                 let db = match Db::open_default() {
                     Ok(db) => db,
-                    Err(e) => return eprintln!("operator: job {} not resumed: {e:#}", job.id),
+                    Err(e) => return crate::faults::failed("jobs", crate::JOBS, &e),
                 };
                 let outcome = match job.kind.as_str() {
                     "session.run" => {
@@ -1614,7 +1621,11 @@ impl Operator {
                     other => db.job_end(job.id, &Err(format!("no way to resume a {other} job"))),
                 };
                 if let Err(e) = outcome {
-                    eprintln!("operator: job {} not recorded: {e:#}", job.id);
+                    crate::faults::failed(
+                        "jobs",
+                        crate::JOBS,
+                        &e.context(format!("job {}", job.id)),
+                    );
                 }
             });
         }
@@ -1699,7 +1710,7 @@ impl Engine for Operator {
         }
         for (name, found) in [
             ("agent setup", agent_findings()),
-            ("cache", crate::cachefault::findings()),
+            ("operator fault", crate::faults::findings()),
         ] {
             match found {
                 Ok(found) => findings.extend(found),
@@ -2141,10 +2152,14 @@ impl Engine for Operator {
 
     fn agents_accounts_list(&self, _: &Ctx, _: Empty) -> Result<Vec<Account>> {
         let root = legionctl_core::session::accounts_root();
-        let mut out: Vec<Account> = std::fs::read_dir(&root)
+        let entries = match std::fs::read_dir(&root) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            entries => entries
+                .and_then(Iterator::collect::<std::io::Result<Vec<_>>>)
+                .with_context(|| format!("listing {}", root.display()))?,
+        };
+        let mut out: Vec<Account> = entries
             .into_iter()
-            .flatten()
-            .flatten()
             .filter(|e| e.path().is_dir())
             .map(|e| {
                 let dir = e.path();
@@ -2949,11 +2964,15 @@ impl Engine for Operator {
         // a cache that cannot be read is a reported miss (user decision Q2)
         let value = match Cache::open().and_then(|c| c.get("tools", &key)) {
             Ok(entry) => {
-                crate::cachefault::works("tools");
+                crate::faults::works("cache-tools");
                 entry.map(|e| String::from_utf8_lossy(&e.value).into_owned())
             }
             Err(e) => {
-                crate::cachefault::failed("tools", &e);
+                crate::faults::failed(
+                    "cache-tools",
+                    "the tool cache fails, so its calls go upstream",
+                    &e,
+                );
                 None
             }
         };
@@ -3432,7 +3451,8 @@ impl Engine for Operator {
         // the runner says how its start went (the polkit dialog waits for a human)
         let deadline = std::time::Instant::now() + std::time::Duration::from_mins(2);
         loop {
-            let now = std::fs::read_to_string(&state).unwrap_or_default();
+            // the runner replaces the file: a moment without it is no state yet
+            let now = legionctl_machine::sysroot::read_file(&state)?.unwrap_or_default();
             if let Some(why) = now.strip_prefix("failed: ") {
                 anyhow::bail!("the Windows VM did not start: {why}");
             }
@@ -3549,8 +3569,8 @@ impl Engine for Operator {
     fn windows_vm_status(&self, _: &Ctx, _: Empty) -> Result<Lines> {
         let unit = format!("{}.service", legionctl_core::session::WINDOWS_UNIT);
         let dir = legionctl_core::session::windows_root();
-        let state =
-            std::fs::read_to_string(dir.join("state")).unwrap_or_else(|_| "never started".into());
+        let state = legionctl_machine::sysroot::read_file(&dir.join("state"))?
+            .unwrap_or_else(|| "never started".into());
         let mut lines = vec![if unit_active(&unit)? {
             "running".to_string()
         } else {
@@ -3589,8 +3609,13 @@ impl Engine for Operator {
 
     fn record(&self, _: &Ctx, input: RecordIn) -> Result<Recording> {
         let dir = input.dir.get()?;
+        let empty = match std::fs::read_dir(dir) {
+            Ok(mut d) => d.next().is_none(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+            Err(e) => return Err(e).with_context(|| format!("listing {}", dir.display())),
+        };
         anyhow::ensure!(
-            std::fs::read_dir(dir).map_or(true, |mut d| d.next().is_none()),
+            empty,
             "{} is not empty; record into a new directory",
             dir.display()
         );
@@ -3623,11 +3648,16 @@ impl Engine for Operator {
             .into_iter()
             .chain(layers)
         {
-            if let Ok(bytes) = std::fs::read(root.path(file)) {
-                let to = SysRoot::new(&tree).path(file);
-                std::fs::create_dir_all(to.parent().context("no parent")?)?;
-                std::fs::write(to, bytes)?;
-            }
+            // a file that is not there is not in the recording; one that cannot be read fails it (a gap would replay
+            // other decisions)
+            let bytes = match std::fs::read(root.path(file)) {
+                Ok(bytes) => bytes,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e).with_context(|| format!("reading {file}")),
+            };
+            let to = SysRoot::new(&tree).path(file);
+            std::fs::create_dir_all(to.parent().context("no parent")?)?;
+            std::fs::write(to, bytes)?;
         }
         std::fs::write(
             dir.join("events.json"),
@@ -4058,7 +4088,7 @@ impl Engine for Operator {
                 }
             }
         } else {
-            for layer in rules::own_layers(&plan.root, &plan.profile, &home())
+            for layer in rules::own_layers(&plan.root, &plan.profile, &home())?
                 .iter()
                 .filter_map(reset)
             {

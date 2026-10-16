@@ -138,21 +138,30 @@ pub fn write_own(layer: &Layer) -> Result<String> {
 }
 
 /// The user's own layers: each file's layer, as `rules reset` changes them.
-pub fn own_layers(root: &SysRoot, profile: &Profile, home: &Path) -> Vec<Layer> {
-    let mut names: Vec<String> = std::fs::read_dir(own_folder(home))
-        .into_iter()
-        .flatten()
-        .flatten()
+///
+/// # Errors
+/// The folder is there but cannot be listed.
+pub fn own_layers(root: &SysRoot, profile: &Profile, home: &Path) -> Result<Vec<Layer>> {
+    let folder = own_folder(home);
+    let entries = match std::fs::read_dir(&folder) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        entries => entries
+            .and_then(Iterator::collect::<std::io::Result<Vec<_>>>)
+            .with_context(|| format!("listing {}", folder.display()))?,
+    };
+    let mut names: Vec<String> = entries
+        .iter()
         .filter_map(|e| e.file_name().into_string().ok())
         .filter_map(|n| n.strip_suffix(".jsonc").map(String::from))
         .collect();
     names.sort();
-    names
+    Ok(names
         .into_iter()
         .map(|name| {
             let file = file_of(Folder::User, home, &name);
+            // a file that went since the listing is an empty layer; one that cannot be read is the layer's fault
             let text = read(root, Folder::User, &file).unwrap_or(Ok(String::new()));
             configset::parse(Some(root), profile, Folder::User, &name, &file, text)
         })
-        .collect()
+        .collect())
 }

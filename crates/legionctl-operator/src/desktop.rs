@@ -91,7 +91,8 @@ pub async fn question(summary: &str, body: &str) -> Result<Option<bool>> {
         .context("no desktop notification service to ask the user")?;
     let id: u32 = reply.body().deserialize()?;
     let answer = tokio::time::timeout(WAIT, async {
-        while let Some(Ok(signal)) = answers.next().await {
+        while let Some(signal) = answers.next().await {
+            let signal = signal.context("reading the notification service's answer")?;
             match signal.header().member().map(ToString::to_string).as_deref() {
                 Some("ActionInvoked") => {
                     let (of, key): (u32, String) = signal.body().deserialize()?;
@@ -108,7 +109,7 @@ pub async fn question(summary: &str, body: &str) -> Result<Option<bool>> {
                 _ => {}
             }
         }
-        anyhow::Ok(None)
+        anyhow::bail!("the notification service's signals ended before an answer")
     })
     .await;
     if answer.is_err() {
@@ -122,5 +123,6 @@ pub async fn question(summary: &str, body: &str) -> Result<Option<bool>> {
             )
             .await;
     }
+    // no answer within the time is no decision (None): the caller says so
     answer.unwrap_or(Ok(None))
 }

@@ -1499,6 +1499,8 @@ pub struct VirtInstance {
     pub consumer: Option<String>,
     /// Host memory it holds while it runs: a container's use without its page cache, a VM's resident memory.
     pub memory_bytes: Option<u64>,
+    /// Why `memory_bytes` is not known while it runs.
+    pub memory_unknown: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

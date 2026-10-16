@@ -1732,10 +1732,11 @@ impl Render for crate::VirtStatus {
                 .as_deref()
                 .map(|c| format!(" ({c})"))
                 .unwrap_or_default();
-            let memory = i
-                .memory_bytes
-                .map(|b| format!(", holds {}", legionctl_machine::human_bytes(b)))
-                .unwrap_or_default();
+            let memory = match (i.memory_bytes, &i.memory_unknown) {
+                (Some(b), _) => format!(", holds {}", legionctl_machine::human_bytes(b)),
+                (None, Some(why)) => format!(", memory unknown: {why}"),
+                (None, None) => String::new(),
+            };
             format!(
                 "  {:<9} {}{consumer}: {} {}{memory}",
                 wire_name(&i.kind),

@@ -25,6 +25,9 @@ use serde_json::{Value, json};
 
 use crate::translate::{self, Direction};
 
+/// The finding of a gateway cache that cannot be used (user decision Q3).
+const GATEWAY_CACHE: &str = "the gateway cache fails, so its calls go upstream";
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Api {
     Messages,
@@ -389,11 +392,11 @@ fn blocked(
 fn replay(key: &str, model: &str, label: &'static str) -> Option<Response> {
     let kept = match Cache::open().and_then(|c| c.get("gateway", key)) {
         Ok(kept) => {
-            crate::cachefault::works("gateway");
+            crate::faults::works("cache-gateway");
             kept?
         }
         Err(e) => {
-            crate::cachefault::failed("gateway", &e);
+            crate::faults::failed("cache-gateway", GATEWAY_CACHE, &e);
             return None;
         }
     };
@@ -646,7 +649,7 @@ async fn cached(
     {
         Ok(nearest) => nearest,
         Err(e) => {
-            crate::cachefault::failed("gateway", &e);
+            crate::faults::failed("cache-gateway", GATEWAY_CACHE, &e);
             None
         }
     };
@@ -748,7 +751,7 @@ fn respond(
                 }
             })
         {
-            crate::cachefault::failed("gateway", &e);
+            crate::faults::failed("cache-gateway", GATEWAY_CACHE, &e);
         }
     });
     let stream = futures_util::stream::unfold(rx, |mut rx| async move {
