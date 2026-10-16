@@ -14,6 +14,7 @@ pub mod error;
 pub mod facts;
 pub mod folder;
 pub mod gates;
+pub mod git;
 pub mod graph;
 pub mod home;
 pub mod hooks;

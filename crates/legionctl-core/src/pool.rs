@@ -1186,7 +1186,7 @@ impl Dossiers {
             "thread {new} is a branch of thread {thread} at log row {at}: this session is main0"
         )];
         if let (Some(commit), Some(dir)) = (&commit, &workdir) {
-            crate::workspace::git(Path::new(dir), &["branch", &branch, commit])?;
+            crate::git::text(Path::new(dir), &["branch", &branch, commit])?;
             out.push(format!(
                 "branch {branch} starts at the checkpoint {commit}; open it with `legionctl workspace open --base {branch} --topic thread-{new}`"
             ));

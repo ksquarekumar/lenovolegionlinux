@@ -169,7 +169,7 @@ struct Plan {
 }
 
 fn parse<T: DeserializeOwned>(dir: &Path, tree: &str, path: &str) -> Result<T, String> {
-    let bytes = codegraph::run(dir, &["cat-file", "blob", &format!("{tree}:{path}")])
+    let bytes = crate::git::bytes(dir, &["cat-file", "blob", &format!("{tree}:{path}")])
         .map_err(|e| format!("{path}: {e:#}"))?;
     serde_json::from_reader(json_comments::StripComments::new(&bytes[..]))
         .map_err(|e| format!("{path}: {e}"))
@@ -181,7 +181,8 @@ fn load(dir: &Path, tree: &str) -> Result<Plan> {
         units: Vec::new(),
         problems: Vec::new(),
     };
-    for path in codegraph::git(dir, &["ls-tree", "-r", "--name-only", tree, "planning"])?.lines() {
+    for path in crate::git::text(dir, &["ls-tree", "-r", "--name-only", tree, "planning"])?.lines()
+    {
         if path == UNITS {
             match parse::<Units>(dir, tree, path) {
                 Ok(units) => plan.units = units.units,
@@ -224,7 +225,7 @@ impl Facts {
     fn at(dir: &Path, rev: &str, build: bool, plan_units: &[Unit]) -> Result<Facts> {
         let (tree, db) = codegraph::snapshot_for(dir, rev, build)?;
         let files: BTreeSet<String> =
-            codegraph::git(dir, &["ls-tree", "-r", "--name-only", &tree])?
+            crate::git::text(dir, &["ls-tree", "-r", "--name-only", &tree])?
                 .lines()
                 .map(String::from)
                 .collect();
@@ -233,7 +234,7 @@ impl Facts {
             if !files.contains(path) {
                 return Ok(None);
             }
-            codegraph::run(dir, &["cat-file", "blob", &format!("{tree}:{path}")]).map(Some)
+            crate::git::bytes(dir, &["cat-file", "blob", &format!("{tree}:{path}")]).map(Some)
         };
         let ops = match blob("docs/api/schema.json")? {
             Some(b) => serde_json::from_slice::<serde_json::Map<String, Value>>(&b)
@@ -520,12 +521,13 @@ fn tokei(
     let tmp = std::env::temp_dir().join(format!("legionctl-tokei-{}.{nanos}", std::process::id()));
     let counted = (|| {
         // a planned file that is not in the tree yet has no lines; one that is must be read
-        let in_tree = codegraph::git(dir, &["ls-tree", "-r", "--name-only", tree])?;
+        let in_tree = crate::git::text(dir, &["ls-tree", "-r", "--name-only", tree])?;
         let in_tree: BTreeSet<&str> = in_tree.lines().collect();
         let mut written = Vec::new();
         for file in files {
             if in_tree.contains(file.as_str()) {
-                let blob = codegraph::run(dir, &["cat-file", "blob", &format!("{tree}:{file}")])?;
+                let blob =
+                    crate::git::bytes(dir, &["cat-file", "blob", &format!("{tree}:{file}")])?;
                 let path = tmp.join(file.as_str());
                 std::fs::create_dir_all(path.parent().context("a file path has no folder")?)?;
                 std::fs::write(path, blob)?;

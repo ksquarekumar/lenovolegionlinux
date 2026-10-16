@@ -4203,7 +4203,7 @@ fn dossier_check_finds_dangling_links_unverified_acceptance_and_stale_evidence()
             "MEMORY/01-note supports plan#acceptance-9, which does not exist",
             "plan#acceptance-3 has no EVIDENCE that supports it",
             "EV-03 is stale: parse in src/lib.rs changed after it was written",
-            "EV-05 links src/lib.rs#gone: fatal: -L parameter 'gone' starting at line 1: no match",
+            "EV-05 links src/lib.rs#gone: git log -1 -s --format=%ct -L:gone:src/lib.rs: fatal: -L parameter 'gone' starting at line 1: no match",
             "1 code links of EVIDENCE name a whole file (unanchored): their staleness is not checked; link \
              <path>#<symbol>",
             // the repository declares no checks (design 23, E2 rule 2)

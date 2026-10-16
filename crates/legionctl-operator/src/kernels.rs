@@ -109,9 +109,7 @@ fn run(command: &mut Command) -> Result<String> {
 }
 
 fn git(repo: &Path) -> Command {
-    let mut git = Command::new("git");
-    git.arg("-C").arg(repo);
-    git
+    legionctl_core::git::command(repo)
 }
 
 /// The commit of `folder` whose `.SRCINFO` has the version `version` (`pkgver-pkgrel`), newest first.
@@ -501,9 +499,7 @@ impl Operator {
         let repo = build.dir.join("linux-cachyos");
         if !repo.join(".git").exists() {
             progress("clone")?;
-            run(Command::new("git")
-                .args(["clone", "--quiet", REPO])
-                .arg(&repo))?;
+            run(git(&build.dir).args(["clone", "--quiet", REPO]).arg(&repo))?;
         }
         progress("pin")?;
         let commit = pin(&repo, &build.folder, &build.version)?;

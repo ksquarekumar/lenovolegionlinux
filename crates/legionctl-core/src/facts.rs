@@ -8,7 +8,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context as _, Result, bail, ensure};
 use rusqlite::params;
@@ -228,23 +227,7 @@ struct Ancestry {
 
 impl Ancestry {
     fn git_status(repo: &Path, args: &[&str]) -> Result<Option<String>> {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(repo)
-            .args(args)
-            .output()
-            .context("git cannot start")?;
-        match out.status.code() {
-            Some(0) => Ok(Some(
-                String::from_utf8_lossy(&out.stdout).trim().to_string(),
-            )),
-            Some(1) => Ok(None),
-            _ => bail!(
-                "git {}: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
-        }
+        crate::git::found(repo, args)
     }
 
     fn ancestor(&mut self, repo: &Path, a: &str, b: &str) -> Result<bool> {
@@ -287,7 +270,7 @@ impl Ancestry {
         let Some(repo) = &f.repo else {
             return Ok("holds".into());
         };
-        let commit = crate::codegraph::git(
+        let commit = crate::git::text(
             repo,
             &["rev-parse", "--verify", &format!("{rev}^{{commit}}")],
         )
@@ -611,7 +594,7 @@ pub fn confidence(c: f64) -> Result<f64> {
 #[must_use]
 pub fn repository(dir: &Path) -> Option<(PathBuf, PathBuf)> {
     let root = crate::workspace::main_checkout(dir).ok()?;
-    let top = crate::codegraph::git(dir, &["rev-parse", "--show-toplevel"]).ok()?;
+    let top = crate::git::text(dir, &["rev-parse", "--show-toplevel"]).ok()?;
     Some((root, PathBuf::from(top)))
 }
 
@@ -621,7 +604,7 @@ pub fn repository(dir: &Path) -> Option<(PathBuf, PathBuf)> {
 /// It does not resolve.
 pub fn commit(dir: &Path, rev: &str) -> Result<String> {
     ensure!(!rev.starts_with('-'), "a ref must not start with '-'");
-    crate::codegraph::git(
+    crate::git::text(
         dir,
         &["rev-parse", "--verify", &format!("{rev}^{{commit}}")],
     )

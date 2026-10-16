@@ -18,7 +18,8 @@ use crate::config::{Dirs, resolve};
 use crate::db::now;
 use crate::dossier::Dossiers;
 use crate::error::{Code, coded};
-use crate::workspace::{git, git_common_dir};
+use crate::git::text as git;
+use crate::workspace::git_common_dir;
 
 /// The shipped language files. A new language is a new file in `config/languages/` and a line here.
 const LANGUAGES: [&str; 3] = [

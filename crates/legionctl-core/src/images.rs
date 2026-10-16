@@ -432,7 +432,7 @@ pub fn tag(repo: &Path) -> Result<String> {
     if !repo.ancestors().any(|d| d.join(".git").exists()) {
         return Ok("dev".into());
     }
-    crate::workspace::git(repo, &["rev-parse", "--short", "HEAD"])
+    crate::git::text(repo, &["rev-parse", "--short", "HEAD"])
 }
 
 /// The image reference of `service`: `localhost/<project>/<service>:<tag>`.

@@ -3678,22 +3678,14 @@ mod operator_and_daemon {
 
     /// Reads as the user on the live machine (todo-142, EV-validation-read-ops-r260): status, gpu status, knobs list,
     /// plan and resources list failed on one value. Now a RAPL constraint whose time window the kernel has no data for
-    /// (ENODATA, PL4 `peak_power`) has no window and keeps its limit; processes whose files the user may not read (the
+    /// (ENODATA, PL4 `peak_power`; a recording keeps that read as `<file>.errno`, and `legionctl record` writes it
+    /// again) has no window and keeps its limit; processes whose files the user may not read (the
     /// user's own `systemd --user`, not dumpable: its fds list but their links are denied; another user's: its fd
     /// folder is denied) are counted and named as not visible, while a visible process still shows; the daemon's
     /// host-use guard, which must see every process, refuses with that count.
     #[tokio::test(flavor = "multi_thread")]
     async fn reads_as_the_user_count_the_processes_they_cannot_see_and_keep_a_value_without_data() {
         use std::os::unix::fs::PermissionsExt;
-        // a file that the kernel answers with ENODATA (a regular file never does)
-        let no_data = [
-            "/sys/class/powercap/intel-rapl-mmio:0/constraint_2_time_window_us",
-            "/sys/class/powercap/intel-rapl:0/constraint_2_time_window_us",
-            "/sys/power/pm_wakeup_irq",
-        ]
-        .into_iter()
-        .find(|f| std::fs::read(f).is_err_and(|e| e.raw_os_error() == Some(61)))
-        .expect("this host has no file that answers ENODATA: the test needs one");
         let m = Machine::new("notvisible");
         let _kernel = pci_machine(&m);
         let root = m.dir.join("root");
@@ -3709,11 +3701,8 @@ mod operator_and_daemon {
         }
         m.set(&format!("{zone}/constraint_0_time_window_us"), "27983872");
         m.set(&format!("{zone}/constraint_1_time_window_us"), "2440");
-        std::os::unix::fs::symlink(
-            no_data,
-            root.join(&format!("{zone}/constraint_2_time_window_us")[1..]),
-        )
-        .unwrap();
+        // as `legionctl record` keeps the live machine's read: the kernel answered ENODATA (61)
+        m.set(&format!("{zone}/constraint_2_time_window_us.errno"), "61");
         let (own, other) = (root.join("proc/4329/fd"), root.join("proc/1/fd"));
         m.set("/proc/4329/comm", "systemd");
         m.set("/proc/1/comm", "systemd");
@@ -3738,6 +3727,15 @@ mod operator_and_daemon {
         assert_eq!(rapl["constraints"][2]["limit_w"], 230.0);
         assert!(rapl["constraints"][2]["window_us"].is_null(), "{rapl}");
         assert_eq!(rapl["constraints"][0]["window_us"], 27_983_872);
+        let recorded = m.dir.join("recorded");
+        op.ok(&["record", recorded.to_str().unwrap()]);
+        assert_eq!(
+            std::fs::read_to_string(
+                recorded.join(format!("root{zone}/constraint_2_time_window_us.errno"))
+            )
+            .unwrap(),
+            "61"
+        );
 
         let gpu = op.ok(&["gpu", "status"]);
         assert!(
@@ -5131,7 +5129,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             &bin,
             "git",
             &format!(
-                "if [ \"$1\" = clone ]; then echo \"$3\" >> {d}/git.log; exec /usr/bin/git clone --quiet {r} \"$4\"; fi; \
+                "if [ \"$3\" = clone ]; then echo \"$5\" >> {d}/git.log; exec /usr/bin/git clone --quiet {r} \"$6\"; fi; \
                  exec /usr/bin/git \"$@\"",
                 d = m.dir.display(),
                 r = repo.display()

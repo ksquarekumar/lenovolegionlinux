@@ -39,6 +39,18 @@ pub enum Seen {
     File(String),
     Dir,
     Link(PathBuf),
+    /// The read failed with this errno (ENODATA: the kernel has no value): a recording keeps it as `<file>.errno`.
+    Errno(i32),
+}
+
+/// ENODATA: the kernel has no value for this attribute (RAPL's `peak_power` constraint has no time window).
+const ENODATA: i32 = 61;
+
+/// Where a recording keeps the errno of a read that failed: `<file>.errno`.
+fn errno_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".errno");
+    path.with_file_name(name)
 }
 
 #[derive(Debug, Clone)]
@@ -133,16 +145,42 @@ impl SysRoot {
     /// The file is there but cannot be read (permission denied, IO error, not UTF-8).
     pub fn read(&self, machine_path: impl AsRef<Path>) -> Result<Option<String>> {
         let machine_path = machine_path.as_ref();
-        let content = match std::fs::read_to_string(self.path(machine_path)) {
+        let content = match self.read_file(machine_path) {
             Ok(content) => content,
             Err(e) if missing(&e) => return Ok(None),
-            // ENODATA: the kernel has no value for this attribute (RAPL's peak_power constraint has no time window)
-            Err(e) if e.raw_os_error() == Some(61) => return Ok(None),
+            Err(e) if e.raw_os_error() == Some(ENODATA) => {
+                self.note(machine_path, Seen::Errno(ENODATA));
+                return Ok(None);
+            }
             Err(e) => return Err(e).with_context(|| format!("reading {}", machine_path.display())),
         };
         let trimmed = content.trim().to_string();
         self.note(machine_path, Seen::File(content));
         Ok(Some(trimmed))
+    }
+
+    /// The file at `machine_path`; under a recording (a root other than `/`) a file that is not there but has
+    /// `<file>.errno` fails with that errno, as the machine's read did.
+    fn read_file(&self, machine_path: &Path) -> std::io::Result<String> {
+        let path = self.path(machine_path);
+        match std::fs::read_to_string(&path) {
+            Err(e) if missing(&e) && self.root != Path::new("/") => {
+                match std::fs::read_to_string(errno_path(&path)) {
+                    Ok(errno) => Err(errno.trim().parse().map_or_else(
+                        |_| {
+                            std::io::Error::new(
+                                ErrorKind::InvalidData,
+                                format!("{errno} is no errno"),
+                            )
+                        },
+                        std::io::Error::from_raw_os_error,
+                    )),
+                    Err(no) if missing(&no) => Err(e),
+                    Err(no) => Err(no),
+                }
+            }
+            read => read,
+        }
     }
 
     /// Where a symlink points (a device's `driver`); None when the link is not there.
@@ -180,6 +218,7 @@ impl SysRoot {
                 Seen::Dir => std::fs::create_dir_all(&target),
                 Seen::File(content) => std::fs::write(&target, content),
                 Seen::Link(link) => std::os::unix::fs::symlink(link, &target),
+                Seen::Errno(errno) => std::fs::write(errno_path(&target), errno.to_string()),
             }
             .with_context(|| format!("recording {}", target.display()))?;
         }

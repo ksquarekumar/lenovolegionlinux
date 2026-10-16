@@ -653,7 +653,7 @@ fn relink(store: &Dossiers, place: &Place) -> Result<Vec<String>> {
             .flat_map(|l| [l, "\n"])
             .collect();
         std::fs::write(&ignore, kept)?;
-        crate::workspace::git(dir, &["add", ".gitignore"])?;
+        crate::git::text(dir, &["add", ".gitignore"])?;
     }
     crate::home::link(store, dir)
 }

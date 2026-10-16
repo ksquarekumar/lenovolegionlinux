@@ -44,26 +44,6 @@ fn unique() -> String {
     format!("{}.{nanos}.{n}", std::process::id())
 }
 
-pub(crate) fn run(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .context("running git")?;
-    ensure!(
-        out.status.success(),
-        "git {}: {}",
-        args.join(" "),
-        String::from_utf8_lossy(&out.stderr).trim()
-    );
-    Ok(out.stdout)
-}
-
-pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    Ok(String::from_utf8_lossy(&run(dir, args)?).trim().to_string())
-}
-
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -95,7 +75,7 @@ pub(crate) fn resolve(dir: &Path, rev: &str) -> Result<(String, String)> {
             format!("no commit '{rev}' in {}", dir.display()),
         )
     })?;
-    let tree = git(dir, &["rev-parse", &format!("{commit}^{{tree}}")])?;
+    let tree = crate::git::text(dir, &["rev-parse", &format!("{commit}^{{tree}}")])?;
     Ok((commit, tree))
 }
 
@@ -105,27 +85,15 @@ pub(crate) fn resolve(dir: &Path, rev: &str) -> Result<(String, String)> {
 /// git does not run or fails for another reason.
 fn commit_of(dir: &Path, rev: &str) -> Result<Option<String>> {
     ensure!(!rev.starts_with('-'), "a ref must not start with '-'");
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args([
+    crate::git::found(
+        dir,
+        &[
             "rev-parse",
             "--verify",
             "--quiet",
             &format!("{rev}^{{commit}}"),
-        ])
-        .output()
-        .context("running git")?;
-    match out.status.code() {
-        Some(0) => Ok(Some(
-            String::from_utf8_lossy(&out.stdout).trim().to_string(),
-        )),
-        Some(1) => Ok(None),
-        _ => bail!(
-            "git rev-parse {rev}: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ),
-    }
+        ],
+    )
 }
 
 /// Whether the repository of `dir` keeps snapshots: its `.graf/refs` exists (the first `code graph refresh` or
@@ -137,7 +105,7 @@ pub fn enabled(dir: &Path) -> bool {
 
 /// Add `/.graf/` to the repository's `info/exclude` (shared by its worktrees) when git does not ignore it yet.
 fn exclude(dir: &Path) -> Result<()> {
-    if run(
+    if crate::git::bytes(
         dir,
         &["check-ignore", "--quiet", "--no-index", ".graf/index.db"],
     )
@@ -177,9 +145,7 @@ pub fn snapshot(dir: &Path, rev: &str) -> Result<(String, bool)> {
     let tmp = graf.join("refs").join(format!("{tree}.db.tmp.{suffix}"));
     let built = (|| {
         std::fs::create_dir_all(&source)?;
-        let mut archive = Command::new("git")
-            .arg("-C")
-            .arg(dir)
+        let mut archive = crate::git::command(dir)
             .args(["archive", "--format=tar", &tree])
             .stdout(Stdio::piped())
             .spawn()
@@ -241,7 +207,7 @@ pub(crate) fn snapshot_for(dir: &Path, rev: &str, build: bool) -> Result<(String
 
 /// Point the checkout's `.graf/index.db` (what `ctx mcp serve` opens) at the snapshot of its HEAD.
 fn link(dir: &Path, tree: &str) -> Result<()> {
-    let top = PathBuf::from(git(dir, &["rev-parse", "--show-toplevel"])?);
+    let top = PathBuf::from(crate::git::text(dir, &["rev-parse", "--show-toplevel"])?);
     let own = top.join(".graf");
     std::fs::create_dir_all(&own)?;
     let tmp = own.join(format!("index.db.{}", unique()));
@@ -272,7 +238,7 @@ pub fn refresh(dossiers: &Dossiers, dir: &Path, rev: &str) -> Result<Vec<String>
 /// workspace of the repository its base and the merge-base of base and branch.
 fn kept(dossiers: &Dossiers, dir: &Path) -> Result<BTreeMap<String, Vec<String>>> {
     let mut keep: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for line in git(
+    for line in crate::git::text(
         dir,
         &[
             "for-each-ref",
@@ -287,11 +253,11 @@ fn kept(dossiers: &Dossiers, dir: &Path) -> Result<BTreeMap<String, Vec<String>>
         }
     }
     let mut checkout = None;
-    for line in git(dir, &["worktree", "list", "--porcelain"])?.lines() {
+    for line in crate::git::text(dir, &["worktree", "list", "--porcelain"])?.lines() {
         if let Some(path) = line.strip_prefix("worktree ") {
             checkout = Some(path.to_string());
         } else if let (Some(commit), Some(path)) = (line.strip_prefix("HEAD "), &checkout) {
-            let tree = git(dir, &["rev-parse", &format!("{commit}^{{tree}}")])?;
+            let tree = crate::git::text(dir, &["rev-parse", &format!("{commit}^{{tree}}")])?;
             keep.entry(tree)
                 .or_default()
                 .push(format!("HEAD of {path}"));
@@ -309,7 +275,7 @@ fn kept(dossiers: &Dossiers, dir: &Path) -> Result<BTreeMap<String, Vec<String>>
                 .or_default()
                 .push(format!("base of {}", ws.branch));
             if commit_of(dir, &ws.branch)?.is_some() {
-                let base = git(dir, &["merge-base", &ws.base, &ws.branch])?;
+                let base = crate::git::text(dir, &["merge-base", &ws.base, &ws.branch])?;
                 let (_, tree) = resolve(dir, &base)?;
                 keep.entry(tree)
                     .or_default()
@@ -412,7 +378,7 @@ pub struct GraphRefs {
 pub fn refs(dossiers: &Dossiers, dir: &Path) -> Result<GraphRefs> {
     let graf = graf(dir)?;
     let mut refs = Vec::new();
-    let heads = git(
+    let heads = crate::git::text(
         dir,
         &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
     )?;
@@ -562,7 +528,7 @@ impl Blobs<'_> {
     /// the whole blob.
     fn bytes(&mut self, node: &Node) -> Result<(&[u8], bool)> {
         if !self.read.contains_key(&node.file) {
-            let blob = run(
+            let blob = crate::git::bytes(
                 self.dir,
                 &["cat-file", "blob", &format!("{}:{}", self.tree, node.file)],
             )?;
@@ -724,7 +690,7 @@ fn change_set(dir: &Path, from: &str, to: &str, build: bool) -> Result<ChangeSet
     let (from_commit, to_commit) = (resolve(dir, from)?.0, resolve(dir, to)?.0);
     let range = format!("{from_commit}..{to_commit}");
     let mut numstat: BTreeMap<String, String> = BTreeMap::new();
-    for line in git(
+    for line in crate::git::text(
         dir,
         &["diff", "--numstat", "--no-renames", &from_tree, &to_tree],
     )?
@@ -868,13 +834,18 @@ fn file_rows(
     for (path, lines) in numstat {
         let key = format!("file:{path}");
         if !covered.contains(&key) {
-            let change = if run(dir, &["cat-file", "-e", &format!("{from_tree}:{path}")]).is_err() {
-                "added"
-            } else if run(dir, &["cat-file", "-e", &format!("{to_tree}:{path}")]).is_err() {
-                "removed"
-            } else {
-                "modified"
-            };
+            let change =
+                if crate::git::bytes(dir, &["cat-file", "-e", &format!("{from_tree}:{path}")])
+                    .is_err()
+                {
+                    "added"
+                } else if crate::git::bytes(dir, &["cat-file", "-e", &format!("{to_tree}:{path}")])
+                    .is_err()
+                {
+                    "removed"
+                } else {
+                    "modified"
+                };
             entities.push(EntityChange {
                 key,
                 kind: "file".into(),
@@ -911,7 +882,7 @@ fn link_commits(
                 (!whole).then(|| pickaxe(dir, range, text, &[&a.file, &b.file]))
             }
             (_, Some(b)) => match (new.bytes(b)?.1, b.line, b.end_line) {
-                (false, Some(line), Some(end)) => Some(git(
+                (false, Some(line), Some(end)) => Some(crate::git::text(
                     dir,
                     &[
                         "log",
@@ -927,7 +898,7 @@ fn link_commits(
         };
         let log = match log {
             Some(log) => log?,
-            None => git(dir, &["log", "--format=%h", range, "--", &entity.file])?,
+            None => crate::git::text(dir, &["log", "--format=%h", range, "--", &entity.file])?,
         };
         entity.commits = log.lines().map(String::from).collect();
     }
@@ -939,22 +910,15 @@ fn pickaxe(dir: &Path, range: &str, text: &[u8], files: &[&str]) -> Result<Strin
     use std::os::unix::ffi::OsStrExt as _;
     let mut arg = b"-S".to_vec();
     arg.extend_from_slice(text);
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["log", "--format=%h", "--no-renames"])
-        .arg(std::ffi::OsStr::from_bytes(&arg))
-        .arg(range)
-        .arg("--")
-        .args(files)
-        .output()
-        .context("running git log -S")?;
-    ensure!(
-        out.status.success(),
-        "git log -S: {}",
-        String::from_utf8_lossy(&out.stderr).trim()
-    );
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    let out = crate::git::run(
+        crate::git::command(dir)
+            .args(["log", "--format=%h", "--no-renames"])
+            .arg(std::ffi::OsStr::from_bytes(&arg))
+            .arg(range)
+            .arg("--")
+            .args(files),
+    )?;
+    Ok(String::from_utf8_lossy(&out).trim().to_string())
 }
 
 /// The stable patch id (`git patch-id --stable`) of each commit of `range` that changes a file: (patch id, commit).
@@ -963,10 +927,8 @@ fn pickaxe(dir: &Path, range: &str, text: &[u8], files: &[&str]) -> Result<Strin
 /// # Errors
 /// git fails in `dir`.
 pub fn patch_ids(dir: &Path, range: &str) -> Result<Vec<(String, String)>> {
-    let log = run(dir, &["log", "-p", "--no-color", "--no-ext-diff", range])?;
-    let mut child = Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let log = crate::git::bytes(dir, &["log", "-p", "--no-color", "--no-ext-diff", range])?;
+    let mut child = crate::git::command(dir)
         .args(["patch-id", "--stable"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -993,7 +955,7 @@ fn commits(dir: &Path, range: &str) -> Result<Vec<CommitRow>> {
         .into_iter()
         .map(|(patch, commit)| (commit, patch))
         .collect();
-    let log = git(
+    let log = crate::git::text(
         dir,
         &["log", "--format=%H%x1f%h%x1f%ct%x1f%an%x1f%B%x1e", range],
     )?;
@@ -1233,7 +1195,7 @@ pub fn annotations(
 /// # Errors
 /// `dir` is not in a git repository, or a hook cannot be written.
 pub fn hook(dir: &Path, legionctl: &Path, install: bool) -> Result<Vec<String>> {
-    let hooks = PathBuf::from(git(
+    let hooks = PathBuf::from(crate::git::text(
         dir,
         &["rev-parse", "--path-format=absolute", "--git-path", "hooks"],
     )?);

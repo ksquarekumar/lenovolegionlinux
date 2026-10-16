@@ -1285,19 +1285,17 @@ impl Dossiers {
             let Some(repo) = &repo else {
                 return Ok(false);
             };
-            let out = std::process::Command::new("git")
-                .arg("-C")
-                .arg(repo)
-                .args(["log", "-1", "-s", "--format=%ct"])
-                .arg(format!("-L:{symbol}:{file}"))
-                .output()
-                .context("running git log -L")?;
-            anyhow::ensure!(
-                out.status.success(),
-                "{}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-            let last: u64 = String::from_utf8_lossy(&out.stdout)
+            let out = crate::git::bytes(
+                repo,
+                &[
+                    "log",
+                    "-1",
+                    "-s",
+                    "--format=%ct",
+                    &format!("-L:{symbol}:{file}"),
+                ],
+            )?;
+            let last: u64 = String::from_utf8_lossy(&out)
                 .trim()
                 .parse()
                 .with_context(|| format!("no commit of {symbol} in {file}"))?;
@@ -1357,7 +1355,7 @@ impl Dossiers {
                 {
                     // the base has the commit, or (after a rebase, which keeps the patch id) its change: `-`
                     let range = format!("{sha}~1");
-                    let git = |args: &[&str]| crate::workspace::git(&ws.repo, args);
+                    let git = |args: &[&str]| crate::git::text(&ws.repo, args);
                     if git(&["merge-base", "--is-ancestor", sha, &ws.base]).is_ok()
                         || git(&["cherry", &ws.base, sha, &range]).is_ok_and(|o| o.starts_with('-'))
                     {

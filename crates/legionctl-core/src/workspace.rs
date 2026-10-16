@@ -9,7 +9,6 @@
 //! The disks here are ext4, which cannot reflink, so the copy is a worktree: it shares the repo's object store.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -18,22 +17,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::dossier::Dossiers;
-
-pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .context("running git")?;
-    ensure!(
-        out.status.success(),
-        "git {}: {}",
-        args.join(" "),
-        String::from_utf8_lossy(&out.stderr).trim()
-    );
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
+use crate::git::text as git;
 
 /// A gate's refusal with what it refused first; the error keeps its code.
 fn refused(what: &str, e: &anyhow::Error) -> anyhow::Error {
@@ -155,12 +139,11 @@ pub(crate) fn main_checkout(dir: &Path) -> Result<PathBuf> {
 /// The main checkout of the repository that contains `dir`; `None` only when git says `dir` is in no repository
 /// (another git failure, such as dubious ownership or a broken `.git`, is an error).
 pub(crate) fn repo_of(dir: &Path) -> Result<Option<PathBuf>> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
-        .output()
-        .context("running git")?;
+    let out = crate::git::output(crate::git::command(dir).args([
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+    ]))?;
     if !out.status.success() {
         let why = String::from_utf8_lossy(&out.stderr);
         if why.contains("not a git repository") {

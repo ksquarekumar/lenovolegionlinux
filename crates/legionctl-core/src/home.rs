@@ -10,7 +10,8 @@ use anyhow::{Context, Result, bail, ensure};
 use blake2::{Blake2b, Digest as _, digest::consts::U16};
 
 use crate::dossier::{Dossiers, new_id, valid_name, write_id};
-use crate::workspace::{git, git_common_dir};
+use crate::git::text as git;
+use crate::workspace::git_common_dir;
 
 /// The name of the link in a directory root.
 pub const LINK: &str = "agentWorkspaces";

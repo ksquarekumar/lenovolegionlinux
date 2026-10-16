@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::now;
 use crate::dossier::Dossiers;
-use crate::workspace::{git, git_common_dir};
+use crate::git::text as git;
+use crate::workspace::git_common_dir;
 
 /// The tables of the test records (workspace.db v12, the step from v11; in each dossier.db now).
 macro_rules! tables {
@@ -394,19 +395,12 @@ fn names(recorded: &str, name: &str) -> bool {
 
 /// git in `dir`, with `index` as its index file when given (the `GIT_INDEX_FILE` of a running `git commit`).
 pub(crate) fn git_with(dir: &Path, index: Option<&Path>, args: &[&str]) -> Result<String> {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(dir).args(args);
+    let mut cmd = crate::git::command(dir);
+    cmd.args(args);
     if let Some(index) = index {
         cmd.env("GIT_INDEX_FILE", index);
     }
-    let out = cmd.output().context("running git")?;
-    ensure!(
-        out.status.success(),
-        "git {}: {}",
-        args.join(" "),
-        String::from_utf8_lossy(&out.stderr).trim()
-    );
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok(String::from_utf8_lossy(&crate::git::run(&mut cmd)?).into_owned())
 }
 
 /// Where a change set is: the working tree, or an index (the repository's own, or a `git commit`'s other file).

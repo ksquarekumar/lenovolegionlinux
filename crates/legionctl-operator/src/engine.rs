@@ -4660,23 +4660,12 @@ impl Engine for Operator {
         let dir = input.project.get()?;
         let deny = config(Some(&input.project))?.config.gates.git.deny;
         // an alias is resolved by the real git outside the sandbox, so the agent cannot hide a denied command
+        // git config --get: 0 found, 1 not set, another code an error
         let is_alias = |sub: &str| -> Result<bool> {
-            let out = Command::new("git")
-                .arg("-C")
-                .arg(dir)
-                .args(["config", "--get", &format!("alias.{sub}")])
-                .output()
-                .context("starting git")?;
-            // git config --get: 0 found, 1 not set, another code an error
-            match out.status.code() {
-                Some(0) => Ok(true),
-                Some(1) => Ok(false),
-                _ => anyhow::bail!(
-                    "git config --get alias.{sub} exited with {}: {}",
-                    out.status,
-                    String::from_utf8_lossy(&out.stderr).trim()
-                ),
-            }
+            Ok(
+                legionctl_core::git::found(dir, &["config", "--get", &format!("alias.{sub}")])?
+                    .is_some(),
+            )
         };
         Ok(Guard {
             refusal: legionctl_core::gates::git_refusal(&input.args, &deny, is_alias),
