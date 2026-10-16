@@ -35,6 +35,7 @@ fn main() -> anyhow::Result<()> {
         .with_assets(AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            legionctl_app::init(cx);
             // 70% of the monitor, at least the smallest content size at which every tab reads well
             // Wayland names no primary display: the first one
             let monitor = cx

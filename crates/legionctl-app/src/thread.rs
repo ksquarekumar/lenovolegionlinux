@@ -50,6 +50,8 @@ pub struct Screen {
     pub chats: BTreeMap<String, String>,
     /// The chat bar's width in percent of the tab.
     pub chat_width: u32,
+    /// The chat bar's input history.
+    pub history: crate::history::History,
     pub threads: Vec<ThreadInfo>,
     /// The threads that tabs show, by id.
     pub shown: BTreeMap<i64, ThreadView>,
@@ -118,6 +120,7 @@ impl Screen {
             drag: None,
             chats: BTreeMap::new(),
             chat_width: 60,
+            history: crate::history::History::default(),
             threads: Vec::new(),
             shown: BTreeMap::new(),
             thread: None,
@@ -557,6 +560,7 @@ impl LegionApp {
         if line.is_empty() {
             return;
         }
+        self.keep_line(&line, cx);
         if let Some(why) = agents_only(&line) {
             self.state.message = Some(why);
             cx.notify();
@@ -893,6 +897,20 @@ impl LegionApp {
                 };
                 self.move_tab(from, to, cx);
             }
+            "pageup" | "pagedown" | "home" | "end" => {
+                let page = self.body_scroll.bounds().size.height * 0.9;
+                let by = match k.key.as_str() {
+                    "pageup" => page,
+                    "pagedown" => -page,
+                    "home" => px(f32::MAX),
+                    _ => px(f32::MIN),
+                };
+                self.scroll_body(by);
+            }
+            "up" | "down" if self.body_focus.is_focused(window) => {
+                self.scroll_body(px(if k.key == "up" { LINE } else { -LINE }));
+            }
+            "tab" if self.body_focus.is_focused(window) => self.chat_focus.focus(window, cx),
             _ if self.form_focus.is_focused(window) => {
                 if !self.form_key(event, cx) {
                     return;
@@ -909,13 +927,14 @@ impl LegionApp {
             "backspace" => {
                 self.screen.chat_mut().pop();
             }
-            "tab" => {
-                if let Some(first) = self.screen.completions().first()
-                    && first.text.starts_with(self.screen.chat())
-                {
+            "up" | "down" => self.recall(k.key == "up"),
+            "tab" => match self.screen.completions().first() {
+                Some(first) if first.text.starts_with(self.screen.chat()) => {
                     *self.screen.chat_mut() = format!("{} ", first.text);
                 }
-            }
+                // nothing to complete: the focus goes to the tab's body (its keys scroll it)
+                _ => self.body_focus.focus(window, cx),
+            },
             _ => match &k.key_char {
                 Some(text) if !control && !alt => self.screen.chat_mut().push_str(text),
                 _ => return,
@@ -939,6 +958,28 @@ fn agents_only(line: &str) -> Option<String> {
              work in a dossier, choose it: /dossier use <name>; to make one: /dossier create <name>"
         )
     })
+}
+
+/// One line of a keyboard scroll.
+const LINE: f32 = 40.;
+
+impl LegionApp {
+    /// Scroll the tab's body by `by` (up is positive), within its content.
+    fn scroll_body(&mut self, by: gpui_kit::Pixels) {
+        let max = self.body_scroll.max_offset().y;
+        let now = self.body_scroll.offset();
+        let y = (now.y + by).clamp(-max, px(0.));
+        self.body_scroll.set_offset(gpui_kit::point(now.x, y));
+    }
+
+    /// How far the tab's body is scrolled down, and how far it can go (a test reads them).
+    #[must_use]
+    pub fn body_scrolled(&self) -> (f32, f32) {
+        (
+            f32::from(-self.body_scroll.offset().y),
+            f32::from(self.body_scroll.max_offset().y),
+        )
+    }
 }
 
 /// Seconds since the epoch now.
@@ -1700,6 +1741,7 @@ impl LegionApp {
                     .min_h_0()
                     .overflow_y_scroll()
                     .track_scroll(&self.body_scroll)
+                    .track_focus(&self.body_focus)
                     .px(S5)
                     .pt(S5)
                     .pb(S4)

@@ -1126,7 +1126,10 @@ fn open_app(
     let client = Client::at("app", &op.runtime);
     let handle = runtime.handle().clone();
     let repo = runs.map_or_else(here, |(_, repo)| repo.to_path_buf());
-    cx.update(gpui_kit::init);
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        legionctl_app::init(cx);
+    });
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds {
             origin: point(px(0.), px(0.)),
@@ -1376,6 +1379,104 @@ fn tabs_the_space_and_the_navigator_width_persist_across_an_app_restart(cx: &mut
         );
     });
     near(place(cx, "navigator").1, 300., "the kept width");
+    drop(runtime);
+}
+
+/// The user's bugs of 2026-10-17: the chat bar has an input history, and the keyboard scrolls the tab. Up and Down
+/// recall the lines sent, as a shell does: the text typed before the first Up comes back after the newest line. The
+/// history is the user's facts, so a new app on the same operator (a restart) recalls the same lines. `PageDown`, End
+/// and Home scroll the tab's body from the chat bar; Tab with nothing to complete moves the focus to the body, where
+/// Down scrolls one line and Tab goes back to the chat bar.
+#[gpui_kit::test]
+fn the_chat_bar_recalls_its_lines_after_a_restart_and_the_keyboard_scrolls_the_tab(
+    cx: &mut TestAppContext,
+) {
+    let (op, home, repo) = thread_lab("keys");
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
+    {
+        let cx = &mut vcx;
+        wait(cx, &app, "the chat bar's agent", |a| {
+            a.screen.agent().is_some()
+        });
+        cx.update(|window, cx| {
+            window.click("chat", cx);
+            window.input("/thread show 1", cx);
+            window.press("enter", cx);
+        });
+        wait(cx, &app, "the first line's run", |a| {
+            a.screen.runs.first().is_some_and(|r| r.1.is_some())
+        });
+        cx.update(|window, cx| {
+            window.input("hello", cx);
+            window.press("enter", cx);
+            window.input("dr", cx);
+        });
+        let chat = |cx: &mut VisualTestContext, key: &str| {
+            cx.update(|window, cx| window.press(key, cx));
+            app.read_with(cx, |a, _| a.screen.chat().to_string())
+        };
+        assert_eq!(chat(cx, "up"), "hello");
+        assert_eq!(chat(cx, "up"), "/thread show 1");
+        assert_eq!(chat(cx, "up"), "/thread show 1", "the oldest line stays");
+        assert_eq!(chat(cx, "down"), "hello");
+        assert_eq!(chat(cx, "down"), "dr", "the typed text comes back");
+        assert_eq!(chat(cx, "down"), "dr");
+        cx.update(|window, cx| {
+            for _ in 0..2 {
+                window.press("backspace", cx);
+            }
+        });
+        // the health seed is longer than the window
+        cx.update(|window, cx| window.click("nav-health", cx));
+        wait(cx, &app, "a tab that scrolls", |a| {
+            a.body_scrolled().1 > 100.
+        });
+        let scrolled = |cx: &mut VisualTestContext, key: &str| {
+            cx.update(|window, cx| {
+                window.press(key, cx);
+                window.render_frame(cx);
+            });
+            app.read_with(cx, |a, _| a.body_scrolled())
+        };
+        let (_, max) = app.read_with(cx, |a, _| a.body_scrolled());
+        let (down, _) = scrolled(cx, "pagedown");
+        assert!(down > 100. && down <= max, "PageDown: {down} of {max}");
+        assert_eq!(scrolled(cx, "end").0, max, "End");
+        assert_eq!(scrolled(cx, "home").0, 0., "Home");
+        cx.update(|window, cx| window.click("chat", cx));
+        assert_eq!(
+            scrolled(cx, "tab").0,
+            0.,
+            "Tab moves the focus, it does not scroll"
+        );
+        assert_eq!(
+            scrolled(cx, "down").0,
+            40.,
+            "Down in the body scrolls one line"
+        );
+        cx.update(|window, cx| {
+            window.press("tab", cx);
+            window.input("x", cx);
+        });
+        app.read_with(cx, |a, _| {
+            assert_eq!(a.screen.chat(), "x", "Tab goes back to the chat bar");
+        });
+    }
+    drop(app);
+    drop(vcx);
+    drop(runtime);
+
+    // a restart: the same lines
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
+    let cx = &mut vcx;
+    wait(cx, &app, "the kept lines", |a| {
+        a.screen.history.lines.len() == 2
+    });
+    cx.update(|window, cx| {
+        window.click("chat", cx);
+        window.press("up", cx);
+    });
+    app.read_with(cx, |a, _| assert_eq!(a.screen.chat(), "hello"));
     drop(runtime);
 }
 

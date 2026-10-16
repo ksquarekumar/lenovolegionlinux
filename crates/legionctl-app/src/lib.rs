@@ -6,6 +6,7 @@ pub mod activity;
 mod forms;
 mod graph;
 pub mod greeter;
+mod history;
 pub mod shell;
 pub mod theme;
 pub mod thread;
@@ -29,6 +30,19 @@ const REFRESH: Duration = Duration::from_secs(2);
 const EVENTS: Duration = Duration::from_millis(100);
 /// The view of the first start.
 pub const FIRST: &str = "machine-now";
+
+/// The app's key context: its keys go before the kit's root keys.
+const KEYS: &str = "LegionApp";
+
+/// The app's key bindings; call it once after `gpui_kit::init`. The kit's root takes Tab for its focus order; in the app
+/// Tab goes to [`LegionApp::key`] (it completes a chat line and moves between the chat bar and the tab's body).
+pub fn init(cx: &mut gpui_kit::App) {
+    cx.bind_keys([gpui_kit::KeyBinding::new(
+        "tab",
+        gpui_kit::NoAction,
+        Some(KEYS),
+    )]);
+}
 
 /// A button's change waiting for the user: its operation's class, and the plan of its dry run when it has one.
 #[derive(Debug, Clone)]
@@ -74,6 +88,8 @@ pub struct LegionApp {
     pub screen: thread::Screen,
     chat_focus: FocusHandle,
     form_focus: FocusHandle,
+    /// The tab body: Up, Down and Tab there scroll it and go back to the chat bar.
+    body_focus: FocusHandle,
     /// The tab body's scroll: a form or a plan shows at its top.
     body_scroll: gpui_kit::ScrollHandle,
     _refresh: Task<()>,
@@ -119,6 +135,7 @@ impl LegionApp {
             screen: thread::Screen::new(repo),
             chat_focus: cx.focus_handle(),
             form_focus: cx.focus_handle(),
+            body_focus: cx.focus_handle(),
             body_scroll: gpui_kit::ScrollHandle::new(),
             _refresh: refresh,
             _events: events,
@@ -127,6 +144,7 @@ impl LegionApp {
         app.read_layout(open, cx);
         app.read_thread(cx);
         app.read_views(cx);
+        app.read_history(cx);
         app
     }
 

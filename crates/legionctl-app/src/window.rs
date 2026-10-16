@@ -220,6 +220,7 @@ impl Render for LegionApp {
             .bg(t.window)
             .text_color(t.text)
             .text_size(T_SM)
+            .key_context(crate::KEYS)
             .on_key_down(cx.listener(LegionApp::key))
             .child(title)
             .child(self.panes(body, &t, cx))
