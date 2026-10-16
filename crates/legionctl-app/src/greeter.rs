@@ -582,15 +582,6 @@ impl Greeter {
                 cx,
             ))
             .child(self.row(
-                "VM autostart",
-                &[
-                    ("autostart-off", "Off"),
-                    ("autostart-login", "At login"),
-                    ("autostart-boot", "At boot"),
-                ],
-                cx,
-            ))
-            .child(self.row(
                 "Windows disk",
                 &[
                     ("disk-attach", "Attach to Linux"),

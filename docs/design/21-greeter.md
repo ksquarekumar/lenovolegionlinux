@@ -24,7 +24,6 @@ it waits for todo-17, and the screen shows nothing for it.
 | Row | Buttons | Daemon method (polkit action) |
 | --- | --- | --- |
 | Windows VM | Start, Stop | `GreeterAct(user, vm-start / vm-stop)` (`org.legionctl.greeter.act`) |
-| VM autostart | Off, At login, At boot | `GreeterAct(user, autostart-off / -login / -boot)` |
 | Windows disk | Attach to Linux, Detach | `GreeterAct(user, disk-attach / disk-detach)` |
 | NVIDIA GPU | Linux, Free for the VM | `GreeterAct(user, gpu-linux / gpu-none)` |
 | Desktop GPU | Intel, NVIDIA, Auto | `SetPrimaryGpu(choice, false)` (`org.legionctl.gpu.primary`) |
@@ -36,9 +35,10 @@ How each action works:
   the power button and waits for Windows (note 05).
 - **VM start needs autostart**: the VM's runner asks polkit as the user. Before login, no polkit agent can ask a person.
   Thus the daemon refuses a start when the user's autostart rule (note 05) does not exist.
-- **Autostart**: the same as `legionctl windows vm autostart`, for the user that you typed. The daemon writes or
-  removes the user's own polkit rule (one file for each user, so one user's choice keeps another user's rule) and enables or disables the unit in the user's service manager. `At boot` also does
-  `loginctl enable-linger`.
+- **No autostart** (P-1, EV-review-08, 2026-10-16): the greeter changes nothing that lasts. The daemon refuses
+  `autostart-off / -login / -boot` from the greeter; each user sets autostart after login with `legionctl windows vm
+  autostart` (the user's own approval). The rule grants only the user's local, active session (P-2), so a start
+  before login gets no grant.
 - **Windows disk**: `Detach` stops the automount and mount units of the fstab entries on the Windows disk, as a VM
   start does. `Attach to Linux` starts the automounts again. The daemon refuses both while the Windows VM runs.
 - After login, `legionctl windows disk attach|detach` (D-Bus `WindowsDisk`, polkit `org.legionctl.windows.vm`) runs
@@ -121,11 +121,5 @@ The change has an effect at the next start.
 - `the_package_removal_stops_while_the_boot_takeover_or_a_greeter_without_gdm_is_installed`: the hook's `Exec` line
   on the recorded machine: it passes with nothing installed; it fails with the boot entry or with the greeter and no
   GDM, and names the command to run first; it passes again with GDM.
-- `each_users_windows_vm_autostart_is_a_rule_of_its_own`: `GreeterAct` for two users: ben's autostart off keeps
-  anna's rule, and anna's VM start passes while ben's is refused.
-
-## Live (the user's first run)
-
-1. `sudo pacman -S greetd cage`, then install the package (`make package install-package`).
-2. `legionctl greeter install --dry-run`, then `legionctl greeter install`.
-3. Restart. To go back: `legionctl greeter remove`, then restart.
+- `the_greeter_cannot_write_a_lasting_autostart_rule`: the greeter's autostart actions are refused and write no rule; a
+  VM start without the user's rule is refused.
