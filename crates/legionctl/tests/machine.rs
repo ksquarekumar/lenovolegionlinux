@@ -4092,6 +4092,80 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         );
     }
 
+    /// todo-149 (the user's run 2026-10-16: boot install stopped at a missing ukify after it signed systemd-boot): the
+    /// plan checks each tool that it runs, in the dry run too, and refuses with the package before any step; an install
+    /// that fails on the way (ukify fails) leaves no firmware entry, and the next install completes it; one more install
+    /// makes no second firmware entry.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn boot_install_needs_its_tools_first_and_the_next_install_completes_a_failed_one() {
+        let m = Machine::new("boot-tools");
+        let state = boot_machine(&m);
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "boot-tools");
+        let (bin, esp) = (m.dir.join("bin"), m.dir.join("root/boot/efi"));
+        let efivars = || -> Value {
+            serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap()
+        };
+        let creates = || {
+            std::fs::read_to_string(format!("{}.log", state.display()))
+                .unwrap_or_default()
+                .matches("--create-only")
+                .count()
+        };
+        let ukify = std::fs::read_to_string(bin.join("ukify")).unwrap();
+        let sbverify = std::fs::read_to_string(bin.join("sbverify")).unwrap();
+        std::fs::remove_file(bin.join("ukify")).unwrap();
+        std::fs::remove_file(bin.join("sbverify")).unwrap();
+        for args in [&["boot", "install", "--dry-run"][..], &["boot", "install"]] {
+            let out = op.cli(args);
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                !out.status.success()
+                    && err.contains("ukify (systemd-ukify), sbverify (sbsigntools)")
+                    && err.contains("pacman -S systemd-ukify sbsigntools"),
+                "{args:?}: {err}"
+            );
+        }
+        assert!(
+            !esp.join("EFI/legionctl").exists() && !m.dir.join("units.log").exists(),
+            "no step runs before the refusal"
+        );
+
+        Machine::script(&bin, "sbverify", sbverify.trim_start_matches("#!/bin/sh\n"));
+        Machine::script(&bin, "ukify", "echo 'ukify: build failed' >&2; exit 1");
+        let out = op.cli(&["boot", "install"]);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success() && err.contains("ukify: build failed"),
+            "{err}"
+        );
+        assert!(
+            esp.join("EFI/legionctl/grubx64.efi").exists(),
+            "the steps before ukify ran"
+        );
+        assert_eq!(creates(), 0, "no firmware entry after a failed install");
+
+        Machine::script(&bin, "ukify", ukify.trim_start_matches("#!/bin/sh\n"));
+        op.ok(&["boot", "install"]);
+        op.ok(&["boot", "install"]);
+        let vars = efivars();
+        assert_eq!(
+            (
+                creates(),
+                vars["entries"]["0007"].clone(),
+                vars["next"].clone()
+            ),
+            (1, Value::from("legionctl"), Value::from("0007")),
+            "one firmware entry, tried once: {vars}"
+        );
+        for kernel in ["linux-cachyos", "linux-cachyos-bore-lto"] {
+            let image =
+                std::fs::read_to_string(esp.join(format!("EFI/Linux/legionctl-{kernel}.efi")))
+                    .unwrap();
+            assert!(image.contains("--secureboot-private-key"), "{image}");
+        }
+    }
+
     /// The recorded kernels' module lists, cut to what the kernel lines name: `zswap` is built in (its `enabled`
     /// parameter is not in modinfo, as on the machine) and `nvidia-drm` is a DKMS module.
     fn kernel_modules(m: &Machine) {

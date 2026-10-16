@@ -88,7 +88,7 @@ fn efibootmgr(args: &[&str]) -> Result<String> {
     let out = std::process::Command::new("efibootmgr")
         .args(args)
         .output()
-        .context("running efibootmgr")?;
+        .context("running efibootmgr (install the package efibootmgr)")?;
     anyhow::ensure!(
         out.status.success(),
         "efibootmgr {}: {}",
@@ -307,6 +307,49 @@ fn running_kernel(root: &SysRoot) -> Result<String> {
     }
 }
 
+/// The boot tools that a plan runs, each with the Arch package that has it.
+const TOOLS: [(&str, &str); 4] = [
+    ("ukify", "systemd-ukify"),
+    ("sbsign", "sbsigntools"),
+    ("sbverify", "sbsigntools"),
+    ("efibootmgr", "efibootmgr"),
+];
+
+/// `steps` when each boot tool that they run is on `PATH`; for the dry run too, so a plan never stops half done at a
+/// missing tool (todo-149).
+///
+/// # Errors
+/// A tool is missing: the error names it and its package.
+pub fn tools_checked(steps: Vec<Step>) -> Result<Vec<Step>> {
+    let mut missing: Vec<String> = Vec::new();
+    let mut packages: Vec<&str> = Vec::new();
+    for step in &steps {
+        let (Step::Run(argv) | Step::Unit(argv)) = step else {
+            continue;
+        };
+        let Some((tool, package)) = TOOLS
+            .iter()
+            .find(|(t, _)| argv.first().is_some_and(|a| a == t))
+        else {
+            continue;
+        };
+        let name = format!("{tool} ({package})");
+        if !missing.contains(&name) && crate::policy::which(tool).is_none() {
+            missing.push(name);
+            if !packages.contains(package) {
+                packages.push(package);
+            }
+        }
+    }
+    anyhow::ensure!(
+        missing.is_empty(),
+        "the plan runs {}, which is not installed: install it with pacman -S {}; nothing was changed",
+        missing.join(", "),
+        packages.join(" ")
+    );
+    Ok(steps)
+}
+
 fn text(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
@@ -518,7 +561,7 @@ pub fn default_plan(state: &BootState, name: &str) -> Result<Vec<Step>> {
 pub fn try_plan(state: &BootState, name: &str) -> Result<Vec<Step>> {
     let (id, _) = takeover(state)?;
     startable(state, name)?;
-    Ok(vec![
+    tools_checked(vec![
         Step::LoaderVar {
             name: "LoaderEntryOneShot".into(),
             value: image(name),
@@ -605,7 +648,7 @@ pub fn cmdline_plan(
                 path: trial_file(name),
             },
         ]);
-        return Ok(steps);
+        return tools_checked(steps);
     }
     steps.extend(build(root, &esp, name, &line, &trial)?);
     steps.extend([
@@ -624,7 +667,7 @@ pub fn cmdline_plan(
              through it, give the same command again: then the new line becomes {name}'s"
         )),
     ]);
-    Ok(steps)
+    tools_checked(steps)
 }
 
 /// Plan `kernel cmdline undo`: the line before the last change, as [`cmdline_plan`] (one start through its trial
@@ -765,11 +808,12 @@ pub fn package_plan(root: &SysRoot, name: &str, dir: &Path) -> Result<Vec<Step>>
 }
 
 /// Plan `boot install`: our shim copy with systemd-boot as its signed second stage, the UKIs, `loader.conf` (the
-/// running kernel first, no wait), and a new firmware entry that is not first in the order.
+/// running kernel first, no wait), and a new firmware entry that is not first in the order. Each step can run again:
+/// the next install completes one that failed on the way, and makes the firmware entry only when it is not there.
 ///
 /// # Errors
-/// No ESP, no shim on it, no MOK key, no systemd-boot, no kernels.
-pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
+/// No ESP, no shim on it, no MOK key, no systemd-boot, no kernels, or a boot tool is missing.
+pub fn install_plan(root: &SysRoot, state: &BootState) -> Result<Vec<Step>> {
     let running = running_kernel(root)?;
     let (esp, device) =
         esp(root)?.context("no ESP is mounted at /boot/efi, /efi or /boot (vfat)")?;
@@ -823,6 +867,9 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
         path: text(&Path::new(&esp).join(LOADER)),
         content: loader_conf(&running),
     });
+    if state.ours.is_some() {
+        return tools_checked(steps);
+    }
     let partition = device.trim_start_matches("/dev/");
     let number = root
         .read(format!("/sys/class/block/{partition}/partition"))?
@@ -848,7 +895,7 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
         "--loader".into(),
         format!("\\{}\\shimx64.efi", DIR.replace('/', "\\")),
     ]));
-    Ok(steps)
+    tools_checked(steps)
 }
 
 /// The step that tries our entry once at the next start.
@@ -860,11 +907,8 @@ pub fn try_once(state: &BootState) -> Result<Step> {
         .ours
         .clone()
         .context("no legionctl boot entry (legionctl boot install)")?;
-    Ok(Step::Unit(vec![
-        "efibootmgr".into(),
-        "--bootnext".into(),
-        id,
-    ]))
+    let step = Step::Unit(vec!["efibootmgr".into(), "--bootnext".into(), id]);
+    Ok(tools_checked(vec![step])?.remove(0))
 }
 
 /// Plan `boot confirm`: our entry first in the order, after a start through it.
@@ -886,7 +930,7 @@ pub fn confirm_plan(state: &BootState) -> Result<Vec<Step>> {
     let order: Vec<String> = std::iter::once(id.clone())
         .chain(state.order.iter().filter(|e| **e != id).cloned())
         .collect();
-    Ok(vec![Step::Unit(vec![
+    tools_checked(vec![Step::Unit(vec![
         "efibootmgr".into(),
         "--bootorder".into(),
         order.join(","),
@@ -939,7 +983,7 @@ pub fn rebuild_plan(root: &SysRoot, state: &BootState) -> Result<Vec<Step>> {
             ))),
         }
     }
-    Ok(steps)
+    tools_checked(steps)
 }
 
 /// Plan `boot remove`: our entry, our folder, our UKIs and our `loader.conf` gone; the old chain as it was.
@@ -974,5 +1018,5 @@ pub fn remove_plan(root: &SysRoot, state: &BootState) -> Result<Vec<Step>> {
             path: text(&loader),
         });
     }
-    Ok(steps)
+    tools_checked(steps)
 }

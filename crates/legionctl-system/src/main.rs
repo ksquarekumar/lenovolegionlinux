@@ -760,11 +760,9 @@ fn start_set(root: &SysRoot) {
 /// The plan of the boot action `action` (for `install`: before its `BootNext` step, which needs the new entry): for
 /// its run and its dry run (`Plan`).
 fn boot_plan(root: &SysRoot, action: &str) -> Result<Vec<Step>> {
-    if action == "install" {
-        return boot::install_plan(root);
-    }
     let state = boot::state(root)?;
     match action {
+        "install" => boot::install_plan(root, &state),
         "confirm" => boot::confirm_plan(&state),
         "rebuild" if state.ours.is_none() => Ok(vec![Step::Info(
             "no legionctl boot entry: nothing to rebuild".into(),

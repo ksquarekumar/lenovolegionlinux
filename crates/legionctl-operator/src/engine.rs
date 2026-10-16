@@ -4,6 +4,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use legionctl_machine::policy::which;
+
 use anyhow::{Context, Result};
 use legionctl_api::{
     Account, BenchCompare, BenchCompareIn, BenchIn, BenchRun, Code, DossierAddIn, DossierAppendIn,
@@ -352,18 +354,6 @@ pub(crate) fn bench_run_of(e: legionctl_core::db::EventRow) -> Result<BenchRun> 
         at: e.ts,
         result: serde_json::from_value::<bench::BenchResult>(e.payload)?.into_wire(),
     })
-}
-
-/// The full path of an executable on `PATH`.
-pub(crate) fn which(program: &str) -> Option<PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|dir| dir.join(program))
-        .find(|p| {
-            std::fs::metadata(p).is_ok_and(|m| {
-                m.is_file()
-                    && std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111 != 0
-            })
-        })
 }
 
 /// `systemctl --user <verb>` on a session's scope (stop, freeze, thaw).

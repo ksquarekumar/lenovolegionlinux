@@ -349,7 +349,7 @@ fn adapter(launch: Launch) -> Result<AcpAgent> {
     let mut sandbox = launch.sandbox;
     let mut gate = Vec::new();
     if launch.inside != Inside::Container {
-        let legionctl = crate::engine::which("legionctl")
+        let legionctl = legionctl_machine::policy::which("legionctl")
             .context("legionctl is not on PATH (the git gate and the VM runner are its binary)")?
             .display()
             .to_string();

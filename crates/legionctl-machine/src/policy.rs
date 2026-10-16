@@ -25,6 +25,19 @@ const CPUFREQ: &str = "/sys/devices/system/cpu/cpufreq";
 const FIRMWARE_ATTRIBUTES: &str = "/sys/class/firmware-attributes/lenovo-wmi-other-0/attributes";
 const DMI: &str = "/sys/class/dmi/id";
 
+/// The full path of an executable on `PATH`.
+#[must_use]
+pub fn which(program: &str) -> Option<std::path::PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(program))
+        .find(|p| {
+            std::fs::metadata(p).is_ok_and(|m| {
+                m.is_file()
+                    && std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111 != 0
+            })
+        })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
     Write {

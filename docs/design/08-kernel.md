@@ -103,7 +103,11 @@ whose line fails its check keeps its old image, and the hook writes a warning to
 `legionctl-system`; `doctor` shows it until the line is correct), and removes those of kernels that are gone; when the
 default kernel is gone, `loader.conf` starts the running kernel, else the first kernel with an image; `boot remove` takes the entry, the folder, the UKIs and our `loader.conf` away. The daemon (D-Bus `Boot`,
 polkit `org.legionctl.boot`, no kept authorization) carries a plan out step by step and stops at the first failure,
-so no entry follows an unsigned loader. Windows stays reachable through `windows reboot` (BootNext into its entry) and
+so no entry follows an unsigned loader. Each boot and kernel plan (and its dry run) first checks each tool that it
+runs (ukify: systemd-ukify, sbsign and sbverify: sbsigntools, efibootmgr) and refuses with the packages to install
+before any step (todo-149; the package has them as optional dependencies, as other feature tools). Each install step can
+run again: an install that failed on the way is completed by the next one, which makes the firmware entry only when
+it is not there. Windows stays reachable through `windows reboot` (BootNext into its entry) and
 the firmware menu: systemd-boot cannot start the boot manager on the other disk's ESP. e2e (real daemon, a fake ESP,
 a stand-in efibootmgr with its own state, stand-in ukify/sbsign): the dry run changes nothing; install signs the loader
 and each kernel's image with the kernel line, adds the entry not first and sets BootNext (mutation-checked); confirm

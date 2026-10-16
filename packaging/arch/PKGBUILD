@@ -26,6 +26,7 @@ optdepends=(
   "virt-viewer: legionctl windows vm view (SPICE)"
   "systemd-ukify: legionctl boot install (signed kernel images)"
   "sbsigntools: legionctl boot install (signing with the MOK key)"
+  "efibootmgr: legionctl boot and windows reboot (the firmware boot entries)"
   "greetd: legionctl greeter install (the login screen in place of GDM)"
   "cage: legionctl greeter install (the compositor of the login screen)"
   "stress-ng: the CPU workload of bench and tune"
