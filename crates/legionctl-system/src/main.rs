@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 use legionctl_machine::keys::{self, Debounce, EVENT_SIZE, FN_KEYS_DEVICE};
 use legionctl_machine::ledger::{Key, Ledger};
@@ -62,23 +62,28 @@ const SAFE_MODE: &str = "/run/legionctl/safe-mode";
 /// (`MONITOR_SERVICE_RESULT`): with `RestartMode=direct` only a result that is no restart reaches this unit, and only
 /// `start-limit-hit` is repeated failure; another one (a stop that timed out during an upgrade) is not (todo-125).
 fn safe(root: &SysRoot) -> Result<()> {
-    if let Ok(result) = std::env::var("MONITOR_SERVICE_RESULT")
-        && result != "start-limit-hit"
-    {
+    let result = std::env::var("MONITOR_SERVICE_RESULT").context(
+        "MONITOR_SERVICE_RESULT is not set: --safe runs only from legionctl-safe.service",
+    )?;
+    if result != "start-limit-hit" {
         eprintln!(
             "safe mode: not entered: legionctl-system ended with result {result}, not repeated failures"
         );
         return Ok(());
     }
-    let (profile, _) = profile::load(None)?;
-    let choices = root
-        .read(&profile.paths.platform_profile_choices)?
-        .unwrap_or_default();
-    let mut done = Vec::new();
-    if choices.split_whitespace().any(|c| c == "balanced") {
-        std::fs::write(root.path(&profile.paths.platform_profile), "balanced\n")?;
-        done.push("platform_profile balanced");
-    }
+    let set = (|| -> Result<&str> {
+        let (profile, _) = profile::load(None)?;
+        let path = &profile.paths.platform_profile_choices;
+        let choices = root
+            .read(path)?
+            .with_context(|| format!("{path} is missing"))?;
+        if !choices.split_whitespace().any(|c| c == "balanced") {
+            bail!("the firmware offers no balanced mode ({choices})");
+        }
+        std::fs::write(root.path(&profile.paths.platform_profile), "balanced\n")
+            .with_context(|| format!("writing {}", profile.paths.platform_profile))?;
+        Ok("platform_profile balanced")
+    })();
     let marker = root.path(SAFE_MODE);
     std::fs::create_dir_all(marker.parent().context("no parent")?)?;
     std::fs::write(
@@ -86,15 +91,14 @@ fn safe(root: &SysRoot) -> Result<()> {
         format!(
             "legionctl-system failed repeatedly and stopped; set: {}. See journalctl -u legionctl-system, then \
              systemctl restart legionctl-system\n",
-            if done.is_empty() {
-                "nothing".to_string()
-            } else {
-                done.join(", ")
+            match &set {
+                Ok(done) => (*done).to_string(),
+                Err(e) => format!("nothing: {e:#}"),
             }
         ),
     )?;
     eprintln!("safe mode: {}", std::fs::read_to_string(&marker)?.trim());
-    Ok(())
+    set.map(|_| ())
 }
 const BUS_NAME: &str = "org.legionctl.System1";
 const OBJECT_PATH: &str = "/org/legionctl/System1";
@@ -344,7 +348,7 @@ async fn settled(
     tuning: &AtomicBool,
     source_planned: bool,
 ) -> Option<Observed> {
-    let now = observed(root)?;
+    let now = observed(root, Some(emitter)).await?;
     let last = source(
         &announced
             .lock()
@@ -356,44 +360,67 @@ async fn settled(
         return Some(now);
     }
     plan(root, emitter, Event::PowerSource).await;
-    observed(root)
+    observed(root, Some(emitter)).await
 }
 
-/// The state that other tools follow cannot be read: a background loop error (user decision Q1), so a journal entry
-/// and an open `doctor` finding until a read works again.
-fn observe_failed(root: &SysRoot, e: &anyhow::Error) {
-    let reason = format!("{e:#}");
-    journal(
-        root,
-        "observe-error",
-        &format!("the machine state cannot be read: {reason}"),
-        &[("REASON", reason.replace('\n', " "))],
-    );
-    let marker = root.path(doctor::OBSERVE_ERROR);
-    if let Err(e) = marker
-        .parent()
-        .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| std::fs::write(&marker, &reason))
-    {
-        eprintln!("cannot write {}: {e}", doctor::OBSERVE_ERROR);
+/// A background loop failed (user decision Q1): a journal entry (`LEGIONCTL_EVENT=<event>`) and an open `doctor`
+/// finding (the file `marker` holds the reason) until the loop works again ([`loop_works`]). True when the finding
+/// opens or its reason changes: then the caller puts it on the event stream ([`loop_event`]) once, not at each retry.
+fn loop_failed(root: &SysRoot, event: &str, marker: &str, reason: &str) -> bool {
+    let path = root.path(marker);
+    let new = std::fs::read_to_string(&path).map_or(true, |old| old != reason);
+    if new {
+        journal(
+            root,
+            event,
+            reason,
+            &[("REASON", reason.replace('\n', " "))],
+        );
+        if let Err(e) = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&path, reason))
+        {
+            eprintln!("cannot write {marker}: {e}");
+        }
+    }
+    new
+}
+
+/// The loop works again: its `doctor` finding closes.
+fn loop_works(root: &SysRoot, marker: &str) {
+    match std::fs::remove_file(root.path(marker)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            eprintln!("cannot remove {marker}: {e}");
+        }
+        _ => {}
     }
 }
 
-/// The state now; when it cannot be read, [`observe_failed`] reports why. A read that works closes the `doctor`
-/// finding.
-fn observed(root: &SysRoot) -> Option<Observed> {
+/// A loop error on the event stream: the `Changed` signal with cause `event`, which the operator records as
+/// `machine.<event>`.
+async fn loop_event(emitter: &SignalEmitter<'_>, event: &str, reason: &str) {
+    sent(
+        event,
+        System1::changed(emitter, event, &[reason.to_string()]).await,
+    );
+}
+
+/// The state now; when it cannot be read, a background loop error (`observe-error`). A read that works closes the
+/// `doctor` finding.
+async fn observed(root: &SysRoot, emitter: Option<&SignalEmitter<'_>>) -> Option<Observed> {
     match observe(root) {
         Ok(now) => {
-            match std::fs::remove_file(root.path(doctor::OBSERVE_ERROR)) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                    eprintln!("cannot remove {}: {e}", doctor::OBSERVE_ERROR);
-                }
-                _ => {}
-            }
+            loop_works(root, doctor::OBSERVE_ERROR);
             Some(now)
         }
         Err(e) => {
-            observe_failed(root, &e);
+            let reason = format!("{e:#}");
+            if loop_failed(root, "observe-error", doctor::OBSERVE_ERROR, &reason)
+                && let Some(emitter) = emitter
+            {
+                loop_event(emitter, "observe-error", &reason).await;
+            }
             None
         }
     }
@@ -563,8 +590,15 @@ async fn plan(root: &SysRoot, emitter: &SignalEmitter<'_>, event: Event) {
                 eprintln!("{event:?}: cannot send Changed: {e}");
             }
         }
-        Err(e) => eprintln!("{event:?}: error: {e:#}"),
+        Err(e) => {
+            let reason = format!("{event:?}: {e:#}");
+            if loop_failed(root, "plan-error", doctor::POLICY_ERROR, &reason) {
+                loop_event(emitter, "plan-error", &reason).await;
+            }
+            return;
+        }
     }
+    loop_works(root, doctor::POLICY_ERROR);
 }
 
 /// Carry out a plan that does not need the policy's machine (boot, greeter, disk): it stops at the first failure, so a
@@ -745,7 +779,9 @@ fn switch_set(root: &SysRoot, name: &str) -> Result<Vec<String>> {
 /// parameter goes back to it.
 fn boot_set(root: &SysRoot) -> Result<Vec<String>> {
     let ledger = Ledger::open(root)?;
-    let line = root.read("/proc/cmdline")?.unwrap_or_default();
+    let line = root
+        .read("/proc/cmdline")?
+        .context("/proc/cmdline is missing: the boot entry's set is unknown")?;
     let saved = ledger.sets()?;
     match sets::chosen(&line) {
         Some(name) => {
@@ -1224,8 +1260,11 @@ impl System1 {
             Ok(line) => lines.extend(line),
             Err(e) => {
                 // the devices go back: the VM cannot start without the limit
-                let _ = vfio::unbind(&self.root, &devices);
-                return Err(zbus::fdo::Error::Failed(format!("{e:#}")));
+                let back = match vfio::unbind(&self.root, &devices) {
+                    Ok(_) => "the devices are back on their drivers".to_string(),
+                    Err(back) => format!("the devices stay on vfio-pci: {back:#}"),
+                };
+                return Err(zbus::fdo::Error::Failed(format!("{e:#}; {back}")));
             }
         }
         self.tell(&emitter, "Passthrough", &lines).await?;
@@ -1969,10 +2008,15 @@ fn watch_fn_keys(root: SysRoot, presses: tokio::sync::mpsc::UnboundedSender<()>)
                 }
             };
             let mut buf = [0u8; EVENT_SIZE * 64];
-            while let Ok(n) = file.read(&mut buf) {
-                if n == 0 {
-                    break;
-                }
+            loop {
+                let n = match file.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(e) => {
+                        eprintln!("Fn keys: reading {}: {e}", device.display());
+                        break;
+                    }
+                };
                 if keys::has_fn_r_press(&buf[..n])
                     && debounce.press(Instant::now())
                     && presses.send(()).is_err()
@@ -2190,7 +2234,8 @@ async fn run(root: SysRoot) -> Result<()> {
     let monitor = udev_monitor()?;
     // announce later changes only; the session asks for the current state when it starts
     // nothing announced yet when the state cannot be read: the first read that works announces each state
-    let first = observed(&root).unwrap_or(Observed {
+    // no bus yet: a failure is in the journal and doctor; the next tick puts it on the event stream
+    let first = observed(&root, None).await.unwrap_or(Observed {
         mode: None,
         workload: BTreeSet::new(),
         throttle: None,
@@ -2230,7 +2275,7 @@ async fn run(root: SysRoot) -> Result<()> {
     handle(&root, &emitter, Event::Start, &announced, &tuning).await;
     notify(sd_notify::NotifyState::Ready);
     // running again: safe mode is over
-    let _ = std::fs::remove_file(root.path(SAFE_MODE));
+    loop_works(&root, SAFE_MODE);
 
     loop {
         tokio::select! {

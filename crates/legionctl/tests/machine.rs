@@ -243,6 +243,43 @@ fn a_machine_already_in_ac_policy_gets_no_writes() {
     assert!(!out.contains("would write"), "{out}");
 }
 
+/// What a plan needs and cannot read stops it with the cause (todo-142 F-27, F-28): a firmware attribute whose range
+/// the firmware gives only in part (no `min_value`) is not written but skipped with a warning, while one with its full
+/// range is written; without the AC adapter file the power source is unknown and no plan is made (before, a missing
+/// file was battery and a missing bound was 0, so the battery policy or a value outside the range was written).
+#[test]
+fn a_plan_skips_a_firmware_value_without_its_range_and_stops_without_the_power_source() {
+    let m = Machine::new("bounds");
+    let attrs = "/sys/class/firmware-attributes/lenovo-wmi-other-0/attributes";
+    m.set(
+        "/etc/legionctl/configsets/40-site.jsonc",
+        r#"{"set": {"firmware.ppt_pl1_spl": "120", "firmware.ppt_pl2_sppt": "150"}}"#,
+    );
+    std::fs::remove_file(
+        m.dir
+            .join("root")
+            .join(&format!("{attrs}/ppt_pl1_spl/min_value")[1..]),
+    )
+    .unwrap();
+    let out = m.ok(&["power", "apply", "--source", "auto", "--dry-run"]);
+    assert!(
+        out.contains("firmware attribute ppt_pl1_spl has only part of its range (min missing, max 140); skipped")
+            && !out.contains(&format!("{attrs}/ppt_pl1_spl/current_value"))
+            && out.contains(&format!("would write {attrs}/ppt_pl2_sppt/current_value: 150")),
+        "{out}"
+    );
+    std::fs::remove_file(m.dir.join("root/sys/class/power_supply/ADP0/online")).unwrap();
+    let out = m.legion(&["power", "apply", "--source", "auto", "--dry-run"]);
+    let text = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success()
+            && text.contains(
+                "/sys/class/power_supply/ADP0/online is missing: the power source is unknown"
+            ),
+        "{text}"
+    );
+}
+
 #[test]
 fn refuses_to_apply_on_a_machine_that_is_not_this_model() {
     let m = Machine::new("dmi");
@@ -930,26 +967,55 @@ fn a_daemon_older_than_a_source_it_was_built_from_is_refused() {
 
 /// Safe mode: after repeated failures systemd runs `legionctl-system --safe`, which hands the machine to the
 /// firmware's balanced mode and leaves the reason, which `doctor` shows first. A stop that timed out (the upgrade of
-/// 2026-10-16, todo-125) is no repeated failure: systemd's result for it changes nothing.
+/// 2026-10-16, todo-125) is no repeated failure: systemd's result for it changes nothing. A run without systemd's
+/// result is refused; a run that cannot set the mode says why in the marker and fails.
 #[test]
 fn safe_mode_hands_the_machine_to_the_firmware_and_doctor_says_why() {
     let m = Machine::new("safe");
     assert_eq!(m.file(PROFILE_PATH), "max-power");
     let daemon = crate::common::sibling("legionctl-system");
-    let safe = |result: &str| {
-        std::process::Command::new(&daemon)
-            .arg("--safe")
+    let safe = |result: Option<&str>| {
+        let mut cmd = std::process::Command::new(&daemon);
+        cmd.arg("--safe")
             .env_clear()
-            .env("LEGIONCTL_SYSROOT", m.dir.join("root"))
-            .env("MONITOR_SERVICE_RESULT", result)
-            .output()
-            .unwrap()
+            .env("LEGIONCTL_SYSROOT", m.dir.join("root"));
+        if let Some(result) = result {
+            cmd.env("MONITOR_SERVICE_RESULT", result);
+        }
+        cmd.output().unwrap()
     };
-    let out = safe("timeout");
-    assert!(out.status.success());
+    // a run by hand (no result from systemd) is refused and changes nothing (todo-142 F-12)
+    let out = safe(None);
+    assert!(
+        !out.status.success()
+            && String::from_utf8_lossy(&out.stderr).contains(
+                "MONITOR_SERVICE_RESULT is not set: --safe runs only from legionctl-safe.service"
+            ),
+        "{out:?}"
+    );
     assert_eq!(m.file(PROFILE_PATH), "max-power");
     assert_eq!(m.file("/run/legionctl/safe-mode"), "<missing>");
-    let out = safe("start-limit-hit");
+    // no firmware modes to read: the marker says why nothing was set, and the run fails (F-13)
+    let choices = m
+        .dir
+        .join("root/sys/class/platform-profile/platform-profile-0/choices");
+    let kept = std::fs::read(&choices).unwrap();
+    std::fs::remove_file(&choices).unwrap();
+    let out = safe(Some("start-limit-hit"));
+    assert!(!out.status.success(), "{out:?}");
+    assert!(
+        m.file("/run/legionctl/safe-mode").contains(
+            "set: nothing: /sys/class/platform-profile/platform-profile-0/choices is missing."
+        ),
+        "{}",
+        m.file("/run/legionctl/safe-mode")
+    );
+    assert_eq!(m.file(PROFILE_PATH), "max-power");
+    std::fs::write(&choices, kept).unwrap();
+    let out = safe(Some("timeout"));
+    assert!(out.status.success());
+    assert_eq!(m.file(PROFILE_PATH), "max-power");
+    let out = safe(Some("start-limit-hit"));
     assert!(
         out.status.success(),
         "{}",
@@ -2079,6 +2145,93 @@ mod operator_and_daemon {
                 .all(|e| e["id"] != apply["id"]),
             "{untouched}"
         );
+    }
+
+    /// A daemon loop that fails (todo-142 F-14 and the observe loop, user decision Q1): when the AC adapter cannot be
+    /// read, the plan of a layer change and the state read fail; each is one event on the stream (machine.plan-error,
+    /// machine.observe-error, once, not at each retry), a journal line and an open doctor finding with the reason; the
+    /// machine keeps its state; the next plan that works closes the finding.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_daemon_loop_is_an_event_and_a_doctor_finding_until_it_works_again() {
+        use std::os::unix::fs::PermissionsExt;
+        let m = Machine::new("looperr");
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "looperr");
+        wait_for("the AC policy at start", || {
+            m.file(PROFILE_PATH) == "max-power"
+        });
+        // the daemon's first plan and the operator's recorder are up: an event before it would not be recorded
+        op.ok(&["status"]);
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let ac = m.dir.join("root/sys/class/power_supply/ADP0/online");
+        let layer = m
+            .dir
+            .join("root")
+            .join(INSTALLED_LAYERS)
+            .join("20-ac.jsonc");
+        let reload = || {
+            let aside = m.dir.join("20-ac.jsonc");
+            std::fs::rename(&layer, &aside).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            std::fs::rename(&aside, &layer).unwrap();
+        };
+        std::fs::set_permissions(&ac, std::fs::Permissions::from_mode(0o000)).unwrap();
+        reload();
+        wait_for("the policy error", || {
+            m.file("/run/legionctl/policy.error") != "<missing>"
+        });
+        let error = m.file("/run/legionctl/policy.error");
+        assert!(
+            error.ends_with(
+                ": reading /sys/class/power_supply/ADP0/online: Permission denied (os error 13)"
+            ),
+            "{error}"
+        );
+        assert_eq!(m.file(PROFILE_PATH), "max-power");
+        let kinds = |kind: &str| -> Vec<Value> {
+            let events: Value = serde_json::from_str(&op.ok(&["events", "--json"])).unwrap();
+            events["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|e| e["kind"] == kind)
+                .cloned()
+                .collect()
+        };
+        wait_for("the loop events", || {
+            !kinds("machine.plan-error").is_empty() && !kinds("machine.observe-error").is_empty()
+        });
+        let reason = m.file("/run/legionctl/policy.error");
+        assert_eq!(
+            kinds("machine.plan-error").last().unwrap()["payload"]["lines"][0],
+            Value::String(reason.clone())
+        );
+        let doctor = String::from_utf8_lossy(&op.cli(&["doctor"]).stdout).to_string();
+        assert!(
+            doctor.contains(&format!(
+                "legionctl-system cannot carry out the policy, the machine keeps its old state: {reason}"
+            )) && doctor.contains("legionctl-system cannot read the machine state that it announces"),
+            "{doctor}"
+        );
+        // a retry with the same reason is no new event
+        let (plans, observes) = (
+            kinds("machine.plan-error").len(),
+            kinds("machine.observe-error").len(),
+        );
+        reload();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        assert_eq!(m.file("/run/legionctl/policy.error"), reason);
+        assert_eq!(kinds("machine.plan-error").len(), plans);
+        assert_eq!(kinds("machine.observe-error").len(), observes);
+
+        std::fs::set_permissions(&ac, std::fs::Permissions::from_mode(0o644)).unwrap();
+        reload();
+        wait_for("the closed findings", || {
+            m.file("/run/legionctl/policy.error") == "<missing>"
+                && m.file("/run/legionctl/observe.error") == "<missing>"
+        });
+        let doctor = String::from_utf8_lossy(&op.cli(&["doctor"]).stdout).to_string();
+        assert!(!doctor.contains("legionctl-system cannot"), "{doctor}");
     }
 
     /// A sweep of PL1 through the operator and the daemon: the stand-in workload scores what the firmware limit is at

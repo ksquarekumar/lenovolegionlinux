@@ -299,16 +299,32 @@ impl Machine<'_> {
                 steps.push(Step::Warn(format!("firmware attribute {name} not found")));
                 continue;
             }
-            let bound = |f: &str| -> Result<i64> {
-                Ok(self
-                    .root
-                    .read(base.join(f))?
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(0))
+            let bound = |f: &str| -> Result<Option<String>> { self.root.read(base.join(f)) };
+            let range = match (bound("min_value")?, bound("max_value")?) {
+                (None, None) => None,
+                (Some(low), Some(high)) => match (low.parse::<i64>(), high.parse::<i64>()) {
+                    // some attributes publish min=max=0, meaning the firmware does not report a range
+                    (Ok(0), Ok(0)) => None,
+                    (Ok(low), Ok(high)) => Some((low, high)),
+                    _ => {
+                        steps.push(Step::Warn(format!(
+                            "firmware attribute {name} has a range that is not a number ({low}-{high}); skipped"
+                        )));
+                        continue;
+                    }
+                },
+                (low, high) => {
+                    steps.push(Step::Warn(format!(
+                        "firmware attribute {name} has only part of its range (min {}, max {}); skipped",
+                        low.as_deref().unwrap_or("missing"),
+                        high.as_deref().unwrap_or("missing")
+                    )));
+                    continue;
+                }
             };
-            let (low, high) = (bound("min_value")?, bound("max_value")?);
-            // some attributes publish min=max=0, meaning the firmware does not report a range
-            if high != 0 && !value.parse().is_ok_and(|v: i64| (low..=high).contains(&v)) {
+            if let Some((low, high)) = range
+                && !value.parse().is_ok_and(|v: i64| (low..=high).contains(&v))
+            {
                 steps.push(Step::Warn(format!(
                     "firmware attribute {name}={value} is outside {low}-{high}; skipped"
                 )));
@@ -410,15 +426,20 @@ impl Machine<'_> {
     /// The AC adapter is online.
     ///
     /// # Errors
-    /// The AC adapter file cannot be read.
+    /// The AC adapter file is missing or cannot be read.
     pub fn ac_online(&self) -> Result<bool> {
-        Ok(self.root.read(&self.profile.paths.ac_adapter)?.as_deref() == Some("1"))
+        let path = &self.profile.paths.ac_adapter;
+        Ok(self
+            .root
+            .read(path)?
+            .with_context(|| format!("{path} is missing: the power source is unknown"))?
+            == "1")
     }
 
     /// The power source now.
     ///
     /// # Errors
-    /// The AC adapter file cannot be read.
+    /// The AC adapter file is missing or cannot be read.
     pub fn source(&self) -> Result<Source> {
         Ok(if self.ac_online()? {
             Source::Ac
@@ -709,7 +730,10 @@ pub fn execute(root: &SysRoot, ledger: &Ledger, steps: &[Step]) -> Result<Vec<St
 fn execute_one(root: &SysRoot, ledger: &Ledger, step: &Step, out: &mut Vec<String>) -> Result<()> {
     match step {
         Step::Write { path, value } => {
-            let before = root.read(path)?.unwrap_or_default();
+            // undo writes this value back: a file that is not there has none
+            let before = root
+                .read(path)?
+                .with_context(|| format!("{path} is missing"))?;
             std::fs::write(root.path(path), format!("{value}\n"))
                 .with_context(|| format!("writing {path}"))?;
             // the D-Bus contract (note 13): `undo` reads what a write replaced from this line
@@ -735,8 +759,12 @@ fn execute_one(root: &SysRoot, ledger: &Ledger, step: &Step, out: &mut Vec<Strin
             Err(e) => return Err(e).with_context(|| format!("removing {path}")),
         },
         Step::Try(argv) => {
-            // a try step may fail by design: the step after it does the real work
-            let _ = Command::new(&argv[0]).args(&argv[1..]).output();
+            // its exit status may be a failure by design (the step after it does the real work); a program that does
+            // not start is a failure
+            Command::new(&argv[0])
+                .args(&argv[1..])
+                .output()
+                .with_context(|| format!("running {}", argv[0]))?;
         }
         Step::Record { key, value } => ledger.set(*key, value.as_deref())?,
         Step::Hold { path, value } => {

@@ -110,6 +110,8 @@ pub fn doctor(machine: &Machine) -> Vec<String> {
 
 /// Written by the daemon while the machine state that it announces cannot be read (the reason).
 pub const OBSERVE_ERROR: &str = "/run/legionctl/observe.error";
+/// Written by the daemon while the plan of an event fails (the event and the reason); removed when a plan works.
+pub const POLICY_ERROR: &str = "/run/legionctl/policy.error";
 
 /// Safe mode, the daemon's state loop, the workload sensor, and the DMI identity.
 fn state_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
@@ -120,6 +122,11 @@ fn state_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
     if let Some(reason) = root.read(OBSERVE_ERROR)? {
         w.push(format!(
             "legionctl-system cannot read the machine state that it announces (mode, workload, fan): {reason}"
+        ));
+    }
+    if let Some(reason) = root.read(POLICY_ERROR)? {
+        w.push(format!(
+            "legionctl-system cannot carry out the policy, the machine keeps its old state: {reason}"
         ));
     }
     if let Some(reason) = root.read(crate::configset::WORKLOAD_ERROR)? {
