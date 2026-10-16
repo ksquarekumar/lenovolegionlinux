@@ -89,12 +89,7 @@ fn file(graf: &Path, tree: &str) -> PathBuf {
 
 /// A ref resolved: the commit and its tree.
 pub(crate) fn resolve(dir: &Path, rev: &str) -> Result<(String, String)> {
-    ensure!(!rev.starts_with('-'), "a ref must not start with '-'");
-    let commit = git(
-        dir,
-        &["rev-parse", "--verify", &format!("{rev}^{{commit}}")],
-    )
-    .map_err(|_| {
+    let commit = commit_of(dir, rev)?.ok_or_else(|| {
         coded(
             Code::NotFound,
             format!("no commit '{rev}' in {}", dir.display()),
@@ -102,6 +97,35 @@ pub(crate) fn resolve(dir: &Path, rev: &str) -> Result<(String, String)> {
     })?;
     let tree = git(dir, &["rev-parse", &format!("{commit}^{{tree}}")])?;
     Ok((commit, tree))
+}
+
+/// The commit of `rev`; `None` when the repository has no such ref (`rev-parse --verify --quiet` exits 1).
+///
+/// # Errors
+/// git does not run or fails for another reason.
+fn commit_of(dir: &Path, rev: &str) -> Result<Option<String>> {
+    ensure!(!rev.starts_with('-'), "a ref must not start with '-'");
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{rev}^{{commit}}"),
+        ])
+        .output()
+        .context("running git")?;
+    match out.status.code() {
+        Some(0) => Ok(Some(
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        )),
+        Some(1) => Ok(None),
+        _ => bail!(
+            "git rev-parse {rev}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+    }
 }
 
 /// Whether the repository of `dir` keeps snapshots: its `.graf/refs` exists (the first `code graph refresh` or
@@ -278,16 +302,19 @@ fn kept(dossiers: &Dossiers, dir: &Path) -> Result<BTreeMap<String, Vec<String>>
         if ws.repo != main || ws.is_folder() {
             continue;
         }
-        if let Ok((_, tree)) = resolve(dir, &ws.base) {
+        // a base or branch that is gone keeps nothing; any other git failure stops the prune
+        if commit_of(dir, &ws.base)?.is_some() {
+            let (_, tree) = resolve(dir, &ws.base)?;
             keep.entry(tree)
                 .or_default()
                 .push(format!("base of {}", ws.branch));
-        }
-        if let Ok(base) = git(dir, &["merge-base", &ws.base, &ws.branch]) {
-            let (_, tree) = resolve(dir, &base)?;
-            keep.entry(tree)
-                .or_default()
-                .push(format!("merge-base of {}", ws.branch));
+            if commit_of(dir, &ws.branch)?.is_some() {
+                let base = git(dir, &["merge-base", &ws.base, &ws.branch])?;
+                let (_, tree) = resolve(dir, &base)?;
+                keep.entry(tree)
+                    .or_default()
+                    .push(format!("merge-base of {}", ws.branch));
+            }
         }
     }
     Ok(keep)

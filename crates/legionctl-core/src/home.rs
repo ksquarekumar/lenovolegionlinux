@@ -80,8 +80,16 @@ pub(crate) fn link(dossiers: &Dossiers, dir: &Path) -> Result<Vec<String>> {
 #[must_use]
 pub fn finding(dossiers: &Dossiers, dir: &Path) -> Option<String> {
     let at = dir.join(LINK);
-    let meta = std::fs::symlink_metadata(&at).ok()?;
-    if meta.file_type().is_symlink() && at.canonicalize().ok() == dossiers.root.canonicalize().ok()
+    let meta = match std::fs::symlink_metadata(&at) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => return Some(format!("cannot read {}: {e}", at.display())),
+    };
+    // a link that resolves to the home; a link to nowhere never matches
+    if meta.file_type().is_symlink()
+        && at
+            .canonicalize()
+            .is_ok_and(|to| dossiers.root.canonicalize().is_ok_and(|root| to == root))
     {
         return None;
     }
@@ -105,9 +113,10 @@ fn refused(at: &Path, dossiers: &Dossiers) -> String {
 /// (no trailing `/`: git sees a link as a file) and is staged; a worktree's line goes into `<common dir>/info/exclude`.
 /// A plain folder has nothing to do.
 fn ignore(dir: &Path) -> Result<Vec<String>> {
-    let Ok(git_dir) = git(dir, &["rev-parse", "--absolute-git-dir"]) else {
+    if crate::workspace::repo_of(dir)?.is_none() {
         return Ok(Vec::new());
-    };
+    }
+    let git_dir = git(dir, &["rev-parse", "--absolute-git-dir"])?;
     if git(dir, &["check-ignore", "-q", LINK]).is_ok() {
         return Ok(Vec::new());
     }

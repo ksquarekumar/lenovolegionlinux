@@ -223,21 +223,34 @@ struct Found {
 impl Facts {
     fn at(dir: &Path, rev: &str, build: bool, plan_units: &[Unit]) -> Result<Facts> {
         let (tree, db) = codegraph::snapshot_for(dir, rev, build)?;
-        let blob =
-            |path: &str| codegraph::run(dir, &["cat-file", "blob", &format!("{tree}:{path}")]).ok();
-        let ops = blob("docs/api/schema.json")
-            .and_then(|b| serde_json::from_slice::<serde_json::Map<String, Value>>(&b).ok())
-            .map(|m| m.keys().cloned().collect())
-            .unwrap_or_default();
-        let config = blob("config/defaults.jsonc")
-            .and_then(|b| serde_json::from_reader(json_comments::StripComments::new(&b[..])).ok())
-            .unwrap_or_default();
-        Ok(Facts {
-            graph: codegraph::nodes(&db)?,
-            files: codegraph::git(dir, &["ls-tree", "-r", "--name-only", &tree])?
+        let files: BTreeSet<String> =
+            codegraph::git(dir, &["ls-tree", "-r", "--name-only", &tree])?
                 .lines()
                 .map(String::from)
+                .collect();
+        // a file that is not in the tree has no facts; one that is must read and parse
+        let blob = |path: &str| -> Result<Option<Vec<u8>>> {
+            if !files.contains(path) {
+                return Ok(None);
+            }
+            codegraph::run(dir, &["cat-file", "blob", &format!("{tree}:{path}")]).map(Some)
+        };
+        let ops = match blob("docs/api/schema.json")? {
+            Some(b) => serde_json::from_slice::<serde_json::Map<String, Value>>(&b)
+                .context("docs/api/schema.json")?
+                .keys()
+                .cloned()
                 .collect(),
+            None => BTreeSet::new(),
+        };
+        let config = match blob("config/defaults.jsonc")? {
+            Some(b) => serde_json::from_reader(json_comments::StripComments::new(&b[..]))
+                .context("config/defaults.jsonc")?,
+            None => Value::Null,
+        };
+        Ok(Facts {
+            graph: codegraph::nodes(&db)?,
+            files,
             units: plan_units
                 .iter()
                 .map(|u| (u.name.clone(), u.files.clone()))
@@ -506,10 +519,13 @@ fn tokei(
         .map_or(0, |d| d.subsec_nanos());
     let tmp = std::env::temp_dir().join(format!("legionctl-tokei-{}.{nanos}", std::process::id()));
     let counted = (|| {
+        // a planned file that is not in the tree yet has no lines; one that is must be read
+        let in_tree = codegraph::git(dir, &["ls-tree", "-r", "--name-only", tree])?;
+        let in_tree: BTreeSet<&str> = in_tree.lines().collect();
         let mut written = Vec::new();
         for file in files {
-            if let Ok(blob) = codegraph::run(dir, &["cat-file", "blob", &format!("{tree}:{file}")])
-            {
+            if in_tree.contains(file.as_str()) {
+                let blob = codegraph::run(dir, &["cat-file", "blob", &format!("{tree}:{file}")])?;
                 let path = tmp.join(file.as_str());
                 std::fs::create_dir_all(path.parent().context("a file path has no folder")?)?;
                 std::fs::write(path, blob)?;
@@ -747,13 +763,17 @@ pub fn row_findings(
     if !codegraph::enabled(dir) {
         return Vec::new();
     }
-    let Ok(state) = status(dossiers, dir, None, "HEAD", None, false) else {
-        return Vec::new();
+    let not_checked =
+        |e: anyhow::Error| vec![format!("the plan rows of {dossier} are not checked: {e:#}")];
+    let state = match status(dossiers, dir, None, "HEAD", None, false) {
+        Ok(state) => state,
+        Err(e) => return not_checked(e),
     };
     // a link keeps the name the dossier had when it was written (the registry keeps old names)
-    let names = dossiers
-        .names_of(dossier)
-        .unwrap_or_else(|_| vec![dossier.to_string()]);
+    let names = match dossiers.names_of(dossier) {
+        Ok(names) => names,
+        Err(e) => return not_checked(e),
+    };
     let mut out = Vec::new();
     for f in &state.features {
         for row in f.plan_rows.iter().filter_map(|r| {

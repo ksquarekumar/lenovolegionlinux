@@ -876,12 +876,15 @@ impl Dossiers {
     }
 
     /// The findings of the checks of `dir` (doctor, `dossier check`): the required kinds it lacks, each check whose
-    /// last run did not find its command (exit 127), or why its checks do not resolve. A worktree that is gone has
-    /// none here: its workspace's status says so.
+    /// last run did not find its command (exit 127), or why its checks do not resolve; a worktree that is gone is
+    /// that finding (its checks cannot be read).
     #[must_use]
     pub fn check_findings(&self, dir: &Path) -> Vec<String> {
         if !dir.is_dir() {
-            return Vec::new();
+            return vec![format!(
+                "the worktree {} is missing; open the workspace again",
+                dir.display()
+            )];
         }
         self.findings_of(dir).unwrap_or_else(|e| {
             vec![format!(

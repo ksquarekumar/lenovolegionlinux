@@ -638,17 +638,21 @@ pub(crate) fn repo_root(dir: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// `*.jsonc` files of a layer folder in merge order: by name, and the managed file last.
-fn layer_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
+/// `*.jsonc` files of a layer folder in merge order: by name, and the managed file last; none when it is not there.
+fn layer_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let entries = match std::fs::read_dir(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        entries => entries
+            .and_then(Iterator::collect::<std::io::Result<Vec<_>>>)
+            .with_context(|| format!("listing {}", dir.display()))?,
+    };
+    let mut files: Vec<PathBuf> = entries
+        .iter()
+        .map(std::fs::DirEntry::path)
         .filter(|p| p.extension().is_some_and(|x| x == "jsonc"))
         .collect();
     files.sort_by_key(|p| (p.file_name().is_some_and(|n| n == MANAGED), p.clone()));
-    files
+    Ok(files)
 }
 
 fn locked(locks: &[String], key: &str) -> bool {
@@ -795,7 +799,8 @@ fn merge_layers(
 ///
 /// # Errors
 /// The built-in defaults do not parse, `/etc/legionctl` sets an unknown layer, or the merged config does not match
-/// [`Config`] (the message names the key). A file that is not valid JSONC is a problem, not an error.
+/// [`Config`] (the message names the key), or a layer folder or file cannot be read or is not a JSONC object (a typo
+/// must not drop a setting such as a gate in silence).
 pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
     let defaults: Value =
         serde_json::from_reader(json_comments::StripComments::new(DEFAULTS.as_bytes()))
@@ -805,25 +810,21 @@ pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
     let repo_dir = project.and_then(repo_root).map(|r| r.join(".legionctl"));
 
     let mut problems = Vec::new();
-    let mut read = |dir: &Path| -> Vec<(PathBuf, Value)> {
-        layer_files(dir)
+    let read = |dir: &Path| -> Result<Vec<(PathBuf, Value)>> {
+        layer_files(dir)?
             .into_iter()
-            .filter_map(|file| match read_jsonc(&file) {
-                Ok(Value::Object(map)) => Some((file, Value::Object(map))),
-                Ok(_) => {
-                    problems.push(format!("{}: not a JSON object; ignored", file.display()));
-                    None
-                }
-                Err(e) => {
-                    problems.push(format!("{e:#}; ignored"));
-                    None
-                }
+            .map(|file| match read_jsonc(&file)? {
+                Value::Object(map) => Ok((file, Value::Object(map))),
+                _ => bail!("{}: not a JSON object", file.display()),
             })
             .collect()
     };
-    let system = read(&system_dir);
-    let user = read(&user_dir);
-    let repo = repo_dir.as_deref().map(&mut read).unwrap_or_default();
+    let system = read(&system_dir)?;
+    let user = read(&user_dir)?;
+    let repo = match repo_dir.as_deref() {
+        Some(dir) => read(dir)?,
+        None => Vec::new(),
+    };
 
     // order and locks come only from the defaults and /etc/legionctl
     let trusted_meta = |key: &str| {

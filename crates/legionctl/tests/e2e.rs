@@ -258,6 +258,51 @@ fn the_git_gate_refuses_when_git_cannot_check_for_an_alias() {
     assert!(!ran.exists(), "the real git ran");
 }
 
+/// A file the operator cannot read fails the call with its name, never reads as empty (todo-142 F-38, F-39, F-45):
+/// a user config layer with a syntax error fails every call that resolves the config (before, the layer was dropped,
+/// with its gates); a dossier whose `dossier.jsonc` cannot be read fails `dossier list` and `dossier search` (before,
+/// it was listed without its id, and its files were not searched).
+#[test]
+fn a_config_layer_or_dossier_file_that_cannot_be_read_fails_with_its_name() {
+    use std::os::unix::fs::PermissionsExt;
+    let (op, home) = operator("unread");
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", "s1"),
+    ];
+    let layer = home.join(".config/legionctl/mine.jsonc");
+    write(&layer, r#"{ "session": { "writable": [] "#);
+    let out = op.run(&home, &env, &["config", "show"], "");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && err.contains(&layer.display().to_string()),
+        "{err}"
+    );
+    std::fs::remove_file(&layer).unwrap();
+
+    let o = op.run(&home, &env, &["dossier", "use", "seen"], "");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let jsonc = home.join("agentWorkspaces/seen/dossier.jsonc");
+    std::fs::set_permissions(&jsonc, std::fs::Permissions::from_mode(0o000)).unwrap();
+    for args in [&["dossier", "list"][..], &["dossier", "search", "anything"]] {
+        let out = op.run(&home, &env, args, "");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success()
+                && err.contains(&format!("reading {}", jsonc.display()))
+                && err.contains("Permission denied"),
+            "{args:?}: {err}"
+        );
+    }
+    std::fs::set_permissions(&jsonc, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let list = op.run(&home, &env, &["dossier", "list"], "");
+    assert!(
+        list.status.success(),
+        "{}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+}
+
 /// A user file that cannot be read is not written over (todo-142 F-9): a `.gitignore` in Latin-1 (not UTF-8) where
 /// the dossier link needs its ignore line; `dossier use` fails with the reason and the file keeps every byte. Before,
 /// the failed read gave an empty file, and the write left only legionctl's line.

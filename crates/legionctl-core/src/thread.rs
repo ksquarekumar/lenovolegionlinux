@@ -1563,6 +1563,8 @@ impl Dossiers {
                 |r| r.get(0),
             )
             .optional()?;
+        // a session that legionctl did not start is seen only through `legionctl hook`, Claude Code's hook adapter
+        // (Codex has no hooks): it is a Claude Code session
         let (agent, account) = p
             .started
             .get(session_of(session))

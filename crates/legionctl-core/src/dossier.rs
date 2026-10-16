@@ -319,12 +319,12 @@ impl Dossiers {
         let mut out = stmt
             .query_map([&repo], |r| r.get(0))?
             .collect::<rusqlite::Result<Vec<String>>>()?;
-        let mut named: Vec<String> = self
-            .list()
-            .into_iter()
-            .map(|d| d.name)
-            .filter(|d| !out.contains(d) && names_entity(&self.root.join(d), &repo))
-            .collect();
+        let mut named = Vec::new();
+        for d in self.list()? {
+            if !out.contains(&d.name) && names_entity(&self.root.join(&d.name), &repo)? {
+                named.push(d.name);
+            }
+        }
         named.sort();
         out.extend(named);
         out.retain(|d| self.root.join(d).is_dir());
@@ -507,7 +507,7 @@ impl Dossiers {
         )?;
         tx.commit()?;
         out.push(format!("active dossier: {name} ({})", dir.display()));
-        let memory = self.recent_memory(name, 3);
+        let memory = self.recent_memory(name, 3)?;
         if !memory.is_empty() {
             out.push("newest memory:".into());
             out.extend(memory.into_iter().map(|m| format!("  {m}")));
@@ -698,7 +698,7 @@ impl Dossiers {
     pub fn sync_registry(&self) -> Result<Vec<String>> {
         let mut seen: Vec<(String, String)> = Vec::new();
         let mut findings = Vec::new();
-        let mut names: Vec<String> = self.list().into_iter().map(|d| d.name).collect();
+        let mut names: Vec<String> = self.list()?.into_iter().map(|d| d.name).collect();
         names.sort();
         for name in names {
             let dir = self.root.join(&name);
@@ -798,38 +798,37 @@ impl Dossiers {
     }
 
     /// Dossiers, most recently changed first.
-    #[must_use]
-    pub fn list(&self) -> Vec<DossierInfo> {
-        let mut dirs: Vec<(SystemTime, DossierInfo)> = std::fs::read_dir(&self.root)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|e| e.path().is_dir() && valid_name(&e.file_name().to_string_lossy()))
-            .map(|e| {
-                let modified = e
-                    .metadata()
-                    .and_then(|m| m.modified())
-                    .unwrap_or(UNIX_EPOCH);
-                let info = DossierInfo {
+    ///
+    /// # Errors
+    /// The dossier root is there but cannot be listed, or a dossier's `dossier.jsonc` cannot be read.
+    pub fn list(&self) -> Result<Vec<DossierInfo>> {
+        let mut dirs: Vec<(SystemTime, DossierInfo)> = Vec::new();
+        for e in entries(&self.root)? {
+            if !(e.path().is_dir() && valid_name(&e.file_name().to_string_lossy())) {
+                continue;
+            }
+            let modified = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .with_context(|| format!("reading {}", e.path().display()))?;
+            dirs.push((
+                modified,
+                DossierInfo {
                     name: e.file_name().to_string_lossy().into_owned(),
-                    id: read_id(&e.path()).ok().flatten(),
+                    id: read_id(&e.path())?,
                     has_plan: e.path().join("plan.md").is_file(),
-                };
-                (modified, info)
-            })
-            .collect();
+                },
+            ));
+        }
         dirs.sort_by_key(|d| std::cmp::Reverse(d.0));
-        dirs.into_iter().map(|(_, d)| d).collect()
+        Ok(dirs.into_iter().map(|(_, d)| d).collect())
     }
 
     /// `MEMORY/NN-<topic>.md  <title>`, newest first.
-    fn recent_memory(&self, name: &str, limit: usize) -> Vec<String> {
-        let dir = self.root.join(name).join("MEMORY");
-        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
+    fn recent_memory(&self, name: &str, limit: usize) -> Result<Vec<String>> {
+        let mut files: Vec<PathBuf> = entries(&self.root.join(name).join("MEMORY"))?
+            .iter()
+            .map(std::fs::DirEntry::path)
             .filter(|p| p.extension().is_some_and(|x| x == "md"))
             .collect();
         files.sort();
@@ -838,16 +837,17 @@ impl Dossiers {
             .rev()
             .take(limit)
             .map(|p| {
-                let text = std::fs::read_to_string(p).unwrap_or_default();
+                let text = std::fs::read_to_string(p)
+                    .with_context(|| format!("reading {}", p.display()))?;
                 let title = text
                     .lines()
                     .find_map(|l| l.strip_prefix("# "))
                     .unwrap_or_default()
                     .to_string();
-                format!(
+                Ok(format!(
                     "MEMORY/{}  {title}",
                     p.file_name().unwrap_or_default().to_string_lossy()
-                )
+                ))
             })
             .collect()
     }
@@ -993,15 +993,17 @@ impl Dossiers {
     }
 
     /// Lines that contain `pattern` (case-insensitive with `ignore_case`) in every dossier, or in `dossier`, as
-    /// `<path>:<line>:<hash>|<text>`.
-    #[must_use]
+    /// `<path>:<line>:<hash>|<text>`. A file that is not text (an image) has no lines.
+    ///
+    /// # Errors
+    /// A dossier folder or file cannot be read.
     pub fn search(
         &self,
         pattern: &str,
         dossier: Option<&str>,
         ignore_case: bool,
         limit: usize,
-    ) -> Vec<String> {
+    ) -> Result<Vec<String>> {
         let needle = if ignore_case {
             pattern.to_lowercase()
         } else {
@@ -1010,16 +1012,18 @@ impl Dossiers {
         let mut files = Vec::new();
         let dossiers: Vec<String> = match dossier {
             Some(d) => vec![d.to_string()],
-            None => self.list().into_iter().map(|d| d.name).collect(),
+            None => self.list()?.into_iter().map(|d| d.name).collect(),
         };
         for d in dossiers {
-            collect_files(&self.root.join(&d), &mut files);
+            collect_files(&self.root.join(&d), &mut files)?;
         }
         files.sort();
         let mut out = Vec::new();
         for file in files {
-            let Ok(text) = std::fs::read_to_string(&file) else {
-                continue;
+            let text = match std::fs::read_to_string(&file) {
+                Ok(text) => text,
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
+                Err(e) => return Err(e).with_context(|| format!("reading {}", file.display())),
             };
             let rel = file
                 .strip_prefix(&self.root)
@@ -1035,12 +1039,12 @@ impl Dossiers {
                 if hay.contains(&needle) {
                     out.push(format!("{rel}:{}", hashline(i + 1, line)));
                     if out.len() >= limit {
-                        return out;
+                        return Ok(out);
                     }
                 }
             }
         }
-        out
+        Ok(out)
     }
 
     /// Write a new file (or replace one with `overwrite`) in the session's active dossier.
@@ -1477,36 +1481,59 @@ impl Dossiers {
     }
 }
 
-fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in entries(dir)? {
         let path = entry.path();
         let hidden = entry.file_name().to_string_lossy().starts_with('.');
-        let Ok(kind) = entry.file_type() else {
-            continue;
-        };
+        let kind = entry
+            .file_type()
+            .with_context(|| format!("reading {}", path.display()))?;
         if hidden || kind.is_symlink() {
             continue;
         }
         if kind.is_dir() {
-            collect_files(&path, out);
-        } else if entry.metadata().is_ok_and(|m| m.len() <= 2 << 20) {
+            collect_files(&path, out)?;
+        } else if entry
+            .metadata()
+            .with_context(|| format!("reading {}", path.display()))?
+            .len()
+            <= 2 << 20
+        {
             out.push(path);
         }
     }
+    Ok(())
+}
+
+/// The entries of the folder `dir`; none when it is not there.
+fn entries(dir: &Path) -> Result<Vec<std::fs::DirEntry>> {
+    match std::fs::read_dir(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        read => read
+            .and_then(Iterator::collect)
+            .with_context(|| format!("listing {}", dir.display())),
+    }
+}
+
+/// The dossier's `dossier.jsonc` in `dir`; `None` when it has none.
+fn dossier_json(dir: &Path) -> Result<Option<serde_json::Value>> {
+    let path = dir.join("dossier.jsonc");
+    let Some(text) = legionctl_machine::sysroot::read_file(&path)? else {
+        return Ok(None);
+    };
+    serde_json::from_reader(json_comments::StripComments::new(text.as_bytes()))
+        .with_context(|| format!("reading {}", path.display()))
+        .map(Some)
 }
 
 /// Whether the `entities` of the dossier in `dir` name the folder `repo` (a text, or an object with that `path`).
-fn names_entity(dir: &Path, repo: &str) -> bool {
-    let Ok(text) = std::fs::read_to_string(dir.join("dossier.jsonc")) else {
-        return false;
-    };
-    let value: serde_json::Value =
-        serde_json::from_reader(json_comments::StripComments::new(text.as_bytes()))
-            .unwrap_or_default();
-    value["entities"].as_array().is_some_and(|list| {
-        list.iter()
-            .any(|e| e.as_str() == Some(repo) || e["path"].as_str() == Some(repo))
-    })
+fn names_entity(dir: &Path, repo: &str) -> Result<bool> {
+    Ok(dossier_json(dir)?.is_some_and(|value| {
+        value["entities"].as_array().is_some_and(|list| {
+            list.iter()
+                .any(|e| e.as_str() == Some(repo) || e["path"].as_str() == Some(repo))
+        })
+    }))
 }
 
 /// `path` with its longest existing part resolved (links and `..`); the rest is not there, so it has no link, and its
@@ -1572,14 +1599,7 @@ pub(crate) fn new_id() -> Result<String> {
 /// # Errors
 /// The file exists and is not JSON with comments.
 pub(crate) fn read_id(dir: &Path) -> Result<Option<String>> {
-    let path = dir.join("dossier.jsonc");
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Ok(None);
-    };
-    let value: serde_json::Value =
-        serde_json::from_reader(json_comments::StripComments::new(text.as_bytes()))
-            .with_context(|| format!("reading {}", path.display()))?;
-    Ok(value["id"].as_str().map(String::from))
+    Ok(dossier_json(dir)?.and_then(|value| value["id"].as_str().map(String::from)))
 }
 
 /// A new `dossier.jsonc` with `id` and the title `name`.

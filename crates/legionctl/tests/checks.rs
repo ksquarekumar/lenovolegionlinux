@@ -627,10 +627,9 @@ fn a_broken_checks_file_and_a_check_that_changes_the_files_refuse_the_checkpoint
     );
     let refused = lab.run(&ws, &["workspace", "checkpoint", "broken gate"]);
     let err = text(&refused).1;
+    // the config does not resolve at all: no layer with a syntax error is dropped (todo-142 F-45)
     assert!(
-        !refused.status.success()
-            && err.contains("the repository's checks do not resolve, so no gate can pass")
-            && err.contains("checks.jsonc"),
+        !refused.status.success() && err.contains(".legionctl/checks.jsonc: expected `,` or `}`"),
         "{err}"
     );
     assert_eq!(commits(), "1");

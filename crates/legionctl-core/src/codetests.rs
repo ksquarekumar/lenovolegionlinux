@@ -496,9 +496,13 @@ fn tool_mutants(
         if mutant.is_null() || !["CaughtMutant", "MissedMutant"].contains(&summary) {
             continue;
         }
+        let log = results.join(
+            outcome["log_path"]
+                .as_str()
+                .context("a mutant outcome has no log_path")?,
+        );
         let log =
-            std::fs::read_to_string(results.join(outcome["log_path"].as_str().unwrap_or_default()))
-                .unwrap_or_default();
+            std::fs::read_to_string(&log).with_context(|| format!("reading {}", log.display()))?;
         let mut killed_by = Vec::new();
         for name in log
             .lines()

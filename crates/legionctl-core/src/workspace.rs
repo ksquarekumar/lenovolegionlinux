@@ -152,6 +152,29 @@ pub(crate) fn main_checkout(dir: &Path) -> Result<PathBuf> {
         .context("the repository has no main checkout")
 }
 
+/// The main checkout of the repository that contains `dir`; `None` only when git says `dir` is in no repository
+/// (another git failure, such as dubious ownership or a broken `.git`, is an error).
+pub(crate) fn repo_of(dir: &Path) -> Result<Option<PathBuf>> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output()
+        .context("running git")?;
+    if !out.status.success() {
+        let why = String::from_utf8_lossy(&out.stderr);
+        if why.contains("not a git repository") {
+            return Ok(None);
+        }
+        bail!("git rev-parse in {}: {}", dir.display(), why.trim());
+    }
+    let common = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    common
+        .parent()
+        .map(|p| Some(p.to_path_buf()))
+        .context("the repository has no main checkout")
+}
+
 /// Count the entries of `git status --porcelain` by kind: (staged, unstaged, untracked, conflicted).
 fn changes(path: &Path) -> Result<(u32, u32, u32, u32)> {
     let mut counts = (0, 0, 0, 0);
@@ -182,21 +205,29 @@ pub struct Place {
 impl Dossiers {
     /// The repository that contains `dir`, the dossier's open workspace there (the one that contains `dir`, else the
     /// dossier's own workspace), and whether the main checkout is dirty; `None` when `dir` is not in a git repository.
-    #[must_use]
-    pub fn place(&self, dossier: &str, dir: &Path) -> Option<Place> {
-        let repo = main_checkout(dir).ok()?;
-        let (staged, unstaged, untracked, conflicted) = changes(&repo).ok()?;
-        let dir = std::fs::canonicalize(dir).ok()?;
+    ///
+    /// # Errors
+    /// git or the workspace rows cannot be read.
+    pub fn place(&self, dossier: &str, dir: &Path) -> Result<Option<Place>> {
+        let Some(repo) = repo_of(dir)? else {
+            return Ok(None);
+        };
+        let (staged, unstaged, untracked, conflicted) = changes(&repo)?;
+        let dir = std::fs::canonicalize(dir)?;
+        // a workspace whose worktree is gone contains nothing
         let containing = self
-            .workspaces(Some(dossier))
-            .ok()?
+            .workspaces(Some(dossier))?
             .into_iter()
             .find(|ws| std::fs::canonicalize(&ws.path).is_ok_and(|path| dir.starts_with(path)));
-        Some(Place {
-            workspace: containing.or_else(|| self.row(dossier, &repo, "").ok().flatten()),
+        let workspace = match containing {
+            Some(ws) => Some(ws),
+            None => self.row(dossier, &repo, "")?,
+        };
+        Ok(Some(Place {
+            workspace,
             main_dirty: staged + unstaged + untracked + conflicted > 0,
             repo,
-        })
+        }))
     }
 
     fn row(&self, dossier: &str, repo: &Path, topic: &str) -> Result<Option<Workspace>> {
@@ -262,7 +293,7 @@ impl Dossiers {
         let dossier = self.active_dossier(session)?;
         let found = if let Some(topic) = topic {
             self.row(&dossier, &main_checkout(dir)?, topic)?
-        } else if let Some(place) = self.place(&dossier, dir) {
+        } else if let Some(place) = self.place(&dossier, dir)? {
             place.workspace
         } else {
             self.row(&dossier, &std::fs::canonicalize(dir)?, "")?
@@ -297,7 +328,7 @@ impl Dossiers {
             topic.is_none_or(crate::dossier::valid_name),
             "topic must be a-z, 0-9 and '-', starting with a letter or digit"
         );
-        let Ok(repo) = main_checkout(dir) else {
+        let Some(repo) = repo_of(dir)? else {
             ensure!(topic.is_none(), "a plain folder's workspace has no topics");
             return self.open_folder(dossier, dir, root);
         };

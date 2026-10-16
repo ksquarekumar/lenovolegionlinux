@@ -124,8 +124,17 @@ impl Store {
         self.root.join(name).join(version_of(p))
     }
 
-    fn manifest(dir: &Path) -> Option<Manifest> {
-        serde_json::from_slice(&std::fs::read(dir.join(MANIFEST)).ok()?).ok()
+    /// The manifest of a fetched package; `None` when it was not fetched.
+    fn manifest(dir: &Path) -> Result<Option<Manifest>> {
+        let path = dir.join(MANIFEST);
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        serde_json::from_slice(&bytes)
+            .with_context(|| format!("{}: not a package manifest", path.display()))
+            .map(Some)
     }
 
     /// The state of every configured package, with a fresh hash check of each fetched one.
@@ -137,7 +146,7 @@ impl Store {
             .iter()
             .map(|(name, p)| {
                 let dir = self.dir(name, p);
-                let manifest = Self::manifest(&dir);
+                let manifest = Self::manifest(&dir)?;
                 let intact = match &manifest {
                     Some(m) => Some(tree_hash(&dir)? == m.hash),
                     None => None,
@@ -167,7 +176,7 @@ impl Store {
         hidden: &[String],
     ) -> Result<Manifest> {
         let dir = self.dir(name, p);
-        if let Some(m) = Self::manifest(&dir).filter(|_| !force) {
+        if let Some(m) = Self::manifest(&dir)?.filter(|_| !force) {
             return Ok(m);
         }
         ensure!(
@@ -264,7 +273,7 @@ impl Store {
     /// The package is not fetched, or its tree no longer has the recorded hash.
     pub fn checked(&self, name: &str, p: &PackageConfig) -> Result<PathBuf> {
         let dir = self.dir(name, p);
-        let Some(manifest) = Self::manifest(&dir) else {
+        let Some(manifest) = Self::manifest(&dir)? else {
             bail!("package {name} is not fetched; run `legionctl packages fetch {name}`")
         };
         ensure!(

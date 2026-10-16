@@ -1142,7 +1142,8 @@ fn agent_findings() -> Result<Vec<String>> {
         for dir in [&ws.repo, &ws.path] {
             w.extend(legionctl_core::home::finding(&store, dir));
         }
-        if !ws.is_folder() {
+        // a missing worktree is the workspace's drift below
+        if !ws.is_folder() && ws.path.is_dir() {
             w.extend(store.check_findings(&ws.path));
         }
         let status = store.workspace_status(&ws)?;
@@ -1467,7 +1468,7 @@ fn nudge_line(resolved: &Resolved) -> String {
 /// What a blocked prompt shows: why, and the commands that pass the gate, with the most recent dossiers.
 fn gate_message(resolved: &Resolved) -> Result<String> {
     let recent: Vec<String> = Dossiers::open(&resolved.config.dossier)?
-        .list()
+        .list()?
         .into_iter()
         .take(5)
         .map(|d| d.name)
@@ -2540,10 +2541,10 @@ impl Engine for Operator {
             }
             _ => None,
         };
-        let place = active
-            .as_deref()
-            .zip(input.project.get().ok())
-            .and_then(|(d, dir)| store.place(d, dir));
+        let place = match active.as_deref().zip(input.project.get().ok()) {
+            Some((d, dir)) => store.place(d, dir)?,
+            None => None,
+        };
         if let Some(block) = blocking_reason(
             &resolved,
             &input,
@@ -2662,7 +2663,7 @@ impl Engine for Operator {
     }
 
     fn dossier_list(&self, _: &Ctx, _: Empty) -> Result<DossierList> {
-        Ok(dossiers()?.list().into_wire())
+        Ok(dossiers()?.list()?.into_wire())
     }
 
     fn dossier_migrate(&self, _: &Ctx, input: DossierMigrateIn) -> Result<Lines> {
@@ -2717,7 +2718,7 @@ impl Engine for Operator {
             input.dossier.as_deref(),
             input.ignore_case,
             input.limit as usize,
-        );
+        )?;
         Ok(Lines { lines })
     }
 
