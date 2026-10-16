@@ -284,7 +284,8 @@ pub struct View {
     /// to Windows"}`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub labels: BTreeMap<String, String>,
-    /// How a column's or a stat's value shows: `ago`, `time` (seconds since the epoch), `int`, `1dp`, `count` (an
+    /// How a column's or a stat's value shows: `ago`, `time` (seconds since the epoch), `int`, `1dp`, `bytes` (a size,
+    /// 1.5 KiB), `ms` (a duration in milliseconds, 1.2 s), `count` (an
     /// array's length), `join` (an array or object's values with " / ").
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub formats: BTreeMap<String, String>,
@@ -370,7 +371,7 @@ pub fn schema() -> Result<(&'static str, Value)> {
 }
 
 /// The seeds that legionctl ships: (name, text).
-const SEEDS: [(&str, &str); 12] = [
+const SEEDS: [(&str, &str); 13] = [
     (
         "machine-now",
         include_str!("../../../config/views/machine-now.jsonc"),
@@ -413,6 +414,7 @@ const SEEDS: [(&str, &str); 12] = [
         "composer-cost",
         include_str!("../../../config/views/composer-cost.jsonc"),
     ),
+    ("about", include_str!("../../../config/views/about.jsonc")),
 ];
 
 /// The seed of `name`, if legionctl ships one.
@@ -588,6 +590,16 @@ impl View {
             self.widget != Widget::Timeline || self.columns.len() == 4,
             "a timeline's columns are its time, actor, kind and text"
         );
+        if let Some((field, format)) = self
+            .formats
+            .iter()
+            .find(|(_, f)| !FORMATS.contains(&f.as_str()))
+        {
+            bail!(
+                "{field} has the format {format}, which is not one of {}",
+                FORMATS.join(", ")
+            );
+        }
         for name in [&self.expand, &self.select]
             .into_iter()
             .flatten()
@@ -981,6 +993,47 @@ fn field<'a>(row: &'a Value, path: &str) -> &'a Value {
         .unwrap_or(&Value::Null)
 }
 
+/// The formats of a value (`View::formats`).
+const FORMATS: [&str; 8] = ["ago", "time", "int", "1dp", "count", "join", "bytes", "ms"];
+
+/// A size in bytes in the largest binary unit that keeps it at 1 or more: 512 B, 1.5 KiB, 3.2 GiB.
+fn bytes(n: f64) -> String {
+    let mut size = n;
+    for unit in ["B", "KiB", "MiB", "GiB", "TiB"] {
+        if size.abs() < 1024. || unit == "TiB" {
+            return if unit == "B" {
+                format!("{size:.0} {unit}")
+            } else {
+                format!("{size:.1} {unit}")
+            };
+        }
+        size /= 1024.;
+    }
+    unreachable!("the loop returns at TiB")
+}
+
+/// A time in milliseconds in its largest unit: 850 ms, 1.2 s, 3 min 5 s, 2 h 10 min.
+fn duration(ms: f64) -> String {
+    let ms = ms.round();
+    if ms < 1000. {
+        format!("{ms:.0} ms")
+    } else if ms < 60_000. {
+        format!("{:.1} s", ms / 1000.)
+    } else if ms < 3_600_000. {
+        format!(
+            "{:.0} min {:.0} s",
+            (ms / 60_000.).floor(),
+            (ms % 60_000. / 1000.).floor()
+        )
+    } else {
+        format!(
+            "{:.0} h {:.0} min",
+            (ms / 3_600_000.).floor(),
+            (ms % 3_600_000. / 60_000.).floor()
+        )
+    }
+}
+
 /// A value as its format says.
 fn shown(value: &Value, format: Option<&str>) -> String {
     let now = std::time::SystemTime::now()
@@ -994,6 +1047,8 @@ fn shown(value: &Value, format: Option<&str>) -> String {
         (Some("int"), v) => v.as_f64().map_or_else(|| cell(v), |n| format!("{n:.0}")),
         (Some("1dp"), v) => v.as_f64().map_or_else(|| cell(v), |n| format!("{n:.1}")),
         (Some("count"), Value::Array(items)) => items.len().to_string(),
+        (Some("bytes"), v) => v.as_f64().map_or_else(|| cell(v), bytes),
+        (Some("ms"), v) => v.as_f64().map_or_else(|| cell(v), duration),
         (_, Value::Array(items)) if items.is_empty() => "none".into(),
         (_, Value::String(text)) if text.is_empty() => "none".into(),
         (Some("join"), Value::Array(items)) => {

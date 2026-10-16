@@ -207,6 +207,7 @@ impl Render for LegionApp {
                         )
                         .on_click(cx.listener(|app, _, window, cx| app.ask_feedback(window, cx))),
                 )
+                .child(LegionApp::help_menu(cx))
                 .child(self.status(&t)),
         );
         // the tab's content width: the window less the rail, the navigator and the tab's padding

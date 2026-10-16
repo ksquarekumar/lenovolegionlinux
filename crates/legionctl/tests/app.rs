@@ -1668,6 +1668,113 @@ fn copy_puts_a_row_on_the_clipboard_and_feedback_keeps_the_note_state_and_screen
     drop(runtime);
 }
 
+/// todo-169: the title bar's Help menu opens About as a tab (the seed view of the read operation `about`: the
+/// operator's build, a daemon that does not answer as a part that needs the user, the machine profile, the licenses
+/// and the source) and shows the keys; Ctrl+K is the command palette (the chat bar with `/`, which lists the views and
+/// the operations). A view's `ms` and `bytes` formats show a duration and a size; a format outside the set is refused.
+#[gpui_kit::test]
+fn help_opens_about_and_the_keys_ctrl_k_searches_and_numbers_show_by_their_unit(
+    cx: &mut TestAppContext,
+) {
+    let (op, home, repo) = thread_lab("about");
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
+    let cx = &mut vcx;
+    cx.update(|window, cx| window.click("help", cx));
+    cx.update(|window, cx| window.within("popup-menu").click(0usize, cx));
+    wait(cx, &app, "the About tab", |a| {
+        a.screen
+            .view()
+            .is_some_and(|v| v.name == "about" && v.rows.len() == 5)
+    });
+    let rows = app.read_with(cx, |a, _| a.screen.view().unwrap().rows.clone());
+    // a list row: part · what · state
+    let row = |part: &str| {
+        let line = rows
+            .iter()
+            .map(|r| r.join(" · "))
+            .find(|r| r.starts_with(&format!("{part} · ")));
+        line.unwrap_or_else(|| panic!("no {part} in {rows:?}"))
+    };
+    assert!(
+        row("operator").starts_with("operator · legionctl 0.")
+            && row("operator").ends_with(" · ok")
+    );
+    assert!(
+        row("daemon").starts_with("daemon · legionctl-system does not answer")
+            && row("daemon").ends_with(" · warn"),
+        "{rows:?}"
+    );
+    assert_eq!(
+        row("machine"),
+        "machine · profile lenovo-82wq-legion-pro-7-16irx8h · ok"
+    );
+    assert!(row("licenses").contains("/usr/share/licenses/legionctl"));
+
+    cx.update(|window, cx| window.click("help", cx));
+    cx.update(|window, cx| window.within("popup-menu").click(2usize, cx));
+    app.read_with(cx, |a, _| {
+        assert!(
+            a.state
+                .message
+                .as_deref()
+                .is_some_and(|m| m.starts_with("Ctrl+K: search"))
+        );
+    });
+    cx.update(|window, cx| window.press("ctrl-k", cx));
+    app.read_with(cx, |a, _| {
+        assert_eq!(a.screen.chat(), "/");
+        let all: Vec<String> = a.screen.completions().into_iter().map(|e| e.text).collect();
+        for want in ["/view about", "/about", "/feedback "] {
+            assert!(all.iter().any(|e| e == want), "{want} in {all:?}");
+        }
+    });
+    cx.update(|window, cx| window.input("x", cx));
+    app.read_with(cx, |a, _| {
+        assert_eq!(a.screen.chat(), "/x", "the chat bar takes the keys");
+    });
+    drop(runtime);
+
+    let view = |formats: &str| {
+        format!(
+            r#"{{"name": "event-times", "widget": "table", "source": {{"op": "events", "input": {{"limit": 1000}},
+                "path": "$.items"}}, "columns": ["kind", "payload.ms", "id"], "formats": {formats}}}"#
+        )
+    };
+    write(
+        &home.join(".config/legionctl/views/event-times.jsonc"),
+        &view(r#"{"payload.ms": "ms", "id": "bytes"}"#),
+    );
+    let shown = lab_cli(
+        &op,
+        &home,
+        &repo,
+        &["views", "render", "event-times", "--json"],
+        "",
+    );
+    let shown: serde_json::Value = serde_json::from_str(&shown).unwrap();
+    let rows = shown["rows"].as_array().unwrap();
+    assert!(
+        rows.iter()
+            .filter(|r| r[1] != "no value")
+            .all(|r| r[1].as_str().unwrap().ends_with(" ms")
+                || r[1].as_str().unwrap().ends_with(" s")),
+        "{rows:?}"
+    );
+    assert_eq!(rows[0][2], "1 B", "{rows:?}");
+    let refused = op.run(
+        &repo,
+        &[("HOME", home.to_str().unwrap())],
+        &["views", "check"],
+        &view(r#"{"id": "megabytes"}"#),
+    );
+    assert!(
+        !refused.status.success()
+            && String::from_utf8_lossy(&refused.stderr)
+                .contains("id has the format megabytes, which is not one of ago, time, int, 1dp, count, join, bytes, ms"),
+        "{refused:?}"
+    );
+}
+
 /// A thread tab says what each row of the thread's log means (todo-127, A3): a watch rule that a member adds reaches
 /// the app through the event stream and reads as a sentence in the app; no row is raw JSON.
 #[gpui_kit::test]

@@ -2931,6 +2931,52 @@ impl Engine for Operator {
         Ok(Lines { lines })
     }
 
+    fn about(&self, _: &Ctx, _: Empty) -> Result<Vec<legionctl_api::AboutItem>> {
+        let item = |part: &str, value: String, ok: bool| legionctl_api::AboutItem {
+            part: part.into(),
+            value,
+            state: if ok { "ok" } else { "warn" }.into(),
+        };
+        let mut items = vec![item(
+            "operator",
+            format!(
+                "legionctl {} (API build {})",
+                env!("CARGO_PKG_VERSION"),
+                legionctl_api::api_fingerprint()
+            ),
+            true,
+        )];
+        let ours = legionctl_machine::interface_version();
+        items.push(match self.system(async |p| p.version().await) {
+            Ok(v) if v == ours => item("daemon", format!("legionctl-system, interface {v}: the same build"), true),
+            Ok(v) => item(
+                "daemon",
+                format!(
+                    "legionctl-system, interface {v}; this operator has {ours}: install the matching package and \
+                     restart both"
+                ),
+                false,
+            ),
+            Err(e) => item("daemon", format!("legionctl-system does not answer: {e:#}"), false),
+        });
+        items.push(match Plan::load(None) {
+            Ok(plan) => item("machine", format!("profile {}", plan.profile.id), true),
+            Err(e) => item("machine", format!("no machine profile: {e:#}"), false),
+        });
+        items.push(item(
+            "licenses",
+            "MIT; the notices of the parts from other projects: /usr/share/licenses/legionctl"
+                .into(),
+            true,
+        ));
+        items.push(item(
+            "source",
+            "https://github.com/ksquarekumar/lenovolegionlinux".into(),
+            true,
+        ));
+        Ok(items)
+    }
+
     fn feedback_new(&self, _: &Ctx, input: legionctl_api::FeedbackIn) -> Result<Lines> {
         let store = dossiers()?;
         let now = legionctl_core::facts::now_ms() / 1000;

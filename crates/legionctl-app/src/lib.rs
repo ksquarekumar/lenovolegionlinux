@@ -7,6 +7,7 @@ mod feedback;
 mod forms;
 mod graph;
 pub mod greeter;
+mod help;
 mod history;
 pub mod shell;
 pub mod theme;

@@ -372,6 +372,9 @@ macro_rules! operations {
 operations! {
     /// Power source, thermal mode, firmware limits, CPU policy, temperature, GPU wiring and load.
     status / Status = "status", Read, StatusIn => Snapshot;
+    /// About legionctl: the operator's version and API build, whether the machine daemon is of the same build, the
+    /// machine profile, the licenses and the links; one row each, with its state.
+    about / About = "about", Read, Empty => Vec<AboutItem>;
     /// Load level (idle, normal, busy, overloaded) and why, from CPU, memory and I/O pressure. Check it before
     /// builds, test suites or parallel jobs.
     load / Load = "load", Read, Empty => LoadState;

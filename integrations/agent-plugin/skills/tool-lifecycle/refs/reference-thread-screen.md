@@ -58,7 +58,7 @@ repository's `.legionctl/views/`, the user's `~/.config/legionctl/views/`, the s
 | `name`, `title`, `intent`, `space`, `params` | a-z, 0-9 and `-`; the words; the intent it answers ("the machine now"); the navigator's space (machine, work, agents); parameters `string` or `integer`. |
 | `widget` | `table`, `tree`, `gauge`, `sparkline`, `markdown`, `diff`, `list`, `stack`, `stat`, `chart`, `graph`, `form` or `timeline`. |
 | `source` | `op` (a read operation), `input` (`{param}` in a string is the value), `path` (`$`, `$.a.0.b`, `$.[name=x].value`), `all` (read every page of a paged answer). |
-| `columns`, `labels`, `formats` | Table fields (`a.b`; `a\|b` the first that is not null); header and button words; `ago`, `time`, `int`, `1dp`, `count`, `join`. |
+| `columns`, `labels`, `formats` | Table fields (`a.b`; `a\|b` the first that is not null); header and button words; `ago`, `time`, `int`, `1dp`, `count`, `join`, `bytes` (1.5 KiB), `ms` (a duration: 1.2 s); another format is refused. |
 | `group`, `levels`, `filter`, `last` | Rows in groups (a field, or rules `prefix`/`any` with `rest`; `labels`, `order`, `fold`); state colours of a number column (`warn`, `critical`, `when`); rows with these values; the newest N rows first. |
 | `unit`, `warn`, `critical`, `note`, `missing`, `trend` | A stat's unit, limits, note (`{field}` of the answer), the cause when the value is missing, and a path to its trend. |
 | `x`, `y`, `series` | A chart's fields: one line per series value (a chart never mixes kinds), x as time with `formats.x = time`. |

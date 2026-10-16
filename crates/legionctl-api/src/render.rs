@@ -2851,6 +2851,19 @@ impl Render for Vec<crate::PartInfo> {
     }
 }
 
+/// One line per part of `about`: `daemon: legionctl-system ... (warn)`.
+impl Render for Vec<crate::AboutItem> {
+    fn text(&self) -> String {
+        self.iter()
+            .map(|i| {
+                let warn = if i.state == "ok" { "" } else { " (needs you)" };
+                format!("{}: {}{warn}", i.part, i.value)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
 /// One line per step of `ask`: `composer: 3 runs, 2 answered, 1 failed; 9000 tokens in, 900 out; median 14000 ms`.
 impl Render for Vec<crate::AskCost> {
     fn text(&self) -> String {

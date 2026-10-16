@@ -445,6 +445,42 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "about": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "description": "One row of `about`.",
+        "type": "object",
+        "properties": {
+          "part": {
+            "description": "What the row is about: operator, daemon, machine, licenses, source.",
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          },
+          "state": {
+            "description": "ok, or warn when the part needs the user (a daemon of another build, or no daemon).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "part",
+          "value",
+          "state"
+        ]
+      },
+      "title": "Array_of_AboutItem",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "load": {
     "class": "read",
     "internal": false,

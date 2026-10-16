@@ -73,6 +73,9 @@ for bench and tune.
 A chat keeps its conversation in a dossier. Choose one with `/dossier use <name>`, or make one with `/dossier create
 <name>` (the title bar shows it; a click opens the Dossiers view).
 
+Help in the title bar: About (the builds of the operator and the daemon, and whether they match; the machine profile;
+the licenses), Feedback, and Keys. Ctrl+K searches the views, commands and operations (the chat bar with `/`).
+
 Keys: Up and Down in the chat bar show the lines that you sent before (also after a restart). PageUp, PageDown, Home
 and End scroll the tab. Tab with nothing to complete goes to the tab, where Up and Down scroll; Tab goes back. Select
 text with the mouse and copy it with Ctrl+C; the copy button of a table row or an error copies it whole.

@@ -1,0 +1,13 @@
+// Seed (todo-169): about legionctl: the builds of the operator and the daemon and whether they match, the machine
+// profile, the licenses and the source. The title bar's Help opens it.
+{
+  "$schema": "../../docs/api/view.schema.json",
+  "name": "about",
+  "title": "About legionctl",
+  "intent": "about legionctl and its versions",
+  "space": "agents",
+  "widget": "list",
+  "source": { "op": "about" },
+  "columns": ["part", "value", "state"],
+  "labels": { "part": "Part", "value": "What", "state": "State" }
+}

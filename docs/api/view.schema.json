@@ -78,7 +78,7 @@
       }
     },
     "formats": {
-      "description": "How a column's or a stat's value shows: `ago`, `time` (seconds since the epoch), `int`, `1dp`, `count` (an\narray's length), `join` (an array or object's values with \" / \").",
+      "description": "How a column's or a stat's value shows: `ago`, `time` (seconds since the epoch), `int`, `1dp`, `bytes` (a size,\n1.5 KiB), `ms` (a duration in milliseconds, 1.2 s), `count` (an\narray's length), `join` (an array or object's values with \" / \").",
       "type": "object",
       "additionalProperties": {
         "type": "string"

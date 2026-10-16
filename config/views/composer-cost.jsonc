@@ -16,8 +16,9 @@
     "failed": "Failed",
     "tokens_in": "Tokens in",
     "tokens_out": "Tokens out",
-    "ms_median": "Median ms",
-    "ms_max": "Longest ms"
+    "ms_median": "Median time",
+    "ms_max": "Longest time"
   },
+  "formats": { "ms_median": "ms", "ms_max": "ms" },
   "refresh": { "events": ["views.ask"] }
 }

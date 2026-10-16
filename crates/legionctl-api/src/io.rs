@@ -872,6 +872,16 @@ pub struct DossierAddIn {
     pub session: SessionId,
 }
 
+/// One row of `about`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AboutItem {
+    /// What the row is about: operator, daemon, machine, licenses, source.
+    pub part: String,
+    pub value: String,
+    /// ok, or warn when the part needs the user (a daemon of another build, or no daemon).
+    pub state: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FeedbackIn {
     /// What the user says.

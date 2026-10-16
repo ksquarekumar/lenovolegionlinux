@@ -887,6 +887,7 @@ impl LegionApp {
                 self.show_space(Space::ALL[i], cx);
             }
             "w" if control => self.close_tab(self.screen.active, cx),
+            "k" if control => self.palette(window, cx),
             "tab" if control && n > 0 => {
                 let next = if shift {
                     (self.screen.active + n - 1) % n
