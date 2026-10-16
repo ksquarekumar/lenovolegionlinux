@@ -17,7 +17,14 @@ use legionctl_api::client::Client;
 
 fn client_only() -> Vec<Command> {
     vec![
-        Command::new("mcp").about("MCP server over stdio, for Claude Code, Codex and other agents"),
+        Command::new("mcp")
+            .about("MCP server over stdio, for Claude Code, Codex and other agents")
+            .arg(
+                Arg::new("only")
+                    .long("only")
+                    .action(ArgAction::Append)
+                    .help("An operation the server offers (a bound agent's tools); none: every public operation"),
+            ),
         Command::new("mcp-proxy")
             .about("A session agent's way to an MCP server: only the allowed tools, every call logged (tools calls)")
             .arg(Arg::new("server").long("server").required(true))
@@ -295,7 +302,15 @@ fn main() -> Result<()> {
     }
     let matches = cli::command(client_only()).get_matches();
     match matches.subcommand() {
-        Some(("mcp", _)) => return tokio::runtime::Runtime::new()?.block_on(mcp::serve()),
+        Some(("mcp", sub)) => {
+            let only: Vec<String> = sub
+                .get_many::<String>("only")
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect();
+            return tokio::runtime::Runtime::new()?.block_on(mcp::serve(&only));
+        }
         Some(("mcp-proxy", sub)) => {
             let strings = |id: &str| {
                 sub.get_many::<String>(id)

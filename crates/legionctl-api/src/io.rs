@@ -1038,6 +1038,11 @@ pub struct SessionRunIn {
     /// on in the thread's last ACP session, and the prompt and the answer (or the failure) are rows of its log.
     #[serde(default)]
     pub thread: Option<i64>,
+    /// Bind the agent to these operations: its only tools are legionctl's MCP tools of them (no file, shell or web
+    /// tools of its own, no settings, plugins or other MCP servers). The run fails when the agent's adapter cannot be
+    /// bound (config `session.acp_bind`). None: the agent's own tools and the session's MCP servers.
+    #[serde(default)]
+    pub tools: Vec<String>,
 }
 
 /// What a headless run gave back.
@@ -2750,7 +2755,61 @@ pub struct ViewAnswer {
     pub data: Option<crate::ViewData>,
     /// The composer's run: its session and ACP session (the chat bar goes on in it).
     pub run: Option<RunOutput>,
-    /// The composer's request and answer in tokens (an estimate: 4 characters each).
-    pub prompt_tokens: u64,
-    pub answer_tokens: u64,
+    /// Each step that ran, in order, with what it cost (also the event `views.ask`).
+    pub steps: Vec<AskStep>,
+}
+
+/// One step of an ask: stored (the intent word for word), rlcd (a pick among the stored intents) or composer.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct AskStep {
+    /// stored, rlcd or composer.
+    pub step: String,
+    /// answered, none (it ran and found no view) or failed.
+    pub outcome: String,
+    /// Tokens sent: rlcd's count, the composer's request as an estimate (4 characters each).
+    pub tokens_in: u64,
+    /// Tokens of the composer's answer (an estimate); rlcd answers no text.
+    pub tokens_out: u64,
+    pub ms: u64,
+    /// Why it failed, or why it found none.
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ViewPartsIn {
+    /// What the parts are for, in words: the parts that fit it come first, and only those that share a word.
+    #[serde(default)]
+    pub intent: Option<String>,
+    /// A folder in a repository: its layer comes first.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+}
+
+/// A part of the library: a stored view with one widget and one source, which a stack places by name and version.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PartInfo {
+    pub name: String,
+    /// The version that shows now (0: the seed); a stack pins one with `{"name": .., "version": ..}`.
+    pub version: u32,
+    pub title: String,
+    pub widget: ViewWidget,
+    /// The read operation and the path of its answer.
+    pub op: String,
+    pub path: String,
+}
+
+/// The cost of one step of `ask` over the asks in the event log.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AskCost {
+    /// stored, rlcd or composer.
+    pub step: String,
+    /// The asks in which it ran, it answered, and it failed.
+    pub runs: u64,
+    pub answered: u64,
+    pub failed: u64,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    /// The median and the longest time of a run.
+    pub ms_median: u64,
+    pub ms_max: u64,
 }

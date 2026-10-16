@@ -60,14 +60,14 @@ for bench and tune.
 
 ## The app
 
-`legionctl-app [<view>]` opens the desktop app. It needs the operator.
+`legionctl-app [<view> [name=value...]]` opens the desktop app. It needs the operator.
 
 | Part | What |
 | --- | --- |
-| Pane 1 | the pages: Now, Apps & GPU, Health, Bench, Resources |
-| Pane 2 | the navigator: in Work, New chat and your chats (your threads), newest first |
-| Pane 3 | the page, or a view that an agent or you placed (`legionctl views place`) |
-| Chat bar | `/` lists the commands; in a chat, other text is a message to the agent, and the answer comes into the tab |
+| Rail | the spaces Machine, Work and Agents, and Activity |
+| Navigator | the views of the space (in Work: New chat and your chats, newest first); drag its edge to change its width |
+| Tabs | each tab is one view (a seed, yours, or a composed one), or a chat |
+| Chat bar | `/` lists the commands; in a chat, other text is a message to the agent; in a view, it is an intent; `/change <words>` changes the tab's view |
 
 A chat keeps its conversation in a dossier. Choose one with `/dossier use <name>`, or make one with `/dossier create
 <name>` (the title bar shows it; a click opens the Dossiers view).
@@ -76,11 +76,22 @@ Pick the agent of the chat bar with `/agent claude` or `/agent codex` (the names
 is a row of the thread's log, so every app window on the thread uses the same agent. With no pick, config `app.agent` applies
 (default `claude`).
 
-![Bench page: CPU score over time and the runs](../media/app-bench.webp)
+Each screen is a view (`legionctl views list`). An intent opens a view in three steps; each step is recorded with
+its tokens and time (`legionctl views cost`, the view Composer cost):
 
-Planned (v1, plan#todo-146, DESIGN-09): a 56 px rail with the spaces Machine, Work and Agents plus Activity, a
-navigator pane, tabs, and every screen as a view that an agent can remake. Step G1 is built on the topic branch
-`gen-ui` and is not merged.
+1. Stored: the view whose intent it is word for word. No model runs.
+2. rlcd (config `views.rlcd`, off by default; for development, `rlcd.backend` `openrouter-free` is the free
+   model): a pick among the stored intents that share a word with it. A failed rlcd call fails the ask;
+   the composer does not run in its place.
+3. Composer: the chat bar's agent (`/agent claude`; Haiku on Claude Code) makes a view. It gets the view tools only
+   (no data, file or shell tools) and the parts of the library that fit the intent (`legionctl views parts`). A
+   stack places a part by name and version, so a new version of a part does not change the views that pin the old
+   one. The view is checked before it is saved; the next ask of the same intent is step 1.
+
+Codex cannot be the composer: codex-acp has no way to turn off its shell, so a bound run on Codex fails (config
+`session.acp_bind`).
+
+![Bench page: CPU score over time and the runs](../media/app-bench.webp)
 
 ## Commands by task
 

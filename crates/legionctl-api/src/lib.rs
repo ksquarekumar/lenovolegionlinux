@@ -940,10 +940,12 @@ operations! {
     /// view of that name; that version shows, and the screens that show the view read it again.
     views_save / ViewsSave = "views.save", Workspace, ViewSaveIn => Lines;
     /// An intent's view (DESIGN-09 G5): the stored view whose intent it is word for word; else, with config
-    /// `views.rlcd`, the stored view that rlcd picks; else the ui-composer (the agent over ACP, with its model from
-    /// `views.composer_models`) makes a view, or with `--view` the next version of that view. The view is checked
-    /// before it is saved; a view that fails its check is an error with its reason. The state given to models has
-    /// its secrets removed.
+    /// `views.rlcd`, the stored view that rlcd picks among the stored intents that share a word with it; else the
+    /// ui-composer (the agent over ACP, with its model from `views.composer_models`, bound to the view tools) makes a
+    /// view from the parts library and new parts, or with `--view` the next version of that view. The view is checked
+    /// before it is saved; a view that fails its check is an error with its reason. A failed rlcd call fails the ask:
+    /// the composer does not run in its place. The state given to models has its secrets removed; each ask is an
+    /// event `views.ask` with each step's cost.
     ask / Ask = "ask", Workspace, AskIn => ViewAnswer;
     /// Show another version of a view: undo, redo, reset (to the pinned version, else the seed), pin, or a number.
     views_version / ViewsVersion = "views.version", Session, ViewVersionIn => Lines;
@@ -951,6 +953,13 @@ operations! {
     views_render / ViewsRender = "views.render", Read, ViewRenderIn => ViewData;
     /// Show a view in pane 3 of a thread's screens: the thread's layout, kept in its log.
     views_place / ViewsPlace = "views.place", Session, ViewPlaceIn => Lines;
+    /// The parts library (todo-163): each stored view with one widget and one source, with the version that shows; with
+    /// an intent, the parts that share a word with it, best first. A stack places a part by name and version, so a
+    /// new view reuses it and a new version of the part does not change the views that pin the old one.
+    views_parts / ViewsParts = "views.parts", Read, ViewPartsIn => Vec<PartInfo>;
+    /// What each step of `ask` cost (stored, rlcd, composer): runs, answers, failures, tokens and time, from the
+    /// `views.ask` events.
+    views_cost / ViewsCost = "views.cost", Read, Empty => Vec<AskCost>;
     /// Pick the agent of a thread's chat bar (a name of `session.acp`): the screens send their prompts to it; the
     /// pick is a row of the thread's log.
     thread_agent / ThreadAgent = "thread.agent", Session, ThreadAgentIn => Lines;

@@ -210,6 +210,9 @@ pub struct Launch {
     pub workdir: PathBuf,
     /// The session's MCP servers (`mcp.json`): legionctl's own and each one behind the proxy.
     pub mcp: serde_json::Value,
+    /// The operations the agent is bound to ([`Launch::bind`]): its only tools; none: unbound.
+    #[serde(default)]
+    pub tools: Option<Vec<String>>,
     /// What the session uses (its dossier, new or not; its workspace, branch and size) and the commands that change
     /// them; the client shows them before the agent starts.
     pub lines: Vec<String>,
@@ -1188,6 +1191,30 @@ impl Dossiers {
     }
 }
 
+impl Launch {
+    /// Bind the run of `agent` to the operations `tools` (DESIGN-11: a bound agent gets only what its binding needs):
+    /// its MCP config is legionctl's server with those tools only, and the ACP client asks the adapter for no tools
+    /// of its own.
+    ///
+    /// # Errors
+    /// The agent's adapter cannot be bound (not in `session.acp_bind`).
+    pub fn bind(&mut self, agent: &str, tools: &[String], config: &Config) -> Result<()> {
+        anyhow::ensure!(
+            config.session.acp_bind.iter().any(|a| a == agent),
+            "agent {agent} cannot be bound to tools: its adapter has no way to turn off its own file and shell tools \
+             (config session.acp_bind: {:?})",
+            config.session.acp_bind
+        );
+        let mut args = vec!["mcp".to_string()];
+        for tool in tools {
+            args.extend(["--only".into(), tool.clone()]);
+        }
+        self.mcp = serde_json::json!({ "mcpServers": { "legionctl": { "command": "legionctl", "args": args } } });
+        self.tools = Some(tools.to_vec());
+        Ok(())
+    }
+}
+
 /// Claude Code settings for a session (layer 1 of the gates, note 14): the git gate's refusals and the grant's
 /// forbidden commands as `permissions.deny`, so the agent learns them before it runs a command (the git shim in the
 /// sandbox stays the authority for git), with the harness set's settings over them (its own sandbox off).
@@ -1844,6 +1871,7 @@ impl Dossiers {
             lines,
             workdir,
             mcp: mcp_json,
+            tools: None,
             id,
         })
     }

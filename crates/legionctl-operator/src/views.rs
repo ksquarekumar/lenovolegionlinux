@@ -74,7 +74,7 @@ fn check(view: &View, repo: Option<&Path>) -> Result<()> {
         for part in &view.views {
             match part {
                 Part::Placed(placed) => {
-                    legionctl_core::views::find(&placed.name, None, repo)
+                    legionctl_core::views::find(&placed.name, placed.version, repo)
                         .with_context(|| format!("stack {} holds {}", view.name, placed.name))?;
                 }
                 Part::Inline(inline) => check(inline, repo)?,
@@ -397,7 +397,9 @@ impl Pass<'_> {
                             .collect();
                         self.render(inline, &inherited, depth + 1)
                     }
-                    Part::Placed(placed) => match version(&placed.name, self.repo)
+                    Part::Placed(placed) => match placed
+                        .version
+                        .map_or_else(|| version(&placed.name, self.repo), |v| Ok(Some(v)))
                         .and_then(|v| legionctl_core::views::find(&placed.name, v, Some(self.repo)))
                     {
                         Ok(inner) => {
@@ -497,6 +499,7 @@ pub fn place(input: &ViewPlaceIn) -> Result<Lines> {
     let placed = Placed {
         name: input.name.clone(),
         params: params(&input.params)?,
+        version: None,
     };
     let view = legionctl_core::views::find(&placed.name, version(&placed.name, repo)?, Some(repo))?;
     if view.widget != Widget::Stack {
@@ -537,26 +540,68 @@ fn stored(intent: &str, repo: &Path) -> Result<Option<String>> {
         .map(|v| v.name))
 }
 
-/// rlcd's pick among the stored views (config `views.rlcd`): a choice with each view's intent as its meaning, and
-/// "none"; a pick under `views.rlcd_min` is none. A failed call fails the ask (no other route runs).
-fn rlcd_pick(
-    engine: &dyn Engine,
-    ctx: &Ctx,
-    intent: &str,
-    repo: &Path,
-    min: f64,
-) -> Result<Option<String>> {
+/// The words of `text` that say something, as stems (their first 5 letters): a cheap lexical fit between an intent
+/// and the stored intents, parts and operations.
+fn stems(text: &str) -> Vec<String> {
+    const STOP: [&str; 12] = [
+        "the", "and", "what", "why", "show", "this", "that", "with", "for", "add", "how", "are",
+    ];
+    text.split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|w| w.len() > 2 && !STOP.contains(&w.as_str()))
+        .map(|w| w.chars().take(5).collect())
+        .collect()
+}
+
+/// How many of the stems `want` `text` has.
+fn fit(want: &[String], text: &str) -> usize {
+    let have = stems(text);
+    want.iter().filter(|w| have.contains(w)).count()
+}
+
+/// The stored intents that rlcd chooses among: at most this many, those that share the most words with the intent.
+const RLCD_TOP: usize = 8;
+
+/// What the rlcd step found: the view it picked, and its input tokens.
+struct Pick {
+    view: Option<String>,
+    tokens: u64,
+    note: Option<String>,
+}
+
+/// rlcd's pick among the stored intents (config `views.rlcd`), as the second check after the exact match: the
+/// candidates are the stored views whose intent shares a word with `intent` (at most [`RLCD_TOP`], best first; none:
+/// no call); the state is the intent, and the choice has each candidate's intent and title as its meaning, and none.
+/// A pick under `views.rlcd_min` is none. A failed call is an error: the ask fails (no other step runs).
+fn rlcd_pick(engine: &dyn Engine, ctx: &Ctx, intent: &str, repo: &Path, min: f64) -> Result<Pick> {
     let clean = |t: &str| t.replace([',', ':', '='], " ");
-    let options: Vec<String> = legionctl_core::views::list(Some(repo))
+    let want = stems(intent);
+    let mut candidates: Vec<(usize, String, String)> = legionctl_core::views::list(Some(repo))
         .into_iter()
         .filter_map(|(_, _, v)| v.ok())
-        .map(|v| {
-            format!(
-                "{}={}",
+        .filter_map(|v| {
+            let stored = v.intent.clone()?;
+            let title = v.title();
+            Some((
+                fit(&want, &format!("{stored} {title}")),
                 v.name,
-                clean(&v.intent.clone().unwrap_or_else(|| v.title()))
-            )
+                format!("{} - {}", clean(&stored), clean(&title)),
+            ))
         })
+        .filter(|(score, _, _)| *score > 0)
+        .collect();
+    candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    candidates.truncate(RLCD_TOP);
+    if candidates.is_empty() {
+        return Ok(Pick {
+            view: None,
+            tokens: 0,
+            note: Some("no stored intent shares a word with it: rlcd was not asked".into()),
+        });
+    }
+    let options: Vec<String> = candidates
+        .iter()
+        .map(|(_, name, meaning)| format!("{name}={meaning}"))
         .chain(std::iter::once("none=no view answers it".to_string()))
         .collect();
     let question = format!(
@@ -573,10 +618,195 @@ fn rlcd_pick(
             repo: legionctl_api::ClientPath(repo.to_path_buf()),
         },
     )?;
+    let tokens = u64::try_from(decision.input_tokens).unwrap_or(0);
     let answer = &decision.answers.unwrap_or_default()["view"];
     let choice = answer["choice"].as_str().unwrap_or("none");
     let p = answer["probabilities"][choice].as_f64().unwrap_or(0.0);
-    Ok((choice != "none" && p >= min).then(|| choice.to_string()))
+    Ok(if choice != "none" && p >= min {
+        Pick {
+            view: Some(choice.to_string()),
+            tokens,
+            note: None,
+        }
+    } else {
+        Pick {
+            view: None,
+            tokens,
+            note: Some(format!(
+                "rlcd picked {choice} at {p:.2} (counts from {min})"
+            )),
+        }
+    })
+}
+
+/// The parts library: each stored view with one widget and one source, with the version that shows; with `want`
+/// (an intent's stems), only those that share a word with it, best first.
+fn library(repo: &Path, want: Option<&[String]>) -> Result<Vec<(legionctl_api::PartInfo, View)>> {
+    let mut out = Vec::new();
+    for (_, _, view) in legionctl_core::views::list(Some(repo)) {
+        let Ok(view) = view else { continue };
+        let Some(source) = view.source.clone() else {
+            continue;
+        };
+        let score = want.map_or(1, |w| {
+            fit(
+                w,
+                &format!(
+                    "{} {} {} {}",
+                    view.title(),
+                    view.intent.as_deref().unwrap_or_default(),
+                    view.name,
+                    source.op
+                ),
+            )
+        });
+        if score == 0 {
+            continue;
+        }
+        let shown = match version(&view.name, repo)? {
+            Some(v) => v,
+            None => legionctl_core::views::versions(&view.name, Some(repo))
+                .last()
+                .copied()
+                .unwrap_or(0),
+        };
+        out.push((
+            score,
+            legionctl_api::PartInfo {
+                name: view.name.clone(),
+                version: shown,
+                title: view.title(),
+                widget: view.widget.into_wire(),
+                op: source.op,
+                path: source.path,
+            },
+            view,
+        ));
+    }
+    out.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
+    Ok(out
+        .into_iter()
+        .map(|(_, info, view)| (info, view))
+        .collect())
+}
+
+pub fn parts(input: &legionctl_api::ViewPartsIn) -> Result<Vec<legionctl_api::PartInfo>> {
+    let want = input.intent.as_deref().map(stems);
+    Ok(library(input.repo.get()?, want.as_deref())?
+        .into_iter()
+        .map(|(info, _)| info)
+        .collect())
+}
+
+/// Two parts that show the same: equal but for their names and words.
+fn same(a: &View, b: &View) -> bool {
+    let shape = |v: &View| {
+        let mut value = serde_json::to_value(v).unwrap_or_default();
+        if let Some(map) = value.as_object_mut() {
+            for key in ["name", "title", "intent", "space", "$schema"] {
+                map.remove(key);
+            }
+        }
+        value
+    };
+    shape(a) == shape(b)
+}
+
+/// Each part that a composed stack writes in place goes into the library and the stack places it by name and
+/// version: a part that the library has already (the same widget, source and fields) is placed as it is, a new one is
+/// saved as `<stack>-<part>` (a name no layer has), version 1.
+fn into_library(view: &mut View, repo: &Path, layer: Option<&Path>) -> Result<()> {
+    if view.widget != Widget::Stack {
+        return Ok(());
+    }
+    let known = library(repo, None)?;
+    let stack_params: Vec<String> = view.params.keys().cloned().collect();
+    for part in &mut view.views {
+        let Part::Inline(inline) = part else {
+            continue;
+        };
+        // the part gets the stack's values of the parameters it declares, as an inline part did
+        let params = inline
+            .params
+            .keys()
+            .filter(|k| stack_params.contains(k))
+            .map(|k| (k.clone(), format!("{{{k}}}")))
+            .collect();
+        let (name, version) = if let Some((info, _)) = known.iter().find(|(_, v)| same(v, inline)) {
+            (info.name.clone(), info.version)
+        } else {
+            let name = unique(&format!("{}-{}", view.name, inline.name), repo);
+            inline.name.clone_from(&name);
+            let text = serde_json::to_string_pretty(&**inline)?;
+            let (_, saved) = legionctl_core::views::save(inline, &text, layer)?;
+            (name, saved)
+        };
+        *part = Part::Placed(Placed {
+            name,
+            params,
+            version: Some(version),
+        });
+    }
+    Ok(())
+}
+
+/// The cost of each step of `ask`, from the `views.ask` events.
+pub fn cost() -> Result<Vec<legionctl_api::AskCost>> {
+    let db = legionctl_core::db::Db::open_default()?;
+    let filter = legionctl_core::db::EventFilter {
+        kinds: &["views.ask"],
+        ..Default::default()
+    };
+    let mut steps: BTreeMap<String, (legionctl_api::AskCost, Vec<u64>)> = BTreeMap::new();
+    let mut after = 0;
+    loop {
+        let (rows, next) = db.events_page(&filter, after, 1000)?;
+        for row in rows {
+            let ran: Vec<legionctl_api::AskStep> =
+                serde_json::from_value(row.payload["steps"].clone())
+                    .with_context(|| format!("event {} has no steps of an ask", row.id))?;
+            for step in ran {
+                let (c, times) = steps.entry(step.step.clone()).or_insert_with(|| {
+                    (
+                        legionctl_api::AskCost {
+                            step: step.step.clone(),
+                            runs: 0,
+                            answered: 0,
+                            failed: 0,
+                            tokens_in: 0,
+                            tokens_out: 0,
+                            ms_median: 0,
+                            ms_max: 0,
+                        },
+                        Vec::new(),
+                    )
+                });
+                c.runs += 1;
+                c.answered += u64::from(step.outcome == "answered");
+                c.failed += u64::from(step.outcome == "failed");
+                c.tokens_in += step.tokens_in;
+                c.tokens_out += step.tokens_out;
+                times.push(step.ms);
+            }
+        }
+        match next {
+            Some(id) => after = id,
+            None => break,
+        }
+    }
+    // the order of the route: stored, rlcd, composer
+    let rank = |s: &str| ["stored", "rlcd", "composer"].iter().position(|r| *r == s);
+    let mut out: Vec<legionctl_api::AskCost> = steps
+        .into_values()
+        .map(|(mut c, mut times)| {
+            times.sort_unstable();
+            c.ms_median = times[times.len() / 2];
+            c.ms_max = times.last().copied().unwrap_or(0);
+            c
+        })
+        .collect();
+    out.sort_by_key(|c| rank(&c.step));
+    Ok(out)
 }
 
 /// A JSON schema in a few characters for a model: `string`, `[T]`, `{a: T, b: T}` (with `$defs` of `root`), at most
@@ -701,14 +931,7 @@ fn relevant(
     Vec<&'static legionctl_api::OpInfo>,
     Vec<&'static legionctl_api::OpInfo>,
 ) {
-    const STOP: [&str; 12] = [
-        "the", "and", "what", "why", "show", "this", "that", "with", "for", "add", "how", "are",
-    ];
-    let words: Vec<String> = intent
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.len() > 2 && !STOP.contains(w))
-        .map(str::to_lowercase)
-        .collect();
+    let words = stems(intent);
     let mut groups: Vec<String> = Vec::new();
     let mut collect = |v: &View| {
         if let Some(s) = &v.source {
@@ -775,7 +998,8 @@ fn composer_prompt(
          one ```json block. Use only the widgets and fields below; a source is a read operation of the list; a \
          button may name an operation of either list (it runs with its own approval). Keep the view small: the \
          point first, the detail on demand. The view and each part have a title in the user's words (a card's \
-         heading; a name is an id). A table's first column names the row (its name, key or id)."
+         heading; a name is an id). A table's first column names the row (its name, key or id). Your tools are the \
+         view tools only (views list, check, parts, render, save, place); the data sample below is the data you get."
             .to_string(),
         format!("Intent: {intent}"),
     ];
@@ -793,6 +1017,23 @@ fn composer_prompt(
         );
     }
     out.extend(format_lines()?);
+    let fitting = library(repo, Some(&stems(intent)))?;
+    if fitting.is_empty() {
+        out.push("Parts library: no part fits this intent yet.".into());
+    } else {
+        out.push(
+            "Parts library: reuse a part that fits by placing it in a stack's views as {\"name\": \"<part>\", \
+             \"version\": <n>}; write a new part only for what no part shows (each new part of a stack goes into the \
+             library):"
+                .into(),
+        );
+        out.extend(fitting.iter().take(PARTS_TOP).map(|(p, _)| {
+            format!(
+                "- {} v{}: {} ({} of {} {})",
+                p.name, p.version, p.title, p.widget, p.op, p.path
+            )
+        }));
+    }
     let (reads, changes) = relevant(intent, current.and_then(|c| c.1), (20, 8));
     out.push("Read operations (sources):".into());
     out.extend(reads.iter().map(|op| {
@@ -838,6 +1079,20 @@ fn composer_prompt(
     }
     Ok(out.join("\n"))
 }
+
+/// The parts of the library that a composer request lists at most.
+const PARTS_TOP: usize = 12;
+
+/// The composer's tools (DESIGN-11: bound to what its binding needs): the view operations, no data, file or shell
+/// tools; its data sample comes in the request.
+const COMPOSER_TOOLS: [&str; 6] = [
+    "views.list",
+    "views.check",
+    "views.parts",
+    "views.render",
+    "views.save",
+    "views.place",
+];
 
 /// A path field of `op`'s input resolves against `repo`, as a client resolves it against its folder: a given one,
 /// and one whose default is the client's folder (".").
@@ -942,6 +1197,7 @@ fn keep(
     if view.intent.is_none() && current.is_none() {
         view.intent = Some(intent.to_string());
     }
+    into_library(view, repo, layer)?;
     let text = serde_json::to_string_pretty(&*view)?;
     let (_, saved) = legionctl_core::views::save(view, &text, layer)?;
     show_version(ctx, &name, saved, layer, &format!("ask: {intent}"))?;
@@ -990,6 +1246,7 @@ fn composer_run(
             acp: input.acp.clone(),
             model,
             thread: None,
+            tools: COMPOSER_TOOLS.map(String::from).to_vec(),
         },
     )
 }
@@ -1030,16 +1287,65 @@ fn tab_view(
     Ok(Some((name.clone(), view, text, data)))
 }
 
+/// The time since `started` in ms.
+fn ms(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// One step of an ask, as it ended.
+fn step(name: &str, outcome: &str, started: std::time::Instant) -> legionctl_api::AskStep {
+    legionctl_api::AskStep {
+        step: name.into(),
+        outcome: outcome.into(),
+        ms: ms(started),
+        ..Default::default()
+    }
+}
+
+/// `ask`: each step that runs is kept with its cost in the answer and in the event `views.ask`, also when a step
+/// fails the ask.
 pub fn ask(
     engine: &dyn Engine,
     ctx: &Ctx,
     input: &legionctl_api::AskIn,
 ) -> Result<legionctl_api::ViewAnswer> {
+    let intent = normal(&input.intent);
+    let mut steps = Vec::new();
+    let result = route(engine, ctx, input, &intent, &mut steps);
+    let (route, view, error) = match &result {
+        Ok(a) => (a.route.clone(), a.view.clone(), a.error.clone()),
+        Err(e) => (
+            steps
+                .last()
+                .map(|s: &legionctl_api::AskStep| s.step.clone())
+                .unwrap_or_default(),
+            None,
+            Some(format!("{e:#}")),
+        ),
+    };
+    legionctl_core::db::Db::open_default()?.record(
+        "views",
+        "views.ask",
+        &serde_json::json!({"intent": intent, "change": input.view, "route": route, "view": view, "error": error,
+            "steps": steps}),
+    )?;
+    result.map(|mut answer| {
+        answer.steps = steps;
+        answer
+    })
+}
+
+fn route(
+    engine: &dyn Engine,
+    ctx: &Ctx,
+    input: &legionctl_api::AskIn,
+    intent: &str,
+    steps: &mut Vec<legionctl_api::AskStep>,
+) -> Result<legionctl_api::ViewAnswer> {
     let repo = input.repo.get()?;
     let resolved =
         legionctl_core::config::resolve(&legionctl_core::config::Dirs::from_env(), Some(repo))?;
     let cfg = &resolved.config;
-    let intent = normal(&input.intent);
     ensure!(!intent.is_empty(), "an intent is the words of what to see");
     let render_view = |name: &str| {
         render(
@@ -1060,24 +1366,70 @@ pub fn ask(
             text: String::new(),
             error: None,
             run: None,
-            prompt_tokens: 0,
-            answer_tokens: 0,
+            steps: Vec::new(),
         })
     };
     if input.view.is_none() {
-        if let Some(name) = stored(&intent, repo)? {
+        let started = std::time::Instant::now();
+        let stored = stored(intent, repo);
+        let outcome = match &stored {
+            Ok(Some(_)) => "answered",
+            Ok(None) => "none",
+            Err(_) => "failed",
+        };
+        steps.push(step("stored", outcome, started));
+        if let Some(name) = stored? {
             return found("stored", name);
         }
-        if cfg.views.rlcd
-            && let Some(name) = rlcd_pick(engine, ctx, &intent, repo, cfg.views.rlcd_min)?
-        {
-            return found("rlcd", name);
+        if cfg.views.rlcd {
+            let started = std::time::Instant::now();
+            let pick = rlcd_pick(engine, ctx, intent, repo, cfg.views.rlcd_min);
+            let mut done = step("rlcd", "failed", started);
+            match &pick {
+                Ok(p) => {
+                    done.outcome = if p.view.is_some() { "answered" } else { "none" }.into();
+                    done.tokens_in = p.tokens;
+                    done.note.clone_from(&p.note);
+                }
+                Err(e) => done.note = Some(format!("{e:#}")),
+            }
+            steps.push(done);
+            // a failed rlcd call fails the ask: the composer does not run in its place
+            if let Some(name) = pick?.view {
+                return found("rlcd", name);
+            }
         }
     }
     ensure!(
         !input.stored,
         "no stored view answers \"{intent}\"; a new view needs an agent run in a dossier (dossier use <name>)"
     );
+    let started = std::time::Instant::now();
+    let mut done = step("composer", "failed", started);
+    let answer = compose(engine, ctx, input, intent, cfg, &mut done);
+    done.ms = ms(started);
+    match &answer {
+        Ok(a) if a.view.is_some() => done.outcome = "answered".into(),
+        Ok(a) => {
+            done.outcome = if a.error.is_some() { "failed" } else { "none" }.into();
+            done.note.clone_from(&a.error);
+        }
+        Err(e) => done.note = Some(format!("{e:#}")),
+    }
+    steps.push(done);
+    answer
+}
+
+/// The ui-composer's step: its request, its bound run, and its view checked and kept.
+fn compose(
+    engine: &dyn Engine,
+    ctx: &Ctx,
+    input: &legionctl_api::AskIn,
+    intent: &str,
+    cfg: &legionctl_core::config::Config,
+    done: &mut legionctl_api::AskStep,
+) -> Result<legionctl_api::ViewAnswer> {
+    let repo = input.repo.get()?;
     let agent = input
         .agent
         .clone()
@@ -1087,14 +1439,16 @@ pub fn ask(
     let prompt = composer_prompt(
         engine,
         ctx,
-        &intent,
+        intent,
         current
             .as_ref()
             .map(|(n, v, t, d)| (n.as_str(), v.as_ref(), t.as_str(), d.as_str())),
         repo,
     )?;
+    done.tokens_in = legionctl_core::pool::tokens(&prompt);
     let model = cfg.views.composer_models.get(&agent).cloned();
     let run = composer_run(engine, ctx, input, (&agent, model), &prompt, repo)?;
+    done.tokens_out = legionctl_core::pool::tokens(&run.text);
 
     let (text, spec) = split(&run.text);
     let mut answer = legionctl_api::ViewAnswer {
@@ -1103,9 +1457,8 @@ pub fn ask(
         text,
         error: None,
         data: None,
-        prompt_tokens: legionctl_core::pool::tokens(&prompt),
-        answer_tokens: legionctl_core::pool::tokens(&run.text),
         run: Some(run),
+        steps: Vec::new(),
     };
     let Some(spec) = spec else {
         return Ok(answer);
@@ -1121,10 +1474,19 @@ pub fn ask(
         ctx,
         &mut view,
         current.as_ref().map(|c| c.0.as_str()),
-        (&intent, &agent),
+        (intent, &agent),
         repo,
     )?;
-    answer.data = Some(render_view(&name)?);
+    let render_view = render(
+        engine,
+        ctx,
+        &ViewRenderIn {
+            name: name.clone(),
+            params: input.params.clone(),
+            repo: legionctl_api::ClientPath(repo.to_path_buf()),
+        },
+    )?;
+    answer.data = Some(render_view);
     answer.view = Some(name);
     Ok(answer)
 }

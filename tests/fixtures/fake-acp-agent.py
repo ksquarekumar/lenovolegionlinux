@@ -14,7 +14,9 @@ $FAKE_ACP_SCRIPTS/<member>.sh instead, with the prompt in FAKE_ACP_PROMPT, and i
 as its first argument ends each answer with the line "agent: <name>" (two session.acp agents in one test). Like the real adapters, it does not end when its input closes: the operator must end the session.
 A ui-composer (DESIGN-09 G5): session/set_model keeps the model, and the answer has the line "model: <model>"; with
 FAKE_ACP_VIEWS set to a folder, a prompt with a line "Intent: <words>" gets the file <first word>.jsonc of that folder
-as a ```json block at the end of the answer (no file: no block).
+as a ```json block at the end of the answer (no file: no block). The answer has the line "bound: <json>" with the
+MCP servers (name, command, args) and the _meta of session/new or session/load, so a test can read what the run was
+bound to.
 """
 
 import json
@@ -28,6 +30,7 @@ import uuid
 SESSIONS = ".fake-acp-sessions"
 model = None
 mcp_servers = []
+meta = None
 loaded = None
 next_id = 100
 
@@ -120,6 +123,7 @@ def prompt(params):
         "COMMIT_OK" if committed else "COMMIT_FAILED",
         "PUSH_REFUSED" if (not pushed and "gates.git.deny" in push_output) else "PUSH_NOT_REFUSED",
         "inside: " + where(),
+        "bound: " + json.dumps({"mcp": [{k: s.get(k) for k in ("name", "command", "args")} for s in mcp_servers], "meta": meta}),
     ]
     if len(sys.argv) > 1:
         lines.append(f"agent: {sys.argv[1]}")
@@ -161,11 +165,11 @@ for line in sys.stdin:
     if method == "initialize":
         result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}, "authMethods": []}
     elif method == "session/new":
-        mcp_servers = params.get("mcpServers", [])
+        mcp_servers, meta = params.get("mcpServers", []), params.get("_meta")
         result = {"sessionId": f"fake-{uuid.uuid4().hex[:12]}"}
         keep(result["sessionId"], [])
     elif method == "session/load" and params.get("sessionId") in sessions():
-        mcp_servers, loaded = params.get("mcpServers", []), params["sessionId"]
+        mcp_servers, meta, loaded = params.get("mcpServers", []), params.get("_meta"), params["sessionId"]
         for earlier in sessions()[loaded]:
             update(loaded, "user_message_chunk", content={"type": "text", "text": earlier})
             update(loaded, "agent_message_chunk", content={"type": "text", "text": "REPLAYED\n"})

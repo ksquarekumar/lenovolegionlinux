@@ -1720,7 +1720,15 @@ impl Operator {
         let record = store.session(id)?;
         let resolved = resolve(&Dirs::from_env(), Some(&place_of(&record.workdir)))?;
         let token = legionctl_api::random_token()?;
-        let launch = store.resume_session(id, &resolved.config, None, &token, true)?;
+        let mut launch = store.resume_session(id, &resolved.config, None, &token, true)?;
+        // a job from before the binding has no tools: an unbound run, as it was
+        let tools: Vec<String> =
+            serde_json::from_value::<Option<Vec<String>>>(input["tools"].clone())
+                .context("the job's tools are not a list of operations")?
+                .unwrap_or_default();
+        if !tools.is_empty() {
+            launch.bind(&record.agent, &tools, &resolved.config)?;
+        }
         Db::open_default()?.issue_token(&launch.id, &token)?;
         let note = format!(
             "A restart of legionctl cut off your work on this task; your workspace and your dossier hold what you did. \
@@ -4544,6 +4552,18 @@ impl Engine for Operator {
         crate::views::place(&input)
     }
 
+    fn views_parts(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::ViewPartsIn,
+    ) -> Result<Vec<legionctl_api::PartInfo>> {
+        crate::views::parts(&input)
+    }
+
+    fn views_cost(&self, _: &Ctx, _: Empty) -> Result<Vec<legionctl_api::AskCost>> {
+        crate::views::cost()
+    }
+
     fn thread_agent(&self, _: &Ctx, input: legionctl_api::ThreadAgentIn) -> Result<Lines> {
         crate::thread::agent(&input)
     }
@@ -4955,12 +4975,26 @@ impl Operator {
             capabilities: &main_agent_sets(&resolved.config, &input.capability),
             parent: None,
         };
-        let launch = store.start_session(&start, &resolved.config)?;
+        for tool in &input.tools {
+            legionctl_api::OPS
+                .iter()
+                .find(|op| op.name == tool && !op.internal())
+                .with_context(|| format!("no operation {tool} to bind the agent to"))?;
+        }
+        let mut launch = store.start_session(&start, &resolved.config)?;
+        if !input.tools.is_empty() {
+            launch
+                .bind(agent, &input.tools, &resolved.config)
+                .inspect_err(|_| {
+                    let _ = store.release(&launch.id);
+                })?;
+        }
         let db = Db::open_default()?;
         db.issue_token(&launch.id, &token)?;
-        // `load`: the caller asked to go on in `acp`, so an agent that cannot load it fails the run
+        // `load`: the caller asked to go on in `acp`, so an agent that cannot load it fails the run; `tools`: a resume
+        // binds the run again
         let job_input = serde_json::json!({"session": launch.id, "prompt": prompt, "tag": tag,
-            "acp": acp, "load": acp.is_some(), "model": input.model});
+            "acp": acp, "load": acp.is_some(), "model": input.model, "tools": input.tools});
         let job = db.job_begin("session.run", &job_input)?;
         let out = self.runtime.block_on(crate::acp::run(
             launch,

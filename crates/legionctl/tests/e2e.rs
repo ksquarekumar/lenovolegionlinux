@@ -167,9 +167,15 @@ struct Mcp {
 
 impl Mcp {
     fn start(operator: &Operator, env: &[(&str, &str)]) -> Mcp {
+        Self::start_with(operator, env, &[])
+    }
+
+    /// `legionctl mcp <args>`.
+    fn start_with(operator: &Operator, env: &[(&str, &str)], args: &[&str]) -> Mcp {
         let mut child = Kill::spawn(
             Command::new(env!("CARGO_BIN_EXE_legionctl"))
                 .arg("mcp")
+                .args(args)
                 .env_clear()
                 .env("XDG_RUNTIME_DIR", &operator.runtime)
                 .envs(env.iter().copied())
@@ -197,13 +203,18 @@ impl Mcp {
     }
 
     fn call(&mut self, method: &str, params: &Value) -> Value {
+        self.call_raw(method, params)["result"].clone()
+    }
+
+    /// The whole reply: its result or its error.
+    fn call_raw(&mut self, method: &str, params: &Value) -> Value {
         self.next += 1;
         self.send(&json!({"jsonrpc": "2.0", "id": self.next, "method": method, "params": params}));
         let mut line = String::new();
         self.out.read_line(&mut line).unwrap();
         let reply: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(reply["id"], self.next, "{reply}");
-        reply["result"].clone()
+        reply
     }
 }
 
@@ -648,6 +659,25 @@ fn an_unknown_input_field_is_refused_before_the_operation_runs() {
     );
 }
 
+/// `legionctl mcp --only <op>...`: the server of a bound agent.
+fn bound_server_offers_only_its_operations(op: &Operator) {
+    // a bound agent's server (todo-163, the ui-composer): only its operations are tools, and only they run
+    let mut bound = Mcp::start_with(op, &[], &["--only", "views.list", "--only", "views.parts"]);
+    let tools = bound.call("tools/list", &json!({}));
+    let names: Vec<&str> = tools["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["views_list", "views_parts"]);
+    let refused = bound.call_raw("tools/call", &json!({"name": "skills", "arguments": {}}));
+    assert_eq!(
+        refused["error"]["message"], "unknown tool skills",
+        "a tool outside the binding does not run: {refused}"
+    );
+}
+
 #[test]
 fn mcp_server_has_one_tool_per_operation_and_calls_the_operator() {
     let (op, home) = operator("mcp");
@@ -669,6 +699,8 @@ fn mcp_server_has_one_tool_per_operation_and_calls_the_operator() {
         names, expected,
         "the registry's public operations are the tool list"
     );
+
+    bound_server_offers_only_its_operations(&op);
 
     let result = mcp.call("tools/call", &json!({"name": "skills", "arguments": {}}));
     assert_ne!(result["isError"], true, "{result}");

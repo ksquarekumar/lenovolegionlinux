@@ -1,0 +1,23 @@
+// Seed (todo-163): what each step of an intent's lookup costs: the stored view (word for word), rlcd's pick among the
+// stored intents, and the ui-composer over ACP. It reads again after each ask.
+{
+  "$schema": "../../docs/api/view.schema.json",
+  "name": "composer-cost",
+  "title": "Composer cost",
+  "intent": "what do generated views cost",
+  "space": "agents",
+  "widget": "table",
+  "source": { "op": "views.cost" },
+  "columns": ["step", "runs", "answered", "failed", "tokens_in", "tokens_out", "ms_median", "ms_max"],
+  "labels": {
+    "step": "Step",
+    "runs": "Runs",
+    "answered": "Answered",
+    "failed": "Failed",
+    "tokens_in": "Tokens in",
+    "tokens_out": "Tokens out",
+    "ms_median": "Median ms",
+    "ms_max": "Longest ms"
+  },
+  "refresh": { "events": ["views.ask"] }
+}

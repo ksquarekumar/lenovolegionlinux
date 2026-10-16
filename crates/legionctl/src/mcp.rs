@@ -22,6 +22,8 @@ fn tool_name(op: &OpInfo) -> String {
 
 struct Legion {
     client: Client,
+    /// The operations offered: the public ones, or the bound ones of `--only`.
+    ops: Vec<&'static OpInfo>,
 }
 
 impl Legion {
@@ -47,9 +49,9 @@ impl ServerHandler for Legion {
         _: Option<PaginatedRequestParams>,
         _: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + Send + '_ {
-        let tools = OPS
+        let tools = self
+            .ops
             .iter()
-            .filter(|op| !op.internal())
             .map(|op| {
                 let schema = match (op.input)() {
                     Value::Object(schema) => schema,
@@ -66,9 +68,11 @@ impl ServerHandler for Legion {
         request: CallToolRequestParams,
         _: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let Some(op) = OPS
+        let Some(op) = self
+            .ops
             .iter()
-            .find(|op| !op.internal() && tool_name(op) == request.name)
+            .copied()
+            .find(|op| tool_name(op) == request.name)
         else {
             return Err(ErrorData::invalid_params(
                 format!("unknown tool {}", request.name),
@@ -93,9 +97,26 @@ impl ServerHandler for Legion {
     }
 }
 
-pub async fn serve() -> anyhow::Result<()> {
+/// Serve the public operations, or only those named in `only`.
+///
+/// # Errors
+/// A name of `only` is not a public operation, or the transport fails.
+pub async fn serve(only: &[String]) -> anyhow::Result<()> {
+    let public = || OPS.iter().filter(|op| !op.internal());
+    let ops = if only.is_empty() {
+        public().collect()
+    } else {
+        only.iter()
+            .map(|name| {
+                public()
+                    .find(|op| op.name == name)
+                    .ok_or_else(|| anyhow::anyhow!("--only {name}: no such public operation"))
+            })
+            .collect::<anyhow::Result<_>>()?
+    };
     Legion {
         client: Client::new("mcp")?,
+        ops,
     }
     .serve(rmcp::transport::stdio())
     .await?

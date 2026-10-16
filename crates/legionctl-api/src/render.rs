@@ -2833,6 +2833,42 @@ impl Render for Vec<crate::ViewInfo> {
     }
 }
 
+/// `cpu-temp v2  stat of sensors $.[name=Package id 0].value  CPU temperature`, best fit first.
+impl Render for Vec<crate::PartInfo> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no part".into();
+        }
+        self.iter()
+            .map(|p| {
+                format!(
+                    "{} v{}  {} of {} {}  {}",
+                    p.name, p.version, p.widget, p.op, p.path, p.title
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+/// One line per step of `ask`: `composer: 3 runs, 2 answered, 1 failed; 9000 tokens in, 900 out; median 14000 ms`.
+impl Render for Vec<crate::AskCost> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no ask yet".into();
+        }
+        self.iter()
+            .map(|c| {
+                format!(
+                    "{}: {} runs, {} answered, {} failed; {} tokens in, {} out; median {} ms, longest {} ms",
+                    c.step, c.runs, c.answered, c.failed, c.tokens_in, c.tokens_out, c.ms_median, c.ms_max
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
 /// `#3 observer thread 1 observer0 openrouter (typesafe/jev-1.14) 169 tokens $0.0000 210 ms: action escalate 0.74
 /// (ignore 0.01, note 0.24) confidence 0.62; acp ok; gate checkpoint passed`.
 fn decision_line(d: &crate::RlcdDecision) -> String {
@@ -3020,18 +3056,18 @@ impl Render for crate::CodeTree {
 
 impl Render for crate::ViewAnswer {
     fn text(&self) -> String {
+        let (tokens_in, tokens_out, ms) = self.steps.iter().fold((0, 0, 0), |(i, o, m), s| {
+            (i + s.tokens_in, o + s.tokens_out, m + s.ms)
+        });
+        let cost = if tokens_in > 0 {
+            format!(", {tokens_in} tokens in, {tokens_out} out, {ms} ms")
+        } else {
+            String::new()
+        };
         let mut out = vec![format!(
-            "{} ({}{})",
+            "{} ({}{cost})",
             self.view.as_deref().unwrap_or("no view"),
             self.route,
-            if self.prompt_tokens > 0 {
-                format!(
-                    ", {} tokens in, {} out",
-                    self.prompt_tokens, self.answer_tokens
-                )
-            } else {
-                String::new()
-            }
         )];
         if !self.text.trim().is_empty() {
             out.push(self.text.trim().to_string());

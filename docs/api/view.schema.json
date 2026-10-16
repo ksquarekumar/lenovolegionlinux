@@ -655,7 +655,7 @@
       ]
     },
     "Placed": {
-      "description": "A view in a stack, or on a thread: its name and its parameters.",
+      "description": "A view in a stack, or on a thread: its name, its parameters, and the version it pins.",
       "type": "object",
       "properties": {
         "name": {
@@ -665,8 +665,16 @@
           "type": "object",
           "additionalProperties": {
             "type": "string"
-          },
-          "default": {}
+          }
+        },
+        "version": {
+          "description": "The version of the part that shows (a part of the library, `views parts`); a new version of the part does not\nchange this view. None: the version of the part that shows now.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
         }
       },
       "additionalProperties": false,

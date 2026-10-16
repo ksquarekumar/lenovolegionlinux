@@ -381,6 +381,10 @@ pub struct SessionConfig {
     pub resume: BTreeMap<String, Vec<String>>,
     /// Agent name -> the command of its ACP adapter, for headless runs (`session run`).
     pub acp: BTreeMap<String, Vec<String>>,
+    /// The agents of `acp` whose adapter can be bound to given tools (a run with `tools`: no file, shell or web tools
+    /// of its own, no settings, plugins or MCP servers but legionctl's with those tools); a bound run of another agent
+    /// fails.
+    pub acp_bind: Vec<String>,
     /// ACP adapter command -> the npm package that gives it: `setup apply` installs a missing one with `bun add -g`.
     pub acp_packages: BTreeMap<String, String>,
     /// Run sessions in a systemd user scope (`legionctl-session-<id>`); off where there is no user systemd.

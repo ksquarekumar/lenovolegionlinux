@@ -26,8 +26,10 @@ change the machine without you.
   planned graph show what changed and what is still to build (`legionctl code plan status`).
 - **Agents that watch each other.** A thread has a main agent and observers. Observers review tests, remind the main
   agent of skipped steps, and can block it until it answers. Messages go through a durable outbox.
-- **Generative UI.** Agents compose views (table, tree, gauge, sparkline, diff, markdown) from read operations, and
-  the app shows them. The next step, where each screen is a view that an agent can remake, is in progress.
+- **Generative UI.** Each screen of the app is a view: a declarative spec over read operations. Text in the chat bar
+  (or `legionctl ask "<intent>"`) opens the stored view of that intent at no model cost; else rlcd picks a stored
+  view of a similar intent; else the ui-composer (Haiku on Claude Code, bound to the view tools only) makes one from
+  the parts library and saves it. `legionctl views cost` shows what each step cost.
 
 ## The parts
 
@@ -72,9 +74,9 @@ and `~/agentWorkspaces/<dossier>/` (each with `.state/dossier.db`). Configuratio
 
 | State | What |
 | --- | --- |
-| Built, on main | power policy and configset rules, knobs, plan, undo; sensors, monitor, eBPF sensors, bench, tune, record, replay; fan reads and fan max; GPU, display fixes, VFIO; kernels (list, try, command line, bench, build); boot entry (systemd-boot beside rEFInd); greeter; dual boot and the installed Windows as a VM; resources; dossiers, workspaces, code graph and planned graph, test gate, project checks; sessions (host, container, VM), model gateway, threads, team `vanilla`, views; rlcd core |
-| Building, on topic branches | generative UI step G1 (rail, spaces, tabs) and the fact store; v1 bug fixes; quality fixes; sandbox hardening |
-| Planned (v1) | generative UI G2-G6, the temporal graph, projects, environments with network isolation, accounts, rlcd on hot paths, Windows repair, language tooling: [design index](docs/design/README.md#planned-v1) |
+| Built, on main | power policy and configset rules, knobs, plan, undo; sensors, monitor, eBPF sensors, bench, tune, record, replay; fan reads and fan max; GPU, display fixes, VFIO; kernels (list, try, command line, bench, build); boot entry (systemd-boot beside rEFInd); greeter; dual boot and the installed Windows as a VM; resources; dossiers, workspaces, code graph and planned graph, test gate, project checks; sessions (host, container, VM), model gateway, threads, team `vanilla`; generative UI G1-G6 (rail, spaces, tabs, views as screens, the composer, view history); rlcd core |
+| Building, on topic branches | generative UI cost and reuse (rlcd intent match, parts library, bound composer, cost per step: todo-163); v1 bug fixes |
+| Planned (v1) | the answer envelope, the temporal graph, projects, environments with network isolation, accounts, rlcd on hot paths, Windows repair, language tooling: [design index](docs/design/README.md#planned-v1) |
 | Waits for you | fan curve writes (WMI calls to verify, todo-17), the first `legionctl boot install`, the first live polkit dialogs |
 
 ## Start

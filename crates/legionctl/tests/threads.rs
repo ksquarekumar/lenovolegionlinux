@@ -1211,53 +1211,332 @@ fn the_cli_asks_for_an_intent_and_prints_the_stored_view() {
     );
 }
 
-/// The rlcd step of `ask` (config views.rlcd): an intent that no stored view has word for word goes to rlcd as a
-/// choice among the stored views (their intents as meanings, and none); its pick at 0.8 opens that view with no
-/// composer. A pick of none, or a failed rlcd call, does not open a view: with --stored the ask says so, and a failed
-/// call fails the ask with rlcd's error (no other route runs).
-#[test]
-fn ask_takes_rlcds_pick_of_a_stored_view_and_fails_with_a_failed_call() {
-    let mut lab = Lab::new("ask-rlcd");
-    let (server, port, log, env) = decisions(&lab.home);
+/// A lab for `ask` (todo-163): the stand-in decision server and keyring, the stand-in ACP agent as the composer
+/// (`fake`, bound by config `session.acp_bind`; `other` the same agent, not bindable), whose answer to an intent is the
+/// view file `<first word>.jsonc` of `views`, and `config` in the user's layer.
+fn ask_lab(tag: &str, config: &Value) -> (Lab, u16, PathBuf, common::process::Kill, PathBuf) {
+    let mut lab = Lab::new(tag);
+    let (server, port, log, mut env) = decisions(&lab.home);
+    let views = lab.home.join("composed");
+    std::fs::create_dir_all(&views).unwrap();
+    env.push(("FAKE_ACP_VIEWS", views.clone().into()));
     lab.op.child.kill().unwrap();
     lab.op.child.wait().unwrap();
-    lab.op = Lab::operator_with("ask-rlcdp", &lab.home, &env);
+    lab.op = Lab::operator_with(&format!("{tag}p"), &lab.home, &env);
+    let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-acp-agent.py");
+    let mut all = json!({
+        "rlcd": {"backend": "stand"},
+        "session": {"acp": {"fake": ["python3", fake], "other": ["python3", fake, "other"]},
+                    "acp_bind": ["fake"], "scope": false, "writable": []},
+        "app": {"agent": "fake"}
+    });
+    for (k, v) in config.as_object().unwrap() {
+        all[k] = v.clone();
+    }
     write(
-        &lab.home.join(".config/legionctl/views.jsonc"),
-        &json!({"rlcd": {"backend": "stand"}, "views": {"rlcd": true}}).to_string(),
+        &lab.home.join(".config/legionctl/ask.jsonc"),
+        &all.to_string(),
     );
-    let ask = |pick: &str| {
-        rlcd_backends(&lab.home, port, pick);
-        lab.op.run(
-            &lab.repo,
-            &[("HOME", lab.home.to_str().unwrap())],
-            &["ask", "list what i can run", "--stored"],
+    (lab, port, log, server, views)
+}
+
+impl Lab {
+    /// `legionctl ask <args> --json` of the user in the repository (the composer's runs on dossier `views`): the
+    /// output, and the answer when it is JSON.
+    fn ask(&self, args: &[&str]) -> (std::process::Output, Value) {
+        let out = self.op.run(
+            &self.repo,
+            &[("HOME", self.home.to_str().unwrap())],
+            &[&["ask"], args, &["--dossier", "views", "--json"]].concat(),
             "",
-        )
+        );
+        let answer = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
+        (out, answer)
+    }
+
+    /// The composer's runs so far (the operator's session.run jobs).
+    fn composer_runs(&self) -> usize {
+        self.json("main", &["jobs", "list"])["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|j| j["kind"] == "session.run")
+            .count()
+    }
+}
+
+/// The rlcd step of `ask` (config views.rlcd; todo-163): an intent that no stored view has word for word goes to rlcd
+/// as a choice among the stored intents that share a word with it (a lexical prefilter; the state is the intent only,
+/// each option an intent and its title); its pick at 0.8 opens that view and no composer runs. A pick of none goes on
+/// to the composer; a failed rlcd call fails the ask with rlcd's error and the composer does not run in its place. An
+/// intent that shares no word with a stored one asks no rlcd. Each step's outcome, tokens and time are in the answer,
+/// in the event views.ask and in views cost.
+#[test]
+fn a_similar_intent_opens_the_stored_view_through_rlcd_and_a_failed_rlcd_runs_no_composer() {
+    let (lab, port, log, server, _) = ask_lab("ask-rlcd", &json!({"views": {"rlcd": true}}));
+    let ask = |pick: &str, intent: &str| {
+        rlcd_backends(&lab.home, port, pick);
+        lab.ask(&[intent])
     };
-    let out = ask("operations");
+    let (out, answer) = ask("operations", "list what I can run");
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(String::from_utf8_lossy(&out.stdout).starts_with("operations (rlcd)"));
-    let call = calls(&log).pop().unwrap();
-    let criteria = &call["body"]["questions"]["view"]["criteria"];
     assert_eq!(
-        criteria["operations"], "everything legionctl can do",
+        (answer["route"].as_str(), answer["view"].as_str()),
+        (Some("rlcd"), Some("operations")),
+        "{answer}"
+    );
+    let steps: Vec<(&str, &str)> = answer["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| (s["step"].as_str().unwrap(), s["outcome"].as_str().unwrap()))
+        .collect();
+    assert_eq!(steps, [("stored", "none"), ("rlcd", "answered")]);
+    assert_eq!(answer["steps"][1]["tokens_in"], 169);
+    assert_eq!(lab.composer_runs(), 0, "rlcd's pick: no composer run");
+    let call = calls(&log).pop().unwrap();
+    assert_eq!(
+        call["body"]["state"], "The user asks: list what i can run",
+        "the state is the intent, nothing else: {call}"
+    );
+    let criteria = call["body"]["questions"]["view"]["criteria"]
+        .as_object()
+        .unwrap();
+    // only the stored intents that share a word ("can") with it, and none
+    assert_eq!(
+        criteria.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["none", "operations"],
         "{call}"
     );
-    assert!(criteria["none"].is_string(), "{call}");
-    let none = ask("none");
+    assert_eq!(
+        criteria["operations"],
+        "everything legionctl can do - Operations"
+    );
+
+    // no stored intent shares a word: rlcd is not asked, and with --stored nothing answers
+    let before = calls(&log).len();
+    let (none, _) = lab.ask(&["xyzzy plugh", "--stored"]);
     assert!(String::from_utf8_lossy(&none.stderr).contains("no stored view answers"));
-    let failed = ask("fail");
+    assert_eq!(
+        calls(&log).len(),
+        before,
+        "no rlcd call without a candidate"
+    );
+
+    // a failed call fails the ask: the composer does not run in rlcd's place
+    let (failed, _) = ask("fail", "list what I can run");
     assert!(!failed.status.success());
     assert!(
         String::from_utf8_lossy(&failed.stderr).contains("rlcd stand"),
         "{}",
         String::from_utf8_lossy(&failed.stderr)
     );
+    assert_eq!(
+        lab.composer_runs(),
+        0,
+        "a failed rlcd step runs no composer"
+    );
+
+    // a pick of none goes on to the composer (which answers in words here)
+    let (went_on, answer) = ask("none", "list what I can run");
+    assert!(
+        went_on.status.success(),
+        "{}",
+        String::from_utf8_lossy(&went_on.stderr)
+    );
+    assert_eq!(answer["route"], "composer", "{answer}");
+    assert_eq!(lab.composer_runs(), 1);
+
+    rlcd_costs_are_recorded(&lab);
+    drop(server);
+}
+
+/// views cost after the asks of the rlcd test, and the event of its failed ask.
+fn rlcd_costs_are_recorded(lab: &Lab) {
+    let cost = lab.json("main", &["views", "cost"]);
+    let row = |step: &str| {
+        cost.as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["step"] == step)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {step} in {cost}"))
+    };
+    let rlcd = row("rlcd");
+    assert_eq!(
+        (
+            &rlcd["runs"],
+            &rlcd["answered"],
+            &rlcd["failed"],
+            &rlcd["tokens_in"]
+        ),
+        // the ask with no candidate ran the step with no call: none, no tokens
+        (&json!(4), &json!(1), &json!(1), &json!(338)),
+        "{cost}"
+    );
+    let composer = row("composer");
+    assert_eq!(
+        (&composer["runs"], &composer["failed"]),
+        (&json!(1), &json!(0))
+    );
+    assert!(composer["tokens_in"].as_u64().unwrap() > 500, "{cost}");
+    let events = lab.json("main", &["events", "--limit", "1000"]);
+    let failed_event = events["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "views.ask")
+        .find(|e| {
+            e["payload"]["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("rlcd stand"))
+        })
+        .unwrap_or_else(|| panic!("no failed ask event: {events}"));
+    assert_eq!(failed_event["payload"]["route"], "rlcd");
+}
+
+/// The binding of the composer's ACP session, from the stand-in's line `bound: <json>` in its answer `text`.
+fn composer_is_bound(text: &str) {
+    // what the composer's session got
+    let bound: Value = serde_json::from_str(
+        text.lines()
+            .find_map(|l| l.strip_prefix("bound: "))
+            .unwrap_or_else(|| panic!("no bound line: {text}")),
+    )
+    .unwrap();
+    let tools = [
+        "views.list",
+        "views.check",
+        "views.parts",
+        "views.render",
+        "views.save",
+        "views.place",
+    ];
+    let args: Vec<String> = std::iter::once("mcp".to_string())
+        .chain(
+            tools
+                .iter()
+                .flat_map(|t| ["--only".to_string(), (*t).to_string()]),
+        )
+        .collect();
+    assert_eq!(
+        bound["mcp"],
+        json!([{"name": "legionctl", "command": "legionctl", "args": args}]),
+        "only legionctl's MCP server, with the view tools only: {bound}"
+    );
+    assert_eq!(
+        bound["meta"],
+        json!({"disableBuiltInTools": true,
+               "claudeCode": {"options": {"settingSources": [], "strictMcpConfig": true}}}),
+        "no file, shell or web tools, no settings, plugins or other servers: {bound}"
+    );
+}
+
+/// The parts library and the bound composer (todo-163). A part is a stored one-widget view; a stack places it by
+/// name and version. The composer's request lists the parts that fit the intent; its stack that places a part at
+/// version 1 keeps showing version 1 after the part's version 2; a part it writes in place that the library has
+/// already becomes a reference to that part, and a new one goes into the library. The composer's ACP session gets
+/// legionctl's MCP server with the view tools only, and the adapter is asked for no tools and settings of its own; an
+/// agent whose adapter cannot be bound fails the ask before any run.
+#[test]
+fn a_new_view_reuses_a_library_part_by_reference_and_the_composer_is_bound_to_view_tools() {
+    let (lab, _, _, server, composed) = ask_lab("ask-parts", &json!({}));
+    let save = |text: &str| {
+        let out = lab.op.run(
+            &lab.repo,
+            &[("HOME", lab.home.to_str().unwrap())],
+            &["views", "save"],
+            text,
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    let part = |title: &str| {
+        json!({"name": "ops-table", "title": title, "widget": "table", "source": {"op": "ops.list"},
+               "columns": ["name", "class"]})
+    };
+    save(&part("Operations, short").to_string());
+    save(&part("All operations").to_string());
+    let listed = lab.json(
+        "main",
+        &["views", "parts", "--intent", "table board of operations"],
+    );
+    assert_eq!(listed[0]["name"], "ops-table", "{listed}");
+    assert_eq!(listed[0]["version"], 2);
+
+    let mut dup = part("Every operation");
+    dup["name"] = json!("again");
+    let board = json!({"name": "ops-board", "title": "Operations board", "widget": "stack", "views": [
+        {"name": "ops-table", "version": 1},
+        dup,
+        {"name": "reads", "title": "Read operations", "widget": "table", "source": {"op": "ops.list"},
+         "columns": ["name"], "filter": {"class": "read"}}
+    ]});
+    write(&composed.join("table.jsonc"), &board.to_string());
+    let (out, answer) = lab.ask(&["table board of operations"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = answer["text"].as_str().unwrap();
+    assert!(
+        text.contains("- ops-table v2: All operations (table of ops.list $)"),
+        "the request lists the fitting part: {text}"
+    );
+    composer_is_bound(text);
+
+    // the stack as saved: three references, pinned
+    let saved =
+        std::fs::read_to_string(lab.home.join(".config/legionctl/views/ops-board.jsonc")).unwrap();
+    let saved: Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(
+        saved["views"],
+        json!([{"name": "ops-table", "version": 1}, {"name": "ops-table", "version": 2},
+               {"name": "ops-board-reads", "version": 1}]),
+        "{saved}"
+    );
+    let titles: Vec<&str> = answer["data"]["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        titles,
+        ["Operations, short", "All operations", "Read operations"]
+    );
+    // a new part version leaves the views that pin the old one as they are
+    save(&part("Operations, third").to_string());
+    let shown = lab.json("main", &["views", "render", "ops-board"]);
+    assert_eq!(shown["parts"][0]["title"], "Operations, short");
+    assert_eq!(shown["parts"][1]["title"], "All operations");
+    let new_part = lab.json("main", &["views", "parts", "--intent", "read operations"]);
+    assert!(
+        new_part
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["name"] == "ops-board-reads"),
+        "the new part is in the library: {new_part}"
+    );
+
+    // an agent that cannot be bound fails the ask before its run
+    let (refused, _) = lab.ask(&["table board again", "--agent", "other"]);
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("agent other cannot be bound to tools"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert_eq!(lab.composer_runs(), 1, "no run of the unbound agent");
     drop(server);
 }
 

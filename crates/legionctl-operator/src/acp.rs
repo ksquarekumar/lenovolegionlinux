@@ -254,7 +254,15 @@ async fn drive(
 ) -> Result<(RunOutput, Option<&'static str>)> {
     let started = Instant::now();
     let (id, workdir) = (launch.id.clone(), launch.workdir.clone());
-    let servers = servers(&launch)?;
+    let (servers, meta) = (servers(&launch)?, bound(&launch));
+    let new = NewSessionRequest::new(&workdir)
+        .mcp_servers(servers.clone())
+        .meta(meta.clone());
+    let load = |acp| {
+        LoadSessionRequest::new(acp, &workdir)
+            .mcp_servers(servers)
+            .meta(meta)
+    };
     let agent = adapter(launch)?;
     let over = Arc::new(tokio::sync::Notify::new());
     let live = Arc::new(Mutex::new(Live {
@@ -301,18 +309,10 @@ async fn drive(
                 .filter(|_| init.agent_capabilities.load_session)
                 .map(|id| SessionId::new(id.to_string()));
             let acp = if let Some(acp) = loading {
-                cx.send_request(
-                    LoadSessionRequest::new(acp.clone(), &workdir).mcp_servers(servers),
-                )
-                .block_task()
-                .await?;
+                cx.send_request(load(acp.clone())).block_task().await?;
                 acp
             } else {
-                let acp = cx
-                    .send_request(NewSessionRequest::new(&workdir).mcp_servers(servers))
-                    .block_task()
-                    .await?
-                    .session_id;
+                let acp = cx.send_request(new).block_task().await?.session_id;
                 input["acp"] = acp.to_string().into();
                 // without it a resume starts a new ACP session, without the history
                 keep_acp(&live, job, &input)?;
@@ -367,6 +367,21 @@ fn adapter_error(e: agent_client_protocol::Error) -> anyhow::Error {
         Some(why) => anyhow::anyhow!("the agent's ACP adapter ended before it answered: {why}"),
         None => e.into(),
     }
+}
+
+/// A bound run's `_meta` for `session/new` and `session/load` (claude-code-acp's keys; `session.acp_bind` names the
+/// agents that take them): no tools of the adapter's own, and no settings files, so no plugin, hook or MCP server of
+/// the user's either; legionctl's MCP server with the bound tools is the only one.
+fn bound(launch: &Launch) -> Option<agent_client_protocol::schema::v1::Meta> {
+    launch.tools.as_ref().map(|_| {
+        serde_json::json!({
+            "disableBuiltInTools": true,
+            "claudeCode": {"options": {"settingSources": [], "strictMcpConfig": true}}
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default()
+    })
 }
 
 /// The session's MCP servers as ACP's `session/new` takes them.

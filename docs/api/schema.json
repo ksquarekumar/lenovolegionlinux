@@ -13143,6 +13143,14 @@
           "format": "int64",
           "description": "The user's thread of the run (the app's chat): the run works on the thread's dossier and in its folder, goes\non in the thread's last ACP session, and the prompt and the answer (or the failure) are rows of its log.",
           "default": null
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Bind the agent to these operations: its only tools are legionctl's MCP tools of them (no file, shell or web\ntools of its own, no settings, plugins or other MCP servers). The run fails when the agent's adapter cannot be\nbound (config `session.acp_bind`). None: the agent's own tools and the session's MCP servers.",
+          "default": []
         }
       },
       "required": [
@@ -18207,23 +18215,60 @@
           ],
           "description": "The composer's run: its session and ACP session (the chat bar goes on in it)."
         },
-        "prompt_tokens": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0,
-          "description": "The composer's request and answer in tokens (an estimate: 4 characters each)."
-        },
-        "answer_tokens": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
+        "steps": {
+          "type": "array",
+          "items": {
+            "description": "One step of an ask: stored (the intent word for word), rlcd (a pick among the stored intents) or composer.",
+            "type": "object",
+            "properties": {
+              "step": {
+                "description": "stored, rlcd or composer.",
+                "type": "string"
+              },
+              "outcome": {
+                "description": "answered, none (it ran and found no view) or failed.",
+                "type": "string"
+              },
+              "tokens_in": {
+                "description": "Tokens sent: rlcd's count, the composer's request as an estimate (4 characters each).",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "tokens_out": {
+                "description": "Tokens of the composer's answer (an estimate); rlcd answers no text.",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "ms": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "note": {
+                "description": "Why it failed, or why it found none.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "step",
+              "outcome",
+              "tokens_in",
+              "tokens_out",
+              "ms"
+            ]
+          },
+          "description": "Each step that ran, in order, with what it cost (also the event `views.ask`)."
         }
       },
       "required": [
         "route",
         "text",
-        "prompt_tokens",
-        "answer_tokens"
+        "steps"
       ],
       "description": "What answered an intent: a stored view, rlcd's pick, or the composer's view (or text).",
       "title": "ViewAnswer",
@@ -19210,6 +19255,159 @@
       ],
       "description": "Lines of output (dossier rows, messages).",
       "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "views.parts": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "intent": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What the parts are for, in words: the parts that fit it come first, and only those that share a word.",
+          "default": null
+        },
+        "repo": {
+          "type": "string",
+          "format": "path",
+          "description": "A folder in a repository: its layer comes first.",
+          "default": "."
+        }
+      },
+      "title": "ViewPartsIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "description": "A part of the library: a stored view with one widget and one source, which a stack places by name and version.",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "description": "The version that shows now (0: the seed); a stack pins one with `{\"name\": .., \"version\": ..}`.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string"
+          },
+          "widget": {
+            "description": "A widget of the closed set of a view (design 23, C4).",
+            "type": "string",
+            "enum": [
+              "table",
+              "tree",
+              "gauge",
+              "sparkline",
+              "markdown",
+              "diff",
+              "list",
+              "stack",
+              "stat",
+              "chart",
+              "graph",
+              "form",
+              "timeline"
+            ]
+          },
+          "op": {
+            "description": "The read operation and the path of its answer.",
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "title",
+          "widget",
+          "op",
+          "path"
+        ]
+      },
+      "title": "Array_of_PartInfo",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "views.cost": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "description": "The cost of one step of `ask` over the asks in the event log.",
+        "type": "object",
+        "properties": {
+          "step": {
+            "description": "stored, rlcd or composer.",
+            "type": "string"
+          },
+          "runs": {
+            "description": "The asks in which it ran, it answered, and it failed.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "answered": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "tokens_in": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "tokens_out": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "ms_median": {
+            "description": "The median and the longest time of a run.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "ms_max": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "step",
+          "runs",
+          "answered",
+          "failed",
+          "tokens_in",
+          "tokens_out",
+          "ms_median",
+          "ms_max"
+        ]
+      },
+      "title": "Array_of_AskCost",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },

@@ -103,13 +103,17 @@ fn root() -> String {
     "$".into()
 }
 
-/// A view in a stack, or on a thread: its name and its parameters.
+/// A view in a stack, or on a thread: its name, its parameters, and the version it pins.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Placed {
     pub name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, String>,
+    /// The version of the part that shows (a part of the library, `views parts`); a new version of the part does not
+    /// change this view. None: the version of the part that shows now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
 }
 
 /// A part of a stack: a view by name, or a view written in place.
@@ -366,7 +370,7 @@ pub fn schema() -> Result<(&'static str, Value)> {
 }
 
 /// The seeds that legionctl ships: (name, text).
-const SEEDS: [(&str, &str); 11] = [
+const SEEDS: [(&str, &str); 12] = [
     (
         "machine-now",
         include_str!("../../../config/views/machine-now.jsonc"),
@@ -404,6 +408,10 @@ const SEEDS: [(&str, &str); 11] = [
     (
         "accounts",
         include_str!("../../../config/views/accounts.jsonc"),
+    ),
+    (
+        "composer-cost",
+        include_str!("../../../config/views/composer-cost.jsonc"),
     ),
 ];
 

@@ -130,6 +130,11 @@
       "claude": ["claude-code-acp"],
       "codex": ["codex-acp"]
     },
+    // The agents of "acp" whose adapter can be bound to given tools (a bound run, such as the ui-composer's, gets
+    // only legionctl's MCP server with those tools: no file, shell or web tools, no settings, plugins or other MCP
+    // servers). claude-code-acp takes the binding in session/new (_meta disableBuiltInTools, settingSources []);
+    // codex-acp 0.16 has no way to turn off its shell, so a bound run on codex fails.
+    "acp_bind": ["claude"],
     // ACP adapter command -> its npm package. `legionctl setup check` reports an adapter command of "acp" that is not
     // on the PATH of the systemd user manager (with bun's global folder, `bun pm -g bin`); `setup apply` installs it
     // with `bun add -g <package>`.
