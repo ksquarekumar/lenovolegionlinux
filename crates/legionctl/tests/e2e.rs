@@ -5139,8 +5139,10 @@ fn vm_test_base(image: &Path) -> PathBuf {
 }
 
 /// The checks of fixtures/legionctl-wmi/run.sh, in their order: each must report ok.
-const LEGIONCTL_WMI_CHECKS: [&str; 46] = [
+const LEGIONCTL_WMI_CHECKS: [&str; 48] = [
     "dkms-build",
+    "no-autoload",
+    "explicit-load",
     "only-legionctl-wmi",
     "profile-choices",
     "profile-start",
@@ -5212,11 +5214,9 @@ fn the_legionctl_wmi_module_gives_the_legion_wmi_through_sysfs() {
     ] {
         std::fs::copy(kmod.join(name), module.join(name)).unwrap();
     }
-    std::fs::copy(
-        kmod.join("legionctl-wmi.conf"),
-        test.join("legionctl-wmi.conf"),
-    )
-    .unwrap();
+    for name in ["legionctl-wmi.conf", "no-autoload.conf"] {
+        std::fs::copy(kmod.join(name), test.join(name)).unwrap();
+    }
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legionctl-wmi");
     std::fs::copy(fixtures.join("run.sh"), test.join("run.sh")).unwrap();
     std::fs::create_dir(test.join("aml-call")).unwrap();

@@ -1,9 +1,10 @@
 #!/bin/bash
 # The legionctl-wmi test in the guest (crates/legionctl/tests/e2e.rs). QEMU gives the stand-in firmware (ssdt.asl)
 # as an ACPI table, so the WMI devices exist from the start, as on the real machine. First start: build and install
-# the module with DKMS, install the package's blacklist and restart. Second start: udev loaded the drivers for the
-# WMI devices, and the test uses the module through sysfs only. Each check writes "ok <name>" or "FAIL <name>: <why>"
-# to the results disk (serial lwmiresults); the test reads it after power-off.
+# the module with DKMS, install the package's no-autoload file and check it, install the opt-in blacklist and
+# restart. Second start: udev loaded the drivers for the WMI devices, and the test uses the module through sysfs only.
+# Each check writes "ok <name>" or "FAIL <name>: <why>" to the results disk (serial lwmiresults); the test reads it
+# after power-off.
 set -u
 here=$(dirname "$0")
 results=/var/lib/lwmi-results
@@ -68,6 +69,14 @@ if [ ! -e "$results" ]; then
     finish
     exit 1
   fi
+  # the package's file: no load by alias (udev), an explicit modprobe still loads the module
+  install -Dm 644 "$here/no-autoload.conf" /usr/lib/modprobe.d/legionctl-wmi.conf
+  alias_plan=$(modprobe -n -v -b wmi:887B54E3-DDDC-4B2C-8B88-68A26A8835D0 2>&1)
+  if echo "$alias_plan" | grep -q legionctl; then fail no-autoload "$alias_plan"; else ok no-autoload; fi
+  if modprobe -n -v legionctl_wmi 2>&1 | grep -q 'legionctl-wmi\.ko'; then ok explicit-load; else
+    fail explicit-load "$(modprobe -n -v legionctl_wmi 2>&1)"
+  fi
+  # the user's opt-in: the same name in /etc replaces the package's file
   install -m 644 "$here/legionctl-wmi.conf" /etc/modprobe.d/legionctl-wmi.conf
   # the restart stops this script before the unit powers off
   systemctl reboot

@@ -166,3 +166,4 @@ install: ## install into DESTDIR; the PKGBUILD calls this (on this machine: `mak
 	install -Dm644 tuning/scx_loader.toml "$(DESTDIR)$(SYSCONFDIR)/scx_loader.toml"
 	install -Dm644 -t "$(DESTDIR)$(PREFIX)/src/legionctl-wmi-$(KMOD_VERSION)" $(addprefix $(KMOD)/,$(KMOD_SOURCES) dkms.conf)
 	install -Dm644 $(KMOD)/legionctl-wmi.conf "$(DESTDIR)$(PREFIX)/share/legionctl/legionctl-wmi.conf"
+	install -Dm644 $(KMOD)/no-autoload.conf "$(DESTDIR)$(PREFIX)/lib/modprobe.d/legionctl-wmi.conf"

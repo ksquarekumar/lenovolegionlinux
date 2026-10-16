@@ -66,6 +66,7 @@ fn module_warnings(root: &SysRoot, profile: &Profile) -> Vec<String> {
             }
         }
     }
+    out.extend(wmi_warnings(root, profile));
     out
 }
 
@@ -176,6 +177,51 @@ pub fn doctor(machine: &Machine) -> Vec<String> {
         wanted.text("nvidia.services").as_deref() == Some("start"),
     ));
     w.extend(desktop_warnings());
+    w
+}
+
+/// The Legion WMI driver families: legionctl's module and the upstream drivers it replaces.
+const WMI_FAMILIES: [&str; 2] = ["legionctl_wmi", "lenovo_wmi_"];
+
+/// Two driver families on the Legion WMI devices (todo-143: `legionctl_wmi` autoloaded beside the upstream drivers),
+/// and no `platform_profile` while a Legion WMI driver is loaded.
+fn wmi_warnings(root: &SysRoot, profile: &Profile) -> Vec<String> {
+    let mut w = Vec::new();
+    let mut loaded = Vec::new();
+    let mut bound = Vec::new();
+    for driver in root.children("/sys/bus/wmi/drivers", "") {
+        let name = driver.file_name().unwrap().to_string_lossy().into_owned();
+        let Some(family) = WMI_FAMILIES.iter().find(|f| name.starts_with(**f)) else {
+            continue;
+        };
+        // a bound device is a link named <GUID>-<instance>; bind, unbind, module and uevent are lower case
+        let devices: Vec<String> = root
+            .children(&driver, "")
+            .iter()
+            .map(|d| d.file_name().unwrap().to_string_lossy().into_owned())
+            .filter(|d| d.len() > 36 && d.as_bytes()[8] == b'-')
+            .collect();
+        if !devices.is_empty() {
+            bound.push((*family, format!("{name} ({})", devices.join(", "))));
+        }
+        loaded.push(name);
+    }
+    if bound.iter().any(|b| b.0 == WMI_FAMILIES[0]) && bound.iter().any(|b| b.0 == WMI_FAMILIES[1])
+    {
+        let drivers: Vec<&str> = bound.iter().map(|b| b.1.as_str()).collect();
+        w.push(format!(
+            "the Legion WMI devices are bound to legionctl_wmi and to the upstream lenovo_wmi drivers: {}; neither \
+             side has all of them (see docs/design/08-kernel.md, First live load)",
+            drivers.join("; ")
+        ));
+    }
+    if !loaded.is_empty() && !root.exists(&profile.paths.platform_profile) {
+        w.push(format!(
+            "{} is missing while {} is loaded: legionctl cannot set the power mode",
+            profile.paths.platform_profile,
+            loaded.join(", ")
+        ));
+    }
     w
 }
 

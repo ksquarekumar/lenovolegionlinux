@@ -329,6 +329,57 @@ fn refuses_to_apply_on_a_machine_that_is_not_this_model() {
     );
 }
 
+/// todo-143, the first boot with the DKMS module (2026-10-16): udev loaded `legionctl_wmi` by modalias beside the
+/// upstream drivers. The WMI driver tree is recorded from that boot (`tests/fixtures/sysfs-wmi-mixed-82wq-2026-10-16`;
+/// the 887B54E3 bind of `lenovo_wmi_gamezone` is from the boot log, it was unloaded before the recording); the machine
+/// had no `platform_profile`. Doctor names the mixed bind with its devices and the missing profile; with the upstream
+/// drivers only and the profile in place, or with no Legion WMI driver, it names neither.
+#[test]
+fn doctor_reports_a_mixed_legion_wmi_bind_and_a_missing_platform_profile() {
+    let m = Machine::new("wmi-mixed");
+    let root = m.dir.join("root");
+    copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/sysfs-wmi-mixed-82wq-2026-10-16"),
+        &root,
+    );
+    let profile = root.join("sys/class/platform-profile/platform-profile-0/profile");
+    let recorded = std::fs::read_to_string(&profile).unwrap();
+    std::fs::remove_file(&profile).unwrap();
+    let doctor = |m: &Machine| -> Vec<String> {
+        let out = m.legion(&["doctor"]);
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .filter(|l| l.contains("wmi") || l.contains("platform-profile"))
+            .map(String::from)
+            .collect()
+    };
+    assert_eq!(
+        doctor(&m),
+        [
+            "- the Legion WMI devices are bound to legionctl_wmi and to the upstream lenovo_wmi drivers: legionctl_wmi \
+             (92549549-4BDE-4F06-AC04-CE8BF898DBAA-5, DC2A8805-3A8C-41BA-A6F7-092E0089CD3B-8); lenovo_wmi_gamezone \
+             (887B54E3-DDDC-4B2C-8B88-68A26A8835D0-4); neither side has all of them (see docs/design/08-kernel.md, \
+             First live load)",
+            "- /sys/class/platform-profile/platform-profile-0/profile is missing while legionctl_wmi, \
+             legionctl_wmi_gamezone, lenovo_wmi_gamezone is loaded: legionctl cannot set the power mode",
+        ]
+    );
+
+    // the upstream drivers only, with their profile: the healthy machine
+    let drivers = root.join("sys/bus/wmi/drivers");
+    std::fs::remove_dir_all(drivers.join("legionctl_wmi")).unwrap();
+    std::fs::remove_dir_all(drivers.join("legionctl_wmi_gamezone")).unwrap();
+    std::fs::write(&profile, recorded).unwrap();
+    assert_eq!(doctor(&m), Vec::<String>::new());
+
+    // no Legion WMI driver: a missing profile is not this finding
+    std::fs::remove_dir_all(drivers.join("lenovo_wmi_gamezone")).unwrap();
+    std::fs::remove_file(&profile).unwrap();
+    assert_eq!(doctor(&m), Vec::<String>::new());
+}
+
 #[test]
 fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
     let m = Machine::new("doctor");

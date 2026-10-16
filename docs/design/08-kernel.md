@@ -380,21 +380,31 @@ through `platform_profile` and on each Fn+Q into custom mode: the last table wri
   loads nothing. `make kmod-checkpatch` runs checkpatch only (CI, with checkpatch of v7.2).
 - The module uses the WMI buffer API (`wmidev_invoke_method`, `notify_new`) of Linux 7.0 and later. DKMS does not
   build it for older kernels (`BUILD_EXCLUSIVE_KERNEL_MIN`).
-- The package installs the source to `/usr/src/legionctl-wmi-<version>/` (DKMS builds it for each installed kernel)
-  and the blacklist of the five upstream drivers to `/usr/share/legionctl/legionctl-wmi.conf` only (review on
+- The package installs the source to `/usr/src/legionctl-wmi-<version>/` (DKMS builds it for each installed kernel),
+  `/usr/lib/modprobe.d/legionctl-wmi.conf` with `blacklist legionctl_wmi` (`kernel/legionctl-wmi/no-autoload.conf`),
+  and the opt-in blacklist of the five upstream drivers to `/usr/share/legionctl/legionctl-wmi.conf` only (review on
   merge, 2026-10-14): a package install must not make an untested module replace the upstream drivers at the next
-  start. The blacklist goes to `/etc/modprobe.d` in step 6 below, after the user's first live load; until then the
-  profile keeps requiring the upstream drivers.
+  start. A blacklist stops only the load by alias (udev); `modprobe legionctl_wmi` still loads the module. In step 6
+  below, after the user's first live load, the opt-in goes to `/etc/modprobe.d/legionctl-wmi.conf`: a file in `/etc`
+  with the same name replaces the one in `/usr/lib` (modprobe.d(5)), so udev then loads `legionctl_wmi` and not the
+  upstream drivers. Until then the profile keeps requiring the upstream drivers.
+- Incident (2026-10-16, todo-143): the first package had no `/usr/lib` file. The module has the modalias of each
+  Legion WMI GUID, so at the first start udev loaded it beside the upstream drivers. `legionctl_wmi` bound the fan and
+  other-method GUIDs, `lenovo_wmi_gamezone` bound the GameZone GUID, `lenovo_wmi_other` got nothing: no
+  `platform_profile`, and the daemon could not set the power mode. `legionctl doctor` now reports a mixed bind (the
+  bound devices under `/sys/bus/wmi/drivers` of both driver families) and a missing `platform_profile` while a Legion
+  WMI driver is loaded.
 - Secure Boot is on: DKMS must sign the module with the enrolled key, as for `acpi_call` and `nvidia`.
 - Test (`crates/legionctl/tests/e2e.rs`, `the_legionctl_wmi_module_gives_the_legion_wmi_through_sysfs`, also in the
   CI VM step): a Debian VM with the generic 7.x kernel builds the module with DKMS. A stand-in of the firmware
   (`tests/fixtures/legionctl-wmi/ssdt.asl`: the same GUIDs, object ids and buffer layouts) is an ACPI table that
-  QEMU gives (`-acpitable`). The guest installs the module and the blacklist, then restarts: udev loads the drivers
-  as on the real machine. The stand-in prints each call that it gets as an AML Debug line, and a test helper
-  (`aml-call`) calls its Fn+Q method as the EC does. The guest script (`run.sh`) makes 46 checks through sysfs: the
-  blacklist, the profile and its Fn+Q notice, the attribute bounds and modes, the fan table byte for byte as the
-  firmware gets it, the refusals, the table again after a mode change, after Fn+Q and after resume (`pm_test`), full
-  speed, fan max mode, the LEDs, and a clean unload.
+  QEMU gives (`-acpitable`). The guest installs the module and the `/usr/lib` file, checks that `modprobe -b` of a
+  Legion WMI alias does not plan `legionctl_wmi` and that `modprobe legionctl_wmi` does, installs the opt-in in
+  `/etc`, then restarts: udev loads the drivers as on the real machine. The stand-in prints each call that it gets as
+  an AML Debug line, and a test helper (`aml-call`) calls its Fn+Q method as the EC does. The guest script (`run.sh`)
+  makes 48 checks: the no-autoload file, the opt-in blacklist, the profile and its Fn+Q notice, the attribute bounds
+  and modes, the fan table byte for byte as the firmware gets it, the refusals, the table again after a mode change,
+  after Fn+Q and after resume (`pm_test`), full speed, fan max mode, the LEDs, and a clean unload.
 
 ### First live load (the user's, todo-17 gate)
 
@@ -415,6 +425,9 @@ user's:
    Write `fan_max_mode` 1, then 0. Push Fn+Q and make sure that `platform_profile` follows.
 5. To go back: `sudo modprobe -r legionctl_wmi`, then
    `sudo modprobe lenovo_wmi_gamezone lenovo_wmi_other lenovo_wmi_events lenovo_wmi_hotkey_utilities`.
-6. Only when steps 3 and 4 are right: `sudo install -m644 /usr/share/legionctl/legionctl-wmi.conf /etc/modprobe.d/`,
-   restart, and `lsmod | grep -E 'legionctl_wmi|lenovo_wmi'` shows `legionctl_wmi` only. The switch part then moves
-   the profile and the daemon to the module (no acpi_call). To go back for good: remove that file and restart.
+6. Only when steps 3 and 4 are right: `sudo install -m644 /usr/share/legionctl/legionctl-wmi.conf /etc/modprobe.d/`.
+   This file has the same name as the package's `/usr/lib/modprobe.d/legionctl-wmi.conf` and replaces it: the
+   blacklist moves from `legionctl_wmi` to the upstream drivers. Restart, and
+   `lsmod | grep -E 'legionctl_wmi|lenovo_wmi'` shows `legionctl_wmi` only; `legionctl doctor` reports no mixed bind.
+   The switch part then moves the profile and the daemon to the module (no acpi_call). To go back for good: remove
+   the file in `/etc` and restart (the `/usr/lib` file then stops the autoload of `legionctl_wmi` again).
