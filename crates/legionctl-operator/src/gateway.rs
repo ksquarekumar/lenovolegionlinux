@@ -119,11 +119,42 @@ fn token() -> Result<String> {
     Ok(token)
 }
 
-/// Serve the gateway on 127.0.0.1:`port` until the operator stops.
+/// The gateway's listeners, bound before the operator answers its first call: a session that a call starts finds the
+/// gateway's socket there (a connection waits in the queue until the gateway serves it, none is refused).
+pub struct Bound {
+    tcp: tokio::net::TcpListener,
+    local: tokio::net::UnixListener,
+}
+
+/// Bind 127.0.0.1:`port` and the gateway's socket in the runtime folder.
 ///
 /// # Errors
-/// The port is taken or the token cannot be made.
-pub async fn serve(port: u16, ready: crate::Ready) -> Result<()> {
+/// The port is taken, or the socket cannot be bound.
+pub async fn bind(port: u16) -> Result<Bound> {
+    let tcp = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .with_context(|| format!("gateway port {port}"))?;
+    // sessions reach the gateway through this socket (their 127.0.0.1 is their own)
+    let socket = std::path::PathBuf::from(
+        std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?,
+    )
+    .join("legionctl")
+    .join(legionctl_core::session::GATEWAY_SOCKET);
+    let _ = std::fs::remove_file(&socket);
+    let local = tokio::net::UnixListener::bind(&socket)
+        .with_context(|| format!("binding {}", socket.display()))?;
+    eprintln!(
+        "operator: model gateway on 127.0.0.1:{port} and {}",
+        socket.display()
+    );
+    Ok(Bound { tcp, local })
+}
+
+/// Serve the gateway on its bound listeners until the operator stops.
+///
+/// # Errors
+/// The token cannot be made.
+pub async fn serve(bound: Bound, ready: crate::Ready) -> Result<()> {
     let gateway = Gateway {
         http: reqwest::Client::new(),
         token: token()?,
@@ -139,25 +170,10 @@ pub async fn serve(port: u16, ready: crate::Ready) -> Result<()> {
             post(|s, h, b| call(s, Api::Responses, h, b)),
         )
         .with_state(gateway);
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
-        .await
-        .with_context(|| format!("gateway port {port}"))?;
-    // sessions in a container or VM reach the gateway through this socket (their 127.0.0.1 is their own)
-    let socket = std::path::PathBuf::from(
-        std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?,
-    )
-    .join("legionctl")
-    .join(legionctl_core::session::GATEWAY_SOCKET);
-    let _ = std::fs::remove_file(&socket);
-    let local = tokio::net::UnixListener::bind(&socket)
-        .with_context(|| format!("binding {}", socket.display()))?;
-    eprintln!(
-        "operator: model gateway on 127.0.0.1:{port} and {}",
-        socket.display()
-    );
+    let Bound { tcp, local } = bound;
     ready.set();
     tokio::try_join!(
-        axum::serve(listener, app.clone()).into_future(),
+        axum::serve(tcp, app.clone()).into_future(),
         axum::serve(local, app).into_future()
     )?;
     Ok(())

@@ -83,16 +83,16 @@ where
     (name, ready.clone(), tokio::spawn(run(ready)))
 }
 
-/// The model gateway, when `gateway.port` is set.
-async fn gateway(ready: Ready) -> Result<()> {
+/// The model gateway's listeners, when `gateway.port` is set (`None`: off).
+async fn gateway_bind() -> Result<Option<gateway::Bound>> {
     let port = legionctl_core::config::resolve(&legionctl_core::config::Dirs::from_env(), None)?
         .config
         .gateway
         .port;
     if port == 0 {
-        return Ok(());
+        return Ok(None);
     }
-    gateway::serve(port, ready).await
+    Ok(Some(gateway::bind(port).await?))
 }
 
 fn main() -> Result<()> {
@@ -154,12 +154,20 @@ async fn run() -> Result<()> {
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || thread::init(runtime));
     }
+    // bound before the first call is served: a session started by a call finds the gateway's socket
+    let bound = gateway_bind().await;
     let modules = vec![
         module("the machine event recorder", recorder::run),
         module("the session module", |ready| {
             session::run(ready, operator.clone())
         }),
-        module("the model gateway", gateway),
+        module("the model gateway", |ready| async move {
+            match bound {
+                Ok(Some(bound)) => gateway::serve(bound, ready).await,
+                Ok(None) => Ok(()),
+                Err(e) => Err(e),
+            }
+        }),
         module("the session policy", |ready| {
             policy::run(ready, operator.clone())
         }),

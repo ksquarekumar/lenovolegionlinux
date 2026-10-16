@@ -6272,7 +6272,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         let m = Machine::new("tofu");
         let (_stand_ins, _asked, (_bus, _daemon)) = start(&m).await;
         let address = format!("unix:path={}", m.dir.join("bus").display());
-        let (_desktop, asked) = answering_desktop(&address, &["allow", "deny"]).await;
+        let (_desktop, asked) = crate::desktop::answering(&address, &["allow", "deny"]).await;
         let (op, home, repo) = tofu_operator(&m, address);
         let layer = |command: &str| hooks_layer(&repo, command);
         let env = [

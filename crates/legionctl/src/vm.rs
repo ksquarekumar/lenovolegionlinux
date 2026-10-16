@@ -315,8 +315,12 @@ pub fn forward(port: u16, socket: &Path, agent: &[String]) -> Result<()> {
         while let Ok((mut caller, _)) = listener.accept().await {
             let socket = socket.clone();
             tokio::spawn(async move {
-                if let Ok(mut gateway) = tokio::net::UnixStream::connect(&socket).await {
-                    let _ = tokio::io::copy_bidirectional(&mut caller, &mut gateway).await;
+                // a failed connect ends the caller's connection; the reason goes to the agent's stderr
+                match tokio::net::UnixStream::connect(&socket).await {
+                    Ok(mut gateway) => {
+                        let _ = tokio::io::copy_bidirectional(&mut caller, &mut gateway).await;
+                    }
+                    Err(e) => eprintln!("legionctl forward: {}: {e}", socket.display()),
                 }
             });
         }
