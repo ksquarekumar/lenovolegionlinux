@@ -51,6 +51,9 @@ user-invocable: true
     (`dossier read <dossier>/plan.md`) and the MEMORY and DESIGN files its rows name by itself, not only your prompt.
     Tell a reviewer or auditor to be adversarial and thorough and to report what it did not check. When you are the
     delegate, read them yourself first.
+25. When agents talk or share notes (thread send, a note, a result), keep the message short and objective and
+    point to the dossier: `plan#todo-NN`, `MEMORY-n`, `EVIDENCE/...`, a commit. Put the details in the dossier, not in
+    the message. The reader gets the details from the dossier, or asks for them. Know your dossier(s) and use them.
 
 ## Refs
 
