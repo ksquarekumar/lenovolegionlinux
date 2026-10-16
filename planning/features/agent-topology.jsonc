@@ -1,0 +1,49 @@
+// DESIGN-11 (todo-153 topology part, approved 2026-10-16; MEMORY-15): v1 = A1 (six product-development archetypes,
+// the team and the track choice), A2 (the trio starts with the track; rlcd self-nudges with digests and pointers), A4
+// (coherence of the operations and views across surfaces, with todo-78). Post-v1: A3 (pool), A5 (bound skill agents).
+{
+  "$schema": "../feature.schema.json",
+  "id": "agent-topology",
+  "title": "Agent topology: bound main and observers, the product-development track, one SDK",
+  "status": "planned",
+  "plan_rows": ["legionctl#todo-153", "legionctl#todo-146"],
+  "objectives": [
+    { "id": "O1", "text": "Choosing the product-development track starts main0, the trio and the six specialists, each from an archetype file." },
+    { "id": "O2", "text": "Bound agents nudge themselves with rlcd over a digest of keys, not a transcript, and never wake an LLM by default." },
+    { "id": "O3", "text": "What one surface offers, every surface offers in its form; a gap is a finding in CI." }
+  ],
+  "stories": [
+    { "id": "S1", "text": "thread start --track product-development (and the app and plugin choice) starts main0, the trio and the six specialists with their configs; agents check refuses a missing tool and reports an extra one. Variations: V1 unknown track (failure: refused with the known tracks); V2 a specialist archetype that names a tool the harness lacks (failure: agents check names it).", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/agents.rs::the_product_development_track_starts_main_the_trio_and_six_specialists_from_their_archetypes"] },
+    { "id": "S2", "kind": "control-flow", "text": "A self-nudge is an rlcd question on a trigger over a digest; yes gives main0 a short note, no gives nothing. Variations: V1 digest over the model's context (success: the question is split or goes to the owner, never cut silently); V2 rlcd call fails (failure: the failed step is recorded, no note, no LLM wake in its place).", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/threads.rs::a_self_nudge_asks_rlcd_over_a_digest_and_notes_main_only_on_yes"] },
+    { "id": "S3", "kind": "requirement", "text": "The coherence check lists each operation and seed view with the surfaces that offer it (CLI, MCP, TUI, app); a gap fails CI with its name. Variations: V1 an operation with no app action (failure: named).", "objectives": ["O3"],
+      "tests": ["test:crates/legionctl/tests/e2e.rs::each_operation_and_view_is_offered_on_every_surface_or_named_as_a_gap"] }
+  ],
+  "work_items": [
+    { "id": "A1", "text": "Six product-development archetypes, the team product-development, the track choice in app, CLI and plugin", "status": "planned", "stories": ["S1"], "units": [
+      { "key": "file:integrations/agent-plugin/agents/product-user-interactions-mapping.md", "change": "add", "loc": 80 },
+      { "key": "file:integrations/agent-plugin/agents/product-user-design-and-information-architecture.md", "change": "add", "loc": 80 },
+      { "key": "file:integrations/agent-plugin/agents/product-engineering-requirements-prototyping-validation.md", "change": "add", "loc": 80 },
+      { "key": "file:integrations/agent-plugin/agents/product-delivery-planning-and-verification.md", "change": "add", "loc": 80 },
+      { "key": "file:integrations/agent-plugin/agents/product-delivery-implementation-and-validation-management.md", "change": "add", "loc": 80 },
+      { "key": "file:integrations/agent-plugin/agents/product-delivery-release-management.md", "change": "add", "loc": 80 },
+      { "key": "file:integrations/agent-plugin/teams/product-development.jsonc", "change": "add", "loc": 120 },
+      { "key": "file:crates/legionctl-core/src/archetypes.rs", "change": "edit", "loc": 200 },
+      { "key": "op:thread.start", "change": "edit" },
+      { "key": "op:agents.check", "change": "edit" }
+    ] },
+    { "id": "A2", "text": "Trio start with the track; self-nudges with rlcd over digests and pointers (keys expanded through the query layer)", "status": "planned", "stories": ["S2"], "depends_on": ["A1"], "units": [
+      { "key": "file:crates/legionctl-core/src/pool.rs", "change": "edit", "loc": 300 },
+      { "key": "file:crates/legionctl-core/src/thread.rs", "change": "edit" },
+      { "key": "file:crates/legionctl-operator/src/thread.rs", "change": "edit", "loc": 250 },
+      { "key": "op:thread.digest", "change": "add" },
+      { "key": "op:thread.rules.add", "change": "edit" }
+    ] },
+    { "id": "A4", "text": "Coherence check across surfaces: operation catalog x CLI, MCP, TUI, app actions and seed views", "status": "planned", "stories": ["S3"], "units": [
+      { "key": "file:crates/legionctl-api/src/surfaces.rs", "change": "add", "loc": 250 },
+      { "key": "op:surfaces", "change": "add" },
+      { "key": "file:Makefile", "change": "edit" }
+    ] }
+  ]
+}

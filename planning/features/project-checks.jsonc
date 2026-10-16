@@ -5,7 +5,7 @@
   "$schema": "../feature.schema.json",
   "id": "project-checks",
   "title": "Project checks, language files and the gates",
-  "status": "done",
+  "status": "in-progress",
   "plan_rows": ["legionctl#todo-100", "legionctl#todo-113"],
   "objectives": [
     { "id": "O1", "text": "Agents, gates and the observer run the repository's own checks, not a guess or a fixed command." },
@@ -30,13 +30,15 @@
       { "key": "file:config/languages/rust.jsonc", "change": "add" },
       { "key": "file:config/languages/node.jsonc", "change": "add" },
       { "key": "file:config/languages/python.jsonc", "change": "add" },
-      { "key": "file:.legionctl/checks.jsonc", "change": "add" },
       { "key": "file:crates/legionctl-core/src/workspace.rs", "change": "edit" },
       { "key": "file:crates/legionctl-core/src/codetests.rs", "change": "edit" },
       { "key": "op:code.checks.detect", "change": "add" },
       { "key": "op:code.checks.list", "change": "add" },
       { "key": "op:code.checks.run", "change": "add" },
       { "key": "op:code.checks.show", "change": "add" }
+    ] },
+    { "id": "P10b", "text": "legionctl's own .legionctl/checks.jsonc (dogfood): built 061ee68 in topic repo-checks, waits for the user's merge (todo-147; EV-review-07 Q-40)", "status": "in-progress", "stories": ["S2", "S3"], "depends_on": ["P10"], "units": [
+      { "key": "file:.legionctl/checks.jsonc", "change": "add" }
     ] }
   ]
 }

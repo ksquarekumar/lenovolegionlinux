@@ -1,0 +1,60 @@
+// todo-111 (build output per repo and language, graph sizes and coverage), todo-113 (language tools tracked and run
+// on request; on change only as an opt-in), todo-114 (a tooling manifest per repository with sources, versions and
+// hashes), todo-137 (agent-side tuning; the PL sweep and the WinBoat RAM stay the user's). All v1 (MEMORY-16).
+// The language files (config/languages) and checks exist from project-checks (P10).
+{
+  "$schema": "../feature.schema.json",
+  "id": "tooling-and-tuning",
+  "title": "Build output, language tools, tooling manifests and tuning for agent work",
+  "status": "planned",
+  "plan_rows": ["legionctl#todo-111", "legionctl#todo-113", "legionctl#todo-114", "legionctl#todo-137"],
+  "objectives": [
+    { "id": "O1", "text": "Build output and graph snapshots per repository, worktree and language have a size, an age and a safe cleanup." },
+    { "id": "O2", "text": "Each language's tools are known (installed, version, path) and run when asked, or on change when a repository opts in." },
+    { "id": "O3", "text": "A repository's tooling is a checked manifest: each install with its source, version and hashes, and a health check." },
+    { "id": "O4", "text": "Builds and tests of many agents share the machine without stalls: one slot pool, impact-selected tests, low-weight slices." }
+  ],
+  "stories": [
+    { "id": "S1", "kind": "lifecycle", "text": "workspace outputs lists target, node_modules, .venv and the others per worktree and language with size and age, and .graf/refs sizes; the cleanup shows a dry run first and keeps what a running build uses. Variations: V1 a cargo build runs in the worktree (success: its target is kept); V2 over the size limit (success: a doctor finding); V3 language coverage (success: the C files named as giving no facts).", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/checks.rs::build_outputs_are_listed_per_language_and_cleanup_keeps_what_a_running_build_uses"] },
+    { "id": "S2", "kind": "control-flow", "text": "code tools list shows each tool of each language with version and path or missing; code tools run runs the formatter or linter on the changed files; on change only when the repository opted in. Variations: V1 no opt-in (success: the watcher only records unchecked files); V2 missing tool (failure: named with its install source, nothing run).", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/checks.rs::language_tools_run_on_request_and_on_change_only_with_the_repositorys_opt_in"] },
+    { "id": "S3", "kind": "requirement", "text": "The tooling manifest is checked against its schema; each entry's version and hash are verified by its health check. Variations: V1 a curl|sh script whose hash changed (failure: refused, not run); V2 no manifest (success: an agent proposes one, the user approves before it is written).", "objectives": ["O3"],
+      "tests": ["test:crates/legionctl/tests/checks.rs::a_tooling_manifest_entry_fails_its_check_when_its_hash_or_version_differs"] },
+    { "id": "S4", "kind": "control-flow", "text": "Full builds and suites of several agents queue for the machine's slot pool; code tests run --impact runs only the tests that reach the changed entities; builds run in a low-weight slice. Variations: V1 pool full (success: queued with its place, no failure); V2 a change with no reaching test (success: says so, and the merge gate still runs the full suite).", "objectives": ["O4"],
+      "tests": ["test:crates/legionctl/tests/e2e.rs::builds_of_several_agents_share_the_slot_pool_and_impact_runs_only_reaching_tests"] }
+  ],
+  "work_items": [
+    { "id": "TT1", "text": "Build output per repository, worktree and language; graph snapshot sizes; code graph language coverage; cleanup with dry run; doctor finding (todo-111)", "status": "planned", "stories": ["S1"], "units": [
+      { "key": "file:crates/legionctl-core/src/outputs.rs", "change": "add", "loc": 450 },
+      { "key": "op:workspace.outputs", "change": "add" },
+      { "key": "op:workspace.outputs.clean", "change": "add" },
+      { "key": "op:code.graph.coverage", "change": "add" },
+      { "key": "op:workspace.status", "change": "edit" }
+    ] },
+    { "id": "TT2", "text": "Language tools tracked and run (formatter, linter, analyzers, LSP per workspace, profiler and debugger on demand); on change as an opt-in (todo-113)", "status": "planned", "stories": ["S2"], "units": [
+      { "key": "file:crates/legionctl-core/src/tools.rs", "change": "add", "loc": 600 },
+      { "key": "file:crates/legionctl-operator/src/lsp.rs", "change": "add", "loc": 400 },
+      { "key": "file:config/languages/rust.jsonc", "change": "edit" },
+      { "key": "op:code.tools.list", "change": "add" },
+      { "key": "op:code.tools.run", "change": "add" },
+      { "key": "op:code.tools.install", "change": "add" },
+      { "key": "op:code.lsp", "change": "add" }
+    ] },
+    { "id": "TT3", "text": "Tooling manifest per repository with its schema (installs: source kind, source, version, hashes, path, health check) and agent proposal (todo-114)", "status": "planned", "stories": ["S3"], "depends_on": ["TT2"], "units": [
+      { "key": "file:docs/api/tooling.schema.json", "change": "add", "loc": 150 },
+      { "key": "file:crates/legionctl-core/src/tools.rs", "change": "edit", "loc": 400 },
+      { "key": "op:code.tooling.check", "change": "add" },
+      { "key": "op:code.tooling.propose", "change": "add" }
+    ] },
+    { "id": "TT4", "text": "Agent-side tuning (todo-137): one build and test slot pool in the operator, impact selection and nextest, builds in a low-weight slice, scx mode for build load, target cleanup on workspace close", "status": "planned", "stories": ["S4"], "depends_on": ["TT1"], "units": [
+      { "key": "file:crates/legionctl-operator/src/slots.rs", "change": "add", "loc": 350 },
+      { "key": "op:jobs.slots", "change": "add" },
+      { "key": "op:code.tests.run", "change": "edit" },
+      { "key": "file:crates/legionctl-core/src/codetests.rs", "change": "edit", "loc": 250 },
+      { "key": "file:systemd/user/legionctl-builds.slice", "change": "add", "loc": 10 },
+      { "key": "file:configsets/lenovo-82wq-legion-pro-7-16irx8h/40-workload-build.jsonc", "change": "add", "loc": 30 },
+      { "key": "op:workspace.close", "change": "edit" }
+    ] }
+  ]
+}

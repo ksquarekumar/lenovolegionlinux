@@ -1,0 +1,53 @@
+// todo-153 environments, v1 parts (user 2026-10-16, MEMORY-15, MEMORY-16): zero network for programs except through
+// the gateway, connections declared per environment and their view, write-back/restore/undo for topic files outside
+// git and environment snapshots, two environment kinds (runtime-managed entrypoint, agent-managed runnables; with
+// feature projects), the gateway as the one connection runner with port open/close on this host. Post-v1: topic diary
+// as a formal artifact, the kit as a public SDK, ports across hosts, capability matching.
+{
+  "$schema": "../feature.schema.json",
+  "id": "environments",
+  "title": "Environments: network isolation, declared connections, snapshots and write-back",
+  "status": "planned",
+  "plan_rows": ["legionctl#todo-153"],
+  "objectives": [
+    { "id": "O1", "text": "A program in an environment has no network except the connections that its environment declares, run by the gateway." },
+    { "id": "O2", "text": "Each connection and port is listed, viewable and checked against the firewall rules of its environment." },
+    { "id": "O3", "text": "Topic files outside git and whole environments can be snapshotted, written back, restored and undone." }
+  ],
+  "stories": [
+    { "id": "S1", "kind": "requirement", "text": "A sandboxed run reaches only its declared connections through the gateway; an undeclared one fails and is listed as refused. Variations: V1 declared https host (success: through the gateway, logged); V2 direct socket to the internet (failure: no route); V3 undeclared host through the gateway (failure: refused with the environment and rule); V4 container and VM runs (same results).", "objectives": ["O1", "O2"],
+      "tests": ["test:crates/legionctl/tests/environments.rs::a_run_reaches_only_its_declared_connections_through_the_gateway"] },
+    { "id": "S2", "kind": "lifecycle", "text": "A port opened for an environment on this host is listed, reaches only that environment and closes with it. Variations: V1 port already used (failure: refused with the user); V2 environment stops (success: port closed, event).", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/environments.rs::a_port_opened_for_an_environment_is_listed_and_closes_with_it"] },
+    { "id": "S3", "kind": "lifecycle", "text": "A copy-on-write environment writes back, restores and undoes topic files outside git and its snapshot. Variations: V1 write-back after the host file changed (failure: refused with the conflict, nothing written); V2 undo after write-back (success: the old bytes); V3 restore of a named snapshot (success).", "objectives": ["O3"],
+      "tests": ["test:crates/legionctl/tests/environments.rs::an_environment_writes_back_restores_and_undoes_files_outside_git"] },
+    { "id": "S4", "kind": "control-flow", "text": "A runtime-managed environment runs only its entrypoint; an agent-managed one runs any runnable of its project. Variations: V1 another runnable in a runtime-managed environment (failure: refused).", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/environments.rs::a_runtime_managed_environment_runs_only_its_entrypoint"] }
+  ],
+  "work_items": [
+    { "id": "N1", "text": "Environment model (kinds, connections, firewall rules) in config and per topic workspace", "status": "planned", "stories": ["S4"], "units": [
+      { "key": "file:crates/legionctl-core/src/environment.rs", "change": "add", "loc": 600 },
+      { "key": "file:crates/legionctl-core/src/workspace.rs", "change": "edit" },
+      { "key": "op:environments.list", "change": "add" },
+      { "key": "op:environments.show", "change": "add" }
+    ] },
+    { "id": "N2", "text": "Zero network in sandboxes, containers and VMs; the gateway runs each declared connection and logs it; connection view", "status": "planned", "stories": ["S1"], "depends_on": ["N1"], "units": [
+      { "key": "file:crates/legionctl-core/src/session.rs", "change": "edit", "loc": 200 },
+      { "key": "file:crates/legionctl-operator/src/connections.rs", "change": "add", "loc": 900 },
+      { "key": "file:crates/legionctl-operator/src/gateway.rs", "change": "edit" },
+      { "key": "op:environments.connections", "change": "add" }
+    ] },
+    { "id": "N3", "text": "Ports on this host opened and closed by the gateway for an environment", "status": "planned", "stories": ["S2"], "depends_on": ["N2"], "units": [
+      { "key": "file:crates/legionctl-operator/src/connections.rs", "change": "edit", "loc": 250 },
+      { "key": "op:gateway.ports.open", "change": "add" },
+      { "key": "op:gateway.ports.close", "change": "add" }
+    ] },
+    { "id": "N4", "text": "Copy-on-write environments: write-back, restore, undo for topic files outside git; environment snapshots", "status": "planned", "stories": ["S3"], "depends_on": ["N1"], "units": [
+      { "key": "file:crates/legionctl-core/src/snapshot.rs", "change": "add", "loc": 600 },
+      { "key": "op:environments.snapshot", "change": "add" },
+      { "key": "op:environments.writeback", "change": "add" },
+      { "key": "op:environments.restore", "change": "add" },
+      { "key": "op:undo", "change": "edit" }
+    ] }
+  ]
+}

@@ -1,0 +1,60 @@
+// Design 23 Part F: rlcd, the System One decision tier (todo-138 core, merged d014e65) and rlcd on hot paths and
+// for cost (todo-139). Rules: never on a path that writes hardware or firmware, never to pass a gate; off when not
+// configured; when on, a failed or timed-out call fails its path with its error (no bypass); each decision stored with
+// its outcome; one shared client.
+{
+  "$schema": "../feature.schema.json",
+  "id": "rlcd",
+  "title": "rlcd: the System One decision tier, its route steps and hot paths",
+  "status": "in-progress",
+  "plan_rows": ["legionctl#todo-138", "legionctl#todo-139"],
+  "objectives": [
+    { "id": "O1", "text": "One typed question model and two wire shapes answer observer wakes and hot paths fast and cheap." },
+    { "id": "O2", "text": "A configured step that fails, fails its path with its error; nothing runs in its place." },
+    { "id": "O3", "text": "Each decision has its outcome as a label; cost and latency per path are visible." }
+  ],
+  "stories": [
+    { "id": "S1", "kind": "requirement", "text": "rlcd ask sends each wire shape, stores the answers and fails a failed call at once; an observer routed [rlcd, acp] wakes ACP only on escalate.", "objectives": ["O1", "O2"],
+      "tests": ["test:crates/legionctl/tests/threads.rs::rlcd_ask_sends_each_wire_shape_and_fails_a_failed_call_at_once",
+                "test:crates/legionctl/tests/threads.rs::an_observer_routed_through_rlcd_wakes_acp_only_on_escalate"] },
+    { "id": "S2", "kind": "control-flow", "text": "A route with the api step calls the model through the gateway (no tools) and records which step answered. Variations: V1 route [api, acp] and api fails (failure: the wake ends with the error, acp does not run); V2 route [rlcd, api] on escalate (success: api answers with the brief).", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/threads.rs::a_route_with_the_api_step_calls_the_gateway_and_a_failed_api_step_runs_nothing_else"] },
+    { "id": "S3", "kind": "control-flow", "text": "Gateway model routing asks rlcd for the tier of each request when configured. Variations: V1 rlcd off (success: the request's own model, no call); V2 rlcd times out (failure: the request fails with the error, no default tier).", "objectives": ["O1", "O2"],
+      "tests": ["test:crates/legionctl/tests/gateway.rs::the_gateway_routes_a_request_to_the_tier_rlcd_picks_and_fails_it_when_rlcd_fails"] },
+    { "id": "S4", "kind": "control-flow", "text": "The chat bar line, the pre-tool risk check (only for commands outside the allow and deny lists), doctor severity, OSD notify and the test gate pre-check use rlcd when configured; none writes hardware or passes a gate. Variations: V1 a command in the deny list (success: denied by the rule, no rlcd call); V2 gate pre-check says obvious (success: a hint, the gate still runs).", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/threads.rs::the_pre_tool_risk_check_asks_rlcd_only_outside_the_allow_and_deny_lists",
+                "test:crates/legionctl/tests/e2e.rs::the_test_gate_pre_check_gives_a_hint_and_never_passes_the_gate"] },
+    { "id": "S5", "kind": "data-flow", "text": "rlcd replay runs recorded thread logs against a backend and gives precision and recall against the stored outcomes; cost and latency per path are shown. Variations: V1 no outcomes yet (success: says so, no score).", "objectives": ["O3"],
+      "tests": ["test:crates/legionctl/tests/threads.rs::rlcd_replay_scores_recorded_wakes_against_their_outcomes_and_shows_cost_per_path"] }
+  ],
+  "work_items": [
+    { "id": "R0", "text": "Core (todo-138): question model, both wire shapes, backends in config, redaction, observer route [rlcd, acp], learning record, rlcd ask and decisions; merged d014e65", "status": "done", "stories": ["S1"], "units": [
+      { "key": "file:crates/legionctl-core/src/rlcd.rs", "change": "add", "loc": 500 },
+      { "key": "file:crates/legionctl-operator/src/rlcd.rs", "change": "add", "loc": 250 },
+      { "key": "file:tests/fixtures/fake-decisions.py", "change": "add" },
+      { "key": "config:rlcd.backends", "change": "add" },
+      { "key": "op:rlcd.ask", "change": "add" },
+      { "key": "op:rlcd.decisions", "change": "add" }
+    ] },
+    { "id": "R1", "text": "The api route step: a direct model call through the gateway, no tools", "status": "planned", "stories": ["S2"], "depends_on": ["R0"], "units": [
+      { "key": "file:crates/legionctl-operator/src/thread.rs", "change": "edit", "loc": 200 },
+      { "key": "file:crates/legionctl-operator/src/gateway.rs", "change": "edit" },
+      { "key": "op:agents.check", "change": "edit" }
+    ] },
+    { "id": "R2", "text": "Hot path: gateway model routing (tier per request)", "status": "planned", "stories": ["S3"], "depends_on": ["R0"], "units": [
+      { "key": "file:crates/legionctl-operator/src/gateway.rs", "change": "edit", "loc": 250 },
+      { "key": "config:rlcd.paths", "change": "add" }
+    ] },
+    { "id": "R3", "text": "Hot paths: app chat bar line, pre-tool risk check, doctor severity, OSD notify, test gate pre-check (ui-composer view choice comes with generative-ui G5)", "status": "planned", "stories": ["S4"], "depends_on": ["R2"], "units": [
+      { "key": "file:crates/legionctl-api/src/chat.rs", "change": "edit", "loc": 150 },
+      { "key": "file:crates/legionctl/src/hook.rs", "change": "edit", "loc": 150 },
+      { "key": "file:crates/legionctl-machine/src/doctor.rs", "change": "edit", "loc": 100 },
+      { "key": "file:crates/legionctl-operator/src/desktop.rs", "change": "edit", "loc": 80 },
+      { "key": "file:crates/legionctl-core/src/codetests.rs", "change": "edit", "loc": 120 }
+    ] },
+    { "id": "R4", "text": "Evaluation replay and cost and latency per path (CLI and app)", "status": "planned", "stories": ["S5"], "depends_on": ["R0"], "units": [
+      { "key": "op:rlcd.replay", "change": "add", "loc": 400 },
+      { "key": "op:rlcd.paths", "change": "add", "loc": 150 }
+    ] }
+  ]
+}

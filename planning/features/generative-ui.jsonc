@@ -1,0 +1,84 @@
+// DESIGN-09 (todo-146, approved 2026-10-16), todo-145 (app UI pass 2) and todo-141 (code graph page, ACP views,
+// intelligent UI): every screen is a view spec that an intent finds or an agent makes; one view system on the app, the
+// TUI and the CLI (Rule 0, Rule 1). G1 is built in topic gen-ui (dbd22e7, not merged); the T1 fact store of the same
+// commit is in feature temporal-graph.
+{
+  "$schema": "../feature.schema.json",
+  "id": "generative-ui",
+  "title": "Generative UI: spaces, tabs, views that agents remake, on every surface",
+  "status": "in-progress",
+  "plan_rows": ["legionctl#todo-146", "legionctl#todo-145", "legionctl#todo-141"],
+  "objectives": [
+    { "id": "O1", "text": "Each tab is the answer to an intent: a stored view first, then rlcd, then the composer; a failed step shows its error in the tab." },
+    { "id": "O2", "text": "All public operations are reachable as actions with forms from their input schemas, with the confirm of their class." },
+    { "id": "O3", "text": "The app, the TUI and the CLI render the same view specs; views and preferences are graph facts with scope and validity." }
+  ],
+  "stories": [
+    { "id": "S1", "text": "The rail, the navigator and the tabs keep their sizes; the chat bar never covers the tab; tabs, space and width persist as user facts. Variations: V1 navigator dragged to 45% (success: 45% after an app restart); V2 tall chat bar (success: below the content, 40% at most).", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/app.rs::the_app_rail_navigator_and_tab_have_their_sizes_and_the_chat_bar_never_covers_the_tab",
+                "test:crates/legionctl/tests/app.rs::tabs_the_space_and_the_navigator_width_persist_across_an_app_restart"] },
+    { "id": "S2", "kind": "lifecycle", "text": "The shipped pages are seed views; a remade view gets a new version of the same view, with undo, redo, reset to the seed and pin. Variations: V1 data refresh (success: no new version); V2 a spec that fails views check (failure: the tab shows the reason, the old version stays).", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/app.rs::the_shipped_pages_are_seed_views_and_a_remade_view_keeps_its_versions_with_undo_redo_reset_and_pin"] },
+    { "id": "S3", "kind": "control-flow", "text": "An operation's action opens a form from its input schema and confirms by its class. Variations: V1 read (success: no confirm); V2 session with dry_run (success: inline confirm with the plan); V3 machine (success: plan, then the polkit dialog); V4 a form value against the schema (failure: refused at the field, no call).", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/app.rs::an_operation_action_opens_a_form_from_its_input_schema_and_confirms_by_its_class"] },
+    { "id": "S4", "text": "Each widget of the grown set (chart with axes, graph, diff, code, form, choice, slider, progress, timeline) draws its data; the code graph page is a seed view; a widget outside the set is refused. Variations: V1 a chart that mixes kinds in one series (failure: views check refuses it).", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/app.rs::the_grown_widget_set_draws_each_kind_and_the_code_graph_page_is_a_seed_view",
+                "test:crates/legionctl/tests/threads.rs::a_view_cannot_bind_a_change_operation_or_a_widget_outside_the_set"] },
+    { "id": "S5", "kind": "control-flow", "text": "An intent finds a stored view first, then an rlcd match, then the composer (Haiku on Claude, Luna on Codex); an ACP answer with an inline spec opens as a tab after views check. Variations: V1 exact stored intent (success: no rlcd, no composer call); V2 rlcd matches (success: no composer); V3 rlcd step fails (failure: the tab shows the error, the composer does not run in its place); V4 inline spec fails views check (failure: the reason under the answer).", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/threads.rs::an_intent_finds_a_stored_view_then_rlcd_then_the_composer_and_a_failed_step_shows_its_error",
+                "test:crates/legionctl/tests/app.rs::an_acp_answer_with_an_inline_view_opens_as_a_tab_after_views_check"] },
+    { "id": "S6", "kind": "requirement", "text": "The TUI and legionctl views render / ask show the same spec as the app; a preference holds by scope (thread > dossier > project > global) and time; an agent fact never overrides a user fact. Variations: V1 the same intent on the CLI after the app made it (success: no composer call); V2 an agent preference at thread scope over a user one at the same scope (failure: the user's holds).", "objectives": ["O3"],
+      "tests": ["test:crates/legionctl/tests/tui.rs::the_tui_and_the_cli_render_the_same_view_spec_as_the_app",
+                "test:crates/legionctl/tests/code.rs::a_view_preference_holds_by_its_nearest_scope_and_a_user_fact_wins"] }
+  ],
+  "work_items": [
+    { "id": "G1", "text": "Rail, spaces, navigator, tabs (threads as tabs), Activity, layout facts; built dbd22e7 in topic gen-ui, not merged", "status": "in-progress", "stories": ["S1"], "units": [
+      { "key": "file:crates/legionctl-app/src/shell.rs", "change": "add", "loc": 720 },
+      { "key": "file:crates/legionctl-app/src/activity.rs", "change": "add", "loc": 175 },
+      { "key": "file:crates/legionctl-app/src/thread.rs", "change": "edit" },
+      { "key": "file:crates/legionctl-app/src/lib.rs", "change": "edit" },
+      { "key": "file:scripts/app-shots.sh", "change": "edit" }
+    ] },
+    { "id": "G2", "text": "Screens as shipped seed views (the 5 pages first), view versions, undo, redo, reset, pin", "status": "planned", "stories": ["S2"], "depends_on": ["G1"], "units": [
+      { "key": "file:config/views/machine-now.jsonc", "change": "add", "loc": 60 },
+      { "key": "file:config/views/machine-gpu.jsonc", "change": "add", "loc": 40 },
+      { "key": "file:config/views/machine-health.jsonc", "change": "add", "loc": 40 },
+      { "key": "file:config/views/machine-bench.jsonc", "change": "add", "loc": 40 },
+      { "key": "file:config/views/machine-resources.jsonc", "change": "add", "loc": 50 },
+      { "key": "file:crates/legionctl-core/src/views.rs", "change": "edit", "loc": 700 },
+      { "key": "file:crates/legionctl-operator/src/views.rs", "change": "edit" },
+      { "key": "file:crates/legionctl-app/src/pages.rs", "change": "remove" },
+      { "key": "op:views.history", "change": "add" },
+      { "key": "op:views.revert", "change": "add" },
+      { "key": "op:views.pin", "change": "add" }
+    ] },
+    { "id": "G3", "text": "Actions and forms from the operation catalog; confirm language by class", "status": "planned", "stories": ["S3"], "depends_on": ["G2"], "units": [
+      { "key": "file:crates/legionctl-api/src/catalog.rs", "change": "add", "loc": 300 },
+      { "key": "file:crates/legionctl-app/src/form.rs", "change": "add", "loc": 600 },
+      { "key": "file:crates/legionctl-app/src/lib.rs", "change": "edit" }
+    ] },
+    { "id": "G4", "text": "Widget set growth (time chart with axes, graph, diff, code, form, choice, slider, progress, timeline); code graph page as a seed view (todo-141)", "status": "planned", "stories": ["S4"], "depends_on": ["G2"], "units": [
+      { "key": "file:crates/legionctl-app/src/widgets.rs", "change": "add", "loc": 1400 },
+      { "key": "file:crates/legionctl-core/src/views.rs", "change": "edit" },
+      { "key": "file:docs/api/view.schema.json", "change": "edit" },
+      { "key": "file:config/views/work-code-graph.jsonc", "change": "add", "loc": 60 }
+    ] },
+    { "id": "G5", "text": "Intent routing (stored view, rlcd, composer), composer defaults Haiku and Luna, adapt flow, inline specs in ACP answers, proactive view chips", "status": "planned", "stories": ["S5"], "depends_on": ["G3", "G4"], "units": [
+      { "key": "op:ask", "change": "add", "loc": 350 },
+      { "key": "op:views.adapt", "change": "add" },
+      { "key": "file:crates/legionctl-operator/src/views.rs", "change": "edit", "loc": 300 },
+      { "key": "file:crates/legionctl-operator/src/acp.rs", "change": "edit" },
+      { "key": "file:crates/legionctl-api/src/chat.rs", "change": "edit" },
+      { "key": "file:integrations/agent-plugin/agents/ui-composer.md", "change": "edit" },
+      { "key": "file:integrations/agent-plugin/teams/vanilla.jsonc", "change": "edit" }
+    ] },
+    { "id": "G6", "text": "TUI and CLI render the same views (views render text forms, ask); views and preferences as graph facts with scope, time and ref validity; the rest of the spaces' screens as view specs", "status": "planned", "stories": ["S6"], "depends_on": ["G5"], "units": [
+      { "key": "file:crates/legionctl/src/tui.rs", "change": "edit", "loc": 500 },
+      { "key": "file:crates/legionctl-api/src/render.rs", "change": "edit", "loc": 400 },
+      { "key": "file:crates/legionctl-core/src/views.rs", "change": "edit" },
+      { "key": "file:config/views/work-dossier.jsonc", "change": "add", "loc": 50 },
+      { "key": "file:config/views/agents-accounts.jsonc", "change": "add", "loc": 50 },
+      { "key": "op:views.render", "change": "edit" }
+    ] }
+  ]
+}

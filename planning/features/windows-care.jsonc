@@ -1,0 +1,46 @@
+// todo-151 a-f (v1, user 2026-10-16): Windows repair and restore basics through the VM of the installed Windows
+// disk, and host power actions from inside Windows. The disk guard (VM and bare metal never at once) holds for all.
+// Post-v1: a scheduled health check, more repair steps.
+{
+  "$schema": "../feature.schema.json",
+  "id": "windows-care",
+  "title": "Windows care: backup, WinRE, repair, restore points, host actions from Windows",
+  "status": "planned",
+  "plan_rows": ["legionctl#todo-151"],
+  "objectives": [
+    { "id": "O1", "text": "No repair runs without a backup: an overlay to commit or drop, or a full image when the user asks." },
+    { "id": "O2", "text": "Basic repairs (sfc, DISM, chkdsk, bcdboot, System Restore) run from legionctl with their output in the app." },
+    { "id": "O3", "text": "From inside Windows the user asks for a host action with the host's normal approval, and sees VM or whole machine." }
+  ],
+  "stories": [
+    { "id": "S1", "kind": "lifecycle", "text": "A repair session starts with a copy-on-write overlay of the Windows disk; commit writes it to the disk, drop leaves the disk unchanged. Variations: V1 disk in use by bare metal hibernation or the VM (failure: refused by the disk guard); V2 full image asked (success: image with its hash); V3 drop (success: disk bytes unchanged).", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/machine.rs::a_windows_repair_runs_on_an_overlay_that_is_committed_or_dropped"] },
+    { "id": "S2", "kind": "control-flow", "text": "The VM starts into WinRE with its console in the app; bcdboot runs from WinRE. Variations: V1 no recovery entry (failure: named, VM not started).", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/machine.rs::the_windows_vm_starts_into_winre_and_runs_bcdboot_there"] },
+    { "id": "S3", "kind": "data-flow", "text": "sfc, DISM /RestoreHealth and chkdsk run through the QEMU guest agent with their output streamed; restore points are listed and one is restored. Variations: V1 guest agent not answering (failure: the step fails with the timeout, nothing else runs); V2 sfc exit code for found and fixed (success: shown as fixed).", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/machine.rs::windows_repairs_and_restore_points_run_through_the_guest_agent_with_their_output"] },
+    { "id": "S4", "kind": "control-flow", "text": "A host action asked from inside Windows (restart, shutdown, restart into Linux or Windows bare metal) goes through the guest channel and the host's approval; VM-only actions stay in the VM. Variations: V1 approval denied (failure: nothing happens, the guest is told); V2 unknown request on the channel (failure: refused, logged).", "objectives": ["O3"],
+      "tests": ["test:crates/legionctl/tests/machine.rs::a_host_action_from_inside_windows_needs_the_hosts_approval"] }
+  ],
+  "work_items": [
+    { "id": "W1", "text": "(a) Backup before repair: overlay commit or drop, full image on request", "status": "planned", "stories": ["S1"], "units": [
+      { "key": "file:crates/legionctl-machine/src/winvm.rs", "change": "edit", "loc": 250 },
+      { "key": "op:windows.vm.snapshot", "change": "add" }
+    ] },
+    { "id": "W2", "text": "(b) Start into WinRE with its console in the app; (d) bcdboot from WinRE", "status": "planned", "stories": ["S2"], "depends_on": ["W1"], "units": [
+      { "key": "op:windows.vm.recovery", "change": "add", "loc": 200 },
+      { "key": "file:crates/legionctl/src/winvm.rs", "change": "edit" }
+    ] },
+    { "id": "W3", "text": "(c) sfc, DISM, chkdsk through the QEMU guest agent; (e) restore points list and restore", "status": "planned", "stories": ["S3"], "depends_on": ["W1"], "units": [
+      { "key": "file:crates/legionctl-core/src/qga.rs", "change": "add", "loc": 350 },
+      { "key": "op:windows.repair", "change": "add", "loc": 200 },
+      { "key": "op:windows.restore.list", "change": "add" },
+      { "key": "op:windows.restore.apply", "change": "add" }
+    ] },
+    { "id": "W4", "text": "(f) Guest channel (virtio-serial) and a small Windows tool for host actions with the host's approval", "status": "planned", "stories": ["S4"], "depends_on": ["W3"], "units": [
+      { "key": "file:crates/legionctl-guest/src/main.rs", "change": "add", "loc": 400 },
+      { "key": "op:internal.windows.host", "change": "add", "loc": 200 },
+      { "key": "file:crates/legionctl-operator/src/virt.rs", "change": "edit" }
+    ] }
+  ]
+}

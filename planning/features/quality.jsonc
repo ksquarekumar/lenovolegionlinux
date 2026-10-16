@@ -1,0 +1,78 @@
+// todo-154, later batches (after gen-ui and v1-bugs merge; EV-review-07): core helper merges (Q-11..Q-17), the
+// deleted one-time ~/.agentworkspace migration (Q-23, user decision), the helpers moved from legionctl-machine into
+// legionctl-core (Q-28, user decision), and file splits (Q-29..Q-34). Batches 1-4 run in topic quality-fixes and are
+// not in this file. A split or a delete that moves tests edits the test keys of the feature files that name them.
+{
+  "$schema": "../feature.schema.json",
+  "id": "quality",
+  "title": "Codebase quality: one helper per concept, no dead migration, clean crate edges, smaller files",
+  "status": "planned",
+  "plan_rows": ["legionctl#todo-154"],
+  "objectives": [
+    { "id": "O1", "text": "One implementation per concept (git runner, keyring, now, home, atomic write, spawn context)." },
+    { "id": "O2", "text": "No code for a migration that has run; legionctl-core does not depend on legionctl-machine." },
+    { "id": "O3", "text": "No source or test file mixes unrelated areas; each split keeps behaviour and tests." }
+  ],
+  "stories": [
+    { "id": "S1", "kind": "requirement", "text": "Two writers of one config file never leave a mixed or a lost file (one atomic_write with a unique temporary name). Variations: V1 two agents set at once (success: one of the two whole files); V2 a write that fails half way (success: the old file stays).", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/agents.rs::two_writers_of_one_config_file_never_leave_a_mixed_or_lost_file"] },
+    { "id": "S2", "kind": "requirement", "text": "Without HOME the operator and the CLI refuse with 'HOME is not set' (one home()); no path falls back to '/'. Variations: V1 HOME empty (failure: same refusal).", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/e2e.rs::without_home_the_operator_and_the_cli_refuse_and_write_nothing_under_root"] },
+    { "id": "S3", "kind": "requirement", "text": "Every secret-tool read goes through one keyring module: the gateway, rlcd and session logins find the same entry and give one error text.", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/threads.rs::rlcd_ask_sends_each_wire_shape_and_fails_a_failed_call_at_once",
+                "test:crates/legionctl/tests/gateway.rs::a_missing_provider_key_names_the_keyring_entry_for_each_caller"] },
+    { "id": "S4", "text": "Dossier homes work without the migration: first use imports and links the home.", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/e2e.rs::the_first_use_in_a_repository_imports_its_agentworkspaces_folder_and_links_the_home"] },
+    { "id": "S5", "text": "Config writes keep the user's file when it cannot be read, also after the helpers move into core.", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/agents.rs::setup_never_writes_over_a_codex_config_that_it_cannot_read"] },
+    { "id": "S6", "kind": "requirement", "text": "After the splits each area keeps its tests: the full suite passes with the same test count and the moved tests keep their names.", "objectives": ["O3"],
+      "tests": ["test:crates/legionctl/tests/code.rs::a_plan_is_checked_against_the_code_graph_and_a_commit_that_adds_its_units_completes_it",
+                "test:crates/legionctl/tests/e2e.rs::the_checkpoint_gate_refuses_tests_without_evidence_and_takes_recorded_kills_and_accepts"] }
+  ],
+  "work_items": [
+    { "id": "Q1", "text": "Helper merges: one git runner (Q-11), one keyring module (Q-12), has_command and ppd_current in legionctl-machine (Q-13), db::now (Q-14), one home() (Q-15), one atomic_write (Q-16), one spawn context form (Q-17)", "status": "planned", "stories": ["S1", "S2", "S3"], "units": [
+      { "key": "rust:crates/legionctl-core:workspace::git", "change": "remove" },
+      { "key": "rust:crates/legionctl-core:codegraph::git", "change": "remove" },
+      { "key": "file:crates/legionctl-core/src/keyring.rs", "change": "add", "loc": 80 },
+      { "key": "rust:crates/legionctl-core:session::keyring_get", "change": "remove" },
+      { "key": "rust:crates/legionctl-core:session::keyring_put", "change": "remove" },
+      { "key": "file:crates/legionctl-operator/src/gateway.rs", "change": "edit" },
+      { "key": "file:crates/legionctl-operator/src/rlcd.rs", "change": "edit" },
+      { "key": "file:crates/legionctl-system/src/main.rs", "change": "edit" },
+      { "key": "file:crates/legionctl-core/src/db.rs", "change": "edit" },
+      { "key": "file:crates/legionctl-core/src/dossier.rs", "change": "edit" }
+    ] },
+    { "id": "Q2", "text": "Q-23: delete the one-time ~/.agentworkspace migration (module, operation, guards, tests) and its units in dossier-home", "status": "planned", "stories": ["S4"], "units": [
+      { "key": "file:crates/legionctl-core/src/migrate.rs", "change": "remove" },
+      { "key": "op:dossier.migrate", "change": "remove" },
+      { "key": "test:crates/legionctl/tests/e2e.rs::the_dossiers_move_to_their_homes_once_and_keep_their_ids_links_and_rows", "change": "remove" },
+      { "key": "file:crates/legionctl-operator/src/engine.rs", "change": "edit" },
+      { "key": "file:planning/features/dossier-home.jsonc", "change": "edit" }
+    ] },
+    { "id": "Q3", "text": "Q-28: sysroot::read_file, profile::read_jsonc, human_bytes, load::Thresholds, winvm::UNIT move into legionctl-core; core drops the machine dependency", "status": "planned", "stories": ["S5"], "units": [
+      { "key": "file:crates/legionctl-core/src/util.rs", "change": "add", "loc": 150 },
+      { "key": "file:crates/legionctl-core/Cargo.toml", "change": "edit" },
+      { "key": "file:crates/legionctl-machine/Cargo.toml", "change": "edit" }
+    ] },
+    { "id": "Q4", "text": "Splits: operator engine.rs (Q-29), system main.rs (Q-30), api render.rs by domain (Q-31), core session, dossier, thread (Q-32), serde default fns (Q-33), tests machine.rs and e2e.rs by area (Q-34) with the feature files' test keys", "status": "planned", "stories": ["S6"], "depends_on": ["Q1", "Q2"], "units": [
+      { "key": "file:crates/legionctl-operator/src/pack.rs", "change": "add", "loc": 400 },
+      { "key": "file:crates/legionctl-operator/src/jobs.rs", "change": "add", "loc": 100 },
+      { "key": "file:crates/legionctl-operator/src/engine.rs", "change": "edit" },
+      { "key": "file:crates/legionctl-system/src/observe.rs", "change": "add", "loc": 330 },
+      { "key": "file:crates/legionctl-system/src/plans.rs", "change": "add", "loc": 280 },
+      { "key": "file:crates/legionctl-system/src/dbus.rs", "change": "add", "loc": 880 },
+      { "key": "file:crates/legionctl-system/src/keys.rs", "change": "add", "loc": 70 },
+      { "key": "file:crates/legionctl-system/src/activity.rs", "change": "add", "loc": 150 },
+      { "key": "file:crates/legionctl-api/src/render.rs", "change": "edit" },
+      { "key": "file:crates/legionctl-core/src/sandbox.rs", "change": "add", "loc": 310 },
+      { "key": "file:crates/legionctl-core/src/registry.rs", "change": "add", "loc": 550 },
+      { "key": "file:crates/legionctl-core/src/peers.rs", "change": "add", "loc": 400 },
+      { "key": "file:crates/legionctl-api/src/io.rs", "change": "edit" },
+      { "key": "file:crates/legionctl/tests/power.rs", "change": "add" },
+      { "key": "file:crates/legionctl/tests/windows.rs", "change": "add" },
+      { "key": "file:crates/legionctl/tests/dossier.rs", "change": "add" },
+      { "key": "file:crates/legionctl/tests/sessions.rs", "change": "add" },
+      { "key": "file:planning/features/parity.jsonc", "change": "edit" }
+    ] }
+  ]
+}

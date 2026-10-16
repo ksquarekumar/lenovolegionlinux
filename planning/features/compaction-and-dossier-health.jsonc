@@ -1,0 +1,42 @@
+// todo-156 (user 2026-10-16): a compaction defers to the dossier: a serial, immutable JOURNAL entry before it, the
+// plan and the newest entry read first after it, immutable artifacts, a summary whose items carry their dossier
+// links, and a health audit (content-anchored staleness, ambiguity) left as an immutable note. The Codex side is
+// checked from its docs and recorded payloads, not guessed.
+{
+  "$schema": "../feature.schema.json",
+  "id": "compaction-and-dossier-health",
+  "title": "Compaction defers to the dossier; immutable entries; dossier health that is signal",
+  "status": "planned",
+  "plan_rows": ["legionctl#todo-156"],
+  "objectives": [
+    { "id": "O1", "text": "No state is lost at a compaction: it is in a numbered JOURNAL entry and the summary links to it." },
+    { "id": "O2", "text": "A written JOURNAL or HEALTH entry never changes; a correction is a new entry that supersedes it." },
+    { "id": "O3", "text": "The health audit names what is stale by content and what is ambiguous, once per cause." }
+  ],
+  "stories": [
+    { "id": "S1", "kind": "lifecycle", "text": "PreCompact tells the session to write JOURNAL/<NNNN>-<session>.md with links and attaches the health audit; SessionStart source compact says to read the plan, the newest JOURNAL and HEALTH entry first. Variations: V1 two sessions on one dossier (success: serial numbers without a gap or a collision); V2 no active dossier (success: no instruction); V3 Codex payload (as its recorded fixture shows).", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/e2e.rs::a_compaction_asks_for_a_journal_entry_and_the_next_start_reads_it_first"] },
+    { "id": "S2", "kind": "requirement", "text": "An artifact with immutable: true (JOURNAL and HEALTH by default) refuses dossier write, edit and append; a superseding entry links the old one. Variations: V1 edit through a symlink or an outside editor (failure: dossier check reports the changed hash); V2 a new entry with supersedes (success).", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/e2e.rs::an_immutable_entry_refuses_each_write_and_a_correction_supersedes_it"] },
+    { "id": "S3", "kind": "data-flow", "text": "dossier health counts a whole-file reference once as unanchored, marks anchored references stale only when their entity's hash changed, and names ambiguity (rows that disagree, a status git contradicts, a decision with no source) in an immutable HEALTH entry. Variations: V1 an unrelated edit of a referenced file (success: no stale finding for the anchored reference); V2 duplicate row ids (failure: named once).", "objectives": ["O3"],
+      "tests": ["test:crates/legionctl/tests/e2e.rs::dossier_health_reports_content_anchored_staleness_and_ambiguity_once_per_cause"] }
+  ],
+  "work_items": [
+    { "id": "C1", "text": "PreCompact and SessionStart(compact) hook text; JOURNAL serial numbers; summary-with-links instruction in dossier-practice", "status": "planned", "stories": ["S1"], "units": [
+      { "key": "file:integrations/agent-plugin/hooks/hooks.json", "change": "edit" },
+      { "key": "file:crates/legionctl/src/hook.rs", "change": "edit", "loc": 150 },
+      { "key": "file:integrations/agent-plugin/skills/dossier-practice/SKILL.md", "change": "edit" }
+    ] },
+    { "id": "C2", "text": "Immutable artifacts (front matter immutable, supersedes); JOURNAL and HEALTH immutable by default", "status": "planned", "stories": ["S2"], "units": [
+      { "key": "file:crates/legionctl-core/src/dossier.rs", "change": "edit", "loc": 150 },
+      { "key": "op:dossier.write", "change": "edit" },
+      { "key": "op:dossier.edit", "change": "edit" },
+      { "key": "op:dossier.append", "change": "edit" }
+    ] },
+    { "id": "C3", "text": "Health audit: content-anchored staleness, ambiguity, layered memory index; written as an immutable HEALTH entry", "status": "planned", "stories": ["S3"], "depends_on": ["C2"], "units": [
+      { "key": "op:dossier.health", "change": "add", "loc": 450 },
+      { "key": "file:crates/legionctl-core/src/graph.rs", "change": "edit" },
+      { "key": "op:dossier.check", "change": "edit" }
+    ] }
+  ]
+}

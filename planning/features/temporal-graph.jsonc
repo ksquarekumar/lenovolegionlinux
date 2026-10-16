@@ -1,0 +1,110 @@
+// DESIGN-10 (todo-152, approved 2026-10-16) T1-T5 and design 23 Part E P11-P14 (todo-101..104): one bitemporal,
+// ref-bound fact store for all graphs; the change watcher, the three test sets with story variations, rules and watched
+// queries as Datalog in-process (ascent + a runtime evaluator; DESIGN-10 replaces Part E decision 6), the recovery
+// brief, observer backfill, rlcd as second check, curation and the token- and task-efficient agent query layer
+// (MEMORY-14). T1 is built in topic gen-ui (dbd22e7, not merged).
+{
+  "$schema": "../feature.schema.json",
+  "id": "temporal-graph",
+  "title": "Temporal, ref-bound graph, watcher, rules and the agent query layer",
+  "status": "in-progress",
+  "plan_rows": ["legionctl#todo-152", "legionctl#todo-101", "legionctl#todo-102", "legionctl#todo-103", "legionctl#todo-104"],
+  "objectives": [
+    { "id": "O1", "text": "Each fact holds on four axes (valid time, recorded time, ref range, content anchor) with scope, source and confidence." },
+    { "id": "O2", "text": "Each change has a record, a hash and a test state, also outside legionctl's tools." },
+    { "id": "O3", "text": "Rules are data (Datalog over the as_of view) and give diagnostics without a model." },
+    { "id": "O4", "text": "Agents get their state and context in one task-shaped call with counts first, a token budget and deltas." }
+  ],
+  "stories": [
+    { "id": "S1", "kind": "data-flow", "text": "A fact holds by ref ancestry, content anchor and time; a correction keeps the old belief by recorded time; a user fact wins over an agent fact. Variations: V1 body changed (success: stale); V2 reverted (success: holds again); V3 rebased away (success: unreachable, kept in history).", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/code.rs::facts_hold_by_ref_anchor_and_time_and_a_user_fact_wins_over_an_agent_fact"] },
+    { "id": "S2", "kind": "data-flow", "text": "Code graph and dossier graph nodes and edges sit on the same axes; a renamed entity keeps its facts through a same-as edge. Variations: V1 moved symbol (success: facts follow); V2 unproven rename (success: undecided, no silent move).", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/code.rs::code_and_dossier_nodes_hold_by_ref_and_a_renamed_entity_keeps_its_facts"] },
+    { "id": "S3", "kind": "data-flow", "text": "The watcher records an editor change with its session, hash and untested items; the daemon watches only owned, registered roots and rescans after a restart. Variations: V1 root of another uid (failure: refused); V2 edit while the daemon is stopped (success: found by rescan); V3 same content twice (success: same hash).", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/code.rs::the_watcher_records_an_editor_change_with_its_session_hash_and_untested_items",
+                "test:crates/legionctl/tests/machine.rs::the_daemon_watches_only_owned_registered_roots_and_survives_a_restart"] },
+    { "id": "S4", "text": "Planned, actual and runnable tests differ; a story's variations need their tests. Variations: V1 #[ignore] test without its probe (success: not runnable here); V2 done story with an uncovered variation (failure: code plan check refuses).", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/code.rs::planned_actual_and_runnable_tests_differ_and_variations_need_their_tests"] },
+    { "id": "S5", "kind": "control-flow", "text": "A watched Datalog query opens and closes its diagnostic and wakes no model. Variations: V1 a query on an unknown relation (failure: code queries check refuses); V2 the fixing change (success: closed with that change).", "objectives": ["O3"],
+      "tests": ["test:crates/legionctl/tests/code.rs::a_query_on_watch_opens_and_closes_its_diagnostic_and_wakes_no_model"] },
+    { "id": "S6", "kind": "lifecycle", "text": "After a compaction the brief classes each work item from data; the observer backfills only while main is idle and tells main once. Variations: V1 releasable item with a test not run since change (failure: not releasable); V2 write while main runs (failure: refused, waits); V3 brief over max_tokens (success: cut with the rest named).", "objectives": ["O4"],
+      "tests": ["test:crates/legionctl/tests/threads.rs::after_a_compaction_the_brief_classes_each_item_from_data",
+                "test:crates/legionctl/tests/threads.rs::the_observer_backfills_only_while_main_is_idle_and_tells_main_once"] },
+    { "id": "S7", "kind": "control-flow", "text": "rlcd decides only what the exact path cannot (staleness, identity, conflict, scope), with the smallest state; a stand-in rlcd answer is stored with its outcome. Variations: V1 equal hash (success: no rlcd call); V2 unsure (success: stays stale, the owner is asked); V3 failed call (failure: state unchanged, the failure reported).", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/code.rs::a_stale_fact_goes_to_rlcd_only_when_the_exact_path_cannot_decide_and_a_failure_changes_nothing"] },
+    { "id": "S8", "text": "A view shows its data as of a ref or a time from the slider. Variations: V1 a ref where the source op has no answer (failure: the tab says why).", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/app.rs::a_view_shows_its_data_as_of_a_ref_and_a_time_from_the_slider"] },
+    { "id": "S9", "kind": "requirement", "text": "Task-shaped calls (context for an edit, why not done, changes since) answer in one call within max_tokens, name what they left out, give deltas since the caller's last call; curation runs only on change within its budget. Variations: V1 answer over budget (success: cursor and count of the rest, never a silent cut); V2 curation budget used up (success: queued, 'not curated since <ref>').", "objectives": ["O4"],
+      "tests": ["test:crates/legionctl/tests/code.rs::a_task_shaped_query_fits_its_token_budget_names_the_rest_and_gives_deltas",
+                "test:crates/legionctl/tests/code.rs::curation_runs_only_on_changed_entities_and_waits_when_its_budget_is_used"] }
+  ],
+  "work_items": [
+    { "id": "T1", "text": "Fact store (operator.db v14) and facts.set/at/history/diff/stale; views and preferences first; built dbd22e7 in topic gen-ui, not merged", "status": "in-progress", "stories": ["S1"], "units": [
+      { "key": "file:crates/legionctl-core/src/facts.rs", "change": "add", "loc": 630 },
+      { "key": "file:crates/legionctl-operator/src/facts.rs", "change": "add", "loc": 185 },
+      { "key": "file:crates/legionctl-core/src/codegraph.rs", "change": "edit" },
+      { "key": "file:crates/legionctl-core/src/db.rs", "change": "edit" },
+      { "key": "op:facts.set", "change": "add" },
+      { "key": "op:facts.at", "change": "add" },
+      { "key": "op:facts.history", "change": "add" },
+      { "key": "op:facts.diff", "change": "add" },
+      { "key": "op:facts.stale", "change": "add" }
+    ] },
+    { "id": "P11", "text": "Change watcher: daemon fanotify, D-Bus Watch/Changes, system.db queue; operator roots, change records, hash, test state, code watch, untested in plan status", "status": "planned", "stories": ["S3"], "units": [
+      { "key": "file:crates/legionctl-system/src/watch.rs", "change": "add", "loc": 600 },
+      { "key": "file:crates/legionctl-operator/src/watch.rs", "change": "add", "loc": 700 },
+      { "key": "file:dbus/org.legionctl.System1.xml", "change": "edit" },
+      { "key": "file:crates/legionctl-core/src/planning.rs", "change": "edit" },
+      { "key": "op:code.watch.status", "change": "add" },
+      { "key": "op:code.watch.changes", "change": "add" },
+      { "key": "op:code.plan.status", "change": "edit" }
+    ] },
+    { "id": "P12", "text": "Runners and the three test sets (planned, actual, runnable); story variations in planning/ and its schema", "status": "planned", "stories": ["S4"], "units": [
+      { "key": "file:crates/legionctl-core/src/codetests.rs", "change": "edit", "loc": 250 },
+      { "key": "file:crates/legionctl-core/src/planning.rs", "change": "edit", "loc": 200 },
+      { "key": "file:planning/feature.schema.json", "change": "edit" },
+      { "key": "op:code.tests.list", "change": "edit" }
+    ] },
+    { "id": "T2", "text": "Code graph and dossier graph nodes and edges on the four axes; same-as identity", "status": "planned", "stories": ["S2"], "depends_on": ["T1"], "units": [
+      { "key": "file:crates/legionctl-core/src/facts.rs", "change": "edit", "loc": 400 },
+      { "key": "file:crates/legionctl-core/src/graph.rs", "change": "edit" },
+      { "key": "file:crates/legionctl-core/src/codegraph.rs", "change": "edit" }
+    ] },
+    { "id": "P13", "text": "Graph schema rules, watched queries and diagnostics as Datalog in-process (ascent for built-in rules, a runtime evaluator for added queries)", "status": "planned", "stories": ["S5"], "depends_on": ["P11", "P12", "T2"], "units": [
+      { "key": "file:crates/legionctl-core/src/datalog.rs", "change": "add", "loc": 1100 },
+      { "key": "file:crates/legionctl-core/Cargo.toml", "change": "edit" },
+      { "key": "file:planning/graph.schema.jsonc", "change": "add", "loc": 80 },
+      { "key": "op:code.queries.list", "change": "add" },
+      { "key": "op:code.queries.run", "change": "add" },
+      { "key": "op:code.queries.check", "change": "add" },
+      { "key": "op:code.diagnostics", "change": "add" }
+    ] },
+    { "id": "P14a", "text": "Recovery brief and its session-start hook (compact, resume, clear)", "status": "planned", "stories": ["S6"], "depends_on": ["P11"], "units": [
+      { "key": "op:dossier.brief", "change": "add", "loc": 450 },
+      { "key": "file:crates/legionctl/src/hook.rs", "change": "edit" }
+    ] },
+    { "id": "P14b", "text": "Observer rules of E6 (tools on time), backfill as member writes, notices", "status": "planned", "stories": ["S6"], "depends_on": ["P13"], "units": [
+      { "key": "file:crates/legionctl-core/src/thread.rs", "change": "edit", "loc": 400 },
+      { "key": "file:integrations/agent-plugin/agents/thread-observer.md", "change": "edit" },
+      { "key": "op:dossier.write", "change": "edit" },
+      { "key": "op:thread.show", "change": "edit" }
+    ] },
+    { "id": "T3", "text": "rlcd decisions for staleness, identity, conflict and scope; second check only, minimal state, stored with outcome", "status": "planned", "stories": ["S7"], "depends_on": ["T2"], "units": [
+      { "key": "file:crates/legionctl-core/src/facts.rs", "change": "edit", "loc": 300 },
+      { "key": "file:crates/legionctl-core/src/rlcd.rs", "change": "edit" }
+    ] },
+    { "id": "T4", "text": "Time and ref slider on any view (views render --at)", "status": "planned", "stories": ["S8"], "depends_on": ["T2"], "units": [
+      { "key": "file:crates/legionctl-app/src/lib.rs", "change": "edit", "loc": 250 },
+      { "key": "op:views.render", "change": "edit" }
+    ] },
+    { "id": "T5", "text": "Curation over the lifetime (change-driven, exact, rlcd, cached LLM summaries, budgets, tightness health) and the agent query layer (task-shaped calls, counts first, max_tokens, deltas, measured); planned vs actual drift as facts", "status": "planned", "stories": ["S9"], "depends_on": ["P13", "T3"], "units": [
+      { "key": "file:crates/legionctl-core/src/curate.rs", "change": "add", "loc": 700 },
+      { "key": "file:crates/legionctl-core/src/query.rs", "change": "add", "loc": 600 },
+      { "key": "op:code.context", "change": "add" },
+      { "key": "op:code.plan.why", "change": "add" },
+      { "key": "op:code.since", "change": "add" },
+      { "key": "op:code.graph.curate", "change": "add" },
+      { "key": "op:doctor", "change": "edit" }
+    ] }
+  ]
+}

@@ -28,7 +28,7 @@
                 "test:crates/legionctl/tests/agents.rs::a_field_that_a_run_path_cannot_apply_refuses_the_member_and_names_the_field",
                 "test:crates/legionctl/tests/agents.rs::setup_apply_writes_each_agent_config_as_a_codex_agent_with_instructions_model_and_effort_only",
                 "test:crates/legionctl/tests/agents.rs::the_archetype_files_carry_only_the_frontmatter_fields_that_plugin_agents_honour"] },
-    { "id": "S5", "kind": "requirement", "text": "A Claude lead runs the team as teammates; a lost teammate runs as an operator member.", "objectives": ["O1", "O2"],
+    { "id": "S6", "kind": "requirement", "text": "A Claude lead runs the team as teammates; a lost teammate runs as an operator member.", "objectives": ["O1", "O2"],
       "tests": ["test:crates/legionctl/tests/threads.rs::a_claude_lead_runs_the_team_as_teammates_and_a_lost_one_restarts_as_an_operator_member",
                 "test:crates/legionctl/tests/threads.rs::a_codex_lead_refuses_a_member_config_that_sets_its_own_sandbox"] }
   ],
@@ -65,7 +65,7 @@
       { "key": "op:thread.branch", "change": "add" },
       { "key": "op:thread.compensate", "change": "add" }
     ] },
-    { "id": "P6c", "text": "Team mode: the teams env var, TeammateIdle and TaskCompleted, lost teammates, Codex subagents", "status": "done", "stories": ["S5"], "depends_on": ["P6b"], "units": [
+    { "id": "P6c", "text": "Team mode: the teams env var, TeammateIdle and TaskCompleted, lost teammates, Codex subagents", "status": "done", "stories": ["S6"], "depends_on": ["P6b"], "units": [
       { "key": "file:crates/legionctl/src/hook.rs", "change": "edit" },
       { "key": "file:crates/legionctl-core/src/session.rs", "change": "edit" },
       { "key": "op:internal.thread.teammate", "change": "add", "loc": 300 }

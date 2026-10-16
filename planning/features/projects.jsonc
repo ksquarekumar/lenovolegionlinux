@@ -1,0 +1,54 @@
+// todo-140 (all v1, MEMORY-16): projects in monorepos (Cargo workspace members, package.json workspaces, uv
+// workspaces, pyproject) as nodes of the code graph and the dossier graph, with files, internal and external
+// dependencies, entrypoints, runnables, images and checks per project; any runnable runs sandboxed or on the host
+// (an agent's host run needs the user's approval for each run). The design part comes first (design 23 Part F is
+// rlcd, so projects get Part G).
+{
+  "$schema": "../feature.schema.json",
+  "id": "projects",
+  "title": "Projects: nodes, dependencies, runnables, images and runs per project",
+  "status": "planned",
+  "plan_rows": ["legionctl#todo-140"],
+  "objectives": [
+    { "id": "O1", "text": "Each project of a repository is a graph node with its files, internal edges, external dependencies, entrypoints, runnables and images." },
+    { "id": "O2", "text": "Checks run per project and language, from the language files." },
+    { "id": "O3", "text": "Agents and humans run any runnable, check or image of a project, sandboxed or on the host, as a tracked run." }
+  ],
+  "stories": [
+    { "id": "S1", "kind": "data-flow", "text": "A monorepo with a Cargo workspace, a bun workspace and a uv workspace gives one node per project with its path and workspace edges, its lock-file dependencies and its runnables. Variations: V1 pyproject with console_scripts (success: each script a runnable); V2 package.json bin and scripts (success); V3 a manifest that does not parse (failure: a finding with the file, no partial node).", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/projects.rs::a_monorepo_gives_one_node_per_project_with_its_edges_dependencies_and_runnables"] },
+    { "id": "S2", "text": "A Dockerfile and its container env belong to their project; images build and run per project. Variations: V1 Dockerfile outside any project (success: a repository image).", "objectives": ["O1"],
+      "tests": ["test:crates/legionctl/tests/projects.rs::a_dockerfile_belongs_to_its_project_and_builds_as_its_image"] },
+    { "id": "S3", "kind": "control-flow", "text": "code checks detect and run work per project and language; the gates run the checks of the projects a change touches. Variations: V1 a change in one project (success: only its checks run); V2 a project with no test kind (failure: a finding for that project).", "objectives": ["O2"],
+      "tests": ["test:crates/legionctl/tests/checks.rs::checks_run_per_project_and_a_gate_runs_only_the_touched_projects"] },
+    { "id": "S4", "kind": "control-flow", "text": "A runnable runs sandboxed with no approval, or on the host; an agent's host run asks the user each time; both are runs with log and result. Variations: V1 agent host run denied (failure: not started, recorded); V2 user host run from a terminal (success: no dialog); V3 sandboxed run (success: own namespace, tracked files and network).", "objectives": ["O3"],
+      "tests": ["test:crates/legionctl/tests/projects.rs::a_runnable_runs_sandboxed_freely_and_on_the_host_only_with_the_users_approval"] }
+  ],
+  "work_items": [
+    { "id": "PR1", "text": "Design part G (projects) in design 23; project discovery from manifests per language file; project nodes and edges in the code graph and the dossier graph", "status": "planned", "stories": ["S1"], "units": [
+      { "key": "file:docs/design/23-agent-network.md", "change": "edit" },
+      { "key": "file:crates/legionctl-core/src/projects.rs", "change": "add", "loc": 900 },
+      { "key": "file:config/languages/rust.jsonc", "change": "edit" },
+      { "key": "file:config/languages/node.jsonc", "change": "edit" },
+      { "key": "file:config/languages/python.jsonc", "change": "edit" },
+      { "key": "file:crates/legionctl-core/src/codegraph.rs", "change": "edit" },
+      { "key": "file:crates/legionctl-core/src/graph.rs", "change": "edit" },
+      { "key": "op:code.projects.list", "change": "add" },
+      { "key": "op:code.projects.show", "change": "add" }
+    ] },
+    { "id": "PR2", "text": "Images per project (Dockerfile, container env)", "status": "planned", "stories": ["S2"], "depends_on": ["PR1"], "units": [
+      { "key": "file:crates/legionctl-core/src/images.rs", "change": "edit", "loc": 200 },
+      { "key": "op:images.scan", "change": "edit" }
+    ] },
+    { "id": "PR3", "text": "Checks per project and language; gates per touched project", "status": "planned", "stories": ["S3"], "depends_on": ["PR1"], "units": [
+      { "key": "file:crates/legionctl-core/src/checks.rs", "change": "edit", "loc": 350 },
+      { "key": "op:code.checks.detect", "change": "edit" },
+      { "key": "op:code.checks.run", "change": "edit" }
+    ] },
+    { "id": "PR4", "text": "Runs of runnables in env mode sandboxed or host; per-run approval for an agent's host run; run records", "status": "planned", "stories": ["S4"], "depends_on": ["PR1"], "units": [
+      { "key": "op:code.projects.run", "change": "add", "loc": 600 },
+      { "key": "file:crates/legionctl-core/src/session.rs", "change": "edit" },
+      { "key": "file:crates/legionctl-operator/src/desktop.rs", "change": "edit" }
+    ] }
+  ]
+}
