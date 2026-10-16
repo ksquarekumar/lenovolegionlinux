@@ -1692,8 +1692,7 @@ impl Render for crate::Edit {
 
 impl Render for crate::UsageReport {
     fn text(&self) -> String {
-        let mut out: Vec<String> = self
-            .rows
+        self.rows
             .iter()
             .map(|u| {
                 format!(
@@ -1701,13 +1700,8 @@ impl Render for crate::UsageReport {
                     u.day, u.agent, u.model, u.input, u.output, u.cache_read, u.cache_write
                 )
             })
-            .collect();
-        out.extend(
-            self.codex_limits
-                .iter()
-                .map(|(w, p)| format!("codex limit {w}: {p:.0}% used")),
-        );
-        out.join("\n")
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -1861,6 +1855,27 @@ impl Render for Vec<crate::Plugin> {
                         ": outside plugins.marketplaces"
                     }
                 )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+impl Render for Vec<crate::AccountUsage> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no account profile has a login (legionctl agents accounts add <name>)".into();
+        }
+        self.iter()
+            .map(|u| {
+                let what = u.error.clone().unwrap_or_else(|| {
+                    u.windows
+                        .iter()
+                        .map(|w| format!("{} {:.0}%", w.name, w.used_percent))
+                        .collect::<Vec<_>>()
+                        .join("  ")
+                });
+                format!("{:<16} {:<7} {what}", u.account, u.agent)
             })
             .collect::<Vec<_>>()
             .join("\n")

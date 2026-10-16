@@ -89,6 +89,11 @@ pub struct Screen {
     pub updated: Option<std::time::Instant>,
     /// The refreshes since the start (the Activity reads its slow parts each 15th).
     pub ticks: u32,
+    /// The account profiles and their usage (`agents accounts list`, `agents accounts usage`, todo-136).
+    pub accounts: Vec<String>,
+    pub usage: Vec<legionctl_api::AccountUsage>,
+    /// Whose account picker shows: a member's name, or "" for the chat bar.
+    pub picking: Option<String>,
 }
 
 impl Screen {
@@ -129,6 +134,9 @@ impl Screen {
             activity: Activity::default(),
             updated: None,
             ticks: 0,
+            accounts: Vec::new(),
+            usage: Vec::new(),
+            picking: None,
         }
     }
 
@@ -162,6 +170,42 @@ impl Screen {
             .find(|r| r.kind == "thread.agent")
             .and_then(|r| r.payload["agent"].as_str().map(String::from))
             .or_else(|| self.default_agent.clone())
+    }
+
+    /// The chat bar's account: the thread's newest chat bar pick (a `thread.account` row of no member), else the
+    /// thread's account.
+    #[must_use]
+    pub fn chat_account(&self) -> Option<String> {
+        let thread = self.thread.as_ref()?;
+        thread
+            .log
+            .iter()
+            .rev()
+            .find(|r| r.kind == "thread.account" && r.member.is_empty())
+            .and_then(|r| r.payload["account"].as_str().map(String::from))
+            .or_else(|| thread.thread.account.clone())
+    }
+
+    /// An account's use in a few words (`claude 5h 42% 7d 8%`), each agent's, or why it cannot be read.
+    #[must_use]
+    pub fn usage_of(&self, account: &str) -> String {
+        self.usage
+            .iter()
+            .filter(|u| u.account == account)
+            .map(|u| match &u.error {
+                Some(e) if e.starts_with("login needed") => format!("{} login needed", u.agent),
+                Some(_) => format!("{} usage unknown", u.agent),
+                None => std::iter::once(u.agent.clone())
+                    .chain(
+                        u.windows
+                            .iter()
+                            .map(|w| format!("{} {:.0}%", w.name, w.used_percent)),
+                    )
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            })
+            .collect::<Vec<_>>()
+            .join(" · ")
     }
 
     /// The `/` commands that match the chat bar's text: the agent's first.
@@ -444,6 +488,28 @@ impl LegionApp {
         }
     }
 
+    /// Read the account profiles and their usage (kept by the operator for `agents.accounts.usage_ttl_s`): the
+    /// member chips and the account picker show them.
+    pub(crate) fn read_accounts(&mut self, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+        let task = self.operator(cx, async move {
+            let accounts = client
+                .call::<op::AgentsAccountsList>(&legionctl_api::Empty {})
+                .await?;
+            let usage = client
+                .call::<op::AgentsAccountsUsage>(&legionctl_api::AccountUsageIn {
+                    account: None,
+                    fresh: false,
+                })
+                .await?;
+            Ok((accounts, usage))
+        });
+        self.finish(cx, task, |app, (accounts, usage)| {
+            app.screen.accounts = accounts.into_iter().map(|a| a.name).collect();
+            app.screen.usage = usage;
+        });
+    }
+
     /// An intent's answer (DESIGN-09 G5): its view opens as a tab with its data (a change reads the tab again), the
     /// composer's run is the chat bar's session from now on.
     fn answered(&mut self, answer: ViewAnswer, cx: &mut Context<Self>) {
@@ -476,11 +542,7 @@ impl LegionApp {
             ));
             return;
         };
-        let account = self
-            .screen
-            .thread
-            .as_ref()
-            .and_then(|t| t.thread.account.clone());
+        let account = self.screen.chat_account();
         let acp = self
             .screen
             .attached
@@ -513,7 +575,7 @@ impl LegionApp {
         let input = json!({
             "intent": words, "view": name, "params": params, "agent": agent, "dossier": self.screen.dossier,
             "repo": self.screen.repo,
-            "account": self.screen.thread.as_ref().and_then(|t| t.thread.account.clone()),
+            "account": self.screen.chat_account(),
             "acp": self.screen.attached.as_ref().and_then(|(_, acp)| acp.clone()),
         });
         self.start("ask", input, line, cx);
@@ -676,62 +738,201 @@ fn kind_color(kind: &str, t: &Tokens) -> gpui_kit::Hsla {
     }
 }
 
-/// A thread tab's head: its title, state, dossier and account, and its members.
-fn thread_header(v: &ThreadView, t: &Tokens) -> Div {
-    let members = v.members.iter().filter(|m| m.state != "left").map(|m| {
+impl LegionApp {
+    /// A thread tab's head: its title, state, dossier and account, and its members, each with its account and that
+    /// account's use; an operator member's account opens the picker.
+    fn thread_header(&self, v: &ThreadView, t: &Tokens, cx: &mut Context<Self>) -> Div {
+        let members: Vec<Div> = v
+            .members
+            .iter()
+            .filter(|m| m.state != "left")
+            .map(|m| {
+                div()
+                    .h_flex()
+                    .gap(S1)
+                    .pl(px(2.))
+                    .pr(S2)
+                    .py(px(2.))
+                    .rounded_full()
+                    .bg(t.card)
+                    .text_size(T_XS)
+                    .text_color(t.text2)
+                    .child(avatar(&m.name, 18.))
+                    .child(format!("{} · {}", m.name, m.archetype))
+                    .child(self.account_chip(&m.name, m.account.as_deref(), Some(&m.run), t, cx))
+            })
+            .collect();
+        let mut facts = vec![
+            badge(
+                v.thread.state.clone(),
+                if v.thread.state == "open" {
+                    t.ok
+                } else {
+                    t.muted
+                },
+            ),
+            div().text_color(t.muted).child(format!(
+                "thread {} · dossier {}",
+                v.thread.id, v.thread.dossier
+            )),
+        ];
+        if let Some(account) = &v.thread.account {
+            facts.push(
+                div()
+                    .text_color(t.muted)
+                    .child(format!("account {account}")),
+            );
+        }
+        let picking = self
+            .screen
+            .picking
+            .as_ref()
+            .filter(|p| !p.is_empty() && v.members.iter().any(|m| m.name == **p));
         div()
+            .v_flex()
+            .gap(S2)
+            .child(
+                div()
+                    .text_size(T_MD)
+                    .font_semibold()
+                    .text_color(t.text)
+                    .child(v.thread.title.clone()),
+            )
+            .child(
+                div()
+                    .h_flex()
+                    .flex_wrap()
+                    .gap(S2)
+                    .text_size(T_XS)
+                    .children(facts),
+            )
+            .child(div().h_flex().flex_wrap().gap(S1).children(members))
+            .children(picking.map(|p| self.account_picker(v.thread.id, Some(p), t, cx)))
+    }
+
+    /// The account of a member (`run` given) or of the chat bar (`run` none, `who` ""), with its use. Only an operator
+    /// member and the chat bar pick their account; another member's chip says why it cannot.
+    fn account_chip(
+        &self,
+        who: &str,
+        account: Option<&str>,
+        run: Option<&str>,
+        t: &Tokens,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let usage = account.map(|a| self.screen.usage_of(a)).unwrap_or_default();
+        let text = match account {
+            Some(a) if usage.is_empty() => a.to_string(),
+            Some(a) => format!("{a} · {usage}"),
+            None => "home login".into(),
+        };
+        let why: Option<&'static str> = match run {
+            None | Some("operator") => None,
+            Some("teammate") => Some("A teammate runs on the account of its lead"),
+            Some("subagent") => Some("A Codex subagent runs on the account of its main session"),
+            Some(_) => {
+                Some("This member runs its own session: session resume <id> --account <name>")
+            }
+        };
+        let chip = div()
+            .id(SharedString::from(format!("account-{who}")))
+            .flex_none()
             .h_flex()
             .gap(S1)
-            .pl(px(2.))
-            .pr(S2)
-            .py(px(2.))
+            .px(S2)
+            .py(px(1.))
             .rounded_full()
-            .bg(t.card)
+            .bg(t.accent.opacity(0.10))
             .text_size(T_XS)
-            .text_color(t.text2)
-            .child(avatar(&m.name, 18.))
-            .child(format!("{} · {}", m.name, m.archetype))
-    });
-    let mut facts = vec![
-        badge(
-            v.thread.state.clone(),
-            if v.thread.state == "open" {
-                t.ok
-            } else {
-                t.muted
-            },
-        ),
-        div().text_color(t.muted).child(format!(
-            "thread {} · dossier {}",
-            v.thread.id, v.thread.dossier
-        )),
-    ];
-    if let Some(account) = &v.thread.account {
-        facts.push(
-            div()
-                .text_color(t.muted)
-                .child(format!("account {account}")),
-        );
+            .text_color(if why.is_some() { t.muted } else { t.accent })
+            .child(icon(IconName::User, px(11.), t.muted))
+            .child(text);
+        if let Some(why) = why {
+            return chip
+                .tooltip(move |window, cx| Tooltip::new(why).build(window, cx))
+                .test_support()
+                .into_any_element();
+        }
+        let who = who.to_string();
+        chip.cursor_pointer()
+            .tooltip(|window, cx| {
+                Tooltip::new("Pick the account (the next wake runs on it)").build(window, cx)
+            })
+            .on_click(cx.listener(move |app, _, _, cx| {
+                app.screen.picking = match &app.screen.picking {
+                    Some(p) if *p == who => None,
+                    _ => Some(who.clone()),
+                };
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .test_support()
+            .into_any_element()
     }
-    div()
-        .v_flex()
-        .gap(S2)
-        .child(
+
+    /// The account profiles with their use, for `member` of `thread` (none: the chat bar). A pick runs
+    /// `thread.account` with its approval.
+    fn account_picker(
+        &self,
+        thread: i64,
+        member: Option<&str>,
+        t: &Tokens,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let picks = self.screen.accounts.iter().map(|a| {
+            let input = json!({"thread": thread, "member": member, "account": a});
+            let label = match member {
+                Some(m) => format!("Run {m} on account {a}"),
+                None => format!("Run the chat bar on account {a}"),
+            };
+            let usage = self.screen.usage_of(a);
             div()
-                .text_size(T_MD)
-                .font_semibold()
-                .text_color(t.text)
-                .child(v.thread.title.clone()),
-        )
-        .child(
-            div()
-                .h_flex()
-                .flex_wrap()
-                .gap(S2)
+                .id(SharedString::from(format!("pick-{a}")))
+                .flex_none()
+                .px(S2)
+                .py(px(2.))
+                .rounded(R_SM)
+                .border_1()
+                .border_color(t.border)
+                .bg(t.raised)
                 .text_size(T_XS)
-                .children(facts),
-        )
-        .child(div().h_flex().flex_wrap().gap(S1).children(members))
+                .text_color(t.text)
+                .cursor_pointer()
+                .child(if usage.is_empty() {
+                    a.clone()
+                } else {
+                    format!("{a} · {usage}")
+                })
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.screen.picking = None;
+                    app.act(
+                        legionctl_api::ViewButton {
+                            label: label.clone(),
+                            op: "thread.account".into(),
+                            input: input.clone(),
+                        },
+                        cx,
+                    );
+                }))
+                .test_support()
+        });
+        div()
+            .id("account-picker")
+            .h_flex()
+            .flex_wrap()
+            .gap(S1)
+            .when(self.screen.accounts.is_empty(), |d| {
+                d.child(
+                    div()
+                        .text_size(T_XS)
+                        .text_color(t.muted)
+                        .child("No account profile: legionctl agents accounts add <name>"),
+                )
+            })
+            .children(picks)
+            .test_support()
+            .into_any_element()
+    }
 }
 
 impl LegionApp {
@@ -864,7 +1065,7 @@ impl LegionApp {
         div()
             .v_flex()
             .gap(S4)
-            .child(thread_header(v, t))
+            .child(self.thread_header(v, t, cx))
             .when(!v.rules.is_empty(), |d| {
                 d.child(
                     card(t)
@@ -1072,6 +1273,27 @@ impl LegionApp {
                     .border_t_1()
                     .border_color(t.border)
                     .children(list)
+                    .children(
+                        self.screen
+                            .thread
+                            .as_ref()
+                            .filter(|_| self.screen.picking.as_deref() == Some(""))
+                            .map(|v| {
+                                div()
+                                    .w(width)
+                                    .child(self.account_picker(v.thread.id, None, t, cx))
+                            }),
+                    )
+                    // the chat bar's account, above the bar: the bar keeps its width for the text
+                    .when(self.screen.thread.is_some(), |d| {
+                        d.child(div().w(width).h_flex().child(self.account_chip(
+                            "",
+                            self.screen.chat_account().as_deref(),
+                            None,
+                            t,
+                            cx,
+                        )))
+                    })
                     .child(self.chat_bar(width, t, window, cx))
                     .test_support(),
             )

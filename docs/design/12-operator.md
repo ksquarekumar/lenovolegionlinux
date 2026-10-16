@@ -149,7 +149,7 @@ Operating directory, dossier home `~/agentWorkspaces`, dossier and change sets: 
   (`toml_edit`); JSON is written pretty, so a one-line list in the file becomes lines. An unknown top-level key is
   written with a warning (the published schemas grow each release). `legionctl agents usage [--days N]` counts
   tokens per agent, day and model from Claude Code's transcripts (each message once) and Codex's `token_count`
-  events, with Codex's rate-limit use.
+  events. The rate-limit windows come from the providers (`agents accounts usage`, below).
 - **Plugins, MCP servers and skills:** an allowlist of authorised marketplaces and items; install into Claude Code
   (`claude plugin …`) and Codex (`~/.codex/config.toml`) from one place, and show what each agent has loaded.
   Built (2026-10-13, A1 part 3): `plugins.marketplaces` (marketplace name -> `source` and `allow`, plugin names or
@@ -174,6 +174,23 @@ Operating directory, dossier home `~/agentWorkspaces`, dossier and change sets: 
   its `<id>/` folder; regular files and folders only, as the agent can plant symlinks there) into that profile,
   after the dossier is bound, records the new account, and runs the resume command there. The old profile
   keeps its copy. Codex has no resume by id, so its sessions start anew.
+  Built (2026-10-17, todo-136; ported in part from clauth 0.17.0, MIT, THIRD-PARTY-NOTICES.md):
+  `legionctl agents accounts usage [--account <name>] [--fresh]` reads each logged-in agent of each profile from its
+  provider with the profile's own access token: Claude `GET /api/oauth/usage` (`limits[]` where it has the window,
+  else `five_hour` / `seven_day`), Codex `GET /backend-api/wham/usage` (`rate_limit`, else the `x-codex-*` rate-limit
+  headers). The token is only read, from the profile file or, at rest, the keyring: never refreshed (the agents
+  rotate their refresh tokens), written, printed or logged; an expired Claude token is "login needed" and is not
+  sent. A failed read is that account's error with its cause, never zero use. Each answer or error is kept in
+  cache.db (namespace `accounts`) for `agents.accounts.usage_ttl_s` with its fetch time; the seed view `accounts`
+  shows them. `agents accounts list` counts a login at rest in the keyring. Switch at the limit: with
+  `agents.accounts.fallback.<agent>` set (none: no switch), an operator member whose account has a window at
+  `agents.accounts.switch_at` percent or more starts or resumes its next wake (`session resume --account`) on the
+  first listed account under it, with a `thread.account` row, a note to main0 and an `agents.accounts.switch` event;
+  when no listed account is under it, the wake fails with the reason (the restart limit applies). The check runs at
+  the start of a wake, so a turn is never cut. A failed usage read of the member's account is a `thread.account` row
+  with the error, and the member runs on its account. `thread account <thread> <account> [--member <m>]` (the app's
+  member chip and chat bar) picks an operator member's account from its next wake, or the chat bar's; a teammate or a
+  Codex subagent is refused. Only the defaults, /etc/legionctl and the user layer set `agents.accounts`.
 
 ## AI gateway
 

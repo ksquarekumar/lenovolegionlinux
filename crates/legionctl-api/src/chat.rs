@@ -131,6 +131,18 @@ pub fn log_detail(row: &ThreadLogRow) -> String {
     if row.kind == "thread.rule" {
         return rule_sentence(p);
     }
+    if row.kind == "thread.account" {
+        return match (
+            p["account"].as_str(),
+            p["why"].as_str(),
+            p["error"].as_str(),
+        ) {
+            (Some(account), Some(why), _) => format!("account {account}: {why}"),
+            (Some(account), None, _) => format!("account {account}"),
+            (None, _, Some(error)) => format!("usage check failed: {error}"),
+            _ => p.to_string(),
+        };
+    }
     if let (Some(commit), Some(message)) = (p["commit"].as_str(), p["message"].as_str()) {
         return format!("{}: {}", &commit[..commit.len().min(8)], short(message));
     }

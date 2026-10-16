@@ -2152,28 +2152,28 @@ impl Engine for Operator {
 
     fn agents_accounts_list(&self, _: &Ctx, _: Empty) -> Result<Vec<Account>> {
         let root = legionctl_core::session::accounts_root();
-        let entries = match std::fs::read_dir(&root) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            entries => entries
-                .and_then(Iterator::collect::<std::io::Result<Vec<_>>>)
-                .with_context(|| format!("listing {}", root.display()))?,
-        };
-        let mut out: Vec<Account> = entries
+        legionctl_core::accounts::profiles()?
             .into_iter()
-            .filter(|e| e.path().is_dir())
-            .map(|e| {
-                let dir = e.path();
-                Account {
-                    name: e.file_name().to_string_lossy().into_owned(),
-                    // the files each agent writes at login
-                    claude: dir.join("claude/.credentials.json").is_file(),
-                    codex: dir.join("codex/auth.json").is_file(),
-                    dir: dir.display().to_string(),
-                }
+            .map(|name| {
+                // a login rests in the keyring while no session of the account runs
+                let has =
+                    |agent| legionctl_core::accounts::login_file(&name, agent).map(|f| f.is_some());
+                Ok(Account {
+                    claude: has("claude")?,
+                    codex: has("codex")?,
+                    dir: root.join(&name).display().to_string(),
+                    name,
+                })
             })
-            .collect();
-        out.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(out)
+            .collect()
+    }
+
+    fn agents_accounts_usage(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::AccountUsageIn,
+    ) -> Result<Vec<legionctl_api::AccountUsage>> {
+        Ok(crate::accounts::usage(&self.runtime, &input)?.into_wire())
     }
 
     fn agents_accounts_add(&self, _: &Ctx, input: AccountAddIn) -> Result<Lines> {
@@ -4368,6 +4368,10 @@ impl Engine for Operator {
 
     fn thread_agent(&self, _: &Ctx, input: legionctl_api::ThreadAgentIn) -> Result<Lines> {
         crate::thread::agent(&input)
+    }
+
+    fn thread_account(&self, _: &Ctx, input: legionctl_api::ThreadAccountIn) -> Result<Lines> {
+        crate::thread::account(&input)
     }
 
     fn thread_join(&self, _: &Ctx, input: legionctl_api::ThreadJoinIn) -> Result<Lines> {

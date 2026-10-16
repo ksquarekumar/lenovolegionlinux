@@ -1909,6 +1909,91 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "agents.accounts.usage": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "account": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "One account profile; none: each.",
+          "default": null
+        },
+        "fresh": {
+          "type": "boolean",
+          "description": "Read from the providers now, not from the kept answers.",
+          "default": false
+        }
+      },
+      "title": "AccountUsageIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "description": "One account's rate-limit windows for one agent, from its provider; or why the read failed.",
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "windows": {
+            "type": "array",
+            "items": {
+              "description": "One rate-limit window of an account.",
+              "type": "object",
+              "properties": {
+                "name": {
+                  "description": "`5h`, `7d`, or the window's length.",
+                  "type": "string"
+                },
+                "used_percent": {
+                  "type": "number",
+                  "format": "double"
+                },
+                "resets_at": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64"
+                }
+              },
+              "required": [
+                "name",
+                "used_percent"
+              ]
+            }
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fetched_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "required": [
+          "account",
+          "agent",
+          "windows",
+          "fetched_at"
+        ]
+      },
+      "title": "Array_of_AccountUsage",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "agents.plugins.list": {
     "class": "read",
     "internal": false,
@@ -2200,19 +2285,10 @@
               "cache_write"
             ]
           }
-        },
-        "codex_limits": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "number",
-            "format": "double"
-          },
-          "description": "Codex's own rate-limit windows from its latest session: name -> percent used."
         }
       },
       "required": [
-        "rows",
-        "codex_limits"
+        "rows"
       ],
       "title": "UsageReport",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
@@ -14871,6 +14947,13 @@
               "run": {
                 "description": "self (its own session runs it), operator (an operator session, one prompt per wake), teammate (Claude\nCode team mode) or subagent (a Codex subagent).",
                 "type": "string"
+              },
+              "account": {
+                "description": "The account profile it runs on; none: the home's logins.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -18541,6 +18624,55 @@
         "agent"
       ],
       "title": "ThreadAgentIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "thread.account": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The thread's id (`thread list`)."
+        },
+        "member": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "An operator member: it runs on the account from its next wake. None: the chat bar's account.",
+          "default": null
+        },
+        "account": {
+          "type": "string",
+          "description": "An account profile (`agents accounts list`)."
+        }
+      },
+      "required": [
+        "thread",
+        "account"
+      ],
+      "title": "ThreadAccountIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {

@@ -2,12 +2,12 @@
 // usage for Claude (GET api.anthropic.com/api/oauth/usage with the profile's OAuth token, read only, never refresh)
 // and Codex (chatgpt.com/backend-api/wham/usage and its rate-limit headers); an account per operator member (not per
 // Claude team-mode teammate); switch on limit through session resume --account; member chips and an account picker
-// in the app. Waits for todo-134 and todo-135. Risk: both usage endpoints are undocumented.
+// in the app. Risk: both usage endpoints are undocumented. Built 2026-10-17 on topic accounts (not merged).
 {
   "$schema": "../feature.schema.json",
   "id": "accounts",
   "title": "Accounts per team member, usage and switch on limit",
-  "status": "planned",
+  "status": "in-progress",
   "plan_rows": ["legionctl#todo-136"],
   "objectives": [
     { "id": "O1", "text": "Each account's 5 h and 7 d usage is known from the provider, read only." },
@@ -19,25 +19,26 @@
       "tests": ["test:crates/legionctl/tests/agents.rs::account_usage_comes_from_each_provider_read_only_and_a_changed_answer_is_an_error"] },
     { "id": "S2", "kind": "control-flow", "text": "An operator member starts under its account; a Claude team-mode teammate with an account is refused; at the configured limit a session resumes under the next account with its transcript. Variations: V1 no next account (failure: the member stops with the limit reason); V2 limit reached during a tool call (success: the switch waits for the turn end).", "objectives": ["O2"],
       "tests": ["test:crates/legionctl/tests/threads.rs::a_member_runs_under_its_account_and_resumes_under_the_next_at_its_limit"] },
-    { "id": "S3", "text": "The member chips show the account with 5 h and 7 d usage; the picker writes the member config. Variations: V1 pick for a teammate (failure: disabled with the reason).", "objectives": ["O3"],
+    { "id": "S3", "text": "The member chips show the account with 5 h and 7 d usage; the picker sets an operator member's account in the thread (`thread.account`, with its approval) and the chat bar's account. Variations: V1 pick for a teammate (failure: no picker, the chip says why, the operation refuses it).", "objectives": ["O3"],
       "tests": ["test:crates/legionctl/tests/app.rs::the_member_chip_shows_its_account_usage_and_the_picker_sets_it"] }
   ],
   "work_items": [
-    { "id": "AC1", "text": "Usage of Claude and Codex accounts (ported from clauth with attribution)", "status": "planned", "stories": ["S1"], "units": [
-      { "key": "file:crates/legionctl-core/src/accounts.rs", "change": "add", "loc": 500 },
+    { "id": "AC1", "text": "Usage of Claude and Codex accounts (ported from clauth with attribution)", "status": "done", "stories": ["S1"], "units": [
+      { "key": "file:crates/legionctl-core/src/accounts.rs", "change": "add", "loc": 330 },
+      { "key": "file:crates/legionctl-operator/src/accounts.rs", "change": "add", "loc": 230 },
       { "key": "file:crates/legionctl-core/src/agents.rs", "change": "edit" },
+      { "key": "file:config/views/accounts.jsonc", "change": "add", "loc": 25 },
       { "key": "file:THIRD-PARTY-NOTICES.md", "change": "add", "loc": 30 },
       { "key": "op:agents.accounts.usage", "change": "add" },
       { "key": "op:agents.accounts.list", "change": "edit" }
     ] },
-    { "id": "AC2", "text": "Account per operator member; refused for teammates; switch on limit through session resume --account", "status": "planned", "stories": ["S2"], "depends_on": ["AC1"], "units": [
-      { "key": "file:crates/legionctl-core/src/archetypes.rs", "change": "edit", "loc": 80 },
-      { "key": "file:crates/legionctl-core/src/pool.rs", "change": "edit", "loc": 200 },
-      { "key": "file:crates/legionctl-core/src/session.rs", "change": "edit", "loc": 150 },
+    { "id": "AC2", "text": "Account per operator member; refused for teammates; switch on limit through session resume --account", "status": "done", "stories": ["S2"], "depends_on": ["AC1"], "units": [
+      { "key": "file:crates/legionctl-operator/src/thread.rs", "change": "edit", "loc": 100 },
+      { "key": "file:crates/legionctl-core/src/thread.rs", "change": "edit", "loc": 90 },
       { "key": "config:agents.accounts", "change": "add" },
-      { "key": "op:session.resume", "change": "edit" }
+      { "key": "op:thread.account", "change": "add" }
     ] },
-    { "id": "AC3", "text": "App member chips with account usage and the account picker", "status": "planned", "stories": ["S3"], "depends_on": ["AC2"], "units": [
+    { "id": "AC3", "text": "App member chips with account usage and the account picker", "status": "done", "stories": ["S3"], "depends_on": ["AC2"], "units": [
       { "key": "file:crates/legionctl-app/src/thread.rs", "change": "edit", "loc": 250 }
     ] }
   ]

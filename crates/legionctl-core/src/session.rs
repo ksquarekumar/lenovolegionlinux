@@ -1071,9 +1071,10 @@ fn packed(dir: &Path) -> Result<String> {
 
 /// Each agent's login file in an account profile (A1, decided 2026-10-13): at rest in the keyring
 /// (`legionctl-login <account>/<agent>`), in the profile only while a session of the account runs.
-const LOGINS: [(&str, &str); 2] = [("claude", ".credentials.json"), ("codex", "auth.json")];
+pub(crate) const LOGINS: [(&str, &str); 2] =
+    [("claude", ".credentials.json"), ("codex", "auth.json")];
 
-fn keyring_get(entry: &str) -> Result<Option<Vec<u8>>> {
+pub(crate) fn keyring_get(entry: &str) -> Result<Option<Vec<u8>>> {
     let out = std::process::Command::new("secret-tool")
         .args(["lookup", "legionctl-login", entry])
         .output()

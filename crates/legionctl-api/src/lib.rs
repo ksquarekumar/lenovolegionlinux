@@ -440,6 +440,10 @@ operations! {
     agents_accounts_list / AgentsAccountsList = "agents.accounts.list", Read, Empty => Vec<Account>;
     /// Make an account profile (its own Claude Code and Codex logins); `session start --account` uses it.
     agents_accounts_add / AgentsAccountsAdd = "agents.accounts.add", Workspace, AccountAddIn => Lines;
+    /// Each account profile's rate-limit windows (Claude: 5h and 7d; Codex: its windows) from the provider, read
+    /// with the profile's own access token, never refreshed; a failed read is that account's error with its cause.
+    /// Answers are kept for `agents.accounts.usage_ttl_s`; `--fresh` reads again.
+    agents_accounts_usage / AgentsAccountsUsage = "agents.accounts.usage", Read, AccountUsageIn => Vec<AccountUsage>;
     /// Claude Code's installed plugins, each marked in or out of the allowlist (`plugins.marketplaces`).
     agents_plugins_list / AgentsPluginsList = "agents.plugins.list", Read, Empty => Vec<Plugin>;
     /// Install a Claude Code plugin that `plugins.marketplaces` allows (`claude plugin install`); a command the
@@ -449,7 +453,7 @@ operations! {
     /// `agents.configs.<name>`, then the team. Refuses, with the field named, each field that a member's run path cannot
     /// apply, and each layer that widens tools, commands, budgets or message kinds.
     agents_check / AgentsCheck = "agents.check", Read, AgentsCheckIn => AgentCheck;
-    /// Tokens per agent, day and model from Claude Code's and Codex's own transcripts, and Codex's rate-limit use.
+    /// Tokens per agent, day and model from Claude Code's and Codex's own transcripts.
     agents_usage / AgentsUsage = "agents.usage", Read, AgentUsageIn => UsageReport;
     /// Open (or reopen) this session's dossier workspace in a repository: a worktree on legionctl/<dossier> with the
     /// dossier home linked as agentWorkspaces. Change code there, not in the main checkout. With `--topic`, a separate
@@ -915,6 +919,10 @@ operations! {
     /// Pick the agent of a thread's chat bar (a name of `session.acp`): the screens send their prompts to it; the
     /// pick is a row of the thread's log.
     thread_agent / ThreadAgent = "thread.agent", Session, ThreadAgentIn => Lines;
+    /// Pick the account of an operator member (it runs on it from its next wake, through session resume --account)
+    /// or of a thread's chat bar; the pick is a row of the thread's log. A teammate or a Codex subagent is refused:
+    /// it runs on the account of its lead.
+    thread_account / ThreadAccount = "thread.account", Workspace, ThreadAccountIn => Lines;
     /// The sessions that share the caller's dossier, workspace or threads (or the scope given), with their state,
     /// last tool call, declared state and messages they did not ack.
     thread_peers / ThreadPeers = "thread.peers", Read, PeersIn => Vec<Peer>;

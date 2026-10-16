@@ -323,8 +323,6 @@ pub struct Usage {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct UsageReport {
     pub rows: Vec<Usage>,
-    /// Codex's own rate-limit windows from its latest session: name -> percent used.
-    pub codex_limits: std::collections::BTreeMap<String, f64>,
 }
 
 fn jsonl_files(dir: &Path, since: std::time::SystemTime, out: &mut Vec<PathBuf>) {
@@ -412,7 +410,6 @@ pub fn usage(claude: &Path, codex: &Path, days: u64) -> UsageReport {
     let mut files = Vec::new();
     jsonl_files(&codex.join("sessions"), since, &mut files);
     files.sort();
-    let mut codex_limits = std::collections::BTreeMap::new();
     for file in &files {
         let mut model = String::from("?");
         for line in std::fs::read_to_string(file).unwrap_or_default().lines() {
@@ -445,18 +442,9 @@ pub fn usage(claude: &Path, codex: &Path, days: u64) -> UsageReport {
                     0,
                 ],
             );
-            for window in ["primary", "secondary"] {
-                if let Some(used) = payload["rate_limits"][window]["used_percent"].as_f64() {
-                    let minutes = payload["rate_limits"][window]["window_minutes"]
-                        .as_u64()
-                        .unwrap_or(0);
-                    codex_limits.insert(format!("{window} ({minutes} min)"), used);
-                }
-            }
         }
     }
     UsageReport {
         rows: rows.into_values().collect(),
-        codex_limits,
     }
 }

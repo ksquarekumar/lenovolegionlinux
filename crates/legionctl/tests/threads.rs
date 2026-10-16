@@ -6,6 +6,10 @@
 mod common;
 #[path = "common/hooks.rs"]
 mod hooks;
+#[path = "common/keyring.rs"]
+mod keyring;
+#[path = "common/usage.rs"]
+mod usage;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -2691,4 +2695,210 @@ fn a_failed_step_wakes_no_acp_and_clears_no_gate(r: &RlcdPool) {
         ],
         "{stored}"
     );
+}
+
+/// A team lab for the account tests: team acct (main0, and observer0 of config observer-acct: Claude, account work),
+/// three account profiles with a Claude login each (work, spare, third), the stand-in usage endpoint and keyring, and
+/// the user's fallback list [work, spare] at 90%. observer0 writes the profile it runs in into its working folder.
+struct AcctLab {
+    pool: Pool,
+    answers: PathBuf,
+    _server: common::process::Kill,
+    _home: Scratch,
+}
+
+impl AcctLab {
+    fn new() -> AcctLab {
+        let home = Scratch::new(format!(
+            "/var/tmp/legionctl-thread-acctx-{}",
+            std::process::id()
+        ));
+        let answers = home.join("usage");
+        let (server, port) = usage::usage_server(&answers);
+        let bin = Path::new(env!("CARGO_BIN_EXE_legionctl"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let path = std::env::join_paths(
+            std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        let pool = pool_with(
+            "acct",
+            "fake",
+            &[("PATH", keyring::keyring_path(&home, &path))],
+        );
+        let a = AcctLab {
+            pool,
+            answers,
+            _server: server,
+            _home: home,
+        };
+        let Pool { lab, main, ws } = &a.pool;
+        for (name, token) in [("work", "tok-w"), ("spare", "tok-s"), ("third", "tok-t")] {
+            lab.ok(main, ws, &["agents", "accounts", "add", name]);
+            write(
+                &lab.home.join(format!(
+                    ".local/share/legionctl/accounts/{name}/claude/.credentials.json"
+                )),
+                &format!(
+                    r#"{{"claudeAiOauth": {{"accessToken": "{token}", "expiresAt": 4102444800000}}}}"#
+                ),
+            );
+            a.used(token, 10.0);
+        }
+        write(
+            &lab.home.join(".config/legionctl/accounts.jsonc"),
+            &json!({"agents": {
+                "configs": {"observer-acct": {"archetype": "thread-observer", "harness": "claude", "account": "work",
+                                              "pace": "on-trigger"}},
+                "accounts": {"usage_ttl_s": 0, "switch_at": 90, "fallback": {"claude": ["work", "spare"]},
+                             "endpoints": {"claude": format!("http://127.0.0.1:{port}/claude"),
+                                           "codex": "http://127.0.0.1:1/none"}}}})
+            .to_string(),
+        );
+        write(
+            &lab.home.join(".config/legionctl/teams/acct.jsonc"),
+            &json!({"name": "acct", "members": {"main0": {"agent": "main-agent"}, "observer0": {"agent": "observer-acct"}},
+                    "flow": {"restart": {"max": 0, "within": "1h"}}})
+            .to_string(),
+        );
+        write(
+            &lab.home.join("scripts/observer0.sh"),
+            "echo \"$CLAUDE_CONFIG_DIR\" >> account-dirs.txt; echo checked\n",
+        );
+        lab.ok(
+            main,
+            ws,
+            &["thread", "start", "port the parser", "--team", "acct"],
+        );
+        a
+    }
+
+    /// The account of `token` has its 5h window at `five` percent.
+    fn used(&self, token: &str, five: f64) {
+        write(
+            &self.answers.join(format!("{token}.json")),
+            &json!({"body": {"five_hour": {"utilization": five}, "seven_day": {"utilization": 1.0}}}).to_string(),
+        );
+    }
+
+    fn profile(&self, name: &str) -> String {
+        self.pool
+            .lab
+            .home
+            .join(format!(".local/share/legionctl/accounts/{name}/claude"))
+            .display()
+            .to_string()
+    }
+
+    /// The profiles that observer0's wakes ran in, in order.
+    fn dirs(&self) -> Vec<String> {
+        std::fs::read_to_string(
+            self.pool
+                .lab
+                .home
+                .join("worktrees/repo/port--observer0/account-dirs.txt"),
+        )
+        .unwrap_or_default()
+        .lines()
+        .map(String::from)
+        .collect()
+    }
+
+    /// A test change by main0 wakes observer0: its `n`th wake.
+    fn wake(&self, n: usize) {
+        let Pool { lab, main, ws } = &self.pool;
+        lab.edit(main, ws, &ws.join(format!("tests/lexer{n}.rs")));
+        until(&format!("wake {n}"), || self.dirs().len() == n);
+    }
+}
+
+/// An operator member runs under its account and, at its limit, continues under the next account of the user's
+/// fallback list (S2 of planning/features/accounts.jsonc): observer0 wakes in work's profile; with work's 5h at 95%
+/// its next wake resumes in spare's profile (the first account of agents.accounts.fallback.claude under it) with a
+/// thread.account row, a note to main0 and an agents.accounts.switch event. The user's pick (`thread account`)
+/// takes effect at the next wake. When every listed account is at its limit, the wake fails with the reason and the
+/// member stops (V1).
+#[test]
+fn a_member_runs_under_its_account_and_resumes_under_the_next_at_its_limit() {
+    let a = AcctLab::new();
+    let Pool { lab, main, ws } = &a.pool;
+    a.used("tok-w", 50.0);
+    assert_eq!(
+        Lab::member(&lab.show(main, 1), "observer0")["account"],
+        "work"
+    );
+    a.wake(1);
+    assert_eq!(a.dirs().last(), Some(&a.profile("work")));
+
+    a.used("tok-w", 95.0);
+    a.wake(2);
+    assert_eq!(a.dirs().last(), Some(&a.profile("spare")));
+    let view = lab.show(main, 1);
+    assert_eq!(Lab::member(&view, "observer0")["account"], "spare");
+    let switch = view["log"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["kind"] == "thread.account")
+        .unwrap();
+    assert_eq!(
+        switch["payload"],
+        json!({"account": "spare", "from": "work", "why": "account work has 5h at 95% (switch at 90%)"})
+    );
+    assert!(
+        view["messages"].as_array().unwrap().iter().any(|m| m["kind"] == "note"
+            && m["to"] == "main0"
+            && m["body"] == "observer0 continues on account spare: account work has 5h at 95% (switch at 90%)"),
+        "{:#}",
+        view["messages"]
+    );
+    let events: Value =
+        serde_json::from_str(&lab.ok(main, ws, &["events", "--limit", "1000", "--json"])).unwrap();
+    assert!(
+        events["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["kind"] == "agents.accounts.switch"
+                && e["payload"]["from"] == "work"
+                && e["payload"]["to"] == "spare"),
+        "{events:#}"
+    );
+
+    // the user's pick, at the next wake
+    lab.ok(
+        main,
+        ws,
+        &["thread", "account", "1", "third", "--member", "observer0"],
+    );
+    a.wake(3);
+    assert_eq!(a.dirs().last(), Some(&a.profile("third")));
+    no_account_under_the_limit_stops_the_member(&a);
+}
+
+/// V1: no listed account is under the limit: the wake fails with the reason, main0 gets it, and no wake runs.
+fn no_account_under_the_limit_stops_the_member(a: &AcctLab) {
+    let Pool { lab, main, ws } = &a.pool;
+    for token in ["tok-w", "tok-s", "tok-t"] {
+        a.used(token, 92.0);
+    }
+    lab.edit(main, ws, &ws.join("tests/lexer4.rs"));
+    until("observer0 stopped", || {
+        Lab::member(&lab.show(main, 1), "observer0")["state"] == "failed"
+    });
+    let view = lab.show(main, 1);
+    let why = "account third has 5h at 92% (switch at 90%) and no account of agents.accounts.fallback.claude is \
+               under it: work: 5h at 92%; spare: 5h at 92%";
+    assert!(
+        view["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["to"] == "main0" && m["body"].as_str().unwrap().contains(why)),
+        "{:#}",
+        view["messages"]
+    );
+    assert_eq!(a.dirs().len(), 3, "no wake ran on an account at its limit");
 }

@@ -2,4 +2,8 @@
 
 1. `legionctl agents accounts add work`, then log in to the agent in that profile.
 2. `legionctl session start claude --account work --dossier legionctl`.
-3. If the rate limit stops it: `legionctl session resume <id> --account <other profile>`. The conversation continues.
+3. `legionctl agents accounts usage` shows each account's 5h and 7d use from the provider (`--fresh` reads again).
+4. If the rate limit stops it: `legionctl session resume <id> --account <other profile>`. The conversation continues.
+5. An operator member of a thread runs on its own account: `thread account <thread> <profile> --member <name>`, or
+   the member chip in the app. With `agents.accounts.fallback.<agent>` set, a member at `switch_at` percent moves to
+   the next account by itself. A teammate runs on the account of its lead.

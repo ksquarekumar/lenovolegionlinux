@@ -2,6 +2,7 @@
 //! `$XDG_RUNTIME_DIR/legionctl/api.sock` (socket-activated) and, in a graphical session, runs the session module
 //! (Fn+R, OSD).
 
+mod accounts;
 mod acp;
 mod code;
 mod desktop;

@@ -179,6 +179,8 @@ pub struct Member {
     pub config: Option<String>,
     /// How it runs: self, operator, teammate or subagent.
     pub run: String,
+    /// The account profile it runs on (an operator member's pick, else its session's); none: the home's logins.
+    pub account: Option<String>,
 }
 
 pub struct Message {
@@ -1356,6 +1358,97 @@ impl Dossiers {
         Ok(())
     }
 
+    /// The account of operator member `member` of `thread` (it runs on it from its next wake), or of the thread's
+    /// chat bar (no member): a `thread.account` row of its log. `why` is a switch at the limit (todo-136): main0
+    /// gets it as a note.
+    ///
+    /// # Errors
+    /// No such thread or member, it is read-only, the member is not an operator member, no such account profile, or
+    /// the database write fails.
+    pub fn thread_account(
+        &self,
+        thread: i64,
+        member: Option<&str>,
+        account: &str,
+        why: Option<&str>,
+    ) -> Result<()> {
+        self.writable(thread)?;
+        crate::session::account_dir(account)?;
+        let tx = self.begin()?;
+        let Some(member) = member else {
+            log(
+                &tx,
+                thread,
+                "",
+                "thread.account",
+                &json!({"account": account}),
+            )?;
+            tx.commit()?;
+            return Ok(());
+        };
+        let (run, fields): (String, String) = tx
+            .query_row(
+                "SELECT run, fields FROM members WHERE thread = ?1 AND name = ?2 AND state != 'left'",
+                params![thread, member],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+            .with_context(|| format!("thread {thread} has no member {member}"))?;
+        match run.as_str() {
+            "operator" => {}
+            "teammate" => bail!("{member} is a teammate: it runs on the account of its lead"),
+            "subagent" => {
+                bail!("{member} is a Codex subagent: it runs on the account of its main session")
+            }
+            _ => bail!(
+                "{member} runs its own session: continue it with `session resume <id> --account {account}`"
+            ),
+        }
+        let mut fields: serde_json::Map<String, Value> = serde_json::from_str(&fields)?;
+        let from = fields.insert("account".into(), json!(account));
+        tx.execute(
+            "UPDATE members SET fields = ?3 WHERE thread = ?1 AND name = ?2",
+            params![thread, member, Value::Object(fields).to_string()],
+        )?;
+        log(
+            &tx,
+            thread,
+            member,
+            "thread.account",
+            &json!({"account": account, "from": from, "why": why}),
+        )?;
+        if let Some(why) = why {
+            post(
+                &tx,
+                thread,
+                (member, "main0"),
+                Kind::Note,
+                &format!("{member} continues on account {account}: {why}"),
+                None,
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// A failed usage read of `member`'s account at its wake: a `thread.account` row with the error (the member
+    /// runs on its account).
+    ///
+    /// # Errors
+    /// The database write fails.
+    pub fn thread_account_unread(&self, thread: i64, member: &str, error: &str) -> Result<()> {
+        let tx = self.begin()?;
+        log(
+            &tx,
+            thread,
+            member,
+            "thread.account",
+            &json!({"error": error}),
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// One thread: its members, messages, rules and log.
     ///
     /// # Errors
@@ -1370,14 +1463,15 @@ impl Dossiers {
             .db()
             .prepare(
                 "SELECT name, archetype, session, pace, cursor, state, joined, (SELECT count(*) FROM thread_log l
-                 WHERE l.thread = m.thread AND l.member = m.name AND l.kind = 'thread.wake'), config, run FROM members m
-                 WHERE thread = ?1 ORDER BY joined, name",
+                 WHERE l.thread = m.thread AND l.member = m.name AND l.kind = 'thread.wake'), config, run,
+                 coalesce(json_extract(fields, '$.account'), (SELECT s.account FROM sessions s WHERE s.id = m.session))
+                 FROM members m WHERE thread = ?1 ORDER BY joined, name",
             )?
             .query_map([id], |r| {
-                Ok(((r.get(0)?, r.get::<_, String>(1)?, r.get(2)?, r.get::<_, String>(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?), (r.get(8)?, r.get(9)?)))
+                Ok(((r.get(0)?, r.get::<_, String>(1)?, r.get(2)?, r.get::<_, String>(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?), (r.get(8)?, r.get(9)?, r.get(10)?)))
             })?
             .map(|row| {
-                let ((name, archetype, session, pace, cursor, state, joined, wakes), (config, run)) = row?;
+                let ((name, archetype, session, pace, cursor, state, joined, wakes), (config, run, account)) = row?;
                 Ok(Member {
                     name,
                     archetype: Archetype::parse(&archetype)?,
@@ -1389,6 +1483,7 @@ impl Dossiers {
                     wakes,
                     config,
                     run,
+                    account,
                 })
             })
             .collect::<Result<_>>()?;

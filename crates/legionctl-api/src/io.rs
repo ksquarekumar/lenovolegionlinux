@@ -247,6 +247,27 @@ pub struct AccountAddIn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AccountUsageIn {
+    /// One account profile; none: each.
+    #[serde(default)]
+    pub account: Option<String>,
+    /// Read from the providers now, not from the kept answers.
+    #[serde(default)]
+    pub fresh: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThreadAccountIn {
+    /// The thread's id (`thread list`).
+    pub thread: i64,
+    /// An operator member: it runs on the account from its next wake. None: the chat bar's account.
+    #[serde(default)]
+    pub member: Option<String>,
+    /// An account profile (`agents accounts list`).
+    pub account: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct IdIn {
     /// The reminder's or hook action's id (`reminders list`, `hooks list`).
     pub id: String,

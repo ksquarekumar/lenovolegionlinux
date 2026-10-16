@@ -3,6 +3,10 @@
 //! Real clicks through GPUI's headless window; the operator answers in real time.
 
 mod common;
+#[path = "common/keyring.rs"]
+mod keyring;
+#[path = "common/usage.rs"]
+mod usage;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -1684,4 +1688,178 @@ fn the_app_thread_page_updates_from_the_event_stream(cx: &mut TestAppContext) {
         assert!(a.screen.events >= 2, "{}", a.screen.events);
     });
     drop(runtime);
+}
+
+/// The thread lab with account profiles work (5h 42%) and spare (5h 10%), each with a Claude login, the stand-in
+/// usage endpoint and keyring, and two more team threads of vanilla: 2 with teammates (session main is Claude
+/// Code's), 3 with operator members (a session of the agent fake) whose observer0 runs on work.
+fn accounts_lab() -> (Operator, PathBuf, PathBuf, common::process::Kill) {
+    let (op, home, repo) = thread_lab("acct");
+    // a stand-in keyring on the operator's PATH (the home's own tools come first): never the user's
+    keyring::keyring_path(&home, &std::ffi::OsString::new());
+    std::fs::copy(
+        home.join("keyring-bin/secret-tool"),
+        home.join(".local/bin/secret-tool"),
+    )
+    .unwrap();
+    // thread 2: teammates (session main is Claude Code's), before observer0's config has an account
+    lab_cli(
+        &op,
+        &home,
+        &repo,
+        &["thread", "start", "teammates", "--team", "vanilla"],
+        "",
+    );
+    let answers = home.join("usage");
+    let (server, port) = usage::usage_server(&answers);
+    write(
+        &home.join(".config/legionctl/accounts.jsonc"),
+        &serde_json::json!({
+            "session": {"agents": {"fake": ["true"]}},
+            "agents": {"configs": {"thread-observer": {"account": "work"}},
+                       "accounts": {"usage_ttl_s": 3600, "endpoints": {
+                           "claude": format!("http://127.0.0.1:{port}/claude"), "codex": "http://127.0.0.1:1/none"}}}})
+        .to_string(),
+    );
+    for (name, token, five) in [("work", "tok-w", 42.0), ("spare", "tok-s", 10.0)] {
+        lab_cli(&op, &home, &repo, &["agents", "accounts", "add", name], "");
+        write(
+            &home.join(format!(
+                ".local/share/legionctl/accounts/{name}/claude/.credentials.json"
+            )),
+            &format!(
+                r#"{{"claudeAiOauth": {{"accessToken": "{token}", "expiresAt": 4102444800000}}}}"#
+            ),
+        );
+        write(
+            &answers.join(format!("{token}.json")),
+            &serde_json::json!({"body": {"five_hour": {"utilization": five}, "seven_day": {"utilization": 8.0}}})
+                .to_string(),
+        );
+    }
+    // thread 3: a team of operator members (the main agent is neither Claude Code nor Codex)
+    let launch: serde_json::Value = serde_json::from_str(&lab_cli(
+        &op,
+        &home,
+        &repo,
+        &["session", "start", "fake", "--dossier", "team", "--json"],
+        "",
+    ))
+    .unwrap();
+    let fake = launch["id"].as_str().unwrap();
+    let as_fake = op.run(
+        &repo,
+        &[
+            ("HOME", home.to_str().unwrap()),
+            ("LEGIONCTL_SESSION", fake),
+        ],
+        &["thread", "start", "operators", "--team", "vanilla"],
+        "",
+    );
+    assert!(
+        as_fake.status.success(),
+        "{}",
+        String::from_utf8_lossy(&as_fake.stderr)
+    );
+
+    (op, home, repo, server)
+}
+
+/// The member chips show each member's account with its use from the provider, and the account picker sets it with
+/// the operation's approval (S3 of planning/features/accounts.jsonc): in a team thread of operator members, a click on
+/// observer0's account opens the profiles, a pick asks, Apply runs `thread.account`, and observer0 runs on it from its
+/// next wake; the chat bar's account picks the same way. A teammate's account cannot be picked: its chip says why,
+/// and the operation refuses it (V1).
+#[gpui_kit::test]
+fn the_member_chip_shows_its_account_usage_and_the_picker_sets_it(cx: &mut TestAppContext) {
+    let (op, home, repo, _server) = accounts_lab();
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
+    let cx = &mut vcx;
+    app.update(cx, |a, cx| a.open_tab(Tab::Thread { id: 3 }, cx));
+    wait(cx, &app, "thread 3 and the usage", |a| {
+        a.screen.thread.as_ref().is_some_and(|t| t.thread.id == 3) && !a.screen.usage.is_empty()
+    });
+    app.read_with(cx, |a, _| {
+        let observer = a.screen.shown[&3]
+            .members
+            .iter()
+            .find(|m| m.name == "observer0")
+            .unwrap();
+        assert_eq!(observer.account.as_deref(), Some("work"));
+        assert_eq!(a.screen.usage_of("work"), "claude 5h 42% 7d 8%");
+    });
+    reveal(cx, "account-observer0");
+    cx.update(|window, cx| window.click("account-observer0", cx));
+    reveal(cx, "pick-spare");
+    cx.update(|window, cx| window.click("pick-spare", cx));
+    wait(cx, &app, "the pick's approval", |a| {
+        a.state.pending.is_some()
+    });
+    app.read_with(cx, |a, _| {
+        let pending = a.state.pending.as_ref().unwrap();
+        assert_eq!(pending.class, legionctl_api::Class::Workspace);
+        assert_eq!(
+            pending.button.input,
+            serde_json::json!({"thread": 3, "member": "observer0", "account": "spare"})
+        );
+    });
+    cx.update(|window, cx| window.click("apply", cx));
+    wait(cx, &app, "observer0 on spare", |a| {
+        a.screen.shown.get(&3).is_some_and(|t| {
+            t.members
+                .iter()
+                .any(|m| m.name == "observer0" && m.account.as_deref() == Some("spare"))
+        })
+    });
+
+    // the chat bar's account
+    reveal(cx, "account-");
+    cx.update(|window, cx| window.click("account-", cx));
+    app.read_with(cx, |a, _| assert_eq!(a.screen.picking.as_deref(), Some("")));
+    reveal(cx, "pick-work");
+    cx.update(|window, cx| window.click("pick-work", cx));
+    wait(cx, &app, "the chat pick's approval", |a| {
+        a.state.pending.is_some()
+    });
+    cx.update(|window, cx| window.click("apply", cx));
+    wait(cx, &app, "the chat bar on work", |a| {
+        a.screen.chat_account().as_deref() == Some("work")
+    });
+
+    a_teammates_account_cannot_be_picked(cx, &app, (&op, &home, &repo));
+    drop(runtime);
+}
+
+/// V1: a teammate runs on its lead's account: its chip opens no picker, and the operation refuses it.
+fn a_teammates_account_cannot_be_picked(
+    cx: &mut VisualTestContext,
+    app: &Entity<LegionApp>,
+    (op, home, repo): (&Operator, &Path, &Path),
+) {
+    app.update(cx, |a, cx| a.open_tab(Tab::Thread { id: 2 }, cx));
+    wait(cx, app, "thread 2", |a| {
+        a.screen.thread.as_ref().is_some_and(|t| t.thread.id == 2)
+    });
+    reveal(cx, "account-observer0");
+    cx.update(|window, cx| window.click("account-observer0", cx));
+    cx.run_until_parked();
+    app.read_with(cx, |a, _| {
+        assert_eq!(a.screen.picking, None, "no picker for a teammate");
+    });
+    let refused = op.run(
+        repo,
+        &[
+            ("HOME", home.to_str().unwrap()),
+            ("LEGIONCTL_SESSION", "main"),
+        ],
+        &["thread", "account", "2", "spare", "--member", "observer0"],
+        "",
+    );
+    assert!(
+        !refused.status.success()
+            && String::from_utf8_lossy(&refused.stderr)
+                .contains("observer0 is a teammate: it runs on the account of its lead"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
 }

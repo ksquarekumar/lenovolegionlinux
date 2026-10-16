@@ -55,4 +55,5 @@ package() {
   make -C "${repo_root}" DESTDIR="${pkgdir}" install
   install -Dm644 "${repo_root}/README.md" "${pkgdir}/usr/share/doc/legionctl/README.md"
   install -Dm644 "${repo_root}/LICENSE" "${pkgdir}/usr/share/licenses/legionctl/LICENSE"
+  install -Dm644 "${repo_root}/THIRD-PARTY-NOTICES.md" "${pkgdir}/usr/share/licenses/legionctl/THIRD-PARTY-NOTICES.md"
 }

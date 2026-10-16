@@ -272,10 +272,25 @@ wire! {
         cache_write: u64,
     }
 
+    /// One rate-limit window of an account.
+    struct UsageWindow from core::accounts::Window {
+        /// `5h`, `7d`, or the window's length.
+        name: String,
+        used_percent: f64,
+        resets_at: Option<i64>,
+    }
+
+    /// One account's rate-limit windows for one agent, from its provider; or why the read failed.
+    struct AccountUsage from core::accounts::AccountUsage {
+        account: String,
+        agent: String,
+        windows: Vec<UsageWindow>,
+        error: Option<String>,
+        fetched_at: i64,
+    }
+
     struct UsageReport from core::agents::UsageReport {
         rows: Vec<Usage>,
-        /// Codex's own rate-limit windows from its latest session: name -> percent used.
-        codex_limits: BTreeMap<String, f64>,
     }
 
     /// One config file and the layer it belongs to.
@@ -1599,6 +1614,8 @@ wire! {
         /// self (its own session runs it), operator (an operator session, one prompt per wake), teammate (Claude
         /// Code team mode) or subagent (a Codex subagent).
         run: String,
+        /// The account profile it runs on; none: the home's logins.
+        account: Option<String>,
     }
 
     /// An rlcd decision (todo-138) with its outcomes.

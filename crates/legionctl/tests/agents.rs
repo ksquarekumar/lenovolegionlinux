@@ -1,9 +1,14 @@
 //! End-to-end: agent archetypes, configs and teams (design 23, B+2 to B+4, P6a) through the CLI and the real
 //! operator: `agents check` resolves the layers (archetype file, `agents.configs.<name>`, team) and refuses each field
 //! that a member's run path cannot apply and each layer that widens; `setup apply` writes each config as a Codex agent
-//! and the systemd user manager's PATH (environment.d).
+//! and the systemd user manager's PATH (environment.d). `agents accounts usage` reads each account's rate-limit
+//! windows from stand-in providers with the profile's own token, read only (todo-136).
 
 mod common;
+#[path = "common/keyring.rs"]
+mod keyring;
+#[path = "common/usage.rs"]
+mod usage;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -11,7 +16,7 @@ use std::process::Command;
 
 use common::Operator;
 use common::scratch::Scratch;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -51,7 +56,11 @@ impl Lab {
             &[
                 ("LEGIONCTL_SYSROOT", home.join("root").into()),
                 ("HOME", home.as_os_str().to_owned()),
-                ("PATH", std::env::var_os("PATH").unwrap()),
+                // a stand-in keyring: never the user's
+                (
+                    "PATH",
+                    keyring::keyring_path(&home, &std::env::var_os("PATH").unwrap()),
+                ),
                 ("LEGIONCTL_PLUGIN", OsString::from(plugin)),
             ],
         );
@@ -719,4 +728,291 @@ esac
         "{}",
         ctx[2].1
     );
+}
+
+/// An account usage lab: the stand-in usage endpoint of both providers (`usage_ttl_s` 3600) and four profiles:
+/// work (Claude in its profile, Codex at rest in the keyring), spare (both in its profile), old (an expired Claude
+/// token, a Codex token the provider refuses) and changed (an answer of a changed shape). `files` are the login
+/// files as written.
+struct UsageLab {
+    lab: Lab,
+    answers: PathBuf,
+    files: Vec<(PathBuf, String)>,
+    _server: common::process::Kill,
+}
+
+impl UsageLab {
+    fn new() -> UsageLab {
+        let lab = Lab::new("usage", &shipped_plugin());
+        let answers = lab.home.join("usage");
+        let (server, port) = usage::usage_server(&answers);
+        let url = |agent: &str| format!("http://127.0.0.1:{port}/{agent}");
+        lab.user_config(
+            &json!({"agents": {"accounts": {"usage_ttl_s": 3600,
+                "endpoints": {"claude": url("claude"), "codex": url("codex")}}}})
+            .to_string(),
+        );
+        for name in ["work", "spare", "old", "changed"] {
+            lab.op.ok(&["agents", "accounts", "add", name]);
+        }
+        let soon = "4102444800000"; // 2100-01-01 in ms
+        let claude = |token: &str, expires: &str| {
+            format!(
+                r#"{{"claudeAiOauth": {{"accessToken": "{token}", "refreshToken": "r-{token}", "expiresAt": {expires}}}}}"#
+            )
+        };
+        let codex = |token: &str| format!(r#"{{"tokens": {{"access_token": "{token}"}}}}"#);
+        let mut files = Vec::new();
+        for (account, agent, text) in [
+            ("work", "claude", claude("tok-work", soon)),
+            ("spare", "claude", claude("tok-spare", soon)),
+            ("spare", "codex", codex("tok-sparex")),
+            ("old", "claude", claude("tok-old", "1000")),
+            ("old", "codex", codex("tok-oldx")),
+            ("changed", "claude", claude("tok-changed", soon)),
+        ] {
+            let file = if agent == "claude" {
+                ".credentials.json"
+            } else {
+                "auth.json"
+            };
+            let path = lab
+                .home
+                .join(".local/share/legionctl/accounts")
+                .join(account)
+                .join(agent)
+                .join(file);
+            write(&path, &text);
+            files.push((path, text));
+        }
+        // work's Codex login rests in the keyring (no session of the account runs)
+        write(
+            &lab.home.join("keyring/work_codex"),
+            r#"{"tokens": {"access_token": "tok-workx", "account_id": "acct-1"}}"#,
+        );
+        let u = UsageLab {
+            lab,
+            answers,
+            files,
+            _server: server,
+        };
+        u.answer(
+            "tok-work",
+            &json!({"body": {
+            "five_hour": {"utilization": 42.0, "resets_at": "2026-10-17T05:00:00.512+00:00"},
+            "seven_day": {"utilization": 7.5, "resets_at": null}}}),
+        );
+        u.answer(
+            "tok-spare",
+            &json!({"body": {"limits": [{"kind": "weekly_all", "percent": 80.0},
+            {"kind": "session", "percent": 3.0, "resets_at": "2026-10-17T10:30:00Z"}],
+            "five_hour": {"utilization": 99.0}, "seven_day": {"utilization": 99.0}}}),
+        );
+        u.answer("tok-workx", &json!({"body": {"rate_limit": {"limit_reached": true,
+            "primary_window": {"used_percent": 97.0, "limit_window_seconds": 18_000, "reset_at": 1_800_000_000_i64},
+            "secondary_window": {"used_percent": 20.0, "limit_window_seconds": 604_800}}}}));
+        u.answer(
+            "tok-sparex",
+            &json!({"body": {"plan_type": "plus"}, "headers": {
+            "x-codex-primary-used-percent": "12.5", "x-codex-primary-window-minutes": "300",
+            "x-codex-primary-reset-at": "1800000600", "x-codex-secondary-used-percent": "61",
+            "x-codex-secondary-window-minutes": "10080"}}),
+        );
+        u.answer(
+            "tok-oldx",
+            &json!({"status": 401, "body": {"error": "token expired"}}),
+        );
+        u.answer(
+            "tok-changed",
+            &json!({"body": {"five_hour": {"used": 3}, "seven_day": {"utilization": 1.0}}}),
+        );
+        u
+    }
+
+    /// The provider answers `token` with `answer` from now on.
+    fn answer(&self, token: &str, answer: &Value) {
+        write(
+            &self.answers.join(format!("{token}.json")),
+            &answer.to_string(),
+        );
+    }
+
+    /// `agents accounts usage --json <args>`.
+    fn read(&self, args: &[&str]) -> Value {
+        let mut command = vec!["agents", "accounts", "usage", "--json"];
+        command.extend(args);
+        serde_json::from_str(&self.lab.op.ok(&command)).unwrap()
+    }
+
+    /// The calls the provider got.
+    fn calls(&self) -> Vec<Value> {
+        std::fs::read_to_string(self.answers.join("calls.log"))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+}
+
+/// The row of `account` and `agent` in a usage answer.
+fn row(usage: &Value, account: &str, agent: &str) -> Value {
+    usage
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["account"] == account && r["agent"] == agent)
+        .cloned()
+        .unwrap_or_else(|| panic!("no {account}/{agent} in {usage:#}"))
+}
+
+/// The windows of a row that has no error.
+fn windows(usage: &Value, account: &str, agent: &str) -> Value {
+    let r = row(usage, account, agent);
+    assert!(r["error"].is_null(), "{account}/{agent}: {r}");
+    r["windows"].clone()
+}
+
+/// `agents accounts usage` reads each logged-in agent of each profile from its provider (both stand-ins) with the
+/// profile's own token, the way the agents' own clients ask (S1 of planning/features/accounts.jsonc): Claude's
+/// top-level windows and its `limits[]` form, Codex's body (a reached limit counts as 100%) and its rate-limit
+/// headers only (V3); a login at rest in the keyring counts. An expired Claude token is "login needed" and is never
+/// sent (V1); a refused token is "login needed" too; a changed answer is that account's error with the field, no zero
+/// use (V2). No token is printed, no login file or keyring entry changes. The answers are kept with their fetch time;
+/// `--fresh` reads again; the seed view shows them by account.
+#[test]
+fn account_usage_comes_from_each_provider_read_only_and_a_changed_answer_is_an_error() {
+    let u = UsageLab::new();
+    let usage = u.read(&[]);
+    assert_eq!(
+        usage.as_array().unwrap().len(),
+        7,
+        "each logged-in agent once: {usage:#}"
+    );
+    assert_eq!(
+        windows(&usage, "work", "claude"),
+        json!([{"name": "5h", "used_percent": 42.0, "resets_at": 1_792_213_200_i64},
+               {"name": "7d", "used_percent": 7.5, "resets_at": null}])
+    );
+    assert_eq!(
+        windows(&usage, "spare", "claude"),
+        json!([{"name": "5h", "used_percent": 3.0, "resets_at": 1_792_233_000_i64},
+               {"name": "7d", "used_percent": 80.0, "resets_at": null}]),
+        "limits[] is the source where it has the window"
+    );
+    assert_eq!(
+        windows(&usage, "work", "codex"),
+        json!([{"name": "5h", "used_percent": 100.0, "resets_at": 1_800_000_000_i64},
+               {"name": "7d", "used_percent": 20.0, "resets_at": null}]),
+        "a reached limit counts the fuller window as 100%"
+    );
+    assert_eq!(
+        windows(&usage, "spare", "codex"),
+        json!([{"name": "5h", "used_percent": 12.5, "resets_at": 1_800_000_600_i64},
+               {"name": "7d", "used_percent": 61.0, "resets_at": null}]),
+        "the rate-limit headers when the body has no rate_limit"
+    );
+    for (account, agent, text) in [
+        (
+            "old",
+            "claude",
+            "login needed: the access token of account old expired",
+        ),
+        ("old", "codex", "login needed: http://127.0.0.1"),
+        (
+            "changed",
+            "claude",
+            "five_hour: the answer has no number utilization",
+        ),
+    ] {
+        let r = row(&usage, account, agent);
+        let error = r["error"].as_str().unwrap_or_default();
+        assert!(
+            error.contains(text) && r["windows"] == json!([]),
+            "{account}/{agent}: {r}"
+        );
+    }
+    each_call_is_the_agents_own_and_reads_only(&u, &usage);
+    the_answer_is_kept_until_fresh(&u, &usage);
+}
+
+/// Each call asks as the agent's own client (Claude's beta header, Codex's account id), an expired token is never
+/// sent, no login file or keyring entry changes, no answer shows a token, and a login at rest in the keyring counts.
+fn each_call_is_the_agents_own_and_reads_only(u: &UsageLab, usage: &Value) {
+    let calls = u.calls();
+    assert!(
+        calls.iter().all(|c| c["token"] != "tok-old"),
+        "an expired token is never sent: {calls:?}"
+    );
+    let call = |token: &str| calls.iter().find(|c| c["token"] == token).unwrap().clone();
+    assert_eq!(
+        [&call("tok-work")["path"], &call("tok-work")["beta"]],
+        [&json!("/claude"), &json!("oauth-2025-04-20")]
+    );
+    assert_eq!(
+        [&call("tok-workx")["path"], &call("tok-workx")["account"]],
+        [&json!("/codex"), &json!("acct-1")]
+    );
+    for (path, text) in &u.files {
+        assert_eq!(
+            &std::fs::read_to_string(path).unwrap(),
+            text,
+            "{}",
+            path.display()
+        );
+    }
+    let home = &u.lab.home;
+    assert!(
+        !home
+            .join(".local/share/legionctl/accounts/work/codex/auth.json")
+            .exists()
+    );
+    assert_eq!(
+        std::fs::read_dir(home.join("keyring")).unwrap().count(),
+        1,
+        "nothing went into the keyring"
+    );
+    let text = u.lab.op.ok(&["agents", "accounts", "usage"]);
+    assert!(
+        !text.contains("tok-") && !usage.to_string().contains("tok-"),
+        "{text}"
+    );
+    assert!(text.contains("work") && text.contains("5h 42%"), "{text}");
+    let list: Value =
+        serde_json::from_str(&u.lab.op.ok(&["agents", "accounts", "list", "--json"])).unwrap();
+    let work = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "work")
+        .unwrap();
+    assert_eq!(
+        [&work["claude"], &work["codex"]],
+        [&json!(true), &json!(true)],
+        "a login at rest in the keyring is a login: {work}"
+    );
+}
+
+/// The kept answer, with its fetch time, until `--fresh`; the seed view groups the accounts.
+fn the_answer_is_kept_until_fresh(u: &UsageLab, usage: &Value) {
+    u.answer(
+        "tok-work",
+        &json!({"body": {"five_hour": {"utilization": 88.0}, "seven_day": {"utilization": 9.0}}}),
+    );
+    let again = u.read(&["--account", "work"]);
+    assert_eq!(
+        row(&again, "work", "claude"),
+        row(usage, "work", "claude"),
+        "the kept answer and its fetch time"
+    );
+    let fresh = u.read(&["--account", "work", "--fresh"]);
+    assert_eq!(windows(&fresh, "work", "claude")[0]["used_percent"], 88.0);
+    let seed = u.lab.op.ok(&["views", "render", "accounts"]);
+    for line in [
+        "== work (2) ==",
+        "claude | 5h | 88 | 7d | 9 | no value | now",
+        "codex | 5h | 100 | 7d | 20 | no value | now",
+        "claude | no value | no value | no value | no value | five_hour: the answer has no number utilization | now",
+    ] {
+        assert!(seed.lines().any(|l| l == line), "{line} missing:\n{seed}");
+    }
 }

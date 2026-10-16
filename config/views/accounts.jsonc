@@ -1,0 +1,26 @@
+// Seed (todo-136): each account profile's rate-limit windows per agent, from the provider (Claude: 5h then 7d;
+// Codex: its windows by length), with when they were read; a read that failed shows its cause. Read again asks the
+// providers now.
+{
+  "$schema": "../../docs/api/view.schema.json",
+  "name": "accounts",
+  "title": "Accounts",
+  "intent": "how much of each account's limits is used",
+  "space": "agents",
+  "widget": "table",
+  "source": { "op": "agents.accounts.usage" },
+  "columns": ["agent", "windows.0.name", "windows.0.used_percent", "windows.1.name", "windows.1.used_percent", "error", "fetched_at"],
+  "labels": {
+    "agent": "Agent",
+    "windows.0.name": "Window",
+    "windows.0.used_percent": "Used %",
+    "windows.1.name": "Window",
+    "windows.1.used_percent": "Used %",
+    "error": "Read failed",
+    "fetched_at": "Read"
+  },
+  "formats": { "windows.0.used_percent": "int", "windows.1.used_percent": "int", "fetched_at": "ago" },
+  "group": { "field": "account" },
+  "actions": [{ "label": "Read again", "op": "agents.accounts.usage", "input": { "fresh": true } }],
+  "refresh": { "events": ["agents.accounts.*"], "every": 300 }
+}

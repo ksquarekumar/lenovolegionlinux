@@ -1,6 +1,7 @@
 //! Agent-side core of legionctl: agent settings, hooks, reminders, skills, setup, worktrees and the operator
 //! database. `legionctl-operator` calls it; machine state and load live in legionctl-machine.
 
+pub mod accounts;
 pub mod agents;
 pub mod archetypes;
 pub mod cache;

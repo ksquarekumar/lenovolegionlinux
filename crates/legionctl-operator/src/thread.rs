@@ -71,11 +71,12 @@ pub fn start(input: &ThreadStartIn) -> Result<Lines> {
                 name: &m.name,
                 archetype: Archetype::parse(&m.archetype)?,
                 config: &m.config,
-                agent: m
-                    .fields
-                    .get("harness")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or(&main_agent),
+                // the harness of the member's config (an operator member's agent of session.acp), else the main's
+                agent: match sources.configs.get(&m.config).and_then(|c| c.harness) {
+                    Some(Harness::Claude) => "claude",
+                    Some(Harness::Codex) => "codex",
+                    None => &main_agent,
+                },
                 run,
                 fields: &m.fields,
             })
@@ -223,6 +224,85 @@ fn wake(thread: i64, member: &str) -> Result<bool> {
     anyhow::bail!("the route {route:?} has no configured step")
 }
 
+/// The account that the member runs on at this wake (todo-136): its own (its config's, or the user's pick), or the
+/// next account of `agents.accounts.fallback` when its own is at its limit, with a thread note and an event. A
+/// failed usage read is reported in the thread log and the member runs on its own account.
+fn account_of(
+    store: &legionctl_core::dossier::Dossiers,
+    w: &legionctl_core::pool::Wake,
+) -> Result<Option<String>> {
+    let own = w.fields["account"].as_str();
+    let runtime = RUNTIME
+        .get()
+        .context("the operator has no runtime for wakes")?;
+    Ok(match crate::accounts::decide(runtime, (&w.agent, own))? {
+        crate::accounts::Decision::Stay => own.map(String::from),
+        crate::accounts::Decision::Unread(error) => {
+            store.thread_account_unread(w.thread, &w.member, &error)?;
+            own.map(String::from)
+        }
+        crate::accounts::Decision::Move { to, why } => {
+            store.thread_account(w.thread, Some(&w.member), &to, Some(&why))?;
+            Db::open_default()?.record(
+                "operator",
+                "agents.accounts.switch",
+                &serde_json::json!({"thread": w.thread, "member": w.member, "from": own, "to": to, "why": why}),
+            )?;
+            Some(to)
+        }
+    })
+}
+
+/// `thread account`: an operator member's account, or the chat bar's.
+pub fn account(input: &legionctl_api::ThreadAccountIn) -> Result<Lines> {
+    dossiers()?.thread_account(input.thread, input.member.as_deref(), &input.account, None)?;
+    Ok(lines(vec![match &input.member {
+        Some(member) => format!(
+            "thread {}: {member} runs on account {} from its next wake",
+            input.thread, input.account
+        ),
+        None => format!(
+            "thread {}: the chat bar runs on account {}",
+            input.thread, input.account
+        ),
+    }]))
+}
+
+/// The member's session for this wake on its account (`account_of`): made at its first wake, else resumed, with
+/// the token of its run.
+fn launch(
+    store: &legionctl_core::dossier::Dossiers,
+    w: &legionctl_core::pool::Wake,
+) -> Result<(legionctl_core::session::Launch, String)> {
+    let resolved = resolve(&Dirs::from_env(), Some(&w.workdir))?;
+    let account = account_of(store, w)?;
+    let token = legionctl_api::random_token()?;
+    let name = format!("{}/{}", w.thread, w.member);
+    let launch = match &w.session {
+        None => {
+            let launch = store.start_session(
+                &Start {
+                    agent: &w.agent,
+                    dossier: &w.dossier,
+                    steal: false,
+                    token: &token,
+                    dir: &w.workdir,
+                    headless: true,
+                    account: account.as_deref(),
+                    inside: Inside::Host,
+                    gpu: false,
+                    member: Some((&name, &w.workdir)),
+                },
+                &resolved.config,
+            )?;
+            store.member_session(w, &launch.id)?;
+            launch
+        }
+        Some(id) => store.resume_session(id, &resolved.config, account.as_deref(), &token, true)?,
+    };
+    Ok((launch, token))
+}
+
 /// The acp step of a wake: the member's session (made at its first wake), one ACP prompt with its instructions, the
 /// rlcd brief of an escalate, and the events since its cursor, within its budget. The answer is the outcome of the
 /// escalating decision. Returns true when it must wake again now (a failed wake within the restart limit).
@@ -234,33 +314,7 @@ fn acp_wake(
     let (thread, member) = (w.thread, w.member.as_str());
     let name = format!("{thread}/{member}");
     // from here each error ends the wake through wake_end: the restart limit applies, and the request does not stay due
-    let started = resolve(&Dirs::from_env(), Some(&w.workdir)).and_then(|resolved| {
-        let token = legionctl_api::random_token()?;
-        let launch = match &w.session {
-            None => store
-                .start_session(
-                    &Start {
-                        agent: &w.agent,
-                        dossier: &w.dossier,
-                        steal: false,
-                        token: &token,
-                        dir: &w.workdir,
-                        headless: true,
-                        account: w.fields["account"].as_str(),
-                        inside: Inside::Host,
-                        gpu: false,
-                        member: Some((&name, &w.workdir)),
-                    },
-                    &resolved.config,
-                )
-                .and_then(|launch| {
-                    store.member_session(w, &launch.id)?;
-                    Ok(launch)
-                }),
-            Some(id) => store.resume_session(id, &resolved.config, None, &token, true),
-        }?;
-        Ok((launch, token))
-    });
+    let started = launch(store, w);
     let ran = started.and_then(|(launch, token)| {
         let id = launch.id.clone();
         let db = Db::open_default()?;

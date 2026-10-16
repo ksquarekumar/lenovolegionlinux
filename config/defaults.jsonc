@@ -226,10 +226,12 @@
   "events": { "keep_days": 90 },
 
   // The disposable cache (~/.cache/legionctl/cache.db; delete it any time): namespace -> bytes it may hold. tools: the
-  // MCP proxy's tool results; gateway: the model gateway's kept answers. The least recently used go first.
+  // MCP proxy's tool results; gateway: the model gateway's kept answers; accounts: the accounts' usage answers. The
+  // least recently used go first.
   "cache": {
     "tools": { "max_bytes": 268435456 },
-    "gateway": { "max_bytes": 1073741824 }
+    "gateway": { "max_bytes": 1073741824 },
+    "accounts": { "max_bytes": 1048576 }
   },
 
   // The package store: name -> { "kind": npm|pypi|cargo|git|path, "source", "version" (the pin), "run" (the MCP
@@ -265,6 +267,23 @@
       "main-agent": { "archetype": "main-agent" },
       "thread-observer": { "archetype": "thread-observer", "pace": "on-trigger", "budget": { "tokens_per_day": 2000000 } },
       "ui-composer": { "archetype": "ui-composer", "pace": "on-trigger", "budget": { "tokens_per_day": 500000 } }
+    },
+    // Account usage and the switch at the limit (todo-136). `legionctl agents accounts usage` reads each profile's
+    // 5 h and 7 d use from the provider with the profile's own access token (never refreshed: the agents rotate
+    // their refresh tokens) and keeps each answer, or its error, for "usage_ttl_s" seconds. "fallback": agent
+    // (claude, codex) -> account profiles in order; none: no switch. With a list, an operator member whose account
+    // has a window at "switch_at" percent or more continues on the first account of the list that is under it
+    // (session resume --account), with a thread note; when no account is under it, the wake fails with the reason.
+    // Only the defaults, /etc/legionctl and the user layer apply: a repository cannot send a token elsewhere or pick
+    // an account.
+    "accounts": {
+      "usage_ttl_s": 300,
+      "switch_at": 90,
+      "fallback": {},
+      "endpoints": {
+        "claude": "https://api.anthropic.com/api/oauth/usage",
+        "codex": "https://chatgpt.com/backend-api/wham/usage"
+      }
     }
   },
 

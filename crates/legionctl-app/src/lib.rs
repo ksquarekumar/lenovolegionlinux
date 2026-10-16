@@ -233,6 +233,7 @@ impl LegionApp {
         }
         if self.screen.ticks.is_multiple_of(15) {
             self.load_space(cx);
+            self.read_accounts(cx);
         }
         self.screen.ticks += 1;
     }

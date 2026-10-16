@@ -5,6 +5,8 @@ mod common;
 mod git;
 #[path = "common/hooks.rs"]
 mod hooks;
+#[path = "common/keyring.rs"]
+mod keyring;
 #[path = "common/provider.rs"]
 mod provider;
 
@@ -106,24 +108,9 @@ fn operator_with(tag: &str, home: &Path, extra: &[(&str, OsString)]) -> Operator
     Operator::start(tag, &env)
 }
 
-/// This build's `PATH` behind a stand-in `secret-tool` that keeps entries as files in `home/keyring`
-/// (`<attribute value with / as _>`): no test reaches the user's real keyring.
+/// This build's `PATH` behind the stand-in keyring: no test reaches the user's real keyring.
 fn path_with_keyring(home: &Path) -> OsString {
-    let bin = home.join("keyring-bin");
-    write(
-        &bin.join("secret-tool"),
-        &format!(
-            "#!/bin/sh\nk={}; mkdir -p \"$k\"\ncase \"$1\" in\n  lookup) cat \"$k/$(printf %s \"$3\" | tr / _)\" 2>/dev/null || exit 1;;\n  store) cat > \"$k/$(printf %s \"$4\" | tr / _)\";;\nesac\n",
-            home.join("keyring").display()
-        ),
-    );
-    std::fs::set_permissions(
-        bin.join("secret-tool"),
-        std::os::unix::fs::PermissionsExt::from_mode(0o755),
-    )
-    .unwrap();
-    std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path_with_build())))
-        .unwrap()
+    keyring::keyring_path(home, &path_with_build())
 }
 
 #[test]
@@ -4665,8 +4652,8 @@ fn agents_set_never_writes_over_a_settings_file_that_it_cannot_read() {
     );
 }
 
-/// Usage counts each Claude Code message once (its usage repeats on every content block) and each Codex turn, with
-/// Codex's rate-limit use.
+/// Usage counts each Claude Code message once (its usage repeats on every content block) and each Codex turn. The
+/// rate-limit windows come from the providers (`agents accounts usage`), not from the transcripts.
 #[test]
 fn agent_usage_from_transcripts() {
     let (op, home) = operator("agentuse");
@@ -4709,7 +4696,6 @@ fn agent_usage_from_transcripts() {
             {"agent": "codex", "day": "2026-10-13", "model": "gpt-x", "input": 30, "output": 4, "cache_read": 2, "cache_write": 0}
         ])
     );
-    assert_eq!(usage["codex_limits"], json!({"primary (300 min)": 4.0}));
 }
 
 /// Images: a repository's Dockerfiles become the services and cache descriptions: the last stage is the target,
