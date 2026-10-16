@@ -387,10 +387,29 @@ pub fn send(input: &ThreadSendIn) -> Result<Lines> {
         input.tool.as_deref(),
         (input.rule, input.teammate.as_deref()),
     )?;
-    Ok(lines(vec![format!(
-        "message #{id} to {} ({})",
-        input.to, input.kind
-    )]))
+    let mut out = vec![format!("message #{id} to {} ({})", input.to, input.kind)];
+    let limit = crate::engine::config(None)?.config.dossier.message_chars;
+    if limit > 0 && input.text.chars().count() > limit && !links_dossier(&input.text) {
+        out.push(format!(
+            "hint: the message has more than {limit} characters and no dossier link: put the details in the dossier \
+             and link them (plan#todo-NN, MEMORY-n, EVIDENCE/..., a commit)"
+        ));
+    }
+    Ok(lines(out))
+}
+
+/// The text links a dossier artifact or a commit: `plan#`, a class name (`MEMORY-3`, `EVIDENCE/...`), or a word of
+/// 7 to 40 hex digits with a digit in it.
+fn links_dossier(text: &str) -> bool {
+    const MARKS: [&str; 7] = [
+        "plan#", "MEMORY", "DESIGN", "EVIDENCE", "SPIKE", "JOURNAL", "HEALTH",
+    ];
+    MARKS.iter().any(|m| text.contains(m))
+        || text.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| {
+            (7..=40).contains(&w.len())
+                && w.bytes().all(|b| b.is_ascii_hexdigit())
+                && w.bytes().any(|b| b.is_ascii_digit())
+        })
 }
 
 pub fn inbox(input: &SessionIn) -> Result<Vec<ThreadMessage>> {

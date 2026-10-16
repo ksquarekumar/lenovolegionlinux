@@ -4530,6 +4530,43 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "internal.hooks.delegate": {
+    "class": "read",
+    "internal": true,
+    "input": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "format": "session",
+          "description": "Agent session id; the client fills it.",
+          "default": ""
+        }
+      },
+      "title": "SessionIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "block": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Set when the prompt is blocked: the reason the user sees."
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "HookReply",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "skills": {
     "class": "read",
     "internal": false,

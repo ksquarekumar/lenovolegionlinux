@@ -523,6 +523,9 @@ operations! {
     /// Run everything bound to an event and return the combined output, or the reason the dossier gate blocks the
     /// prompt (the agent plugin calls this through `legionctl hook`).
     hooks_run / HooksRun = "internal.hooks.run", Session, HookRunIn => HookReply;
+    /// The delegation rule for a subagent that a session with a dossier starts (the `SubagentStart` hook): read the
+    /// dossier yourself, review adversarially, keep messages short and link the dossier; empty without a dossier.
+    hooks_delegate / HooksDelegate = "internal.hooks.delegate", Read, SessionIn => HookReply;
     /// legionctl skills: where each agent has them and whether the reminder that keeps each in force is on.
     skills / Skills = "skills", Read, ProjectIn => SkillList;
     /// Telemetry: package and GPU power, temperatures, clocks, PSI, fan RPM and throttle reasons, one line per sample.

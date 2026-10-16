@@ -1120,6 +1120,18 @@ fn agent_findings() -> Result<Vec<String>> {
     Ok(w)
 }
 
+/// What a delegate of a session with dossier `d` reads first (user rule 2026-10-16, MEMORY-14; skill
+/// sessions-and-agents rule 25).
+fn delegation_rule(d: &str) -> String {
+    format!(
+        "legionctl delegation rule (dossier {d}): read the full dossier plan (`legionctl dossier read {d}/plan.md`) \
+         and the MEMORY and DESIGN files its rows name yourself; do not rely only on this prompt. If you review or \
+         audit: be adversarial and thorough, and report what you did not check. Details live in the dossier; keep \
+         your messages and your final report short and objective, and point to dossier artifacts (plan#todo-NN, \
+         MEMORY-n, EVIDENCE/..., commits) instead of pasting details."
+    )
+}
+
 pub(crate) fn session(id: &SessionId) -> Result<&str> {
     anyhow::ensure!(
         !id.0.is_empty(),
@@ -2450,6 +2462,17 @@ impl Engine for Operator {
         }
         Ok(HookReply {
             text: lines.join("\n"),
+            block: None,
+        })
+    }
+
+    fn hooks_delegate(&self, _: &Ctx, input: SessionIn) -> Result<HookReply> {
+        let active = match input.session.0.as_str() {
+            "" => None,
+            s => dossiers()?.active(s)?,
+        };
+        Ok(HookReply {
+            text: active.map(|d| delegation_rule(&d)).unwrap_or_default(),
             block: None,
         })
     }

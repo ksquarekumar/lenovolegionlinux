@@ -480,6 +480,45 @@ fn blocks_hold_main_until_acked_and_only_an_observer_of_the_thread_sends_them() 
     assert_eq!(lab.stop("main", false), None);
 }
 
+/// Delegation and messages point to the dossier (user 2026-10-16, item 7 of v1-bugs): a subagent that a session with
+/// a dossier starts gets the delegation rule with that dossier's plan path in its context (the `SubagentStart` hook's
+/// `additionalContext`; payload shape from the hooks reference, no recorded fixture); a session without a dossier
+/// gets nothing. A thread message over `dossier.message_chars` with no dossier link gets a one-line hint and is sent;
+/// one with a link gets no hint.
+#[test]
+fn a_delegate_reads_the_dossier_first_and_a_long_message_is_told_to_link_it() {
+    let lab = thread_lab("delegate");
+    let started = lab.hook("main", &lab.repo, "subagent-start", json!({}));
+    let v: Value = serde_json::from_str(&started).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["hookEventName"], "SubagentStart");
+    let rule = v["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        rule.contains("legionctl dossier read port/plan.md")
+            && rule.contains("adversarial")
+            && rule.contains("point to dossier artifacts"),
+        "{rule}"
+    );
+    assert_eq!(
+        lab.hook("loner", &lab.repo, "subagent-start", json!({})),
+        "",
+        "no dossier, no rule"
+    );
+
+    let long = "the parser drops the last token of each line. ".repeat(14);
+    let hinted = lab.thread("obs", &["send", "main0", "note", &long]);
+    assert!(
+        hinted.contains("hint: the message has more than 600 characters and no dossier link"),
+        "{hinted}"
+    );
+    let linked = format!("{long} details: plan#todo-1");
+    let plain = lab.thread("obs", &["send", "main0", "note", &linked]);
+    assert!(!plain.contains("hint:"), "{plain}");
+    let inbox = lab.json("main", &["thread", "inbox"]);
+    assert_eq!(inbox.as_array().unwrap().len(), 2, "both are sent: {inbox}");
+}
+
 /// A `SendMessage` call of main0 (Claude Code's message to another session) lands in the thread log with the
 /// receiver, the text and whether it was sent: the recorded call that failed, and one that was sent.
 #[test]

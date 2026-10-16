@@ -4,6 +4,7 @@
     "SessionStart": [{ "hooks": [{ "type": "command", "command": "legionctl hook session-start", "timeout": 30 }] }],
     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "legionctl hook prompt", "timeout": 30 }] }],
     "PreToolUse": [{ "hooks": [{ "type": "command", "command": "legionctl hook pre-tool", "timeout": 10 }] }],
+    "SubagentStart": [{ "hooks": [{ "type": "command", "command": "legionctl hook subagent-start", "timeout": 10 }] }],
     "PostToolUse": [{ "hooks": [{ "type": "command", "command": "legionctl hook post-tool", "timeout": 10 }] }],
     "Stop": [{ "hooks": [{ "type": "command", "command": "legionctl hook stop", "timeout": 30 }] }],
     "SessionEnd": [{ "hooks": [{ "type": "command", "command": "legionctl hook session-end", "timeout": 10 }] }],

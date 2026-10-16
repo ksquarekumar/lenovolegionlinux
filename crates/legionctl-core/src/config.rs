@@ -447,6 +447,9 @@ pub struct DossierConfig {
     /// 0 turns this off.
     pub nudge_turns: u32,
     pub stale_hours: u64,
+    /// A message between agents (`thread send`) longer than this, with no link to a dossier artifact, gets a hint in
+    /// the answer: put the details in the dossier and link them; it is sent all the same. 0 turns this off.
+    pub message_chars: usize,
     /// Class name -> purpose.
     pub classes: BTreeMap<String, String>,
     pub plan_sections: Vec<String>,

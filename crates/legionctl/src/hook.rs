@@ -7,6 +7,7 @@
 //! | session-start | `internal.hooks.run` | stdout: added to the context |
 //! | prompt | `internal.hooks.run` | stdout, or `{"decision":"block","reason":...}` from the dossier gate |
 //! | pre-tool | `internal.thread.gate`, `internal.dossier.guard` | `permissionDecision: deny` for a tool that a thread hard-block holds, or a write into another dossier |
+//! | subagent-start | `internal.hooks.delegate` | `additionalContext` for the subagent: the delegation rule of the session's dossier (none without a dossier) |
 //! | post-tool | `internal.agent.tool` | the call is recorded (thread log, watch rules, presence) per peer: a subagent (`agent_id`) is a peer of its own and gets its messages as `additionalContext` |
 //! | stop | `internal.hooks.run` | `{"decision":"block","reason":...}` to the agent when the session is not set up (once per reply), or for a thread block |
 //! | session-end | `dossier.release` | nothing; its `reason` `clear` or `resume` keeps the pool that the session leads |
@@ -18,16 +19,17 @@
 use anyhow::{Context, Result};
 use legionctl_api::{
     AgentToolIn, ClientPath, DossierReleaseIn, Event, Guard, GuardIn, HookReply, HookRunIn,
-    SessionId, TeammateIn, ThreadGateIn, op,
+    SessionId, SessionIn, TeammateIn, ThreadGateIn, op,
 };
 use serde_json::{Value, json};
 
 use legionctl_api::client::Client;
 
-pub const EVENTS: [&str; 8] = [
+pub const EVENTS: [&str; 9] = [
     "session-start",
     "prompt",
     "pre-tool",
+    "subagent-start",
     "post-tool",
     "stop",
     "session-end",
@@ -88,6 +90,24 @@ async fn answer(event: &str, input: &Value) -> Result<Option<Answer>> {
             };
             pre_tool(&client, session, input, path).await?
         }
+        // additionalContext of SubagentStart reaches the subagent before its first prompt; PreToolUse's updatedInput
+        // would need permissionDecision allow (it skips the permission prompt) to be documented
+        "subagent-start" => match session {
+            Some(session) => {
+                let text = client
+                    .call::<op::HooksDelegate>(&SessionIn { session })
+                    .await?
+                    .text;
+                (!text.is_empty()).then(|| {
+                    json!({"hookSpecificOutput": {
+                        "hookEventName": "SubagentStart",
+                        "additionalContext": text,
+                    }})
+                    .to_string()
+                })
+            }
+            None => None,
+        },
         "post-tool" => match session {
             Some(session) => post_tool(&client, session, project, input, path).await?,
             None => None,
