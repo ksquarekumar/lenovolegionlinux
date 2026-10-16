@@ -309,6 +309,8 @@ fn refuses_to_apply_on_a_machine_that_is_not_this_model() {
 fn doctor_reports_a_mixed_legion_wmi_bind_and_a_missing_platform_profile() {
     let m = Machine::new("wmi-mixed");
     let root = m.dir.join("root");
+    // every module exists for every kernel (a modinfo that cannot run is a check that cannot run, todo-142 F-24)
+    Machine::script(&m.dir.join("bin"), "modinfo", "echo /m/$5.ko");
     let doctor = |m: &Machine| -> Vec<String> {
         let out = m.legion(&["doctor"]);
         String::from_utf8(out.stdout)

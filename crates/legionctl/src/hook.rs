@@ -45,6 +45,16 @@ enum Answer {
     KeepWorking(String),
 }
 
+/// The project of the hook input: its `cwd`, which Claude Code always sends.
+fn project(input: &Value) -> Result<ClientPath> {
+    Ok(ClientPath(
+        input["cwd"]
+            .as_str()
+            .context("the hook input has no cwd")?
+            .into(),
+    ))
+}
+
 async fn answer(event: &str, input: &Value) -> Result<Option<Answer>> {
     let client = Client::new("hook")?;
     // in a legionctl session the dossier is bound to its id, not to the id of the agent inside the sandbox
@@ -53,12 +63,7 @@ async fn answer(event: &str, input: &Value) -> Result<Option<Answer>> {
         .filter(|s| !s.is_empty())
         .or_else(|| input["session_id"].as_str().map(String::from))
         .map(SessionId);
-    let project = ClientPath(
-        input["cwd"]
-            .as_str()
-            .context("the hook input has no cwd")?
-            .into(),
-    );
+    let project = project(input)?;
     let run = |event: Event| HookRunIn {
         event,
         project: project.clone(),
