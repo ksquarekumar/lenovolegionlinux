@@ -111,12 +111,13 @@ fn duplicate_rows(plan: &str) -> BTreeSet<String> {
 
 /// Refuse a write of `file` (relative to the dossier at `dir`; `plan.md`, an artifact, or empty for a new numbered
 /// artifact) from `old` to `new` that changes an immutable artifact (front matter `immutable: true`, or a file of one
-/// of the `immutable` classes, todo-156), adds a plan row id that is there already, or a front-matter link to no node;
+/// of the `immutable` classes, todo-156), adds a plan row id that is there already, a plan table row that does not
+/// parse ([`plan_problems`]), or a front-matter link to no node;
 /// a bare plan row id (`todo-12`) gets its form (`plan#todo-12`) in the refusal (todo-121). Links and duplicate rows
 /// that `old` has already do not refuse a write.
 ///
 /// # Errors
-/// The write changes an immutable artifact, adds a duplicate row id or a link to no node.
+/// The write changes an immutable artifact, adds a duplicate row id, a bad table row or a link to no node.
 pub fn check_write(
     dir: &Path,
     file: &str,
@@ -141,6 +142,23 @@ pub fn check_write(
             added.is_empty(),
             "plan.md would have the row {} twice: give the new row the next free id",
             added.join(", ")
+        );
+        // by the text after the line number: a bad line that `old` has already does not refuse, wherever it moves
+        let text = |p: &str| {
+            p.split_once(": ")
+                .map(|(_, t)| t.to_string())
+                .unwrap_or_default()
+        };
+        let before: BTreeSet<String> = plan_problems(old).iter().map(|p| text(p)).collect();
+        let bad: Vec<String> = plan_problems(new)
+            .into_iter()
+            .filter(|p| !before.contains(&text(p)))
+            .collect();
+        anyhow::ensure!(
+            bad.is_empty(),
+            "plan.md would have a table row that does not parse ({}): start and end a row with |, give it the \
+             header's cells, do not write | inside a cell",
+            bad.join("; ")
         );
         return Ok(());
     }
@@ -216,38 +234,124 @@ fn paths_in(text: &str, artifacts: &BTreeMap<String, String>) -> Vec<String> {
         .collect()
 }
 
-fn plan_rows(plan: &str, artifacts: &BTreeMap<String, String>, graph: &mut Graph) {
+fn separator(line: &str) -> bool {
+    cells(line).is_some_and(|row| {
+        row.iter()
+            .all(|c| c.chars().all(|ch| ch == '-' || ch == ':' || ch == ' '))
+    })
+}
+
+/// A table row of plan.md: its 1-based line, section, cells and status cell, and what does not parse in it.
+struct TableRow {
+    line: usize,
+    section: String,
+    cells: Vec<String>,
+    /// The row is in a table (under a header); a row outside one is no node.
+    in_table: bool,
+    status: Option<String>,
+    problem: Option<String>,
+}
+
+/// The table rows of plan.md. A header is only the line above a `| --- |` line, so one bad line cannot make the next
+/// row a header (EV-review-10 S2). Inside a table, a line with a `|` that does not start and end with `|` is still a
+/// row (with a problem); so is a row whose cell count is not the header's (a `|` inside a cell). A row outside a
+/// table has a problem and no header.
+fn table_rows(plan: &str) -> Vec<TableRow> {
+    let lines: Vec<&str> = plan.lines().collect();
+    let mut out = Vec::new();
     let mut section = String::new();
     let mut header: Option<Vec<String>> = None;
-    for line in plan.lines() {
+    for (i, line) in lines.iter().enumerate() {
         if let Some(title) = line.strip_prefix("## ") {
             section = title.trim().to_string();
             header = None;
             continue;
         }
-        let Some(row) = cells(line) else {
-            header = None;
-            continue;
-        };
-        if row
-            .iter()
-            .all(|c| c.chars().all(|ch| ch == '-' || ch == ':' || ch == ' '))
-        {
+        if separator(line) {
             continue;
         }
-        let Some(head) = &header else {
-            header = Some(row.iter().map(|c| c.to_lowercase()).collect());
+        if let Some(head) = cells(line).filter(|_| lines.get(i + 1).is_some_and(|l| separator(l))) {
+            header = Some(head.iter().map(|c| c.to_lowercase()).collect());
             continue;
+        }
+        let (row, mut problem) = match cells(line) {
+            Some(row) => (row, None),
+            None if header.is_some() && line.contains('|') => {
+                let inner = line.trim();
+                let inner = inner.strip_prefix('|').unwrap_or(inner);
+                let inner = inner.strip_suffix('|').unwrap_or(inner);
+                (
+                    inner.split('|').map(|c| c.trim().to_string()).collect(),
+                    Some("a table line that does not start and end with |".to_string()),
+                )
+            }
+            None => {
+                header = None;
+                continue;
+            }
         };
-        let Some(id) = row.first().filter(|id| !id.is_empty() && !id.contains(' ')) else {
+        let status = match &header {
+            None => {
+                problem = Some(
+                    "a table row outside a table (no header and | --- | line above it)".into(),
+                );
+                None
+            }
+            Some(head) => {
+                if problem.is_none() && row.len() != head.len() {
+                    problem = Some(format!(
+                        "{} cells, the header has {} (a | inside a cell?)",
+                        row.len(),
+                        head.len()
+                    ));
+                }
+                head.iter()
+                    .position(|h| h == "status")
+                    .and_then(|i| row.get(i))
+                    .cloned()
+            }
+        };
+        out.push(TableRow {
+            line: i + 1,
+            section: section.clone(),
+            cells: row,
+            in_table: header.is_some(),
+            status,
+            problem,
+        });
+    }
+    out
+}
+
+/// The plan.md lines that do not parse as table rows, each as `plan.md:<line>: <what>: <row id or start>`.
+#[must_use]
+pub fn plan_problems(plan: &str) -> Vec<String> {
+    table_rows(plan)
+        .into_iter()
+        .filter_map(|r| {
+            let what = r.problem?;
+            let start: String = r.cells.join(" | ").chars().take(40).collect();
+            Some(format!("plan.md:{}: {what}: {start}", r.line))
+        })
+        .collect()
+}
+
+fn plan_rows(plan: &str, artifacts: &BTreeMap<String, String>, graph: &mut Graph) {
+    for TableRow {
+        section,
+        cells: row,
+        in_table,
+        status,
+        ..
+    } in table_rows(plan)
+    {
+        let Some(id) = row
+            .first()
+            .filter(|id| in_table && !id.is_empty() && !id.contains(' '))
+        else {
             continue;
         };
         let id = format!("plan#{id}");
-        let status = head
-            .iter()
-            .position(|h| h == "status")
-            .and_then(|i| row.get(i))
-            .cloned();
         let text = row.join(" | ");
         for to in paths_in(&text, artifacts) {
             graph.edges.push(Edge {
@@ -258,7 +362,7 @@ fn plan_rows(plan: &str, artifacts: &BTreeMap<String, String>, graph: &mut Graph
         }
         graph.nodes.push(Node {
             id,
-            kind: section.clone(),
+            kind: section,
             file: "plan.md".into(),
             status,
             title: row.get(1).cloned().unwrap_or_default(),

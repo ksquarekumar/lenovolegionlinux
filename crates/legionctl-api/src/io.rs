@@ -223,6 +223,9 @@ pub struct CloseIn {
     /// Discard uncommitted changes.
     #[serde(default)]
     pub force: bool,
+    /// Show the workspace that close would remove and what it would discard; change nothing.
+    #[serde(default)]
+    pub dry_run: bool,
     /// A folder in a workspace or in the repository.
     #[serde(default = "here")]
     pub repo: ClientPath,

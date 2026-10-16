@@ -1,8 +1,8 @@
 //! The dossier home in each directory (design 23, E1a): at the first dossier use in a directory, `<root>/agentWorkspaces`
 //! becomes a link to the dossier root (the whole home; the bound dossier is `agentWorkspaces/<name>`). A real folder
 //! there is imported first: each first-level subfolder becomes a registered dossier, copied with a hash compare, and
-//! the folder goes to a backup. In a git repository, git ignores the link: `/agentWorkspaces` in the main checkout's
-//! `.gitignore` (staged, not committed), or in `info/exclude` for a worktree until the line is on its branch.
+//! the folder goes to a backup. In a git repository, git ignores the link: `/agentWorkspaces` in the repository's
+//! `info/exclude` (shared by the main checkout and its worktrees; the user's `.gitignore` and index stay as they are).
 
 use std::path::{Path, PathBuf};
 
@@ -110,34 +110,18 @@ fn refused(at: &Path, dossiers: &Dossiers) -> String {
     )
 }
 
-/// Make git ignore `<dir>/agentWorkspaces` when it does not: the main checkout's `.gitignore` gets `/agentWorkspaces`
-/// (no trailing `/`: git sees a link as a file) and is staged; a worktree's line goes into `<common dir>/info/exclude`.
-/// A plain folder has nothing to do.
+/// Make git ignore `<dir>/agentWorkspaces` when it does not: `/agentWorkspaces` (no trailing `/`: git sees a link as
+/// a file) goes into `<common dir>/info/exclude`, never into a file of the user's checkout (EV-review-10 S7). A plain
+/// folder has nothing to do.
 fn ignore(dir: &Path) -> Result<Vec<String>> {
-    if crate::workspace::repo_of(dir)?.is_none() {
+    if crate::workspace::repo_of(dir)?.is_none() || git(dir, &["check-ignore", "-q", LINK]).is_ok()
+    {
         return Ok(Vec::new());
     }
-    let git_dir = git(dir, &["rev-parse", "--absolute-git-dir"])?;
-    if git(dir, &["check-ignore", "-q", LINK]).is_ok() {
-        return Ok(Vec::new());
-    }
-    let common = git_common_dir(dir)?;
+    let exclude = git_common_dir(dir)?.join("info/exclude");
     let line = format!("/{LINK}");
-    let done = if Path::new(&git_dir) == common {
-        append_line(&dir.join(".gitignore"), &line)?;
-        git(dir, &["add", ".gitignore"])?;
-        format!(
-            "added {line} to {} (staged, not committed: commit it with your next change)",
-            dir.join(".gitignore").display()
-        )
-    } else {
-        let exclude = common.join("info/exclude");
-        append_line(&exclude, &line)?;
-        format!(
-            "added {line} to {} until the .gitignore line is on this branch",
-            exclude.display()
-        )
-    };
+    append_line(&exclude, &line)?;
+    let done = format!("added {line} to {}", exclude.display());
     if let Err(e) = git(dir, &["check-ignore", "-q", LINK]) {
         bail!("git does not ignore {LINK} in {}: {e}", dir.display());
     }

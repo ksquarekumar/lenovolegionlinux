@@ -47,7 +47,8 @@ user-invocable: true
     must pass.
 18. `workspace close [--force]` removes the worktree; the dossier stays. It deletes a topic branch that is merged into
     its base (`git branch -d`); an unmerged topic branch and the branch `legionctl/<dossier>` stay. It refuses
-    uncommitted changes; ask before `--force`.
+    uncommitted changes; ask before `--force`. `--dry-run` shows the workspace it would close and the changes it would
+    discard. It refuses a folder in the workspace of another dossier.
 19. Do not push. See skill verify-and-ship.
 
 ## Refs

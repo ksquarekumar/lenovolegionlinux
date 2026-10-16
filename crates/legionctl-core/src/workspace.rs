@@ -276,6 +276,18 @@ impl Dossiers {
         let dossier = self.active_dossier(session)?;
         let found = if let Some(topic) = topic {
             self.row(&dossier, &main_checkout(dir)?, topic)?
+        } else if let Some(other) = self.innermost(dir)?
+            && other.dossier != dossier
+        {
+            // never the caller's own workspace for a folder in another dossier's (todo-172)
+            bail!(
+                "{} is in the workspace {} of dossier {}, not of this session's dossier {dossier}: a session of \
+                 dossier {} must do this",
+                dir.display(),
+                other.path.display(),
+                other.dossier,
+                other.dossier
+            );
         } else if let Some(place) = self.place(&dossier, dir)? {
             place.workspace
         } else {
@@ -288,6 +300,21 @@ impl Dossiers {
                 dir.display()
             )
         })
+    }
+
+    /// The innermost open workspace, of any dossier, that contains `dir`.
+    fn innermost(&self, dir: &Path) -> Result<Option<Workspace>> {
+        let dir = std::fs::canonicalize(dir)?;
+        Ok(self
+            .workspaces(None)?
+            .into_iter()
+            .filter_map(|ws| {
+                let path = std::fs::canonicalize(&ws.path).ok()?;
+                dir.starts_with(&path)
+                    .then(|| (path.components().count(), ws))
+            })
+            .max_by_key(|(depth, _)| *depth)
+            .map(|(_, ws)| ws))
     }
 
     /// Open (or reopen) the workspace of this session's dossier in the repository that contains `dir`: a worktree on
@@ -692,19 +719,33 @@ impl Dossiers {
         Ok(lines)
     }
 
-    /// Remove the worktree; the branch stays until it is merged, and the dossier stays.
+    /// Remove the worktree; the branch stays until it is merged, and the dossier stays. `dry_run` makes the same
+    /// checks and tells what close would do.
     ///
     /// # Errors
     /// The workspace has uncommitted changes without `force`, or git refuses.
-    pub fn close(&self, ws: &Workspace, force: bool) -> Result<String> {
+    pub fn close(&self, ws: &Workspace, force: bool, dry_run: bool) -> Result<String> {
+        let what = format!("{} (dossier {})", ws.path.display(), ws.dossier);
         if ws.is_folder() {
-            crate::folder::close(&ws.path, &ws.repo, force)?;
+            crate::folder::close(&ws.path, &ws.repo, force, dry_run)?;
         } else if ws.path.join(".git").exists() {
             let (staged, unstaged, untracked, conflicted) = changes(&ws.path)?;
+            let dirty = staged + unstaged + untracked + conflicted;
             ensure!(
-                force || staged + unstaged + untracked + conflicted == 0,
-                "the workspace has uncommitted changes; run `legionctl workspace checkpoint <message>`, or add --force to discard them"
+                force || dirty == 0,
+                "the workspace {what} has {dirty} uncommitted changes; run `legionctl workspace checkpoint <message>`, \
+                 or add --force to discard them"
             );
+            if dry_run {
+                return Ok(format!(
+                    "would close {what}{}",
+                    if dirty > 0 {
+                        format!(" and discard its {dirty} uncommitted changes")
+                    } else {
+                        String::new()
+                    }
+                ));
+            }
             let path = ws
                 .path
                 .to_str()
@@ -714,6 +755,9 @@ impl Dossiers {
                 args.push("--force");
             }
             git(&ws.repo, &args)?;
+        }
+        if dry_run {
+            return Ok(format!("would close {what}"));
         }
         self.db().execute(
             "UPDATE workspaces SET closed = ?1 WHERE path = ?2 AND closed IS NULL",
@@ -725,7 +769,7 @@ impl Dossiers {
                 ws.path.display()
             ));
         }
-        let closed = format!("closed {}", ws.path.display());
+        let closed = format!("closed {what}");
         if ws.topic.is_empty() {
             return Ok(format!("{closed} (branch {} kept)", ws.branch));
         }

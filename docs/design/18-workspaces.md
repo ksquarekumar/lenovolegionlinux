@@ -97,9 +97,9 @@ The dossier home appears in the root of each directory where a dossier is used (
 `session start`) as the symlink `agentWorkspaces → ~/agentWorkspaces`; the bound dossier is
 `agentWorkspaces/<dossier>` (design 23, E1a, built in P9). A real `agentWorkspaces/` folder there is imported first:
 each first-level subfolder becomes a registered dossier (`<name>-imported-<n>` on a clash), and the folder goes to
-`~/.local/state/legionctl/backup/`. In a git repository, the main checkout's `.gitignore` gets `/agentWorkspaces` (no
-trailing `/`: git sees a link as a file), staged, not committed; a worktree uses `<common dir>/info/exclude` until
-the line is on its branch; `git check-ignore` must pass. A plain folder gets the link only.
+`~/.local/state/legionctl/backup/`. In a git repository, `<common dir>/info/exclude` gets `/agentWorkspaces` (no
+trailing `/`: git sees a link as a file) for the main checkout and its worktrees; the user's `.gitignore` and index
+stay as they are; `git check-ignore` must pass. A plain folder gets the link only.
 
 The dossiers of the old root `~/.agentworkspace` move to `~/agentWorkspaces` only when the user runs
 `legionctl dossier migrate` (`--dry-run` first: what moves, the backups, the clashes, the counts it compares). Until

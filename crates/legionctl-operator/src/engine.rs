@@ -2506,7 +2506,7 @@ impl Engine for Operator {
             input.topic.as_deref(),
         )?;
         Ok(Lines {
-            lines: vec![store.close(&ws, input.force)?],
+            lines: vec![store.close(&ws, input.force, input.dry_run)?],
         })
     }
 
@@ -4659,9 +4659,12 @@ impl Engine for Operator {
         let store = Dossiers::open(&resolved.config.dossier)?;
         let dossier = match input.dossier {
             Some(d) => d,
-            None => store.last_in(&place_of(dir))?.context(
-                "no dossier was used in this repository yet; add --dossier <name> --create",
-            )?,
+            None => store.last_in(&place_of(dir))?.with_context(|| {
+                format!(
+                    "no dossier was used in {} yet: give --dossier <name> (dossier list)",
+                    dir.display()
+                )
+            })?,
         };
         let token = legionctl_api::random_token()?;
         let start = Start {

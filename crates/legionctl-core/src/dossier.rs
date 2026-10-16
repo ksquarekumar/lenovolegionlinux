@@ -1296,7 +1296,7 @@ impl Dossiers {
         }
     }
 
-    /// Ledger findings: a missing `plan.md` or a missing section.
+    /// Ledger findings: a missing `plan.md`, a missing section, or a plan table row that does not parse.
     #[must_use]
     pub fn check(&self, dossier: &str) -> Vec<String> {
         let Ok(plan) = std::fs::read_to_string(self.root.join(dossier).join("plan.md")) else {
@@ -1313,6 +1313,7 @@ impl Dossiers {
             .filter(|s| !present.contains(&s.as_str()))
             .map(|s| format!("plan.md has no '## {s}' section"))
             .collect();
+        findings.extend(crate::graph::plan_problems(&plan));
         // code paths of EVIDENCE are relative to the dossier's repository (its open workspace's main checkout)
         let workspace = match self.workspaces(Some(dossier)) {
             Ok(w) => w.into_iter().next(),

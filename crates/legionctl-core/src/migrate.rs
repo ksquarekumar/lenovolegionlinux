@@ -644,8 +644,11 @@ fn relink(store: &Dossiers, place: &Place) -> Result<Vec<String>> {
         std::fs::remove_file(&old)?;
     }
     let ignore = dir.join(".gitignore");
+    let old_line = |text: &str| text.lines().any(|l| l.trim() == "/.agentworkspace");
+    // also when only the index has the line: a cut-off call removed it and did not stage the removal
+    let staged = crate::git::text(dir, &["show", ":.gitignore"]).is_ok_and(|t| old_line(&t));
     if let Ok(text) = std::fs::read_to_string(&ignore)
-        && text.lines().any(|l| l.trim() == "/.agentworkspace")
+        && (old_line(&text) || staged)
     {
         let kept: String = text
             .lines()

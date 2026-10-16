@@ -206,18 +206,23 @@ pub fn merge(path: &Path, source: &Path) -> Result<Vec<String>> {
     Ok(changes.iter().map(ToString::to_string).collect())
 }
 
-/// Drop the layer and its checkpoints.
+/// Drop the layer and its checkpoints; `dry_run` makes the check only.
 ///
 /// # Errors
 /// Changes are not merged and `force` is not given.
-pub fn close(path: &Path, source: &Path, force: bool) -> Result<()> {
+pub fn close(path: &Path, source: &Path, force: bool, dry_run: bool) -> Result<()> {
     let changes = changes(path, source)?;
     ensure!(
         force || changes.is_empty(),
-        "the workspace has {} changes not merged into {}; run `legionctl workspace merge`, or add --force to drop them",
+        "the workspace {} has {} changes not merged into {}; run `legionctl workspace merge`, or add --force to drop \
+         them",
+        path.display(),
         changes.len(),
         source.display()
     );
+    if dry_run {
+        return Ok(());
+    }
     clear(path)?;
     std::fs::remove_dir(path)?;
     Ok(())

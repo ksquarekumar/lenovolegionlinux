@@ -292,14 +292,16 @@ fn a_config_layer_or_dossier_file_that_cannot_be_read_fails_with_its_name() {
     );
 }
 
-/// A user file that cannot be read is not written over (todo-142 F-9): a `.gitignore` in Latin-1 (not UTF-8) where
-/// the dossier link needs its ignore line; `dossier use` fails with the reason and the file keeps every byte. Before,
-/// the failed read gave an empty file, and the write left only legionctl's line.
+/// A user file that cannot be read is not written over (todo-142 F-9): an `info/exclude` in Latin-1 (not UTF-8)
+/// where the dossier link needs its ignore line; `dossier use` fails with the reason and the file keeps every byte.
+/// Before, the failed read gave an empty file, and the write left only legionctl's line.
 #[test]
 fn a_user_file_that_cannot_be_read_is_not_written_over() {
     let (op, home) = operator("latin1");
     let repo = repository(&home);
-    let ignore = repo.join(".gitignore");
+    git(&home, &repo, &["rm", "--quiet", ".gitignore"]);
+    git(&home, &repo, &["commit", "--quiet", "-m", "no ignore line"]);
+    let ignore = repo.join(".git/info/exclude");
     let before = b"target/\n# caf\xe9\n".to_vec();
     std::fs::write(&ignore, &before).unwrap();
     let out = op.run(
@@ -492,6 +494,106 @@ fn a_dossier_write_refuses_a_link_to_no_node_and_a_plan_row_id_twice() {
     );
 }
 
+/// One bad plan table line (EV-review-10 S2): the real plan had a row without its leading `|` (todo-155), which ended
+/// the table and made the next row a header, so 79 rows lost their status and health blamed four correct EVIDENCE
+/// links; and rows with a `|` inside a cell. A write (write, edit, append) that adds such a line is refused with the
+/// line and row; append of a row under a prose section (no table) is refused too. A bad line made outside legionctl
+/// is a check finding with its line; the rows keep their nodes and statuses, so the link to the row is no finding.
+#[test]
+fn a_plan_table_row_that_does_not_parse_is_refused_and_check_names_its_line() {
+    let (op, home) = operator("rows");
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("LEGIONCTL_SESSION", "s1"),
+    ];
+    let run = |args: &[&str], stdin: &str| op.run(&home, &env, args, stdin);
+    let refused = |args: &[&str], stdin: &str, why: &str| {
+        let o = run(args, stdin);
+        let text = String::from_utf8_lossy(&o.stderr);
+        assert!(
+            !o.status.success() && text.contains(why),
+            "{args:?}: {text}"
+        );
+    };
+    let ok = |args: &[&str], stdin: &str| {
+        let o = run(args, stdin);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8_lossy(&o.stdout).to_string()
+    };
+    ok(&["dossier", "use", "rows"], "");
+    let plan = "# rows\n\n## ToDo\n| id | item | status |\n| --- | --- | --- |\n| todo-1 | one | open |\n\
+                | todo-2 | two | open |\n| todo-3 | three | built |\n\n## Validation\nTests: none yet.\n";
+    let overwrite = ["dossier", "write", "rows/plan.md", "--overwrite"];
+    ok(&overwrite, plan);
+    ok(
+        &["dossier", "add", "EVIDENCE", "two"],
+        "---\nid: EV-2\nclass: EVIDENCE\nsupports: [plan#todo-2]\n---\n# Two\n",
+    );
+    let file = home.join("agentWorkspaces/rows/plan.md");
+
+    refused(
+        &overwrite,
+        &plan.replace("| todo-2 |", " todo-2 |"),
+        "plan.md:7: a table line that does not start and end with |: todo-2",
+    );
+    let read = ok(&["dossier", "read", "rows/plan.md"], "");
+    let anchor = read
+        .lines()
+        .find(|l| l.contains("| todo-1 |"))
+        .and_then(|l| l.split('|').next())
+        .unwrap();
+    refused(
+        &[
+            "dossier",
+            "edit",
+            "rows/plan.md",
+            "replace",
+            anchor,
+            "--content",
+            "| todo-1 | curl|sh | open |",
+        ],
+        "",
+        "plan.md:6: 4 cells, the header has 3 (a | inside a cell?): todo-1",
+    );
+    refused(
+        &["dossier", "append", "rows/plan.md"],
+        "| todo-4 | four | open |\n",
+        "plan.md:12: a table row outside a table",
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        plan,
+        "nothing written"
+    );
+
+    // the same bad line written outside legionctl (an agent's own file tool)
+    write(&file, &plan.replace("| todo-2 |", " todo-2 |"));
+    let check = String::from_utf8_lossy(&run(&["dossier", "check"], "").stdout).to_string();
+    assert!(
+        check.contains("plan.md:7: a table line that does not start and end with |: todo-2")
+            && !check.contains("does not exist"),
+        "{check}"
+    );
+    let graph: Value = serde_json::from_str(&ok(&["dossier", "graph", "--json"], "")).unwrap();
+    let status = |id: &str| {
+        graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["id"] == id)
+            .map(|n| n["status"].clone())
+    };
+    assert_eq!(
+        (status("plan#todo-2"), status("plan#todo-3")),
+        (Some(json!("open")), Some(json!("built"))),
+        "{graph}"
+    );
+}
+
 /// A misspelled field is refused, not dropped: an agent's `dossier_edit` with `lines` for `content` (as happened on
 /// 2026-10-14) ran as an empty replace and deleted the plan row it was to change. Through the MCP server, as agents
 /// call it: the call fails with the operation's real fields, and the row stays.
@@ -507,7 +609,7 @@ fn an_unknown_input_field_is_refused_before_the_operation_runs() {
         (&["dossier", "use", "plan"][..], ""),
         (
             &["dossier", "write", "plan/plan.md", "--overwrite"][..],
-            "# Plan\n| todo-1 | keep me |\n",
+            "# Plan\n| id | item |\n| --- | --- |\n| todo-1 | keep me |\n",
         ),
     ] {
         let o = op.run(&repo, &env, args, stdin);
@@ -1740,6 +1842,66 @@ fn close_deletes_merged_topic_branches(
         );
     }
     assert_eq!(git(home, repo, &["branch", "--list", "legionctl/*"]), "");
+}
+
+/// Close acts on the workspace that holds `--repo`, never on the caller's own (todo-172, EV-review-10 S1): two
+/// dossiers in one repository; s1 points close at s2's worktree, with --force, while s1's own workspace has an
+/// uncommitted file. Before, s1's workspace was closed and the file deleted. Now the close is refused with the
+/// workspace and dossier it would touch, and both stay; a dry run names s1's workspace and the changes it would drop.
+#[test]
+fn close_of_another_dossiers_worktree_is_refused_and_keeps_the_callers_work() {
+    let (op, home) = operator("close-other");
+    let repo = repository(&home);
+    let run = |s: &str, cwd: &Path, args: &[&str]| as_session(&op, &home, (s, cwd), args);
+    session_ok(&op, &home, ("s1", &repo), &["dossier", "use", "demo"]);
+    session_ok(&op, &home, ("s2", &repo), &["dossier", "use", "other"]);
+    session_ok(&op, &home, ("s1", &repo), &["workspace", "open"]);
+    session_ok(&op, &home, ("s2", &repo), &["workspace", "open"]);
+    let (demo, other) = (
+        home.join("worktrees/repo/demo"),
+        home.join("worktrees/repo/other"),
+    );
+    write(&demo.join("p.txt"), "not committed");
+
+    let target = other.to_str().unwrap();
+    let (closed, why) = run(
+        "s1",
+        &demo,
+        &["workspace", "close", "--repo", target, "--force"],
+    );
+    assert!(
+        !closed
+            && why.contains(&format!(
+                "is in the workspace {} of dossier other, not of this session's dossier demo",
+                other.display()
+            )),
+        "{why}"
+    );
+    assert!(demo.join("p.txt").is_file() && other.join(".git").exists());
+
+    let (_, plan) = run("s1", &demo, &["workspace", "close", "--force", "--dry-run"]);
+    assert!(
+        plan.contains(&format!(
+            "would close {} (dossier demo) and discard its 1 uncommitted changes",
+            demo.display()
+        )),
+        "{plan}"
+    );
+    let (refused, why) = run("s1", &demo, &["workspace", "close"]);
+    assert!(
+        !refused
+            && why.contains(&format!(
+                "the workspace {} (dossier demo) has 1 uncommitted",
+                demo.display()
+            )),
+        "{why}"
+    );
+    assert!(demo.join("p.txt").is_file());
+    let list = session_ok(&op, &home, ("s1", &repo), &["workspace", "list"]);
+    assert!(
+        list.contains(&demo.display().to_string()) && list.contains(&other.display().to_string()),
+        "{list}"
+    );
 }
 
 /// The MCP proxy between a session's agent and a server (here legionctl's own MCP server): the agent sees only the
@@ -6748,7 +6910,7 @@ fn migrated_rows_links_and_lines(op: &Operator, home: &Path, repo: &Path, wt: &P
     );
 
     // the links: in the main checkout and the worktree, the old link and line are gone and staged, the new link
-    // is ignored (the main checkout's .gitignore, the worktree's info/exclude)
+    // is ignored (the repository's info/exclude)
     for dir in [repo, wt] {
         assert!(std::fs::symlink_metadata(dir.join(".agentworkspace")).is_err());
         assert_eq!(
@@ -6767,7 +6929,7 @@ fn migrated_rows_links_and_lines(op: &Operator, home: &Path, repo: &Path, wt: &P
     }
     assert_eq!(
         std::fs::read_to_string(repo.join(".gitignore")).unwrap(),
-        "target/\n/agentWorkspaces\n"
+        "target/\n"
     );
     assert_eq!(
         std::fs::read_to_string(wt.join(".gitignore")).unwrap(),
@@ -7003,8 +7165,8 @@ fn session_ok(op: &Operator, home: &Path, (s, cwd): (&str, &Path), args: &[&str]
 /// The first dossier use in a directory (design 23, E1a): a real `agentWorkspaces` folder with two dossiers (one
 /// name in use in the home) and a file is imported (copies compared, the clash renamed, the folder kept while the
 /// file is there), a cut-off import finishes without a second copy, and the folder goes to the backup and becomes
-/// the link. git ignores the link by a staged `.gitignore` line in the main checkout and by info/exclude in a
-/// worktree; a plain folder gets the link only; a link that the user made stays; the home itself is not imported.
+/// the link. git ignores the link by info/exclude in the main checkout and its worktrees, and the user's `.gitignore`
+/// and index stay as they are (EV-review-10 S7: a staged line blocked the first merge); a plain folder gets the link only; a link that the user made stays; the home itself is not imported.
 #[test]
 fn the_first_use_in_a_repository_imports_its_agentworkspaces_folder_and_links_the_home() {
     let (op, home) = operator("home-link");
@@ -7074,19 +7236,15 @@ fn the_first_use_in_a_repository_imports_its_agentworkspaces_folder_and_links_th
         saved.display()
     );
 
-    // git ignores the link: the line without a trailing slash, staged and not committed
-    assert_eq!(
-        std::fs::read_to_string(repo.join(".gitignore")).unwrap(),
-        "/agentWorkspaces\n"
+    // git ignores the link by info/exclude (the line without a trailing slash); the checkout has no change
+    assert!(
+        std::fs::read_to_string(repo.join(".git/info/exclude"))
+            .unwrap()
+            .lines()
+            .any(|l| l == "/agentWorkspaces")
     );
-    assert_eq!(
-        git(&home, &repo, &["diff", "--cached", "--name-only"]),
-        ".gitignore"
-    );
-    assert_eq!(
-        git(&home, &repo, &["log", "-1", "--format=%s"]),
-        "no ignore line"
-    );
+    assert!(!repo.join(".gitignore").exists());
+    assert_eq!(git(&home, &repo, &["status", "--porcelain"]), "");
     assert_eq!(
         git(&home, &repo, &["check-ignore", "agentWorkspaces"]),
         "agentWorkspaces"

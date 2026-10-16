@@ -40,8 +40,8 @@ user-invocable: false
     ask the user first). The id, the bindings, the workspaces and the `planning/` links stay valid.
 22. A rename to a name in use is refused. Choose a descriptive name that is not in `dossier list`.
 23. The first dossier use in a directory links the home there as `agentWorkspaces`, and imports a real
-    `agentWorkspaces/` folder first. In a main checkout, `/agentWorkspaces` goes into `.gitignore`, staged and not
-    committed: tell the user to commit it.
+    `agentWorkspaces/` folder first. In a repository, `/agentWorkspaces` goes into `.git/info/exclude`; the checkout
+    does not change.
 24. When a dossier operation or a hook says "the dossiers are not migrated yet: the user runs legionctl dossier migrate", tell
     the user and go on without dossier writes; the hooks do not block you. The migration moves every dossier
     (class workspace): run it only when the user says so, `legionctl dossier migrate --dry-run` first, then

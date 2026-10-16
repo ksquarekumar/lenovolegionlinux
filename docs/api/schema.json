@@ -3355,6 +3355,11 @@
           "description": "Discard uncommitted changes.",
           "default": false
         },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Show the workspace that close would remove and what it would discard; change nothing.",
+          "default": false
+        },
         "repo": {
           "type": "string",
           "format": "path",
