@@ -426,14 +426,49 @@ fn lab_git(home: &Path, repo: &Path, args: &[&str]) {
     );
 }
 
-/// The lab's repository with the ctx stand-in: src/lib.rs (add, two) and tools/x.rs on main, then on branch work
-/// a commit that changes two.
+/// The lab's ctx (HOME/.local/bin comes before the host's PATH): the stand-in, never the host's ctx.
+fn lab_ctx(home: &Path, ctx: &Path) {
+    let at = home.join(".local/bin/ctx");
+    let _ = std::fs::remove_file(&at);
+    assert!(ctx.is_file(), "no ctx at {}", ctx.display());
+    std::os::unix::fs::symlink(ctx, at).unwrap();
+}
+
+/// A ctx that cannot index: no graph can be made.
+fn broken_ctx(home: &Path) {
+    let broken = home.join("broken-ctx");
+    write(
+        &broken,
+        "#!/bin/sh\necho 'ctx: cannot index here' >&2\nexit 2\n",
+    );
+    std::fs::set_permissions(&broken, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    lab_ctx(home, &broken);
+}
+
+/// The ctx stand-in, then `code graph refresh` of main and HEAD, as a user does after the reason.
+fn refresh_with_standin(op: &Operator, home: &Path, repo: &Path) {
+    lab_ctx(
+        home,
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/ctx-standin"),
+    );
+    for rev in ["main", "HEAD"] {
+        let out = op.run(
+            repo,
+            &[("HOME", home.to_str().unwrap())],
+            &["code", "graph", "refresh", "--ref", rev],
+            "",
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+/// The lab's repository: src/lib.rs (add, two) and tools/x.rs on main, then on branch work a commit that changes
+/// two.
 fn graph_repo(home: &Path, repo: &Path) {
-    std::os::unix::fs::symlink(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ctx-standin"),
-        home.join(".local/bin/ctx"),
-    )
-    .unwrap();
     write(
         &repo.join("Cargo.toml"),
         "[package]\nname = \"fx\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
@@ -454,15 +489,17 @@ fn graph_repo(home: &Path, repo: &Path) {
 }
 
 /// The code graph seed (DESIGN-09 G4, todo-141) on a repository with the ctx stand-in: on branch work, the commit
-/// after main changes `two`. The tree's top has the folder src with its symbol count, marked as changed since main
-/// (tools is not); a click on src reads its level (src/lib.rs, marked), a click on the file its symbols (two is
-/// marked, add is not); a click on add selects it, and the stack's other part reads what uses it: two.
+/// after main changes `two`. A ctx that cannot index gives no graph: the tree part shows why, not an empty tab. With
+/// the stand-in, the tree's top has the folder src with its symbol count, marked as changed since main (tools is
+/// not); a click on src reads its level (src/lib.rs, marked), a click on the file its symbols (two is marked, add is
+/// not); a click on add selects it, and the stack's other part reads what uses it: two.
 #[gpui_kit::test]
 fn the_code_graph_seed_opens_levels_on_click_marks_changes_and_shows_what_uses_a_selected_symbol(
     cx: &mut TestAppContext,
 ) {
     let (op, home, repo) = thread_lab("graph");
     graph_repo(&home, &repo);
+    broken_ctx(&home);
     let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
     let cx = &mut vcx;
     let click = |cx: &mut VisualTestContext, id: &str| {
@@ -476,6 +513,19 @@ fn the_code_graph_seed_opens_levels_on_click_marks_changes_and_shows_what_uses_a
         a.screen.views.iter().any(|v| v.name == "code-graph")
     });
     click(cx, "nav-code-graph");
+    wait(cx, &app, "why there is no graph", |a| {
+        shown(a, "code-tree").is_some_and(|v| v.error.is_some())
+    });
+    app.read_with(cx, |a, _| {
+        let error = shown(a, "code-tree").unwrap().error.clone().unwrap();
+        assert!(
+            error.starts_with("ctx graph index refused tree ")
+                && error.ends_with(": ctx: cannot index here"),
+            "{error}"
+        );
+    });
+    // with a working ctx, a refresh makes the graphs, and its event reads the tab again
+    refresh_with_standin(&op, &home, &repo);
     wait(cx, &app, "the tree", |a| {
         shown(a, "code-tree").is_some_and(|v| !v.nodes.is_empty())
     });
