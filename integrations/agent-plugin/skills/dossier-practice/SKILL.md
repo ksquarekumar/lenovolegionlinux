@@ -12,7 +12,9 @@ user-invocable: false
 2. Bind it with `dossier use <name>` (class session). A new name makes a new dossier. Without a session (the user in
    the app or a terminal), `dossier use` chooses the user's dossier and `dossier create <name>` makes one.
 3. A dossier that another live session holds is refused. `--steal` takes it; ask the user first.
-4. Your session writes only to its own dossier. You can read every dossier. `dossier locks` shows who holds which.
+4. Your session writes only to its own dossier, and only with the dossier commands (rules 10, 16 and 18). The `pre-tool`
+   hook denies Write, Edit, MultiEdit and NotebookEdit into every dossier. You can read every dossier. `dossier locks`
+   shows who holds which.
 5. Until a session has a dossier, the `prompt` hook blocks each prompt except `/legionctl:dossier`.
 6. `plan.md` is the ledger. It records state only, in short entries that point to the artifact with the detail.
 7. Keep requested, proposed, approved, implemented and validated state separate. A proposal is not a decision.

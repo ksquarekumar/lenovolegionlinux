@@ -55,7 +55,15 @@ fn client_only() -> Vec<Command> {
         Command::new("trace").about("Follow the event log: agents, people and the machine daemon, as it happens"),
         Command::new("hook")
             .about("Claude Code hook adapter: reads the hook's JSON from stdin, answers in Claude Code's hook protocol")
-            .arg(Arg::new("event").required(true).value_parser(hook::EVENTS)),
+            // any words: the adapter refuses an unknown event itself (exit 1), as clap's exit 2 blocks the agent
+            .arg(
+                Arg::new("event")
+                    .num_args(0..)
+                    .trailing_var_arg(true)
+                    .allow_hyphen_values(true)
+                    .value_name("EVENT")
+                    .help(format!("One of: {}", legionctl_core::plugin::HOOK_EVENTS.join(", "))),
+            ),
         Command::new("run")
             .about("Run a program on a chosen GPU, core class and priority")
             .arg(
@@ -355,7 +363,14 @@ fn main() -> Result<()> {
         Some(("trace", _)) => return trace(),
         Some(("run", sub)) => return run(sub),
         Some(("hook", sub)) => {
-            return hook::run(sub.get_one::<String>("event").map_or("", String::as_str));
+            let args: Vec<String> = sub
+                .get_many::<String>("event")
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect();
+            hook::run(&args);
+            return Ok(());
         }
         _ => {}
     }

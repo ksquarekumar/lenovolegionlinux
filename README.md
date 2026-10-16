@@ -118,9 +118,11 @@ changes the mode until the charger changes, a restart, or `legionctl power apply
 
 ## Agents
 
-Install the Claude Code plugin with `/plugin marketplace add /data/git/lenovolegionlinux`, then
-`/plugin install legionctl@lenovolegionlinux`. Codex gets the same MCP server, skills and agents from
-`legionctl setup apply`.
+Install the Claude Code plugin from the package folder, so that the plugin and the binary are of one build:
+`claude plugin marketplace add /usr/share/legionctl`, then `claude plugin install legionctl@lenovolegionlinux`. Claude
+Code reads the plugin from that folder at each session start, so a package upgrade also upgrades the plugin.
+`legionctl doctor` tells you when the plugin comes from another folder. Codex gets the same MCP server, skills and
+agents from `legionctl setup apply`.
 
 | Part | What |
 | --- | --- |

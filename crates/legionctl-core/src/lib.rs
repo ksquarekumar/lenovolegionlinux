@@ -23,6 +23,7 @@ pub mod images;
 pub mod migrate;
 pub mod packages;
 pub mod planning;
+pub mod plugin;
 pub mod pool;
 pub mod qga;
 pub mod qmp;

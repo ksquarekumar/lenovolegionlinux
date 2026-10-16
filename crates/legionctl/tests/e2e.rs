@@ -1022,34 +1022,30 @@ fn dossier_write_guard_and_takeover_work_through_the_claude_code_hooks() {
         "{refused:?}"
     );
 
-    // the write guard: only the holder writes into the dossier; other paths are not legionctl's business
+    // the write guard: no file tool writes into a dossier (the holder writes with the dossier commands, todo-176 S3);
+    // every dossier can be read; other paths are not legionctl's business
     let plan = home.join("agentWorkspaces/port/plan.md");
-    let denied: Value = serde_json::from_str(&hook(
-        "pre-tool",
-        json!({"session_id": "s2", "tool_name": "Write", "tool_input": {"file_path": plan, "content": "x"}}),
-    ))
-    .unwrap();
-    assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny");
+    let pre_tool = |session: &str, tool: &str, path: &Path| {
+        hook(
+            "pre-tool",
+            json!({"session_id": session, "tool_name": tool, "tool_input": {"file_path": path, "content": "x"}}),
+        )
+    };
+    let denied = pre_tool("s2", "Write", &plan);
     assert!(
-        denied["hookSpecificOutput"]["permissionDecisionReason"]
-            .as_str()
-            .unwrap()
-            .contains("active in session s1")
+        denied.contains(r#""permissionDecision":"deny""#)
+            && denied.contains("active in session s1")
     );
-    assert_eq!(
-        hook(
-            "pre-tool",
-            json!({"session_id": "s1", "tool_name": "Edit", "tool_input": {"file_path": plan}})
-        ),
-        ""
+    let own = pre_tool("s1", "Edit", &plan);
+    assert!(
+        own.contains(r#""permissionDecision":"deny""#)
+            && own.contains(
+                "port/plan.md is in this session's dossier: write it with legionctl dossier write"
+            ),
+        "{own}"
     );
-    assert_eq!(
-        hook(
-            "pre-tool",
-            json!({"session_id": "s2", "tool_name": "Write", "tool_input": {"file_path": home.join("x.rs")}})
-        ),
-        ""
-    );
+    assert_eq!(pre_tool("s2", "Read", &plan), "");
+    assert_eq!(pre_tool("s2", "Write", &home.join("x.rs")), "");
 
     // a second session cannot take the dossier while s1 holds it. s1 quiet for two hours (within stale_hours) still
     // holds it, and its next prompt shows it active again
@@ -7078,7 +7074,7 @@ fn a_migration_into_the_old_root_through_a_link_refuses_and_keeps_each_dossier()
 
 /// A live session in a home that is not migrated (design 23, E1; the session that runs the migration is one): its
 /// hooks never block it. Session start and prompt pass with one line that says to migrate, stop does not block, and a
-/// write is not denied. After `dossier migrate` its binding is the moved row: the session keeps its dossier, the write
+/// write is not denied (the guard fails with exit 1). After `dossier migrate` its binding is the moved row: the session keeps its dossier, the write
 /// guard denies another dossier again and a write to the old place, and a session without a dossier is held at the
 /// prompt as before.
 #[test]
@@ -7115,13 +7111,32 @@ fn the_hooks_of_a_live_session_pass_before_the_migration_and_gate_after_it() {
         hook("stop", json!({"session_id": "s-new", "cwd": repo})),
         ""
     );
-    assert_eq!(write("s-live", old.join("alpha/plan.md")), "", "not denied");
+    // the guard's operations refuse before the migration: a failure (exit 1) that denies nothing
+    let unmigrated = op.run(
+        &repo,
+        &[],
+        &["hook", "pre-tool"],
+        &claude_hook(
+            "pre-tool",
+            &json!({"session_id": "s-live", "cwd": repo, "tool_name": "Write",
+                    "tool_input": {"file_path": old.join("alpha/plan.md"), "content": "x"}}),
+        ),
+    );
+    assert!(
+        unmigrated.status.code() == Some(1)
+            && unmigrated.stdout.is_empty()
+            && String::from_utf8_lossy(&unmigrated.stderr).contains(NOT_MIGRATED),
+        "not denied: {unmigrated:?}"
+    );
 
     op.ok(&["dossier", "migrate"]);
     let (bound, active) = as_session(&op, &home, ("s-live", &repo), &["dossier", "active"]);
     assert!(bound && active.contains("active dossier beta"), "{active}");
     assert!(write("s-live", homes.join("alpha/plan.md")).contains("deny"));
-    assert_eq!(write("s-live", homes.join("beta/plan.md")), "");
+    assert!(
+        write("s-live", homes.join("beta/plan.md"))
+            .contains("beta/plan.md is in this session's dossier")
+    );
     // a write to the old place would make the old root again and refuse every dossier operation (R3-16)
     let stale = write("s-live", old.join("beta/plan.md"));
     assert!(
@@ -7430,7 +7445,7 @@ fn facts_written_from_one_dossier_are_read_from_another_and_a_rename_keeps_rows_
     shown.sort();
     assert_eq!(shown, ["m1", "m2", "m3"]);
 
-    // beta's session writes its own dossier through the link, not gamma's
+    // beta's session reaches its own dossier through the link, not gamma's
     let guard = |path: PathBuf| {
         let out = op.run(
             &ws_b,
@@ -7444,6 +7459,195 @@ fn facts_written_from_one_dossier_are_read_from_another_and_a_rename_keeps_rows_
         );
         String::from_utf8_lossy(&out.stdout).to_string()
     };
-    assert!(guard(ws_b.join("agentWorkspaces/gamma/plan.md")).contains("deny"));
-    assert!(!guard(ws_b.join("agentWorkspaces/beta/plan.md")).contains("deny"));
+    assert!(guard(ws_b.join("agentWorkspaces/gamma/plan.md")).contains("active in session s-a"));
+    assert!(
+        guard(ws_b.join("agentWorkspaces/beta/plan.md"))
+            .contains("beta/plan.md is in this session's dossier")
+    );
+}
+
+/// The hooks of the shipped plugin (hooks.json, the `PreCompact` block of 2026-10-17, todo-176): each command runs on
+/// this build with each recorded payload of its event. With the operator up, every hook exits 0 and blocks only by its
+/// rule: the dossier gate (prompt) and the dossier nudge (stop) for a session without a dossier, nothing for a session
+/// with one. With the operator down, every hook fails with exit 1 and blocks nothing. An event that this build does
+/// not know, and any other words after `hook`, exit 1 (clap's exit 2 would block) with this build's name.
+#[test]
+fn every_plugin_hook_runs_on_this_build_and_blocks_only_by_its_rule() {
+    let (op, home) = operator("plugin-hooks");
+    let repo = repository(&home);
+    let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integrations/agent-plugin");
+    let fixtures = plugin.join("../../tests/fixtures/claude-code-hooks");
+    let manifest: Value =
+        serde_json::from_str(&std::fs::read_to_string(plugin.join("hooks/hooks.json")).unwrap())
+            .unwrap();
+    let events: Vec<String> = manifest["hooks"]
+        .as_object()
+        .unwrap()
+        .values()
+        .flat_map(|groups| groups.as_array().unwrap())
+        .flat_map(|group| group["hooks"].as_array().unwrap())
+        .map(|hook| {
+            let command = hook["command"].as_str().unwrap();
+            command
+                .strip_prefix("legionctl hook ")
+                .unwrap_or_else(|| panic!("not a legionctl hook: {command}"))
+                .to_string()
+        })
+        .collect();
+    assert_eq!(events.len(), 10, "{events:?}");
+    let ok = |args: &[&str]| {
+        let out = op.run(&repo, &[("LEGIONCTL_SESSION", "s-bound")], args, "");
+        assert!(out.status.success(), "{args:?}: {out:?}");
+    };
+    ok(&["dossier", "use", "hooks"]);
+    ok(&["workspace", "open"]);
+    let down = home.join("down");
+    std::fs::create_dir_all(&down).unwrap();
+    let mut blocked = std::collections::BTreeSet::new();
+    for event in &events {
+        let payloads: Vec<PathBuf> = std::fs::read_dir(&fixtures)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| {
+                let stem = p.file_stem().unwrap().to_str().unwrap();
+                stem == event || stem.starts_with(&format!("{event}-"))
+            })
+            .collect();
+        assert!(!payloads.is_empty(), "no recorded payload of {event}");
+        for (payload, session) in payloads
+            .iter()
+            .flat_map(|p| [(p, "s-free"), (p, "s-bound")])
+        {
+            let mut input: Value =
+                serde_json::from_str(&std::fs::read_to_string(payload).unwrap()).unwrap();
+            input["session_id"] = json!(session);
+            input["cwd"] = json!(repo);
+            let input = input.to_string();
+            let up = op.run(&repo, &[], &["hook", event], &input);
+            assert_eq!(up.status.code(), Some(0), "{payload:?} {session}: {up:?}");
+            let said = String::from_utf8_lossy(&up.stdout);
+            if said.contains(r#""decision":"block""#)
+                || said.contains(r#""permissionDecision":"deny""#)
+            {
+                blocked.insert(format!("{event} {session}"));
+            }
+            let out = op.run(
+                &repo,
+                &[("XDG_RUNTIME_DIR", down.to_str().unwrap())],
+                &["hook", event],
+                &input,
+            );
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                out.status.code() == Some(1)
+                    && out.stdout.is_empty()
+                    && err.starts_with("legionctl hook: legionctl-operator does not answer"),
+                "{payload:?} {session}, operator down: {out:?}"
+            );
+        }
+    }
+    assert_eq!(
+        blocked.into_iter().collect::<Vec<_>>(),
+        ["prompt s-free", "stop s-free"],
+        "only the dossier gate and the dossier nudge block, and only a session without a dossier"
+    );
+    let exe = env!("CARGO_BIN_EXE_legionctl");
+    for args in [
+        &["hook", "post-compact"][..],
+        &["hook"],
+        &["hook", "pre-tool", "extra"],
+        &["hook", "-x"],
+    ] {
+        let out = op.run(&repo, &[], args, "{}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.code() == Some(1)
+                && out.stdout.is_empty()
+                && err.starts_with(&format!("legionctl hook: this legionctl ({exe} "))
+                && err.contains(
+                    "the legionctl plugin is newer than this legionctl, and the hook did nothing"
+                )
+                && err.contains("the events of this legionctl: session-start, prompt, pre-tool"),
+            "{args:?}: {out:?}"
+        );
+    }
+}
+
+/// `doctor` names a legionctl plugin of another build (todo-176): Claude Code reads a folder marketplace's plugin from
+/// that folder, so a marketplace that is not the package folder (here: a checkout) gives the plugin of that tree, and
+/// its hooks can name events that this build does not know. The package folder as the marketplace gives no finding.
+#[test]
+fn doctor_names_a_claude_code_plugin_that_is_not_of_this_build() {
+    let (op, home) = operator("plugin-doctor");
+    let plugin_findings = || -> Vec<String> {
+        String::from_utf8_lossy(&op.cli(&["doctor"]).stdout)
+            .lines()
+            .filter_map(|l| l.strip_prefix("- "))
+            .filter(|l| {
+                l.starts_with("the legionctl plugin")
+                    || l.starts_with("the Claude Code marketplace")
+            })
+            .map(String::from)
+            .collect()
+    };
+    assert_eq!(
+        plugin_findings(),
+        Vec::<String>::new(),
+        "no plugin installed"
+    );
+    // a checkout as the marketplace, with a newer plugin than this build
+    let checkout = home.join("checkout");
+    write(
+        &checkout.join(".claude-plugin/marketplace.json"),
+        r#"{"name": "lenovolegionlinux", "plugins": [{"name": "legionctl", "source": "./plugin"}]}"#,
+    );
+    write(
+        &checkout.join("plugin/hooks/hooks.json"),
+        r#"{"hooks": {"PreCompact": [{"hooks": [{"type": "command", "command": "legionctl hook pre-compact"}]}],
+            "PostCompact": [{"hooks": [{"type": "command", "command": "legionctl hook post-compact"}]}]}}"#,
+    );
+    let marketplace = |path: &Path| {
+        write(
+            &home.join(".claude/plugins/known_marketplaces.json"),
+            &json!({"lenovolegionlinux": {"source": {"source": "directory", "path": path}}})
+                .to_string(),
+        );
+    };
+    marketplace(&checkout);
+    // the install path is the copy of the install, which Claude Code does not read for a folder marketplace
+    let copy = home.join(".claude/plugins/cache/lenovolegionlinux/legionctl/0.6.0");
+    write(&copy.join("hooks/hooks.json"), r#"{"hooks": {}}"#);
+    write(
+        &home.join(".claude/plugins/installed_plugins.json"),
+        &json!({"version": 2, "plugins": {"legionctl@lenovolegionlinux": [{"scope": "user", "installPath": copy}]}})
+            .to_string(),
+    );
+    let package = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integrations");
+    let fix = format!(
+        "install it from the package: claude plugin marketplace remove lenovolegionlinux; claude plugin marketplace \
+         add {}; claude plugin install legionctl@lenovolegionlinux",
+        package.display()
+    );
+    assert_eq!(
+        plugin_findings(),
+        [
+            format!(
+                "the Claude Code marketplace lenovolegionlinux is {}, not the package folder {}: its plugin and this \
+                 legionctl can be of different builds; {fix}",
+                checkout.display(),
+                package.display()
+            ),
+            format!(
+                "the legionctl plugin ({}) has hooks for events that this legionctl does not know: post-compact; each \
+                 of these hooks fails; {fix}",
+                checkout.join("plugin").display()
+            ),
+        ]
+    );
+    marketplace(&package);
+    assert_eq!(
+        plugin_findings(),
+        Vec::<String>::new(),
+        "the package's own plugin"
+    );
 }

@@ -6,10 +6,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::Resolved;
+use crate::plugin::claude_plugin_dir;
 use crate::reminders;
 use crate::setup::plugin_skills;
-
-const CLAUDE_PLUGIN_KEY: &str = "legionctl@lenovolegionlinux";
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SkillInfo {
@@ -34,16 +33,6 @@ fn description(skill_md: &Path) -> String {
                 .find_map(|l| l.strip_prefix("description:").map(|d| d.trim().to_string()))
         })
         .unwrap_or_default()
-}
-
-/// Install path of the legionctl plugin from Claude Code's registry, if installed.
-pub fn claude_plugin_dir(home: &Path) -> Option<PathBuf> {
-    let text = std::fs::read_to_string(home.join(".claude/plugins/installed_plugins.json")).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let plugins = value.get("plugins").unwrap_or(&value);
-    let entry = &plugins[CLAUDE_PLUGIN_KEY];
-    let first = entry.as_array().and_then(|a| a.first()).unwrap_or(entry);
-    first["installPath"].as_str().map(PathBuf::from)
 }
 
 /// Reminder ids follow the skill name without its "-style" suffix (ste100-style -> ste100).

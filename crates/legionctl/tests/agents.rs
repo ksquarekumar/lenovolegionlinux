@@ -1016,3 +1016,68 @@ fn the_answer_is_kept_until_fresh(u: &UsageLab, usage: &Value) {
         assert!(seed.lines().any(|l| l == line), "{line} missing:\n{seed}");
     }
 }
+
+/// The plugin's text names only commands that this build has (todo-176 S5: a plugin of a newer tree named
+/// `dossier health`, which the installed binary did not know). Each `` `legionctl <words> ...` `` in a skill, ref,
+/// command or agent file: its words up to the first placeholder, option or value give a command that `--help` knows.
+#[test]
+fn the_plugin_text_names_only_commands_of_this_build() {
+    fn files(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "md") {
+                out.push(path);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    files(&shipped_plugin(), &mut found);
+    let mut commands = std::collections::BTreeSet::new();
+    for file in &found {
+        let text = std::fs::read_to_string(file).unwrap();
+        for quoted in text.split('`').skip(1).step_by(2) {
+            let Some(rest) = quoted.strip_prefix("legionctl ") else {
+                continue;
+            };
+            // a word is a subcommand while it is lower case letters and '-'
+            let words: Vec<&str> = rest
+                .split_whitespace()
+                .take_while(|w| {
+                    w.chars().all(|c| c.is_ascii_lowercase() || c == '-') && !w.starts_with('-')
+                })
+                .collect();
+            if !words.is_empty() {
+                commands.insert(words.join(" "));
+            }
+        }
+    }
+    assert!(commands.len() > 30, "{commands:?}");
+    // the help of the longest known prefix: the whole command, or a leaf whose further words are values
+    let help = |words: &[&str]| -> Option<String> {
+        let out = Command::new(env!("CARGO_BIN_EXE_legionctl"))
+            .args(words)
+            .arg("--help")
+            .env_clear()
+            .output()
+            .unwrap();
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let unknown: Vec<&String> = commands
+        .iter()
+        .filter(|command| {
+            let words: Vec<&str> = command.split(' ').collect();
+            !(1..=words.len())
+                .rev()
+                .find_map(|n| help(&words[..n]).map(|h| (n, h)))
+                .is_some_and(|(n, h)| n == words.len() || !h.contains("Commands:"))
+        })
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "plugin text names commands that this build does not have: {unknown:?}"
+    );
+}

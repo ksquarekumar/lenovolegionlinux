@@ -7,7 +7,7 @@
     {
       "name": "legionctl",
       "description": "System state and load, isolated worktrees, agent settings and human-approved machine actions over the legionctl MCP server",
-      "source": "./integrations/agent-plugin",
+      "source": "./agent-plugin",
       "category": "productivity"
     }
   ]

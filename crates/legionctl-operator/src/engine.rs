@@ -1110,7 +1110,8 @@ fn jail(
     }
 }
 
-/// The agent side of `doctor`: setup gaps, stale dossier bindings, workspaces that drifted from their record.
+/// The agent side of `doctor`: setup gaps, a Claude Code plugin of another build, stale dossier bindings, workspaces
+/// that drifted from their record.
 fn agent_findings() -> Result<Vec<String>> {
     let mut w: Vec<String> = setup::check(
         &Sources::resolve(&Dirs::from_env(), None)?,
@@ -1125,6 +1126,7 @@ fn agent_findings() -> Result<Vec<String>> {
         )
     })
     .collect();
+    w.extend(legionctl_core::plugin::findings(&home()));
     if legionctl_core::migrate::pending() {
         w.push(legionctl_core::migrate::state(&Db::open_default()?));
         return Ok(w);

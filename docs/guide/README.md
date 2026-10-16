@@ -49,8 +49,8 @@ command here is on main. A feature that is not on main has the label "planned (v
    legionctl setup check     # each line "current", then "all set up"
    ```
 
-6. In Claude Code, add the plugin: `/plugin marketplace add /data/git/lenovolegionlinux`, then
-   `/plugin install legionctl@lenovolegionlinux`.
+6. Add the Claude Code plugin from the package folder (the plugin and the binary are then of one build):
+   `claude plugin marketplace add /usr/share/legionctl`, then `claude plugin install legionctl@lenovolegionlinux`.
 
 7. Run `legionctl doctor`. Each finding names the command that fixes it.
 

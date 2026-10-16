@@ -261,19 +261,13 @@ fn run_action(config: &Resolved, action: &Action, event: Event, jail: &mut Jail<
             crate::archetypes::Sources::resolve(&crate::config::Dirs::from_env(), None)
                 .and_then(|agents| setup::check(&agents, &config.config.session))
                 .map(|report| {
-                    let todo = report.needs_attention();
-                    if todo.is_empty() {
-                        String::new()
-                    } else {
-                        let names: Vec<String> = todo
-                            .iter()
-                            .map(|i| format!("{} for {}", i.what, i.agent))
-                            .collect();
-                        format!(
-                            "legionctl setup: {} need attention ({}). Run /legionctl:setup.",
-                            todo.len(),
-                            names.join(", ")
-                        )
+                    // a count, not the list: it goes into each session's context (`legionctl setup check` lists them)
+                    match report.needs_attention().len() {
+                        0 => String::new(),
+                        n => format!(
+                            "legionctl setup: {n} need attention (`legionctl setup check` shows each). Run \
+                             /legionctl:setup."
+                        ),
                     }
                 })
         }

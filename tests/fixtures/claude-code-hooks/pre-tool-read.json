@@ -1,0 +1,16 @@
+{
+  "session_id": "SESSION",
+  "transcript_path": "/tmp/transcript.jsonl",
+  "cwd": "CWD",
+  "prompt_id": "PROMPT",
+  "permission_mode": "acceptEdits",
+  "effort": {
+    "level": "high"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Read",
+  "tool_input": {
+    "file_path": "FILE"
+  },
+  "tool_use_id": "TOOL"
+}

@@ -1003,8 +1003,10 @@ impl Dossiers {
         Ok(())
     }
 
-    /// Whether `session` may write the absolute `path`: anything outside the workspace root passes; inside, only
-    /// the session's active dossier. Returns the reason for a refusal.
+    /// Whether an agent's file tool may write the absolute `path` for `session`: anything outside the workspace root
+    /// passes; inside, nothing: another dossier is not the session's, and its own dossier takes writes only through
+    /// the dossier commands, which check immutable entries, plan rows and links and keep the status history. Returns
+    /// the reason for a refusal.
     ///
     /// # Errors
     /// The database read fails.
@@ -1015,6 +1017,14 @@ impl Dossiers {
             return Ok(None);
         };
         let rel = rel.to_string_lossy();
+        let own = self.resolve(&rel).ok().map(|(dossier, _)| dossier);
+        if own.is_some() && self.active(session)? == own {
+            return Ok(Some(format!(
+                "{rel} is in this session's dossier: write it with legionctl dossier write, append, edit or add (MCP \
+                 tools dossier_write, dossier_append, dossier_edit, dossier_add), which check immutable entries, plan \
+                 rows and links and keep the status history"
+            )));
+        }
         Ok(self.guard_write(session, &rel).err().map(|e| e.to_string()))
     }
 

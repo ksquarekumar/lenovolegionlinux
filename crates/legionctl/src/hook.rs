@@ -6,7 +6,7 @@
 //! | --- | --- | --- |
 //! | session-start | `internal.hooks.run` | stdout: added to the context |
 //! | prompt | `internal.hooks.run` | stdout, or `{"decision":"block","reason":...}` from the dossier gate |
-//! | pre-tool | `internal.thread.gate`, `internal.dossier.guard` | `permissionDecision: deny` for a tool that a thread hard-block holds, or a write into another dossier |
+//! | pre-tool | `internal.thread.gate`, `internal.dossier.guard` | `permissionDecision: deny` for a tool that a thread hard-block holds, or a file tool's write (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`) into a dossier: another one, or the session's own, which the dossier commands write with their checks |
 //! | subagent-start | `internal.hooks.delegate` | `additionalContext` for the subagent: the delegation rule of the session's dossier (none without a dossier) |
 //! | pre-compact | `internal.hooks.compact` | nothing (Claude Code takes no instructions for the summary from a `PreCompact` hook): the session's dossier gets an immutable JOURNAL entry and HEALTH note, and the session start after the compaction (`source: compact`) points to them |
 //! | post-tool | `internal.agent.tool` | the call is recorded (thread log, watch rules, presence) per peer: a subagent (`agent_id`) is a peer of its own and gets its messages as `additionalContext` |
@@ -15,7 +15,9 @@
 //! | teammate-idle | `internal.thread.teammate` | exit 2 with the teammate's new thread messages on stderr: it goes on with them |
 //! | task-completed | `internal.thread.teammate` | exit 2 with the open items of the thread's `task:completed` gate: the task stays open |
 //!
-//! A hook must never stop the agent because legionctl is down: errors go to stderr and the exit code stays 0.
+//! Only these rules block. A failure (legionctl-operator is down, the input is not the hook's JSON, an event that
+//! this build does not know) handles nothing: it goes to stderr with exit 1, which Claude Code shows and does not
+//! block on. No failure exits 2, because exit 2 blocks the agent.
 
 use anyhow::{Context, Result};
 use legionctl_api::{
@@ -25,19 +27,7 @@ use legionctl_api::{
 use serde_json::{Value, json};
 
 use legionctl_api::client::Client;
-
-pub const EVENTS: [&str; 10] = [
-    "session-start",
-    "prompt",
-    "pre-tool",
-    "subagent-start",
-    "pre-compact",
-    "post-tool",
-    "stop",
-    "session-end",
-    "teammate-idle",
-    "task-completed",
-];
+use legionctl_core::plugin::HOOK_EVENTS;
 
 /// What the hook gives back: text on stdout (exit 0), or the feedback of a team mode hook on stderr (exit 2).
 enum Answer {
@@ -170,7 +160,12 @@ async fn pre_tool(
             tool: input["tool_name"].as_str().unwrap_or_default().to_string(),
         })
         .await?;
-    let refusal = match (held.refusal, path) {
+    // the guard is on writes: every dossier can be read
+    let writes = matches!(
+        input["tool_name"].as_str(),
+        Some("Write" | "Edit" | "MultiEdit" | "NotebookEdit")
+    );
+    let refusal = match (held.refusal, path.filter(|_| writes)) {
         (Some(reason), _) => Some(reason),
         (None, Some(path)) => {
             let Guard { refusal } = client
@@ -247,21 +242,40 @@ async fn post_tool(
     }))
 }
 
-pub fn run(event: &str) -> Result<()> {
-    let runtime = tokio::runtime::Runtime::new()?;
-    // a hook error never stops the agent (23-agent-network): it is said on stderr, and the hook ends with 0
-    let answered = serde_json::from_reader::<_, Value>(std::io::stdin())
-        .context("stdin is not the hook's JSON")
-        .and_then(|input| runtime.block_on(answer(event, &input)))
-        .context("legionctl hook");
-    match answered {
+/// `legionctl hook <args>`: exit 0 with the answer on stdout, exit 2 when a team mode rule keeps the teammate
+/// working or the task open, exit 1 when the hook failed.
+pub fn run(args: &[String]) {
+    let answered = match args {
+        [event] if HOOK_EVENTS.contains(&event.as_str()) => {
+            serde_json::from_reader::<_, Value>(std::io::stdin())
+                .context("stdin is not the hook's JSON")
+                .and_then(|input| tokio::runtime::Runtime::new()?.block_on(answer(event, &input)))
+        }
+        _ => Err(not_known(args)),
+    };
+    match answered.context("legionctl hook") {
         Ok(Some(Answer::Out(text))) if !text.is_empty() => println!("{text}"),
         Ok(Some(Answer::KeepWorking(text))) => {
             eprintln!("{text}");
             std::process::exit(2);
         }
         Ok(_) => {}
-        Err(e) => eprintln!("{e:#}"),
+        Err(e) => {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
     }
-    Ok(())
+}
+
+/// The arguments name no event of this build: the plugin that runs the hook is of another (newer) build.
+fn not_known(args: &[String]) -> anyhow::Error {
+    let exe = std::env::current_exe().map_or_else(|e| e.to_string(), |p| p.display().to_string());
+    anyhow::anyhow!(
+        "this legionctl ({exe} {}, API build {}) does not know `hook {}`: the legionctl plugin is newer than \
+         this legionctl, and the hook did nothing; run legionctl doctor\nthe events of this legionctl: {}",
+        env!("CARGO_PKG_VERSION"),
+        legionctl_api::api_fingerprint(),
+        args.join(" "),
+        HOOK_EVENTS.join(", ")
+    )
 }

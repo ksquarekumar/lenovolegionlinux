@@ -155,7 +155,8 @@ install: ## install into DESTDIR; the PKGBUILD calls this (on this machine: `mak
 	install -Dm644 packaging/libalpm/05-legionctl-remove.hook "$(DESTDIR)$(PREFIX)/share/libalpm/hooks/05-legionctl-remove.hook"
 	install -Dm644 $(PROFILE) "$(DESTDIR)$(DATADIR)/profiles/$(notdir $(PROFILE))"
 	install -Dm644 -t "$(DESTDIR)$(DATADIR)/configsets/$(basename $(notdir $(PROFILE)))" configsets/$(basename $(notdir $(PROFILE)))/*.jsonc
-	install -d "$(DESTDIR)$(DATADIR)" && cp -r integrations/agent-plugin "$(DESTDIR)$(DATADIR)/"
+# the package folder is the Claude Code marketplace of its own plugin: the plugin and the binary are one build
+	install -d "$(DESTDIR)$(DATADIR)" && cp -r integrations/agent-plugin integrations/.claude-plugin "$(DESTDIR)$(DATADIR)/"
 	install -Dm644 systemd/legionctl-system.service "$(DESTDIR)$(UNITDIR)/legionctl-system.service"
 	install -Dm644 systemd/legionctl-safe.service "$(DESTDIR)$(UNITDIR)/legionctl-safe.service"
 	install -Dm644 -t "$(DESTDIR)$(USERUNITDIR)" systemd/user/legionctl-operator.service systemd/user/legionctl-operator.socket systemd/user/legionctl-windows-vm.service
