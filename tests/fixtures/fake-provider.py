@@ -5,7 +5,8 @@ Base URLs pick the behaviour: http://127.0.0.1:<port>/ok answers (JSON, or an SS
 one) with usage 10 in / 5 out; /limited answers 429. /v1/messages answers as Anthropic, /v1/chat/completions as
 OpenAI. With tools in the request the answer also calls tool `lookup` with {"q": 1}, its arguments split over two
 stream events. /v1/embeddings answers a vector of the input's letter counts (a-z, case ignored), so a reworded
-prompt with the same letters is near. A model named *cached* reports prompt-cache tokens too: Anthropic 1000 read and
+prompt with the same letters is near. A model named *badargs* (OpenAI) calls the tool with arguments that are not
+JSON; a model named *cut* (OpenAI) ends its stream after the text, with no finish chunk and no [DONE]. A model named *cached* reports prompt-cache tokens too: Anthropic 1000 read and
 100 written beside the 10 input tokens, OpenAI 1000 read inside 1010 prompt tokens. Each call appends `<prefix> <model> <key>` to the log (the x-api-key or authorization header) and
 `{"path", "body"}` to `<log>.bodies`.
 """
@@ -82,8 +83,9 @@ def openai(body, text):
     if not body.get("stream"):
         message = {"role": "assistant", "content": text}
         if tools:
+            arguments = "q=1" if "badargs" in body.get("model", "") else '{"q":1}'
             message["tool_calls"] = [
-                {"id": "call_1", "type": "function", "function": {"name": "lookup", "arguments": '{"q":1}'}}
+                {"id": "call_1", "type": "function", "function": {"name": "lookup", "arguments": arguments}}
             ]
         choice = {"index": 0, "message": message, "finish_reason": "tool_calls" if tools else "stop"}
         return "application/json", json.dumps({**base, "object": "chat.completion", "choices": [choice],
@@ -94,6 +96,8 @@ def openai(body, text):
                 "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
 
     events: list[dict | str] = [chunk({"role": "assistant", "content": ""}), chunk({"content": text})]
+    if "cut" in body.get("model", ""):
+        return "text/event-stream", sse(events, False)
     if tools:
         events += [
             chunk({"tool_calls": [{"index": 0, "id": "call_1", "type": "function",

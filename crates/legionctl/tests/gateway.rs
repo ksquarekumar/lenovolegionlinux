@@ -482,6 +482,110 @@ fn an_anthropic_caller_reaches_an_openai_model_translated() {
     );
 }
 
+/// The gateway says what it cannot pass on as the provider gave it, counts every stream, and reports a cache it
+/// cannot use (todo-142 F-58, F-59, F-63, F-65, user decision Q3): a pool entry that names no account is refused
+/// with the name (before, skipped in silence); a tool call whose arguments are not JSON is an error in the caller's
+/// API (before, it ran with `{}`); a stream cut before its end ends with an error event (before, a complete answer);
+/// an `OpenAI` stream passed through asks for its usage, so the call is counted (before, $0); a cache that cannot be
+/// opened is a miss that goes upstream, one `cache.error` event and a doctor finding until the cache works again.
+#[test]
+fn the_gateway_says_what_it_cannot_translate_or_count_and_reports_a_broken_cache() {
+    let s = setup("gw-says");
+    std::fs::write(
+        s.home.join(".config/legionctl/typo.jsonc"),
+        r#"{"gateway": {"pool": {"claude-typo": ["mian"]}}}"#,
+    )
+    .unwrap();
+    let (status, _, body) = post(s.port, "/v1/messages", &CALLER, &ask("claude-typo", "hi"));
+    assert!(
+        status == 400 && body.contains("pool claude-typo: no gateway account mian"),
+        "{status} {body}"
+    );
+
+    let token =
+        std::fs::read_to_string(s.home.join(".local/state/legionctl/gateway-token")).unwrap();
+    let headers = [CALLER[1], ("x-legionctl-token", token.trim())];
+    let mut request = json!({
+        "model": "oa/gpt-badargs", "max_tokens": 10,
+        "tools": [{"name": "lookup", "description": "d", "input_schema": {"type": "object"}}],
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+    let (_, _, body) = post(s.port, "/v1/messages", &headers, &request);
+    let answer: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(answer["type"], "error", "{body}");
+    assert!(
+        answer["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("a tool call's arguments are not JSON"),
+        "{body}"
+    );
+
+    request["model"] = json!("oa/gpt-cut");
+    request["stream"] = json!(true);
+    let (status, _, stream) = post(s.port, "/v1/messages", &headers, &request);
+    assert_eq!(status, 200, "{stream}");
+    let last = events(&stream).last().cloned().unwrap();
+    assert_eq!(
+        last,
+        json!({"type": "error", "error": {"type": "api_error", "message": "the provider's stream ended early"}}),
+        "{stream}"
+    );
+
+    let chat_headers = [
+        ("authorization", "Bearer caller"),
+        ("x-legionctl-token", token.trim()),
+    ];
+    let (status, _, _) = post(
+        s.port,
+        "/v1/chat/completions",
+        &chat_headers,
+        &json!({"model": "oa/gpt-counted", "stream": true, "messages": [{"role": "user", "content": "hi"}]}),
+    );
+    assert_eq!(status, 200);
+    assert_eq!(
+        last_body(&s.log).1["stream_options"],
+        json!({"include_usage": true})
+    );
+    let usage: Value = serde_json::from_str(&s.op.ok(&["gateway", "usage", "--json"])).unwrap();
+    assert!(
+        usage.to_string().contains("gpt-counted")
+            && usage["items"].as_array().unwrap().iter().any(|r| {
+                r["model"] == "gpt-counted" && r["tokens_in"] == 10 && r["tokens_out"] == 5
+            }),
+        "{usage}"
+    );
+
+    // the cache database is a folder: it cannot open
+    let cache = s.home.join(".cache/legionctl/cache.db");
+    let _ = std::fs::remove_file(&cache);
+    std::fs::create_dir_all(&cache).unwrap();
+    let (status, label, body) = post(s.port, "/v1/messages", &CALLER, &ask("claude-z", "hi"));
+    assert!(status == 200 && label == "miss", "{status} {label} {body}");
+    let (status, _, _) = post(s.port, "/v1/messages", &CALLER, &ask("claude-z", "hi"));
+    assert_eq!(status, 200);
+    let logged: Value = serde_json::from_str(&s.op.ok(&["events", "--json"])).unwrap();
+    let errors: Vec<&Value> = logged["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "cache.error")
+        .collect();
+    assert_eq!(errors.len(), 1, "one event for one reason: {logged}");
+    assert_eq!(errors[0]["payload"]["cache"], "gateway");
+    let doctor = s.op.cli(&["doctor"]);
+    assert!(
+        String::from_utf8_lossy(&doctor.stdout)
+            .contains("the gateway cache fails, so its calls go upstream: "),
+        "{doctor:?}"
+    );
+    std::fs::remove_dir(&cache).unwrap();
+    let (status, _, _) = post(s.port, "/v1/messages", &CALLER, &ask("claude-z", "hi"));
+    assert_eq!(status, 200);
+    let doctor = String::from_utf8_lossy(&s.op.cli(&["doctor"]).stdout).to_string();
+    assert!(!doctor.contains("the gateway cache fails"), "{doctor}");
+}
+
 /// The streams of `request` (to `an`): `OpenAI` chunks, the usage chunk only when asked for, then `[DONE]`.
 fn check_chat_streams(s: &Setup, headers: &[(&str, &str)], request: &mut Value) {
     request["stream"] = json!(true);

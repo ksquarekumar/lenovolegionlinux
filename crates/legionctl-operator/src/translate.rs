@@ -89,7 +89,7 @@ fn messages_to_chat(request: &Value) -> Result<Value, String> {
         .as_array()
         .ok_or("messages is not a list")?
     {
-        let role = message["role"].as_str().unwrap_or("user");
+        let role = message["role"].as_str().ok_or("a message has no role")?;
         let blocks = match &message["content"] {
             Value::String(text) => {
                 messages.push(json!({"role": role, "content": text}));
@@ -422,28 +422,49 @@ fn created() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// The provider's whole answer (JSON, success or error) in the caller's API.
+/// An error in the caller's API: what the gateway says when it cannot give the provider's answer.
 #[must_use]
-pub fn response(direction: Direction, body: &Value) -> Value {
+pub fn caller_error(direction: Direction, message: &str) -> Value {
     match direction {
         Direction::MessagesToChat => {
+            json!({"type": "error", "error": {"type": "api_error", "message": message}})
+        }
+        Direction::ChatToMessages => {
+            json!({"error": {"message": message, "type": "legionctl_gateway", "code": null}})
+        }
+    }
+}
+
+/// The provider's whole answer (JSON, success or error) in the caller's API.
+///
+/// # Errors
+/// The answer is not one of the provider's API (no choice, a tool call whose arguments are not JSON): refused with
+/// the reason, never changed (19-gateway).
+pub fn response(direction: Direction, body: &Value) -> Result<Value, String> {
+    Ok(match direction {
+        Direction::MessagesToChat => {
             if let Some(error) = body.get("error") {
-                return json!({"type": "error", "error": {
+                return Ok(json!({"type": "error", "error": {
                     "type": error["type"].as_str().unwrap_or("api_error"),
                     "message": error["message"],
-                }});
+                }}));
             }
             let choice = &body["choices"][0];
             let message = &choice["message"];
+            if !message.is_object() {
+                return Err(format!("the provider's answer has no message: {body}"));
+            }
             let mut content = Vec::new();
             if let Some(text) = message["content"].as_str().filter(|t| !t.is_empty()) {
                 content.push(json!({"type": "text", "text": text}));
             }
             for call in message["tool_calls"].as_array().into_iter().flatten() {
-                let input = serde_json::from_str::<Value>(
-                    call["function"]["arguments"].as_str().unwrap_or("{}"),
-                )
-                .unwrap_or_else(|_| json!({}));
+                let arguments = call["function"]["arguments"]
+                    .as_str()
+                    .ok_or("a tool call has no arguments")?;
+                let input = serde_json::from_str::<Value>(arguments).map_err(|e| {
+                    format!("a tool call's arguments are not JSON ({e}): {arguments}")
+                })?;
                 content.push(json!({"type": "tool_use", "id": call["id"], "name": call["function"]["name"], "input": input}));
             }
             json!({
@@ -458,11 +479,11 @@ pub fn response(direction: Direction, body: &Value) -> Value {
         }
         Direction::ChatToMessages => {
             if body["type"] == "error" {
-                return json!({"error": {
+                return Ok(json!({"error": {
                     "message": body["error"]["message"],
                     "type": body["error"]["type"],
                     "code": null,
-                }});
+                }}));
             }
             let blocks = body["content"].as_array().cloned().unwrap_or_default();
             let text: String = blocks
@@ -490,7 +511,7 @@ pub fn response(direction: Direction, body: &Value) -> Value {
                 "usage": {"prompt_tokens": input, "completion_tokens": output, "total_tokens": input + output},
             })
         }
-    }
+    })
 }
 
 /// A provider's SSE stream, translated event by event as its bytes arrive.
@@ -556,13 +577,26 @@ impl Stream {
         out.into_bytes()
     }
 
-    /// The closing events, if the provider's stream ended without them.
+    /// The end of the provider's stream: one that ended before its last event is an error event, never a complete
+    /// answer (a cut stream would read as a whole one).
     pub fn finish(&mut self) -> Vec<u8> {
         let mut out = String::new();
-        if self.direction == Direction::MessagesToChat {
-            self.end_message(&mut out);
+        if self.started && !self.done {
+            self.fail(&mut out, "the provider's stream ended early");
         }
         out.into_bytes()
+    }
+
+    /// End the caller's stream with an error event; later events are not translated.
+    fn fail(&mut self, out: &mut String, message: &str) {
+        self.done = true;
+        let error = caller_error(self.direction, message);
+        match self.direction {
+            Direction::MessagesToChat => Self::anthropic(out, &error),
+            Direction::ChatToMessages => {
+                let _ = write!(out, "data: {error}\n\n");
+            }
+        }
     }
 
     fn anthropic(out: &mut String, event: &Value) {
@@ -609,14 +643,25 @@ impl Stream {
 
     /// One `OpenAI` chunk -> Anthropic events.
     fn on_chat_chunk(&mut self, data: &str, out: &mut String) {
+        if self.done {
+            return;
+        }
         if data == "[DONE]" {
             self.end_message(out);
             return;
         }
-        let Ok(chunk) = serde_json::from_str::<Value>(data) else {
-            return;
+        let chunk = match serde_json::from_str::<Value>(data) {
+            Ok(chunk) => chunk,
+            Err(e) => {
+                self.started = true;
+                return self.fail(
+                    out,
+                    &format!("the provider sent an event that is not JSON ({e}): {data}"),
+                );
+            }
         };
         if let Some(error) = chunk.get("error") {
+            self.done = true;
             Self::anthropic(
                 out,
                 &json!({"type": "error", "error": {"type": error["type"].as_str().unwrap_or("api_error"), "message": error["message"]}}),
@@ -685,11 +730,22 @@ impl Stream {
 
     /// One Anthropic event -> `OpenAI` chunks.
     fn on_messages_event(&mut self, data: &str, out: &mut String) {
-        let Ok(event) = serde_json::from_str::<Value>(data) else {
+        if self.done {
             return;
+        }
+        let event = match serde_json::from_str::<Value>(data) {
+            Ok(event) => event,
+            Err(e) => {
+                self.started = true;
+                return self.fail(
+                    out,
+                    &format!("the provider sent an event that is not JSON ({e}): {data}"),
+                );
+            }
         };
         match event["type"].as_str() {
             Some("message_start") => {
+                self.started = true;
                 let message = &event["message"];
                 self.id = message["id"].clone();
                 if !message["model"].is_null() {
@@ -752,8 +808,10 @@ impl Stream {
                     let _ = write!(out, "data: {chunk}\n\n");
                 }
                 out.push_str("data: [DONE]\n\n");
+                self.done = true;
             }
             Some("error") => {
+                self.done = true;
                 let error = json!({"error": {"message": event["error"]["message"], "type": event["error"]["type"], "code": null}});
                 let _ = write!(out, "data: {error}\n\n");
             }

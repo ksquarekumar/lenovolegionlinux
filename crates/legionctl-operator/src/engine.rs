@@ -1669,8 +1669,11 @@ impl Engine for Operator {
     }
 
     fn doctor(&self, _: &Ctx, input: ProfileIn) -> Result<Findings> {
-        let plan = Plan::load(path(input.profile.as_ref())?)?;
-        let mut findings = legionctl_machine::doctor::doctor(&plan.machine());
+        // a machine that cannot be planned is a finding; the other checks still run
+        let mut findings = match Plan::load(path(input.profile.as_ref())?) {
+            Ok(plan) => legionctl_machine::doctor::doctor(&plan.machine()),
+            Err(e) => vec![format!("the machine checks cannot run: {e:#}")],
+        };
         match self.system(async |p| p.sample().await) {
             Ok(json) => {
                 for (sensor, e) in serde_json::from_str::<RootSample>(&json)?.sensor_errors {
@@ -1694,7 +1697,15 @@ impl Engine for Operator {
             Ok(found) => findings.extend(found.iter().map(ToString::to_string)),
             Err(e) => findings.push(format!("the graphics check cannot run: {e:#}")),
         }
-        findings.extend(agent_findings()?);
+        for (name, found) in [
+            ("agent setup", agent_findings()),
+            ("cache", crate::cachefault::findings()),
+        ] {
+            match found {
+                Ok(found) => findings.extend(found),
+                Err(e) => findings.push(format!("the {name} check cannot run: {e:#}")),
+            }
+        }
         Ok(Findings { findings })
     }
 
@@ -2935,11 +2946,18 @@ impl Engine for Operator {
 
     fn cache_get(&self, ctx: &Ctx, input: CacheGetIn) -> Result<CacheValue> {
         let key = tool_key(ctx, &input.call)?;
-        Ok(CacheValue {
-            value: Cache::open()?
-                .get("tools", &key)?
-                .map(|e| String::from_utf8_lossy(&e.value).into_owned()),
-        })
+        // a cache that cannot be read is a reported miss (user decision Q2)
+        let value = match Cache::open().and_then(|c| c.get("tools", &key)) {
+            Ok(entry) => {
+                crate::cachefault::works("tools");
+                entry.map(|e| String::from_utf8_lossy(&e.value).into_owned())
+            }
+            Err(e) => {
+                crate::cachefault::failed("tools", &e);
+                None
+            }
+        };
+        Ok(CacheValue { value })
     }
 
     fn cache_put(&self, ctx: &Ctx, input: CachePutIn) -> Result<Empty> {

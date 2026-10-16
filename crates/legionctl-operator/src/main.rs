@@ -3,6 +3,7 @@
 //! (Fn+R, OSD).
 
 mod acp;
+mod cachefault;
 mod code;
 mod desktop;
 mod display;

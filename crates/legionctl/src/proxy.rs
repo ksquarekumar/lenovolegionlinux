@@ -59,6 +59,46 @@ struct Proxy {
 }
 
 impl Proxy {
+    /// The cache key's parts of a call of `tool` that its rule caches: the operator builds the key from the call, the
+    /// working copy's git state and this session.
+    fn cached_call(
+        &self,
+        tool: &str,
+        request: &CallToolRequestParams,
+    ) -> Result<Option<CachedCall>, ErrorData> {
+        let Some(rule) = self.cache.iter().find(|r| r.tool == tool) else {
+            return Ok(None);
+        };
+        let failed = |what: String| ErrorData::internal_error(format!("mcp-proxy: {what}"), None);
+        Ok(Some(CachedCall {
+            server: self.command.join(" "),
+            tool: tool.into(),
+            args: serde_json::to_value(&request.arguments)
+                .map_err(|e| failed(format!("the arguments of {tool}: {e}")))?,
+            workspace: if rule.workspace {
+                Some(ClientPath(std::env::current_dir().map_err(|e| {
+                    failed(format!(
+                        "cannot read the working folder for {tool}'s workspace cache key: {e}"
+                    ))
+                })?))
+            } else {
+                None
+            },
+        }))
+    }
+
+    /// The kept result of `call`. The operator reports a cache that it cannot read and answers a miss (user decision
+    /// Q2); an operator that does not answer is said here, and the call goes upstream.
+    async fn cached(&self, tool: &str, call: CachedCall) -> Option<String> {
+        match self.client.call::<op::CacheGet>(&CacheGetIn { call }).await {
+            Ok(hit) => hit.value,
+            Err(e) => {
+                eprintln!("mcp-proxy: no cache read for {tool}, the call goes upstream: {e:#}");
+                None
+            }
+        }
+    }
+
     fn allowed(&self, tool: &str) -> bool {
         self.allow.is_empty() || self.allow.iter().any(|a| a == tool)
     }
@@ -135,26 +175,18 @@ impl ServerHandler for Proxy {
                 None,
             ));
         }
-        let rule = self.cache.iter().find(|r| r.tool == tool);
-        // the operator builds the key from the call, the working copy's git state and this session
-        let call = rule.map(|rule| CachedCall {
-            server: self.command.join(" "),
-            tool: tool.clone(),
-            args: serde_json::to_value(&request.arguments).unwrap_or_default(),
-            workspace: rule
-                .workspace
-                .then(|| std::env::current_dir().ok().map(ClientPath))
-                .flatten(),
-        });
-        if let Some(call) = &call
-            && let Ok(hit) = self
-                .client
-                .call::<op::CacheGet>(&CacheGetIn { call: call.clone() })
-                .await
-            && let Some(result) = hit
-                .value
-                .and_then(|v| serde_json::from_str::<CallToolResult>(&v).ok())
-        {
+        let call = self.cached_call(&tool, &request)?;
+        let hit = match &call {
+            Some(call) => self.cached(&tool, call.clone()).await,
+            None => None,
+        };
+        if let Some(value) = hit {
+            let result = serde_json::from_str::<CallToolResult>(&value).map_err(|e| {
+                ErrorData::internal_error(
+                    format!("mcp-proxy: the cached result of {tool} does not parse: {e}"),
+                    None,
+                )
+            })?;
             self.log(
                 &tool,
                 args_hash,
@@ -173,6 +205,7 @@ impl ServerHandler for Proxy {
                 } else {
                     Outcome::Ok
                 };
+                let rule = self.cache.iter().find(|r| r.tool == tool);
                 if let (Some(call), Some(rule), Outcome::Ok) = (call, rule, outcome) {
                     let put = CachePutIn {
                         call,
@@ -284,6 +317,7 @@ pub async fn serve(
         cache,
         upstream: upstream_service,
         client: Client::new("mcp-proxy")?,
+        // a proxy that the user runs has no session: its calls are the user's (the audit row has the caller)
         session: std::env::var("LEGIONCTL_SESSION").unwrap_or_default(),
     };
     proxy

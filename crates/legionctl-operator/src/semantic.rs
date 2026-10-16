@@ -60,13 +60,20 @@ pub async fn embed(
         "embeddings from {}: {status} {body}",
         semantic.account
     );
+    // a vector with a value that is not a number would match the wrong prompt: refused, never shortened
     let vector: Vec<f64> = body["data"][0]["embedding"]
         .as_array()
         .context("the answer has no embedding")?
         .iter()
-        .filter_map(Value::as_f64)
-        .collect();
-    let tokens_in = body["usage"]["prompt_tokens"].as_i64().unwrap_or(0);
+        .map(|v| {
+            v.as_f64()
+                .with_context(|| format!("an embedding value is not a number: {v}"))
+        })
+        .collect::<Result<_>>()?;
+    // the embedding's cost counts in the account's budget: an answer without its usage is refused
+    let tokens_in = body["usage"]["prompt_tokens"]
+        .as_i64()
+        .context("the embeddings answer has no usage.prompt_tokens")?;
     let row = GatewayUsage {
         account: semantic.account.clone(),
         model: semantic.model.clone(),

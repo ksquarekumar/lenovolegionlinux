@@ -105,18 +105,14 @@ fn client_only() -> Vec<Command> {
 }
 
 /// Niceness of this process, from /proc/self/stat (field 19).
-fn current_nice() -> i32 {
-    std::fs::read_to_string("/proc/self/stat")
-        .ok()
-        .and_then(|s| {
-            s.rsplit_once(')')?
-                .1
-                .split_whitespace()
-                .nth(16)?
-                .parse()
-                .ok()
-        })
-        .unwrap_or(0)
+///
+/// # Errors
+/// `/proc/self/stat` cannot be read or has no niceness.
+fn current_nice() -> Result<i32> {
+    let stat = std::fs::read_to_string("/proc/self/stat").context("reading /proc/self/stat")?;
+    stat.rsplit_once(')')
+        .and_then(|(_, rest)| rest.split_whitespace().nth(16)?.parse().ok())
+        .with_context(|| format!("/proc/self/stat has no niceness: {stat}"))
 }
 
 /// `legionctl run`: replace this process with the program, with the GPU environment and CPU list from the
@@ -150,7 +146,11 @@ fn run(matches: &ArgMatches) -> Result<()> {
     if let Some(n) = matches.get_one::<i32>("nice") {
         // `nice -n` is relative to the caller's niceness; make --nice the absolute value the program gets
         argv = [
-            vec!["nice".into(), "-n".into(), (n - current_nice()).to_string()],
+            vec![
+                "nice".into(),
+                "-n".into(),
+                (n - current_nice()?).to_string(),
+            ],
             argv,
         ]
         .concat();
@@ -226,8 +226,13 @@ async fn run_streamed(
     input["tag"] = tag.clone().into();
     let mut shown = String::new();
     // the stream starts before the run, so it misses none of its events
-    let Ok(events) = client.follow("now").await else {
-        return Ok((client.call_value("session.run", &input).await?, shown));
+    // a session may not follow the stream: its run is shown when it ends
+    let events = match client.follow("now").await {
+        Ok(events) => events,
+        Err(e) if legionctl_core::error::code_of(&e) == legionctl_api::Code::Denied => {
+            return Ok((client.call_value("session.run", &input).await?, shown));
+        }
+        Err(e) => return Err(e),
     };
     let output = {
         let follow = events.each(|event| {

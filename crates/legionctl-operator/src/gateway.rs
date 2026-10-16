@@ -98,7 +98,9 @@ struct Gateway {
 /// least 32 hex characters (empty, cut short) gets a new token: any local user could send a short one.
 fn token() -> Result<String> {
     let path = legionctl_core::db::default_path().with_file_name("gateway-token");
-    if let Ok(token) = std::fs::read_to_string(&path).map(|t| t.trim().to_string())
+    // a token file that cannot be read (not missing, not cut short) fails the gateway: a new token would lock out
+    // every client that has the old one, with no reason
+    if let Some(token) = legionctl_machine::sysroot::read_file(&path)?.map(|t| t.trim().to_string())
         && token.len() >= 32
         && token.chars().all(|c| c.is_ascii_hexdigit())
     {
@@ -261,9 +263,11 @@ fn candidates(
     let mut reasons = Vec::new();
     let mut accounts = Vec::new();
     for name in pool {
-        let Some(account) = config.accounts.get(name) else {
-            continue;
-        };
+        // a pool entry that names no account is a config error, never a silent gap
+        let account = config
+            .accounts
+            .get(name)
+            .ok_or(format!("pool {model}: no gateway account {name}"))?;
         match api.translation(name, account) {
             Ok(direction) => accounts.push((name.clone(), model.to_string(), direction)),
             Err(why) => reasons.push(why),
@@ -380,9 +384,19 @@ fn blocked(
     Ok(None)
 }
 
-/// The kept answer for `key`, recorded as a cached call of `model`; `label` is the cache header (hit, semantic).
+/// The kept answer for `key`, recorded as a cached call of `model`; `label` is the cache header (hit, semantic). A
+/// cache that cannot be read is a reported miss (user decision Q3).
 fn replay(key: &str, model: &str, label: &'static str) -> Option<Response> {
-    let kept = Cache::open().and_then(|c| c.get("gateway", key)).ok()??;
+    let kept = match Cache::open().and_then(|c| c.get("gateway", key)) {
+        Ok(kept) => {
+            crate::cachefault::works("gateway");
+            kept?
+        }
+        Err(e) => {
+            crate::cachefault::failed("gateway", &e);
+            return None;
+        }
+    };
     let status = kept.meta["status"]
         .as_u64()
         .and_then(|s| u16::try_from(s).ok())
@@ -415,9 +429,17 @@ fn replay(key: &str, model: &str, label: &'static str) -> Option<Response> {
     Some(response)
 }
 
-/// The request as the account's API takes it.
-fn provider_body(direction: Option<Direction>, request: &Value) -> Result<Value, String> {
-    direction.map_or_else(|| Ok(request.clone()), |d| translate::request(d, request))
+/// The request as the account's API takes it. A Chat Completions stream asks for its usage (the last chunk): without
+/// it the provider sends no token counts, and a budget would count the call as free.
+fn provider_body(api: Api, direction: Option<Direction>, request: &Value) -> Result<Value, String> {
+    let Some(d) = direction else {
+        let mut body = request.clone();
+        if api == Api::Chat && body["stream"] == true {
+            body["stream_options"]["include_usage"] = Value::Bool(true);
+        }
+        return Ok(body);
+    };
+    translate::request(d, request)
 }
 
 async fn call(State(gw): State<Gateway>, api: Api, headers: HeaderMap, body: Bytes) -> Response {
@@ -464,7 +486,7 @@ async fn call(State(gw): State<Gateway>, api: Api, headers: HeaderMap, body: Byt
             Err(why) => return refuse(StatusCode::INTERNAL_SERVER_ERROR, &why),
         }
         request["model"] = Value::String(bare.clone());
-        let body = match provider_body(direction, &request) {
+        let body = match provider_body(api, direction, &request) {
             Ok(body) => body,
             Err(why) => {
                 return refuse(
@@ -619,10 +641,15 @@ async fn cached(
         api.path(),
         Blake2b::<U16>::digest(rest.to_string().as_bytes())
     );
-    let nearest = Cache::open()
+    let nearest = match Cache::open()
         .and_then(|c| c.nearest("gateway", &scope, &vector, semantic.threshold))
-        .ok()
-        .flatten();
+    {
+        Ok(nearest) => nearest,
+        Err(e) => {
+            crate::cachefault::failed("gateway", &e);
+            None
+        }
+    };
     match nearest.and_then(|kept| replay(&kept, served, "semantic")) {
         Some(response) => Ok(response),
         None => Err((key, Some((scope, vector)))),
@@ -721,7 +748,7 @@ fn respond(
                 }
             })
         {
-            eprintln!("operator: gateway response not kept: {e:#}");
+            crate::cachefault::failed("gateway", &e);
         }
     });
     let stream = futures_util::stream::unfold(rx, |mut rx| async move {
@@ -767,14 +794,18 @@ impl Translator {
     fn finish(&mut self, raw: &[u8]) -> Vec<u8> {
         match &mut self.stream {
             Some(s) => s.finish(),
-            None => serde_json::from_slice::<Value>(raw).map_or_else(
-                |_| raw.to_vec(),
-                |v| {
-                    translate::response(self.direction, &v)
-                        .to_string()
-                        .into_bytes()
-                },
-            ),
+            // an answer that cannot be translated is an error in the caller's API, with the reason
+            None => serde_json::from_slice::<Value>(raw)
+                .map_err(|e| {
+                    format!(
+                        "the provider's answer is not JSON ({e}): {}",
+                        String::from_utf8_lossy(&raw[..raw.len().min(200)])
+                    )
+                })
+                .and_then(|v| translate::response(self.direction, &v))
+                .unwrap_or_else(|why| translate::caller_error(self.direction, &why))
+                .to_string()
+                .into_bytes(),
         }
     }
 }
