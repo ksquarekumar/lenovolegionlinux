@@ -473,7 +473,7 @@ fn pack(
 }
 
 /// `command`'s stdout, or its stderr as the error.
-fn output(command: &mut Command) -> Result<Vec<u8>> {
+pub(crate) fn output(command: &mut Command) -> Result<Vec<u8>> {
     let out = command
         .output()
         .with_context(|| format!("running {}", command.get_program().display()))?;
@@ -3701,13 +3701,51 @@ impl Engine for Operator {
     ) -> Result<WindowsVmBegun> {
         let usb = config(None)?.config.windows.vm.usb;
         let memlock = input.memlock_mib << 20;
-        let (lines, devices, msdm) =
-            self.system(async move |p| p.windows_vm_begin(&usb, input.pid, memlock).await)?;
+        // with an overlay (a repair), Windows writes to it and the disk is only read
+        let overlay = crate::wincare::start_overlay(&SysRoot::from_env())?;
+        let (lines, devices, msdm) = if overlay.is_some() {
+            self.system(async move |p| p.windows_overlay_begin(&usb).await)?
+        } else {
+            self.system(async move |p| p.windows_vm_begin(&usb, input.pid, memlock).await)?
+        };
         Ok(WindowsVmBegun {
             lines,
             devices,
             msdm,
+            overlay,
         })
+    }
+
+    fn windows_vm_overlay(&self, _: &Ctx, input: legionctl_api::WindowsOverlayIn) -> Result<Lines> {
+        self.windows_overlay(input.action)
+    }
+
+    fn windows_vm_image(&self, _: &Ctx, input: legionctl_api::WindowsImageIn) -> Result<Lines> {
+        self.windows_image(&input.path)
+    }
+
+    fn windows_vm_recovery(&self, _: &Ctx, _: Empty) -> Result<Lines> {
+        crate::wincare::recovery()
+    }
+
+    fn windows_repair(&self, _: &Ctx, input: legionctl_api::WindowsRepairIn) -> Result<Lines> {
+        crate::wincare::repair(input.step)
+    }
+
+    fn windows_restore_list(&self, _: &Ctx, _: Empty) -> Result<Lines> {
+        crate::wincare::restore_list()
+    }
+
+    fn windows_restore_apply(
+        &self,
+        _: &Ctx,
+        input: legionctl_api::WindowsRestoreIn,
+    ) -> Result<Lines> {
+        crate::wincare::restore_apply(input.point)
+    }
+
+    fn internal_windows_host(&self, _: &Ctx, input: legionctl_api::WindowsHostIn) -> Result<Lines> {
+        self.windows_host(input.action)
     }
 
     fn internal_windows_vm_end(&self, _: &Ctx, _: Empty) -> Result<Lines> {

@@ -3775,6 +3775,39 @@ mod operator_and_daemon {
         }
     }
 
+    /// The Windows disk's block device (4 MiB of known bytes), and `qemu-img` (overlay, commit, image) and `qemu-io`
+    /// (the VM's writes) on the operator's and daemon's PATH; the stand-in QEMU writes its arguments and the disk's mode.
+    fn windows_disk(m: &Machine) {
+        let (root, bin) = (m.dir.join("root"), m.dir.join("bin"));
+        // the whole disk: 4 MiB of known bytes (512-byte sectors)
+        m.set("/sys/block/nvme0n1/size", "8192");
+        std::fs::create_dir_all(root.join("dev")).unwrap();
+        std::fs::write(
+            root.join("dev/nvme0n1"),
+            (0..4u32 << 20)
+                .map(|i| u8::try_from(i % 251).unwrap())
+                .collect::<Vec<u8>>(),
+        )
+        .unwrap();
+        let qemu_img = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|d| d.join("qemu-img"))
+            .find(|p| p.exists())
+            .expect("qemu-img is installed (package qemu-img or qemu-utils)");
+        std::os::unix::fs::symlink(qemu_img.with_file_name("qemu-io"), bin.join("qemu-io"))
+            .unwrap();
+        std::os::unix::fs::symlink(qemu_img, bin.join("qemu-img")).unwrap();
+        Machine::script(
+            &bin,
+            "qemu-system-x86_64",
+            // and the disk's mode while it runs (an overlay start makes it readable for the runner)
+            &format!(
+                "printf '%s\\n' \"$@\" > {dir}/qemu.args; stat -c '%a' {disk} > {dir}/qemu.disk 2>/dev/null; exit 0",
+                dir = m.dir.display(),
+                disk = root.join("dev/nvme0n1").display()
+            ),
+        );
+    }
+
     /// The recorded machine with its Windows install (note 05): the SK hynix `NVMe` of `pci_machine` holds
     /// `nvme0n1p3` (system, read-only automount, Fast Startup off, not hibernated) and `nvme0n1p4` (data, read-write
     /// automount), the firmware has an `MSDM` table, the Bolt receiver is plugged in; `systemctl` logs its calls and
@@ -3810,6 +3843,7 @@ mod operator_and_daemon {
         std::fs::write(&hive, HiveFile::system(1, 0)).unwrap();
         std::fs::write(root.join("mnt/windows-system/hiberfil.sys"), [0u8; 64]).unwrap();
         m.set("/sys/firmware/acpi/tables/MSDM", "MSDM-license");
+        windows_disk(m);
         for (file, value) in [
             ("idVendor", "046d"),
             ("idProduct", "c548"),
@@ -3824,9 +3858,11 @@ mod operator_and_daemon {
             &bin,
             "systemctl",
             // no unit runs in the test: is-active answers inactive (3), as systemd does
+            // the VM's unit is active while the test makes the file unit-active
             &format!(
-                "echo \"$*\" >> {}; case \"$*\" in *is-active*) exit 3;; esac",
-                log.display()
+                "echo \"$*\" >> {}; case \"$*\" in *is-active*) [ -e {} ] && exit 0; exit 3;; esac",
+                log.display(),
+                m.dir.join("unit-active").display()
             ),
         );
         Machine::script(
@@ -3841,11 +3877,6 @@ mod operator_and_daemon {
                 "echo \"$2\" > {}/taskset.cpus; shift 2; exec \"$@\"",
                 m.dir.display()
             ),
-        );
-        Machine::script(
-            &bin,
-            "qemu-system-x86_64",
-            &format!("printf '%s\\n' \"$@\" > {}/qemu.args", m.dir.display()),
         );
         Machine::script(
             &bin,
@@ -4042,6 +4073,545 @@ mod operator_and_daemon {
         );
     }
 
+    /// The Windows disk's bytes (the recorded block device).
+    fn disk(m: &Machine) -> Vec<u8> {
+        std::fs::read(m.dir.join("root/dev/nvme0n1")).unwrap()
+    }
+
+    /// What the VM writes on the overlay: `qemu-io` writes 64 KiB of 0xab at 1 MiB through the overlay, as QEMU
+    /// opens it (the backing named, not taken from the header).
+    fn vm_writes(m: &Machine) {
+        let out = std::process::Command::new(m.dir.join("bin/qemu-io"))
+            .arg("--image-opts")
+            .arg(format!(
+                "driver=qcow2,file.filename={},backing.driver=raw,backing.file.filename={}",
+                m.dir
+                    .join("home/.local/share/legionctl/windows/overlay.qcow2")
+                    .display(),
+                m.dir.join("root/dev/nvme0n1").display()
+            ))
+            .args(["-c", "write -P 0xab 1M 64k"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Backup before repair (todo-151 a, W1/S1): a VM start with an overlay never binds the disk to VFIO and only
+    /// reads it (the runner may read it while QEMU runs; owner and mode come back after), and QEMU gets the overlay
+    /// with the disk as its backing. A hibernated Windows is refused by the disk guard. Drop leaves every byte of the
+    /// disk as it was. An overlay is not made while the VM runs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_windows_repair_runs_on_an_overlay_that_is_committed_or_dropped() {
+        let m = Machine::new("winoverlay");
+        let _kernel = windows_machine(&m);
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "winoverlay");
+        let before = disk(&m);
+        let node = m.dir.join("root/dev/nvme0n1");
+        let mode = || {
+            std::os::unix::fs::PermissionsExt::mode(
+                &std::fs::metadata(&node).unwrap().permissions(),
+            ) & 0o7777
+        };
+        let mode_before = mode();
+        let err = |args: &[&str]| {
+            let out = op.cli(args);
+            assert!(!out.status.success(), "{args:?} passed");
+            String::from_utf8_lossy(&out.stderr).to_string()
+        };
+
+        std::fs::write(m.dir.join("unit-active"), "").unwrap();
+        assert!(err(&["windows", "vm", "overlay", "create"]).contains("the Windows VM runs"));
+        std::fs::remove_file(m.dir.join("unit-active")).unwrap();
+        let created = op.ok(&["windows", "vm", "overlay", "create"]);
+        assert!(created.contains("over /dev/nvme0n1"), "{created}");
+
+        let hiberfil = m.dir.join("root/mnt/windows-system/hiberfil.sys");
+        std::fs::write(&hiberfil, b"hibr and a resume image").unwrap();
+        assert!(!windows_runner(&m, &op).status.success());
+        assert!(
+            windows_state(&m).contains("Windows is hibernated"),
+            "{}",
+            windows_state(&m)
+        );
+        assert_eq!(mode(), mode_before, "a refusal changes nothing");
+        std::fs::write(&hiberfil, [0u8; 64]).unwrap();
+        // the guard: a mounted Windows partition (pci_machine's mount table)
+        assert!(!windows_runner(&m, &op).status.success());
+        assert!(
+            windows_state(&m).contains("/dev/nvme0n1p3 is mounted at /mnt/windows-system"),
+            "{}",
+            windows_state(&m)
+        );
+        assert_eq!(mode(), mode_before, "a refusal changes nothing");
+
+        m.set("/proc/self/mounts", "/dev/nvme1n1p2 / btrfs rw 0 0");
+        let out = windows_runner(&m, &op);
+        assert!(out.status.success(), "{}", windows_state(&m));
+        let args = std::fs::read_to_string(m.dir.join("qemu.args")).unwrap();
+        assert!(
+            args.contains(&format!(
+                "if=none,id=disk,driver=qcow2,file.filename={},backing.driver=raw,backing.file.filename={}",
+                m.dir.join("home/.local/share/legionctl/windows/overlay.qcow2").display(),
+                node.display()
+            )) && args.contains("nvme,drive=disk"),
+            "{args}"
+        );
+        assert!(
+            !args.contains("vfio-pci,host=0000:06:00.0"),
+            "no VFIO: {args}"
+        );
+        assert_eq!(
+            std::fs::read_link(m.dir.join("root/sys/bus/pci/devices/0000:06:00.0/driver")).unwrap(),
+            Path::new("../../drivers/nvme"),
+            "the disk stays on its driver"
+        );
+        assert_eq!(
+            std::fs::read_to_string(m.dir.join("qemu.disk"))
+                .unwrap()
+                .trim(),
+            "460",
+            "QEMU may only read the disk"
+        );
+        assert_eq!(mode(), mode_before, "owner and mode back after the VM");
+
+        vm_writes(&m);
+        assert_eq!(disk(&m), before, "the VM's writes stay in the overlay");
+        op.ok(&["windows", "vm", "overlay", "drop"]);
+        assert_eq!(disk(&m), before, "drop: the disk as it was");
+        assert!(
+            op.ok(&["windows", "vm", "overlay", "status"])
+                .contains("no overlay")
+        );
+    }
+
+    /// Commit (todo-151 a, W1/S1): after Windows ran on the disk (its SYSTEM hive changed) a commit is refused and
+    /// writes nothing; else it writes exactly the VM's writes into the disk, with the automounts stopped around it,
+    /// and the overlay goes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_overlay_commit_writes_the_vms_writes_only_when_windows_did_not_run_since() {
+        let m = Machine::new("wincommit");
+        let _kernel = windows_machine(&m);
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "wincommit");
+        m.set("/proc/self/mounts", "/dev/nvme1n1p2 / btrfs rw 0 0");
+        let before = disk(&m);
+        let systemctl = || std::fs::read_to_string(m.dir.join("systemctl.log")).unwrap_or_default();
+        op.ok(&["windows", "vm", "overlay", "create"]);
+        vm_writes(&m);
+        let hive = m
+            .dir
+            .join("root/mnt/windows-system/Windows/System32/config/SYSTEM");
+        let hive_bytes = std::fs::read(&hive).unwrap();
+        std::fs::write(&hive, [hive_bytes.as_slice(), b"bare metal ran"].concat()).unwrap();
+        let refused = op.cli(&["windows", "vm", "overlay", "commit"]);
+        assert!(
+            String::from_utf8_lossy(&refused.stderr)
+                .contains("Windows ran on its disk since the overlay was made")
+        );
+        assert_eq!(disk(&m), before, "a refused commit writes nothing");
+        std::fs::write(&hive, &hive_bytes).unwrap();
+        // bare metal hibernated with the hive as it was: the disk guard still refuses
+        let hiberfil = m.dir.join("root/mnt/windows-system/hiberfil.sys");
+        std::fs::write(&hiberfil, b"hibr and a resume image").unwrap();
+        let refused = op.cli(&["windows", "vm", "overlay", "commit"]);
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("Windows is hibernated"),
+            "{}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+        assert_eq!(disk(&m), before, "a refused commit writes nothing");
+        std::fs::write(&hiberfil, [0u8; 64]).unwrap();
+
+        std::fs::remove_file(m.dir.join("systemctl.log")).unwrap();
+        op.ok(&["windows", "vm", "overlay", "commit"]);
+        let after = disk(&m);
+        let (at, len) = (1 << 20, 64 << 10);
+        assert!(
+            after[at..at + len].iter().all(|b| *b == 0xab),
+            "the VM's write reached the disk"
+        );
+        assert!(
+            after[..at] == before[..at] && after[at + len..] == before[at + len..],
+            "nothing else changed"
+        );
+        let log = systemctl();
+        assert!(
+            log.contains("stop mnt-windows\\x2dsystem.automount mnt-windows\\x2dsystem.mount")
+                && log.contains(
+                    "start mnt-windows\\x2dsystem.automount mnt-windows\\x2ddata.automount"
+                ),
+            "{log}"
+        );
+        assert!(
+            !m.dir
+                .join("home/.local/share/legionctl/windows/overlay.qcow2")
+                .exists()
+        );
+    }
+
+    /// A full image on request (todo-151 a): a new qcow2 file that holds every byte of the disk, with its hash; the
+    /// disk is only read for it and its owner and mode come back; a file that exists is refused.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_full_image_of_the_windows_disk_holds_its_bytes_and_its_hash() {
+        let m = Machine::new("winimage");
+        let _kernel = windows_machine(&m);
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "winimage");
+        m.set("/proc/self/mounts", "/dev/nvme1n1p2 / btrfs rw 0 0");
+        let node = m.dir.join("root/dev/nvme0n1");
+        let mode = || std::fs::metadata(&node).unwrap().permissions();
+        let mode_before = mode();
+        let image = m.dir.join("windows.qcow2");
+        let line = op.ok(&["windows", "vm", "image", image.to_str().unwrap()]);
+        assert!(line.contains("blake2b-512 "), "{line}");
+        let raw = m.dir.join("image.raw");
+        let out = std::process::Command::new(m.dir.join("bin/qemu-img"))
+            .args(["convert", "-O", "raw"])
+            .arg(&image)
+            .arg(&raw)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert_eq!(
+            std::fs::read(&raw).unwrap(),
+            disk(&m),
+            "the image holds the disk"
+        );
+        assert_eq!(mode(), mode_before, "the image gives the disk back");
+        let again = op.cli(&["windows", "vm", "image", image.to_str().unwrap()]);
+        assert!(String::from_utf8_lossy(&again.stderr).contains("exists"));
+    }
+
+    /// A stand-in QEMU guest agent of Windows at the VM's socket (todo-151): `guest-sync`, `guest-exec` (each
+    /// program's command line goes to `qga.log`; its output goes to the log file its command line names, in Windows'
+    /// encodings), `guest-exec-status` and the file reads. sfc writes UTF-16 in two parts 2.5 s apart; chkdsk ends
+    /// with 3 (problems not fixed); reagentc fails while the file `winre-disabled` exists.
+    fn qga_stand_in(m: &Machine) -> Kill {
+        let dir = m.dir.join("home/.local/share/legionctl/windows");
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("qga.sock");
+        let _ = std::fs::remove_file(&socket);
+        let script = r#"
+import base64, json, os, re, socket, sys, threading, time
+path, log, guest = sys.argv[1], sys.argv[2], sys.argv[3]
+os.makedirs(guest, exist_ok=True)
+server = socket.socket(socket.AF_UNIX); server.bind(path); server.listen()
+procs, handles = {}, {}
+def run(pid, line):
+    m = re.search(r"legionctl-\d+\.log", line)
+    out = os.path.join(guest, m.group(0)) if m else None
+    def write(data):
+        if out:
+            open(out, "ab").write(data)
+    code = 0
+    if "sfc /scannow" in line:
+        write("Beginning system scan.  This process will take some time.\r\n".encode("utf-16-le"))
+        time.sleep(2.5)
+        write("Windows Resource Protection found corrupt files and successfully repaired them.\r\n".encode("utf-16-le"))
+    elif "chkdsk" in line:
+        write(b"Stage 1: Examining basic file system structure ...\r\nWindows found problems with the file system.\r\n"); code = 3
+    elif "DISM" in line:
+        write(b"The restore operation completed successfully.\r\n")
+    elif "reagentc" in line:
+        if os.path.exists(os.path.join(guest, "../winre-disabled")):
+            write(b"REAGENTC.EXE: Windows RE is disabled.\r\n"); code = 2
+        else:
+            write(b"REAGENTC.EXE: Operation Successful.\r\n")
+    elif "Get-ComputerRestorePoint" in line:
+        write("\ufeff12|2026-10-01 10:00|Windows Update\r\n13|2026-10-12 09:30|Installed a driver\r\n".encode())
+    procs[pid] = code
+while True:
+    conn, _ = server.accept()
+    f = conn.makefile("rw")
+    for raw in f:
+        msg = json.loads(raw); cmd, a = msg["execute"], msg.get("arguments", {})
+        if cmd == "guest-sync":
+            reply = {"return": a["id"]}
+        elif cmd == "guest-exec":
+            pid = 100 + len(procs) + len(handles)
+            procs[pid] = None
+            line = " ".join([a["path"]] + a.get("arg", []))
+            open(log, "a").write(line + "\n")
+            threading.Thread(target=run, args=(pid, line), daemon=True).start()
+            reply = {"return": {"pid": pid}}
+        elif cmd == "guest-exec-status":
+            code = procs.get(a["pid"])
+            reply = {"return": {"exited": code is not None, "exitcode": code if code is not None else 0}}
+        elif cmd == "guest-file-open":
+            local = os.path.join(guest, a["path"].split("\\")[-1])
+            if os.path.exists(local):
+                handles[len(handles) + 1] = open(local, "rb").read()
+                reply = {"return": len(handles)}
+            else:
+                reply = {"error": {"desc": "no such file"}}
+        elif cmd == "guest-file-read":
+            reply = {"return": {"count": len(handles[a["handle"]]), "buf-b64": base64.b64encode(handles[a["handle"]]).decode(), "eof": True}}
+        else:
+            reply = {"return": {}}
+        f.write(json.dumps(reply) + "\n"); f.flush()
+"#;
+        let child = Kill::spawn(
+            std::process::Command::new("python3")
+                .args(["-c", script])
+                .arg(&socket)
+                .arg(m.dir.join("qga.log"))
+                .arg(m.dir.join("guest")),
+        );
+        wait_for("the stand-in guest agent", || socket.exists());
+        child
+    }
+
+    /// Repairs and restore points through the guest agent (todo-151 c and e, W3/S3): without an overlay nothing runs;
+    /// with no agent answering the step fails and nothing runs; sfc's UTF-16 output comes in parts as events while
+    /// it runs and "found and repaired" is shown as repaired; chkdsk's exit 3 fails with its reason; restore points
+    /// are listed, an unknown one is refused before anything runs, and a known one is restored.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn windows_repairs_and_restore_points_run_through_the_guest_agent_with_their_output() {
+        let m = Machine::new("winrepair");
+        let _kernel = windows_machine(&m);
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "winrepair");
+        let err = |args: &[&str]| {
+            let out = op.cli(args);
+            assert!(!out.status.success(), "{args:?} passed");
+            String::from_utf8_lossy(&out.stderr).to_string()
+        };
+        let ran = || std::fs::read_to_string(m.dir.join("qga.log")).unwrap_or_default();
+
+        std::fs::write(m.dir.join("unit-active"), "").unwrap();
+        assert!(err(&["windows", "repair", "sfc"]).contains("a repair runs only on an overlay"));
+        std::fs::remove_file(m.dir.join("unit-active")).unwrap();
+        op.ok(&["windows", "vm", "overlay", "create"]);
+        std::fs::write(m.dir.join("unit-active"), "").unwrap();
+        assert!(err(&["windows", "repair", "sfc"]).contains("guest agent socket"));
+
+        let _agent = qga_stand_in(&m);
+        let sfc = op.ok(&["windows", "repair", "sfc"]);
+        assert!(
+            sfc.contains("sfc /scannow: sfc: found corrupt files and repaired them"),
+            "{sfc}"
+        );
+        let events: Value = serde_json::from_str(&op.ok(&["events", "--json"])).unwrap();
+        let parts: Vec<String> = events["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["kind"] == "windows.repair.output")
+            .map(|e| e["payload"]["text"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            parts.len() >= 2
+                && parts[0].contains("Beginning system scan")
+                && !parts[0].contains("repaired"),
+            "the output came while sfc ran: {parts:?}"
+        );
+        assert!(
+            err(&["windows", "repair", "chkdsk"])
+                .contains("chkdsk found problems it cannot fix while Windows runs (exit 3)")
+        );
+
+        assert_eq!(
+            op.ok(&["windows", "restore", "list"]),
+            "12  2026-10-01 10:00  Windows Update\n13  2026-10-12 09:30  Installed a driver\n"
+        );
+        assert!(err(&["windows", "restore", "apply", "99"]).contains("no restore point 99"));
+        assert!(!ran().contains("Restore-Computer"), "{}", ran());
+        op.ok(&["windows", "restore", "apply", "12"]);
+        assert!(
+            ran().contains("Restore-Computer -RestorePoint 12 -Confirm:$false"),
+            "{}",
+            ran()
+        );
+    }
+
+    /// Windows RE and boot repair (todo-151 b and d, W2/S2): with Windows RE disabled the recovery start fails with Windows'
+    /// reason and Windows does not restart; else Windows RE is set for the next start and Windows restarts. Boot repair is
+    /// refused while Windows (its guest agent) answers, so no key reaches Windows' desktop; in Windows RE it types the
+    /// bcdboot command and Enter into the console.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_windows_vm_starts_into_winre_and_runs_bcdboot_there() {
+        let m = Machine::new("winre");
+        let _kernel = windows_machine(&m);
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "winre");
+        let err = |args: &[&str]| {
+            let out = op.cli(args);
+            assert!(!out.status.success(), "{args:?} passed");
+            String::from_utf8_lossy(&out.stderr).to_string()
+        };
+        let ran = || std::fs::read_to_string(m.dir.join("qga.log")).unwrap_or_default();
+        op.ok(&["windows", "vm", "overlay", "create"]);
+        std::fs::write(m.dir.join("unit-active"), "").unwrap();
+        let agent = qga_stand_in(&m);
+        let _qmp = qmp_stand_in(&m);
+
+        std::fs::write(m.dir.join("winre-disabled"), "").unwrap();
+        assert!(err(&["windows", "vm", "recovery"]).contains("Windows RE is disabled"));
+        assert!(!ran().contains("shutdown.exe"), "{}", ran());
+        std::fs::remove_file(m.dir.join("winre-disabled")).unwrap();
+        assert!(
+            op.ok(&["windows", "vm", "recovery"])
+                .contains("restarts into WinRE")
+        );
+        assert!(ran().ends_with("shutdown.exe /r /t 5\n"), "{}", ran());
+
+        assert!(err(&["windows", "repair", "boot"]).contains("Windows runs, not WinRE"));
+        let keys = || std::fs::read_to_string(m.dir.join("qmp.log")).unwrap_or_default();
+        assert_eq!(keys(), "", "no key reached Windows");
+        drop(agent);
+        op.ok(&["windows", "repair", "boot"]);
+        let typed: String = keys()
+            .lines()
+            .map(|l| {
+                let keys: Value =
+                    serde_json::from_str(l.strip_prefix("send-key ").unwrap()).unwrap();
+                let codes: Vec<&str> = keys["keys"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|k| k["data"].as_str().unwrap())
+                    .collect();
+                let (shift, code) = match codes.as_slice() {
+                    ["shift", code] => (true, *code),
+                    [code] => (false, *code),
+                    other => panic!("{other:?}"),
+                };
+                match (shift, code) {
+                    (false, "spc") => ' ',
+                    (false, "ret") => '\n',
+                    (false, "backslash") => '\\',
+                    (false, "slash") => '/',
+                    (false, "dot") => '.',
+                    (true, "semicolon") => ':',
+                    (true, "5") => '%',
+                    (true, "2") => '@',
+                    (true, "9") => '(',
+                    (true, "0") => ')',
+                    (true, c) => c.to_ascii_uppercase().chars().next().unwrap(),
+                    (false, c) => c.chars().next().unwrap(),
+                }
+            })
+            .collect();
+        assert_eq!(
+            typed,
+            "for %d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do @if exist %d:\\Windows\\System32\\config\\SYSTEM bcdboot %d:\\Windows /f UEFI\n"
+        );
+    }
+
+    /// Host actions from inside Windows (todo-151 f, W4/S4): a stand-in QEMU asks on the VM's host channel as Windows
+    /// does. Denied on the Linux desktop: nothing happens and Windows is told; an unknown request is refused without a
+    /// question; the restart into Windows bare metal is refused while an overlay holds changes; each question says
+    /// "whole machine"; allowed, the restart into Linux and the restart into Windows run with the host's approval
+    /// (polkit for the latter, `BootNext` first).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_host_action_from_inside_windows_needs_the_hosts_approval() {
+        let m = Machine::new("winhost");
+        let _kernel = windows_machine(&m);
+        let (_stand_ins, asked_polkit, _processes) = start(&m).await;
+        let address = format!("unix:path={}", m.dir.join("bus").display());
+        let (_desktop, asked) =
+            crate::desktop::answering(&address, &["deny", "allow", "allow", "allow", "allow"])
+                .await;
+        let op = Operator::start(
+            "winhost",
+            &[
+                ("PATH", m.dir.join("bin").into()),
+                ("HOME", m.dir.join("home").into()),
+                ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+                ("DBUS_SYSTEM_BUS_ADDRESS", address.clone().into()),
+                ("DBUS_SESSION_BUS_ADDRESS", address.into()),
+            ],
+        );
+        let log = m.dir.join("systemctl.log");
+        Machine::script(
+            &m.dir.join("bin"),
+            "efibootmgr",
+            &format!(
+                "if [ $# -eq 0 ]; then printf 'BootCurrent: 0003\\nBoot0004* Windows Boot Manager\\tHD(1,GPT,e8,0x800,0x82000)/\\\\EFI\\\\Microsoft\\\\Boot\\\\bootmgfw.efi\\n'; exit 0; fi; echo \"efibootmgr $*\" >> {}",
+                log.display()
+            ),
+        );
+        // Windows: the requests one after another, each reply into replies.txt; the overlay goes before the last
+        Machine::script(
+            &m.dir.join("bin"),
+            "qemu-system-x86_64",
+            &format!(
+                "exec python3 -c 'import re,socket,sys,os; p=re.search(r\"id=host,path=([^,]+)\", \" \".join(sys.argv)).group(1); \
+                 s=socket.socket(socket.AF_UNIX); s.connect(p); f=s.makefile(\"rw\"); out=open(\"{replies}\",\"w\")\n\
+                 for r in [\"shutdown\", \"format-c\", \"restart-windows\", \"restart\", \"-\", \"restart-windows\"]:\n\
+                 \x20   if r == \"-\": os.remove(\"{overlay}\"); continue\n\
+                 \x20   f.write(r + \"\\n\"); f.flush(); out.write(r + \" \" + f.readline())\n' \"$@\"",
+                replies = m.dir.join("replies.txt").display(),
+                overlay = m
+                    .dir
+                    .join("home/.local/share/legionctl/windows/overlay.qcow2")
+                    .display()
+            ),
+        );
+        op.ok(&["windows", "vm", "overlay", "create"]);
+        m.set("/proc/self/mounts", "/dev/nvme1n1p2 / btrfs rw 0 0");
+        std::fs::remove_file(&log).unwrap();
+        let out = windows_runner(&m, &op);
+        assert!(out.status.success(), "{}", windows_state(&m));
+
+        let replies = std::fs::read_to_string(m.dir.join("replies.txt")).unwrap();
+        let lines: Vec<&str> = replies.lines().collect();
+        assert!(
+            lines[0].starts_with("shutdown refused: ") && lines[0].contains("did not allow"),
+            "{replies}"
+        );
+        assert!(
+            lines[1].starts_with("format-c refused: format-c is not a host action"),
+            "{replies}"
+        );
+        assert!(
+            lines[2].starts_with("restart-windows refused: ")
+                && lines[2].contains("an overlay holds repair changes"),
+            "{replies}"
+        );
+        assert!(lines[3].starts_with("restart ok: "), "{replies}");
+        assert!(lines[4].starts_with("restart-windows ok: "), "{replies}");
+        let questions = asked.lock().unwrap().clone();
+        assert_eq!(
+            questions.len(),
+            3,
+            "a refusal before the question asks nothing: {questions:?}"
+        );
+        assert!(
+            questions.iter().all(|q| q.contains("whole machine")),
+            "{questions:?}"
+        );
+        assert!(
+            questions[0].contains("shut down")
+                && questions[1].contains("into Linux")
+                && questions[2].contains("bare metal")
+        );
+        let commands: Vec<String> = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .filter(|l| l.contains("poweroff") || l.contains("reboot") || l.contains("bootnext"))
+            .map(String::from)
+            .collect();
+        assert_eq!(
+            commands,
+            ["reboot", "efibootmgr --bootnext 0004", "reboot"],
+            "nothing for the denied shut down"
+        );
+        assert!(
+            asked_polkit
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, a, _, _)| a == "org.legionctl.windows.reboot"),
+            "polkit was asked for the restart into Windows"
+        );
+    }
+
     /// A stand-in QEMU QMP server at the Windows VM's socket: it answers the handshake, lists the devices that were
     /// added, logs every `device_add`/`device_del`/`stop`/`cont` to `qmp.log`, sends `DEVICE_DELETED` after a
     /// `device_del`, and answers `query-status` with running or paused (after `stop`, until `cont`).
@@ -4064,7 +4634,7 @@ while True:
     for line in f:
         msg = json.loads(line)
         cmd, args = msg["execute"], msg.get("arguments", {})
-        if cmd in ("device_add", "device_del", "stop", "cont"):
+        if cmd in ("device_add", "device_del", "stop", "cont", "send-key"):
             open(log, "a").write(cmd + " " + json.dumps(args, sort_keys=True) + "\n")
         if cmd in ("stop", "cont"):
             status = "paused" if cmd == "stop" else "running"
@@ -7516,6 +8086,7 @@ mod resources {
         assert_eq!(
             actions(&running),
             triples(&[
+                ("view", "windows.vm.view", "workspace"),
                 ("pause", "windows.vm.pause", "workspace"),
                 ("stop", "windows.vm.stop", "machine")
             ])

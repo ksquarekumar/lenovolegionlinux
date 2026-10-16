@@ -49,13 +49,20 @@ pub trait System1 {
     fn windows_disk(&self, attach: bool) -> zbus::Result<Vec<String>>;
     /// Saved sets: `save` (with `boot`: boot entries), `switch` or `remove` the set `name`.
     fn sets(&self, action: &str, name: &str, boot: bool) -> zbus::Result<Vec<String>>;
-    /// Make the host ready for the caller's Windows VM; the lines and the MSDM table.
+    /// Make the host ready for the caller's Windows VM; the lines, the devices bound and the MSDM table.
     fn windows_vm_begin(
         &self,
         usb: &[String],
         pid: u32,
         memlock: u64,
     ) -> zbus::Result<(Vec<String>, Vec<String>, Vec<u8>)>;
+    /// As `windows_vm_begin` for a VM on an overlay: the disk's block device readable by the caller, no VFIO.
+    fn windows_overlay_begin(
+        &self,
+        usb: &[String],
+    ) -> zbus::Result<(Vec<String>, Vec<String>, Vec<u8>)>;
+    /// Write the caller's overlay file into the Windows disk.
+    fn windows_overlay_commit(&self, path: &str) -> zbus::Result<Vec<String>>;
     /// The caller may start and end the Windows VM without a prompt (autostart), or not.
     fn set_windows_autostart(&self, on: bool) -> zbus::Result<Vec<String>>;
     /// Give back what the Windows VM's start changed.

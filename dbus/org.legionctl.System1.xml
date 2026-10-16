@@ -73,6 +73,24 @@
       <arg type="ay" direction="out"/>
     </method>
     <!--
+     As `WindowsVmBegin` for a VM on an overlay (a repair, todo-151): the disk stays on its driver and only its
+     block device becomes readable by the caller; no memory lock.
+     -->
+    <method name="WindowsOverlayBegin">
+      <arg name="usb" type="as" direction="in"/>
+      <arg type="as" direction="out"/>
+      <arg type="as" direction="out"/>
+      <arg type="ay" direction="out"/>
+    </method>
+    <!--
+     Write the caller's overlay file `path` (a repair's changes, todo-151) into the Windows disk; refused while a
+     Windows VM or an image has the disk, and for a file that is not the caller's own regular file.
+     -->
+    <method name="WindowsOverlayCommit">
+      <arg name="path" type="s" direction="in"/>
+      <arg type="as" direction="out"/>
+    </method>
+    <!--
      Let the caller start and end the Windows VM without a prompt (`on`: a polkit rule for this user and this
      action only, for autostart), or ask again (`off`).
      -->

@@ -24,6 +24,7 @@ pub mod migrate;
 pub mod packages;
 pub mod planning;
 pub mod pool;
+pub mod qga;
 pub mod qmp;
 pub mod reminders;
 pub mod rlcd;

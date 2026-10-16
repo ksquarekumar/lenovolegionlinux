@@ -26,6 +26,7 @@ mod translate;
 mod trust;
 mod views;
 mod virt;
+mod wincare;
 
 use std::sync::Arc;
 

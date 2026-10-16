@@ -83,7 +83,7 @@ fn members(root: &SysRoot, group: &str) -> Result<Vec<String>> {
 /// The device nodes of `device` that a host process can hold (DRM nodes, NVIDIA's nodes for an NVIDIA GPU, an `NVMe`
 /// controller), and its block devices (namespaces, partitions). None for an audio function: sound cards are made to
 /// go away while in use.
-fn nodes(root: &SysRoot, device: &str) -> Result<(Vec<String>, Vec<String>)> {
+pub(crate) fn nodes(root: &SysRoot, device: &str) -> Result<(Vec<String>, Vec<String>)> {
     let dir = device_path(device);
     let class = root
         .read(dir.join("class"))?

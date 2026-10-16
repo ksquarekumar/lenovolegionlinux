@@ -1,15 +1,20 @@
 //! `legionctl windows-vm` (note 05): the Windows VM's runner, as the user service `legionctl-windows-vm` that
 //! `windows vm start` starts. It checks the free memory, has `legionctl-system` make the host ready (the Windows disk
 //! on vfio-pci, USB devices, the memory lock, the MSDM table), starts swtpm and QEMU, and gives the host back when
-//! QEMU ends. Its state file tells `windows vm start` and `status` how it goes.
+//! QEMU ends. Its state file tells `windows vm start` and `status` how it goes. With an overlay (a repair, todo-151)
+//! the VM's disk is the overlay over the Windows disk, which QEMU only reads. Windows reaches the host through two
+//! virtio-serial ports: the QEMU guest agent (repairs), and `org.legionctl.host.0`, on which it asks for a host
+//! action (one request per line; the reply is one line `ok: ...` or `refused: ...`).
 
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use legionctl_api::client::Client;
-use legionctl_api::{Empty, WindowsVmBeginIn, op};
+use legionctl_api::{Empty, HostAction, OverlayDisk, WindowsHostIn, WindowsVmBeginIn, op};
 use legionctl_core::config::{Dirs, WindowsVmConfig, resolve};
 
 /// A child process that ends with the runner.
@@ -142,7 +147,8 @@ fn smbios() -> Result<Vec<String>> {
     ])
 }
 
-/// The QEMU command of the VM in `dir`; with shares, its memory is shareable (virtiofs needs that).
+/// The QEMU command of the VM in `dir`; with shares, its memory is shareable (virtiofs needs that). Its disk: the
+/// `devices` through VFIO, or (none) an overlay (`overlay_disk`).
 fn qemu_args(dir: &Path, config: &WindowsVmConfig, devices: &[String]) -> Result<Vec<String>> {
     let machine = if config.shares.is_empty() {
         "q35,accel=kvm,smm=off".to_string()
@@ -248,6 +254,37 @@ fn qemu_args(dir: &Path, config: &WindowsVmConfig, devices: &[String]) -> Result
     Ok(args)
 }
 
+/// The virtio-serial ports of Windows' channels to the host: the QEMU guest agent (virtio-win guest tools; repairs
+/// and restore points) and the host-action port (`legionctl-host.ps1`), on which the runner listens.
+fn channels(dir: &Path) -> Vec<String> {
+    let path = |name: &str| opt(&dir.join(name).to_string_lossy());
+    vec![
+        "-chardev".into(),
+        format!("socket,id=qga,path={},server=on,wait=off", path("qga.sock")),
+        "-device".into(),
+        "virtserialport,chardev=qga,name=org.qemu.guest_agent.0".into(),
+        "-chardev".into(),
+        format!("socket,id=host,path={},server=off", path("host.sock")),
+        "-device".into(),
+        "virtserialport,chardev=host,name=org.legionctl.host.0".into(),
+    ]
+}
+
+/// The overlay as Windows' disk: an emulated `NVMe` controller (Windows' own driver), the disk as the overlay's
+/// backing, named here and not taken from the overlay's header; QEMU opens a backing read-only.
+fn overlay_disk(overlay: &OverlayDisk) -> Vec<String> {
+    vec![
+        "-drive".into(),
+        format!(
+            "if=none,id=disk,driver=qcow2,file.filename={},backing.driver=raw,backing.file.filename={}",
+            opt(&overlay.file),
+            opt(&overlay.disk)
+        ),
+        "-device".into(),
+        "nvme,drive=disk,serial=legionctl-windows,bootindex=0".into(),
+    ]
+}
+
 /// Wait until `path` exists (a socket a child makes), or the child ends.
 fn wait_for(path: &Path, child: &mut Child, what: &str) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -291,7 +328,22 @@ fn boot(
             .context("starting swtpm")?,
     );
     wait_for(&tpm_socket, &mut tpm.0, "swtpm")?;
-    let args = qemu_args(dir, config, &begun.devices)?;
+    let host = dir.join("host.sock");
+    let _ = std::fs::remove_file(&host);
+    let listener =
+        UnixListener::bind(&host).with_context(|| format!("listening on {}", host.display()))?;
+    std::thread::spawn(move || {
+        for conn in listener.incoming().flatten() {
+            if let Err(e) = serve(conn) {
+                eprintln!("legionctl: the Windows host channel: {e:#}");
+            }
+        }
+    });
+    let mut args = qemu_args(dir, config, &begun.devices)?;
+    args.extend(channels(dir));
+    if let Some(overlay) = &begun.overlay {
+        args.extend(overlay_disk(overlay));
+    }
     let mut command = Command::new(&args[0]);
     command.args(&args[1..]);
     let shares: Vec<(String, std::path::PathBuf, bool)> = config
@@ -329,6 +381,50 @@ fn boot(
     let status = qemu.0.wait()?;
     anyhow::ensure!(status.success(), "QEMU ended with {status}");
     Ok(())
+}
+
+/// Answer Windows' host requests on `conn` (a line each, at most 64 bytes): a known action goes to the operator
+/// (`internal.windows_host`: the user's question, then the host's approval); anything else is refused and logged.
+fn serve(conn: UnixStream) -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let client = Client::new("cli")?;
+    let mut reader = BufReader::new(conn.try_clone()?);
+    let mut writer = conn;
+    loop {
+        let mut line = Vec::new();
+        // a request is short: a longer line is cut, so a guest cannot fill the host's memory; bytes that are not
+        // UTF-8 are a request that no action has, not an end of the channel
+        if (&mut reader).take(64).read_until(b'\n', &mut line)? == 0 {
+            return Ok(());
+        }
+        let line = String::from_utf8_lossy(&line);
+        let request = line.trim();
+        if request.is_empty() {
+            continue;
+        }
+        let reply = match serde_json::from_value::<HostAction>(serde_json::json!(request)) {
+            Err(_) => {
+                eprintln!(
+                    "legionctl: Windows asked for {request:?}, which is not a host action: refused"
+                );
+                format!(
+                    "refused: {request} is not a host action (shutdown, restart, restart-windows)"
+                )
+            }
+            Ok(action) => {
+                match runtime
+                    .block_on(client.call::<op::InternalWindowsHost>(&WindowsHostIn { action }))
+                {
+                    Ok(done) => format!("ok: {}", done.lines.join("; ")),
+                    Err(e) => format!("refused: {e:#}"),
+                }
+            }
+        };
+        eprintln!("legionctl: Windows asked for {request:?}: {reply}");
+        writeln!(writer, "{}", reply.replace('\n', " "))?;
+    }
 }
 
 /// `legionctl windows-vm-stop` (the unit's stop): the power button through QMP; after 2 minutes the VM is ended. Waits

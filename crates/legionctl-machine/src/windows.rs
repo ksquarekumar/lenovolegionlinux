@@ -105,7 +105,11 @@ pub fn volume(root: &SysRoot) -> Result<Option<(String, PathBuf)>> {
     Ok(None)
 }
 
-fn system_hive(root: &SysRoot) -> Result<Option<PathBuf>> {
+/// The SYSTEM hive on the Windows volume, when there is one.
+///
+/// # Errors
+/// See [`volume`].
+pub fn system_hive(root: &SysRoot) -> Result<Option<PathBuf>> {
     Ok(volume(root)?.map(|(_, target)| root.path(target).join(SYSTEM_HIVE)))
 }
 

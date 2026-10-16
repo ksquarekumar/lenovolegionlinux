@@ -156,7 +156,44 @@ offload (`gpu run --gpu nvidia -- <cmd>`), switcheroo-control, Mutter's primary 
 containers with `--gpu` see both GPUs through Vulkan and OpenCL. Doctor findings with their fix; e2e on recorded
 machines.
 
+## Windows care (todo-151 a-f, built 2026-10-17; topic windows-care)
+
+Repairs change Windows only on a copy-on-write overlay, so the real disk changes only at a commit that the user asks
+for and approves.
+
+| Command | Does | Refused when |
+| --- | --- | --- |
+| `windows vm overlay create` | a qcow2 file (`~/.local/share/legionctl/windows/overlay.qcow2`, the disk's size, empty) and the disk's stamp (the hash of the SYSTEM hive). While it exists, every VM start runs on it: QEMU gets an emulated NVMe controller (Windows' own `stornvme`) on the overlay with the disk as its read-only backing, named on the command line (not in the overlay's header); no VFIO, no memory lock; the daemon makes the disk's block device readable (mode 0460, owner the user) for the run and gives owner and mode back after | the VM runs; an overlay exists |
+| `windows vm overlay status / drop` | its size and whether Windows ran on the disk since; drop removes it (the disk as it was) | the VM runs |
+| `windows vm overlay commit` | the daemon (`WindowsOverlayCommit`, polkit `org.legionctl.windows.vm`) opens the user's own regular file (no symbolic link), stops the disk's automounts, checks that nothing uses the disk, runs `qemu-img commit` on the open file (`/proc/<pid>/fd/<n>`) with the Windows disk named as the backing, and starts the automounts again; then the overlay goes | the VM (or an image) has the disk; the stamp differs (Windows ran on the disk since: bare metal or a VM without the overlay); the disk guard of a VM start (Windows hibernated, Fast Startup on, BootNext into Windows) |
+| `windows vm image <file>` | the disk (only read, through the same guarded start as the VM) into a new qcow2 file, with its BLAKE2b-512 hash; a job | the VM runs; the file exists |
+| `windows vm recovery` | through the guest agent `reagentc /boottore`, then `shutdown /r /t 5`: Windows restarts into WinRE in the VM; `windows vm view` (the app's Resources page: view) shows its console | no overlay; WinRE disabled (Windows' message; nothing restarts) |
+| `windows repair sfc / dism / chkdsk` | `sfc /scannow`, `DISM /Online /Cleanup-Image /RestoreHealth`, `chkdsk C: /scan` through the QEMU guest agent; the output goes to a log file in Windows, read each second and recorded as `windows.repair.output` events (a job); sfc's result comes from its text (UTF-16), DISM's and chkdsk's from the exit code | no overlay; the agent does not answer in 10 s (the step fails, nothing else runs) |
+| `windows repair boot` | in WinRE (no agent there), the user opens Troubleshoot > Command Prompt; legionctl types `for %d in (C .. Z without X) do @if exist %d:\Windows\System32\config\SYSTEM bcdboot %d:\Windows /f UEFI` and Enter through QMP `send-key` (a US layout); the result shows in the console | no overlay; the guest agent answers (Windows runs, not WinRE: keys would go to its desktop) |
+| `windows restore list / apply <n>` | `Get-ComputerRestorePoint`, `Restore-Computer -RestorePoint <n>` through the guest agent (Windows restarts) | apply: no overlay; no such point |
+
+Host actions from inside Windows: the VM has a virtio-serial port `org.legionctl.host.0` (QEMU connects to the
+runner's socket `host.sock`) and the guest agent's port `org.qemu.guest_agent.0` (`qga.sock`). The package ships
+`/usr/share/legionctl/windows/legionctl-host.ps1`: in Windows it shows "This Windows runs in a VM on Linux", and
+offers VM only (Windows' own restart and shut down) or WHOLE MACHINE: shut down, restart into Linux, restart into
+Windows bare metal. A request is one line (at most 64 bytes); the runner refuses anything else (logged in the unit's
+journal) and passes a known action to `internal.windows_host`: legionctl asks on the Linux desktop ("Windows in the
+VM asks to ... whole machine ... Allow?"); after Allow the host's own approval applies (logind for `systemctl
+poweroff` and `reboot`, polkit `org.legionctl.windows.reboot` for the restart into Windows, BootNext first). The
+reply line is `ok: ...` or `refused: <why>`. The restart into Windows bare metal is refused while an overlay exists.
+At a host shut down or restart the VM's unit stops Windows first (the power button), so the disk is never used by the
+VM and bare-metal Windows at once.
+
+Runnables (DESIGN-13): the runner is a runnable with host access (the disk node, `/dev/vfio`, USB nodes through the
+daemon), user channel "desktop question", toolverse `internal.windows_vm_begin/end` and `internal.windows_host`;
+the Windows script is a guest-side runnable whose only connection is the host port. Their manifests come with M1.
+
+Not checked live: Windows on the emulated NVMe controller and OVMF's boot entry for it (a first start may need
+the firmware's boot menu), `qemu-ga` and the virtio-serial driver in this Windows (virtio-win guest tools),
+PowerShell's CreateFile on the port, WinRE's keyboard layout, `Restore-Computer` as SYSTEM. Post-v1: a scheduled
+health check, more repair steps.
+
 ## Not in scope
 
-A Windows-side agent is dropped (decided 2026-10-12): Lenovo Vantage already manages power and firmware settings
-under Windows, and the two Windows fixes above are one-time commands.
+A Windows-side agent for power and firmware is dropped (decided 2026-10-12): Lenovo Vantage manages them under
+Windows. The host-action script above (user decision 2026-10-16) only asks the host.

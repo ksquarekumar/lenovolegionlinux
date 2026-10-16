@@ -716,6 +716,26 @@ operations! {
     windows_vm_view / WindowsVmView = "windows.vm.view", Workspace, Empty => Lines;
     /// Whether the Windows VM runs, and where its display is.
     windows_vm_status / WindowsVmStatus = "windows.vm.status", Read, Empty => Lines;
+    /// The copy-on-write overlay of the Windows disk that repairs run on: `status`, `create` (each VM start then
+    /// writes to it and the disk stays as it is), `commit` (written into the disk; a human approves it in the polkit
+    /// dialog) or `drop` (the disk stays as it was). Refused while the VM runs.
+    windows_vm_overlay / WindowsVmOverlay = "windows.vm.overlay", Machine, WindowsOverlayIn => Lines;
+    /// A full image of the Windows disk into a new qcow2 file, with its `BLAKE2b` hash; the disk is only read. Refused
+    /// while the VM runs. A human approves it in the polkit dialog.
+    windows_vm_image / WindowsVmImage = "windows.vm.image", Machine, WindowsImageIn => Lines;
+    /// Restart the Windows VM into Windows RE (Windows' recovery) through the guest agent; only on an overlay. Its console:
+    /// `windows vm view`.
+    windows_vm_recovery / WindowsVmRecovery = "windows.vm.recovery", Machine, Empty => Lines;
+    /// A repair in the Windows VM, only on an overlay: sfc, dism or chkdsk through the guest agent (a job; its output
+    /// comes as `windows.repair.output` events), or boot (bcdboot typed into Windows RE's open command prompt).
+    windows_repair / WindowsRepair = "windows.repair", Machine, WindowsRepairIn => Lines;
+    /// Windows' System Restore points, through the guest agent of the running VM.
+    windows_restore_list / WindowsRestoreList = "windows.restore.list", Read, Empty => Lines;
+    /// Restore Windows to a restore point (Windows restarts in the VM); only on an overlay.
+    windows_restore_apply / WindowsRestoreApply = "windows.restore.apply", Machine, WindowsRestoreIn => Lines;
+    /// A host action that Windows in the VM asks for on its channel: the user allows it in a desktop question, then
+    /// the host's own approval applies.
+    internal_windows_host / InternalWindowsHost = "internal.windows_host", Machine, WindowsHostIn => Lines;
     /// The Windows VM's runner, before QEMU starts: the host made ready (`legionctl-system`), and the MSDM table.
     internal_windows_vm_begin / InternalWindowsVmBegin = "internal.windows_vm_begin", Machine, WindowsVmBeginIn => WindowsVmBegun;
     /// The Windows VM's runner, after QEMU ended: the host given back.

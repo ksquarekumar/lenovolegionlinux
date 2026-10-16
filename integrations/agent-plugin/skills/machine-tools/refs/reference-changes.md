@@ -29,6 +29,8 @@ commands take `--dry-run`.
 | `windows reboot` | Restarts into Windows once. | Restarts now |
 | `windows vm start\|stop\|pause\|resume`, `windows vm autostart off\|login\|boot`, `windows vm view` (W) | The installed Windows in a VM (its own disk by VFIO); pause and resume stop and continue its CPUs (QMP); view opens a SPICE window. | Now |
 | `windows disk attach\|detach` | The Windows disk's partitions to Linux (automounts start) or away (automounts and mounts stop). Refused while the VM runs. | Now |
+| `windows vm overlay create\|drop\|commit`, `windows vm image <file>` | Repairs run on a copy-on-write overlay: while it exists each VM start writes to it and the disk stays as it is; drop leaves the disk as it was; commit writes it into the disk (polkit). The image is a full copy (only read). Refused while the VM runs. Never commit without the user. | Now |
+| `windows vm recovery`, `windows repair sfc\|dism\|chkdsk\|boot`, `windows restore apply <n>` | In the Windows VM on an overlay only: WinRE at the next start, repairs through the guest agent (output as events), bcdboot typed into WinRE, a System Restore point. | Now (in the VM) |
 | `resources act <id> <action>` | Runs the action's own operation (see `resources list`), with its class, its dialog and its event. | As that operation |
 | `cleanup [--unload-modules]` | Turns off conflicting units of earlier Legion tooling. | Now |
 | `tune <attribute> <scenario> <values>... [--seconds <s>] [--cooldown-s <s>] [--per-kernel]` | Steps a firmware power limit with a bench at each step; the original value comes back. Needs AC and an idle machine. The result is a layer (`tuned`, or `tuned-<package>`), off until `rules enable`. | During the sweep |

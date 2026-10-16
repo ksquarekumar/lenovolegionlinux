@@ -925,6 +925,41 @@ struct System1 {
 }
 
 impl System1 {
+    /// The start of `WindowsVmBegin` and `WindowsOverlayBegin`.
+    async fn begin_vm(
+        &self,
+        ask: &winvm::Ask,
+        header: &zbus::message::Header<'_>,
+        conn: &zbus::Connection,
+        emitter: &SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<(Vec<String>, Vec<String>, Vec<u8>)> {
+        authorize(conn, header, "org.legionctl.windows.vm").await?;
+        let uid = caller_uid(conn, header).await?;
+        let ledger = Ledger::open(&self.root).map_err(|e| failed(&e))?;
+        if ledger
+            .get(Key::WindowsVm)
+            .map_err(|e| failed(&e))?
+            .is_some()
+        {
+            return Err(zbus::fdo::Error::Failed(
+                "a Windows VM runs already (legionctl windows vm stop)".into(),
+            ));
+        }
+        let msdm = winvm::msdm(&self.root).map_err(|e| failed(&e))?;
+        let (lines, record) = winvm::begin(&self.root, uid, ask).map_err(|e| failed(&e))?;
+        let kept =
+            serde_json::to_string(&record).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        if let Err(e) = ledger.set(Key::WindowsVm, Some(&kept)) {
+            let undone = winvm::end(&self.root, &record);
+            return Err(zbus::fdo::Error::Failed(format!(
+                "{e:#}; undone: {}",
+                undone.join("; ")
+            )));
+        }
+        self.tell(emitter, "WindowsVmBegin", &lines).await?;
+        Ok((lines, record.devices, msdm))
+    }
+
     /// Tell the session what changed, then announce what other tools follow.
     async fn tell(
         &self,
@@ -1283,6 +1318,42 @@ impl System1 {
         #[zbus(connection)] conn: &zbus::Connection,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<(Vec<String>, Vec<String>, Vec<u8>)> {
+        let ask = winvm::Ask {
+            usb,
+            pid,
+            memlock,
+            read: false,
+        };
+        self.begin_vm(&ask, &header, conn, &emitter).await
+    }
+
+    /// As `WindowsVmBegin` for a VM on an overlay (a repair, todo-151): the disk stays on its driver and only its
+    /// block device becomes readable by the caller; no memory lock.
+    async fn windows_overlay_begin(
+        &self,
+        usb: Vec<String>,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<(Vec<String>, Vec<String>, Vec<u8>)> {
+        let ask = winvm::Ask {
+            usb,
+            pid: 0,
+            memlock: 0,
+            read: true,
+        };
+        self.begin_vm(&ask, &header, conn, &emitter).await
+    }
+
+    /// Write the caller's overlay file `path` (a repair's changes, todo-151) into the Windows disk; refused while a
+    /// Windows VM or an image has the disk, and for a file that is not the caller's own regular file.
+    async fn windows_overlay_commit(
+        &self,
+        path: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.windows.vm").await?;
         let uid = caller_uid(conn, &header).await?;
         let ledger = Ledger::open(&self.root).map_err(|e| failed(&e))?;
@@ -1292,23 +1363,12 @@ impl System1 {
             .is_some()
         {
             return Err(zbus::fdo::Error::Failed(
-                "a Windows VM runs already (legionctl windows vm stop)".into(),
+                "the Windows VM (or an image) has the disk now (legionctl windows vm stop)".into(),
             ));
         }
-        let msdm = winvm::msdm(&self.root).map_err(|e| failed(&e))?;
-        let ask = winvm::Ask { usb, pid, memlock };
-        let (lines, record) = winvm::begin(&self.root, uid, &ask).map_err(|e| failed(&e))?;
-        let kept =
-            serde_json::to_string(&record).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        if let Err(e) = ledger.set(Key::WindowsVm, Some(&kept)) {
-            let undone = winvm::end(&self.root, &record);
-            return Err(zbus::fdo::Error::Failed(format!(
-                "{e:#}; undone: {}",
-                undone.join("; ")
-            )));
-        }
-        self.tell(&emitter, "WindowsVmBegin", &lines).await?;
-        Ok((lines, record.devices, msdm))
+        let lines = winvm::commit(&self.root, &path, uid).map_err(|e| failed(&e))?;
+        self.tell(&emitter, "WindowsOverlayCommit", &lines).await?;
+        Ok(lines)
     }
 
     /// Let the caller start and end the Windows VM without a prompt (`on`: a polkit rule for this user and this

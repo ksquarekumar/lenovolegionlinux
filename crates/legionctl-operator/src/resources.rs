@@ -67,7 +67,9 @@ fn vm(op: &Operator, ctx: &Ctx, root: &SysRoot) -> Result<Vec<Resource>> {
                 action("resume", "windows.vm.resume", json!({}))?,
                 action("stop", "windows.vm.stop", json!({}))?,
             ],
+            // view: its console (SPICE or Looking Glass), also WinRE's for a repair
             _ => vec![
+                action("view", "windows.vm.view", json!({}))?,
                 action("pause", "windows.vm.pause", json!({}))?,
                 action("stop", "windows.vm.stop", json!({}))?,
             ],

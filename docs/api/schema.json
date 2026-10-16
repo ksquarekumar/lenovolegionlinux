@@ -9867,6 +9867,290 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "windows.vm.overlay": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "status",
+              "description": "Whether there is an overlay, its size and whether Windows ran on the disk since it was made."
+            },
+            {
+              "type": "string",
+              "const": "create",
+              "description": "Make one: the next VM starts write to it, the disk stays as it is."
+            },
+            {
+              "type": "string",
+              "const": "commit",
+              "description": "Write it into the disk, then remove it."
+            },
+            {
+              "type": "string",
+              "const": "drop",
+              "description": "Remove it: the disk stays as it was."
+            }
+          ]
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "title": "WindowsOverlayIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "windows.vm.image": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "A new file for the image (qcow2)."
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "WindowsImageIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "windows.vm.recovery": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "windows.repair": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "step": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "sfc",
+              "description": "`sfc /scannow`: Windows' system files checked and repaired."
+            },
+            {
+              "type": "string",
+              "const": "dism",
+              "description": "`DISM /Online /Cleanup-Image /RestoreHealth`: the component store repaired (from Windows Update)."
+            },
+            {
+              "type": "string",
+              "const": "chkdsk",
+              "description": "`chkdsk C: /scan`: the file system checked while Windows runs."
+            },
+            {
+              "type": "string",
+              "const": "boot",
+              "description": "`bcdboot` typed into Windows RE's command prompt: Windows' boot files on the EFI partition made again."
+            }
+          ]
+        }
+      },
+      "required": [
+        "step"
+      ],
+      "title": "WindowsRepairIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "windows.restore.list": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "title": "Empty",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "windows.restore.apply": {
+    "class": "machine",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "point": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The restore point's number (`windows restore list`)."
+        }
+      },
+      "required": [
+        "point"
+      ],
+      "title": "WindowsRestoreIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "internal.windows_host": {
+    "class": "machine",
+    "internal": true,
+    "input": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "shutdown",
+              "description": "Shut down the whole machine."
+            },
+            {
+              "type": "string",
+              "const": "restart",
+              "description": "Restart the whole machine into Linux."
+            },
+            {
+              "type": "string",
+              "const": "restart-windows",
+              "description": "Restart the whole machine into Windows on the machine itself (bare metal)."
+            }
+          ]
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "title": "WindowsHostIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "internal.windows_vm_begin": {
     "class": "machine",
     "internal": true,
@@ -9917,6 +10201,27 @@
             "maximum": 255
           },
           "description": "The firmware's MSDM table (the Windows license) for the VM's ACPI tables."
+        },
+        "overlay": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "file": {
+              "type": "string",
+              "description": "The qcow2 file that takes Windows' writes."
+            },
+            "disk": {
+              "type": "string",
+              "description": "The disk's block device under it, only read."
+            }
+          },
+          "required": [
+            "file",
+            "disk"
+          ],
+          "description": "The VM runs on this overlay (a repair, todo-151), not on the disk itself."
         }
       },
       "required": [

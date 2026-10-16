@@ -18,6 +18,6 @@
 | `rgb status` | Whether OpenRGB answers and drives the keyboard, and its saved profiles (for knob `rgb.profile`). |
 | `resources list` | Each resource (VMs, GPU, mounts with the processes that use them, layers, held knobs, saved sets, sessions, workspaces), its state and its actions with the operation each runs. |
 | `kernel list`, `kernel bench <scenario>`, `boot status` | Installed kernels (scheduler, LTO, image, command line, DKMS state, running, default); the newest bench run on each kernel; firmware boot entries. |
-| `greeter status`, `windows status`, `windows vm status` | Login screen; dual boot and dirty NTFS volumes; the Windows VM. |
+| `greeter status`, `windows status`, `windows vm status`, `windows vm overlay status`, `windows restore list` | Login screen; dual boot and dirty NTFS volumes; the Windows VM; its repair overlay; Windows' restore points (guest agent). |
 | `virt status` | Containers and VMs (WinBoat recognized) and what is wrong. |
 | `bench list`, `bench compare <earlier> <later>`, `replay <dir>` | Bench runs; two runs side by side; what the daemon would write on a recorded machine. |

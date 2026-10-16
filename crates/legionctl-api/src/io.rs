@@ -654,6 +654,16 @@ pub struct WindowsVmBegun {
     pub devices: Vec<String>,
     /// The firmware's MSDM table (the Windows license) for the VM's ACPI tables.
     pub msdm: Vec<u8>,
+    /// The VM runs on this overlay (a repair, todo-151), not on the disk itself.
+    pub overlay: Option<OverlayDisk>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OverlayDisk {
+    /// The qcow2 file that takes Windows' writes.
+    pub file: String,
+    /// The disk's block device under it, only read.
+    pub disk: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1867,6 +1877,70 @@ pub enum DiskAction {
     Attach,
     /// Away from Linux: their automounts and mounts stop.
     Detach,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum OverlayAction {
+    /// Whether there is an overlay, its size and whether Windows ran on the disk since it was made.
+    Status,
+    /// Make one: the next VM starts write to it, the disk stays as it is.
+    Create,
+    /// Write it into the disk, then remove it.
+    Commit,
+    /// Remove it: the disk stays as it was.
+    Drop,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WindowsOverlayIn {
+    pub action: OverlayAction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WindowsImageIn {
+    /// A new file for the image (qcow2).
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum RepairStep {
+    /// `sfc /scannow`: Windows' system files checked and repaired.
+    Sfc,
+    /// `DISM /Online /Cleanup-Image /RestoreHealth`: the component store repaired (from Windows Update).
+    Dism,
+    /// `chkdsk C: /scan`: the file system checked while Windows runs.
+    Chkdsk,
+    /// `bcdboot` typed into Windows RE's command prompt: Windows' boot files on the EFI partition made again.
+    Boot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WindowsRepairIn {
+    pub step: RepairStep,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WindowsRestoreIn {
+    /// The restore point's number (`windows restore list`).
+    pub point: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum HostAction {
+    /// Shut down the whole machine.
+    Shutdown,
+    /// Restart the whole machine into Linux.
+    Restart,
+    /// Restart the whole machine into Windows on the machine itself (bare metal).
+    RestartWindows,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WindowsHostIn {
+    pub action: HostAction,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
