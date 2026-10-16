@@ -124,18 +124,21 @@ fn token() -> Result<String> {
     Ok(token)
 }
 
-/// The gateway's listeners, bound before the operator answers its first call: a session that a call starts finds the
-/// gateway's socket there (a connection waits in the queue until the gateway serves it, none is refused).
+/// The gateway's token and listeners, made before the operator answers its first call: a session that a call starts
+/// finds the gateway's socket there (a connection waits in the queue until the gateway serves it, none is refused),
+/// and a caller that finds the port open finds the token file too.
 pub struct Bound {
+    token: String,
     tcp: tokio::net::TcpListener,
     local: tokio::net::UnixListener,
 }
 
-/// Bind 127.0.0.1:`port` and the gateway's socket in the runtime folder.
+/// Make the token, then bind 127.0.0.1:`port` and the gateway's socket in the runtime folder.
 ///
 /// # Errors
-/// The port is taken, or the socket cannot be bound.
+/// The token cannot be made, the port is taken, or the socket cannot be bound.
 pub async fn bind(port: u16) -> Result<Bound> {
+    let token = token()?;
     let tcp = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await
         .with_context(|| format!("gateway port {port}"))?;
@@ -152,17 +155,18 @@ pub async fn bind(port: u16) -> Result<Bound> {
         "operator: model gateway on 127.0.0.1:{port} and {}",
         socket.display()
     );
-    Ok(Bound { tcp, local })
+    Ok(Bound { token, tcp, local })
 }
 
 /// Serve the gateway on its bound listeners until the operator stops.
 ///
 /// # Errors
-/// The token cannot be made.
+/// A listener fails.
 pub async fn serve(bound: Bound, ready: crate::Ready) -> Result<()> {
+    let Bound { token, tcp, local } = bound;
     let gateway = Gateway {
         http: reqwest::Client::new(),
-        token: token()?,
+        token,
     };
     let app = axum::Router::new()
         .route("/v1/messages", post(|s, h, b| call(s, Api::Messages, h, b)))
@@ -175,7 +179,6 @@ pub async fn serve(bound: Bound, ready: crate::Ready) -> Result<()> {
             post(|s, h, b| call(s, Api::Responses, h, b)),
         )
         .with_state(gateway);
-    let Bound { tcp, local } = bound;
     ready.set();
     tokio::try_join!(
         axum::serve(tcp, app.clone()).into_future(),
