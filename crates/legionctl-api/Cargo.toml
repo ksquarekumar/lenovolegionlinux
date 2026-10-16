@@ -23,7 +23,7 @@ shlex = { version = "2.0.1", optional = true }
 [features]
 # the operator client, for the CLI and the app
 client = ["dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio"]
-# the CLI words of each operation and the thread screen's chat bar, for the CLI, the TUI and the app
+# the CLI words of each operation and the thread screen's chat bar, for the CLI and the app
 cli = ["dep:clap", "dep:shlex"]
 
 [lints]

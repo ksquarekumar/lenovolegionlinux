@@ -147,7 +147,7 @@ Journeys:
    Linux folders go to Windows with virtiofs (`windows.vm.shares`; Windows needs the virtio-win drivers and WinFsp
    once).
 7. **Settings**: every VM setting is config (`windows.vm`: CPUs, memory, reserve, USB devices, shares, autostart, GPU
-   at boot, display), shown and changed through the API: `legionctl config`, the app's Windows page and the TUI; each
+   at boot, display), shown and changed through the API: `legionctl config`, and the app's Windows page; each
    with its default to go back to (todo-78).
 
 The graphics stack (todo-81): legionctl checks and keeps the stack that the GPU moves depend on: Mesa (iris, anv),

@@ -1,11 +1,9 @@
-//! `legionctl`: the CLI, TUI and MCP server of legionctl. Every command is an operation of `legionctl-operator`
-//! (see `legionctl-api`); only `mcp`, `tui` and `run` are local, because they are surfaces or must run in this
-//! process.
+//! `legionctl`: the CLI and MCP server of legionctl. Every command is an operation of `legionctl-operator` (see
+//! `legionctl-api`); only `mcp` and `run` are local, because `mcp` is a surface and `run` must run in this process.
 
 mod hook;
 mod mcp;
 mod proxy;
-mod tui;
 mod vm;
 mod winvm;
 
@@ -40,19 +38,6 @@ fn client_only() -> Vec<Command> {
                     .required_unless_present("url")
                     .last(true),
             ),
-        Command::new("tui")
-            .about("The thread screen: views, the thread's events, and a chat bar for intents, / commands and the agent")
-            .arg(
-                Arg::new("thread")
-                    .long("thread")
-                    .value_parser(clap::value_parser!(i64))
-                    .help("The thread of pane 2 (thread list); default: the newest open thread"),
-            )
-            .arg(Arg::new("agent").long("agent").help(
-                "The agent that the chat bar talks to: a headless run (session run) of this agent of config session.acp",
-            ))
-            .arg(Arg::new("dossier").long("dossier").help("The dossier of the agent's runs"))
-            .arg(Arg::new("view").long("view").help("The view of pane 3 (views list); default: machine-now")),
         // a session in a VM (W5): the host's runner and relay, and the guest's boot service; legionctl starts them
         Command::new("vm")
             .hide(true)
@@ -338,7 +323,6 @@ fn main() -> Result<()> {
                 },
             ));
         }
-        Some(("tui", sub)) => return tui::run(sub),
         Some(("vm", sub)) => {
             let spec = sub.get_one::<String>("spec").context("the spec")?;
             let agent = sub

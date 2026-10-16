@@ -1,13 +1,12 @@
 # Use legionctl
 
-This guide tells you how to install legionctl, use the app and the TUI, and give work to agents safely. Each
+This guide tells you how to install legionctl, use the app, and give work to agents safely. Each
 command here is on main. A feature that is not on main has the label "planned (v1)" and its plan row.
 
 | Section | You want to |
 | --- | --- |
 | [Install](#install) | install the package, the services and the agent setup |
 | [The app](#the-app) | see the machine and talk to an agent |
-| [The TUI](#the-tui) | the same screen in a terminal |
 | [Commands by task](#commands-by-task) | find the command for a task |
 | [Dossiers and workspaces](#dossiers-and-workspaces) | keep an agent's work and memory |
 | [Threads and observers](#threads-and-observers) | let agents check each other |
@@ -71,7 +70,7 @@ for bench and tune.
 | Chat bar | `/` lists the commands; other text is a prompt for the agent |
 
 Pick the agent of the chat bar with `/agent claude` or `/agent codex` (the names of config `session.acp`). The pick
-is a row of the thread's log, so the TUI and the app use the same agent. With no pick, config `app.agent` applies
+is a row of the thread's log, so every app window on the thread uses the same agent. With no pick, config `app.agent` applies
 (default `claude`).
 
 ![Bench page: CPU score over time and the runs](../media/app-bench.webp)
@@ -79,12 +78,6 @@ is a row of the thread's log, so the TUI and the app use the same agent. With no
 Planned (v1, plan#todo-146, DESIGN-09): a 56 px rail with the spaces Machine, Work and Agents plus Activity, a
 navigator pane, tabs, and every screen as a view that an agent can remake. Step G1 is built on the topic branch
 `gen-ui` and is not merged.
-
-## The TUI
-
-`legionctl tui [--thread <id>] [--agent <name>] [--dossier <name>]` shows the same thread screen in a terminal. Keys:
-`d` dashboard, `r` resources, `s` sensors, `o` output, `/` the chat bar, `q` quit. The full key list:
-[reference-thread-screen.md](../../integrations/agent-plugin/skills/tool-lifecycle/refs/reference-thread-screen.md).
 
 ## Commands by task
 

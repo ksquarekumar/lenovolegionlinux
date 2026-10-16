@@ -15,7 +15,7 @@ This note is the authority for names, processes, crates and paths. Notes 00–14
 
 ```
  clients (no state)                                engines (own state, restartable)
- legionctl       CLI · TUI · MCP · hook adapter ─┐
+ legionctl       CLI · MCP · hook adapter ─┐
  legionctl-app   GPUI desktop                     ├─ api.sock ─▶ legionctl-operator (user) ─ D-Bus + polkit ─▶ legionctl-system (root)
  agent plugin    /legionctl:*                     │              operator.db, approvals,       ◀── events ──────  system.db, firmware, power,
  GNOME extension OSD ◀────────────────────────────┘              agents, sessions, tools,                         GPU, kernel, eBPF, sysctl,
@@ -28,7 +28,7 @@ This note is the authority for names, processes, crates and paths. Notes 00–14
 | --- | --- | --- | --- |
 | `legionctl-system` | root, system service (`--safe`: `legionctl-safe.service`) | machine state, firmware, power, GPU, display policy, kernel, eBPF, Fn keys | D-Bus `org.legionctl.System1`, polkit per method |
 | `legionctl-operator` | user service (socket-activated) | operator database and its schema steps with backups, operation registry, approvals, agents, sessions and their sandboxes, tools, workspaces, config, OSD and Mutter calls when a graphical session exists | `$XDG_RUNTIME_DIR/legionctl/api.sock` (axum, HTTP + SSE) |
-| `legionctl` | user | nothing | CLI, `legionctl tui`, `legionctl mcp`, `legionctl mcp-proxy`, `legionctl hook <event>` |
+| `legionctl` | user | nothing | CLI, `legionctl mcp`, `legionctl mcp-proxy`, `legionctl hook <event>` |
 | `legionctl-app` | user | nothing | GPUI |
 | `legionctl-greeter` | user `greeter` (greetd, in cage) | nothing | GPUI; logins through greetd, machine actions through `legionctl-system` |
 
@@ -52,7 +52,7 @@ workspace, machine, account) and engine. The registry generates every surface:
 | CLI | `legionctl power apply --source ac` |
 | polkit action | `org.legionctl.power.apply` |
 | event log kind | `power.apply` with actor, input and outcome |
-| TUI and GPUI | view models read the same schema |
+| GPUI app | view models read the same schema |
 
 A surface cannot have an operation that the others do not have.
 
@@ -68,7 +68,7 @@ crates/
   legionctl-system    the root daemon (bin legionctl-system) with its eBPF sensors (aya)
   legionctl-operator  the user operator (bin legionctl-operator): engine, gateway (19), sessions (ACP), threads, views,
                       resources, rlcd backends
-  legionctl           the client (bin legionctl): CLI, TUI, MCP server and proxy, hook adapter
+  legionctl           the client (bin legionctl): CLI, MCP server and proxy, hook adapter
   legionctl-app       GPUI (bins legionctl-app and legionctl-greeter)
 ```
 
@@ -104,7 +104,7 @@ The groups of `legionctl --help` (2026-10-16; todo-78 regroups them):
 | config | `config` (show, explain, layers) | operator |
 | agents | `agents`, `setup`, `skills`, `reminders`, `hooks`, `tools`, `packages`, `cache`, `gateway`, `rlcd` | operator |
 | work | `dossier`, `workspace`, `code`, `session`, `thread`, `views`, `jobs` | operator |
-| surfaces | `tui`, `mcp`, `mcp-proxy`, `hook` | client |
+| surfaces | `mcp`, `mcp-proxy`, `hook` | client |
 
 ## Switch from the Python tooling
 

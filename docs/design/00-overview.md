@@ -32,7 +32,7 @@ switch was one change on 2026-10-13 ([07-plan](07-plan.md)).
    fails, `legionctl-safe.service` sets `balanced` and shows a desktop warning.
 5. **Low level where it pays**: eBPF for observation (workload, run-queue latency, power share, throttle, block
    I/O, thermal trips), sched_ext through scx_loader. No eBPF for writes. HID-BPF input fixes: not built.
-6. **Session UX**: the GNOME OSD and vitals overlay, the GPUI app, the TUI, Fn keys handled by the daemon.
+6. **Session UX**: the GNOME OSD and vitals overlay, the GPUI app (the only UI), Fn keys handled by the daemon.
 7. **Dual boot**: find and fix Windows hazards, restart into Windows once, and run the installed Windows under KVM.
 8. **Agents are users too**: every operation is also an MCP tool with a permission class. Agents work in dossiers
    and workspaces, run in sandboxes behind a git gate, and observe each other in threads. Only a person approves a
@@ -91,14 +91,14 @@ flowchart LR
   api <--> op["legionctl-operator (you): operations, event log,<br/>dossiers, workspaces, sessions, threads, gateway"]
   op --> osd[GNOME Shell extension: OSD, overlay]
   op --> mutter[Mutter DisplayConfig: refresh rate, primary GPU]
-  op <--> clients[legionctl CLI, TUI, MCP, hooks; legionctl-app]
+  op <--> clients[legionctl CLI, MCP, hooks; legionctl-app]
   op <--> agents[agent sessions: sandbox, git gate, MCP proxy, ACP]
   greeter[legionctl-greeter] --> api
 ```
 
 ## Crates and processes
 
-See [15-layout](15-layout.md). On main: `legionctl` (CLI, TUI, MCP, hooks), `legionctl-api` (operation registry,
+See [15-layout](15-layout.md). On main: `legionctl` (CLI, MCP, hooks), `legionctl-api` (operation registry,
 wire types, client), `legionctl-core` (config, database, dossiers, sessions, threads, graphs), `legionctl-machine`
 (sysfs, sensors, policy, boot, kernels, Windows), `legionctl-operator`, `legionctl-system` (with the eBPF sensors),
 `legionctl-app` (the app and the greeter); the kernel module in `kernel/legionctl-wmi`.
@@ -106,5 +106,5 @@ wire types, client), `legionctl-core` (config, database, dossiers, sessions, thr
 ## Key dependencies (Cargo.toml)
 
 `tokio`, `zbus` 5, `udev`, `inotify`, `axum` (the operator API), `reqwest` (gateway, rlcd), `rusqlite` (bundled
-SQLite), `aya` (eBPF), `sd-notify`, `clap`, `rmcp` (MCP), `ratatui` (TUI), `gpui-kit` 0.7.3 (app and greeter),
+SQLite), `aya` (eBPF), `sd-notify`, `clap`, `rmcp` (MCP), `gpui-kit` 0.7.3 (app and greeter),
 `serde`, `toml`.

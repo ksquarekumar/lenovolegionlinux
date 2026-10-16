@@ -88,7 +88,7 @@ pub fn random_token() -> Result<String> {
         hex
     }))
 }
-/// HTTP header that says which surface made a call: cli, mcp or tui.
+/// HTTP header that says which surface made a call: cli, mcp or app.
 pub const ACTOR_HEADER: &str = "x-legionctl-actor";
 /// The fingerprint of the operation registry a client and the operator were built with ([`api_fingerprint`]).
 pub const API_HEADER: &str = "x-legionctl-api";
@@ -164,7 +164,7 @@ impl OpInfo {
 /// Who made a call; the operator records it with every call that is not a read.
 #[derive(Debug, Clone)]
 pub struct Ctx {
-    /// The surface: cli, mcp, tui, app, hook, gate, mcp-proxy.
+    /// The surface: cli, mcp, app, hook, gate, mcp-proxy.
     pub actor: String,
     pub principal: Principal,
 }
@@ -173,7 +173,7 @@ pub struct Ctx {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Principal {
-    /// The user token: the CLI, TUI and app, and the hooks and MCP of agents that are not sandboxed.
+    /// The user token: the CLI and app, and the hooks and MCP of agents that are not sandboxed.
     User,
     /// The token of a session's sandbox: the agent and everything it starts.
     Session(String),

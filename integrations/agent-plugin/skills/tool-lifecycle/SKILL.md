@@ -14,8 +14,8 @@ user-invocable: true
    notification with Allow and Deny, 120 s. No answer is a refusal.
 5. `machine` goes to the root daemon (`legionctl-system`) with a polkit dialog. See skill machine-tools.
 6. Each call that is not a read is an event (kind = the operation name) with the actor, the input and the result.
-   `events` pages the log (`--cursor`, `--limit`); `trace` follows it live; `tui` is the thread screen:
-   views, the thread's events, and a chat bar for `/` commands and an agent (`--thread`, `--agent`).
+   `events` pages the log (`--cursor`, `--limit`); `trace` follows it live. The app is the only UI;
+   agents and scripts read its views with `views render` (text or `--json`).
 7. Long operations are jobs: `jobs list`, `jobs show <id>`. See skill sessions-and-agents.
 8. Each operation is also an MCP tool: the command path with `_` (`kernel cmdline set` is `kernel_cmdline_set`).
 9. `--json` prints the operation's JSON output. `--dry-run`, where a command has it, shows the plan and changes nothing.
@@ -38,4 +38,4 @@ user-invocable: true
 ## Refs
 
 - `refs/reference-command-groups.md` - read to find the group, class and owner skill of a command.
-- `refs/reference-thread-screen.md` - read before you use `legionctl tui`: its panes, keys and `/` commands.
+- `refs/reference-thread-screen.md` - read before you place a view or answer in the app: its tabs and `/` commands.

@@ -17,7 +17,7 @@
       "tests": ["test:crates/legionctl/tests/agents.rs::the_product_development_track_starts_main_the_trio_and_six_specialists_from_their_archetypes"] },
     { "id": "S2", "kind": "control-flow", "text": "A self-nudge is an rlcd question on a trigger over a digest; yes gives main0 a short note, no gives nothing. Variations: V1 digest over the model's context (success: the question is split or goes to the owner, never cut silently); V2 rlcd call fails (failure: the failed step is recorded, no note, no LLM wake in its place).", "objectives": ["O2"],
       "tests": ["test:crates/legionctl/tests/threads.rs::a_self_nudge_asks_rlcd_over_a_digest_and_notes_main_only_on_yes"] },
-    { "id": "S3", "kind": "requirement", "text": "The coherence check lists each operation and seed view with the surfaces that offer it (CLI, MCP, TUI, app); a gap fails CI with its name. Variations: V1 an operation with no app action (failure: named).", "objectives": ["O3"],
+    { "id": "S3", "kind": "requirement", "text": "The coherence check lists each operation and seed view with the surfaces that offer it (app, CLI, MCP, API); a gap fails CI with its name. Variations: V1 an operation with no app action (failure: named).", "objectives": ["O3"],
       "tests": ["test:crates/legionctl/tests/e2e.rs::each_operation_and_view_is_offered_on_every_surface_or_named_as_a_gap"] }
   ],
   "work_items": [
@@ -40,7 +40,7 @@
       { "key": "op:thread.digest", "change": "add" },
       { "key": "op:thread.rules.add", "change": "edit" }
     ] },
-    { "id": "A4", "text": "Coherence check across surfaces: operation catalog x CLI, MCP, TUI, app actions and seed views", "status": "planned", "stories": ["S3"], "units": [
+    { "id": "A4", "text": "Coherence check across surfaces: operation catalog x app actions and seed views, CLI, MCP, API", "status": "planned", "stories": ["S3"], "units": [
       { "key": "file:crates/legionctl-api/src/surfaces.rs", "change": "add", "loc": 250 },
       { "key": "op:surfaces", "change": "add" },
       { "key": "file:Makefile", "change": "edit" }

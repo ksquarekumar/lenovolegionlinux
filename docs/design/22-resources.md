@@ -6,7 +6,7 @@ The user wants to attach, detach, start, pause, resume and switch to the resourc
 the machine after the start, from two places that use one model:
 
 1. Before login: hidden boot menu entries choose a kernel and a saved set for this start.
-2. After login: one page in the app (`legionctl-app resources`) and one view in `legionctl tui`.
+2. After login: one page in the app (`legionctl-app resources`).
 
 ## The model: two operations
 
@@ -118,8 +118,6 @@ polkit: the set was saved with polkit, and the boot menu needs a person at the k
 - App: the page **Resources** (`legionctl-app resources`). Each group is a section; each resource is a row with its
   name, state and users, and one button for each action. A click runs `resources.act` with `--dry-run` first: the
   page shows the plan (or the route) with Apply and Discard, as the power policy does.
-- TUI: `legionctl tui`, the key `r` shows the resources view. `Up` and `Down` select a row. The keys `1` to `9`
-  choose an action of the row and show its dry run. `Enter` applies it. `Esc` discards it.
 
 ## Tests (e2e)
 
@@ -141,10 +139,8 @@ efibootmgr, ukify, sbverify):
 - `the_windows_vm_pauses_and_resumes_through_qmp_and_the_list_follows` (`tests/machine.rs`, the stand-in QMP of the
   GPU tests): pause without a VM is refused and nothing reaches QMP; pause sends `stop`, the list says paused,
   resume sends `cont`.
-- `the_tui_resources_view_lists_the_resources_and_a_key_runs_the_route` (`tests/app.rs`): `legionctl tui` in a pty;
-  `r`, Down, `1` show the route of a layer's disable, Enter runs `rules.disable` with the TUI as its actor.
 
-The operator of the app and TUI tests gets `DOCKER_HOST` to a socket that does not exist: those tests click
+The operator of the app tests gets `DOCKER_HOST` to a socket that does not exist: those tests click
 actions, and must not reach this machine's containers.
 
 ## Built (2026-10-15)
@@ -158,7 +154,7 @@ actions, and must not reach this machine's containers.
   name, boot)`, and the set of the start before the first apply. `system.db` has the table `sets`.
 - Machine crate: `mounts.rs` (mounts and the processes that use them, from `/proc/<pid>/cwd` and `fd`), `sets.rs`
   (the selection, the names, the dry-run lines), the profiles in `boot.rs`'s one image build.
-- App: the page **Resources**. TUI: the key `r`. The CLI runs a session that `resources act` starts in the
+- App: the page **Resources**. The CLI runs a session that `resources act` starts in the
   terminal, as `session start` does.
 
 What uses a mount is found only for the processes whose links the operator may read: your own processes. A process

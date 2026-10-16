@@ -53,7 +53,7 @@ of the open work is in [planning/](../../planning) (`legionctl code plan status`
 | --- | --- |
 | A: two code graphs (P1-P4) | built (todo-90) |
 | B and B+: threads, members, outbox, presence, archetypes, teams (P5-P6c) | built (todo-91, 97, 98) |
-| C: the thread UI in the TUI and the app (P7-P8) | built (todo-92) |
+| C: the thread UI in the app (P7-P8) | built (todo-92); P7's TUI removed (user 2026-10-17) |
 | E: dossier home (P9), project checks (P10) | built (todo-103, 100); `.legionctl/checks.jsonc` of this repository: building (P10b, waits for todo-147) |
 | E: change watcher, test runners, graph schema, observer recovery (P11-P14) | planned (v1, todo-101 to 104) |
 | F: rlcd, the System One tier of a wake | core built (todo-138); the `api` step and hot paths: planned (v1, todo-139) |
@@ -65,7 +65,7 @@ These designs are in the dossier, not in this folder. Each has its plan rows.
 
 | Design | Covers | State |
 | --- | --- | --- |
-| DESIGN-09 | the app: spaces Machine, Work, Agents and Activity; tabs; every screen a view that agents can remake; the same views in the TUI and the CLI | G1 building (topic `gen-ui`); G2-G6 planned (v1, todo-145, 146, 141) |
+| DESIGN-09 | the app: spaces Machine, Work, Agents and Activity; tabs; every screen a view that agents can remake; the same views in the CLI (`views render`) | G1 building (topic `gen-ui`); G2-G6 planned (v1, todo-145, 146, 141) |
 | DESIGN-10 | the temporal, ref-bound graph: valid time, recorded time, ref range, content anchor; the agent query layer | T1 building (topic `gen-ui`); T2-T5 planned (v1, todo-152) |
 | DESIGN-11 | agent topology: bound main and observers, the product-development track, one SDK for all surfaces | A1, A2, A4 planned (v1, todo-153); A3, A5 post-v1 |
 | DESIGN-04 | the design map of 2026-10-14 | superseded by this index |
@@ -87,7 +87,7 @@ The v1 cut (MEMORY-16, user 2026-10-16) holds every open plan row except the pos
 | Build output, language tools, tooling manifests, tuning for agent work | todo-111, 113, 114, 137 | `tooling-and-tuning.jsonc` |
 | Compaction defers to the dossier; immutable entries; dossier health | todo-156 | `compaction-and-dossier-health.jsonc` |
 | Codebase quality | todo-154 | `quality.jsonc` |
-| One coherent CLI, TUI and app (regroup), then the logo | todo-78, 89 | last |
+| One coherent CLI and app (regroup), then the logo | todo-78, 89 | last |
 
 Post-v1: the agent pool (A3) and bound skill agents (A5); the topic diary as a formal artifact, a public SDK, ports
 across hosts, capability matching; a scheduled Windows health check and more repair steps.

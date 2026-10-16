@@ -15,7 +15,7 @@ use serde_json::Value;
 static BUILD_WARNED: std::sync::Once = std::sync::Once::new();
 
 pub struct Client {
-    /// Which surface calls: cli, mcp or tui. The operator records it with every change.
+    /// Which surface calls: cli, mcp or app. The operator records it with every change.
     actor: &'static str,
     socket: PathBuf,
     runtime: PathBuf,

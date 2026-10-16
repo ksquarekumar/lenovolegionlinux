@@ -570,13 +570,13 @@ fn to_new(f: &Fact) -> New {
     }
 }
 
-/// A fact's source from the caller: the user on the CLI, TUI and app; an agent through MCP (`agent:mcp`) or in a
+/// A fact's source from the caller: the user on the CLI and app; an agent through MCP (`agent:mcp`) or in a
 /// session (`agent:<session>`).
 #[must_use]
 pub fn source(actor: &str, session: Option<&str>) -> String {
     match (session, actor) {
         (Some(s), _) => format!("agent:{s}"),
-        (None, "cli" | "tui" | "app") => "user".into(),
+        (None, "cli" | "app") => "user".into(),
         (None, other) => format!("agent:{other}"),
     }
 }

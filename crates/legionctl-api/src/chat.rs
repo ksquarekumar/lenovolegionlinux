@@ -1,4 +1,4 @@
-//! The chat bar of the thread screen (design 23, C3), the same in the TUI and the app: the `/` commands that
+//! The chat bar of the thread screen (design 23, C3), in the app: the `/` commands that
 //! completion offers (the attached agent's ACP commands first, then the screen's own, then every operation of the
 //! registry with the CLI's words and its class), what a line does, and the rows of a thread's log for pane 2.
 
@@ -121,23 +121,6 @@ pub fn action(line: &str, commands: &[AgentCommand], screen: &[&str]) -> Action 
         Ok((op, input)) => Action::Operation(op, input),
         Err(e) => Action::Refused(format!("{e:#}")),
     }
-}
-
-/// A row of a thread's log for pane 2: time (UTC), member, kind and what it says.
-#[must_use]
-pub fn log_line(row: &ThreadLogRow) -> String {
-    format!(
-        "{:02}:{:02} {} {} {}",
-        row.at / 3600 % 24,
-        row.at / 60 % 60,
-        if row.member.is_empty() {
-            "-"
-        } else {
-            &row.member
-        },
-        row.kind.trim_start_matches("thread."),
-        log_detail(row)
-    )
 }
 
 /// What a row of a thread's log says, in words: a message with its addressee, a watch rule as a sentence, else the

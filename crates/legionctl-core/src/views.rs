@@ -4,7 +4,7 @@
 //! seeds that legionctl ships (`config/views/`, compiled in: the answers to the common intents, so the app opens with
 //! no model call). Each save is a version (`views/.history/<name>/<n>.jsonc`; the seed is version 0); which version
 //! shows is a fact (DESIGN-10). This module holds the format, its checks (except the operation's class, which the
-//! operator knows), the files, and the shape of a source's answer for each widget, so that every surface (app, TUI,
+//! operator knows), the files, and the shape of a source's answer for each widget, so that every surface (app,
 //! CLI) draws the same data.
 
 use std::collections::BTreeMap;

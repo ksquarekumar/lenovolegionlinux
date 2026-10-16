@@ -11,7 +11,7 @@
 | Agents | none | operator: sessions, tools, skills, MCP, model gateway, Claude/Codex accounts and quotas (12, 14) |
 | Developers and superusers | sysfs files and a GUI | the tools below |
 
-One rule for the tools below: each is an operation in the registry (15-layout), so it works from the CLI, TUI,
+One rule for the tools below: each is an operation in the registry (15-layout), so it works from the CLI, the
 app and MCP. An agent can diagnose the machine with the same tools as a person.
 
 ## See: what is the machine doing, and why
@@ -62,7 +62,7 @@ view again each second (with `--json`, one line per view). `/v1/metrics` has eac
 `legionctl_hwmon_<celsius|rpm|watts|volts|amperes|mhz>{device,sensor}`, each active throttle reason as
 `legionctl_throttle_active{reason}`, and `legionctl_cpu_energy_share_percent{pid,name}`,
 `legionctl_io_latency_p99_microseconds{disk}`, `legionctl_thermal_trips{zone}`,
-`legionctl_throttle_episodes{reason,workload}` and `legionctl_session_memory_pressure_some_percent{session}`. The TUI shows the view with `s`; the app shows it on the Now page.
+`legionctl_throttle_episodes{reason,workload}` and `legionctl_session_memory_pressure_some_percent{session}`. The app shows it on the Now page.
 
 ## For other tools: system events
 

@@ -1,7 +1,7 @@
 //! The tabs' content and their chat bar (design 23 P8, DESIGN-09): a thread tab shows its timeline, members and
 //! rules; a view tab shows its widget; each tab has its chat bar below its content (it never covers it), 60% of the
 //! tab's width at the start, wider and narrower with Ctrl+Right and Ctrl+Left, taller with its text up to 40% of the
-//! tab. The `/` commands and the prompts are the TUI's (`legionctl_api::chat`). The screen reads the threads and the
+//! tab. The `/` commands and the prompts come from `legionctl_api::chat`. The screen reads the threads and the
 //! views again at each event of the operator's event stream, not on a timer.
 
 use std::collections::{BTreeMap, BTreeSet};

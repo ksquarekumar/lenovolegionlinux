@@ -9,14 +9,14 @@ change the machine without you.
 | | |
 | --- | --- |
 | Machine | `LENOVO 82WQ`, Legion Pro 7 16IRX8H, BIOS `KWCN54WW` (1.54), EC 1.51. One model only: legionctl does not guess safe values for other models. |
-| Use it | [docs/guide](docs/guide/README.md): install, the app, the TUI, agents, safety |
+| Use it | [docs/guide](docs/guide/README.md): install, the app, agents, safety |
 | Design | [docs/design](docs/design/README.md): each design note and its real state |
 | API | [docs/api/schema.json](docs/api/schema.json): every operation with its class and input schema |
 
 ## Why it is different
 
 - **One operator, one API.** Each capability is one operation: 199 public operations at main `e8ccd09` (86 read, 25
-  session, 45 workspace, 43 machine). The CLI, the TUI, the desktop app, the MCP server and the agent hooks are
+  session, 45 workspace, 43 machine). The desktop app (the only UI), the CLI, the MCP server and the agent hooks are
   adapters to the same operation, with the same permission and the same event log.
 - **Safety by design.** An agent can read everything. It cannot change the machine: each machine change goes to a
   root daemon through a polkit dialog that only you can approve. Many changes have `--dry-run`, and `undo <event>`
@@ -27,14 +27,14 @@ change the machine without you.
 - **Agents that watch each other.** A thread has a main agent and observers. Observers review tests, remind the main
   agent of skipped steps, and can block it until it answers. Messages go through a durable outbox.
 - **Generative UI.** Agents compose views (table, tree, gauge, sparkline, diff, markdown) from read operations, and
-  the app and the TUI show them. The next step, where each screen is a view that an agent can remake, is in progress.
+  the app shows them. The next step, where each screen is a view that an agent can remake, is in progress.
 
 ## The parts
 
 ```mermaid
 flowchart LR
   subgraph clients["Clients: no state"]
-    cli["legionctl: CLI, TUI, MCP, hooks"]
+    cli["legionctl: CLI, MCP, hooks"]
     app["legionctl-app: GPUI"]
     agents["Claude Code, Codex: plugin, skills"]
   end
@@ -54,7 +54,7 @@ flowchart LR
 
 | Part | Runs as | Does |
 | --- | --- | --- |
-| `legionctl` | you | CLI, `legionctl tui`, `legionctl mcp`, `legionctl hook <event>` for Claude Code |
+| `legionctl` | you | CLI, `legionctl mcp`, `legionctl hook <event>` for Claude Code |
 | `legionctl-app` | you | the desktop app: pages Now, Apps & GPU, Health, Bench, Resources; the thread log; a chat bar to an agent |
 | `legionctl-operator` | you, `legionctl-operator.socket` (user) | the API on `$XDG_RUNTIME_DIR/legionctl/api.sock`: reads, plans, agent tooling, the event log |
 | `legionctl-system` | root, `legionctl-system.service` | power policy at start, charger change, Fn+Q and resume; D-Bus `org.legionctl.System1`; eBPF sensors |
@@ -102,7 +102,7 @@ The [guide](docs/guide/README.md) has the full steps, the plugin, the app and th
 | Try another kernel once | `legionctl kernel list`, `legionctl kernel try <name>` (needs the boot entry) |
 | Start Windows | `legionctl windows reboot` (bare metal, once) or `legionctl windows vm start` |
 | Give an agent work | `legionctl session run claude "fix the failing test"` |
-| Follow everything | `legionctl trace`, `legionctl tui`, `legionctl-app` |
+| Follow everything | `legionctl-app`, `legionctl trace` |
 
 Each command takes `--json`. `legionctl <group> --help` lists the commands of a group.
 

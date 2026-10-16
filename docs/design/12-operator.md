@@ -1,6 +1,6 @@
 # 12 — Operator and agent harness
 
-One product for operating this laptop and the coding agents that run on it. Humans (CLI, TUI, desktop app) and
+One product for operating this laptop and the coding agents that run on it. Humans (desktop app, CLI) and
 agents (Claude Code, Codex, ACP sessions) use the same core and the same API, so every capability has exactly one
 implementation, one permission model and one audit trail.
 
@@ -11,7 +11,6 @@ flowchart LR
   core[legionctl-core and legionctl-machine: config, dossiers, hooks, worktrees, machine reads and plans]
   core --> api[legionctl-operator: legionctl-api registry over HTTP on a unix socket; machine changes via legionctl-system]
   api --> cli[legionctl CLI, generated from the registry]
-  api --> tui[legionctl tui: ratatui]
   api --> app[desktop app: GPUI]
   api --> mcp[MCP tools for Claude / Codex / ACP sessions]
   api --> hooks[harness hooks + slash commands]
@@ -30,10 +29,10 @@ flowchart LR
   - The operator reads machine state as the user (status, load, doctor, plans); fan RPM and throttle reasons stay
     `unknown` without root. Machine changes go to `legionctl-system` over D-Bus with polkit (`ApplyPower`,
     `SetPrimaryGpu`, `Cleanup`).
-  - Client-only commands: `legionctl mcp` and `legionctl tui` (surfaces), and `legionctl run` (it must exec in the
+  - Client-only commands: `legionctl mcp` (a surface), and `legionctl run` (it must exec in the
     caller's process; it gets the GPU environment and CPU list from the `internal.gpu.run-env` operation).
   - Paths in inputs (`profile`, `project`, `repo`) are resolved by the client against its own working directory.
-  - Every call that is not a read is recorded in the operator event log with the actor (cli, mcp, tui).
+  - Every call that is not a read is recorded in the operator event log with the actor (cli, mcp, app).
 
 ## Approvals
 
@@ -186,7 +185,6 @@ Models, accounts, quotas, budgets, cache and replay, over HTTP and ACP: 19-gatew
 | --- | --- |
 | API / gateway | axum, tower-http |
 | Desktop app | gpui |
-| TUI | ratatui |
 | MCP | rmcp |
 | ACP | agent-client-protocol |
 | Git | gix (gitoxide); git CLI where gix lacks a feature |
@@ -204,8 +202,8 @@ its own helper agents, such as the work-ordering planner or the intent-log summa
 
 | Phase | Delivers |
 | --- | --- |
-| 1a (done) | legionctl-core, client CLI/TUI/stdio MCP, Claude Code plugin, Codex MCP snippet |
-| 1b (done 2026-10-13) | legionctl-operator with the operation registry on a unix socket; CLI, TUI and MCP as clients; audit log |
+| 1a (done) | legionctl-core, client CLI/stdio MCP, Claude Code plugin, Codex MCP snippet |
+| 1b (done 2026-10-13) | legionctl-operator with the operation registry on a unix socket; CLI and MCP as clients; audit log |
 | 2 | Sandboxed ACP sessions (bwrap), session registry and resume, overlay build caches; detail in 14-sessions |
 | 3 (milestone 1 done 2026-10-13: dossier, binding, gate) | Workspaces: the dossier home (`~/agentWorkspaces` since design 23 P9), dossier, change sets, gate (18-workspaces) |
 | 4 | Code graph mapping and dependency ordering of work items |

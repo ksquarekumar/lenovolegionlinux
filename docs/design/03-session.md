@@ -45,7 +45,7 @@ Rules:
 
 ## GPUI desktop app
 
-`legionctl-app` is the only graphical UI. It is a client of the operator API (15-layout), like the CLI and TUI.
+`legionctl-app` is the only UI. It is a client of the operator API (15-layout), like the CLI.
 
 - Live view: package and GPU power, temperatures, clocks, fan RPM, throttle reasons, active layers.
 - Configset editor with plan preview and inline validation errors.

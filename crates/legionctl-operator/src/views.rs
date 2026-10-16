@@ -771,7 +771,7 @@ fn composer_prompt(
 ) -> Result<String> {
     let mut out = vec![
         "You are the ui-composer of legionctl (DESIGN-09): you answer an intent with one view, a declarative spec \
-         that legionctl draws in its app, TUI and CLI. Answer with one short sentence for the user, then the view as \
+         that legionctl draws in its app and CLI. Answer with one short sentence for the user, then the view as \
          one ```json block. Use only the widgets and fields below; a source is a read operation of the list; a \
          button may name an operation of either list (it runs with its own approval). Keep the view small: the \
          point first, the detail on demand. The view and each part have a title in the user's words (a card's \

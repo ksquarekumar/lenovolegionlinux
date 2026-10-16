@@ -17,7 +17,7 @@ dossier: `MEMORY/11-agent-network-and-code-graphs.md`.
 | B. Agent network (todo-91) | `#main0` and observers in one durable thread | Recommended: observers are operator ACP sessions with a durable outbox; messages reach the main agent through its hooks |
 | B+. Configs, pools, presence (todo-97, todo-98) | Three archetypes, one team `vanilla`, one config per agent, peers | Archetype files are the lowest config layer; members are operator sessions that sleep until a trigger; the main agent's critical path comes first |
 | E. Checks, runners, schema, watcher, home, recovery (todo-100..104) | Repository checks, three test sets, graph rules and queries, a change watcher, dossier homes, the recovery brief | Checks and queries are repository config; the root daemon watches with fanotify and the user's operator records; each dossier's SQLite is in `~/agentWorkspaces/<name>` |
-| C. Thread UI (todo-92) | Triple pane, chat bar, `/` commands, views | One layout in the TUI (ratatui) and the app (GPUI); views are declarative JSONC from a closed widget set |
+| C. Thread UI (todo-92) | Triple pane, chat bar, `/` commands, views | One layout in the app (GPUI), the only UI (the TUI was removed 2026-10-17); views are declarative JSONC from a closed widget set |
 
 Each part has: what, why, data model, API, hooks, storage, failure and restart behaviour, tests and phases. The
 questions for the user are at the end.
@@ -51,7 +51,7 @@ E10.
 | observer leaves messages, soft-blocks, hard-blocks | B3 Message kinds, B4 Delivery |
 | runs tools main#0 forgot and reminds main#0 with the count since observer#0 started watching | B3 Watch rules and counts |
 | the third agent: persistable, recomposable, reusable UI components for the query, task, progress, quality metrics, tests | C4 UI-component agent |
-| in TUI/app, when legionctl is used directly on an account (Claude or Codex) | C1, C5 Accounts |
+| in the app, when legionctl is used directly on an account (Claude or Codex) | C1, C5 Accounts |
 | threads do not switch across accounts; they can be imported | C5 Threads per account |
 | dynamic plugged data views, triple pane, pane widths 5-10%, 20-40%, 50-75% | C2 Layout |
 | panes 1 and 2 collapse to folded vertical columns | C2 |
@@ -132,7 +132,6 @@ from ctx's `line..end_line` (a span, with blanks and comments).
 | Outbox and sagas | Designed (event log, outbox, sagas with compensation), not built as tables. | 13-daemon.md |
 | Topic workspaces | One worktree per agent of one dossier, merge one by one. | workspace-practice skill |
 | Accounts | Account profiles with their own `CLAUDE_CONFIG_DIR`; `session resume --account` copies the Claude Code transcript into the other profile. | e2e `a_resumed_session_continues_on_another_account_with_its_transcript` |
-| TUI | `legionctl tui` (ratatui), a live dashboard. | `crates/legionctl/src/tui.rs` |
 | App | `legionctl-app` on gpui-kit 0.7.0: Now, Apps & GPU, Health, Bench pages; polls every 2 s. | 09-ux.md |
 | Registry | Each operation declared once; it makes HTTP, MCP tool (`a_b_c`), CLI (`a b c`), polkit and event kind. | 15-layout.md |
 | Test evidence | Mutation checks are made by hand and listed in each commit message ("Mutation-checked (each made its test fail): ..."). `cargo-mutants` and `cargo-llvm-cov` are not installed. 11 `#[test]` blocks are in `src/`; 5 integration test files with 72 functions in `tests/e2e.rs`. | git log, `crates/*/tests` |
@@ -794,8 +793,8 @@ below, and a trigger wakes it only when an operator watch rule finds work that n
 | Process | the main agent's `stop`; a checkpoint; a hard fault from a watch rule | does the steps it can do and sends a `notice`; sends a nudge for the others (table below) |
 | Verification | `declare done`, `declare ready` | runs the suite and `code plan status`; sends a `result` that names each open item, and a `hard-block` on `workspace_checkpoint` when the suite fails |
 
-The `ui-composer`'s triggers: a view request (`/view`, `views place`), and the main agent's `stop` while a TUI or
-the app shows the thread.
+The `ui-composer`'s triggers: a view request (`/view`, `views place`), and the main agent's `stop` while the app
+shows the thread.
 
 Process job: "tool calls, dossier writes, checkpoints are automated and observer can do it and tell main agents,
 other things it sends nudges to main agent instead" (user, 2026-10-15). A step that the observer can do itself, it
@@ -839,7 +838,7 @@ Install and visibility:
 
 | Where | Operator member (thread member) | Plugin subagent | Claude Code teammate (team mode, B+4) | Codex subagent |
 | --- | --- | --- | --- | --- |
-| `thread show`, `thread peers`, TUI pane 2 | yes | yes, from the `SubagentStart`/`SubagentStop` hooks | yes, from the hooks | yes if Codex hooks run (to check) |
+| `thread show`, `thread peers`, the app's thread tab | yes | yes, from the `SubagentStart`/`SubagentStop` hooks | yes, from the hooks | yes if Codex hooks run (to check) |
 | Claude Code `/tasks`, background panel | no (another process) | yes | the team panel or tmux panes | — |
 | Claude Code `ListAgents` | yes, when not `--bare` | — | yes | — |
 | Codex agent list | — | — | — | yes |
@@ -865,7 +864,7 @@ B+2). `legionctl thread start --team vanilla "<prompt>"` starts a thread with it
     "main0":     { "agent": "main-agent" },
     "observer0": { "agent": "thread-observer", "pace": "on-trigger",
                    "wake_budget": { "tokens": 40000, "seconds": 300 } },
-    "ui0":       { "agent": "ui-composer", "pace": "on-trigger", "when": "ui",  // only when a TUI or app shows the thread
+    "ui0":       { "agent": "ui-composer", "pace": "on-trigger", "when": "ui",  // only when the app shows the thread
                    "wake_budget": { "tokens": 15000, "seconds": 60 } }
   },
   "flow": {
@@ -895,7 +894,7 @@ How events reach each member and how it answers:
 Triggers come from the archetype (B+3); a team file can narrow them, or opt in to `on-event` or `poll` (B5) for
 one member. A wake that reaches its `wake_budget` ends; its events stay after the cursor for the next wake.
 
-Cost (rule 1 and 2 of B+0), recorded per thread and shown by `thread show`, `thread peers` and the TUI's pane 2:
+Cost (rule 1 and 2 of B+0), recorded per thread and shown by `thread show`, `thread peers` and the app's thread tab:
 
 | Measure | From |
 | --- | --- |
@@ -1119,8 +1118,8 @@ adapters as members. The operator side of each is tested with the stand-ins.
 ### C1. What and why
 
 When legionctl drives an account directly (a thread through ACP, C5), the person and the agents need one view of
-the thread: the members, the runs, the events and the state of the task. The TUI and the app show the same layout
-and the same data. Agents read the same views as text (`views_render`).
+the thread: the members, the runs, the events and the state of the task. The app shows the layout and the data.
+Agents read the same views as text (`views_render`).
 
 ### C2. Layout
 
@@ -1142,12 +1141,11 @@ and the same data. Agents read the same views as text (`views_render`).
 | Pane 1 | 5-10% of the width | Icons: threads, members, views, the command groups of the registry, settings. |
 | Pane 2 | 20-40% | Events and runs of the thread: messages, tool calls, checkpoints, test runs, jobs; filter by member. |
 | Pane 3 | 50-75% | The task view for the query: scope, progress, quality, tests, changes; made of views (C4). |
-| Fold | Pane 1 and pane 2 fold to one column each | TUI: one cell wide with a vertical label; app: a 24 px rail. Pane 3 takes the space. `Ctrl+1` and `Ctrl+2` fold and open. |
+| Fold | Pane 1 and pane 2 fold to one column each | A 24 px rail. Pane 3 takes the space. `Ctrl+1` and `Ctrl+2` fold and open. |
 | Chat bar | Centred at the bottom of pane 3, 60% of its width at the start | It grows wider (drag or `Ctrl+→`) to the full width, and taller with its content to 40% of the height, then it scrolls. |
 
-The TUI is `legionctl tui` (ratatui, the present dashboard becomes one view). The app is a new page "Threads" in
-`legionctl-app` (gpui-kit). Both read the same operations and the event stream (`GET /v1/events`), so the app does
-not poll for threads.
+The app (`legionctl-app`, gpui-kit) shows the thread screen. It reads the operations and the event stream
+(`GET /v1/events`), so it does not poll for threads.
 
 ### C3. Commands
 
@@ -1194,8 +1192,8 @@ A view is a declarative JSONC file, not code. It binds one widget from a closed 
 The `ui-composer` member reads the query and the progress, picks views, makes new ones (`views save`), and sets
 the thread's pane 3 (`views place`). The person changes the same views by hand or with `/view`.
 
-Operations: `views.list`, `views.show`, `views.save`, `views.check`, `views.place`, `views.render` (text for agents
-and for the TUI's text widgets).
+Operations: `views.list`, `views.show`, `views.save`, `views.check`, `views.place`, `views.render` (text and JSON for
+agents and scripts).
 
 ### C5. Threads per account, import
 
@@ -1216,47 +1214,30 @@ Planned names (design): the built tests are named in each "Built" section and ma
 
 | Test | It catches |
 | --- | --- |
-| `the_thread_tui_folds_panes_and_runs_an_agent_command` | In a pty: fold pane 1 and 2, pane 3 takes the width; the stand-in ACP agent's `available_commands_update` gives `/agent:plan`; the prompt it gets is `/plan x`. |
 | `the_app_thread_page_updates_from_the_event_stream` | Headless GPUI as in `tests/app.rs`: a `thread.message` event shows in pane 2 without a poll. |
-| `a_view_cannot_bind_a_change_operation` | `views check` refuses `power.apply`; a saved view renders the same rows in the TUI text and `views render`. |
+| `a_view_cannot_bind_a_change_operation` | `views check` refuses `power.apply`; a saved view renders the same rows in the app and `views render`. |
 | `a_thread_imported_to_another_account_keeps_its_transcript` | The new thread runs on the other profile with the transcript; the original is read-only. |
 
-### Built: P7 (2026-10-15)
+### Built: P7 (2026-10-15); its TUI removed (user 2026-10-17)
+
+P7 built a thread screen in the terminal (`legionctl tui`, ratatui). The user removed it on 2026-10-17: the app is
+the only UI (DESIGN-09 Rule 1). These parts of P7 stay, and the app (P8) uses them:
 
 | Part | Where |
 | --- | --- |
-| Thread screen | `legionctl tui [--thread <id>] [--agent <name>] [--dossier <name>] [--view <name>]` (`crates/legionctl/src/tui.rs`, ratatui) |
 | Agent commands | The operator records each ACP `available_commands_update` as the event `session.commands` (`acp.rs`); operation `session.commands <session>` (read) gives the newest list |
 | Chat with an agent | `session.run` takes `acp` (go on in the ACP session of an earlier run) and gives `acp` back |
-| Keys and commands | `integrations/agent-plugin/skills/tool-lifecycle/refs/reference-thread-screen.md` |
-
-What is different from C2 and C3, and why:
 
 | Item | Built | Why |
 | --- | --- | --- |
-| The chat bar's agent | `--agent <name>`: text is an intent (`ask`, DESIGN-09 G6): a stored view that answers it shows, else the agent composes one in a headless run; `/agent:<cmd>` is a headless run (`session run`); each goes on in the ACP session of the run before it (`session/load`); a run whose agent cannot load sessions fails. Not `#main0`. | P6b is not built: no member has a live ACP session. When it comes, the chat bar sends to main0. |
 | Agent commands | Kept per session (event `session.commands`, operation `session.commands`), not on the member with `thread.commands`. The list comes with the first run, so `/agent:<name>` is refused until the agent ran once. The file scan of the command folders (no ACP) is not built. | No member has an ACP session yet (P6b). A list that the agent did not give is a guess. |
-| Fold keys | `Alt+1` and `Alt+2`, and `Ctrl+1`, `Ctrl+2` where the terminal reports them; `/fold 1`, `/fold 2`. | A plain xterm sends no key for `Ctrl+1`. |
-| Chat bar | 60% of pane 3 at the start, `Ctrl+Right` and `Ctrl+Left` in steps of 10% (30% to 100%), taller with its text (`Alt+Enter` or `Ctrl+J` adds a line) up to 40% of the height, then the newest rows. | A terminal has no drag. |
-| Pane 2 | The thread's log (the newest open thread, or `--thread`) and the runs of this screen; it reads the thread each second. No filter by member. | The event stream (`GET /v1/events`) is for the app (P8); the TUI reads as the dashboard did. |
-| Views | DESIGN-09 G6: pane 3 shows a stored view (`views render`, the same terminal form as the CLI; default `machine-now`) or the output of the last command; pane 1 lists the views (`views list`) and the output; `Left`/`Right` or `/view <name> [name=value...]` choose. Its buttons are below it: `Up`/`Down` choose, `Enter` takes one with its operation's approval (`legionctl_api::form::route`, as the app: a read runs, a dry run shows its plan, another change asks), `Enter` again applies; an operation that needs input gets its CLI words in the chat bar. `/change <words>` makes the next version of the view. A view that cannot read shows the error in its frame. | The fixed dashboard, resources and sensors pages are gone (Rule 0). |
-| Commands | `/` gives the agent's commands (marked `(agent)`), the screen's own (`/fold`, `/view`), then every operation of the registry with the CLI's words and its class; for an agent caller a workspace operation says that it asks the user. The operator gates each call as from the CLI. | One screen for a person and an agent (C1). |
-
-Tests (`crates/legionctl/tests/tui.rs`; a pty with a small terminal emulator, so the test reads the place of each
-cell; the real operator, a real thread and the stand-in ACP agent):
-
-| Test | It catches |
-| --- | --- |
-| `the_thread_tui_sizes_its_panes_folds_them_and_grows_the_chat_bar` | Pane widths other than 7%, 30% and the rest; a fold that does not give pane 3 the width or has no folded column; a thread's log not in pane 2, or not read again; a chat bar not at 60% centred, not taller with three lines, or not wider after `Ctrl+Right`. |
-| `the_thread_tui_runs_an_agent_command_and_a_registry_operation` | Text sent to the agent and not to `ask`; the agent's commands not kept or not offered, or offered after the screen's; `/agent:plan x` not sent as `/plan x`, or in a new ACP session; a registry command not run with the CLI's words; runs not in pane 2; a stored view's intent that does not show the view; `session commands` of a session that does not exist answered. |
-| `the_tui_draws_the_resources_seed_and_a_button_asks_as_the_app` (`app.rs`) | Pane 3 without the view's terminal form; a row's button without its row; a machine change without a dry run that runs at once; the call not made, or not as the TUI. |
 
 ### Built: P8 (2026-10-15)
 
 | Part | Where |
 | --- | --- |
 | App thread screen | `legionctl-app [<page>] [--dossier <name>]` (`crates/legionctl-app/src/thread.rs`) |
-| Chat bar, shared | `legionctl_api::chat` (the `/` entries, what a line does, the log rows of pane 2) and `legionctl_api::cli` (the CLI's words), for the TUI and the app |
+| Chat bar, shared | `legionctl_api::chat` (the `/` entries, what a line does, the log rows of pane 2) and `legionctl_api::cli` (the CLI's words), for the app |
 | Views | Format, checks, files: `crates/legionctl-core/src/views.rs`; schema `docs/api/view.schema.json`; operations `views.list`, `views.check`, `views.save`, `views.render`, `views.place` (`crates/legionctl-operator/src/views.rs`) |
 | Import | `thread import <thread> <account>` (`thread.import`) |
 | Keys and fields | `integrations/agent-plugin/skills/tool-lifecycle/refs/reference-thread-screen.md` |
@@ -1265,9 +1246,9 @@ What is different from C2 to C5, and why:
 
 | Item | Built | Why |
 | --- | --- | --- |
-| App page | The whole window is the thread screen: pane 1 holds the old pages (Now, Apps & GPU, Health, Bench, Resources) as icons, and the thread's view. Not a page "Threads" next to them. | The same screen as the TUI (C1); the old tab bar and pane 1 did the same job. |
+| App page | The whole window is the thread screen: pane 1 holds the old pages (Now, Apps & GPU, Health, Bench, Resources) as icons, and the thread's view. Not a page "Threads" next to them. | One thread screen (C1); the old tab bar and pane 1 did the same job. |
 | Pane 2 | The newest open thread, read again at each event of `GET /v1/events`. The stream runs on the app's tokio runtime; the screen takes its events each 100 ms. | GPUI's test scheduler refuses a wake from a tokio thread. A timer that takes events is not a poll of the operator. |
-| Chat bar | Click to type; `Shift+Enter` adds a line; `Ctrl+Left` and `Ctrl+Right` (30% to 100%). No drag. | The keys are the TUI's; a drag handle was not asked for in P7 and is not built. |
+| Chat bar | Click to type; `Shift+Enter` adds a line; `Ctrl+Left` and `Ctrl+Right` (30% to 100%). No drag. | A drag handle was not asked for in P8 and is not built. |
 | The chat bar's agent | A headless run as in P7, on the thread's account. The app has no `--agent` (todo-144, 2026-10-16): `/agent <name>` picks a name of `session.acp` (completion offers each; another is refused with the names) and `thread.agent` keeps the pick as a row of the thread's log; a thread with no pick uses config `app.agent` (default `claude`). `setup check` reports an adapter command of `session.acp` that is not on the user manager's PATH; `setup apply` installs it with `bun add -g` (package from `session.acp_packages`) and puts bun's global folder (`bun pm -g bin`) into the environment.d PATH file. | The desktop entries start the app without arguments, so the agent comes from config and the thread. The log is the thread's store (B2): every screen and an import see the pick. |
 | Layout | `views place` writes the row `views.place` (view, parameters, repository) into the thread's log; the screens show the newest one. No `layout` column. | The log is the source (B2); an import copies it. |
 | View operations | `views.show` is not built: `views list` gives each file, layer and widget, and `views render` gives the data. | One operation less with the same facts. |
@@ -1315,9 +1296,9 @@ plugin agents are subagent types `legionctl:<archetype>` (B+3). In legionctl's o
 - todo-78 decides the final command groups. This design adds two groups only, `code` and `thread` (with `views`
   inside `thread`), so that todo-78 has fewer to move.
 - Pane 1's icons and the `/` completion come from the registry's groups. A regroup in todo-78 changes the data,
-  not the TUI or the app.
-- todo-78 item 2 ("commands that have a live view open a TUI"): `thread` is the first group with a live view; its
-  TUI is the model for the others.
+  not the app.
+- todo-78 item 2 ("commands that have a live view open a TUI") is void: the TUI was removed (user 2026-10-17); a live
+  view is a view in the app.
 - The copy of the new commands follows ASD-STE100 now, so todo-78 item 4 has less work.
 
 ## Phases
@@ -1330,7 +1311,7 @@ plugin agents are subagent types `legionctl:<archetype>` (B+3). In legionctl's o
 | P4 | Test runs, mutant records, review signals, checkpoint gate, pre-commit | L (900) | P3, question 2 |
 | P5 | Threads, members, outbox, hook delivery, `post-tool`, watch rules and counts, presence (B+1) | L (1300) | P4 for the test rules |
 | P6 | Model observers through ACP, pace, branch, compensation; agent configs, archetypes, pools (split in B+6) | L (1700) | P5, question 1 |
-| P7 | TUI triple pane, chat bar, `/` commands, ACP commands | L (1200) | P5 |
+| P7 | Thread screen (TUI, removed 2026-10-17), chat bar, `/` commands, ACP commands | L (1200) | P5 |
 | P8 | App thread page, views, `ui-composer`, import | L (1500) | P7 |
 
 Each phase ends with its e2e tests, mutation checks named in the commit, `make lint` and the release test run.

@@ -12,7 +12,7 @@ system down.
 | --- | --- | --- | --- |
 | `legionctl-system.service` | system (root) | machine control: power, firmware, sysctl, kernel modules, eBPF, initramfs | `/run/legionctl/system.sock`, D-Bus `org.legionctl.System1` with polkit per method |
 | `legionctl-operator.service` | user (`systemd --user`) | agent harness: workspaces, hooks, reminders, ACP sessions, gateway | `$XDG_RUNTIME_DIR/legionctl/api.sock` (axum: HTTP + SSE) |
-| clients | user | nothing | CLI, TUI, GPUI app, MCP server, hook dispatcher |
+| clients | user | nothing | CLI, GPUI app, MCP server, hook dispatcher |
 
 No `legionctl-bootstrap` unit was built: schema steps run in `Db::open`, safe mode in `legionctl-safe.service` (see
 Bootstrap).
@@ -177,11 +177,11 @@ bus; a path that the unit does not allow fails it.
 ## Phase 1b work list
 
 1. `legionctl-operator` (user): axum API on the unix socket; move worktrees and reminders into the database; WebSocket
-   event stream; CLI, TUI and MCP become clients in the same change, and their direct database code is deleted.
+   event stream; CLI and MCP become clients in the same change, and their direct database code is deleted.
 2. `legionctl-bootstrap`: migrations with backup, version marker, safe mode; package hooks call it.
 3. `legionctl-system` (system): D-Bus API with polkit; the Python tooling's work moves into it (switch in 15-layout); sagas for GPU-mode
    and initramfs changes.
-4. Telemetry ring in a sealed memfd; TUI reads it.
+4. Telemetry ring in a sealed memfd; the app reads it.
 
 ## D-Bus contract (built 2026-10-14, DESIGN/03, todo-61)
 

@@ -967,90 +967,6 @@ fn a_view_keeps_its_versions_and_the_tab_undoes_redoes_pins_and_resets_them(
     drop(runtime);
 }
 
-/// The TUI (DESIGN-09 G6, Rule 1) draws the same view as the app: the Resources seed in a terminal (a pty) against the
-/// real operator on the recorded machine, without a daemon or Docker. Pane 3 has the view's terminal form and its
-/// buttons (each row's with the row's name); Down moves to the layer 20-ac's disable, Enter shows its route
-/// (rules.disable is a machine operation with no dry run, so it asks with its operation and input, and nothing
-/// runs), and Enter runs it as a call of its own: the operator refuses it without the system bus, the screen says
-/// why, and the event log names it with the TUI as its actor.
-#[test]
-fn the_tui_draws_the_resources_seed_and_a_button_asks_as_the_app() {
-    let op = unplugged_machine("tui");
-    // keys in order; Down until the selected button is 20-ac's; prints the screen text without escape codes
-    let driver = r#"
-import os, pty, re, select, struct, sys, fcntl, termios, time
-pid, fd = pty.fork()
-if pid == 0:
-    os.execv(sys.argv[1], [sys.argv[1], "tui", "--view", "resources"])
-fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 220, 0, 0))
-seen = ""
-def read(limit):
-    global seen
-    chunk = ""
-    end = time.time() + limit
-    while time.time() < end:
-        r, _, _ = select.select([fd], [], [], 0.2)
-        if r:
-            try:
-                chunk += re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", " ", os.read(fd, 65536).decode("utf-8", "replace"))
-            except OSError:
-                break
-        elif chunk:
-            break
-    seen += chunk
-    return chunk
-def until(text, limit=20):
-    end = time.time() + limit
-    while text not in seen:
-        if time.time() > end:
-            sys.stdout.write(seen); sys.exit("timed out waiting for " + text)
-        read(0.5)
-until("Configuration layers")
-for _ in range(80):
-    os.write(fd, b"\x1b[B")
-    if re.search(r"▶\s+\S*/20-ac\.jsonc:\s+disable", read(2)):
-        break
-else:
-    sys.stdout.write(seen); sys.exit("no button of 20-ac")
-os.write(fd, b"\r")
-until("Enter applies")
-os.write(fd, b"\r")
-until("system bus")
-os.write(fd, b"q")
-os.waitpid(pid, 0)
-sys.stdout.write(seen)
-"#;
-    let out = std::process::Command::new("python3")
-        .args(["-c", driver, env!("CARGO_BIN_EXE_legionctl")])
-        .env_clear()
-        .env("XDG_RUNTIME_DIR", &op.runtime)
-        .env("PATH", std::env::var_os("PATH").unwrap())
-        .env("TERM", "xterm")
-        .output()
-        .unwrap();
-    let screen = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        out.status.success(),
-        "{screen}{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        screen.contains("Resources · version 0"),
-        "the seed's title: {screen}"
-    );
-    assert!(
-        screen.contains(r#"runs rules.disable {"layer":"shipped/20-ac"}"#),
-        "the route of the selected button: {screen}"
-    );
-    let events = op.ok(&["events"]);
-    assert!(
-        events
-            .lines()
-            .any(|l| l.contains(" tui ") && l.contains("rules.disable")),
-        "rules.disable by the TUI: {events}"
-    );
-}
-
 fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();
@@ -1441,7 +1357,7 @@ fn tabs_the_space_and_the_navigator_width_persist_across_an_app_restart(cx: &mut
 }
 
 /// A thread tab says what each row of the thread's log means (todo-127, A3): a watch rule that a member adds reaches
-/// the app through the event stream and reads as a sentence, in the app and in the TUI's line; no row is raw JSON.
+/// the app through the event stream and reads as a sentence in the app; no row is raw JSON.
 #[gpui_kit::test]
 fn the_app_thread_pane_shows_a_watch_rule_as_a_sentence(cx: &mut TestAppContext) {
     let (op, home, repo) = thread_lab("rule");
@@ -1482,12 +1398,6 @@ fn the_app_thread_pane_shows_a_watch_rule_as_a_sentence(cx: &mut TestAppContext)
         assert_eq!(
             legionctl_api::chat::log_detail(rule),
             "reminder: after 4 Edit/Write/MultiEdit/NotebookEdit in crates/, expect make lint"
-        );
-        assert!(
-            legionctl_api::chat::log_line(rule)
-                .ends_with("observer0 rule reminder: after 4 Edit/Write/MultiEdit/NotebookEdit in crates/, expect make lint"),
-            "{}",
-            legionctl_api::chat::log_line(rule)
         );
         for row in log {
             let detail = legionctl_api::chat::log_detail(row);
