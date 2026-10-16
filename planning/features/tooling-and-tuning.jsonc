@@ -43,7 +43,7 @@
     ] },
     { "id": "TT3", "text": "Tooling manifest per repository with its schema (installs: source kind, source, version, hashes, path, health check) and agent proposal (todo-114)", "status": "planned", "stories": ["S3"], "depends_on": ["TT2"], "units": [
       { "key": "file:docs/api/tooling.schema.json", "change": "add", "loc": 150 },
-      { "key": "file:crates/legionctl-core/src/tools.rs", "change": "edit", "loc": 400 },
+      { "key": "rust:crates/legionctl-core:tools::Manifest", "change": "add", "loc": 400 },
       { "key": "op:code.tooling.check", "change": "add" },
       { "key": "op:code.tooling.propose", "change": "add" }
     ] },

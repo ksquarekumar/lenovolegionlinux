@@ -33,11 +33,12 @@
     { "id": "Q1", "text": "Helper merges: one git runner (Q-11), one keyring module (Q-12), has_command and ppd_current in legionctl-machine (Q-13), db::now (Q-14), one home() (Q-15), one atomic_write (Q-16), one spawn context form (Q-17)", "status": "planned", "stories": ["S1", "S2", "S3"], "units": [
       { "key": "rust:crates/legionctl-core:workspace::git", "change": "remove" },
       { "key": "rust:crates/legionctl-core:codegraph::git", "change": "remove" },
+      { "key": "rust:crates/legionctl-core:codegraph::run", "change": "remove" },
       { "key": "file:crates/legionctl-core/src/keyring.rs", "change": "add", "loc": 80 },
       { "key": "rust:crates/legionctl-core:session::keyring_get", "change": "remove" },
       { "key": "rust:crates/legionctl-core:session::keyring_put", "change": "remove" },
       { "key": "file:crates/legionctl-operator/src/gateway.rs", "change": "edit" },
-      { "key": "file:crates/legionctl-operator/src/rlcd.rs", "change": "edit" },
+      { "key": "rust:crates/legionctl-operator:rlcd::keyring", "change": "remove" },
       { "key": "file:crates/legionctl-system/src/main.rs", "change": "edit" },
       { "key": "file:crates/legionctl-core/src/db.rs", "change": "edit" },
       { "key": "file:crates/legionctl-core/src/dossier.rs", "change": "edit" }

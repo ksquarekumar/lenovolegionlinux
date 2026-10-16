@@ -38,7 +38,7 @@
       { "key": "op:environments.connections", "change": "add" }
     ] },
     { "id": "N3", "text": "Ports on this host opened and closed by the gateway for an environment", "status": "planned", "stories": ["S2"], "depends_on": ["N2"], "units": [
-      { "key": "file:crates/legionctl-operator/src/connections.rs", "change": "edit", "loc": 250 },
+      { "key": "rust:crates/legionctl-operator:connections::open_port", "change": "add", "loc": 250 },
       { "key": "op:gateway.ports.open", "change": "add" },
       { "key": "op:gateway.ports.close", "change": "add" }
     ] },

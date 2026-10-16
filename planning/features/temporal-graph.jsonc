@@ -66,7 +66,7 @@
       { "key": "op:code.tests.list", "change": "edit" }
     ] },
     { "id": "T2", "text": "Code graph and dossier graph nodes and edges on the four axes; same-as identity", "status": "planned", "stories": ["S2"], "depends_on": ["T1"], "units": [
-      { "key": "file:crates/legionctl-core/src/facts.rs", "change": "edit", "loc": 400 },
+      { "key": "rust:crates/legionctl-core:facts::same_as", "change": "add", "loc": 400 },
       { "key": "file:crates/legionctl-core/src/graph.rs", "change": "edit" },
       { "key": "file:crates/legionctl-core/src/codegraph.rs", "change": "edit" }
     ] },
@@ -90,7 +90,7 @@
       { "key": "op:thread.show", "change": "edit" }
     ] },
     { "id": "T3", "text": "rlcd decisions for staleness, identity, conflict and scope; second check only, minimal state, stored with outcome", "status": "planned", "stories": ["S7"], "depends_on": ["T2"], "units": [
-      { "key": "file:crates/legionctl-core/src/facts.rs", "change": "edit", "loc": 300 },
+      { "key": "rust:crates/legionctl-core:facts::decide", "change": "add", "loc": 300 },
       { "key": "file:crates/legionctl-core/src/rlcd.rs", "change": "edit" }
     ] },
     { "id": "T4", "text": "Time and ref slider on any view (views render --at)", "status": "planned", "stories": ["S8"], "depends_on": ["T2"], "units": [
