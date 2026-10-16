@@ -21,9 +21,9 @@ use legionctl_api::{
     AccountAddIn, AgentCheck, AgentsCheckIn, CapabilityList, Changes, CheckpointIn, CleanupIn,
     ClientPath, CloseIn, ConfigFiles, ConfigView, Ctx, Empty, Engine, ExplainIn, Explanation,
     Findings, GpuPrimaryIn, GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LayerList, LoadState,
-    PowerApplyIn, PowerSource, ProfileIn, ProjectIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn,
-    SetupApplyIn, SetupReport, SkillList, Snapshot, StatusIn, Validation, Workspace, WorkspaceIn,
-    WorkspaceOpenIn, WorkspaceStatus, Workspaces,
+    MergeIn, PowerApplyIn, PowerSource, ProfileIn, ProjectIn, ReminderAddIn, Reminders, RunEnv,
+    RunEnvIn, SetupApplyIn, SetupReport, SkillList, Snapshot, StatusIn, Validation, Workspace,
+    WorkspaceIn, WorkspaceOpenIn, WorkspaceStatus, Workspaces,
 };
 use legionctl_api::{
     Autostart, AutostartIn, DisplayFixIn, FanCurveIn, FanState, FirmwareDevices, FirmwareUpdateIn,
@@ -2229,11 +2229,28 @@ impl Engine for Operator {
         out
     }
 
-    fn workspace_merge(&self, _: &Ctx, input: WorkspaceIn) -> Result<Lines> {
+    fn workspace_merge(&self, _: &Ctx, input: MergeIn) -> Result<Lines> {
         let store = dossiers()?;
-        let session = session(&input.session)?;
-        let ws = store.workspace_of(session, input.repo.get()?, input.topic.as_deref())?;
-        let lines = store.merge(&ws, session)?;
+        let (dir, topic) = (input.repo.get()?, input.topic.as_deref());
+        // no agent session: the user, whose merge of a branch that sets its own gates the desktop dialog confirms
+        let (ws, session) = if input.session.0.is_empty() {
+            let ws = store.workspace_for_user(input.dossier.as_deref(), dir, topic)?;
+            (ws, None)
+        } else {
+            anyhow::ensure!(
+                input.dossier.is_none(),
+                "--dossier is for the user's merge; an agent session merges the workspace of its own dossier"
+            );
+            (
+                store.workspace_of(&input.session.0, dir, topic)?,
+                Some(input.session.0.as_str()),
+            )
+        };
+        let lines = store.merge(&ws, session, |what| {
+            self.runtime
+                .block_on(crate::desktop::ask("legionctl: confirm a merge", what))
+                .context("the merge changes .legionctl/ and needs the user's confirmation in a desktop dialog")
+        })?;
         crate::code::trigger(&ws.repo);
         Ok(Lines { lines })
     }

@@ -489,7 +489,7 @@ operations! {
     /// the tests that killed it.
     code_tests_mutant_run / CodeTestsMutantRun = "code.tests.mutant.run", Session, WorkspaceIn => Lines;
     /// Rebase the branch onto the base, then fast-forward the base in the main checkout (which must be clean).
-    workspace_merge / WorkspaceMerge = "workspace.merge", Workspace, WorkspaceIn => Lines;
+    workspace_merge / WorkspaceMerge = "workspace.merge", Workspace, MergeIn => Lines;
     /// Remove the worktree; the branch and the dossier stay. Refuses uncommitted changes unless `--force`.
     workspace_close / WorkspaceClose = "workspace.close", Session, CloseIn => Lines;
     /// Make the repository's agent image (`localhost/<repo>/legionctl-agent:latest`) for sessions `--in container`:

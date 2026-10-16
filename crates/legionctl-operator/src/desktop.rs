@@ -44,11 +44,11 @@ pub async fn tell(bus: &zbus::Connection, icon: &str, summary: &str, body: &str)
     Ok(())
 }
 
-/// Ask the user whether `session` may do `what`; true only for Allow.
+/// Ask the user, with the title `summary`, whether `what` may go ahead; true only for Allow.
 ///
 /// # Errors
 /// There is no session bus or notification service to ask.
-pub async fn ask(session: &str, what: &str) -> Result<bool> {
+pub async fn ask(summary: &str, what: &str) -> Result<bool> {
     let bus = zbus::Connection::session()
         .await
         .context("no session bus to ask the user")?;
@@ -58,14 +58,13 @@ pub async fn ask(session: &str, what: &str) -> Result<bool> {
         .interface(NOTIFICATIONS)?
         .build();
     let mut answers = zbus::MessageStream::for_match_rule(rule, &bus, None).await?;
-    let short = &session[..session.len().min(8)];
     let hints = std::collections::HashMap::from([("urgency", zbus::zvariant::Value::U8(2))]);
     // Notify: app, replaces id, icon, summary, body, actions (key, label pairs), hints, timeout (0: until closed)
     let args = (
         "legionctl",
         0u32,
         "dialog-question",
-        format!("legionctl: agent session {short} asks"),
+        summary,
         what,
         vec!["allow", "Allow", "deny", "Deny"],
         hints,

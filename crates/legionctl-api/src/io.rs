@@ -107,6 +107,22 @@ pub struct WorkspaceIn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MergeIn {
+    /// A folder in a workspace or in the repository.
+    #[serde(default = "here")]
+    pub repo: ClientPath,
+    /// The topic workspace (`workspace open --topic`), from anywhere in the repository.
+    #[serde(default)]
+    pub topic: Option<String>,
+    /// The user's merge (no agent session): the dossier of the workspace; not needed when one dossier has a
+    /// workspace there.
+    #[serde(default)]
+    pub dossier: Option<String>,
+    #[serde(default)]
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CheckpointIn {
     /// Commit message: what this change set does (from the plan entry).
     pub message: String,

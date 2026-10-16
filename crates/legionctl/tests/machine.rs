@@ -3,6 +3,8 @@
 //! nvidia-smi; and the daemon's event reactions, whose file and ledger writes run against the recorded tree.
 
 mod common;
+#[path = "common/desktop.rs"]
+mod desktop;
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -2973,19 +2975,6 @@ mod operator_and_daemon {
         );
     }
 
-    /// The arguments of `org.freedesktop.Notifications.Notify`: app, replaces id, icon, summary, body, actions, hints,
-    /// timeout.
-    type Notify = (
-        String,
-        u32,
-        String,
-        String,
-        String,
-        Vec<String>,
-        std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
-        i32,
-    );
-
     /// Safe mode reaches the desktop: the operator's session module finds the daemon's safe-mode reason and sends one
     /// desktop notification (a stand-in `org.freedesktop.Notifications` on the private bus, which is also the session
     /// bus here) with the reason and what to do.
@@ -3018,7 +3007,8 @@ mod operator_and_daemon {
                     .member()
                     .is_some_and(|m| m.as_str() == "Notify")
                 {
-                    let (_, _, _, summary, body, ..): Notify = call.body().deserialize().unwrap();
+                    let (_, _, _, summary, body, ..): crate::desktop::Notify =
+                        call.body().deserialize().unwrap();
                     seen.lock().unwrap().push((summary, body));
                     replies.reply(&call.header(), &(1u32,)).await.unwrap();
                 }
@@ -6140,7 +6130,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         let m = Machine::new("idle");
         let (_stand_ins, _asked, _processes) = start(&m).await;
         let address = format!("unix:path={}", m.dir.join("bus").display());
-        let (_desktop, told) = answering_desktop(&address, &["ok", "ok", "ok"]).await;
+        let (_desktop, told) = crate::desktop::answering(&address, &["ok", "ok", "ok"]).await;
         let (op, home, repo) = idle_operator(&m, address);
         let started = op.run(
             &repo,
@@ -6208,65 +6198,6 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         );
     }
 
-    /// A stand-in desktop on the private bus: it records the body of each notification and answers the n-th with
-    /// the n-th of `answers` (an action key) as `ActionInvoked`.
-    async fn answering_desktop(
-        address: &str,
-        answers: &'static [&'static str],
-    ) -> (
-        zbus::Connection,
-        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    ) {
-        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-        let desktop = zbus::connection::Builder::address(address)
-            .unwrap()
-            .name("org.freedesktop.Notifications")
-            .unwrap()
-            .build()
-            .await
-            .unwrap();
-        let seen = asked.clone();
-        let bus = desktop.clone();
-        tokio::spawn(async move {
-            let mut calls = zbus::MessageStream::from(&bus);
-            while let Some(Ok(call)) = futures_util::StreamExt::next(&mut calls).await {
-                if call
-                    .header()
-                    .member()
-                    .is_some_and(|m| m.as_str() == "Notify")
-                {
-                    let (_, _, _, _, body, actions, ..): Notify =
-                        call.body().deserialize().unwrap();
-                    // a question offers Allow and Deny; a notice offers nothing and gets no answer
-                    let question = !actions.is_empty();
-                    assert!(
-                        !question || actions == ["allow", "Allow", "deny", "Deny"],
-                        "{actions:?}"
-                    );
-                    let n = {
-                        let mut seen = seen.lock().unwrap();
-                        seen.push(body);
-                        seen.len()
-                    };
-                    let id = u32::try_from(n).unwrap();
-                    bus.reply(&call.header(), &(id,)).await.unwrap();
-                    if question {
-                        bus.emit_signal(
-                            None::<()>,
-                            "/org/freedesktop/Notifications",
-                            "org.freedesktop.Notifications",
-                            "ActionInvoked",
-                            &(id, answers[n - 1]),
-                        )
-                        .await
-                        .unwrap();
-                    }
-                }
-            }
-        });
-        (desktop, asked)
-    }
-
     /// A session's token in the operator database of `home`, as `session start` issues it (only its hash is kept).
     fn add_session_token(home: &std::path::Path, token: &str, session: &str) {
         let added = std::process::Command::new("python3")
@@ -6292,7 +6223,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         let m = Machine::new("approve");
         let (_stand_ins, _asked, (_bus, _daemon)) = start(&m).await;
         let address = format!("unix:path={}", m.dir.join("bus").display());
-        let (desktop, asked) = answering_desktop(&address, &["deny", "allow"]).await;
+        let (desktop, asked) = crate::desktop::answering(&address, &["deny", "allow"]).await;
         let home = m.dir.join("home");
         let op = Operator::start(
             "approve",

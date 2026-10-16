@@ -31,7 +31,8 @@ user-invocable: true
 13. `workspace merge` rebases the branch onto the base, runs each `gate: merge` check that has no passing run at the
     rebased head (a failure refuses the merge; the branch stays rebased; no file, no check), then fast-forwards the base in the main
     checkout, which must be clean. It is class workspace, so it asks the user. Ask the user before you call it; if a
-    lead agent merges, do not merge.
+    lead agent merges, do not merge. An agent cannot merge a branch that changes `.legionctl/`: give the user the
+    command that the refusal prints (a terminal with no agent session; a desktop dialog confirms).
 14. Merge topics one at a time. Each later merge rebases onto the new base, so the history stays linear.
 15. Before you resolve a conflict, read each side's changes against the merge base by entity:
     `legionctl code graph changes --three-way <merge-base> <ours> <theirs>`. It gives base to ours, base to theirs,

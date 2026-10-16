@@ -3,6 +3,8 @@
 //! they commit or merge, each run keeps its log and profile in the dossier home, and a missing kind is a finding.
 
 mod common;
+#[path = "common/desktop.rs"]
+mod desktop;
 #[path = "common/git.rs"]
 mod git;
 
@@ -35,6 +37,11 @@ struct Lab {
 
 impl Lab {
     fn new(tag: &str) -> Lab {
+        Lab::with_env(tag, &[])
+    }
+
+    /// A lab whose operator also gets `extra` in its environment (a session bus).
+    fn with_env(tag: &str, extra: &[(&str, OsString)]) -> Lab {
         // outside /tmp (private in a session sandbox) and outside any repository, like a real home
         let home = Scratch::new(format!(
             "/var/tmp/legionctl-checks-{tag}-{}",
@@ -58,20 +65,19 @@ impl Lab {
                 .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
         )
         .unwrap();
-        let mut op = Operator::start(
-            tag,
-            &[
-                ("LEGIONCTL_SYSROOT", home.join("root").into()),
-                ("HOME", OsString::from(&*home)),
-                ("PATH", path),
-                (
-                    "LEGIONCTL_PLUGIN",
-                    Path::new(env!("CARGO_MANIFEST_DIR"))
-                        .join("../../integrations/agent-plugin")
-                        .into(),
-                ),
-            ],
-        );
+        let mut env = vec![
+            ("LEGIONCTL_SYSROOT", home.join("root").into()),
+            ("HOME", OsString::from(&*home)),
+            ("PATH", path),
+            (
+                "LEGIONCTL_PLUGIN",
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../integrations/agent-plugin")
+                    .into(),
+            ),
+        ];
+        env.extend(extra.iter().cloned());
+        let mut op = Operator::start(tag, &env);
         let path = home.to_path_buf();
         op.held.push(home);
         Lab { op, home: path }
@@ -104,6 +110,12 @@ impl Lab {
             args,
             "",
         )
+    }
+
+    /// `legionctl` in `cwd` as the user in a terminal: no agent session.
+    fn user(&self, cwd: &Path, args: &[&str]) -> Output {
+        self.op
+            .run(cwd, &[("HOME", self.home.to_str().unwrap())], args, "")
     }
 
     /// stdout, also of a command that fails for its findings (`dossier check`, `doctor`).
@@ -498,10 +510,26 @@ fn a_merge_refuses_without_passing_build_and_test_runs_at_the_rebased_head() {
 
 /// The merge gate tests only what the merge ships (R3-2, R3-7): an untracked file that makes the test pass refuses
 /// the merge (fast-forward ships the commits without it, and main would not pass), and a branch that rewrites its
-/// own gate in `.legionctl/` is refused for the user to merge. main stays at its commit each time.
-#[test]
-fn a_merge_gate_refuses_an_untracked_file_and_a_branch_that_sets_its_own_gate() {
-    let lab = Lab::new("ships");
+/// own gate in `.legionctl/` is refused to the agent with the user's exact command. The user (a terminal with no agent
+/// session, todo-147) runs that command: the same merge gate runs, then a desktop dialog asks; Deny keeps main, Allow
+/// fast-forwards it. main stays at its commit until the user allows.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_merge_gate_refuses_an_untracked_file_and_a_branch_that_sets_its_own_gate() {
+    let runtime = Scratch::new(format!("/var/tmp/lc-ships-bus-{}", std::process::id()));
+    let bus_path = runtime.join("bus");
+    let _bus = common::process::Kill::spawn(
+        std::process::Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--nopidfile"])
+            .arg(format!("--address=unix:path={}", bus_path.display())),
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !bus_path.exists() {
+        assert!(std::time::Instant::now() < deadline, "the private bus");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let address = format!("unix:path={}", bus_path.display());
+    let (_desktop, asked) = desktop::answering(&address, &["deny", "allow"]).await;
+    let lab = Lab::with_env("ships", &[("DBUS_SESSION_BUS_ADDRESS", address.into())]);
     let repo = lab.repo(
         "repo",
         &[
@@ -526,18 +554,51 @@ fn a_merge_gate_refuses_an_untracked_file_and_a_branch_that_sets_its_own_gate() 
     std::fs::remove_file(ws.join("helper.txt")).unwrap();
     write(
         &ws.join(".legionctl/checks.jsonc"),
-        r#"{ "checks": { "unit": { "kind": "test", "run": "true", "gate": "merge" } } }"#,
+        r#"{ "checks": { "unit": { "kind": "test", "run": "echo run >> \"$HOME/unit-runs\"", "gate": "merge" } } }"#,
     );
     lab.ok(&ws, &["workspace", "checkpoint", "drop the gate"]);
     let refused = lab.run(&ws, &["workspace", "merge"]);
+    let command = format!(
+        "legionctl workspace merge --repo {} --dossier ships",
+        repo.canonicalize().unwrap().display()
+    );
     assert!(
         !refused.status.success()
-            && text(&refused)
-                .1
-                .contains("changes .legionctl/, which sets its own gates: the user merges it"),
+            && text(&refused).1.contains("an agent cannot merge it")
+            && text(&refused).1.contains(&command),
         "{refused:?}"
     );
     assert_eq!(lab.git(&repo, &["log", "-1", "--format=%s"]), "start");
+    assert!(
+        asked.lock().unwrap().is_empty(),
+        "the agent's merge asks nobody"
+    );
+
+    // the user's terminal, anywhere: the command from the refusal
+    let args: Vec<&str> = command.split(' ').skip(1).collect();
+    let runs = lab.count("unit-runs");
+    let denied = lab.user(&lab.home, &args);
+    assert!(
+        !denied.status.success() && text(&denied).1.contains("the user did not confirm"),
+        "{denied:?}"
+    );
+    assert_eq!(
+        lab.count("unit-runs"),
+        runs + 1,
+        "the merge gate ran at the rebased head before the dialog"
+    );
+    assert_eq!(lab.git(&repo, &["log", "-1", "--format=%s"]), "start");
+    let allowed = lab.user(&lab.home, &args);
+    assert!(allowed.status.success(), "{allowed:?}");
+    assert_eq!(
+        lab.git(&repo, &["log", "-1", "--format=%s"]),
+        "drop the gate"
+    );
+    let asked = asked.lock().unwrap().clone();
+    assert!(
+        asked.len() == 2 && asked[0].contains(".legionctl/checks.jsonc"),
+        "{asked:?}"
+    );
 }
 
 /// A gate passes only on evidence (R3-3, R3-8, R3-9): a syntax error in the repository's `checks.jsonc` refuses the

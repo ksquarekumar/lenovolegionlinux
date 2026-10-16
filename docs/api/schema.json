@@ -3230,6 +3230,14 @@
           "description": "The topic workspace (`workspace open --topic`), from anywhere in the repository.",
           "default": null
         },
+        "dossier": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The user's merge (no agent session): the dossier of the workspace; not needed when one dossier has a\nworkspace there.",
+          "default": null
+        },
         "session": {
           "type": "string",
           "format": "session",
@@ -3237,8 +3245,7 @@
           "default": ""
         }
       },
-      "description": "Which of this session's workspaces: the topic's, else the one that contains `repo`, else the dossier's own\nworkspace in the repository of `repo`.",
-      "title": "WorkspaceIn",
+      "title": "MergeIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {

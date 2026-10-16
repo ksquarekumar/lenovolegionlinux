@@ -489,14 +489,64 @@ impl Dossiers {
         Ok(lines)
     }
 
+    /// The workspace that the user (no agent session) names for a merge: of `dossier`, or of the one dossier with a
+    /// workspace there; with a topic, that topic's workspace in the repository of `dir`, else the workspace that
+    /// contains `dir`, else the dossier's own workspace in the repository `dir`.
+    ///
+    /// # Errors
+    /// No such workspace, or more than one dossier has one (then `--dossier` chooses).
+    pub fn workspace_for_user(
+        &self,
+        dossier: Option<&str>,
+        dir: &Path,
+        topic: Option<&str>,
+    ) -> Result<Workspace> {
+        let dir = std::fs::canonicalize(dir)?;
+        let repo = main_checkout(&dir)?;
+        let mut found: Vec<Workspace> = self
+            .workspaces(dossier)?
+            .into_iter()
+            .filter(|ws| match topic {
+                Some(t) => ws.repo == repo && ws.topic == t,
+                None => dir.starts_with(&ws.path) || (ws.repo == dir && ws.topic.is_empty()),
+            })
+            .collect();
+        let topic = topic.map(|t| format!(" --topic {t}")).unwrap_or_default();
+        match found.len() {
+            1 => Ok(found.remove(0)),
+            0 => bail!(
+                "no open workspace{topic} for {}{}",
+                dir.display(),
+                dossier
+                    .map(|d| format!(" of dossier {d}"))
+                    .unwrap_or_default()
+            ),
+            _ => bail!(
+                "the dossiers {} each have a workspace{topic} here: choose one with --dossier",
+                found
+                    .iter()
+                    .map(|w| w.dossier.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
+
     /// Rebase the branch onto the base, then fast-forward the base in the main checkout to the commit that the gate
-    /// tested. Conflicts stop the rebase in the workspace, for the agent to resolve.
+    /// tested. Conflicts stop the rebase in the workspace, for the agent to resolve. `session` is the agent's; `None`
+    /// is the user (todo-147). A branch that changes `.legionctl/` sets its own gates: an agent cannot merge it, and the
+    /// user's merge runs the same gate, then `confirm` asks the user (a desktop dialog) before the fast-forward.
     ///
     /// # Errors
     /// The workspace has uncommitted or untracked files (the gate would test files that the merge does not ship), the
-    /// rebase stops on conflicts, the branch changes `.legionctl/` (its own gates: the user merges it), or the main
+    /// rebase stops on conflicts, an agent's branch changes `.legionctl/`, the user does not confirm, or the main
     /// checkout is not clean or not on the base branch.
-    pub fn merge(&self, ws: &Workspace, session: &str) -> Result<Vec<String>> {
+    pub fn merge(
+        &self,
+        ws: &Workspace,
+        session: Option<&str>,
+        confirm: impl FnOnce(&str) -> Result<bool>,
+    ) -> Result<Vec<String>> {
         if ws.is_folder() {
             return crate::folder::merge(&ws.path, &ws.repo);
         }
@@ -513,18 +563,28 @@ impl Dossiers {
                 ws.path.display()
             );
         }
-        ensure!(
-            git(
-                &ws.path,
-                &["diff", "--quiet", &ws.base, "HEAD", "--", ".legionctl"]
-            )
-            .is_ok(),
-            "the branch {} changes .legionctl/, which sets its own gates: the user merges it",
-            ws.branch
-        );
+        let own_gates = git(
+            &ws.path,
+            &["diff", "--name-only", &ws.base, "HEAD", "--", ".legionctl"],
+        )?;
+        if !own_gates.is_empty() && session.is_some() {
+            let topic = if ws.topic.is_empty() {
+                String::new()
+            } else {
+                format!(" --topic {}", ws.topic)
+            };
+            bail!(
+                "the branch {} changes .legionctl/, which sets its own gates: an agent cannot merge it. The user \
+                 merges it from a terminal outside an agent session: legionctl workspace merge --repo {}{topic} \
+                 --dossier {} (the same gate, then a desktop dialog to confirm)",
+                ws.branch,
+                ws.repo.display(),
+                ws.dossier
+            );
+        }
         let tested = git(&ws.path, &["rev-parse", "HEAD"])?;
         let mut lines = self
-            .gate(&ws.path, crate::checks::Gate::Merge, Some(session))
+            .gate(&ws.path, crate::checks::Gate::Merge, session)
             .map_err(|e| {
                 refused(
                     &format!(
@@ -548,6 +608,21 @@ impl Dossiers {
             "the main checkout {} has uncommitted changes; the fast-forward would touch them",
             ws.repo.display()
         );
+        if !own_gates.is_empty() {
+            let what = format!(
+                "merge {} into {} in {}: it changes {}, which sets the repository's own gates",
+                ws.branch,
+                ws.base,
+                ws.repo.display(),
+                own_gates.lines().collect::<Vec<_>>().join(", ")
+            );
+            ensure!(
+                confirm(&what)?,
+                "the user did not confirm the merge of {}; {} stays where it was (the branch stays rebased)",
+                ws.branch,
+                ws.base
+            );
+        }
         // the tested commit, not the branch: a checkpoint after the gate is not tested
         git(&ws.repo, &["merge", "--quiet", "--ff-only", &tested])?;
         lines.extend([
