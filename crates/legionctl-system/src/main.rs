@@ -609,7 +609,9 @@ fn boot_steps(root: &SysRoot, steps: &[Step]) -> Result<Vec<String>> {
 
 /// A mode that runs once and ends, instead of the daemon: `--safe` (the safe-mode unit), `--boot-confirm` (the unit
 /// after graphical.target), `--boot-rebuild` (the pacman hook after a kernel or initramfs change), `--remove-check` (the pacman hook before the package's removal; it fails
-/// to stop the removal), `--greeter-remove` (the package's removal: GDM back, so the computer keeps a login screen).
+/// to stop the removal), `--greeter-remove` (the package's removal: GDM back, so the computer keeps a login screen),
+/// `--greeter-update` (the package's upgrade: an installed legionctl greeter gets this version's greetd configuration
+/// and folder, with no question; nothing when another login screen is in use).
 fn one_shot(root: &SysRoot) -> Option<Result<()>> {
     let print = |lines: Vec<String>| {
         for line in lines {
@@ -621,6 +623,11 @@ fn one_shot(root: &SysRoot) -> Option<Result<()>> {
         Some("--boot-confirm") => Some(boot_confirm(root)),
         Some("--boot-rebuild") => Some(boot_rebuild(root).map(print)),
         Some("--remove-check") => Some(remove_check(root)),
+        Some("--greeter-update") => Some(
+            greeter::update_plan(root)
+                .and_then(|plan| boot_steps(root, &plan))
+                .map(print),
+        ),
         Some("--greeter-remove") => Some(greeter::state(root).and_then(|state| {
             if state.installed {
                 greeter::remove_plan(root)

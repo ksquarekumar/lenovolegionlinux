@@ -6251,10 +6251,11 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
     }
 
     /// r324's greeter (one window over all monitors, so the login sat at the edge of one; no folder for the last
-    /// desktops): a new install makes greetd's configuration and the folder again, keeps the kept file and changes no
-    /// unit (boot of 2026-10-17).
+    /// desktops): the package's upgrade step (`legionctl-system --greeter-update`, no question) makes greetd's
+    /// configuration and the folder again, keeps the kept file and changes no unit (boot of 2026-10-17); with GDM as
+    /// the login screen it changes nothing; after it, `greeter install` says it is installed already.
     #[tokio::test(flavor = "multi_thread")]
-    async fn an_install_over_r324s_greeter_makes_its_config_and_folder_again() {
+    async fn the_upgrade_gives_r324s_greeter_its_new_config_and_folder() {
         let m = Machine::new("greeterup");
         let root = m.dir.join("root");
         let r324 = "# legionctl greeter (legionctl greeter install; legionctl greeter remove puts /etc/greetd/config.toml.before back)\n[terminal]\nvt = 1\n\n[default_session]\ncommand = \"cage -s -- /usr/lib/legionctl/legionctl-greeter\"\nuser = \"greeter\"\n";
@@ -6267,7 +6268,12 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         m.set("/etc/greetd/config.toml.before", "kept");
         let (_stand_ins, _asked, _processes) = start(&m).await;
         let op = on_bus(&m, "greeterup");
-        op.ok(&["greeter", "install"]);
+        let updated = one_shot(&m, &["--greeter-update"]);
+        assert!(
+            updated.status.success(),
+            "{}",
+            String::from_utf8_lossy(&updated.stderr)
+        );
         let ours = std::fs::read_to_string(root.join("etc/greetd/config.toml")).unwrap();
         assert!(
             ours.contains(
@@ -6293,6 +6299,23 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         );
         let again = op.cli(&["greeter", "install"]);
         assert!(String::from_utf8_lossy(&again.stderr).contains("installed already"));
+
+        // GDM's (another) greetd configuration: the upgrade step leaves it as it is
+        m.set(
+            "/etc/greetd/config.toml",
+            "[default_session]\ncommand = \"agreety\"",
+        );
+        let other = std::fs::read_to_string(root.join("etc/greetd/config.toml")).unwrap();
+        let before = std::fs::read_to_string(m.dir.join("units.log")).unwrap();
+        assert!(one_shot(&m, &["--greeter-update"]).status.success());
+        assert_eq!(
+            std::fs::read_to_string(root.join("etc/greetd/config.toml")).unwrap(),
+            other
+        );
+        assert_eq!(
+            std::fs::read_to_string(m.dir.join("units.log")).unwrap(),
+            before
+        );
     }
 
     /// `legionctl-system` in one of its one-shot modes (`--boot-rebuild`, `--remove-check`) on machine `m`, as a

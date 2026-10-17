@@ -4,6 +4,11 @@ logged_in() {
   loginctl list-users --no-legend | awk '$1 >= 1000 { print $2 }'
 }
 
+# The daemon's binary in its one-shot modes (a test puts a stand-in in its place).
+legionctl_system() {
+  /usr/lib/legionctl/legionctl-system "$@"
+}
+
 post_install() {
   systemctl daemon-reload
   # the package turns legionctl on itself, so no step is left to type (EV-review-11 U-14)
@@ -20,6 +25,8 @@ post_install() {
 
 post_upgrade() {
   systemctl daemon-reload
+  # legionctl's greeter, when it is the login screen, gets this version's greetd configuration and folder
+  legionctl_system --greeter-update
   systemctl try-restart legionctl-system.service
   # each running operator restarts with the new build
   for user in $(logged_in); do
@@ -34,7 +41,7 @@ pre_remove() {
   # the daemon's pinned eBPF sensors (they detach when the daemon stops)
   rm -rf /sys/fs/bpf/legionctl
   # GDM back in place of legionctl's greeter (legionctl greeter install), so the computer keeps a login screen
-  /usr/lib/legionctl/legionctl-system --greeter-remove
+  legionctl_system --greeter-remove
   # the Windows VM's autostart rules, one for each user (legionctl windows vm autostart)
   rm -f /etc/polkit-1/rules.d/49-legionctl-windows-vm-*.rules
 }

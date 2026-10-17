@@ -258,7 +258,12 @@ fn the_package_turns_legionctl_on_and_restarts_each_users_operator_on_upgrade() 
     let run = |step: &str| {
         let _ = std::fs::remove_file(dir.join("systemctl.log"));
         let out = Command::new("sh")
-            .args(["-c", &format!(". \"$0\" && {step}")])
+            .args([
+                "-c",
+                &format!(
+                    ". \"$0\" && legionctl_system() {{ echo \"legionctl-system $*\" >> {d}/systemctl.log; }} && {step}"
+                ),
+            ])
             .arg(
                 Path::new(env!("CARGO_MANIFEST_DIR"))
                     .join("../../packaging/arch/legionctl.install"),
@@ -299,7 +304,7 @@ fn the_package_turns_legionctl_on_and_restarts_each_users_operator_on_upgrade() 
     let (said, ran) = run("post_upgrade");
     assert_eq!(
         ran,
-        "daemon-reload\ntry-restart legionctl-system.service\n\
+        "daemon-reload\nlegionctl-system --greeter-update\ntry-restart legionctl-system.service\n\
          --user -M alice@ daemon-reload\n--user -M alice@ try-restart legionctl-operator.service\n\
          --user -M bob@ daemon-reload\n--user -M bob@ try-restart legionctl-operator.service\n"
     );

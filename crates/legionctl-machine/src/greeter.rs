@@ -81,19 +81,11 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
     let now = state(root)?;
     let ours = config();
     if now.installed {
-        // an older install of ours: its configuration and the greeter's folder are made again; the kept file and the
-        // units stay as they are
-        // the root's read trims the text
-        if root.read(CONFIG)?.as_deref() == Some(ours.trim()) {
+        let update = update_plan(root)?;
+        if update.is_empty() {
             bail!("legionctl's greeter is installed already ({CONFIG})");
         }
-        return Ok(vec![
-            state_folder(root),
-            Step::Create {
-                path: CONFIG.into(),
-                content: ours,
-            },
-        ]);
+        return Ok(update);
     }
     if !now.missing.is_empty() {
         bail!(
@@ -122,6 +114,27 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
     steps.push(systemctl("disable", GDM));
     steps.push(systemctl("enable", GREETD));
     Ok(steps)
+}
+
+/// Plan the package upgrade's step (`legionctl-system --greeter-update`): an older install of ours gets the
+/// configuration and the greeter's folder of this version; the kept file and the units stay as they are. None when
+/// legionctl's greeter is not installed or is of this version.
+///
+/// # Errors
+/// greetd's configuration cannot be read.
+pub fn update_plan(root: &SysRoot) -> Result<Vec<Step>> {
+    let ours = config();
+    // the root's read trims the text
+    match root.read(CONFIG)? {
+        Some(now) if now.starts_with(MARK) && now != ours.trim() => Ok(vec![
+            state_folder(root),
+            Step::Create {
+                path: CONFIG.into(),
+                content: ours,
+            },
+        ]),
+        _ => Ok(Vec::new()),
+    }
 }
 
 /// greetd's configuration of this version: cage shows the greeter on one monitor (`-m last`: with two monitors, the
