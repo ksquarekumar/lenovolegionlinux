@@ -2711,7 +2711,8 @@ fn each_failure_of_the_chat_names_its_cause(cx: &mut TestAppContext) {
         cx,
         &app,
         "no such dossier",
-        "no dossier nobody (dossier list); make it with dossier create nobody",
+        // the user's own use of an unknown name lists the dossiers (user decision 2026-10-17)
+        "no dossier nobody; the dossiers are: port, chat. Make a new one with dossier create nobody",
     );
     send(cx, "/agent missing");
     send(cx, "/chat");

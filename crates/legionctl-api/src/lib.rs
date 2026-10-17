@@ -229,7 +229,7 @@ impl ClientPath {
     pub fn get(&self) -> anyhow::Result<&std::path::Path> {
         anyhow::ensure!(
             self.0.is_absolute(),
-            "path '{}' is not absolute; the client must resolve it (an outdated client? restart it)",
+            "path '{}' is not absolute: give an absolute path",
             self.0.display()
         );
         Ok(&self.0)

@@ -42,9 +42,9 @@ pub fn start(input: &ThreadStartIn) -> Result<Lines> {
     let me = session(&input.session)?;
     let dossier = match &input.dossier {
         Some(d) => d.clone(),
-        None => store
-            .active(me)?
-            .context("this session has no dossier; bind one or give --dossier")?,
+        None => store.active(me)?.context(
+            "this session has no dossier: bind one with dossier use <name>, or give --dossier",
+        )?,
     };
     let Some(team) = &input.team else {
         let id = store.thread_start(Some(me), &input.title, &dossier)?;

@@ -678,11 +678,18 @@ impl Dossiers {
     /// # Errors
     /// There is no dossier `name`.
     pub fn known(&self, name: &str) -> Result<()> {
-        ensure!(
-            valid_name(name) && self.root.join(name).is_dir(),
-            "no dossier {name} (dossier list); make it with dossier create {name}"
-        );
-        Ok(())
+        if valid_name(name) && self.root.join(name).is_dir() {
+            return Ok(());
+        }
+        let names: Vec<String> = self.list()?.into_iter().map(|d| d.name).collect();
+        bail!(
+            "no dossier {name}; the dossiers are: {}. Make a new one with dossier create {name}",
+            if names.is_empty() {
+                "none yet".into()
+            } else {
+                names.join(", ")
+            }
+        )
     }
 
     /// The class folders, `plan.md` with every ledger section, `dossier.jsonc` with a new id and the title, and the
