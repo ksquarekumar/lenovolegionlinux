@@ -500,6 +500,39 @@ pub struct Greeter {
     _subscriptions: Vec<Subscription>,
 }
 
+/// The boot splash stays until this screen shows: legionctl's greetd unit only deactivates plymouth. After the first
+/// frame is on the screen, systemd starts `legionctl-splash-quit.service` (`plymouth quit --retain-splash`; polkit
+/// allows only that start to the user `greeter`). A failure goes to the journal: the screen works without it.
+fn end_splash(window: &Window, runtime: tokio::runtime::Handle, bus: String) {
+    window.on_next_frame(move |window, _| {
+        // the first frame's callback runs before its draw, the second's after it
+        window.on_next_frame(move |_, _| {
+            runtime.spawn(async move {
+                let start = async {
+                    let conn = zbus::connection::Builder::address(bus.as_str())?
+                        .build()
+                        .await?;
+                    conn.call_method(
+                        Some("org.freedesktop.systemd1"),
+                        "/org/freedesktop/systemd1",
+                        Some("org.freedesktop.systemd1.Manager"),
+                        "StartUnit",
+                        &(SPLASH_QUIT, "replace"),
+                    )
+                    .await?;
+                    anyhow::Ok(())
+                };
+                if let Err(e) = start.await {
+                    eprintln!("the boot splash stays: starting {SPLASH_QUIT} failed: {e:#}");
+                }
+            });
+        });
+    });
+}
+
+/// The unit that ends the boot splash once the greeter shows (the package's).
+pub const SPLASH_QUIT: &str = "legionctl-splash-quit.service";
+
 impl Greeter {
     /// The screen on `greetd` with `setup`: the user who logged in last (else the only person) is chosen, and the
     /// login starts at once.
@@ -555,6 +588,7 @@ impl Greeter {
             }
         };
         let first = last.or_else(|| (people.len() == 1).then(|| people[0].clone()));
+        end_splash(window, runtime.clone(), bus.clone());
         let mut greeter = Greeter {
             greetd: Arc::new(Mutex::new(greetd)),
             runtime,

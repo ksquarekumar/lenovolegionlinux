@@ -6444,7 +6444,7 @@ fn the_legionctl_wmi_module_gives_the_legion_wmi_through_sysfs() {
 }
 
 /// The checks of tests/fixtures/daemon-sandbox/run.sh, in their order: each must report ok.
-const DAEMON_SANDBOX_CHECKS: [&str; 20] = [
+const DAEMON_SANDBOX_CHECKS: [&str; 24] = [
     "unit-active",
     "esp-after-start",
     "usr-read-only",
@@ -6453,6 +6453,10 @@ const DAEMON_SANDBOX_CHECKS: [&str; 20] = [
     "greeter-install",
     "greeter-config",
     "greeter-display-manager",
+    "greeter-unit",
+    "greeter-modules",
+    "greeter-splash-quit",
+    "greeter-other-unit-refused",
     "boot-install",
     "boot-loader",
     "boot-image",
@@ -6511,6 +6515,14 @@ fn under_its_own_unit_the_daemon_writes_the_greeter_the_esp_and_the_rules() {
         (
             repo.join("polkit/org.legionctl.policy"),
             "org.legionctl.policy",
+        ),
+        (
+            repo.join("polkit/50-legionctl-greeter.rules"),
+            "50-legionctl-greeter.rules",
+        ),
+        (
+            repo.join("systemd/legionctl-splash-quit.service"),
+            "legionctl-splash-quit.service",
         ),
         (
             repo.join(format!("profiles/{profile}.json")),

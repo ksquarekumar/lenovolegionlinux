@@ -1,10 +1,19 @@
 // legionctl greeter (todo-83): greetd's user "greeter" may, before login, change the Windows VM, the Windows disk and
 // the NVIDIA GPU of the chosen user (org.legionctl.greeter.act) and choose the desktop GPU (org.legionctl.gpu.primary).
-// Nothing else, and no other user.
+// It may also end the boot splash. Nothing else, and no other user.
 polkit.addRule(function (action, subject) {
     if (
         subject.user == 'greeter' &&
         (action.id == 'org.legionctl.greeter.act' || action.id == 'org.legionctl.gpu.primary')
+    ) {
+        return polkit.Result.YES;
+    }
+    // after its first frame, the greeter ends the boot splash (legionctl-splash-quit.service); no other unit
+    if (
+        subject.user == 'greeter' &&
+        action.id == 'org.freedesktop.systemd1.manage-units' &&
+        action.lookup('unit') == 'legionctl-splash-quit.service' &&
+        action.lookup('verb') == 'start'
     ) {
         return polkit.Result.YES;
     }

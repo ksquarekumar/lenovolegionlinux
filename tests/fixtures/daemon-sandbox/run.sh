@@ -36,6 +36,8 @@ install -Dm755 "$here/legionctl-system" /usr/lib/legionctl/legionctl-system
 install -Dm644 "$here/legionctl-system.service" /usr/lib/systemd/system/legionctl-system.service
 install -Dm644 "$here/org.legionctl.System1.conf" /usr/share/dbus-1/system.d/org.legionctl.System1.conf
 install -Dm644 "$here/org.legionctl.policy" /usr/share/polkit-1/actions/org.legionctl.policy
+install -Dm644 "$here/50-legionctl-greeter.rules" /usr/share/polkit-1/rules.d/50-legionctl-greeter.rules
+install -Dm644 "$here/legionctl-splash-quit.service" /usr/lib/systemd/system/legionctl-splash-quit.service
 install -Dm644 -t /usr/share/legionctl/profiles "$here"/profiles/*.json
 mkdir -p /usr/share/legionctl/configsets && cp -r "$here/configsets/." /usr/share/legionctl/configsets/
 install -dm755 /etc/greetd
@@ -43,9 +45,11 @@ install -dm755 /etc/greetd
 install -dm750 /etc/polkit-1/rules.d
 systemctl reload dbus
 
-# greetd (with the user greeter that its package makes), cage, the greeter and its font are there; GDM is the display manager
-for f in /usr/bin/greetd /usr/bin/cage /usr/lib/legionctl/legionctl-greeter; do install -Dm755 /bin/true "$f"; done
+# greetd (with the user greeter that its package makes), cage and the greeter are there; GDM is the display manager
+for f in /usr/bin/greetd /usr/bin/cage /usr/lib/legionctl/legionctl-greeter /usr/bin/plymouth; do install -Dm755 /bin/true "$f"; done
+# the greeter's fonts, and a package's module list that loads the NVIDIA driver (nvidia-utils')
 install -Dm644 /dev/null /usr/share/fonts/noto/NotoSans-Regular.ttf
+echo nvidia-uvm | install -Dm644 /dev/stdin /usr/lib/modules-load.d/nvidia-utils.conf
 id greeter >/dev/null 2>&1 || useradd --system --no-create-home --home-dir / greeter
 for unit in gdm greetd; do
   printf '[Service]\nExecStart=/bin/true\n\n[Install]\nAlias=display-manager.service\n' >"/usr/lib/systemd/system/$unit.service"
@@ -149,6 +153,25 @@ check boot-dry-run-user dry_run
 check greeter-install call Greeter s install
 check greeter-config grep -q '^# legionctl greeter' /etc/greetd/config.toml
 check greeter-display-manager sh -c 'readlink /etc/systemd/system/display-manager.service | grep -q greetd.service'
+# systemd reads legionctl's greetd unit: plymouth quits after the greeter, not before it; and it is a valid unit
+greeter_order() {
+  systemctl daemon-reload
+  local after conflicts
+  after=$(systemctl show -p After --value greetd.service)
+  conflicts=$(systemctl show -p Conflicts --value greetd.service)
+  if grep -qw plymouth-quit.service <<<"$conflicts" && grep -qw plymouth-quit.service <<<"$after" &&
+    ! grep -q plymouth-quit-wait <<<"$after"; then
+    systemd-analyze verify greetd.service
+  else
+    echo "After=$after Conflicts=$conflicts"
+    return 1
+  fi
+}
+check greeter-unit greeter_order
+check greeter-modules sh -c "grep -q '^# legionctl greeter' /etc/modules-load.d/nvidia-utils.conf && ! grep -q '^nvidia' /etc/modules-load.d/nvidia-utils.conf"
+# polkit lets the user greeter start the splash's end and nothing else
+check greeter-splash-quit runuser -u greeter -- systemctl --no-ask-password start legionctl-splash-quit.service
+check greeter-other-unit-refused sh -c '! runuser -u greeter -- systemctl --no-ask-password start gdm.service'
 check boot-install call Boot s install
 check boot-loader grep -q 'unit=/system.slice/legionctl-step-' /boot/efi/EFI/legionctl/grubx64.efi
 check boot-image grep -q 'unit=/system.slice/legionctl-step-' /boot/efi/EFI/Linux/legionctl-linux-test.efi

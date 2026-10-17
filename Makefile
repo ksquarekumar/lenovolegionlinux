@@ -163,6 +163,7 @@ install: ## install into DESTDIR; the PKGBUILD calls this (on this machine: `mak
 	install -Dm644 systemd/legionctl-system.service "$(DESTDIR)$(UNITDIR)/legionctl-system.service"
 	install -Dm644 systemd/legionctl-safe.service "$(DESTDIR)$(UNITDIR)/legionctl-safe.service"
 	install -Dm644 systemd/legionctl-boot-confirm.service "$(DESTDIR)$(UNITDIR)/legionctl-boot-confirm.service"
+	install -Dm644 systemd/legionctl-splash-quit.service "$(DESTDIR)$(UNITDIR)/legionctl-splash-quit.service"
 	install -d "$(DESTDIR)$(UNITDIR)/graphical.target.wants"
 	ln -sf ../legionctl-boot-confirm.service "$(DESTDIR)$(UNITDIR)/graphical.target.wants/legionctl-boot-confirm.service"
 	install -Dm644 -t "$(DESTDIR)$(USERUNITDIR)" systemd/user/legionctl-operator.service systemd/user/legionctl-operator.socket systemd/user/legionctl-windows-vm.service systemd/user/legionctl-clauth.service

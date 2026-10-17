@@ -21,6 +21,12 @@ const MARK: &str = "# legionctl greeter";
 pub const STATE: &str = "/var/lib/legionctl-greeter";
 /// The alias that `systemctl enable` of a display manager makes.
 const DISPLAY_MANAGER: &str = "/etc/systemd/system/display-manager.service";
+/// legionctl's greetd unit: it replaces the unit of greetd's package (a drop-in cannot take away its
+/// `After=plymouth-quit-wait.service`).
+pub const UNIT: &str = "/etc/systemd/system/greetd.service";
+/// Where systemd-modules-load reads its lists: a file of the same name in `/etc` hides the package's.
+const MODULES_ETC: &str = "/etc/modules-load.d";
+const MODULES_USR: &str = "/usr/lib/modules-load.d";
 const GDM: &str = "gdm.service";
 const GREETD: &str = "greetd.service";
 
@@ -85,7 +91,6 @@ fn systemctl(verb: &str, unit: &str) -> Step {
 /// display manager.
 pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
     let now = state(root)?;
-    let ours = config();
     if now.installed {
         let update = update_plan(root)?;
         if update.is_empty() {
@@ -113,12 +118,14 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
             content: old,
         });
     }
-    steps.push(Step::Create {
-        path: CONFIG.into(),
-        content: ours,
-    });
+    steps.extend(
+        files(root)?
+            .into_iter()
+            .map(|(path, content)| Step::Create { path, content }),
+    );
     steps.push(systemctl("disable", GDM));
     steps.push(systemctl("enable", GREETD));
+    steps.extend(nvidia_held(root)?);
     Ok(steps)
 }
 
@@ -129,33 +136,141 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
 /// # Errors
 /// greetd's configuration cannot be read, or the new configuration needs a package that is not installed.
 pub fn update_plan(root: &SysRoot) -> Result<Vec<Step>> {
-    let ours = config();
-    // the root's read trims the text
-    match root.read(CONFIG)? {
-        Some(now) if now.starts_with(MARK) && now != ours.trim() => {
-            let missing = state(root)?.missing;
-            if !missing.is_empty() {
-                bail!(
-                    "legionctl's greeter keeps its old configuration, these are not installed:\n- {}",
-                    missing.join("\n- ")
-                );
-            }
-            Ok(vec![
-                state_folder(root),
-                Step::Create {
-                    path: CONFIG.into(),
-                    content: ours,
-                },
-                // change this line with config()
-                Step::Info(
-                    "login screen: it reads only its own fonts and starts no X server, so it shows sooner at the \
-                     next start"
-                        .into(),
-                ),
-            ])
-        }
-        _ => Ok(Vec::new()),
+    if !root.read(CONFIG)?.is_some_and(|c| c.starts_with(MARK)) {
+        return Ok(Vec::new());
     }
+    let mut changed = Vec::new();
+    for (path, content) in files(root)? {
+        // the root's read trims the text
+        if root.read(&path)?.as_deref() != Some(content.trim()) {
+            changed.push(Step::Create { path, content });
+        }
+    }
+    if changed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let missing = state(root)?.missing;
+    if !missing.is_empty() {
+        bail!(
+            "legionctl's greeter keeps its old configuration, these are not installed:\n- {}",
+            missing.join("\n- ")
+        );
+    }
+    let mut steps = vec![state_folder(root)];
+    steps.extend(changed);
+    steps.push(systemctl_reload());
+    // change this line with the files of this version
+    steps.push(Step::Info(
+        "login screen: the boot splash stays until it shows, and the NVIDIA driver loads beside the boot, not before \
+         it"
+        .into(),
+    ));
+    steps.extend(nvidia_held(root)?);
+    Ok(steps)
+}
+
+/// legionctl's files of the greeter, each with its content: greetd's configuration and unit, and for each module
+/// list of a package that loads the NVIDIA driver, an empty list of the same name in `/etc` (a list of another owner
+/// there stays as it is).
+fn files(root: &SysRoot) -> Result<Vec<(String, String)>> {
+    let mut files = vec![(CONFIG.to_string(), config()), (UNIT.to_string(), unit())];
+    for name in lists(root, MODULES_USR)?
+        .into_iter()
+        .filter(|(_, text)| loads_nvidia(text))
+        .map(|(name, _)| name)
+    {
+        let path = format!("{MODULES_ETC}/{name}");
+        if root.read(&path)?.is_none_or(|t| t.starts_with(MARK)) {
+            files.push((
+                path,
+                format!(
+                    "{MARK}: the NVIDIA driver of {MODULES_USR}/{name} loads from udev beside the boot (its \
+                     60-nvidia.rules loads nvidia-uvm), not before the login screen\n"
+                ),
+            ));
+        }
+    }
+    Ok(files)
+}
+
+/// The `*.conf` files of the folder `dir` with their text, by name.
+fn lists(root: &SysRoot, dir: &str) -> Result<Vec<(String, String)>> {
+    let Ok(entries) = std::fs::read_dir(root.path(dir)) else {
+        return Ok(Vec::new());
+    };
+    let mut lists = Vec::new();
+    for entry in entries {
+        let name = entry?.file_name().to_string_lossy().into_owned();
+        // systemd reads `*.conf` with this case only
+        if let Some(text) = std::path::Path::new(&name)
+            .extension()
+            .is_some_and(|e| e == "conf")
+            .then(|| root.read(format!("{dir}/{name}")))
+            .transpose()?
+            .flatten()
+        {
+            lists.push((name, text));
+        }
+    }
+    lists.sort();
+    Ok(lists)
+}
+
+/// Whether the module list `text` loads an NVIDIA module.
+fn loads_nvidia(text: &str) -> bool {
+    text.lines().any(|l| l.trim_start().starts_with("nvidia"))
+}
+
+/// The user's one step when a list in `/etc` that is not legionctl's still loads the NVIDIA driver before the login
+/// screen: legionctl does not change a file of another owner.
+fn nvidia_held(root: &SysRoot) -> Result<Option<Step>> {
+    let held: Vec<String> = lists(root, MODULES_ETC)?
+        .into_iter()
+        .filter(|(_, text)| !text.starts_with(MARK) && loads_nvidia(text))
+        .map(|(name, _)| format!("{MODULES_ETC}/{name}"))
+        .collect();
+    Ok((!held.is_empty()).then(|| {
+        Step::Info(format!(
+            "the NVIDIA driver still loads before the login screen: remove {} once (udev loads the driver): sudo rm {}",
+            held.join(" and "),
+            held.join(" ")
+        ))
+    }))
+}
+
+/// legionctl's greetd unit (greetd's own, with GDM's hand-over of the boot splash): plymouth does not quit before
+/// the login screen; it lets go of the screen (`deactivate`, the splash stays on it), and the greeter ends it after
+/// its first frame (`legionctl-splash-quit.service`). Before that, `udevadm settle` waits for udev's loads, so the
+/// NVIDIA driver and its monitors are there when cage starts (boot of 2026-10-17: nvidia-drm at 10.25 s, after a
+/// 3.29 s systemd-modules-load that held sysinit.target); after 10 s the login screen starts without them.
+fn unit() -> String {
+    format!(
+        "{MARK} (legionctl greeter install; legionctl greeter remove takes it away, greetd's own unit is back)\n\
+         [Unit]\n\
+         Description=Greeter daemon (legionctl: the boot splash stays until the login screen shows)\n\
+         Conflicts=getty@tty1.service plymouth-quit.service\n\
+         After=getty@tty1.service plymouth-quit.service plymouth-start.service systemd-user-sessions.service\n\
+         OnFailure=plymouth-quit.service\n\
+         StartLimitBurst=5\n\
+         StartLimitIntervalSec=30\n\n\
+         [Service]\n\
+         Type=simple\n\
+         ExecStartPre=-/usr/bin/udevadm settle --timeout=10\n\
+         ExecStartPre=-/usr/bin/plymouth deactivate\n\
+         ExecStart=/usr/bin/greetd\n\
+         IgnoreSIGPIPE=no\n\
+         SendSIGHUP=yes\n\
+         TimeoutStopSec=30s\n\
+         KeyringMode=shared\n\
+         Restart=always\n\
+         RestartSec=1\n\n\
+         [Install]\n\
+         Alias=display-manager.service\n"
+    )
+}
+
+fn systemctl_reload() -> Step {
+    Step::Run(vec!["systemctl".into(), "daemon-reload".into()])
 }
 
 /// greetd's configuration of this version: cage shows the greeter on one monitor (`-m last`: with two monitors, the
@@ -215,6 +330,16 @@ pub fn remove_plan(root: &SysRoot) -> Result<Vec<Step>> {
         }],
     };
     steps.push(systemctl("disable", GREETD));
+    steps.push(Step::Remove { path: UNIT.into() });
+    for (name, _) in lists(root, MODULES_ETC)?
+        .into_iter()
+        .filter(|(_, text)| text.starts_with(MARK))
+    {
+        steps.push(Step::Remove {
+            path: format!("{MODULES_ETC}/{name}"),
+        });
+    }
+    steps.push(systemctl_reload());
     steps.push(systemctl("enable", GDM));
     Ok(steps)
 }

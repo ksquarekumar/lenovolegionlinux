@@ -1,0 +1,9 @@
+# legionctl's greeter starts this unit after its first frame (polkit allows only this start to the user greeter):
+# legionctl's greetd unit lets the boot splash stay on the screen until then, as GDM does.
+[Unit]
+Description=End the boot splash: the login screen shows
+ConditionPathExists=/run/plymouth/pid
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/plymouth quit --retain-splash

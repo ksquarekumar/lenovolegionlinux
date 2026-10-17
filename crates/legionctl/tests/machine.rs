@@ -6289,7 +6289,8 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             "/etc/passwd",
             "root:x:0:0::/root:/bin/bash\ngreeter:x:932:932::/:/bin/bash",
         );
-        op.ok(&["greeter", "install"]);
+        let users_list = r340_module_lists(&m);
+        handover_files(&root, &op.ok(&["greeter", "install"]));
         let ours = config();
         assert!(
             ours.starts_with("# legionctl greeter")
@@ -6341,6 +6342,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         op.ok(&["greeter", "remove"]);
         assert_eq!(config(), original);
         assert!(!root.join("etc/greetd/config.toml.before").exists());
+        handover_files_gone(&root, users_list);
         assert_eq!(
             unit_changes()[2..],
             ["disable greetd.service", "enable gdm.service"]
@@ -6350,6 +6352,65 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             status.contains("display manager at the next start: gdm.service"),
             "{status}"
         );
+    }
+
+    /// r340's module lists (boot b of 2026-10-17): nvidia-utils' list, the user's list of no package (returned), and
+    /// another.
+    fn r340_module_lists(m: &Machine) -> &'static str {
+        m.set(
+            "/usr/lib/modules-load.d/nvidia-580xx-utils.conf",
+            "nvidia-uvm",
+        );
+        m.set("/usr/lib/modules-load.d/ntsync.conf", "ntsync");
+        let users_list = "nvidia\nnvidia_modeset\nnvidia-uvm\nnvidia_drm";
+        m.set("/etc/modules-load.d/nvidia.conf", users_list);
+        users_list
+    }
+
+    /// After remove: greetd's own unit is back and the hidden list is shown again; the user's list stays.
+    fn handover_files_gone(root: &Path, users_list: &str) {
+        assert!(!root.join("etc/systemd/system/greetd.service").exists());
+        assert!(
+            !root
+                .join("etc/modules-load.d/nvidia-580xx-utils.conf")
+                .exists()
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("etc/modules-load.d/nvidia.conf"))
+                .unwrap()
+                .trim(),
+            users_list
+        );
+    }
+
+    /// legionctl's greeter files of boot-handover-2 (todo-200 item 1) after an install on r340's module lists: greetd's
+    /// unit lets plymouth stay until the greeter, waits for udev's loads, and has no plymouth-quit-wait; the package's
+    /// NVIDIA list is hidden by an empty one; another list stays; the user's own list is one step in `said`.
+    fn handover_files(root: &Path, said: &str) {
+        assert!(
+            said.contains("sudo rm /etc/modules-load.d/nvidia.conf"),
+            "the one step for the list legionctl does not change: {said}"
+        );
+        let unit = std::fs::read_to_string(root.join("etc/systemd/system/greetd.service")).unwrap();
+        for line in [
+            "Conflicts=getty@tty1.service plymouth-quit.service",
+            "ExecStartPre=-/usr/bin/udevadm settle --timeout=10",
+            "ExecStartPre=-/usr/bin/plymouth deactivate",
+            "ExecStart=/usr/bin/greetd",
+            "Alias=display-manager.service",
+        ] {
+            assert!(unit.lines().any(|l| l == line), "{line} in {unit}");
+        }
+        assert!(!unit.contains("plymouth-quit-wait"), "{unit}");
+        let hidden =
+            std::fs::read_to_string(root.join("etc/modules-load.d/nvidia-580xx-utils.conf"))
+                .unwrap();
+        assert!(
+            hidden.starts_with("# legionctl greeter")
+                && !hidden.lines().any(|l| l.starts_with("nvidia")),
+            "{hidden}"
+        );
+        assert!(!root.join("etc/modules-load.d/ntsync.conf").exists());
     }
 
     /// r324's greeter (one window over all monitors, so the login sat at the edge of one; no folder for the last
@@ -6389,12 +6450,23 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             "{}",
             String::from_utf8_lossy(&updated.stderr)
         );
-        // one line for the upgrade's output
+        // one line for the upgrade's output; greetd's unit of legionctl; systemd reads it again
         assert!(
             String::from_utf8_lossy(&updated.stdout).contains(
-                "login screen: it reads only its own fonts and starts no X server, so it shows sooner at the next start"
+                "login screen: the boot splash stays until it shows, and the NVIDIA driver loads beside the boot, not before it"
             ),
             "{updated:?}"
+        );
+        assert!(
+            std::fs::read_to_string(root.join("etc/systemd/system/greetd.service"))
+                .unwrap()
+                .contains("ExecStartPre=-/usr/bin/plymouth deactivate")
+        );
+        assert!(
+            std::fs::read_to_string(&log)
+                .unwrap()
+                .lines()
+                .any(|l| l == "daemon-reload")
         );
         let ours = std::fs::read_to_string(root.join("etc/greetd/config.toml")).unwrap();
         assert!(

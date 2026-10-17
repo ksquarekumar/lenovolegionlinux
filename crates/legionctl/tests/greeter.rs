@@ -279,6 +279,19 @@ impl Logind {
 
 struct Daemon(Calls);
 
+struct Systemd(Calls);
+
+#[zbus::interface(name = "org.freedesktop.systemd1.Manager")]
+impl Systemd {
+    fn start_unit(&self, name: &str, mode: &str) -> zbus::zvariant::OwnedObjectPath {
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("StartUnit {name} {mode}"));
+        zbus::zvariant::OwnedObjectPath::try_from("/org/freedesktop/systemd1/job/1").unwrap()
+    }
+}
+
 #[zbus::interface(name = "org.legionctl.System1")]
 impl Daemon {
     fn greeter_act(&self, user: &str, action: &str) -> Vec<String> {
@@ -290,7 +303,7 @@ impl Daemon {
     }
 }
 
-/// A private bus in `dir` with the stand-in logind and daemon; returns their calls, the bus's address and what keeps
+/// A private bus in `dir` with the stand-in logind, daemon and systemd; returns their calls, the bus's address and what keeps
 /// them running.
 fn bus(dir: &Path, runtime: &tokio::runtime::Runtime) -> (Calls, String, Kill, zbus::Connection) {
     let path = dir.join("bus");
@@ -312,6 +325,10 @@ fn bus(dir: &Path, runtime: &tokio::runtime::Runtime) -> (Calls, String, Kill, z
             .name("org.freedesktop.login1")
             .unwrap()
             .name("org.legionctl.System1")
+            .unwrap()
+            .name("org.freedesktop.systemd1")
+            .unwrap()
+            .serve_at("/org/freedesktop/systemd1", Systemd(calls.clone()))
             .unwrap()
             .serve_at("/org/freedesktop/login1", Logind(calls.clone()))
             .unwrap()
@@ -702,5 +719,38 @@ fn the_machine_choices_for_a_user_wait_for_a_user(cx: &mut TestAppContext) {
         screen.read_with(vcx, |g, _| g.note.clone()).as_deref(),
         Some("vm-start for alice")
     );
+    drop(runtime);
+}
+
+/// The boot splash stays until the greeter shows (todo-200): legionctl's greetd unit only deactivates plymouth, and the
+/// greeter asks systemd to start legionctl-splash-quit.service once its first frame is drawn, not before.
+#[gpui_kit::test]
+fn the_first_frame_ends_the_boot_splash(cx: &mut TestAppContext) {
+    let (stand_in, _) = greetd("splash", false, None);
+    let socket = stand_in.join("greetd.sock");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (calls, address, _bus, _conn) = bus(&stand_in, &runtime);
+    let found = found(&socket);
+    let remembered = Remembered(socket.with_file_name("last-sessions"));
+    cx.update(gpui_kit::init);
+    let (_screen, mut vcx) = open_screen(
+        cx,
+        Greetd::connect(&socket).unwrap(),
+        setup(&found, &["alice"], &remembered, &address),
+        runtime.handle().clone(),
+    );
+    let start = "StartUnit legionctl-splash-quit.service replace";
+    let asked = |calls: &Calls| calls.lock().unwrap().iter().any(|c| c == start);
+    // the first frame's callback runs before its draw: no call yet
+    vcx.update(gpui_kit::Window::simulate_next_frame);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!asked(&calls), "{:?}", calls.lock().unwrap());
+    vcx.update(gpui_kit::Window::simulate_next_frame);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !asked(&calls) {
+        assert!(Instant::now() < deadline, "{:?}", calls.lock().unwrap());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(*calls.lock().unwrap(), [start], "one start, nothing else");
     drop(runtime);
 }

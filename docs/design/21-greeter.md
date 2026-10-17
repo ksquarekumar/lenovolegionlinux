@@ -13,6 +13,20 @@ it waits for todo-17, and the screen shows nothing for it.
   noto-fonts files) and has no `DISPLAY`. Boot of 2026-10-17 (boot-handover): GPUI parsed every system font (1543
   faces, 2.4 GB) before its first frame, 3.5 s; and NVIDIA's Vulkan driver connected to `DISPLAY`, so cage started
   Xwayland before the first frame. The package needs noto-fonts for the greeter (install and upgrade check it).
+- The boot splash stays until the greeter shows (todo-200 item 1, as GDM does). legionctl writes its own
+  `/etc/systemd/system/greetd.service` (greetd's package unit has `After=plymouth-quit-wait.service`, which a drop-in
+  cannot take away): `Conflicts=` and `After=plymouth-quit.service`, `ExecStartPre=-plymouth deactivate` (plymouth
+  lets go of the screen, the splash stays on it); after its first frame the greeter starts
+  `legionctl-splash-quit.service` (`plymouth quit --retain-splash`; the polkit rule allows only that start to
+  `greeter`). Before boot b of 2026-10-17, plymouth quit at 11.45 s and cage drew at 12.54 s: the console frame
+  showed between.
+- The NVIDIA driver loads beside the boot, not before it. Boot b: systemd-modules-load loaded nvidia, nvidia_modeset,
+  nvidia_uvm and nvidia_drm for 3.29 s, and sysinit.target (so greetd) waited. udev loads the driver by itself
+  (modalias of nvidia and nvidia_drm; nvidia-utils' 60-nvidia.rules loads nvidia_uvm when nvidia binds). legionctl
+  hides each module list of a package that loads nvidia (`/usr/lib/modules-load.d/<name>`) with an empty list of
+  the same name in `/etc/modules-load.d`; greetd's unit runs `udevadm settle --timeout=10` first, so the monitors
+  on the NVIDIA GPU are there when cage starts. A list in `/etc` of another owner (here `nvidia.conf`, of no package)
+  is not changed: install and upgrade say the one step (`sudo rm <file>`).
 - The screen is dark and shows little text (todo-150, 2026-10-17): the people of the computer as avatars (uid 1000 to
   65533 with a login shell), the session chips, and a bar with "Before login" at the left and Suspend, Restart and
   Power off at the right.
@@ -114,8 +128,9 @@ Install does these steps in this order:
 2. It writes `/etc/greetd/config.toml` (first line `# legionctl greeter`): VT 1,
    `systemd-cat -t legionctl-greeter cage -s -m last -- env -u DISPLAY FONTCONFIG_FILE=<fonts.conf> legionctl-greeter`
    as `greeter`.
-3. `systemctl disable gdm.service`. GDM stays installed.
-4. `systemctl enable greetd.service`. The `display-manager.service` alias is one link, so GDM must go first.
+3. It writes `/etc/systemd/system/greetd.service` and the empty NVIDIA module lists (above).
+4. `systemctl disable gdm.service`. GDM stays installed.
+5. `systemctl enable greetd.service`. The `display-manager.service` alias is one link, so GDM must go first.
 
 The change has an effect at the next start.
 
