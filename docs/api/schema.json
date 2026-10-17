@@ -2178,6 +2178,60 @@
           "text": {
             "description": "One plain sentence for the user: the agent, its use or why there is none, clauth's state of the account,\nand when it was read.",
             "type": "string"
+          },
+          "actions": {
+            "description": "The step that gets the use read (Start clauth), as a button.",
+            "type": "array",
+            "items": {
+              "description": "An action of a resource: the operation it runs, with this input.",
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "op": {
+                  "description": "The operation (`knobs.release`), which runs as a call of its own.",
+                  "type": "string"
+                },
+                "input": true,
+                "class": {
+                  "description": "The operation's permission class.",
+                  "oneOf": [
+                    {
+                      "description": "Reads only; no gate.",
+                      "type": "string",
+                      "const": "read"
+                    },
+                    {
+                      "description": "Changes only the caller's own session: its dossier, its workspace, its hooks. An agent calls these freely.",
+                      "type": "string",
+                      "const": "session"
+                    },
+                    {
+                      "description": "Changes your files and settings or other sessions; when an agent calls it, legionctl asks you first in a\ndesktop notice.",
+                      "type": "string",
+                      "const": "workspace"
+                    },
+                    {
+                      "description": "Changes the machine; `legionctl-system` asks for polkit approval. An operation that changes something without\nthe daemon (your own rule layers, a kernel build, the Windows VM's guest or overlay) is `Workspace`: polkit\nasks only for the daemon's part of it.",
+                      "type": "string",
+                      "const": "machine"
+                    }
+                  ]
+                },
+                "dry_run": {
+                  "description": "The operation has a dry run of its own.",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "name",
+                "op",
+                "input",
+                "class",
+                "dry_run"
+              ]
+            }
           }
         },
         "required": [
@@ -2186,7 +2240,8 @@
           "active",
           "agent",
           "windows",
-          "text"
+          "text",
+          "actions"
         ]
       },
       "title": "Array_of_AccountUsage",
@@ -2214,9 +2269,10 @@
             "description": "The folder it worked in.",
             "type": "string"
           },
-          "updated": {
-            "description": "When it last wrote (ISO 8601).",
-            "type": "string"
+          "updated_at": {
+            "description": "When it last wrote.",
+            "type": "integer",
+            "format": "int64"
           },
           "profile": {
             "description": "The clauth account it last ran on; none: clauth does not know.",
@@ -2229,7 +2285,7 @@
         "required": [
           "id",
           "workspace",
-          "updated"
+          "updated_at"
         ]
       },
       "title": "Array_of_ClauthSession",
@@ -3935,7 +3991,7 @@
       "properties": {
         "service": {
           "type": "string",
-          "description": "The service: legionctl-system or legionctl-operator."
+          "description": "The service: legionctl-system, legionctl-operator or clauth daemon."
         }
       },
       "required": [

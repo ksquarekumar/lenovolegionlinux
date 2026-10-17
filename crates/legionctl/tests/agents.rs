@@ -1149,15 +1149,7 @@ fn account_use_comes_from_clauths_status_feed_in_one_plain_sentence() {
         text("spare", "codex"),
         "Codex: clauth does not show spare (it is turned off in clauth)."
     );
-    assert_eq!(
-        text("changed", "claude"),
-        "Claude Code: clauth's daemon does not run, so the use is not read. Set up starts it."
-    );
-    std::fs::write(home.join("legionctl-clauth.service"), "").unwrap();
-    assert_eq!(
-        row(&a.read(&[]), "changed", "claude")["text"],
-        "Claude Code: clauth has not read the use yet."
-    );
+    no_daemon_starts_with_its_button_and_sessions_show_local_time(&a, &usage);
     let cli = a.lab.op.ok(&["agents", "accounts", "usage"]);
     let seed = a.lab.op.ok(&["views", "render", "accounts"]);
     // the seed's terminal form ends with its actions for agents (operation names): the rows are the user's
@@ -1183,6 +1175,73 @@ fn account_use_comes_from_clauths_status_feed_in_one_plain_sentence() {
     );
 
     another_schema_is_one_error(&a);
+}
+
+/// No daemon (lead walk r361): the action is the message, a Start clauth button on the row and no sentence about the
+/// mechanism; the CLI line names the same step, and the step starts clauth's daemon. Claude Code's sessions as clauth
+/// lists them show the time in local time (not clauth's UTC text) and no account column (clauth names none for a
+/// session it did not start).
+fn no_daemon_starts_with_its_button_and_sessions_show_local_time(a: &AccountsLab, usage: &Value) {
+    let home = a.lab.home.to_path_buf();
+    assert_eq!(
+        row(usage, "changed", "claude")["text"],
+        "Claude Code: use unknown."
+    );
+    let start = &row(usage, "changed", "claude")["actions"][0];
+    assert_eq!(
+        (&start["name"], &start["op"], &start["input"]),
+        (
+            &json!("Start clauth"),
+            &json!("setup.turn-on"),
+            &json!({"service": "clauth daemon"})
+        ),
+        "{usage:#}"
+    );
+    let cli = a.lab.op.ok(&["agents", "accounts", "usage"]);
+    assert!(
+        cli.contains(
+            "Claude Code: use unknown. Start clauth: legionctl setup turn-on 'clauth daemon'"
+        ),
+        "{cli}"
+    );
+    let seed = a.lab.op.ok(&["views", "render", "accounts", "--json"]);
+    assert!(seed.contains("Start clauth"), "the row's button: {seed}");
+    // its step: the CLI line as it is printed starts clauth's daemon (its user unit), and the use is read
+    let started = a.lab.op.ok(&["setup", "turn-on", "clauth daemon"]);
+    assert!(
+        started.contains("clauth daemon: started (legionctl-clauth.service)"),
+        "{started}"
+    );
+    assert_eq!(
+        row(&a.read(&[]), "changed", "claude")["text"],
+        "Claude Code: clauth has not read the use yet."
+    );
+    // Claude Code's sessions as clauth lists them: the time in local time (not clauth's UTC text), and no account
+    // column (clauth names none for a session it did not start)
+    let at = "2026-10-17T21:58:30+00:00";
+    write(
+        &home.join("clauth-sessions.json"),
+        &json!([{"id": "s1", "last_ran_profile": null, "workspace": "/data/git/agency", "updated": at,
+                 "first_message": "hi", "last_message": null, "tokens": null, "cost": null}])
+        .to_string(),
+    );
+    let local = std::process::Command::new("date")
+        .args(["-d", at, "+%Y-%m-%d %H:%M"])
+        .output()
+        .unwrap();
+    let local = String::from_utf8(local.stdout).unwrap().trim().to_string();
+    let seed = a.lab.op.ok(&["views", "render", "accounts"]);
+    let sessions = seed
+        .split("Claude Code sessions")
+        .nth(1)
+        .unwrap_or_else(|| panic!("{seed}"));
+    assert!(
+        sessions.contains(&local)
+            && sessions.contains("/data/git/agency")
+            && !sessions.contains(at),
+        "{local}: {sessions}"
+    );
+    assert!(!sessions.contains("Account"), "{sessions}");
 }
 
 /// A status feed of another schema is one error that names both versions.
@@ -1221,9 +1280,13 @@ fn without_clauth_the_current_logins_show_and_setup_installs_and_starts_it() {
     );
     let usage: Value =
         serde_json::from_str(&lab.op.ok(&["agents", "accounts", "usage", "--json"])).unwrap();
+    let current = row(&usage, "current", "claude");
     assert_eq!(
-        row(&usage, "current", "claude")["text"],
-        "Claude Code, the current login: clauth is not installed, so the use is not read. Set up installs it."
+        (&current["text"], &current["actions"][0]["name"]),
+        (
+            &json!("Claude Code, the current login: use unknown."),
+            &json!("Install clauth")
+        )
     );
     let item = |what: &str| -> String {
         let check: Value = serde_json::from_str(&lab.op.ok(&["setup", "check", "--json"])).unwrap();

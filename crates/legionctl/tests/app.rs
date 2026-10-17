@@ -741,12 +741,12 @@ fn the_code_graph_seed_opens_levels_on_click_marks_changes_and_shows_what_uses_a
 }
 
 /// The chat bar's text in a view tab is a message for the ui-composer (DESIGN-09 G5, user 2026-10-17: one input, one
-/// meaning). The intent of a seed opens it from the store: no model runs (no session.run). A new intent goes to the
-/// ui-composer (the chat bar's agent with its model from `views.composer_models`) with the tab's view: its answer is
-/// the view's next version (Health, version 1), and the intent is a fact of the user; the same intent again, from
-/// another tab, opens that view with no model.
+/// meaning) with the tab's view, and it never opens another view (lead walk r361: "Hi" in Apps and GPU opened
+/// Dossiers, a view an agent had kept for "hi"): the words of a seed's intent go to the composer too, and the tab
+/// stays. A wish for the view (the chat bar's agent with its model from `views.composer_models`) gets the view's next
+/// version (Health, version 1), and its words are an agent's fact; the same words from another tab do not open it.
 #[gpui_kit::test]
-fn an_intent_opens_a_stored_view_with_no_model_and_a_new_one_gets_the_composers_view(
+fn a_message_in_a_view_tab_goes_to_the_composer_and_never_opens_another_view(
     cx: &mut TestAppContext,
 ) {
     let (op, home, repo) = thread_lab("intent");
@@ -776,11 +776,17 @@ fn an_intent_opens_a_stored_view_with_no_model_and_a_new_one_gets_the_composers_
             window.press("enter", cx);
         });
     };
+    app.update(cx, |a, cx| a.open_tab(view("health"), cx));
+    // Health's own words: the composer answers in its tab, with no other view
     say(cx, "what is wrong with the machine");
-    wait(cx, &app, "the stored view", |a| {
-        a.tab().is_some_and(|t| t.key().starts_with("view:health:"))
+    wait(cx, &app, "the composer's words", |a| {
+        a.state.message.is_some()
     });
-    assert_eq!(runs(), 0, "a stored view answers with no model");
+    app.read_with(cx, |a, _| {
+        assert!(a.tab().is_some_and(|t| t.key().starts_with("view:health:")));
+        assert_eq!(a.screen.view().unwrap().version, 0, "no new version");
+    });
+    assert_eq!(runs(), 1);
 
     say(cx, "fan speeds of the machine");
     wait(cx, &app, "the composer's view", |a| {
@@ -807,7 +813,7 @@ fn an_intent_opens_a_stored_view_with_no_model_and_a_new_one_gets_the_composers_
             "the spec is taken out of the words: {said}"
         );
     });
-    assert_eq!(runs(), 1);
+    assert_eq!(runs(), 2);
     let facts: serde_json::Value = serde_json::from_str(&lab_cli(
         &op,
         &home,
@@ -830,13 +836,98 @@ fn an_intent_opens_a_stored_view_with_no_model_and_a_new_one_gets_the_composers_
 
     cx.update(|window, cx| window.click("nav-resources", cx));
     say(cx, "Fan speeds of the machine?");
-    wait(cx, &app, "the stored answer", |a| {
-        a.tab().is_some_and(|t| t.key().starts_with("view:health:"))
+    wait(cx, &app, "the composer's answer", |_| runs() == 3);
+    cx.run_until_parked();
+    app.read_with(cx, |a, _| {
+        assert!(
+            a.tab()
+                .is_some_and(|t| t.key().starts_with("view:resources:")),
+            "the tab stays: {:?}",
+            a.tab()
+        );
     });
-    assert_eq!(
-        runs(),
-        1,
-        "the same intent again: the stored view, no model"
+    drop(runtime);
+}
+
+/// Lead walk r361: "Hi" in the Dossiers tab showed "The view is ready." and the agent's Markdown showed raw in the
+/// chat. In a view tab, "Hi" goes to the composer (Codex's ACP adapter as it answers live, replayed:
+/// tests/fixtures/codex-acp-hi.jsonl); its words show under the tab as Markdown (bold, a list, a code block), the tab
+/// keeps its view and version, and a selection of the whole answer copies the words with no Markdown marks.
+#[gpui_kit::test]
+fn hi_in_a_view_tab_shows_the_agents_words_as_markdown_and_keeps_the_view(cx: &mut TestAppContext) {
+    let (op, home, repo) = thread_lab("hi");
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    write(
+        &home.join(".config/legionctl/zz-codex.jsonc"),
+        &serde_json::json!({
+            "session": {"acp": {"codex": ["python3", fixtures.join("replay-acp-agent.py"),
+                                          fixtures.join("codex-acp-hi.jsonl")]},
+                        "scope": false, "writable": []},
+            "app": {"agent": "codex"}
+        })
+        .to_string(),
+    );
+    write(
+        &home.join(".codex/auth.json"),
+        r#"{"tokens": {"refresh_token": "r-codex-of-the-user"}}"#,
+    );
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
+    let cx = &mut vcx;
+    app.update(cx, |a, cx| a.open_tab(view("dossiers"), cx));
+    wait(cx, &app, "the Dossiers view", |a| a.screen.view().is_some());
+    let version = app.read_with(cx, |a, _| a.screen.view().unwrap().version);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("chat", cx);
+        window.input("Hi", cx);
+        window.press("enter", cx);
+    });
+    wait(cx, &app, "the agent's words", |a| a.state.message.is_some());
+    app.read_with(cx, |a, _| {
+        let said = a.state.message.clone().unwrap();
+        assert!(
+            said.starts_with("Hi! I make the views of this tab."),
+            "{said}"
+        );
+        plain::assert_plain("the answer to Hi", &said);
+        assert!(
+            a.tab()
+                .is_some_and(|t| t.key().starts_with("view:dossiers:"))
+        );
+        assert_eq!(a.screen.view().unwrap().version, version, "no new version");
+    });
+    // the whole answer, selected and copied: its words, rendered (no ** or list marks)
+    cx.update(|_, cx| cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("-".into())));
+    let all = cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.find("message-text").bounds()
+    });
+    let plain_mods = gpui_kit::Modifiers::default();
+    let (from, to) = (
+        point(all.origin.x + px(1.), all.origin.y + px(1.)),
+        point(
+            all.origin.x + all.size.width - px(1.),
+            all.origin.y + all.size.height - px(1.),
+        ),
+    );
+    cx.simulate_mouse_down(from, gpui_kit::MouseButton::Left, plain_mods);
+    cx.update(TestWindowExt::render_frame);
+    cx.simulate_mouse_move(to, Some(gpui_kit::MouseButton::Left), plain_mods);
+    cx.update(TestWindowExt::render_frame);
+    cx.simulate_mouse_up(to, gpui_kit::MouseButton::Left, plain_mods);
+    cx.update(|window, cx| window.press("ctrl-c", cx));
+    let copied = cx
+        .update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text()))
+        .unwrap_or_default();
+    assert!(
+        copied.contains("What I can do")
+            && copied.contains("change this view")
+            && copied.contains("show the memory use as a chart"),
+        "{copied}"
+    );
+    assert!(
+        !copied.contains("**") && !copied.contains("```"),
+        "{copied}"
     );
     drop(runtime);
 }
@@ -3567,8 +3658,8 @@ fn the_app_thread_page_updates_from_the_event_stream(cx: &mut TestAppContext) {
 /// The thread lab with the clauth profiles work (5h 42%), spare (5h 10%), alt (active, the current login) and side,
 /// each with a Claude login, the stand-in clauth with their use, and two more team threads of vanilla: 2 with teammates (session main is Claude
 /// Code's), 3 with operator members (a session of the agent fake) whose observer0 runs on work.
-fn accounts_lab() -> (Operator, PathBuf, PathBuf) {
-    let (op, home, repo) = thread_lab("acct");
+fn accounts_lab(tag: &str) -> (Operator, PathBuf, PathBuf) {
+    let (op, home, repo) = thread_lab(tag);
     // thread 2: teammates (session main is Claude Code's), before observer0's config has an account
     lab_cli(
         &op,
@@ -3652,7 +3743,7 @@ fn accounts_lab() -> (Operator, PathBuf, PathBuf) {
 /// and the operation refuses it (V1).
 #[gpui_kit::test]
 fn the_member_chip_shows_its_account_usage_and_the_picker_sets_it(cx: &mut TestAppContext) {
-    let (op, home, repo) = accounts_lab();
+    let (op, home, repo) = accounts_lab("acct");
     let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
     let cx = &mut vcx;
     app.update(cx, |a, cx| a.open_tab(Tab::Thread { id: 3 }, cx));
@@ -3666,7 +3757,7 @@ fn the_member_chip_shows_its_account_usage_and_the_picker_sets_it(cx: &mut TestA
             .find(|m| m.name == "observer0")
             .unwrap();
         assert_eq!(observer.account.as_deref(), Some("work"));
-        assert_eq!(a.screen.usage_of(Some("work")), "claude 5h 42% 7d 8%");
+        assert_eq!(a.screen.usage_of(Some("work")), "Claude 5h 42% 7d 8%");
         // the chip's tooltip: clauth's state of the account in one plain sentence
         let state = a.screen.account_state(Some("work"));
         plain::assert_plain("the accounts", &state);
@@ -3676,7 +3767,7 @@ fn the_member_chip_shows_its_account_usage_and_the_picker_sets_it(cx: &mut TestA
         );
         assert_eq!(
             a.screen.usage_of(None),
-            "claude 5h 21% 7d 8%",
+            "Claude 5h 21% 7d 8%",
             "the current login is alt"
         );
     });
@@ -3747,6 +3838,51 @@ fn the_member_chip_shows_its_account_usage_and_the_picker_sets_it(cx: &mut TestA
     });
 
     a_teammates_account_cannot_be_picked(cx, &app, (&op, &home, &repo));
+    drop(runtime);
+}
+
+/// Lead walk r361: the chat bar's chip said "current login · claude no use read · codex no use read". When clauth's
+/// daemon does not run, the chip says the use in a few words and its action is the button beside it: Start clauth,
+/// which asks first (it starts a service of the user) and runs clauth's daemon step; the detail is in the tooltip.
+#[gpui_kit::test]
+fn with_no_clauth_daemon_the_chip_says_use_unknown_and_offers_start_clauth(
+    cx: &mut TestAppContext,
+) {
+    let (op, home, repo) = accounts_lab("acct-fix");
+    // clauth has not read the use of alt (the current login), and its daemon does not run
+    clauth::status(&home, &[clauth::profile("alt", "claude", true, &[], None)]);
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
+    let cx = &mut vcx;
+    app.update(cx, |a, cx| a.open_tab(Tab::Thread { id: 3 }, cx));
+    wait(cx, &app, "the usage", |a| {
+        a.screen.thread.as_ref().is_some_and(|t| t.thread.id == 3) && !a.screen.usage.is_empty()
+    });
+    app.read_with(cx, |a, _| {
+        assert_eq!(a.screen.usage_of(None), "Claude use unknown");
+        let state = a.screen.account_state(None);
+        plain::assert_plain("the chip's tooltip", &state);
+        assert_eq!(state, "Claude Code, the current login: use unknown.");
+    });
+    reveal(cx, "account-fix-");
+    cx.update(|window, cx| window.click("account-fix-", cx));
+    wait(cx, &app, "Start clauth asks", |a| a.state.pending.is_some());
+    app.read_with(cx, |a, _| {
+        let pending = a.state.pending.as_ref().unwrap();
+        assert_eq!(
+            (
+                pending.button.label.as_str(),
+                pending.button.op.as_str(),
+                &pending.button.input
+            ),
+            (
+                "Start clauth",
+                "setup.turn-on",
+                &serde_json::json!({"service": "clauth daemon"})
+            )
+        );
+    });
+    // the step itself runs in the CLI test (a stand-in systemctl); here no service of the machine starts
+    cx.update(|window, cx| window.press("escape", cx));
     drop(runtime);
 }
 

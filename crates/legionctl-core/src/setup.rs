@@ -679,6 +679,15 @@ pub fn apply(
 /// The user unit that runs clauth's daemon.
 const CLAUTH_UNIT: &str = "legionctl-clauth.service";
 
+/// clauth's daemon as a row of [`check`] and a service of [`turn_on`].
+pub const CLAUTH_DAEMON: &str = "clauth daemon";
+
+/// Start clauth's daemon (it reads each account's use) and start it at each login.
+fn start_clauth_daemon() -> Result<String> {
+    run(&systemctl()?, &["--user", "enable", "--now", CLAUTH_UNIT])?;
+    Ok(format!("{CLAUTH_DAEMON}: started ({CLAUTH_UNIT})"))
+}
+
 /// clauth's version (`clauth 0.17.0`), when it is installed.
 fn clauth_version() -> Result<Option<String>> {
     Ok(crate::accounts::clauth(&["--version"])?
@@ -714,7 +723,7 @@ fn clauth_items() -> Vec<Item> {
         return items;
     }
     items.push(Item {
-        what: "clauth daemon".into(),
+        what: CLAUTH_DAEMON.into(),
         agent: "all".into(),
         status: if crate::accounts::daemon_runs() {
             "current".into()
@@ -790,10 +799,7 @@ fn set_up_clauth() -> Result<Vec<String>> {
     }
     for item in clauth_items().into_iter().filter(|i| i.status != "current") {
         match item.what.as_str() {
-            "clauth daemon" => {
-                run(&systemctl()?, &["--user", "enable", "--now", CLAUTH_UNIT])?;
-                done.push(format!("clauth daemon: started ({CLAUTH_UNIT})"));
-            }
+            CLAUTH_DAEMON => done.push(start_clauth_daemon()?),
             "clauth mcp" => {
                 let claude = claude_bin().context("Claude Code is not installed")?;
                 let clauth = crate::accounts::clauth_bin().context("clauth is not installed")?;
@@ -962,12 +968,19 @@ fn turn_on_services() -> Result<Vec<String>> {
 /// # Errors
 /// `what` is not a service of legionctl, or systemctl is missing or fails.
 pub fn turn_on(what: &str) -> Result<Vec<String>> {
+    if what == CLAUTH_DAEMON {
+        return Ok(if crate::accounts::daemon_runs() {
+            Vec::new()
+        } else {
+            vec![start_clauth_daemon()?]
+        });
+    }
     let service = SERVICES
         .into_iter()
         .find(|s| s.0 == what)
         .with_context(|| {
             format!(
-                "{what} is not a service of legionctl; the services are {}",
+                "{what} is not a service of legionctl; the services are {}, {CLAUTH_DAEMON}",
                 SERVICES.map(|s| s.0).join(", ")
             )
         })?;

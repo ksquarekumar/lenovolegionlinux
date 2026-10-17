@@ -757,7 +757,7 @@ fn gauge(data: &ViewData, t: &Tokens) -> AnyElement {
         .into_any_element()
 }
 
-/// The message under a tab: the result of the last action, or why it failed.
+/// The message under a tab: the result of the last action or the agent's words (Markdown), or why it failed.
 pub(crate) fn message(message: &str, t: &Tokens) -> Div {
     card(t)
         .gap(S1)
@@ -777,10 +777,10 @@ pub(crate) fn message(message: &str, t: &Tokens) -> Div {
                     message.to_string(),
                 )),
         )
-        .children(
-            message
-                .lines()
-                .enumerate()
-                .map(|(i, l)| div().child(text(format!("line-{i}"), l.to_string()))),
+        .child(
+            div()
+                .id("message-text")
+                .child(TextView::markdown("message-markdown", message.to_string()).selectable(true))
+                .test_support(),
         )
 }

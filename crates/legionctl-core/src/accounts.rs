@@ -44,6 +44,16 @@ pub struct AccountUsage {
     /// One plain sentence for the user: the agent, its use or why there is none, clauth's state of the account, and
     /// when it was read.
     pub text: String,
+    /// The step that gets the use read (Start clauth), as a button.
+    pub actions: Vec<Fix>,
+}
+
+/// A button that fixes a state: its words and the operation it runs with this input.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Fix {
+    pub name: String,
+    pub op: String,
+    pub input: serde_json::Value,
 }
 
 /// clauth's status feed (`clauth status --json`, schema 2): the fields legionctl reads.
@@ -426,7 +436,8 @@ pub fn old_profiles() -> Option<(PathBuf, Vec<String>)> {
 
 /// Seconds since the epoch of an ISO 8601 time (`2026-10-17T05:00:00.123+00:00`, `...Z`), ported from clauth 0.17.0
 /// `iso_to_epoch_secs` (MIT License, Copyright (c) 2026 cloudy; THIRD-PARTY-NOTICES.md).
-fn iso_seconds(text: &str) -> Option<i64> {
+#[must_use]
+pub fn iso_seconds(text: &str) -> Option<i64> {
     let num = |r: std::ops::Range<usize>| text.get(r)?.parse::<i64>().ok();
     let bytes = text.as_bytes();
     if bytes.len() < 19 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {

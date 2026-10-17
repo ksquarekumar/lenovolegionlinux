@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::text::TextView;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -241,24 +242,39 @@ impl Screen {
             .join("\n")
     }
 
-    /// An account's use in a few words (`claude 5h 42% 7d 8%`), each agent's, or why it cannot be read; none: the
+    /// An account's use in a few words (`Claude 5h 42% 7d 8%`, `Codex use unknown`), each agent's; none: the
     /// current login's.
     #[must_use]
     pub fn usage_of(&self, account: Option<&str>) -> String {
         self.usage_rows(account)
-            .map(|u| match &u.error {
-                Some(_) => format!("{} no use read", u.agent),
-                None => std::iter::once(u.agent.clone())
-                    .chain(
-                        u.windows
-                            .iter()
-                            .map(|w| format!("{} {:.0}%", w.name, w.used_percent)),
-                    )
-                    .collect::<Vec<_>>()
-                    .join(" "),
+            .map(|u| {
+                let agent = if u.agent == "claude" {
+                    "Claude"
+                } else {
+                    "Codex"
+                };
+                match &u.error {
+                    Some(_) => format!("{agent} use unknown"),
+                    None => std::iter::once(agent.to_string())
+                        .chain(
+                            u.windows
+                                .iter()
+                                .map(|w| format!("{} {:.0}%", w.name, w.used_percent)),
+                        )
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                }
             })
             .collect::<Vec<_>>()
             .join(" · ")
+    }
+
+    /// The step that gets an account's use read (Start clauth; none: the current login's), once.
+    #[must_use]
+    pub fn usage_fix(&self, account: Option<&str>) -> Option<legionctl_api::ResourceAction> {
+        self.usage_rows(account)
+            .find_map(|u| u.actions.first())
+            .cloned()
     }
 
     /// The `/` commands that match the chat bar's text: the agent's first; none after Esc.
@@ -597,7 +613,8 @@ impl LegionApp {
                         }
                         Err(e) => (format!("{e:#}"), false),
                     };
-                    app.state.message = Some(text);
+                    // an opened view with no words of the agent is its own answer: no message
+                    app.state.message = (!text.is_empty()).then_some(text);
                     app.screen.runs[row].1 = Some(ok);
                     cx.notify();
                 });
@@ -995,8 +1012,8 @@ impl LegionApp {
     }
 }
 
-/// What the agent that makes views said, for the user: its words, or that the view is ready; a view that fails its
-/// check says why (the route, the tokens and the data are the CLI's text, not the app's).
+/// What the agent that makes views said, for the user: its words (none when a view opened: the view is the answer); a
+/// view that fails its check says why (the route, the tokens and the data are the CLI's text, not the app's).
 fn answer_words(answer: &ViewAnswer) -> (String, bool) {
     let words = answer.text.trim();
     match (&answer.error, &answer.view) {
@@ -1005,7 +1022,7 @@ fn answer_words(answer: &ViewAnswer) -> (String, bool) {
             false,
         ),
         (None, _) if !words.is_empty() => (words.to_string(), true),
-        (None, Some(_)) => ("The view is ready.".into(), true),
+        (None, Some(_)) => (String::new(), true),
         (None, None) => ("The agent gave no answer.".into(), false),
     }
 }
@@ -1128,7 +1145,7 @@ fn kind_color(kind: &str, t: &Tokens) -> gpui_kit::Hsla {
 }
 
 /// A message of a chat: who, what kind (the user's prompt, the agent's answer, a failure, an answer as it comes) and
-/// the whole text, line by line.
+/// the whole text as Markdown (agents answer in it), selectable.
 fn message(member: &str, kind: &str, text: &str, actor_changed: bool, t: &Tokens) -> AnyElement {
     let color = match kind {
         "thread.fail" => t.critical,
@@ -1169,10 +1186,16 @@ fn message(member: &str, kind: &str, text: &str, actor_changed: bool, t: &Tokens
                     )
                 })
                 .child(
-                    div()
-                        .text_size(T_SM)
-                        .text_color(color)
-                        .children(text.lines().map(|l| div().child(l.to_string()))),
+                    div().text_size(T_SM).text_color(color).child(
+                        TextView::markdown(
+                            SharedString::from(format!(
+                                "message-text-{kind}-{member}-{}",
+                                text.len()
+                            )),
+                            text.to_string(),
+                        )
+                        .selectable(true),
+                    ),
                 ),
         )
         .test_support()
@@ -1294,8 +1317,21 @@ impl LegionApp {
                 .test_support()
                 .into_any_element();
         }
+        // the step that gets the use read is a button beside the chip, not a sentence
+        let fix = self.screen.usage_fix(account).map(|a| {
+            let button = legionctl_api::ViewButton {
+                label: a.name.clone(),
+                op: a.op,
+                input: a.input,
+                confirm: false,
+            };
+            Button::new(SharedString::from(format!("account-fix-{who}")))
+                .xsmall()
+                .label(a.name)
+                .on_click(cx.listener(move |app, _, _, cx| app.act(button.clone(), cx)))
+        });
         let who = who.to_string();
-        crate::theme::control(chip, "Choose an account", t)
+        let chip = crate::theme::control(chip, "Choose an account", t)
             .cursor_pointer()
             .tooltip(move |window, cx| {
                 Tooltip::new(format!(
@@ -1312,7 +1348,12 @@ Choose an account"
                 cx.stop_propagation();
                 cx.notify();
             }))
-            .test_support()
+            .test_support();
+        div()
+            .h_flex()
+            .gap(S1)
+            .child(chip)
+            .children(fix)
             .into_any_element()
     }
 

@@ -1,9 +1,9 @@
 // Seed (todo-136, todo-188): the accounts from clauth, the account engine. One plain sentence per login and agent:
 // its use (clauth's daemon reads it), clauth's state of it (its login, its place in the fallback chain, a live clauth
-// session) and when it was read; a profile that holds the same login as another says so. Without clauth: the current
-// logins and Set up, which installs clauth, starts its daemon and gives Claude Code its MCP server. Then the newest
-// Claude Code sessions as clauth lists them, with the account each last ran on. Log in, Switch account and Save
-// the current login go through clauth.
+// session) and when it was read; a profile that holds the same login as another says so. A use that is not read has
+// the button that gets it read: Install clauth, Start clauth (lead walk r361: the action is the message). Then the
+// newest Claude Code sessions as clauth lists them, in local time (clauth names no account for a session that it did
+// not start, so no account column). Log in, Switch account and Save the current login go through clauth.
 {
   "$schema": "../../docs/api/view.schema.json",
   "name": "accounts",
@@ -18,15 +18,17 @@
       "widget": "list",
       "source": { "op": "agents.accounts.usage" },
       "columns": ["text"],
-      "group": { "field": "account" }
+      "group": { "field": "account" },
+      "row_actions": [{ "label": "{item.name}", "op": "{item.op}", "input": "{item.input}", "each": "actions" }]
     },
     {
       "name": "clauth-sessions",
       "title": "Claude Code sessions (clauth)",
       "widget": "table",
       "source": { "op": "agents.accounts.sessions" },
-      "columns": ["updated", "profile", "workspace"],
-      "labels": { "updated": "Last written", "profile": "Account", "workspace": "Folder" }
+      "columns": ["updated_at", "workspace"],
+      "labels": { "updated_at": "Last written", "workspace": "Folder" },
+      "formats": { "updated_at": "time" }
     }
   ],
   "actions": [

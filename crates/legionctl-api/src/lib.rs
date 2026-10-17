@@ -1050,7 +1050,8 @@ operations! {
     /// Check a view file and save it into your layer, or the repository's (`--repo`), as the next version of the
     /// view of that name; that version shows, and the screens that show the view read it again.
     views_save / ViewsSave = "views.save", Workspace, ViewSaveIn => Lines;
-    /// An intent's view: the stored view whose intent it is word for word; else, with config
+    /// An intent's view. With `--view` (a tab's message), the composer answers with that view's next version or words,
+    /// and no stored view answers. Else the stored view whose intent it is word for word; else, with config
     /// `views.rlcd`, the stored view that rlcd picks among the stored intents that share a word with it; else the
     /// ui-composer (the agent over ACP, with its model from `views.composer_models`, bound to the view tools) makes a
     /// view from the parts library and new parts, or with `--view` the next version of that view. The view is checked

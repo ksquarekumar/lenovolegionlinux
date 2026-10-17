@@ -262,7 +262,7 @@ pub struct SetupApplyIn {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ServiceIn {
-    /// The service: legionctl-system or legionctl-operator.
+    /// The service: legionctl-system, legionctl-operator or clauth daemon.
     pub service: String,
 }
 
@@ -1749,8 +1749,8 @@ pub struct ClauthSession {
     pub id: String,
     /// The folder it worked in.
     pub workspace: String,
-    /// When it last wrote (ISO 8601).
-    pub updated: String,
+    /// When it last wrote.
+    pub updated_at: i64,
     /// The clauth account it last ran on; none: clauth does not know.
     pub profile: Option<String>,
 }
@@ -1943,7 +1943,7 @@ pub struct Resource {
 }
 
 /// An action of a resource: the operation it runs, with this input.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ResourceAction {
     pub name: String,
     /// The operation (`knobs.release`), which runs as a call of its own.

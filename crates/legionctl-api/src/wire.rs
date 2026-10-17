@@ -308,6 +308,8 @@ wire! {
         /// One plain sentence for the user: the agent, its use or why there is none, clauth's state of the account,
         /// and when it was read.
         text: String,
+        /// The step that gets the use read (Start clauth), as a button.
+        actions: Vec<crate::ResourceAction>,
     }
 
     struct UsageReport from core::agents::UsageReport {
@@ -1921,5 +1923,26 @@ wire! {
         attribute: String,
         before: Option<Value>,
         after: Option<Value>,
+    }
+}
+
+impl IntoWire<crate::ResourceAction> for core::accounts::Fix {
+    fn into_wire(self) -> crate::ResourceAction {
+        let op = crate::OPS
+            .iter()
+            .find(|o| o.name == self.op)
+            .unwrap_or_else(|| {
+                panic!(
+                    "a fix names the operation {}, which does not exist",
+                    self.op
+                )
+            });
+        crate::ResourceAction {
+            dry_run: (op.input)()["properties"].get("dry_run").is_some(),
+            class: op.class,
+            name: self.name,
+            op: self.op,
+            input: self.input,
+        }
     }
 }

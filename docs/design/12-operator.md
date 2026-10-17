@@ -176,9 +176,13 @@ Operating directory, dossier home `~/agentWorkspaces`, dossier and change sets: 
   Use: `agents accounts usage [--account <name>]` takes each login's windows, auth state (`ok`, `expired`,
   `broken`), place in the fallback chain with its threshold, live clauth session and read time from clauth's status
   feed (`clauth status --json`, schema 2; its daemon reads the providers), one plain sentence per login and agent;
-  no daemon, a profile clauth does not show and a use not read yet say so. legionctl reads no provider itself.
+  a profile clauth does not show and a use not read yet say so; a use that a step gets read (clauth not installed,
+  its daemon not running) is "use unknown" with that step as the row's button (Install clauth: `setup apply`; Start
+  clauth: `setup turn-on 'clauth daemon'`), and the app's account chip shows the same button. legionctl reads no
+  provider itself.
   `agents accounts sessions` lists the newest Claude Code sessions as clauth sees them (`clauth sessions`), with
-  the account each last ran on; `clauth resume` is not offered (it runs Claude Code in a terminal; `session resume
+  the time each last wrote (seconds since the epoch; the view shows local time) and the account each last ran on
+  when clauth knows it (only for a session that clauth started, so the view has no account column); `clauth resume` is not offered (it runs Claude Code in a terminal; `session resume
   --account` is legionctl's).
   Changes go through clauth: `agents accounts login <name> [--codex]` (`clauth login`, `--codex --browser` for
   Codex), `agents accounts switch <name>` (`clauth switch`), `agents accounts capture <name>` (clauth's capture; a

@@ -173,6 +173,27 @@ impl Render for LoadState {
     }
 }
 
+/// The command line of a fix (`legionctl setup turn-on 'clauth daemon'`).
+// shortcut: a string is a positional word and a true bool a flag, as for the fixes of now; an action with a named
+// text option needs the CLI's own words from the operation's schema
+fn fix_command(a: &crate::ResourceAction) -> String {
+    let words = a
+        .input
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(k, v)| match v {
+            serde_json::Value::String(s) if s.contains(' ') => Some(format!("'{s}'")),
+            serde_json::Value::String(s) => Some(s.clone()),
+            serde_json::Value::Bool(true) => Some(format!("--{}", k.replace('_', "-"))),
+            _ => None,
+        });
+    std::iter::once(format!("legionctl {}", a.op.replace('.', " ")))
+        .chain(words)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 impl Render for Findings {
     fn text(&self) -> String {
         if self.findings.is_empty() {
@@ -182,27 +203,7 @@ impl Render for Findings {
                 .findings
                 .iter()
                 .map(|f| {
-                    // shortcut: a string is a positional word and a true bool a flag, as for the fixes of now; an
-                    // action with a named text option needs the CLI's own words from the operation's schema
-                    let fixes: Vec<String> =
-                        f.actions
-                            .iter()
-                            .map(|a| {
-                                let words = a.input.as_object().into_iter().flatten().filter_map(
-                                    |(k, v)| match v {
-                                        serde_json::Value::String(s) => Some(s.clone()),
-                                        serde_json::Value::Bool(true) => {
-                                            Some(format!("--{}", k.replace('_', "-")))
-                                        }
-                                        _ => None,
-                                    },
-                                );
-                                std::iter::once(format!("legionctl {}", a.op.replace('.', " ")))
-                                    .chain(words)
-                                    .collect::<Vec<_>>()
-                                    .join(" ")
-                            })
-                            .collect();
+                    let fixes: Vec<String> = f.actions.iter().map(fix_command).collect();
                     if fixes.is_empty() {
                         format!("\n- {}", f.text)
                     } else {
@@ -2060,7 +2061,15 @@ impl Render for Vec<crate::AccountUsage> {
                 .into();
         }
         self.iter()
-            .map(|u| format!("{:<16} {}", u.account, u.text))
+            .map(|u| {
+                let fixes = u
+                    .actions
+                    .iter()
+                    .map(|a| format!(" {}: {}", a.name, fix_command(a)));
+                std::iter::once(format!("{:<16} {}", u.account, u.text))
+                    .chain(fixes)
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -2073,10 +2082,14 @@ impl Render for Vec<crate::ClauthSession> {
         }
         self.iter()
             .map(|s| {
+                let on = s
+                    .profile
+                    .as_ref()
+                    .map(|a| format!("  on {a}"))
+                    .unwrap_or_default();
                 format!(
-                    "{}  {}  {}  {}",
-                    s.updated,
-                    s.profile.as_deref().unwrap_or("account unknown"),
+                    "{}  {}  {}{on}",
+                    legionctl_core::views::local(s.updated_at),
                     s.workspace,
                     s.id
                 )

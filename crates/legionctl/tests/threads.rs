@@ -1386,6 +1386,87 @@ fn a_similar_intent_opens_the_stored_view_through_rlcd_and_a_failed_rlcd_runs_no
     drop(server);
 }
 
+/// Lead walk r361: "Hi" in a view tab got "The view is ready." (and Apps and GPU switched to Dossiers): an agent had
+/// kept Dossiers for the words "hi" (r340's composer), so the stored route answered with it and no words. Now a
+/// message in a view's tab never opens a stored view: the composer runs and its words come back, with no new version;
+/// and its answer in words ends the view kept for those words, so "Hi" outside a tab (the CLI) no longer opens it. The
+/// composer is Codex's ACP adapter as it answers live (tests/fixtures/codex-acp-hi.jsonl: the recording of
+/// codex-acp-live.jsonl with the words of its prompt replaced by a greeting in Markdown, sent in chunks as the adapter
+/// sends them).
+#[test]
+fn hi_in_a_view_tab_gets_the_agents_words_and_no_view_even_with_a_kept_view_for_hi() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    let fake = fixtures.join("fake-acp-agent.py");
+    let (lab, _, _, server, views) = ask_lab(
+        "ask-hi",
+        &json!({"session": {"acp": {"fake": ["python3", fake],
+                                    "codex": ["python3", fixtures.join("replay-acp-agent.py"),
+                                              fixtures.join("codex-acp-hi.jsonl")]},
+                            "scope": false, "writable": []}}),
+    );
+    let ask = |args: &[&str]| {
+        let (out, answer) = lab.ask(args);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        answer
+    };
+    write(
+        &views.join("memory.jsonc"),
+        r#"{"name": "mem", "title": "Memory", "widget": "table", "source": {"op": "sensors"}, "columns": ["name"]}"#,
+    );
+    let name = ask(&["memory use of the machine", "--agent", "fake"])["view"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // r324: an agent kept the tab's view for the words "hi"
+    write(
+        &views.join("hi.jsonc"),
+        r#"{"name": "mem", "title": "Memory", "widget": "list", "source": {"op": "sensors"}, "columns": ["name"]}"#,
+    );
+    let kept = ask(&["Hi", "--view", &name, "--agent", "fake"]);
+    assert_eq!(kept["data"]["version"], 2, "{kept}");
+    let runs = lab.composer_runs();
+
+    let words = "Hi! I make the views of this tab.";
+    let hi = ask(&["Hi", "--view", &name, "--agent", "codex"]);
+    assert_eq!(
+        (hi["route"].as_str(), hi["view"].as_str()),
+        (Some("composer"), None),
+        "the composer answers, not the tab's own view: {hi}"
+    );
+    let text = hi["text"].as_str().unwrap();
+    assert!(
+        text.starts_with(words) && text.contains("**What I can do**"),
+        "{hi}"
+    );
+    plain::assert_plain("the answer to Hi", text);
+    assert_eq!(lab.composer_runs(), runs + 1);
+    let shown = lab.json("main", &["views", "render", &name]);
+    assert_eq!(shown["version"], 2, "no new version: {shown}");
+
+    // another tab, then no tab: the words no longer open the kept view
+    let other = ask(&["Hi", "--view", "health", "--agent", "codex"]);
+    assert_eq!(
+        (other["route"].as_str(), other["view"].as_str()),
+        (Some("composer"), None),
+        "{other}"
+    );
+    let other = ask(&["Hi", "--agent", "codex"]);
+    assert_eq!(
+        (other["route"].as_str(), other["view"].as_str()),
+        (Some("composer"), None),
+        "{other}"
+    );
+    assert!(
+        other["text"].as_str().unwrap().starts_with(words),
+        "{other}"
+    );
+    drop(server);
+}
+
 /// todo-181: "go back to the table" on a tab is rlcd's pick among the other versions of the tab's view (each by its
 /// widget, title and intent), and the view shows that version with no composer run. A new wish ("chart over time")
 /// is rlcd's none: the composer makes the next version. A message that asks for no change ("Hi") gets words and no

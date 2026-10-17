@@ -1408,6 +1408,35 @@ fn keep(
     Ok(name)
 }
 
+/// The composer answered `intent` with words and no view: a view that this agent kept for these words no longer
+/// answers them (r324's composer kept Dossiers for "hi", so "Hi" in any tab opened Dossiers).
+fn unkeep(ctx: &Ctx, intent: &str, agent: &str, repo: &Path) -> Result<()> {
+    let store = dossiers()?;
+    let entity = format!("intent:{intent}");
+    if store
+        .fact_value(&entity, "view", &scopes(repo))?
+        .is_none_or(|v| v.is_null())
+    {
+        return Ok(());
+    }
+    store.fact_add(&New {
+        entity,
+        attribute: "view".into(),
+        value: Value::Null,
+        scope: (Scope::Global, String::new()),
+        source: format!("agent:{agent}"),
+        evidence: serde_json::json!({"actor": ctx.actor, "why": "ask: words, no view", "agent": agent}),
+        confidence: 1.0,
+        valid_from: facts::now_ms(),
+        valid_to: None,
+        repo: None,
+        from_ref: None,
+        to_ref: None,
+        anchor: None,
+    })?;
+    Ok(())
+}
+
 /// The composer's run (`session.run` with its model).
 fn composer_run(
     engine: &dyn Engine,
@@ -1565,19 +1594,21 @@ fn route(
             steps: Vec::new(),
         })
     };
-    // a stored view whose intent this is word for word answers it, also from another view's tab
-    let started = std::time::Instant::now();
-    let stored = stored(intent, repo);
-    let outcome = match &stored {
-        Ok(Some(_)) => "answered",
-        Ok(None) => "none",
-        Err(_) => "failed",
-    };
-    steps.push(step("stored", outcome, started));
-    if let Some(name) = stored? {
-        return found("stored", name);
-    }
+    // a stored view whose intent this is word for word answers it; a message in a view's tab never opens another view
+    // (r361: "Hi" switched Apps and GPU to Dossiers, from an intent "hi" that r340's composer kept): rlcd's pick among
+    // the tab's versions or the composer answers it
     if input.view.is_none() {
+        let started = std::time::Instant::now();
+        let stored = stored(intent, repo);
+        let outcome = match &stored {
+            Ok(Some(_)) => "answered",
+            Ok(None) => "none",
+            Err(_) => "failed",
+        };
+        steps.push(step("stored", outcome, started));
+        if let Some(name) = stored? {
+            return found("stored", name);
+        }
         if cfg.views.rlcd {
             let started = std::time::Instant::now();
             let pick = rlcd_pick(engine, ctx, intent, repo, cfg.views.rlcd_min);
@@ -1690,6 +1721,7 @@ fn compose(
         steps: Vec::new(),
     };
     let Some(spec) = spec else {
+        unkeep(ctx, intent, &agent, repo)?;
         return Ok(answer);
     };
     let mut view = match parsed(&spec, Some(repo)).and_then(titled) {
@@ -1709,6 +1741,7 @@ fn compose(
             serde_json::to_value(v)
         };
         if unchanged(&view)? == unchanged(old)? {
+            unkeep(ctx, intent, &agent, repo)?;
             return Ok(answer);
         }
     }

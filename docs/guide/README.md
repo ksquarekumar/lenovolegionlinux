@@ -83,8 +83,10 @@ Pick the agent of the chat bar with `/agent claude` or `/agent codex` (the names
 is a row of the thread's log, so every app window on the thread uses the same agent. With no pick, config `app.agent` applies
 (default `claude`).
 
-Each screen is a view (`legionctl views list`). An intent opens a view in three steps; each step is recorded with
-its tokens and time (`legionctl views cost`, the view Cost of the views that agents make):
+Each screen is a view (`legionctl views list`). A message in a view's tab goes to the composer with that view and
+never opens another view: its answer is words, or the view's next version. `legionctl ask` with no `--view` finds a
+view in three steps; each step is recorded with its tokens and time (`legionctl views cost`, the view Cost of the
+views that agents make):
 
 1. Stored: the view whose intent it is word for word. No model runs.
 2. rlcd (config `views.rlcd`, off by default; for development, `rlcd.backend` `openrouter-free` is the free

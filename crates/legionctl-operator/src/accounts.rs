@@ -5,7 +5,8 @@
 use std::fmt::Write as _;
 
 use anyhow::{Result, bail};
-use legionctl_core::accounts::{self, AccountUsage, Held, ProfileStatus};
+use legionctl_core::accounts::{self, AccountUsage, Fix, Held, ProfileStatus};
+use legionctl_core::setup;
 
 /// `clauth <args>`; clauth must be installed.
 fn clauth(args: &[&str]) -> Result<String> {
@@ -43,7 +44,7 @@ pub fn usage(input: &legionctl_api::AccountUsageIn) -> Result<Vec<AccountUsage>>
                     .iter()
                     .find(|p| p.name == h.name && p.harness == h.agent)
             });
-            let (windows, error) = state(h, status.is_some(), entry, || {
+            let (windows, error, actions) = state(h, status.is_some(), entry, || {
                 *daemon.get_or_insert_with(accounts::daemon_runs)
             });
             let mut u = AccountUsage {
@@ -55,6 +56,7 @@ pub fn usage(input: &legionctl_api::AccountUsageIn) -> Result<Vec<AccountUsage>>
                 error,
                 fetched_at: entry.and_then(ProfileStatus::fetched_at),
                 text: String::new(),
+                actions,
             };
             u.text = sentence(&u, entry, now);
             u
@@ -62,13 +64,18 @@ pub fn usage(input: &legionctl_api::AccountUsageIn) -> Result<Vec<AccountUsage>>
         .collect())
 }
 
-/// The windows of `h`, or why there are none.
+/// The windows of `h`, or why there are none and the step that gets them read.
 fn state(
     h: &Held,
     installed: bool,
     entry: Option<&ProfileStatus>,
     daemon: impl FnOnce() -> bool,
-) -> (Vec<accounts::Window>, Option<String>) {
+) -> (Vec<accounts::Window>, Option<String>, Vec<Fix>) {
+    let fix = |name: &str, op: &str, input: serde_json::Value| Fix {
+        name: name.into(),
+        op: op.into(),
+        input,
+    };
     let why = if let Some(other) = &h.same_as {
         format!(
             "{} holds the same login as {other}: a refresh through one logs the other out. Log in to {} again in \
@@ -76,7 +83,15 @@ fn state(
             h.name, h.name
         )
     } else if !installed {
-        "clauth is not installed, so the use is not read. Set up installs it".into()
+        return (
+            Vec::new(),
+            Some(UNKNOWN.into()),
+            vec![fix(
+                "Install clauth",
+                "setup.apply",
+                serde_json::json!({"install_ctx": false}),
+            )],
+        );
     } else if h.name == "current" {
         "no clauth account holds this login, so clauth does not read its use".into()
     } else if let Some(p) = entry {
@@ -86,9 +101,17 @@ fn state(
                 h.name
             )
         } else if !p.windows.is_empty() {
-            return (p.windows(), None);
+            return (p.windows(), None, Vec::new());
         } else if !daemon() {
-            "clauth's daemon does not run, so the use is not read. Set up starts it".into()
+            return (
+                Vec::new(),
+                Some(UNKNOWN.into()),
+                vec![fix(
+                    "Start clauth",
+                    "setup.turn-on",
+                    serde_json::json!({"service": setup::CLAUTH_DAEMON}),
+                )],
+            );
         } else if p.auth_status == "expired" {
             "the login has expired; clauth renews it at its next use".into()
         } else {
@@ -100,8 +123,11 @@ fn state(
             h.name
         )
     };
-    (Vec::new(), Some(why))
+    (Vec::new(), Some(why), Vec::new())
 }
+
+/// The use is not read, and a button gets it read.
+const UNKNOWN: &str = "use unknown";
 
 /// The row's one sentence: `Claude Code, the current login: 5h 21% used, 7d 27% used. In clauth's fallback chain at
 /// 2: it moves on at 90%. Read 4 min ago.`
@@ -164,16 +190,22 @@ pub fn sessions() -> Result<Vec<legionctl_api::ClauthSession>> {
     };
     let rows: Vec<Row> = serde_json::from_str(&text)
         .map_err(|e| anyhow::anyhow!("clauth's session list is not of its shape: {e}"))?;
-    Ok(rows
-        .into_iter()
+    rows.into_iter()
         .take(20)
-        .map(|r| legionctl_api::ClauthSession {
-            id: r.id,
-            workspace: r.workspace,
-            updated: r.updated,
-            profile: r.last_ran_profile,
+        .map(|r| {
+            Ok(legionctl_api::ClauthSession {
+                updated_at: accounts::iso_seconds(&r.updated).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "clauth's session list is not of its shape: time {}",
+                        r.updated
+                    )
+                })?,
+                id: r.id,
+                workspace: r.workspace,
+                profile: r.last_ran_profile,
+            })
         })
-        .collect())
+        .collect()
 }
 
 /// What a wake does with its member's account.
