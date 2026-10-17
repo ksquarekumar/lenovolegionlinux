@@ -139,7 +139,7 @@ dry_run() {
     echo "$out"
     return 1
   }
-  grep -q -- "--label legionctl" <<<"$out" && grep -q BootNext <<<"$out" && [ ! -e /boot/efi/EFI/legionctl ] || {
+  grep -q -- "--label legionctl" <<<"$out" && grep -q "Restart once: the next start uses legionctl" <<<"$out" && [ ! -e /boot/efi/EFI/legionctl ] || {
     echo "$out"
     return 1
   }
