@@ -115,50 +115,53 @@ impl LegionApp {
             let node = n.clone();
             let view = data.clone();
             out.push(
-                div()
-                    .id(SharedString::from(format!("node-{key}")))
-                    .h_flex()
-                    .gap(S2)
-                    .pl(px(f32::from(u16::try_from(depth).unwrap_or(0)) * 18.))
-                    .py(px(3.))
-                    .rounded(crate::theme::R_SM)
-                    .cursor_pointer()
-                    .text_size(T_SM)
-                    .when(selected, |d| d.bg(t.accent.opacity(0.14)))
-                    .when(!selected, |d| d.hover(|s| s.bg(t.raised)))
-                    .child(if n.leaf {
-                        div().w(px(14.)).flex_none()
-                    } else {
-                        div().flex_none().child(icon(
-                            if open {
-                                IconName::ChevronDown
-                            } else {
-                                IconName::ChevronRight
-                            },
-                            px(14.),
-                            t.muted,
-                        ))
-                    })
-                    .children(state.map(|c| div().size(px(8.)).flex_none().rounded_full().bg(c)))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_color(t.text)
-                            .child(n.label.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(T_XS)
-                            .text_color(t.muted)
-                            .child(n.kind.clone()),
-                    )
-                    .children(n.count.map(|c| badge(c.to_string(), t.muted)))
-                    .children(n.marked.then(|| badge("changed", t.accent)))
-                    .on_click(cx.listener(move |app, _, _, cx| app.click_node(&view, &node, cx)))
-                    .test_support()
-                    .into_any_element(),
+                crate::theme::control(
+                    div().id(SharedString::from(format!("node-{key}"))),
+                    n.label.clone(),
+                    t,
+                )
+                .h_flex()
+                .gap(S2)
+                .pl(px(f32::from(u16::try_from(depth).unwrap_or(0)) * 18.))
+                .py(px(3.))
+                .rounded(crate::theme::R_SM)
+                .cursor_pointer()
+                .text_size(T_SM)
+                .when(selected, |d| d.bg(t.accent.opacity(0.14)))
+                .when(!selected, |d| d.hover(|s| s.bg(t.raised)))
+                .child(if n.leaf {
+                    div().w(px(14.)).flex_none()
+                } else {
+                    div().flex_none().child(icon(
+                        if open {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        },
+                        px(14.),
+                        t.muted,
+                    ))
+                })
+                .children(state.map(|c| div().size(px(8.)).flex_none().rounded_full().bg(c)))
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(t.text)
+                        .child(n.label.clone()),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(T_XS)
+                        .text_color(t.muted)
+                        .child(n.kind.clone()),
+                )
+                .children(n.count.map(|c| badge(c.to_string(), t.muted)))
+                .children(n.marked.then(|| badge("changed", t.accent)))
+                .on_click(cx.listener(move |app, _, _, cx| app.click_node(&view, &node, cx)))
+                .test_support()
+                .into_any_element(),
             );
             if open {
                 let lazy = self.screen.lazy.get(&key);
@@ -290,15 +293,13 @@ impl LegionApp {
                         .label(button.label.clone())
                         .on_click(cx.listener(move |app, _, _, cx| {
                             app.state.pending = None;
-                            app.state.form = Some(Form {
-                                fields: fields.clone(),
-                                values: legionctl_api::form::texts(&button.input),
-                                button: button.clone(),
-                                focused: None,
-                                all: false,
-                                then: crate::Then::Run,
-                                error: None,
-                            });
+                            app.state.form = Some(Form::new(
+                                button.clone(),
+                                crate::Then::Run,
+                                fields.clone(),
+                                legionctl_api::form::texts(&button.input),
+                                false,
+                            ));
                             cx.notify();
                         })),
                 ),

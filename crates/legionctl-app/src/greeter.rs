@@ -934,6 +934,7 @@ impl Greeter {
                         .icon(IconName::ArrowRight)
                         .loading(self.busy)
                         .tooltip("Log in (Enter)")
+                        .accessibility_label("Log in")
                         .on_click(cx.listener(|g, _, window, cx| {
                             let user = g.name.read(cx).value().trim().to_string();
                             g.choose(user, window, cx);
@@ -971,6 +972,7 @@ impl Greeter {
                         .with_size(FIELD)
                         .icon(IconName::ArrowLeft)
                         .tooltip("Other user (Esc)")
+                        .accessibility_label("Other user")
                         .disabled(self.busy)
                         .on_click(cx.listener(|g, _, window, cx| g.back(window, cx))),
                 )
@@ -987,6 +989,7 @@ impl Greeter {
                         .icon(IconName::ArrowRight)
                         .loading(self.busy)
                         .tooltip("Log in (Enter)")
+                        .accessibility_label("Log in")
                         .on_click(cx.listener(|g, _, window, cx| g.answer(window, cx))),
                 ),
             Stage::Waiting(text) => div()

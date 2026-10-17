@@ -125,7 +125,7 @@ impl LegionApp {
             None => out.push(Self::nav_note("Checking…", t)),
             Some(f) if f.is_empty() => out.push(Self::nav_note("No failures", t)),
             Some(f) => out.extend(f.iter().enumerate().map(|(i, line)| {
-                Self::nav_entry(
+                Self::nav_button(
                     format!("failure-{i}"),
                     (IconName::CircleX, line.clone(), None),
                     false,

@@ -21,6 +21,18 @@ pub struct History {
     draft: String,
 }
 
+impl History {
+    /// Up or Down shows a line of the history now.
+    pub(crate) fn recalling(&self) -> bool {
+        self.at.is_some()
+    }
+
+    /// The user typed: the next Up starts at the newest line again, and keeps the typed text.
+    pub(crate) fn typed(&mut self) {
+        self.at = None;
+    }
+}
+
 impl LegionApp {
     /// Read the kept lines; lines sent before they come stay the newest.
     pub(crate) fn read_history(&mut self, cx: &mut Context<Self>) {

@@ -12,13 +12,16 @@ use crate::LegionApp;
 
 /// The keys of the app, one per line.
 const KEYS: &str = "Ctrl+K: search the views, commands and operations (the chat bar with /)
-Up, Down in the chat bar: the lines sent before
-Tab: complete the chat line; with nothing to complete, go to the tab (Up, Down scroll it) and back
-PageUp, PageDown, Home, End: scroll the tab
+Tab, Shift+Tab: the next or the last control; Enter or Space presses it
+Up, Down in the chat bar: the lines sent before; with the list of commands open, move in the list
+Tab in the chat bar: complete the command; Enter: send, or take the command picked in the list; Esc: close the list
+Shift+Enter or Ctrl+J: a new line
+Ctrl+V, Ctrl+Shift+V, Shift+Insert or the middle button: paste; Ctrl+C: copy; Ctrl+X: cut; Ctrl+A: select all
+Esc: close a form, or discard a change that waits for Apply
+PageUp, PageDown: scroll the tab; Home, End too, outside a text field
 Ctrl+Tab, Ctrl+Shift+Tab: the next or the last tab; Ctrl+W: close the tab; Ctrl+Shift+Left, Right: move it
 Ctrl+1 to Ctrl+4: the spaces
-Enter: send; Shift+Enter or Ctrl+J: a new line; Ctrl+Left, Right: the chat bar's width
-Ctrl+C: copy the selected text";
+Ctrl+Left, Right outside a text field: the chat bar's width";
 
 /// What a Help topic is about: a view or an operation that the app has. An app test fails for a topic whose feature
 /// is gone, so the FAQ never answers for a removed feature.

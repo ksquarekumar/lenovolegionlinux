@@ -62,7 +62,7 @@ impl LegionApp {
     /// The pending action in the user's words (DESIGN-09: a session or workspace change confirms inline with its plan;
     /// a machine change shows its plan, then polkit asks): what the operation does, what its class changes, then the
     /// dry run's plan, or the input as labelled values; the operation and its raw input only behind Details.
-    fn pending(&self, t: &Tokens, cx: &mut Context<Self>) -> Option<Div> {
+    fn pending(&self, t: &Tokens, cx: &mut Context<Self>) -> Option<gpui_kit::Stateful<Div>> {
         let pending = self.state.pending.as_ref()?;
         let op = legionctl_api::OPS
             .iter()
@@ -93,8 +93,11 @@ impl LegionApp {
         });
         Some(
             card(t)
+                .id("pending")
+                .track_focus(&self.pending_focus)
                 .bg(t.raised)
                 .border_color(t.accent.opacity(0.5))
+                .focus(|s| s.border_color(t.accent))
                 .child(
                     div()
                         .h_flex()
@@ -150,23 +153,24 @@ impl LegionApp {
         )
     }
 
-    /// Apply (off when the plan changes nothing) and Discard.
+    /// Discard, the safe one, first: the card takes the keys when it shows and Enter or Esc discards; Tab goes to
+    /// Discard, then to Apply (off when the plan changes nothing).
     fn pending_buttons(empty: bool, cx: &mut Context<Self>) -> Div {
         div()
             .h_flex()
             .flex_none()
             .gap(S2)
             .child(
+                Button::new("discard")
+                    .label("Discard")
+                    .on_click(cx.listener(|app, _, _, cx| app.discard(cx))),
+            )
+            .child(
                 Button::new("apply")
                     .primary()
                     .label("Apply")
                     .disabled(empty)
                     .on_click(cx.listener(|app, _, _, cx| app.apply(cx))),
-            )
-            .child(
-                Button::new("discard")
-                    .label("Discard")
-                    .on_click(cx.listener(|app, _, _, cx| app.discard(cx))),
             )
     }
 
@@ -245,6 +249,7 @@ impl LegionApp {
 
 impl Render for LegionApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.settle(window, cx);
         let t = Tokens::of(cx);
         let place = self.tab().map_or_else(
             || self.screen.space.title().to_string(),
@@ -297,7 +302,7 @@ impl Render for LegionApp {
             content = content.child(LegionApp::offline(why, self.state.turn_on.as_ref(), &t, cx));
         } else {
             content = content
-                .children(self.form(&t, window, cx))
+                .children(self.form(&t, cx))
                 .children(self.pending(&t, cx))
                 .child(self.tab_content(&t, width, cx));
             if let Some(message) = &self.state.message {

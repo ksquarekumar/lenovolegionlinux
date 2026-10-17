@@ -402,8 +402,9 @@ fn bench_runs(cx: &mut VisualTestContext, app: &Entity<LegionApp>) {
 
 /// The operation catalog (DESIGN-09 G3): the seed Operations lists each public operation by its group (folded, with
 /// its count); Open on `facts.set` opens its form, made from its input schema (the required fields first, the optional
-/// ones on demand, a choice as buttons). Continue without a required field says which; with them, the session class
-/// asks inline (no dry run), and Apply stores the fact with the user as its source.
+/// ones on demand, a choice as buttons). The first field takes the keys; Enter without a required field says which;
+/// the fields paste (Ctrl+V, the middle button); with them, the session class runs at once and stores the fact with
+/// the user as its source.
 #[gpui_kit::test]
 fn an_operation_of_the_catalog_runs_through_the_form_of_its_input_schema(cx: &mut TestAppContext) {
     let (op, home, repo) = thread_lab("form");
@@ -451,7 +452,8 @@ fn an_operation_of_the_catalog_runs_through_the_form_of_its_input_schema(cx: &mu
             .collect();
         assert_eq!(required, ["entity", "value"]);
     });
-    click(cx, "form-submit".into());
+    // the first field has the keys: Enter goes on as Continue does
+    keys(cx, &["enter"]);
     app.read_with(cx, |a, _| {
         let why = a
             .state
@@ -463,10 +465,15 @@ fn an_operation_of_the_catalog_runs_through_the_form_of_its_input_schema(cx: &mu
             .unwrap_or_default();
         assert!(why.starts_with("entity is required"), "{why}");
     });
-    click(cx, "form-field-entity".into());
-    cx.update(|window, cx| window.input("color", cx));
-    click(cx, "form-field-value".into());
-    cx.update(|window, cx| window.input("\"teal\"", cx));
+    // a form field pastes as the chat bar does (todo-195): typed text, then Ctrl+V; the middle button
+    cx.update(|window, cx| {
+        window.input("col", cx);
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("or".into()));
+        window.press("ctrl-v", cx);
+        cx.write_to_primary(gpui_kit::ClipboardItem::new_string("\"teal\"".into()));
+        window.render_frame(cx);
+    });
+    middle_click(cx, "form-field-value");
     click(cx, "form-more".into());
     click(cx, "form-scope-project".into());
     click(cx, "form-submit".into());
@@ -943,7 +950,8 @@ fn a_change_is_the_next_version_of_the_tabs_view_and_a_bad_view_shows_its_error(
 /// configset layers in their group with their actions, which come with the data (each action names its operation);
 /// a click shows the route first (rules.disable is a machine operation with no dry run, so the tab asks inline and
 /// nothing runs), and Apply runs it as a call of its own: the operator refuses it without the system bus, the tab
-/// says why, and the event log names `rules.disable` with the app as its actor.
+/// says why, and the event log names `rules.disable` with the app as its actor. The confirm is for the keyboard too:
+/// Enter and Esc discard, Tab goes to Discard first, and each button has its name for a screen reader.
 #[gpui_kit::test]
 fn the_resources_seed_lists_the_resources_and_a_row_action_runs_its_operation(
     cx: &mut TestAppContext,
@@ -981,7 +989,7 @@ fn the_resources_seed_lists_the_resources_and_a_row_action_runs_its_operation(
     cx.update(|window, cx| {
         window.render_frame(cx);
         // the group of the layers is open (a short group)
-        window.click(SharedString::from(id), cx);
+        window.click(SharedString::from(id.clone()), cx);
     });
     app.read_with(cx, |a, _| {
         let pending = a.state.pending.as_ref().unwrap();
@@ -991,15 +999,53 @@ fn the_resources_seed_lists_the_resources_and_a_row_action_runs_its_operation(
             "no dry run: an inline confirm of the operation and its input"
         );
     });
+    // todo-195 (4): the keys are on the card and the safe choice is the default: Enter discards, Esc discards, and
+    // the keys go back to the chat bar; Tab goes to Discard, then Apply, and Enter there applies
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        for (id, label) in [("discard", "Discard"), ("apply", "Apply")] {
+            let button = window.find(id);
+            assert_eq!(button.role(), Some(gpui_kit::Role::Button), "{id}");
+            assert_eq!(button.label(), Some(label), "{id}");
+        }
+        window.press("enter", cx);
+    });
+    app.read_with(cx, |a, _| {
+        assert!(a.state.pending.is_none(), "Enter discards");
+    });
+    let open = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click(SharedString::from(id.clone()), cx);
+            window.render_frame(cx);
+        });
+        app.read_with(cx, |a, _| assert!(a.state.pending.is_some()));
+    };
+    cx.update(|window, cx| window.click("chat", cx));
+    open(cx);
+    keys(cx, &["escape"]);
+    app.read_with(cx, |a, _| {
+        assert!(a.state.pending.is_none(), "Esc discards");
+    });
+    cx.update(|window, cx| window.input("k", cx));
+    assert_eq!(
+        chat_text(cx, &app),
+        "k",
+        "the keys are back in the chat bar"
+    );
+    keys(cx, &["backspace"]);
+    open(cx);
+    keys(cx, &["tab", "enter"]);
+    app.read_with(cx, |a, _| {
+        assert!(a.state.pending.is_none(), "Discard is the first button");
+    });
     assert!(
         events_of(&op, "rules.disable").is_empty(),
         "nothing ran before Apply"
     );
 
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        window.click("apply", cx);
-    });
+    open(cx);
+    keys(cx, &["tab", "tab", "enter"]);
     wait(cx, &app, "the apply result", |a| {
         a.state.message.is_some() && a.state.pending.is_none()
     });
@@ -1295,8 +1341,8 @@ fn open_app_at(
         ..WindowOptions::default()
     };
     let window: WindowHandle<gpui_kit::base::Root> = cx.update(|cx| {
-        let (window, _) = gpui_kit::open_window(options, cx, |_, cx| {
-            cx.new(|cx| LegionApp::new(client, handle, Some(view("machine-now")), repo, cx))
+        let (window, _) = gpui_kit::open_window(options, cx, |window, cx| {
+            cx.new(|cx| LegionApp::new(client, handle, Some(view("machine-now")), repo, window, cx))
         })
         .unwrap();
         window.downcast().unwrap()
@@ -1480,8 +1526,8 @@ fn rows_of(cx: &mut VisualTestContext, id: &'static str) -> (f32, f32) {
 
 /// DESIGN-09 at 1000 px (it replaces the 7%/30% panes of P8): the rail is 56 px, the navigator 30% of the window
 /// (300 px), the tab the rest. The chat bar belongs to the tab: below its content (it never covers the last row, U2),
-/// centred, 60% of the tab's width; three lines make it taller, many lines stop at 40% of the tab; Ctrl+Right makes
-/// it 70%. A drag of the navigator's edge sets its width; a click on the space that shows folds the navigator.
+/// centred, 60% of the tab's width; three lines make it taller, many lines stop at 40% of the tab; Ctrl+Right outside a
+/// text field makes it 70%. A drag of the navigator's edge sets its width; a click on the space that shows folds the navigator.
 #[gpui_kit::test]
 fn the_app_rail_navigator_and_tab_have_their_sizes_and_the_chat_bar_never_covers_the_tab(
     cx: &mut TestAppContext,
@@ -1513,6 +1559,16 @@ fn the_app_rail_navigator_and_tab_have_their_sizes_and_the_chat_bar_never_covers
     let inner = wa - 48.;
     cx.update(|window, cx| window.click("chat", cx));
     let (xc, wc, hc1) = place(cx, "chat");
+    // one line of text sits level with the agent chip
+    let middle = |cx: &mut VisualTestContext, id: &'static str| {
+        let (top, bottom) = rows_of(cx, id);
+        f32::midpoint(top, bottom)
+    };
+    near(
+        middle(cx, "chat-text"),
+        middle(cx, "agent-chip"),
+        "the text is level with the agent chip",
+    );
     near(wc, inner * 0.6, "the chat bar is 60% of the tab");
     near(
         xc,
@@ -1548,7 +1604,11 @@ fn the_app_rail_navigator_and_tab_have_their_sizes_and_the_chat_bar_never_covers
         chat_top >= body_bottom - 0.5,
         "a tall chat bar still starts below the content"
     );
-    cx.update(|window, cx| window.press("ctrl-right", cx));
+    // in a text field Ctrl+Right moves by a word; outside one it widens the chat bar
+    cx.update(|window, cx| {
+        window.click_at("body", point(px(4.), px(4.)), cx);
+        window.press("ctrl-right", cx);
+    });
     near(
         place(cx, "chat").1,
         inner * 0.7,
@@ -1748,17 +1808,23 @@ fn the_chat_bar_recalls_its_lines_after_a_restart_and_the_keyboard_scrolls_the_t
             0.,
             "Tab moves the focus, it does not scroll"
         );
+        // the body's padding: a click there gives it the keys
+        cx.update(|window, cx| window.click_at("body", point(px(4.), px(4.)), cx));
         assert_eq!(
             scrolled(cx, "down").0,
             40.,
             "Down in the body scrolls one line"
         );
         cx.update(|window, cx| {
-            window.press("tab", cx);
+            window.click("chat", cx);
             window.input("x", cx);
         });
         app.read_with(cx, |a, _| {
-            assert_eq!(a.screen.chat(), "x", "Tab goes back to the chat bar");
+            assert_eq!(
+                a.screen.chat(),
+                "x",
+                "a click gives the keys back to the chat bar"
+            );
         });
     }
     drop(app);
@@ -1776,6 +1842,288 @@ fn the_chat_bar_recalls_its_lines_after_a_restart_and_the_keyboard_scrolls_the_t
         window.press("up", cx);
     });
     app.read_with(cx, |a, _| assert_eq!(a.screen.chat(), "hello"));
+    drop(runtime);
+}
+
+/// The chat bar's text now.
+fn chat_text(cx: &mut VisualTestContext, app: &Entity<LegionApp>) -> String {
+    app.read_with(cx, |a, _| a.screen.chat().to_string())
+}
+
+/// What the clipboard holds now.
+fn clipboard(cx: &mut VisualTestContext) -> Option<String> {
+    cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text()))
+}
+
+/// A click of the middle button on the element `id`.
+fn middle_click(cx: &mut VisualTestContext, id: &'static str) {
+    let at = cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.find(id).bounds().center()
+    });
+    let plain = gpui_kit::Modifiers::default();
+    cx.simulate_mouse_down(at, gpui_kit::MouseButton::Middle, plain);
+    cx.simulate_mouse_up(at, gpui_kit::MouseButton::Middle, plain);
+}
+
+/// Press each key of `keys` in turn.
+fn keys(cx: &mut VisualTestContext, keys: &[&str]) {
+    cx.update(|window, cx| {
+        for k in keys {
+            window.press(k, cx);
+        }
+    });
+}
+
+/// todo-195 (1), user 2026-10-17: "I cannot even copy-paste into the app's text fields". The chat bar was the app's
+/// own text (a key handler that only appended typed characters): no paste, no cursor, no selection. Now each text
+/// field is the kit's input: Ctrl+V, Ctrl+Shift+V and Shift+Insert paste the clipboard, the middle button pastes the
+/// primary selection, the right-click menu has Paste; Ctrl+A, Ctrl+C and Ctrl+X select, copy and cut; Home and the
+/// arrows move the cursor, so a word goes in front of the text.
+#[gpui_kit::test]
+fn the_chat_bar_pastes_copies_cuts_and_edits_like_every_text_field_of_the_desktop(
+    cx: &mut TestAppContext,
+) {
+    let op = unplugged_machine("paste");
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., None);
+    let cx = &mut vcx;
+    let clip = |cx: &mut VisualTestContext, text: &str| {
+        let item = gpui_kit::ClipboardItem::new_string(text.to_string());
+        cx.update(|_, cx| cx.write_to_clipboard(item));
+    };
+    clip(cx, "fans at full speed");
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("chat", cx);
+        window.press("ctrl-v", cx);
+    });
+    assert_eq!(chat_text(cx, &app), "fans at full speed", "Ctrl+V");
+    keys(cx, &["home"]);
+    cx.update(|window, cx| window.input("why ", cx));
+    assert_eq!(
+        chat_text(cx, &app),
+        "why fans at full speed",
+        "Home, then text"
+    );
+    keys(
+        cx,
+        &["end", "left", "left", "left", "left", "left", "backspace"],
+    );
+    assert_eq!(
+        chat_text(cx, &app),
+        "why fans at fullspeed",
+        "the arrows move the cursor"
+    );
+    keys(cx, &["ctrl-a", "ctrl-x"]);
+    assert_eq!(chat_text(cx, &app), "", "Ctrl+A, Ctrl+X");
+    assert_eq!(clipboard(cx).as_deref(), Some("why fans at fullspeed"));
+    clip(cx, "ab");
+    keys(cx, &["ctrl-shift-v", "shift-insert"]);
+    assert_eq!(chat_text(cx, &app), "abab", "Ctrl+Shift+V and Shift+Insert");
+    clip(cx, "-");
+    keys(cx, &["ctrl-a", "ctrl-c"]);
+    assert_eq!(clipboard(cx).as_deref(), Some("abab"), "Ctrl+C");
+    keys(cx, &["backspace"]);
+    // the middle button: the primary selection of another app
+    cx.update(|_, cx| {
+        cx.write_to_primary(gpui_kit::ClipboardItem::new_string(
+            "from the terminal".into(),
+        ));
+    });
+    middle_click(cx, "chat");
+    assert_eq!(
+        chat_text(cx, &app),
+        "from the terminal",
+        "the middle button"
+    );
+    // the right button: the menu's Paste
+    keys(cx, &["ctrl-a", "backspace"]);
+    clip(cx, "menu");
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.right_click("chat", cx);
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("popup-menu").visible(), "the right-click menu");
+        window.within("popup-menu").click(2usize, cx);
+    });
+    assert_eq!(chat_text(cx, &app), "menu", "the menu's Paste");
+    drop(runtime);
+}
+
+/// User 2026-10-17 on r340: "in the agent input fields, keyboard navigation, completions and input history do not
+/// work". Live on r340 (headless GNOME Shell, EVIDENCE/validation/59-app-input): Up recalled and Tab completed, but the
+/// arrows did not move in the list of commands, Enter sent the half-typed line instead of the picked command, Esc
+/// did not close the list, the cursor could not move in the text, and Tab with nothing to complete moved the keys to
+/// the tab's body, where typing did nothing. The earlier test typed only at the end and pressed Up on an empty bar,
+/// so it passed. Now: Up and Down move in the list, Enter takes the pick, Esc closes the list (a change opens it
+/// again); with no list, Up on the first line and Down on the last recall the lines sent; in a text of two lines Up
+/// first moves to the line above; Tab with nothing to complete and Shift+Tab leave the bar and come back. Each
+/// command shows once (the app's own `/dossier create` was listed again from the operations).
+#[gpui_kit::test]
+fn the_chat_bar_list_moves_with_the_arrows_enter_takes_the_pick_and_the_history_follows_the_lines(
+    cx: &mut TestAppContext,
+) {
+    let op = unplugged_machine("list");
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., None);
+    let cx = &mut vcx;
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("chat", cx);
+        window.input("/view health", cx);
+        window.press("enter", cx);
+    });
+    assert_eq!(chat_text(cx, &app), "", "the line went");
+    cx.update(|window, cx| window.input("/dos", cx));
+    let entries: Vec<String> = app.read_with(cx, |a, _| {
+        a.screen.completions().into_iter().map(|e| e.text).collect()
+    });
+    assert!(entries.len() >= 3, "{entries:?}");
+    let mut once: Vec<&str> = entries.iter().map(|e| e.trim_end()).collect();
+    once.sort_unstable();
+    once.dedup();
+    assert_eq!(once.len(), entries.len(), "each command once: {entries:?}");
+    keys(cx, &["down", "down", "up"]);
+    app.read_with(cx, |a, _| {
+        assert_eq!(a.screen.list.pick, Some(0), "Down, Down, Up");
+    });
+    keys(cx, &["up"]);
+    app.read_with(cx, |a, _| {
+        assert_eq!(
+            a.screen.list.pick,
+            Some(entries.len().min(12) - 1),
+            "Up wraps to the last"
+        );
+    });
+    keys(cx, &["down", "down"]);
+    assert_eq!(
+        chat_text(cx, &app),
+        "/dos",
+        "the arrows move in the list, not in the history"
+    );
+    keys(cx, &["enter"]);
+    assert_eq!(
+        chat_text(cx, &app),
+        format!("{} ", entries[1].trim_end()),
+        "Enter takes the pick and sends nothing"
+    );
+    keys(cx, &["escape"]);
+    app.read_with(cx, |a, _| {
+        assert!(a.screen.completions().is_empty(), "Esc closes the list");
+    });
+    keys(cx, &["up"]);
+    assert_eq!(
+        chat_text(cx, &app),
+        "/view health",
+        "with no list, Up recalls"
+    );
+    keys(cx, &["down"]);
+    assert_eq!(
+        chat_text(cx, &app),
+        format!("{} ", entries[1].trim_end()),
+        "Down past the newest gives back the typed text"
+    );
+    keys(cx, &["ctrl-a", "backspace"]);
+    cx.update(|window, cx| {
+        window.input("one", cx);
+        window.press("shift-enter", cx);
+        window.input("two", cx);
+        window.press("up", cx);
+        window.input("+", cx);
+    });
+    assert_eq!(
+        chat_text(cx, &app),
+        "one+\ntwo",
+        "Up on the second line moves the cursor"
+    );
+    keys(cx, &["ctrl-j"]);
+    assert_eq!(chat_text(cx, &app), "one+\n\ntwo", "Ctrl+J is a new line");
+    keys(cx, &["ctrl-a", "backspace", "tab"]);
+    cx.update(|window, cx| window.input("x", cx));
+    assert_eq!(
+        chat_text(cx, &app),
+        "",
+        "Tab with nothing to complete leaves the bar"
+    );
+    keys(cx, &["shift-tab"]);
+    cx.update(|window, cx| window.input("y", cx));
+    assert_eq!(chat_text(cx, &app), "y", "Shift+Tab comes back");
+    drop(runtime);
+}
+
+/// todo-195 (3, 4): every control is reachable with the keys. Tab from the chat bar goes through each control of the
+/// window and comes back; Shift+Tab goes the same way back. The app's own controls (the rail's spaces, the
+/// navigator's entries, the tabs and their close buttons, the agent chip, the dossier chip) are buttons with a name
+/// for a screen reader, and Enter presses the one that has the keys: Shift+Tab from the rail's Work goes to Machine,
+/// Enter shows it; Shift+Tab from the chat bar is the agent chip, Enter starts `/agent` in the bar.
+#[gpui_kit::test]
+fn the_keyboard_reaches_each_control_in_one_order_and_each_has_a_name(cx: &mut TestAppContext) {
+    let op = unplugged_machine("order");
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., None);
+    let cx = &mut vcx;
+    let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("chat", cx);
+    });
+    let start = focused(cx).expect("the chat bar has the keys");
+    let walk = |cx: &mut VisualTestContext, key: &str| {
+        let mut stops = Vec::new();
+        loop {
+            keys(cx, &[key]);
+            let now = focused(cx).expect("a control has the keys");
+            if now == start {
+                return stops;
+            }
+            stops.push(now);
+            assert!(stops.len() < 300, "{key} never comes back to the chat bar");
+        }
+    };
+    let forward = walk(cx, "tab");
+    let mut back = walk(cx, "shift-tab");
+    back.reverse();
+    assert_eq!(forward, back, "Shift+Tab goes the way of Tab back");
+    let named = cx.update(|window, cx| {
+        window.render_frame(cx);
+        let mut ids: Vec<String> = [
+            "space-machine",
+            "space-work",
+            "space-agents",
+            "space-activity",
+        ]
+        .map(String::from)
+        .into();
+        ids.extend(["nav-health", "tab-0", "tab-close-0", "agent-chip", "place"].map(String::from));
+        for id in &ids {
+            let e = window.find(SharedString::from(id.clone()));
+            assert_eq!(e.role(), Some(gpui_kit::Role::Button), "{id}");
+            assert!(e.label().is_some_and(|l| !l.is_empty()), "{id} has a name");
+        }
+        ids.len()
+    });
+    assert!(
+        forward.len() >= named,
+        "{} stops for {named} controls",
+        forward.len()
+    );
+    cx.update(|window, cx| window.click("space-work", cx));
+    app.read_with(cx, |a, _| assert_eq!(a.screen.space, Space::Work));
+    keys(cx, &["shift-tab", "enter"]);
+    app.read_with(cx, |a, _| {
+        assert_eq!(a.screen.space, Space::Machine, "Shift+Tab, Enter");
+    });
+    keys(cx, &["tab", "tab", "space"]);
+    app.read_with(cx, |a, _| {
+        assert_eq!(a.screen.space, Space::Agents, "Tab, Tab, Space");
+    });
+    cx.update(|window, cx| {
+        window.click("chat", cx);
+        window.press("shift-tab", cx);
+        window.press("enter", cx);
+    });
+    assert_eq!(chat_text(cx, &app), "/agent ", "the agent chip by the keys");
     drop(runtime);
 }
 

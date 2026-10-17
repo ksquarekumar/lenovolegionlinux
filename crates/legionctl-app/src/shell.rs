@@ -347,32 +347,35 @@ impl LegionApp {
                 let selected = self.screen.space == space;
                 let color = if selected { t.accent } else { t.text2 };
                 let tip = format!("{} (Ctrl+{})", space.title(), space as usize + 1);
-                div()
-                    .id(SharedString::from(format!("space-{}", space.word())))
-                    .relative()
-                    .size(px(40.))
-                    .h_flex()
-                    .justify_center()
-                    .rounded(R_SM)
-                    .cursor_pointer()
-                    .when(selected, |d| d.bg(t.accent.opacity(0.14)))
-                    .when(!selected, |d| d.hover(|s| s.bg(t.card)))
-                    .child(icon(space.icon(), px(20.), color))
-                    .when(space == Space::Activity && attention > 0, |d| {
-                        d.child(
-                            div()
-                                .absolute()
-                                .top(px(4.))
-                                .right(px(4.))
-                                .size(px(8.))
-                                .rounded_full()
-                                .bg(t.warn),
-                        )
-                    })
-                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                    .on_click(cx.listener(move |app, _, _, cx| app.show_space(space, cx)))
-                    .test_support()
-                    .into_any_element()
+                crate::theme::control(
+                    div().id(SharedString::from(format!("space-{}", space.word()))),
+                    space.title(),
+                    t,
+                )
+                .relative()
+                .size(px(40.))
+                .h_flex()
+                .justify_center()
+                .rounded(R_SM)
+                .cursor_pointer()
+                .when(selected, |d| d.bg(t.accent.opacity(0.14)))
+                .when(!selected, |d| d.hover(|s| s.bg(t.card)))
+                .child(icon(space.icon(), px(20.), color))
+                .when(space == Space::Activity && attention > 0, |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .top(px(4.))
+                            .right(px(4.))
+                            .size(px(8.))
+                            .rounded_full()
+                            .bg(t.warn),
+                    )
+                })
+                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                .on_click(cx.listener(move |app, _, _, cx| app.show_space(space, cx)))
+                .test_support()
+                .into_any_element()
             }))
             .test_support()
             .into_any_element()
@@ -456,6 +459,17 @@ impl LegionApp {
     }
 
     /// One entry of the navigator: its icon, name and a short value; the full name in its tooltip.
+    /// A navigator entry that opens something: the keyboard reaches it.
+    pub(crate) fn nav_button(
+        id: String,
+        entry: (IconName, String, Option<(String, gpui_kit::Hsla)>),
+        selected: bool,
+        t: &Tokens,
+    ) -> gpui_kit::Stateful<Div> {
+        let label = entry.1.clone();
+        crate::theme::control(Self::nav_entry(id, entry, selected, t), label, t)
+    }
+
     pub(crate) fn nav_entry(
         id: String,
         (glyph, name, value): (IconName, String, Option<(String, gpui_kit::Hsla)>),
@@ -499,7 +513,7 @@ impl LegionApp {
                 let mut out = vec![Self::nav_section("Your chats", t)];
                 let selected = active.as_ref() == Some(&Tab::Chat);
                 out.push(
-                    Self::nav_entry(
+                    Self::nav_button(
                         "nav-new-chat".into(),
                         (IconName::Plus, "New chat".into(), None),
                         selected,
@@ -527,7 +541,7 @@ impl LegionApp {
                 out.extend(self.screen.agents.iter().map(|a| {
                     let picked = now.as_deref() == Some(a.as_str());
                     let name = a.clone();
-                    Self::nav_entry(
+                    Self::nav_button(
                         format!("nav-agent-{a}"),
                         (
                             IconName::Bot,
@@ -573,7 +587,7 @@ impl LegionApp {
             Some(session) => format!("{} · {}", th.dossier, &session[..session.len().min(8)]),
             None => th.dossier.clone(),
         };
-        Self::nav_entry(
+        Self::nav_button(
             format!("nav-thread-{}", th.id),
             (
                 IconName::MessageSquare,
@@ -637,7 +651,7 @@ impl LegionApp {
                     Some(legionctl_api::ViewWidget::List) => IconName::HeartPulse,
                     _ => IconName::LayoutDashboard,
                 };
-                Self::nav_entry(
+                Self::nav_button(
                     format!("nav-{}", v.name),
                     (
                         glyph,
@@ -682,64 +696,76 @@ impl LegionApp {
                 let selected = i == self.screen.active;
                 let title = self.tab_title(tab);
                 let tip = title.clone();
-                div()
-                    .id(SharedString::from(format!("tab-{i}")))
-                    .h(px(30.))
-                    .max_w(px(220.))
-                    .flex_none()
-                    .h_flex()
-                    .gap(S1)
-                    .pl(S3)
-                    .pr(S1)
-                    .rounded_t(R_SM)
-                    .text_size(T_SM)
-                    .cursor_pointer()
-                    .when(selected, |d| {
-                        d.bg(t.window)
-                            .text_color(t.text)
-                            .border_1()
-                            .border_b_0()
-                            .border_color(t.border)
-                    })
-                    .when(!selected, |d| d.text_color(t.muted).hover(|s| s.bg(t.card)))
-                    .when(
-                        matches!(self.screen.drag, Some(Drag::Tab(from)) if from != i),
-                        |d| d.border_l_2().border_color(t.accent),
+                crate::theme::control(
+                    div().id(SharedString::from(format!("tab-{i}"))),
+                    title.clone(),
+                    t,
+                )
+                // the mouse picks and drags a tab on its button's release; the keys pick it with Enter
+                .on_click(cx.listener(move |app, e: &gpui_kit::ClickEvent, _, cx| {
+                    if e.is_keyboard() {
+                        app.show_tab(i, cx);
+                    }
+                }))
+                .h(px(30.))
+                .max_w(px(220.))
+                .flex_none()
+                .h_flex()
+                .gap(S1)
+                .pl(S3)
+                .pr(S1)
+                .rounded_t(R_SM)
+                .text_size(T_SM)
+                .cursor_pointer()
+                .when(selected, |d| {
+                    d.bg(t.window)
+                        .text_color(t.text)
+                        .border_1()
+                        .border_b_0()
+                        .border_color(t.border)
+                })
+                .when(!selected, |d| d.text_color(t.muted).hover(|s| s.bg(t.card)))
+                .when(
+                    matches!(self.screen.drag, Some(Drag::Tab(from)) if from != i),
+                    |d| d.border_l_2().border_color(t.accent),
+                )
+                .child(div().min_w_0().truncate().child(title))
+                .child(
+                    crate::theme::control(
+                        div().id(SharedString::from(format!("tab-close-{i}"))),
+                        format!("Close {tip}"),
+                        t,
                     )
-                    .child(div().min_w_0().truncate().child(title))
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("tab-close-{i}")))
-                            .p(px(2.))
-                            .rounded(R_SM)
-                            .hover(|s| s.bg(t.raised))
-                            .child(icon(IconName::Close, px(12.), t.muted))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(move |app, _, _, cx| {
-                                cx.stop_propagation();
-                                app.close_tab(i, cx);
-                            }))
-                            .test_support(),
-                    )
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |app, _, _, _| app.screen.drag = Some(Drag::Tab(i))),
-                    )
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |app, _, _, cx| {
-                            if let Some(Drag::Tab(from)) = app.screen.drag.take() {
-                                if from == i {
-                                    app.show_tab(i, cx);
-                                } else {
-                                    app.move_tab(from, i, cx);
-                                }
+                    .p(px(2.))
+                    .rounded(R_SM)
+                    .hover(|s| s.bg(t.raised))
+                    .child(icon(IconName::Close, px(12.), t.muted))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        cx.stop_propagation();
+                        app.close_tab(i, cx);
+                    }))
+                    .test_support(),
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |app, _, _, _| app.screen.drag = Some(Drag::Tab(i))),
+                )
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |app, _, _, cx| {
+                        if let Some(Drag::Tab(from)) = app.screen.drag.take() {
+                            if from == i {
+                                app.show_tab(i, cx);
+                            } else {
+                                app.move_tab(from, i, cx);
                             }
-                        }),
-                    )
-                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                    .test_support()
-                    .into_any_element()
+                        }
+                    }),
+                )
+                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                .test_support()
+                .into_any_element()
             }))
             .test_support()
             .into_any_element()
@@ -807,8 +833,7 @@ impl LegionApp {
             (Some(d), None) => (format!("dossier {d}"), t.accent),
             (None, None) => ("Choose a dossier".to_string(), t.warn),
         };
-        div()
-            .id("place")
+        crate::theme::control(div().id("place"), "Choose the dossier", t)
             .h_flex()
             .gap(S1)
             .px(S2)

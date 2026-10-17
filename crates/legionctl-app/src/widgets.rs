@@ -47,6 +47,7 @@ pub(crate) fn copy_button(id: impl Into<SharedString>, tip: &'static str, what: 
         .xsmall()
         .icon(IconName::Copy)
         .tooltip(tip)
+        .accessibility_label(tip)
         .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(what.clone())))
 }
 
@@ -116,6 +117,7 @@ impl LegionApp {
                 .icon(glyph)
                 .disabled(!enabled)
                 .tooltip(tip)
+                .accessibility_label(tip)
                 .on_click(cx.listener(move |app, _, _, cx| app.version(&name, to, cx)))
         };
         div()
@@ -478,39 +480,43 @@ fn group_head(
         })
         .filter(|m| !m.is_empty());
     let toggle = format!("{name}:{group}");
-    div()
-        .id(SharedString::from(format!("view-{name}-group-{group}")))
-        .h_flex()
-        .gap(S2)
-        .pt(S3)
-        .pb(S1)
-        .cursor_pointer()
-        .child(icon(
-            if folded {
-                IconName::ChevronRight
-            } else {
-                IconName::ChevronDown
-            },
-            px(14.),
-            t.muted,
-        ))
-        .child(
-            div()
-                .text_size(T_SM)
-                .font_semibold()
-                .text_color(t.text)
-                .child(group.to_string()),
-        )
-        .child(badge(rows.len().to_string(), t.muted))
-        .children(worst.map(|m| badge(m.clone(), mark(m, t))))
-        .on_click(cx.listener(move |app, _, _, cx| {
-            if !app.screen.toggled.remove(&toggle) {
-                app.screen.toggled.insert(toggle.clone());
-            }
-            cx.notify();
-        }))
-        .test_support()
-        .into_any_element()
+    crate::theme::control(
+        div().id(SharedString::from(format!("view-{name}-group-{group}"))),
+        group.to_string(),
+        t,
+    )
+    .aria_expanded(!folded)
+    .h_flex()
+    .gap(S2)
+    .pt(S3)
+    .pb(S1)
+    .cursor_pointer()
+    .child(icon(
+        if folded {
+            IconName::ChevronRight
+        } else {
+            IconName::ChevronDown
+        },
+        px(14.),
+        t.muted,
+    ))
+    .child(
+        div()
+            .text_size(T_SM)
+            .font_semibold()
+            .text_color(t.text)
+            .child(group.to_string()),
+    )
+    .child(badge(rows.len().to_string(), t.muted))
+    .children(worst.map(|m| badge(m.clone(), mark(m, t))))
+    .on_click(cx.listener(move |app, _, _, cx| {
+        if !app.screen.toggled.remove(&toggle) {
+            app.screen.toggled.insert(toggle.clone());
+        }
+        cx.notify();
+    }))
+    .test_support()
+    .into_any_element()
 }
 
 fn fit_u16(columns: f32) -> u16 {

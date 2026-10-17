@@ -26,28 +26,41 @@ pub fn entries(commands: &[AgentCommand], screen: Vec<(String, String)>) -> Vec<
         },
         agent: true,
     });
-    let screen = screen.into_iter().map(|(text, about)| Entry {
-        text,
-        about,
-        agent: false,
-    });
+    let screen: Vec<Entry> = screen
+        .into_iter()
+        .map(|(text, about)| Entry {
+            text,
+            about,
+            agent: false,
+        })
+        .collect();
+    // a command that the screen names itself shows once, in the screen's words
+    let named: Vec<String> = screen
+        .iter()
+        .map(|e| e.text.trim_end().to_string())
+        .collect();
     // an agent's call of a workspace operation waits for the user's approval
     let asks = crate::cli::session_from_env().is_some();
-    let registry = OPS.iter().filter(|op| !op.internal()).map(move |op| {
-        // what a run of it does to you, in words; an agent's change of your files waits for your answer
-        let effect = match op.class {
-            Class::Read => "reads only",
-            Class::Session => "changes your choices",
-            Class::Workspace if asks => "asks the user first",
-            Class::Workspace => "changes your files",
-            Class::Machine => "asks for your password",
-        };
-        Entry {
-            text: format!("/{}", op.name.replace('.', " ")),
-            about: format!("{} ({effect})", op.summary()),
-            agent: false,
-        }
-    });
+    let registry = OPS
+        .iter()
+        .filter(move |op| {
+            !op.internal() && !named.contains(&format!("/{}", op.name.replace('.', " ")))
+        })
+        .map(move |op| {
+            // what a run of it does to you, in words; an agent's change of your files waits for your answer
+            let effect = match op.class {
+                Class::Read => "reads only",
+                Class::Session => "changes your choices",
+                Class::Workspace if asks => "asks the user first",
+                Class::Workspace => "changes your files",
+                Class::Machine => "asks for your password",
+            };
+            Entry {
+                text: format!("/{}", op.name.replace('.', " ")),
+                about: format!("{} ({effect})", op.summary()),
+                agent: false,
+            }
+        });
     agent.chain(screen).chain(registry).collect()
 }
 

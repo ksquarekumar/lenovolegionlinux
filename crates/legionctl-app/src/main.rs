@@ -66,7 +66,7 @@ fn main() -> anyhow::Result<()> {
                         theme::adopt(cx);
                     })
                     .detach();
-                cx.new(|cx| LegionApp::new(client, handle, open, repo, cx))
+                cx.new(|cx| LegionApp::new(client, handle, open, repo, window, cx))
             })
             .expect("opening the window");
         });

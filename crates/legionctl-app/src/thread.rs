@@ -52,6 +52,8 @@ pub struct Screen {
     pub chat_width: u32,
     /// The chat bar's input history.
     pub history: crate::history::History,
+    /// The chat bar's list of commands: its pick, and whether Esc closed it.
+    pub list: List,
     pub threads: Vec<ThreadInfo>,
     /// The threads that tabs show, by id.
     pub shown: BTreeMap<i64, ThreadView>,
@@ -123,6 +125,7 @@ impl Screen {
             chats: BTreeMap::new(),
             chat_width: 60,
             history: crate::history::History::default(),
+            list: List::default(),
             threads: Vec::new(),
             shown: BTreeMap::new(),
             thread: None,
@@ -258,9 +261,12 @@ impl Screen {
             .join(" · ")
     }
 
-    /// The `/` commands that match the chat bar's text: the agent's first.
+    /// The `/` commands that match the chat bar's text: the agent's first; none after Esc.
     #[must_use]
     pub fn completions(&self) -> Vec<Entry> {
+        if self.list.closed {
+            return Vec::new();
+        }
         let now = self.agent();
         let screen = self
             .views
@@ -915,7 +921,8 @@ impl LegionApp {
         self.start("ask", input, line, cx);
     }
 
-    /// A key on the screen: the spaces, the navigator and the tabs anywhere, the rest in the chat bar.
+    /// A key that no control took: the spaces and the tabs anywhere; Esc closes the list of commands, the form or
+    /// the pending change; in the tab's body the keys scroll it.
     pub(crate) fn key(
         &mut self,
         event: &KeyDownEvent,
@@ -951,51 +958,32 @@ impl LegionApp {
                 };
                 self.move_tab(from, to, cx);
             }
-            "pageup" | "pagedown" | "home" | "end" => {
-                let page = self.body_scroll.bounds().size.height * 0.9;
-                let by = match k.key.as_str() {
-                    "pageup" => page,
-                    "pagedown" => -page,
-                    "home" => px(f32::MAX),
-                    _ => px(f32::MIN),
-                };
-                self.scroll_body(by);
-            }
-            "up" | "down" if self.body_focus.is_focused(window) => {
-                self.scroll_body(px(if k.key == "up" { LINE } else { -LINE }));
-            }
-            "tab" if self.body_focus.is_focused(window) => self.chat_focus.focus(window, cx),
-            _ if self.form_focus.is_focused(window) => {
-                if !self.form_key(event, cx) {
-                    return;
-                }
-            }
-            _ if !self.chat_focus.is_focused(window) => return,
-            "enter" if alt || shift => self.screen.chat_mut().push('\n'),
-            "j" if control => self.screen.chat_mut().push('\n'),
-            "enter" => self.submit(cx),
             "right" if control => self.screen.chat_width = (self.screen.chat_width + 10).min(100),
             "left" if control => {
                 self.screen.chat_width = self.screen.chat_width.saturating_sub(10).max(30);
             }
-            "backspace" => {
-                self.screen.chat_mut().pop();
+            "escape" if !self.screen.completions().is_empty() => self.screen.list.closed = true,
+            "escape" if self.state.form.is_some() => self.cancel_form(cx),
+            "escape" if self.state.pending.is_some() => self.discard(cx),
+            // the safe choice is the default: Enter on the pending change's card discards it
+            "enter" | "space" if self.pending_focus.is_focused(window) => self.discard(cx),
+            "pageup" | "pagedown" => self.page(k.key == "pageup"),
+            "home" | "end" => {
+                self.scroll_body(px(if k.key == "home" { f32::MAX } else { f32::MIN }));
             }
-            "up" | "down" => self.recall(k.key == "up"),
-            "tab" => match self.screen.completions().first() {
-                Some(first) if first.text.starts_with(self.screen.chat()) => {
-                    *self.screen.chat_mut() = format!("{} ", first.text);
-                }
-                // nothing to complete: the focus goes to the tab's body (its keys scroll it)
-                _ => self.body_focus.focus(window, cx),
-            },
-            _ => match &k.key_char {
-                Some(text) if !control && !alt => self.screen.chat_mut().push_str(text),
-                _ => return,
-            },
+            "up" | "down" if self.body_focus.is_focused(window) => {
+                self.scroll_body(px(if k.key == "up" { LINE } else { -LINE }));
+            }
+            _ => return,
         }
         cx.stop_propagation();
         cx.notify();
+    }
+
+    /// Page up or page down: the tab's body scrolls by most of its height.
+    pub(crate) fn page(&mut self, up: bool) {
+        let page = self.body_scroll.bounds().size.height * 0.9;
+        self.scroll_body(if up { page } else { -page });
     }
 }
 
@@ -1023,8 +1011,19 @@ fn agents_only(line: &str) -> bool {
     )
 }
 
+/// The chat bar's list of commands: the entry that Up or Down picked (Enter or Tab takes it), and whether Esc closed
+/// the list (the next change of the text opens it again).
+#[derive(Debug, Default)]
+pub struct List {
+    pub pick: Option<usize>,
+    pub closed: bool,
+}
+
 /// One line of a keyboard scroll.
 const LINE: f32 = 40.;
+
+/// The commands that the chat bar's list shows at most.
+pub(crate) const SHOWN: usize = 12;
 
 /// The key of the Dossiers view that a new chat shows when the user has no dossier: choose one or make one there.
 pub(crate) const PICKER: &str = "view:dossiers:";
@@ -1288,9 +1287,14 @@ impl LegionApp {
                 .into_any_element();
         }
         let who = who.to_string();
-        chip.cursor_pointer()
+        crate::theme::control(chip, "Choose an account", t)
+            .cursor_pointer()
             .tooltip(move |window, cx| {
-                Tooltip::new(format!("{state}\nChoose an account")).build(window, cx)
+                Tooltip::new(format!(
+                    "{state}
+Choose an account"
+                ))
+                .build(window, cx)
             })
             .on_click(cx.listener(move |app, _, _, cx| {
                 app.screen.picking = match &app.screen.picking {
@@ -1360,7 +1364,8 @@ impl LegionApp {
                 (None, Some(a)) => format!("Chat on account {a}"),
                 (None, None) => "Chat on the current login".into(),
             };
-            chip.text_color(t.text)
+            crate::theme::control(chip, label.clone(), t)
+                .text_color(t.text)
                 .cursor_pointer()
                 .on_click(cx.listener(move |app, _, _, cx| {
                     app.screen.picking = None;
@@ -1472,19 +1477,22 @@ impl LegionApp {
                     )
                     .when_some(more, |d, more| {
                         d.child(
-                            div()
-                                .id(SharedString::from(format!("more-{id}")))
-                                .text_size(T_XS)
-                                .text_color(t.accent)
-                                .cursor_pointer()
-                                .child(if open { "Less" } else { "More" })
-                                .on_click(cx.listener(move |app, _, _, cx| {
-                                    if !app.screen.expanded.remove(&id) {
-                                        app.screen.expanded.insert(id);
-                                    }
-                                    cx.notify();
-                                }))
-                                .test_support(),
+                            crate::theme::control(
+                                div().id(SharedString::from(format!("more-{id}"))),
+                                if open { "Less" } else { "More" },
+                                t,
+                            )
+                            .text_size(T_XS)
+                            .text_color(t.accent)
+                            .cursor_pointer()
+                            .child(if open { "Less" } else { "More" })
+                            .on_click(cx.listener(move |app, _, _, cx| {
+                                if !app.screen.expanded.remove(&id) {
+                                    app.screen.expanded.insert(id);
+                                }
+                                cx.notify();
+                            }))
+                            .test_support(),
                         )
                         .when(open, |d| {
                             d.child(div().text_size(T_XS).text_color(t.text2).children(
@@ -1602,23 +1610,17 @@ impl LegionApp {
             // the form shows at the top of the tab
             app.body_scroll
                 .set_offset(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)));
-            app.state.form = Some(crate::Form {
-                fields,
-                values: legionctl_api::form::texts(&input),
-                button: legionctl_api::ViewButton {
-                    label: match then {
-                        crate::Then::TabRepo => "Choose a repository",
-                        _ => "Where the chat works",
-                    }
-                    .into(),
-                    op: "thread.repo".into(),
-                    input,
-                },
-                then,
-                focused: None,
-                all: true,
-                error: None,
-            });
+            let values = legionctl_api::form::texts(&input);
+            let button = legionctl_api::ViewButton {
+                label: match then {
+                    crate::Then::TabRepo => "Choose a repository",
+                    _ => "Where the chat works",
+                }
+                .into(),
+                op: "thread.repo".into(),
+                input,
+            };
+            app.state.form = Some(crate::Form::new(button, then, fields, values, true));
             cx.notify();
         });
     }
@@ -1739,7 +1741,7 @@ impl LegionApp {
             })
     }
 
-    /// The chat bar of the tab: the agent chip, the text or its placeholder.
+    /// The chat bar of the tab: the agent chip and the text field.
     fn chat_bar(
         &self,
         width: gpui_kit::DefiniteLength,
@@ -1748,33 +1750,8 @@ impl LegionApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let focused = self.chat_focus.is_focused(window);
-        let chat = self.screen.chat();
-        let text: Vec<Div> = if chat.is_empty() {
-            // every tab takes a message for the agent; in a view tab, the agent changes the view or answers
-            let agent = self.screen.agent().unwrap_or_else(|| "the agent".into());
-            let hint = match self.tab() {
-                Some(Tab::Chat | Tab::Thread { .. }) => {
-                    format!("Message {agent}, or / for commands")
-                }
-                _ => format!("Ask {agent} about this view, or /"),
-            };
-            vec![
-                div()
-                    .text_color(t.muted)
-                    .child(if focused { format!("▌{hint}") } else { hint }),
-            ]
-        } else {
-            let mut text = chat.to_string();
-            if focused {
-                text.push('▌');
-            }
-            text.split('\n')
-                .map(|l| div().child(l.to_string()))
-                .collect()
-        };
         let agent = self.screen.agent();
-        let chip = div()
-            .id("agent-chip")
+        let chip = crate::theme::control(div().id("agent-chip"), "Choose the agent", t)
             .flex_none()
             .h_flex()
             .gap(S1)
@@ -1805,7 +1782,6 @@ impl LegionApp {
             .test_support();
         div()
             .id("chat")
-            .track_focus(&self.chat_focus)
             .w(width)
             .h_flex()
             .items_end()
@@ -1822,16 +1798,7 @@ impl LegionApp {
             .bg(t.raised)
             .cursor_text()
             .child(chip)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .v_flex()
-                    .justify_end()
-                    .text_size(T_SM)
-                    .text_color(t.text)
-                    .children(text),
-            )
+            .child(self.chat_input(cx))
             .child(
                 div()
                     .flex_none()
@@ -1861,6 +1828,7 @@ impl LegionApp {
                 .w(width)
                 .max_h(px(260.))
                 .overflow_y_scroll()
+                .track_scroll(&self.list_scroll)
                 .v_flex()
                 .p(S1)
                 .rounded(R_MD)
@@ -1868,7 +1836,7 @@ impl LegionApp {
                 .border_color(t.border)
                 .bg(t.raised)
                 .text_size(T_XS)
-                .children(entries.iter().take(12).enumerate().map(|(i, e)| {
+                .children(entries.iter().take(SHOWN).enumerate().map(|(i, e)| {
                     div()
                         .id(SharedString::from(format!("completion-{i}")))
                         .h_flex()
@@ -1876,7 +1844,9 @@ impl LegionApp {
                         .px(S2)
                         .py(S1)
                         .rounded(R_SM)
-                        .when(i == 0, |d| d.bg(t.accent.opacity(0.12)))
+                        .when(self.screen.list.pick == Some(i), |d| {
+                            d.bg(t.accent.opacity(0.18))
+                        })
                         .child(
                             div()
                                 .font_weight(FontWeight::SEMIBOLD)

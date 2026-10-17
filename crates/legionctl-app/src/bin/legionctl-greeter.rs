@@ -26,6 +26,7 @@ fn main() -> anyhow::Result<()> {
         .with_assets(GreeterAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            legionctl_app::init(cx);
             let options = WindowOptions {
                 app_id: Some("legionctl-greeter".into()),
                 ..WindowOptions::default()

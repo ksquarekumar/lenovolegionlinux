@@ -182,3 +182,27 @@ pub fn heading(text: impl Into<String>, t: &Tokens) -> Div {
         .text_color(t.text)
         .child(text.into())
 }
+
+/// A clickable element of the app that the keyboard reaches: Tab stops at it, Enter and Space click it, a screen
+/// reader reads it as a button with `label`, and a ring shows when the keys are on it.
+pub(crate) fn control(
+    el: gpui_kit::Stateful<Div>,
+    label: impl Into<gpui_kit::SharedString>,
+    t: &Tokens,
+) -> gpui_kit::Stateful<Div> {
+    use gpui_kit::{InteractiveElement as _, StatefulInteractiveElement as _};
+    let ring = t.accent;
+    el.tab_index(0)
+        .role(gpui_kit::Role::Button)
+        .aria_label(label)
+        .focus_visible(move |s| {
+            s.shadow(vec![gpui_kit::BoxShadow {
+                color: ring,
+                offset: gpui_kit::point(px(0.), px(0.)),
+                blur_radius: px(0.),
+                spread_radius: px(2.),
+                // inside the edge: no layout shift, and the label stays readable on a see-through background
+                inset: true,
+            }])
+        })
+}

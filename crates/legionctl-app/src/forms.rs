@@ -4,110 +4,45 @@
 
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Enter, Input};
 use gpui_kit::component::{Selectable as _, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, Context, Div, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
-    px,
+    AnyElement, Context, Div, InteractiveElement as _, IntoElement, MouseButton,
+    ParentElement as _, SharedString, Styled as _, div, px,
 };
 use legionctl_api::OPS;
 use legionctl_api::form::Kind;
 
 use crate::LegionApp;
-use crate::theme::{R_SM, S1, S2, S3, T_SM, T_XS, Tokens, card, heading};
+use crate::theme::{S1, S2, S3, T_SM, T_XS, Tokens, card, heading};
 
 impl LegionApp {
-    /// A key in the form's focused field; false when the key is not the form's.
-    pub(crate) fn form_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
-        let k = &event.keystroke;
-        if k.key == "enter" {
-            self.submit_form(cx);
-            return true;
-        }
-        let Some(form) = self.state.form.as_mut() else {
-            return false;
-        };
-        let Some(field) = form.focused.and_then(|i| form.fields.get(i)) else {
-            return false;
-        };
-        let text = form.values.entry(field.name.clone()).or_default();
-        match (k.key.as_str(), &k.key_char) {
-            ("backspace", _) => {
-                text.pop();
-            }
-            ("tab", _) => {
-                let next = form.focused.map_or(0, |i| i + 1);
-                form.focused = (next < form.fields.len()).then_some(next);
-            }
-            (_, Some(c)) if !k.modifiers.control && !k.modifiers.alt => text.push_str(c),
-            _ => return false,
-        }
-        cx.notify();
-        true
-    }
-
-    /// A field's text: its value with the caret when it takes the keys, else its default.
-    fn text_box(
-        &self,
-        i: usize,
-        f: &legionctl_api::form::Field,
-        value: &str,
-        active: bool,
-        t: &Tokens,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let shown = if value.is_empty() && !active {
-            div().text_color(t.muted).child(if f.default.is_empty() {
-                "–".to_string()
-            } else {
-                format!("default {}", f.default)
-            })
-        } else {
+    /// A field's text field; the middle button pastes the primary selection.
+    fn text_box(&self, f: &legionctl_api::form::Field) -> Option<AnyElement> {
+        let input = self.state.form.as_ref()?.inputs.get(&f.name)?;
+        Some(
             div()
-                .text_color(t.text)
-                .child(format!("{value}{}", if active { "▌" } else { "" }))
-        };
-        div()
-            .id(SharedString::from(format!("form-field-{}", f.name)))
-            .track_focus(&self.form_focus)
-            .min_w(px(220.))
-            .flex_1()
-            .px(S2)
-            .py(px(4.))
-            .rounded(R_SM)
-            .border_1()
-            .border_color(if active {
-                t.accent.opacity(0.6)
-            } else {
-                t.border
-            })
-            .bg(t.window)
-            .cursor_text()
-            .text_size(T_SM)
-            .child(shown)
-            .on_click(cx.listener(move |app, _, window, cx| {
-                if let Some(form) = app.state.form.as_mut() {
-                    form.focused = Some(i);
-                }
-                app.form_focus.focus(window, cx);
-                cx.notify();
-            }))
-            .test_support()
-            .into_any_element()
+                .id(SharedString::from(format!("form-field-{}", f.name)))
+                .min_w(px(220.))
+                .flex_1()
+                .on_mouse_down(MouseButton::Middle, crate::input::paste_primary(input))
+                .child(Input::new(input).small().aria_label(label(&f.name)))
+                .test_support()
+                .into_any_element(),
+        )
     }
 
     /// The form card of the button's operation, above the tab's content.
-    pub(crate) fn form(&self, t: &Tokens, window: &Window, cx: &mut Context<Self>) -> Option<Div> {
+    pub(crate) fn form(&self, t: &Tokens, cx: &mut Context<Self>) -> Option<Div> {
         let form = self.state.form.as_ref()?;
         let op = OPS.iter().find(|o| o.name == form.button.op)?;
-        let focused = self.form_focus.is_focused(window);
         let rows: Vec<AnyElement> = form
             .fields
             .iter()
             .enumerate()
             .filter(|(_, f)| f.required || form.all)
-            .map(|(i, f)| {
+            .map(|(_, f)| {
                 let value = form.values.get(&f.name).cloned().unwrap_or_default();
                 let control = match &f.kind {
                     Kind::Bool => choice(&f.name, &["yes", "no"], &value, cx),
@@ -115,7 +50,8 @@ impl LegionApp {
                         let words: Vec<&str> = words.iter().map(String::as_str).collect();
                         choice(&f.name, &words, &value, cx)
                     }
-                    _ => self.text_box(i, f, &value, focused && form.focused == Some(i), t, cx),
+                    // the render makes the text field before this frame's elements
+                    _ => self.text_box(f).unwrap_or_else(|| div().into_any_element()),
                 };
                 div()
                     .v_flex()
@@ -152,6 +88,8 @@ impl LegionApp {
         Some(
             card(t)
                 .id("form")
+                // Enter in a text field goes on, as Continue does
+                .on_action(cx.listener(|app, _: &Enter, _, cx| app.submit_form(cx)))
                 .bg(t.raised)
                 .border_color(t.accent.opacity(0.5))
                 .child(form_head(&form.button.label, about(form, op), t, cx))
@@ -218,10 +156,7 @@ fn form_head(label: &str, about: &'static str, t: &Tokens, cx: &mut Context<Legi
                 .child(
                     Button::new("form-cancel")
                         .label("Cancel")
-                        .on_click(cx.listener(|app, _, _, cx| {
-                            app.state.form = None;
-                            cx.notify();
-                        })),
+                        .on_click(cx.listener(|app, _, _, cx| app.cancel_form(cx))),
                 ),
         )
 }

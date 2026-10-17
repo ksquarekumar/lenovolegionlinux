@@ -9,6 +9,7 @@ mod graph;
 pub mod greeter;
 pub mod help;
 mod history;
+mod input;
 pub mod shell;
 pub mod theme;
 pub mod thread;
@@ -19,7 +20,10 @@ pub use window::AppAssets;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui_kit::{AppContext, AsyncApp, Context, FocusHandle, Task, WeakEntity};
+use gpui_kit::component::input::{InputState, TextareaState};
+use gpui_kit::{
+    AppContext, AsyncApp, Context, Entity, FocusHandle, Subscription, Task, WeakEntity, Window,
+};
 use legionctl_api::client::Client;
 use legionctl_api::{Class, EventRow, EventsIn, OPS, ViewButton, op};
 use serde_json::Value;
@@ -36,14 +40,26 @@ pub const FIRST: &str = "machine-now";
 /// The app's key context: its keys go before the kit's root keys.
 const KEYS: &str = "LegionApp";
 
-/// The app's key bindings; call it once after `gpui_kit::init`. The kit's root takes Tab for its focus order; in the app
-/// Tab goes to [`LegionApp::key`] (it completes a chat line and moves between the chat bar and the tab's body).
+/// The app's key bindings; call it once after `gpui_kit::init`. Every text field (the kit's input) pastes with
+/// Ctrl+V, Ctrl+Shift+V and Shift+Insert, and copies with Ctrl+C and Ctrl+Insert, as the other apps of the desktop do.
 pub fn init(cx: &mut gpui_kit::App) {
-    cx.bind_keys([gpui_kit::KeyBinding::new(
-        "tab",
-        gpui_kit::NoAction,
-        Some(KEYS),
-    )]);
+    use gpui_kit::component::input::{Copy, Enter, Paste};
+    cx.bind_keys([
+        gpui_kit::KeyBinding::new(
+            "ctrl-j",
+            Enter {
+                secondary: false,
+                shift: true,
+            },
+            Some(input::CHAT),
+        ),
+        gpui_kit::KeyBinding::new("ctrl-shift-v", Paste, Some(input::CONTEXT)),
+        gpui_kit::KeyBinding::new("shift-insert", Paste, Some(input::CONTEXT)),
+        gpui_kit::KeyBinding::new("ctrl-insert", Copy, Some(input::CONTEXT)),
+        // the right-click menu names the newest key of an action: Ctrl+C and Ctrl+V, the keys people know
+        gpui_kit::KeyBinding::new("ctrl-c", Copy, Some(input::CONTEXT)),
+        gpui_kit::KeyBinding::new("ctrl-v", Paste, Some(input::CONTEXT)),
+    ]);
 }
 
 /// A button's change waiting for the user: its operation's class, and the plan of its dry run when it has one.
@@ -60,17 +76,39 @@ pub struct Pending {
 }
 
 /// The form of a button's operation (DESIGN-09 G3): its fields from the operation's input schema, the texts, the
-/// field that takes the keys, and why the last Continue did not go on.
+/// text field of each field that takes text, and why the last Continue did not go on.
 #[derive(Debug, Clone)]
 pub struct Form {
     pub button: ViewButton,
     pub then: Then,
     pub fields: Vec<legionctl_api::form::Field>,
     pub values: std::collections::BTreeMap<String, String>,
-    pub focused: Option<usize>,
+    /// The text fields, by field name; the render makes them (they need the window).
+    pub inputs: std::collections::BTreeMap<String, Entity<InputState>>,
     /// The optional fields show.
     pub all: bool,
     pub error: Option<String>,
+}
+
+impl Form {
+    #[must_use]
+    pub fn new(
+        button: ViewButton,
+        then: Then,
+        fields: Vec<legionctl_api::form::Field>,
+        values: std::collections::BTreeMap<String, String>,
+        all: bool,
+    ) -> Form {
+        Form {
+            button,
+            then,
+            fields,
+            values,
+            inputs: std::collections::BTreeMap::new(),
+            all,
+            error: None,
+        }
+    }
 }
 
 /// What a form's Continue does.
@@ -104,15 +142,27 @@ pub struct LegionApp {
     pub state: State,
     /// The screen: spaces, navigator, tabs, chat bars, threads and views.
     pub screen: thread::Screen,
+    /// The chat bar's text field; each tab keeps its own text in `screen`.
+    chat: Entity<TextareaState>,
+    /// The chat bar's text that the field and the tab last agreed on, and the hint that the field shows.
+    chat_synced: (String, String),
     chat_focus: FocusHandle,
-    form_focus: FocusHandle,
-    /// The tab body: Up, Down and Tab there scroll it and go back to the chat bar.
+    /// The pending change's card: its first button (Discard, the safe one) takes the keys.
+    pending_focus: FocusHandle,
+    /// Where the keys go back to when a form or a pending change closes.
+    back: Option<FocusHandle>,
+    /// What took the keys in the last frame: a form, a pending change, or neither.
+    modal: input::Modal,
+    /// The tab body: Up and Down there scroll it.
     body_focus: FocusHandle,
     /// The tab body's scroll: a form or a plan shows at its top.
     body_scroll: gpui_kit::ScrollHandle,
+    /// The chat bar's list of commands: the picked one scrolls into view.
+    list_scroll: gpui_kit::ScrollHandle,
     _refresh: Task<()>,
     _events: Task<()>,
     _follower: Follower,
+    _chat_events: Subscription,
 }
 
 /// The task that follows the event stream; it stops with the app.
@@ -132,6 +182,7 @@ impl LegionApp {
         runtime: tokio::runtime::Handle,
         open: Option<Tab>,
         repo: std::path::PathBuf,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> LegionApp {
         let refresh = cx.spawn(
@@ -146,18 +197,26 @@ impl LegionApp {
         );
         let client = Arc::new(client);
         let (events, follower) = LegionApp::follow(client.clone(), &runtime, cx);
+        let chat = input::chat_field(window, cx);
+        let chat_events = cx.subscribe_in(&chat, window, LegionApp::chat_event);
         let mut app = LegionApp {
             client,
             runtime,
             state: State::default(),
             screen: thread::Screen::new(repo),
-            chat_focus: cx.focus_handle(),
-            form_focus: cx.focus_handle(),
-            body_focus: cx.focus_handle(),
+            chat_focus: gpui_kit::Focusable::focus_handle(chat.read(cx), cx),
+            chat,
+            chat_synced: (String::new(), String::new()),
+            pending_focus: cx.focus_handle().tab_index(0).tab_stop(false),
+            back: None,
+            modal: input::Modal::None,
+            body_focus: cx.focus_handle().tab_index(0).tab_stop(true),
             body_scroll: gpui_kit::ScrollHandle::new(),
+            list_scroll: gpui_kit::ScrollHandle::new(),
             _refresh: refresh,
             _events: events,
             _follower: follower,
+            _chat_events: chat_events,
         };
         app.read_layout(open, cx);
         app.read_thread(cx);
@@ -425,15 +484,13 @@ impl LegionApp {
             .set_offset(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)));
         if legionctl_api::form::needed(info, &button.input) {
             self.state.pending = None;
-            self.state.form = Some(Form {
-                fields: legionctl_api::form::fields(info),
-                values: legionctl_api::form::texts(&button.input),
-                then: Then::Run,
-                button,
-                focused: None,
-                all: false,
-                error: None,
-            });
+            self.state.form = Some(Form::new(
+                button.clone(),
+                Then::Run,
+                legionctl_api::form::fields(info),
+                legionctl_api::form::texts(&button.input),
+                false,
+            ));
             cx.notify();
             return;
         }
@@ -445,6 +502,11 @@ impl LegionApp {
         let Some(form) = self.state.form.as_mut() else {
             return;
         };
+        // the text fields' texts
+        for (name, input) in &form.inputs {
+            form.values
+                .insert(name.clone(), input.read(cx).value().to_string());
+        }
         if form.then != Then::Run {
             self.submit_place(cx);
             return;
@@ -544,6 +606,12 @@ impl LegionApp {
 
     pub fn discard(&mut self, cx: &mut Context<Self>) {
         self.state.pending = None;
+        cx.notify();
+    }
+
+    /// Close the form: nothing runs.
+    pub fn cancel_form(&mut self, cx: &mut Context<Self>) {
+        self.state.form = None;
         cx.notify();
     }
 
