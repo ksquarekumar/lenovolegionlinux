@@ -5,7 +5,7 @@
 //! views again at each event of the operator's event stream, not on a timer.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
@@ -363,10 +363,13 @@ impl LegionApp {
                     winners: true,
                 })
                 .await?;
-            let dossier = facts
-                .into_iter()
-                .find(|f| f.attribute == "dossier")
-                .and_then(|f| f.value.as_str().map(String::from));
+            let fact = |name: &str| {
+                facts
+                    .iter()
+                    .find(|f| f.attribute == name)
+                    .and_then(|f| f.value.as_str().map(String::from))
+            };
+            let (dossier, project) = (fact("dossier"), fact("project"));
             let mut shown = BTreeMap::new();
             for id in wanted {
                 shown.insert(
@@ -377,15 +380,19 @@ impl LegionApp {
                 );
             }
             let dossiers: Vec<String> = dossiers.into_iter().map(|d| d.name).collect();
-            Ok((threads, shown, chat, config, (dossier, dossiers)))
+            Ok((threads, shown, chat, config, (dossier, dossiers, project)))
         });
         cx.spawn(
             async move |this: WeakEntity<LegionApp>, cx: &mut AsyncApp| {
                 let result = task.await;
                 let _ = this.update(cx, |app, cx| {
                     match result {
-                        Ok((threads, shown, chat, config, (dossier, dossiers))) => {
+                        Ok((threads, shown, chat, config, (dossier, dossiers, project))) => {
                             app.screen.dossier = dossier;
+                            // the project chosen before, while it is still a folder
+                            if let Some(p) = project.map(PathBuf::from).filter(|p| p.is_dir()) {
+                                app.screen.repo = p;
+                            }
                             app.screen.dossiers = dossiers;
                             app.screen.agents = config["session"]["acp"]
                                 .as_object()
@@ -1541,15 +1548,15 @@ impl LegionApp {
             )
     }
 
-    /// The folder of the view tab's code: its own (`repo=` in its parameters, set by the user), else the app's.
+    /// The folder of the view tab's code: the app's project (one for every tab and chat, DESIGN-20 rule 7).
     pub(crate) fn tab_repo(&self) -> PathBuf {
-        match self.tab() {
-            Some(Tab::View { params, .. }) => params
-                .iter()
-                .find_map(|p| p.strip_prefix(REPO_PARAM))
-                .map_or_else(|| self.screen.repo.clone(), PathBuf::from),
-            _ => self.screen.repo.clone(),
-        }
+        self.screen.repo.clone()
+    }
+
+    /// Make `path` the app's project: every view, chat and button uses it, and the app keeps it after a restart.
+    pub(crate) fn set_project(&mut self, path: &Path, cx: &mut Context<Self>) {
+        path.clone_into(&mut self.screen.repo);
+        self.remember("project", &json!(path), cx);
     }
 
     /// The environment step (DESIGN-15): the form of a folder (the dossier's linked repository first) and, for a
@@ -1651,17 +1658,12 @@ impl LegionApp {
         }
         let then = form.then;
         self.state.form = None;
-        match then {
-            crate::Then::TabRepo => {
-                if let Some(Tab::View { params, .. }) = self.screen.tabs.get_mut(self.screen.active)
-                {
-                    params.retain(|p| !p.starts_with(REPO_PARAM));
-                    params.push(format!("{REPO_PARAM}{}", path.display()));
-                }
-                self.remember_tabs(cx);
-                self.load_tab(cx);
-            }
-            _ => self.screen.chat_place = Some((path, base)),
+        self.set_project(&path, cx);
+        if then == crate::Then::TabRepo {
+            // the tab keeps its key: read its view again for the new project
+            self.render_view(cx);
+        } else {
+            self.screen.chat_place = Some((path, base));
         }
         cx.notify();
     }

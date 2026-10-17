@@ -584,8 +584,13 @@ fn graph_repo(home: &Path, repo: &Path) {
 }
 
 /// The code tree of a folder in no git repository asks for one (r324 showed git's error); Choose a repository with
-/// `repo` gives the tab its own folder.
-fn choose_the_repository(cx: &mut VisualTestContext, app: &Entity<LegionApp>, repo: &Path) {
+/// `repo` makes it the app's project.
+fn choose_the_repository(
+    cx: &mut VisualTestContext,
+    app: &Entity<LegionApp>,
+    op: &Operator,
+    repo: &Path,
+) {
     wait(cx, app, "the question for a repository", |a| {
         shown(a, "code-tree").is_some_and(|v| v.needs_repository)
     });
@@ -605,14 +610,22 @@ fn choose_the_repository(cx: &mut VisualTestContext, app: &Entity<LegionApp>, re
         window.input(repo.to_str().unwrap(), cx);
         window.click("form-submit", cx);
     });
+    // the folder is the app's project, for every tab and chat, and it is kept for the next start
     app.read_with(cx, |a, _| {
-        assert!(
-            a.tab()
-                .is_some_and(|t| t.key().contains(&format!("repo={}", repo.display()))),
-            "the tab keeps its folder: {:?}",
-            a.tab()
-        );
+        assert_eq!(a.screen.repo, repo, "the app's project");
     });
+    let kept = || {
+        op.ok(&["facts", "at", "--entity", "app", "--json"])
+            .contains(&format!("\"{}\"", repo.display()))
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !kept() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the project is kept as the app's fact"
+        );
+        cx.run_until_parked();
+    }
 }
 
 /// The code graph seed (DESIGN-09 G4, todo-141) on a repository with the ctx stand-in: on branch work, the commit
@@ -642,7 +655,7 @@ fn the_code_graph_seed_opens_levels_on_click_marks_changes_and_shows_what_uses_a
         a.screen.views.iter().any(|v| v.name == "code-graph")
     });
     click(cx, "nav-code-graph");
-    choose_the_repository(cx, &app, &repo);
+    choose_the_repository(cx, &app, &op, &repo);
     wait(cx, &app, "why there is no graph", |a| {
         shown(a, "code-tree").is_some_and(|v| v.error.is_some())
     });

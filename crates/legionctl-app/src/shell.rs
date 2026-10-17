@@ -178,7 +178,12 @@ impl LegionApp {
     }
 
     /// Write one layout fact of the user.
-    fn remember(&mut self, attribute: &'static str, value: &Value, cx: &mut Context<Self>) {
+    pub(crate) fn remember(
+        &mut self,
+        attribute: &'static str,
+        value: &Value,
+        cx: &mut Context<Self>,
+    ) {
         if !self.screen.restored {
             return;
         }
