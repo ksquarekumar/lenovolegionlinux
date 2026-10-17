@@ -216,11 +216,12 @@ class Osd {
 }
 
 // The vitals overlay: always on top (fullscreen windows too), in the top-right corner of the primary monitor, below
-// the top bar. Clicks go through it.
+// the top bar. Clicks go through it: the label is not reactive. GNOME Shell 51 takes only trackFullscreen and
+// affectsStruts; an other parameter (affectsInputRegion) throws, and enable() failed (EV-review-11 U-7).
 class Vitals {
     constructor() {
         this._label = new St.Label({style_class: 'osd-window legionctl-vitals', visible: false});
-        Main.layoutManager.addTopChrome(this._label, {affectsInputRegion: false, trackFullscreen: false});
+        Main.layoutManager.addTopChrome(this._label);
     }
 
     destroy() {

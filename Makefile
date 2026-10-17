@@ -63,6 +63,10 @@ js-lint: node_modules ## Biome lint and format check, tsc type check of the GNOM
 	bun run lint
 	bun run typecheck
 
+.PHONY: extension-check
+extension-check: ## enable the GNOME Shell extension in a private headless GNOME Shell (the installed version): ACTIVE or the error
+	scripts/extension-check.sh
+
 .PHONY: build
 build: static ## build legionctl, legionctl-system, legionctl-operator and legionctl-app (release)
 	cargo build --release --locked
