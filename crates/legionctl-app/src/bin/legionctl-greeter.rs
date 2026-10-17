@@ -1,4 +1,5 @@
-//! The greeter binary: greetd runs `cage -s -m last -- legionctl-greeter` as its user `greeter` (note 21).
+//! The greeter binary: greetd runs `cage -s -m last -- env -u DISPLAY FONTCONFIG_FILE=<its fonts.conf>
+//! legionctl-greeter` as its user `greeter` (note 21).
 
 use gpui_kit::{AppContext, WindowOptions};
 use legionctl_app::greeter::{

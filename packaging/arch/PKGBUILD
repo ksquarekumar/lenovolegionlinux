@@ -28,6 +28,7 @@ optdepends=(
   "efibootmgr: legionctl boot and windows reboot (the firmware boot entries)"
   "greetd: legionctl greeter install (the login screen in place of GDM)"
   "cage: legionctl greeter install (the compositor of the login screen)"
+  "noto-fonts: legionctl greeter install (the fonts of the login screen)"
   "stress-ng: the CPU workload of bench and tune"
   "scx-scheds: sched_ext schedulers (scx_lavd) for /etc/scx_loader.toml"
   "scx-tools: scx_loader service"

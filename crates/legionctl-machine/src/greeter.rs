@@ -14,6 +14,8 @@ pub const CONFIG: &str = "/etc/greetd/config.toml";
 pub const BEFORE: &str = "/etc/greetd/config.toml.before";
 /// The greeter binary of the package.
 pub const GREETER: &str = "/usr/lib/legionctl/legionctl-greeter";
+/// The greeter's font configuration of the package: only the fonts it shows (links into noto-fonts).
+pub const FONTS: &str = "/usr/share/legionctl/greeter/fonts.conf";
 const MARK: &str = "# legionctl greeter";
 /// The greeter's own folder (the last desktop of each user), its user's: `greeter` has `/` as its home.
 pub const STATE: &str = "/var/lib/legionctl-greeter";
@@ -45,6 +47,10 @@ pub fn state(root: &SysRoot) -> Result<GreeterState> {
         ("/usr/bin/greetd", "greetd (pacman -S greetd)"),
         ("/usr/bin/cage", "cage (pacman -S cage)"),
         (GREETER, "legionctl-greeter (the legionctl package)"),
+        (
+            "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+            "noto-fonts, the login screen's fonts (pacman -S noto-fonts)",
+        ),
     ] {
         if !root.exists(path)? {
             missing.push(what.to_string());
@@ -117,35 +123,53 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
 }
 
 /// Plan the package upgrade's step (`legionctl-system --greeter-update`): an older install of ours gets the
-/// configuration and the greeter's folder of this version; the kept file and the units stay as they are. None when
-/// legionctl's greeter is not installed or is of this version.
+/// configuration and the greeter's folder of this version, and one line says what changed; the kept file and the
+/// units stay as they are. None when legionctl's greeter is not installed or is of this version.
 ///
 /// # Errors
-/// greetd's configuration cannot be read.
+/// greetd's configuration cannot be read, or the new configuration needs a package that is not installed.
 pub fn update_plan(root: &SysRoot) -> Result<Vec<Step>> {
     let ours = config();
     // the root's read trims the text
     match root.read(CONFIG)? {
-        Some(now) if now.starts_with(MARK) && now != ours.trim() => Ok(vec![
-            state_folder(root),
-            Step::Create {
-                path: CONFIG.into(),
-                content: ours,
-            },
-        ]),
+        Some(now) if now.starts_with(MARK) && now != ours.trim() => {
+            let missing = state(root)?.missing;
+            if !missing.is_empty() {
+                bail!(
+                    "legionctl's greeter keeps its old configuration, these are not installed:\n- {}",
+                    missing.join("\n- ")
+                );
+            }
+            Ok(vec![
+                state_folder(root),
+                Step::Create {
+                    path: CONFIG.into(),
+                    content: ours,
+                },
+                // change this line with config()
+                Step::Info(
+                    "login screen: it reads only its own fonts and starts no X server, so it shows sooner at the \
+                     next start"
+                        .into(),
+                ),
+            ])
+        }
         _ => Ok(Vec::new()),
     }
 }
 
 /// greetd's configuration of this version: cage shows the greeter on one monitor (`-m last`: with two monitors, the
 /// default `extend` spans one window over both, and the login sits at the seam); `systemd-cat` puts the greeter's
-/// and cage's output in the journal (greetd gives a session the terminal, where nobody sees it).
+/// and cage's output in the journal (greetd gives a session the terminal, where nobody sees it). The greeter reads
+/// only its own fonts (GPUI parses every system font before its first frame: 3.5 s at the boot of 2026-10-17), and
+/// it has no `DISPLAY` (NVIDIA's Vulkan driver connects to it, so cage started Xwayland before the first frame).
 fn config() -> String {
     format!(
         "{MARK} (legionctl greeter install; legionctl greeter remove puts {BEFORE} back)\n\
          [terminal]\nvt = 1\n\n\
          [default_session]\n\
-         command = \"systemd-cat -t legionctl-greeter cage -s -m last -- {GREETER}\"\nuser = \"greeter\"\n"
+         command = \"systemd-cat -t legionctl-greeter cage -s -m last -- env -u DISPLAY FONTCONFIG_FILE={FONTS} \
+         {GREETER}\"\nuser = \"greeter\"\n"
     )
 }
 

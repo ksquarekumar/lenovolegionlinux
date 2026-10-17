@@ -9,6 +9,10 @@ it waits for todo-17, and the screen shows nothing for it.
   through `systemd-cat -t legionctl-greeter`: the greeter's and cage's messages go to the journal
   (`journalctl -t legionctl-greeter`). `-m last` shows the screen on one monitor: with two monitors, cage's default
   (`extend`) spans one window over both, and the login was at the edge of one monitor (boot of 2026-10-17).
+- The greeter reads only its own fonts (`FONTCONFIG_FILE=/usr/share/legionctl/greeter/fonts.conf`: links to five
+  noto-fonts files) and has no `DISPLAY`. Boot of 2026-10-17 (boot-handover): GPUI parsed every system font (1543
+  faces, 2.4 GB) before its first frame, 3.5 s; and NVIDIA's Vulkan driver connected to `DISPLAY`, so cage started
+  Xwayland before the first frame. The package needs noto-fonts for the greeter (install and upgrade check it).
 - The screen is dark and shows little text (todo-150, 2026-10-17): the people of the computer as avatars (uid 1000 to
   65533 with a login shell), the session chips, and a bar with "Before login" at the left and Suspend, Restart and
   Power off at the right.
@@ -108,7 +112,8 @@ Install does these steps in this order:
 
 1. It keeps `/etc/greetd/config.toml` as `/etc/greetd/config.toml.before`.
 2. It writes `/etc/greetd/config.toml` (first line `# legionctl greeter`): VT 1,
-   `systemd-cat -t legionctl-greeter cage -s -m last -- legionctl-greeter` as `greeter`.
+   `systemd-cat -t legionctl-greeter cage -s -m last -- env -u DISPLAY FONTCONFIG_FILE=<fonts.conf> legionctl-greeter`
+   as `greeter`.
 3. `systemctl disable gdm.service`. GDM stays installed.
 4. `systemctl enable greetd.service`. The `display-manager.service` alias is one link, so GDM must go first.
 

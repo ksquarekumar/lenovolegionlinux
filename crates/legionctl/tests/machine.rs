@@ -6277,7 +6277,9 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         let refused = op.cli(&["greeter", "install"]);
         let why = String::from_utf8_lossy(&refused.stderr);
         assert!(
-            why.contains("cage (pacman -S cage)") && why.contains("the user greeter"),
+            why.contains("cage (pacman -S cage)")
+                && why.contains("the user greeter")
+                && why.contains("pacman -S noto-fonts"),
             "{why}"
         );
         assert_eq!(config(), original);
@@ -6285,6 +6287,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         assert_eq!((unit_changes(), asked.lock().unwrap().len()), (vec![], 0));
 
         m.set("/usr/bin/cage", "");
+        m.set("/usr/share/fonts/noto/NotoSans-Regular.ttf", "");
         m.set(
             "/etc/passwd",
             "root:x:0:0::/root:/bin/bash\ngreeter:x:932:932::/:/bin/bash",
@@ -6294,7 +6297,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         assert!(
             ours.starts_with("# legionctl greeter")
                 && ours.contains(
-                    "command = \"systemd-cat -t legionctl-greeter cage -s -m last -- /usr/lib/legionctl/legionctl-greeter\""
+                    "command = \"systemd-cat -t legionctl-greeter cage -s -m last -- env -u DISPLAY FONTCONFIG_FILE=/usr/share/legionctl/greeter/fonts.conf /usr/lib/legionctl/legionctl-greeter\""
                 )
                 && ours.contains("user = \"greeter\""),
             "{ours}"
@@ -6355,7 +6358,9 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
     /// r324's greeter (one window over all monitors, so the login sat at the edge of one; no folder for the last
     /// desktops): the package's upgrade step (`legionctl-system --greeter-update`, no question) makes greetd's
     /// configuration and the folder again, keeps the kept file and changes no unit (boot of 2026-10-17); with GDM as
-    /// the login screen it changes nothing; after it, `greeter install` says it is installed already.
+    /// the login screen it changes nothing; after it, `greeter install` says it is installed already. The greeter of
+    /// boot-handover reads only noto-fonts (its start parsed every system font: 3.5 s): without noto-fonts the old
+    /// configuration stays, and the step says what to install.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_upgrade_gives_r324s_greeter_its_new_config_and_folder() {
         let m = Machine::new("greeterup");
@@ -6370,16 +6375,34 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         m.set("/etc/greetd/config.toml.before", "kept");
         let (_stand_ins, _asked, _processes) = start(&m).await;
         let op = on_bus(&m, "greeterup");
+        // the new greeter reads noto-fonts only: without it, the old configuration stays and the step says why
+        let refused = one_shot(&m, &["--greeter-update"]);
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("pacman -S noto-fonts"),
+            "{refused:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("etc/greetd/config.toml")).unwrap(),
+            r324
+        );
+        m.set("/usr/share/fonts/noto/NotoSans-Regular.ttf", "");
         let updated = one_shot(&m, &["--greeter-update"]);
         assert!(
             updated.status.success(),
             "{}",
             String::from_utf8_lossy(&updated.stderr)
         );
+        // one line for the upgrade's output
+        assert!(
+            String::from_utf8_lossy(&updated.stdout).contains(
+                "login screen: it reads only its own fonts and starts no X server, so it shows sooner at the next start"
+            ),
+            "{updated:?}"
+        );
         let ours = std::fs::read_to_string(root.join("etc/greetd/config.toml")).unwrap();
         assert!(
             ours.contains(
-                "command = \"systemd-cat -t legionctl-greeter cage -s -m last -- /usr/lib/legionctl/legionctl-greeter\""
+                "command = \"systemd-cat -t legionctl-greeter cage -s -m last -- env -u DISPLAY FONTCONFIG_FILE=/usr/share/legionctl/greeter/fonts.conf /usr/lib/legionctl/legionctl-greeter\""
             ),
             "{ours}"
         );

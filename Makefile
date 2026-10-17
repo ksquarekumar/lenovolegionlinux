@@ -10,6 +10,7 @@ PROFILE ?= profiles/lenovo-82wq-legion-pro-7-16irx8h.json
 # dev build's, and in one folder each build compiles every crate again)
 CARGO_TARGET_DIR ?= target
 EXTENSION = legionctl-osd@legionctl
+GREETER_FONTS = NotoSans-Regular NotoSans-Italic NotoSans-Medium NotoSans-Bold NotoSansMono-Regular
 PRE_COMMIT ?= pre-commit
 KMOD = kernel/legionctl-wmi
 KMOD_VERSION = $(shell sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' $(KMOD)/dkms.conf)
@@ -169,6 +170,10 @@ install: ## install into DESTDIR; the PKGBUILD calls this (on this machine: `mak
 	install -Dm644 dbus/org.legionctl.System1.conf "$(DESTDIR)$(PREFIX)/share/dbus-1/system.d/org.legionctl.System1.conf"
 	install -Dm644 polkit/org.legionctl.policy "$(DESTDIR)$(PREFIX)/share/polkit-1/actions/org.legionctl.policy"
 	install -Dm644 polkit/50-legionctl-greeter.rules "$(DESTDIR)$(PREFIX)/share/polkit-1/rules.d/50-legionctl-greeter.rules"
+# the greeter's few fonts (links into noto-fonts): its start does not parse every font of the system
+	install -Dm644 packaging/greeter/fonts.conf "$(DESTDIR)$(DATADIR)/greeter/fonts.conf"
+	install -d "$(DESTDIR)$(DATADIR)/greeter/fonts"
+	for f in $(GREETER_FONTS); do ln -sf /usr/share/fonts/noto/$$f.ttf "$(DESTDIR)$(DATADIR)/greeter/fonts/$$f.ttf"; done
 # the daemon writes the greeter's config.toml there (its unit's ReadWritePaths): the folder is there before greetd
 	install -dm755 "$(DESTDIR)$(SYSCONFDIR)/greetd"
 	install -d "$(DESTDIR)$(PREFIX)/share/gnome-shell/extensions/$(EXTENSION)"
