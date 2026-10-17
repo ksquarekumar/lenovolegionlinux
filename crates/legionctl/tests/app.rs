@@ -110,6 +110,18 @@ fn unplugged_machine(tag: &'static str) -> Operator {
     op
 }
 
+/// The events of operation `kind` (`events --json`), oldest first.
+fn events_of(op: &Operator, kind: &str) -> Vec<serde_json::Value> {
+    let page: serde_json::Value = serde_json::from_str(&op.ok(&["events", "--json"])).unwrap();
+    page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == kind)
+        .cloned()
+        .collect()
+}
+
 /// Scroll the tab's body until the element `id` is whole inside it: a click goes to an element's centre, and the
 /// centre of an element cut at the body's edge hits whatever is there (a group head that did not open).
 fn reveal(cx: &mut VisualTestContext, id: &str) {
@@ -219,12 +231,11 @@ fn the_seed_views_show_the_machine_and_a_generated_machine_button_asks_as_the_cl
         let governor = "would write /sys/devices/system/cpu/cpufreq/policy*/scaling_governor: powersave (32 CPUs)";
         assert!(plan.lines().any(|l| l.contains(governor)), "{plan}");
     });
-    let before = op.ok(&["events"]);
     assert!(
-        !before
-            .lines()
-            .any(|l| l.contains(" app ") && l.contains("power.apply") && !l.contains("dry")),
-        "{before}"
+        events_of(&op, "power.apply")
+            .iter()
+            .all(|e| e["actor"] != "app" || e["payload"]["input"]["dry_run"] == true),
+        "only the dry run ran"
     );
 
     // apply: no daemon on this bus, so the operator refuses, as for the CLI; the app says why and keeps running
@@ -244,12 +255,11 @@ fn the_seed_views_show_the_machine_and_a_generated_machine_button_asks_as_the_cl
         String::from_utf8_lossy(&cli.stderr).contains("system bus"),
         "the CLI gets the same refusal"
     );
-    let events = op.ok(&["events"]);
     assert!(
-        events
-            .lines()
-            .any(|l| l.contains(" app ") && l.contains("power.apply")),
-        "{events}"
+        events_of(&op, "power.apply")
+            .iter()
+            .any(|e| e["actor"] == "app" && e["payload"]["input"]["dry_run"] != true),
+        "the app's apply is an event"
     );
 
     health_and_bench(cx, &app);
@@ -979,8 +989,10 @@ fn the_resources_seed_lists_the_resources_and_a_row_action_runs_its_operation(
             "no dry run: an inline confirm of the operation and its input"
         );
     });
-    let before = op.ok(&["events"]);
-    assert!(!before.contains("rules.disable"), "{before}");
+    assert!(
+        events_of(&op, "rules.disable").is_empty(),
+        "nothing ran before Apply"
+    );
 
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -993,12 +1005,11 @@ fn the_resources_seed_lists_the_resources_and_a_row_action_runs_its_operation(
         let message = a.state.message.as_deref().unwrap();
         assert!(message.contains("system bus"), "{message}");
     });
-    let events = op.ok(&["events"]);
     assert!(
-        events
-            .lines()
-            .any(|l| l.contains(" app ") && l.contains("rules.disable")),
-        "{events}"
+        events_of(&op, "rules.disable")
+            .iter()
+            .any(|e| e["actor"] == "app"),
+        "the app's apply is an event"
     );
     drop(runtime);
 }
@@ -2018,7 +2029,7 @@ fn help_opens_about_and_the_keys_ctrl_k_searches_and_numbers_show_by_their_unit(
         "{rows:?}"
     );
     assert!(
-        row("machine daemon").starts_with("machine daemon · does not answer")
+        row("machine daemon").contains("legionctl-system")
             && row("machine daemon").ends_with(" · warn"),
         "{rows:?}"
     );

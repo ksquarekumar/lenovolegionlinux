@@ -34,15 +34,17 @@ pub fn entries(commands: &[AgentCommand], screen: Vec<(String, String)>) -> Vec<
     // an agent's call of a workspace operation waits for the user's approval
     let asks = crate::cli::session_from_env().is_some();
     let registry = OPS.iter().filter(|op| !op.internal()).map(move |op| {
-        let class = format!("{:?}", op.class).to_lowercase();
-        let ask = if asks && op.class == Class::Workspace {
-            ", asks the user"
-        } else {
-            ""
+        // what a run of it does to you, in words; an agent's change of your files waits for your answer
+        let effect = match op.class {
+            Class::Read => "reads only",
+            Class::Session => "changes your choices",
+            Class::Workspace if asks => "asks the user first",
+            Class::Workspace => "changes your files",
+            Class::Machine => "asks for your password",
         };
         Entry {
             text: format!("/{}", op.name.replace('.', " ")),
-            about: format!("{} [{class}{ask}]", op.summary()),
+            about: format!("{} ({effect})", op.summary()),
             agent: false,
         }
     });

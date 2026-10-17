@@ -68,12 +68,10 @@ impl LegionApp {
             .iter()
             .find(|o| o.name == pending.button.op)?;
         let what = match pending.class {
-            Class::Machine => {
-                "It changes the machine; when you apply it, the system asks for your password."
-            }
-            Class::Workspace => "It changes your files or settings.",
-            Class::Session => "It changes a choice of yours in legionctl.",
-            Class::Read => "It reads only.",
+            Class::Machine => "Changes the machine. Asks for your password.",
+            Class::Workspace => "Changes your files or settings.",
+            Class::Session => "Changes a setting of yours.",
+            Class::Read => "Reads only.",
         };
         let empty = pending.plan.as_deref().is_some_and(|p| p.trim().is_empty());
         let lines = Self::pending_lines(pending, op, empty, t);
@@ -180,11 +178,7 @@ impl LegionApp {
         t: &Tokens,
     ) -> Vec<AnyElement> {
         match &pending.plan {
-            Some(_) if empty => vec![
-                div()
-                    .child("Nothing: the machine is already in this state")
-                    .into_any_element(),
-            ],
+            Some(_) if empty => vec![div().child("Nothing to change").into_any_element()],
             Some(plan) => plan
                 .lines()
                 .enumerate()
@@ -284,9 +278,7 @@ impl Render for LegionApp {
                         .xsmall()
                         .icon(IconName::MessageSquare)
                         .label("Feedback")
-                        .tooltip(
-                            "Keep a note with this tab's state and a screenshot in the dossier",
-                        )
+                        .tooltip("Write a note about this tab, with a screenshot")
                         .on_click(cx.listener(|app, _, window, cx| app.ask_feedback(window, cx))),
                 )
                 .child(LegionApp::help_menu(cx))

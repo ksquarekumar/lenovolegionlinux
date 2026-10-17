@@ -4347,6 +4347,7 @@ dependencies = [
  "anyhow",
  "gpui-kit",
  "legionctl-api",
+ "legionctl-core",
  "serde",
  "serde_json",
  "tokio",

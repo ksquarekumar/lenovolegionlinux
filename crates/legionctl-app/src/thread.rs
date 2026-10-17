@@ -258,7 +258,7 @@ impl Screen {
             })
             .chain(std::iter::once((
                 "/feedback ".to_string(),
-                "Keep a note with this tab's state and a screenshot in the dossier".to_string(),
+                "Write a note about this tab, with a screenshot".to_string(),
             )))
             .chain(self.agents.iter().map(|a| {
                 let current = if now.as_ref() == Some(a) {
@@ -283,7 +283,7 @@ impl Screen {
                 };
                 (
                     format!("/dossier use {d}"),
-                    format!("Chat and run agents in dossier {d}{current}"),
+                    format!("Use dossier {d}{current}"),
                 )
             }))
             .chain([
@@ -859,10 +859,7 @@ impl LegionApp {
         if self.tab() != Some(&Tab::Chat) {
             self.open_view("dossiers", cx);
         }
-        self.state.message = Some(
-            "Choose a dossier first: a chat keeps its record in a dossier. Click Use on a dossier, or New dossier."
-                .into(),
-        );
+        self.state.message = Some("Choose a dossier first: click Use, or New dossier.".into());
     }
 
     /// What follows an operation that the user ran: a new dossier is the user's dossier at once; a changed choice
@@ -1065,26 +1062,6 @@ pub(crate) fn ago_short(seconds: u64) -> String {
     }
 }
 
-/// `at` as a date and time in UTC: 2026-10-16 15:18 UTC.
-fn utc(at: i64) -> String {
-    // the civil date of a day count (Howard Hinnant's days_from_civil, reversed)
-    let z = at.div_euclid(86_400) + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    let secs = at.rem_euclid(86_400);
-    format!(
-        "{year}-{month:02}-{day:02} {:02}:{:02} UTC",
-        secs / 3600,
-        secs / 60 % 60
-    )
-}
-
 /// A member's colour, the same for the same name.
 fn member_color(name: &str) -> gpui_kit::Hsla {
     let hue = name
@@ -1275,8 +1252,8 @@ impl LegionApp {
         };
         let why: Option<&'static str> = match run {
             None | Some("operator") => None,
-            Some("teammate") => Some("A teammate runs on the account of its lead"),
-            Some("subagent") => Some("A Codex subagent runs on the account of its main session"),
+            Some("teammate") => Some("Uses the account of its lead"),
+            Some("subagent") => Some("Uses the account of its main session"),
             Some(_) => Some("Resume its session on another account to change this"),
         };
         let chip = div()
@@ -1366,8 +1343,8 @@ impl LegionApp {
             let label = match (member, &pick) {
                 (Some(m), Some(a)) => format!("Run {m} on account {a}"),
                 (Some(m), None) => format!("Run {m} on the current login"),
-                (None, Some(a)) => format!("Run the chat bar on account {a}"),
-                (None, None) => "Run the chat bar on the current login".into(),
+                (None, Some(a)) => format!("Chat on account {a}"),
+                (None, None) => "Chat on the current login".into(),
             };
             chip.text_color(t.text)
                 .cursor_pointer()
@@ -1423,7 +1400,7 @@ impl LegionApp {
         } else {
             &r.member
         };
-        let when = utc(r.at);
+        let when = legionctl_core::views::local(r.at);
         let more = chat::log_more(r);
         let open = self.screen.expanded.contains(&r.id);
         let id = r.id;
@@ -1515,7 +1492,7 @@ impl LegionApp {
     /// the environment of its runs; a button attaches a repository or changes it (the form of `thread.repo`).
     fn thread_place(th: &ThreadInfo, t: &Tokens, cx: &mut Context<Self>) -> Div {
         let text = match (&th.repo, &th.branch) {
-            (Some(repo), Some(branch)) => format!("Works on {repo} at {branch} (its own worktree)"),
+            (Some(repo), Some(branch)) => format!("Works in {repo} on branch {branch}"),
             (Some(folder), None) => {
                 format!("Works on a copy of {folder}: its changes stay in the copy")
             }

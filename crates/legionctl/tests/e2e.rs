@@ -1455,7 +1455,8 @@ fn trace_shows_each_change_as_it_happens() {
     assert!(!line.contains("before"), "the backlog stays out: {line}");
     let n = (0..written.len())
         .rev()
-        .find(|n| line.contains("dossier.use") && line.contains(&format!("during{n}")))
+        // the change in words: dossier.use's sentence with its name
+        .find(|n| line.contains(&format!("(name during{n}")))
         .unwrap_or_else(|| panic!("{line}"));
     let latency = arrived.saturating_duration_since(written[n]);
     assert!(
@@ -3257,7 +3258,11 @@ fn a_store_package_runs_pinned_and_offline_and_a_changed_one_is_refused() {
         "{}",
         String::from_utf8_lossy(&fetched.stderr)
     );
-    assert!(String::from_utf8_lossy(&cli(&["packages", "list"]).stdout).contains(" ok "));
+    assert!(
+        String::from_utf8_lossy(&cli(&["packages", "list"]).stdout)
+            .lines()
+            .any(|l| l.starts_with("probe") && l.ends_with(" ok"))
+    );
 
     let started = cli(&["session", "start", "claude", "--dossier", "port", "--json"]);
     assert!(

@@ -13,7 +13,7 @@
       "title": "The GPU that draws the desktop",
       "widget": "stat",
       "source": { "op": "gpu.status", "path": "$.desktop_gpu" },
-      "note": "GNOME reads it at the next login; the displays are in {mode} mode"
+      "note": "Applies at your next login · displays: {mode}"
     },
     {
       "name": "displays",

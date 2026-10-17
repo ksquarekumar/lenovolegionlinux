@@ -3173,8 +3173,7 @@ impl Engine for Operator {
         });
         items.push(item(
             "licenses",
-            "MIT; the notices of the parts from other projects: /usr/share/licenses/legionctl"
-                .into(),
+            "MIT, with the notices of other projects in /usr/share/licenses/legionctl".into(),
             true,
         ));
         items.push(item(

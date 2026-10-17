@@ -360,7 +360,7 @@ impl LegionApp {
                     Ok(result) => return result,
                     Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
                     Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                        return Err(anyhow::anyhow!("the call ended without an answer"));
+                        return Err(anyhow::anyhow!("no answer from legionctl; try again"));
                     }
                 }
             }

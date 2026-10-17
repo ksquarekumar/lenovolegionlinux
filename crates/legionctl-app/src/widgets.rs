@@ -764,7 +764,7 @@ pub(crate) fn message(message: &str, t: &Tokens) -> Div {
                 .text_color(t.muted)
                 .text_size(T_XS)
                 .child(icon(IconName::Info, px(14.), t.muted))
-                .child(div().flex_1().child("Last result"))
+                .child(div().flex_1().child("Result"))
                 .child(copy_button(
                     "message-copy",
                     "Copy the result",

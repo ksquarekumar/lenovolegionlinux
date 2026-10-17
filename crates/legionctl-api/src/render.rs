@@ -1240,7 +1240,8 @@ impl Render for Vec<EventRow> {
                     e.id,
                     legionctl_core::views::local(e.at),
                     e.actor,
-                    in_words(&e.kind, &e.payload)
+                    // an operation's event keeps its input under `input`, next to who called and how long it took
+                    in_words(&e.kind, e.payload.get("input").unwrap_or(&e.payload))
                 )
             })
             .collect::<Vec<_>>()

@@ -252,10 +252,8 @@ fn choice(name: &str, words: &[&str], value: &str, cx: &mut Context<LegionApp>) 
 /// What the form is for: the operation's summary, or the environment step's own words.
 fn about(form: &crate::Form, op: &legionctl_api::OpInfo) -> &'static str {
     match form.then {
-        crate::Then::TabRepo => "Choose the git repository whose code this tab shows.",
-        _ if op.name == "thread.repo" => {
-            "Choose where the chat's agent works. You can change it later."
-        }
+        crate::Then::TabRepo => "Choose a git repository.",
+        _ if op.name == "thread.repo" => "Choose where the agent works.",
         _ => op.summary(),
     }
 }
