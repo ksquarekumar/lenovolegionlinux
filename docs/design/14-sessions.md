@@ -173,9 +173,10 @@ Trust fixes (2026-10-17, EV-review-14, plan#todo-198):
   reminders changes ask the user; the pre-tool hook denies its file writes into `~/.config/legionctl` and
   `~/.local/state/legionctl`. Limit: the agent runs as the user, so a hostile process can still read the user token
   or write the files with its shell; this guards a prompt-injected agent that uses legionctl's tools.
-- A-4: a view button runs at once only for a read; every change confirms by its class. A line the user types in the
-  chat bar runs a change of the user's own session at once. The composer's views go into the user's layer and its
-  facts have the source `agent:<composer>`.
+- A-4: buttons of shipped and user views follow the class route (Read and Session run, Workspace confirms, Machine:
+  polkit); buttons of a repository's view and of a view the composer made (`made_by`) carry `confirm` and confirm
+  every change. The composer's views go into the user's layer with `made_by: agent:<composer>`, and their facts
+  have that source.
 - A-2: `code tests mutant run` of a session runs cargo-mutants in its sandbox.
 - A-9: a folder whose config does not resolve holds each prompt with the file and key that broke it.
 - A-10: a user's fact wins over every other fact; `--corrects` only by the fact's own source or the user.

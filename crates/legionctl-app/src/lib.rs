@@ -471,9 +471,9 @@ impl LegionApp {
         );
     }
 
-    /// A view's button: a read runs at once; a change with a dry run shows its plan first; a change without one
-    /// asks inline with its operation and input (a view comes from files and model output, so even a change of the
-    /// user's own session confirms). Apply runs it; for the machine, polkit asks.
+    /// A view's button: a read and a change of the user's own session run at once (but for a button of a
+    /// repository's or a model's view, which confirms every change); a change with a dry run shows its plan first; a
+    /// change without one asks inline with its operation and input. Apply runs it; for the machine, polkit asks.
     pub fn act(&mut self, button: ViewButton, cx: &mut Context<Self>) {
         let Some(info) = OPS.iter().find(|o| o.name == button.op && !o.internal()) else {
             self.state.message = Some(format!("{}: unknown operation {}", button.label, button.op));
@@ -495,7 +495,7 @@ impl LegionApp {
             cx.notify();
             return;
         }
-        self.confirm(button, false, cx);
+        self.confirm(button, cx);
     }
 
     /// The form's Continue: its input, then the approval of the operation's class.
@@ -520,17 +520,16 @@ impl LegionApp {
                 let mut button = form.button.clone();
                 button.input = input;
                 self.state.form = None;
-                self.confirm(button, false, cx);
+                self.confirm(button, cx);
             }
             Err(e) => form.error = Some(format!("{e:#}")),
         }
         cx.notify();
     }
 
-    /// `button` with its whole input, in its class's approval; a line the user `typed` that changes only the user's
-    /// own session runs at once. Its paths are the user's, against the app's folder, as on the chat bar (the operator
-    /// takes only absolute paths).
-    fn confirm(&mut self, mut button: ViewButton, typed: bool, cx: &mut Context<Self>) {
+    /// `button` with its whole input, in its class's approval. Its paths are the user's, against the app's folder,
+    /// as on the chat bar (the operator takes only absolute paths).
+    fn confirm(&mut self, mut button: ViewButton, cx: &mut Context<Self>) {
         let Some(info) = OPS.iter().find(|o| o.name == button.op) else {
             return;
         };
@@ -538,7 +537,7 @@ impl LegionApp {
         let route = legionctl_api::form::route(info);
         let dry_run = route == legionctl_api::form::Route::Plan;
         let class = info.class;
-        if route == legionctl_api::form::Route::Run || (typed && class == Class::Session) {
+        if route == legionctl_api::form::Route::Run && !(button.confirm && class != Class::Read) {
             self.state.pending = None;
             self.run(button, false, cx);
             return;

@@ -397,6 +397,19 @@ impl Pass<'_> {
 
     /// `view` with its data: its source's answer, or each view of a stack.
     fn render(&mut self, view: &View, given: &BTreeMap<String, String>, depth: usize) -> Rendered {
+        let mut out = self.render_view(view, given, depth);
+        if view.made_by.is_some() {
+            out.confirm_all();
+        }
+        out
+    }
+
+    fn render_view(
+        &mut self,
+        view: &View,
+        given: &BTreeMap<String, String>,
+        depth: usize,
+    ) -> Rendered {
         if depth >= DEPTH {
             return Rendered::failed(view, format!("stacks hold stacks more than {DEPTH} deep"));
         }
@@ -574,6 +587,10 @@ pub fn render(engine: &dyn Engine, ctx: &Ctx, input: &ViewRenderIn) -> Result<Vi
         answers: BTreeMap::new(),
     };
     let mut out = pass.render(&view, &given, 0);
+    // a repository's view: its buttons come from a file of the repository
+    if shown != Some(0) && legionctl_core::views::in_repository(&input.name, Some(repo)) {
+        out.confirm_all();
+    }
     out.versions = legionctl_core::views::seed(&input.name)
         .map(|_| 0)
         .into_iter()
@@ -865,7 +882,7 @@ fn same(a: &View, b: &View) -> bool {
     let shape = |v: &View| {
         let mut value = serde_json::to_value(v).unwrap_or_default();
         if let Some(map) = value.as_object_mut() {
-            for key in ["name", "title", "intent", "space", "$schema"] {
+            for key in ["name", "title", "intent", "space", "made_by", "$schema"] {
                 map.remove(key);
             }
         }
@@ -1353,6 +1370,9 @@ fn keep(
         None => unique(&view.name, repo),
     };
     view.name.clone_from(&name);
+    // the composer made it: its buttons confirm every change, and its facts lose to the user's own
+    let made_by = format!("agent:{agent}");
+    view.made_by = Some(made_by.clone());
     // its space follows its sources (View::space), not the model's word
     view.space = None;
     if view.intent.is_none() && current.is_none() {
@@ -1361,8 +1381,6 @@ fn keep(
     into_library(view, repo, None)?;
     let text = serde_json::to_string_pretty(&*view)?;
     let (_, saved) = legionctl_core::views::save(view, &text, None)?;
-    // the composer made it, not the user: its facts lose to the user's own
-    let made_by = format!("agent:{agent}");
     show_version(
         ctx,
         &made_by,
@@ -1687,6 +1705,7 @@ fn compose(
             let mut v = v.clone();
             v.name.clone_from(name);
             v.space = None;
+            v.made_by = None;
             serde_json::to_value(v)
         };
         if unchanged(&view)? == unchanged(old)? {

@@ -479,11 +479,10 @@ fn an_operation_of_the_catalog_runs_through_the_form_of_its_input_schema(cx: &mu
     click(cx, "form-more".into());
     click(cx, "form-scope-project".into());
     click(cx, "form-submit".into());
-    // a change of the user's own session from a view's form confirms too (A-4)
+    // a change of the user's own session runs at once: no confirm
     app.read_with(cx, |a, _| {
-        assert!(a.state.form.is_none() && a.state.pending.is_some());
+        assert!(a.state.form.is_none() && a.state.pending.is_none());
     });
-    click(cx, "apply".into());
     wait(cx, &app, "the fact", |a| {
         a.state
             .message
@@ -2824,19 +2823,10 @@ fn make_a_dossier_in_the_app(
     });
     cx.update(|window, cx| {
         window.render_frame(cx);
-        // a view's button confirms even a change of the user's own session (A-4): its view is a file
+        // Use is a change of the user's own session: it runs at once, with no confirm
         window.click("view-dossiers-row-0-action-0", cx);
     });
-    app.read_with(cx, |a, _| {
-        assert_eq!(
-            a.state.pending.as_ref().expect("a confirm").class,
-            legionctl_api::Class::Session
-        );
-    });
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        window.click("apply", cx);
-    });
+    app.read_with(cx, |a, _| assert!(a.state.pending.is_none(), "no confirm"));
     wait(cx, app, "the row's dossier in use", |a| {
         a.screen.dossier.as_deref() == Some(first.as_str())
     });
@@ -2892,6 +2882,42 @@ fn make_a_dossier_in_the_app(
             .any(|l| l.starts_with("appreview") && l.ends_with("(your dossier)")),
         "{listed}"
     );
+    agent_made_buttons_confirm(cx, app, home);
+}
+
+/// A-4: the same Use button in a view that the composer made (`made_by`) asks first: a model wrote its buttons.
+fn agent_made_buttons_confirm(cx: &mut VisualTestContext, app: &Entity<LegionApp>, home: &Path) {
+    let seed = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/views/dossiers.jsonc"),
+    )
+    .unwrap();
+    write(
+        &home.join(".config/legionctl/views/picked.jsonc"),
+        &seed.replacen(
+            "\"name\": \"dossiers\"",
+            "\"name\": \"picked\", \"made_by\": \"agent:composer\"",
+            1,
+        ),
+    );
+    app.update(cx, |a, cx| a.open_view("picked", cx));
+    wait(cx, app, "the agent's view", |a| {
+        a.screen
+            .view_data
+            .get("view:picked:")
+            .is_some_and(|v| !v.rows.is_empty())
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("view-picked-row-0-action-0", cx);
+    });
+    app.read_with(cx, |a, _| {
+        let pending = a.state.pending.as_ref().expect("a confirm");
+        assert_eq!(pending.class, legionctl_api::Class::Session);
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("discard", cx);
+    });
 }
 
 /// Wait until the layout fact of the app keeps the tab of thread `id`.

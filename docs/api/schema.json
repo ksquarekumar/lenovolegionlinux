@@ -18406,12 +18406,17 @@
                   "op": {
                     "type": "string"
                   },
-                  "input": true
+                  "input": true,
+                  "confirm": {
+                    "description": "It comes from a repository's view or a model's: every change confirms, also a change of your own session.",
+                    "type": "boolean"
+                  }
                 },
                 "required": [
                   "label",
                   "op",
-                  "input"
+                  "input",
+                  "confirm"
                 ]
               },
               "description": "The view's buttons, and each row's."
@@ -18430,12 +18435,17 @@
                     "op": {
                       "type": "string"
                     },
-                    "input": true
+                    "input": true,
+                    "confirm": {
+                      "description": "It comes from a repository's view or a model's: every change confirms, also a change of your own session.",
+                      "type": "boolean"
+                    }
                   },
                   "required": [
                     "label",
                     "op",
-                    "input"
+                    "input",
+                    "confirm"
                   ]
                 }
               }
@@ -18893,12 +18903,17 @@
                   "op": {
                     "type": "string"
                   },
-                  "input": true
+                  "input": true,
+                  "confirm": {
+                    "description": "It comes from a repository's view or a model's: every change confirms, also a change of your own session.",
+                    "type": "boolean"
+                  }
                 },
                 "required": [
                   "label",
                   "op",
-                  "input"
+                  "input",
+                  "confirm"
                 ]
               },
               "description": "The view's buttons, and each row's."
@@ -18917,12 +18932,17 @@
                     "op": {
                       "type": "string"
                     },
-                    "input": true
+                    "input": true,
+                    "confirm": {
+                      "description": "It comes from a repository's view or a model's: every change confirms, also a change of your own session.",
+                      "type": "boolean"
+                    }
                   },
                   "required": [
                     "label",
                     "op",
-                    "input"
+                    "input",
+                    "confirm"
                   ]
                 }
               }
@@ -19400,12 +19420,17 @@
               "op": {
                 "type": "string"
               },
-              "input": true
+              "input": true,
+              "confirm": {
+                "description": "It comes from a repository's view or a model's: every change confirms, also a change of your own session.",
+                "type": "boolean"
+              }
             },
             "required": [
               "label",
               "op",
-              "input"
+              "input",
+              "confirm"
             ]
           },
           "description": "The view's buttons, and each row's."
@@ -19424,12 +19449,17 @@
                 "op": {
                   "type": "string"
                 },
-                "input": true
+                "input": true,
+                "confirm": {
+                  "description": "It comes from a repository's view or a model's: every change confirms, also a change of your own session.",
+                  "type": "boolean"
+                }
               },
               "required": [
                 "label",
                 "op",
-                "input"
+                "input",
+                "confirm"
               ]
             }
           }

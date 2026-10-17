@@ -272,6 +272,9 @@ pub struct View {
     /// A parameter's value when none is given.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub defaults: BTreeMap<String, String>,
+    /// Who made it when not the user: `agent:<composer>` for the composer's views. Its buttons confirm every change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_by: Option<String>,
     pub widget: Widget,
     /// Every widget but `stack` has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -879,6 +882,24 @@ pub struct Button {
     pub label: String,
     pub op: String,
     pub input: Value,
+    /// It comes from a repository's view or a model's: every change confirms, also a change of your own session.
+    pub confirm: bool,
+}
+
+impl Rendered {
+    /// Every button of this view and its parts confirms every change (a repository's or a model's view).
+    pub fn confirm_all(&mut self) {
+        for button in self
+            .actions
+            .iter_mut()
+            .chain(self.row_actions.iter_mut().flatten())
+        {
+            button.confirm = true;
+        }
+        for part in &mut self.parts {
+            part.confirm_all();
+        }
+    }
 }
 
 /// One line of a chart.
@@ -1164,6 +1185,7 @@ fn buttons(
                 label: labels.get(&label).cloned().unwrap_or(label),
                 op: text(&action.op, &values),
                 input: fill(&action.input, &values),
+                confirm: false,
             });
         }
     }

@@ -49,6 +49,13 @@
         "type": "string"
       }
     },
+    "made_by": {
+      "description": "Who made it when not the user: `agent:<composer>` for the composer's views. Its buttons confirm every change.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "widget": {
       "$ref": "#/$defs/Widget"
     },

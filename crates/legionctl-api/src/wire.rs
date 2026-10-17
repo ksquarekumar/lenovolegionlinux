@@ -1538,6 +1538,8 @@ wire! {
         label: String,
         op: String,
         input: Value,
+        /// It comes from a repository's view or a model's: every change confirms, also a change of your own session.
+        confirm: bool,
     }
 
     /// One line of a chart: (x, y) points; x is seconds since the epoch when the chart's x is a time.

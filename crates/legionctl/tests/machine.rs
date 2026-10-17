@@ -7918,6 +7918,19 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             "the user's view stays over the repository's"
         );
 
+        // a repository's buttons confirm every change; the user's own run their class route
+        let confirm = |name: &str| -> Value {
+            let shown: Value = serde_json::from_slice(
+                &op.run(&repo, &env, &["views", "render", name, "--json"], "")
+                    .stdout,
+            )
+            .unwrap();
+            shown["actions"][0]["confirm"].clone()
+        };
+        assert_eq!(
+            (confirm("panel"), confirm("shared")),
+            (Value::Bool(true), Value::Bool(false))
+        );
         // the user's own save into the repository's layer is the user's answer for that content: no question
         let saved = op.run(
             &repo,

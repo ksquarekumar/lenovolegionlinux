@@ -646,8 +646,8 @@ impl LegionApp {
                         label: op.summary().to_string(),
                         op: op.name.to_string(),
                         input,
+                        confirm: false,
                     },
-                    true,
                     cx,
                 );
             }
@@ -1382,6 +1382,7 @@ Choose an account"
                             label: label.clone(),
                             op: "thread.account".into(),
                             input: input.clone(),
+                            confirm: false,
                         },
                         cx,
                     );
@@ -1627,6 +1628,7 @@ impl LegionApp {
                 .into(),
                 op: "thread.repo".into(),
                 input,
+                confirm: false,
             };
             app.state.form = Some(crate::Form::new(button, then, fields, values, true));
             cx.notify();
