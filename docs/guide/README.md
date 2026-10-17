@@ -39,7 +39,10 @@ command here is on main. A feature that is not on main has the label "planned (v
 2. Set up the rest as your user. This enables the OSD (it shows at the next login), installs the Claude Code plugin
    from the package folder (the plugin and the binary are then of one build), and writes the MCP server, the skills
    and the agents for Claude Code and Codex, and installs the ACP adapters (`claude-code-acp`, `codex-acp`) with bun.
-   It changes only your user files, with backups.
+   It also installs clauth 0.17, the account engine (`cargo install clauth --version ~0.17 --locked`; cargo comes
+   with the `rust` package), starts clauth's daemon as the user unit `legionctl-clauth.service` (it reads each
+   account's use and switches at the limit) and adds clauth's MCP server to Claude Code. A clauth of another
+   version stays as it is; doctor says so. It changes only your user files, with backups.
 
    ```bash
    legionctl setup apply

@@ -157,47 +157,46 @@ Operating directory, dossier home `~/agentWorkspaces`, dossier and change sets: 
   `legionctl agents plugins list` lists Claude Code's installed plugins (`claude plugin list --json`) and marks those
   outside the allowlist. Codex has no plugin system; MCP servers for sessions go through `mcp.servers` (the proxy)
   and skills through `session.skills`, not into the agents' own files.
-- **Accounts:** clauth is the only store of the user's logins (user decision 2026-10-17); legionctl reads clauth's
-  files and calls clauth to change them, and keeps no login of its own.
+- **Accounts:** clauth (0.17, a runtime dependency) is the account engine and the only store of the user's logins
+  (user decisions 2026-10-17, todo-188). legionctl keeps only what clauth does not do: the sandbox binding of a
+  profile's login file, the per-member and chat-bar picks, and seeing two profiles with one login.
+  Dependency: `setup check` has the rows clauth (not installed, its version against 0.17, current), clauth daemon
+  (running or not) and clauth mcp (in Claude Code); `setup apply` installs clauth with `cargo install clauth
+  --version ~0.17 --locked`, starts its daemon as the user unit `legionctl-clauth.service` (`clauth daemon
+  --standby`) and adds `clauth mcp` to Claude Code (user scope). A clauth of another version is one plain doctor
+  finding with no action: Set up does not replace it. Sessions do not get clauth's MCP server: its store is hidden
+  there, and its `delegate` would run Claude Code outside the sandbox.
   The accounts: `agents accounts list` and `usage` show every login, each with its source: `current` (the login
-  Claude Code and Codex use now, `~/.claude/.credentials.json` and `~/.codex/auth.json`, named by the clauth profile
-  that holds the same refresh token, as `clauth which` does; clauth's link first) and `clauth` (clauth's other
-  profiles, read only from `~/.clauth`: `profiles.toml` and `codex-profiles.toml` for the roster and the active
-  profile, `profiles/<name>/credentials.json` or `auth.json` for the login). Two profiles with the same refresh
-  token are two holders of one rotating token (a refresh through one logs the other out): the second one is not
-  read, and its row says which profile holds the same login, until the user fixes it in clauth. No token is shown.
+  Claude Code and Codex use now, `~/.claude/.credentials.json` and `~/.codex/auth.json`: Claude Code's owner is the
+  profile `clauth which` names, Codex's the profile with the same refresh token; else, when Claude Code replaced
+  clauth's link with a plain file, clauth's active profile, as clauth's own switch sees it) and `clauth` (clauth's
+  other profiles, from `~/.clauth`). Without clauth installed, only the current logins. Two profiles with the same
+  refresh token say so (a refresh through one logs the other out) until the user fixes it in clauth. No token is
+  shown.
+  Use: `agents accounts usage [--account <name>]` takes each login's windows, auth state (`ok`, `expired`,
+  `broken`), place in the fallback chain with its threshold, live clauth session and read time from clauth's status
+  feed (`clauth status --json`, schema 2; its daemon reads the providers), one plain sentence per login and agent;
+  no daemon, a profile clauth does not show and a use not read yet say so. legionctl reads no provider itself.
+  `agents accounts sessions` lists the newest Claude Code sessions as clauth sees them (`clauth sessions`), with
+  the account each last ran on; `clauth resume` is not offered (it runs Claude Code in a terminal; `session resume
+  --account` is legionctl's).
   Changes go through clauth: `agents accounts login <name> [--codex]` (`clauth login`, `--codex --browser` for
-  Codex; clauth opens the provider's page in the browser), `agents accounts switch <name>` (`clauth switch`),
-  `agents accounts capture <name>` (keeps the current logins without a copy, DESIGN-12 wall 1: a login that a
-  clauth profile holds is kept already; Claude Code's other login goes to `clauth capture <name>`; a Codex login
-  that no clauth profile holds is not kept). legionctl's old account folder (`~/.local/share/legionctl/accounts`)
-  is not read: doctor names its profiles with a Log in action for each.
+  Codex), `agents accounts switch <name>` (`clauth switch`), `agents accounts capture <name>` (clauth's capture; a
+  Codex login that no clauth profile holds is not kept). legionctl's old account folder is not read: doctor names
+  its profiles with a Log in action for each.
   Sessions: `session start <agent> --account <name>` runs on clauth account `name`: the sandbox binds the profile's
-  own login file (the file that `clauth start` links its runtime's `.credentials.json` to) over the agent's login
-  path, so a refresh writes the profile's chain and no copy; the other folders are the user's (one transcript
-  store, so `session resume <id> --account <name>` goes on with no copy). `clauth start` itself is not used: it
-  runs the `claude` command (not the ACP adapter) and keeps a watchdog in its own process. No account: the current
-  login. The session keeps its account, so a resume uses it again. `~/.clauth` is hidden in the sandbox.
-  Usage (2026-10-17, todo-136; ported in part from clauth 0.17.0, MIT, THIRD-PARTY-NOTICES.md):
-  `legionctl agents accounts usage [--account <name>] [--fresh]` reads each login from its provider with its own
-  access token: Claude `GET /api/oauth/usage` (`limits[]`: `session` is 5h, `weekly_all` 7d), Codex `GET
-  /backend-api/wham/usage` (`rate_limit`: its windows by `limit_window_seconds`). One shape per provider, the one
-  that clauth 0.17.0 and the live answer use (checked 2026-10-17); another shape is that account's error with the
-  field. The token is only read: never refreshed (the agents rotate their refresh tokens), written, printed or
-  logged; an expired Claude token is "login needed" and is not sent. A failed read is that account's error with its
-  cause, never zero use. Each answer or error is kept in cache.db (namespace `accounts`) for
-  `agents.accounts.usage_ttl_s` with its fetch time; the seed view `accounts` shows them. `agents usage` counts the
-  tokens of the transcripts in `~/.claude` and `~/.codex`. Switch at the limit: with
-  `agents.accounts.fallback.<agent>` set (none: no switch), an operator member whose account has a window at
-  `agents.accounts.switch_at` percent or more starts or resumes its next wake (`session resume --account`) on the
-  first listed account under it, with a `thread.account` row, a note to main0 and an `agents.accounts.switch` event;
-  when no listed account is under it, the wake fails with the reason (the restart limit applies). The check runs at
-  the start of a wake, so a turn is never cut. A failed usage read of the member's account fails the wake with its
-  reason (user decision 2026-10-17). `thread account <thread> [--account <name>] [--member <m>]` (the app's
-  member chip and chat bar) picks an operator member's account from its next wake, or the chat bar's; no
-  `--account` is the current login; a teammate or a Codex subagent is refused. Only the defaults, /etc/legionctl and
-  the user layer set `agents.accounts`. The `views.ask` steps keep the account the composer ran on, and
-  `views.cost` counts per step and account.
+  own login file (the file that `clauth start` links to) over the agent's login path, so a refresh writes the
+  profile's chain and no copy; the transcripts stay in one store. `clauth start` itself is not used: it runs the
+  `claude` command (not the ACP adapter) and keeps a watchdog in its own process. No account: the current login,
+  which clauth's auto-switch moves along its chain. `~/.clauth` is hidden in the sandbox.
+  Switch at the limit: at the start of a wake, an operator member on an account of clauth's fallback chain whose
+  window is at the chain's threshold or more resumes on the next chain member (in chain order, around) that is
+  under its threshold and has a use clauth read, with a `thread.account` row, a note to main0 and an
+  `agents.accounts.switch` event; when none is, or clauth does not show the account, the wake fails with the reason.
+  A member on an account outside the chain stays. `thread account <thread> [--account <name>] [--member <m>]` (the
+  app's member chip and chat bar; the chip's tooltip is clauth's sentence of the account) picks an operator
+  member's account from its next wake, or the chat bar's; a teammate or a Codex subagent is refused. The
+  `views.ask` steps keep the account the composer ran on, and `views.cost` counts per step and account.
 
 ## AI gateway
 

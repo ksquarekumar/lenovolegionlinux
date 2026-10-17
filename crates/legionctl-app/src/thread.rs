@@ -217,19 +217,34 @@ impl Screen {
         }
     }
 
+    /// The use rows of an account (none: the current login's).
+    fn usage_rows(
+        &self,
+        account: Option<&str>,
+    ) -> impl Iterator<Item = &legionctl_api::AccountUsage> + '_ {
+        let account = account.map(String::from);
+        self.usage.iter().filter(move |u| match &account {
+            None => u.source == "current",
+            Some(a) => u.account == *a && u.source != "current",
+        })
+    }
+
+    /// clauth's state of an account (none: the current login), each agent's sentence on a line: the chip's tooltip.
+    #[must_use]
+    pub fn account_state(&self, account: Option<&str>) -> String {
+        self.usage_rows(account)
+            .map(|u| u.text.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// An account's use in a few words (`claude 5h 42% 7d 8%`), each agent's, or why it cannot be read; none: the
     /// current login's.
     #[must_use]
     pub fn usage_of(&self, account: Option<&str>) -> String {
-        self.usage
-            .iter()
-            .filter(|u| match account {
-                None => u.source == "current",
-                Some(a) => u.account == a && u.source != "current",
-            })
+        self.usage_rows(account)
             .map(|u| match &u.error {
-                Some(e) if e.starts_with("login needed") => format!("{} login needed", u.agent),
-                Some(_) => format!("{} usage unknown", u.agent),
+                Some(_) => format!("{} no use read", u.agent),
                 None => std::iter::once(u.agent.clone())
                     .chain(
                         u.windows
@@ -671,8 +686,7 @@ impl LegionApp {
         }
     }
 
-    /// Read the accounts and their usage (kept by the operator for `agents.accounts.usage_ttl_s`): the
-    /// member chips and the account picker show them.
+    /// Read the accounts and their use from clauth: the member chips and the account picker show them.
     pub(crate) fn read_accounts(&mut self, cx: &mut Context<Self>) {
         let client = self.client.clone();
         let task = self.operator(cx, async move {
@@ -680,10 +694,7 @@ impl LegionApp {
                 .call::<op::AgentsAccountsList>(&legionctl_api::Empty {})
                 .await?;
             let usage = client
-                .call::<op::AgentsAccountsUsage>(&legionctl_api::AccountUsageIn {
-                    account: None,
-                    fresh: false,
-                })
+                .call::<op::AgentsAccountsUsage>(&legionctl_api::AccountUsageIn { account: None })
                 .await?;
             Ok((accounts, usage))
         });
@@ -1244,6 +1255,7 @@ impl LegionApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let usage = self.screen.usage_of(account);
+        let state = self.screen.account_state(account);
         let name = account.unwrap_or("current login");
         let text = if usage.is_empty() {
             name.to_string()
@@ -1277,7 +1289,9 @@ impl LegionApp {
         }
         let who = who.to_string();
         chip.cursor_pointer()
-            .tooltip(|window, cx| Tooltip::new("Choose an account").build(window, cx))
+            .tooltip(move |window, cx| {
+                Tooltip::new(format!("{state}\nChoose an account")).build(window, cx)
+            })
             .on_click(cx.listener(move |app, _, _, cx| {
                 app.screen.picking = match &app.screen.picking {
                     Some(p) if *p == who => None,

@@ -235,18 +235,15 @@ fn wake(thread: i64, member: &str) -> Result<bool> {
     anyhow::bail!("the route {route:?} has no configured step")
 }
 
-/// The account that the member runs on at this wake (todo-136): its own (its config's, or the user's pick), or the
-/// next account of `agents.accounts.fallback` when its own is at its limit, with a thread note and an event. A
-/// failed usage read fails the wake with its reason.
+/// The account that the member runs on at this wake (todo-136, todo-188): its own (its config's, or the user's pick),
+/// or the next account of clauth's fallback chain when its own is at the chain's limit, with a thread note and an
+/// event. When clauth cannot tell, the wake fails with the reason.
 fn account_of(
     store: &legionctl_core::dossier::Dossiers,
     w: &legionctl_core::pool::Wake,
 ) -> Result<Option<String>> {
     let own = w.fields["account"].as_str();
-    let runtime = RUNTIME
-        .get()
-        .context("the operator has no runtime for wakes")?;
-    Ok(match crate::accounts::decide(runtime, (&w.agent, own))? {
+    Ok(match crate::accounts::decide(&w.agent, own)? {
         crate::accounts::Decision::Stay => own.map(String::from),
         crate::accounts::Decision::Move { to, why } => {
             store.thread_account(w.thread, Some(&w.member), Some(&to), Some(&why))?;

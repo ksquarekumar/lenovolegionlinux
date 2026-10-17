@@ -1,0 +1,11 @@
+[Unit]
+Description=clauth's daemon, the account engine of legionctl (it reads each account's use and switches at the limit)
+
+[Service]
+# cargo install puts clauth in cargo's folder, which the user manager's PATH has only after the next login
+ExecStart=/bin/sh -c 'PATH="$HOME/.cargo/bin:$PATH" exec clauth daemon --standby'
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

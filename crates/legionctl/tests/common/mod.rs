@@ -81,6 +81,17 @@ impl Operator {
             .into_iter()
             .filter(|(k, _)| !env.iter().any(|(e, _)| e == k));
         for (name, value) in env.iter().cloned().chain(unset) {
+            // the user's own clauth never runs in a test: a folder of PATH outside the tests' homes that has one is
+            // left out (a test gives its stand-in in its home)
+            let value = if name == "PATH" {
+                std::env::join_paths(
+                    std::env::split_paths(&value)
+                        .filter(|d| d.starts_with("/var/tmp") || !d.join("clauth").exists()),
+                )
+                .unwrap()
+            } else {
+                value
+            };
             cmd.arg(format!("--setenv={name}={}", value.to_string_lossy()));
         }
         let child = Kill::spawn(cmd.arg(sibling("legionctl-operator")));

@@ -84,7 +84,7 @@ and `~/agentWorkspaces/<dossier>/` (each with `.state/dossier.db`). Configuratio
 
 ```bash
 make install-package        # build and install the Arch package (sudo password the first time); it turns legionctl on
-legionctl setup apply       # the OSD, the Claude Code plugin, MCP server, skills, agents and ACP adapters
+legionctl setup apply       # the OSD, the Claude Code plugin, MCP server, skills, agents, ACP adapters and clauth
 legionctl doctor            # what is wrong now, and the command that fixes each finding
 ```
 
@@ -132,6 +132,11 @@ plugin and the binary are of one build. Claude Code reads the plugin from that f
 package upgrade also upgrades the plugin. `legionctl setup check` and `legionctl doctor` tell you when the plugin is
 missing or comes from another folder. Codex gets the same MCP server, skills and
 agents from `legionctl setup apply`.
+
+Accounts are [clauth](https://github.com/uwuclxdy/clauth)'s (a runtime dependency, version 0.17): it keeps the
+logins, reads each account's use and switches at the limit along its fallback chain. `legionctl setup apply`
+installs it with cargo (the `rust` package), starts its daemon (the user unit `legionctl-clauth.service`) and gives
+Claude Code clauth's MCP server. Without clauth, the Accounts view shows the current logins only.
 
 | Part | What |
 | --- | --- |

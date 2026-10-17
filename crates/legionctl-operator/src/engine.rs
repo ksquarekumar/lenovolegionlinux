@@ -1177,6 +1177,14 @@ fn setup_findings() -> Result<Vec<legionctl_api::Finding>> {
         .needs_attention()
         .iter()
         .map(|i| {
+            // a clauth of other versions is the user's: Set up does not replace it
+            if i.what == "clauth" && i.status.starts_with("version ") {
+                return Ok(state(format!(
+                    "setup: clauth {}; the accounts may read wrong until clauth {} is installed",
+                    i.status,
+                    legionctl_core::accounts::CLAUTH_SUPPORTED
+                )));
+            }
             let text = format!("setup: {} for {} is {}", i.what, i.agent, i.status);
             // no setup step mends an extension that GNOME Shell refused
             if i.status == legionctl_machine::system::OSD_BROKEN {
@@ -2484,7 +2492,15 @@ impl Engine for Operator {
         _: &Ctx,
         input: legionctl_api::AccountUsageIn,
     ) -> Result<Vec<legionctl_api::AccountUsage>> {
-        Ok(crate::accounts::usage(&self.runtime, &input)?.into_wire())
+        Ok(crate::accounts::usage(&input)?.into_wire())
+    }
+
+    fn agents_accounts_sessions(
+        &self,
+        _: &Ctx,
+        _: Empty,
+    ) -> Result<Vec<legionctl_api::ClauthSession>> {
+        crate::accounts::sessions()
     }
 
     fn agents_accounts_login(&self, _: &Ctx, input: AccountLoginIn) -> Result<Lines> {

@@ -83,11 +83,6 @@
   "windows.vm.ovmf_vars": "The firmware settings file of the Windows virtual machine.",
 
   "agents.configs": "Your own agent setups: model, account, skills and limits.",
-  "agents.accounts.usage_ttl_s": "How long account use is kept before it is read again, in seconds.",
-  "agents.accounts.switch_at": "Account use at which work moves to the next account, in percent.",
-  "agents.accounts.fallback": "The accounts to move to when an account reaches its limit.",
-  "agents.accounts.endpoints.claude": "Where legionctl reads Claude account use.",
-  "agents.accounts.endpoints.codex": "Where legionctl reads Codex account use.",
 
   "checks.required": "The checks that every project must have, such as lint and tests.",
   "checks.nudge": "Tell agents when a project misses a required check.",

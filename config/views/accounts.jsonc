@@ -1,23 +1,39 @@
-// Seed (todo-136): the rate-limit windows of each login per agent, from the provider (Claude: 5h then 7d; Codex: its
-// windows by length), one plain sentence per agent with when it was read; a read that failed says why. The logins are
-// clauth's: the current one (named by the clauth profile that holds it) and clauth's other profiles; a profile that
-// holds the same login as another says so. Refresh asks the providers now; Log in and Switch account go
-// through clauth; Save the current login keeps it as an account, never as a copy.
+// Seed (todo-136, todo-188): the accounts from clauth, the account engine. One plain sentence per login and agent:
+// its use (clauth's daemon reads it), clauth's state of it (its login, its place in the fallback chain, a live clauth
+// session) and when it was read; a profile that holds the same login as another says so. Without clauth: the current
+// logins and Set up, which installs clauth, starts its daemon and gives Claude Code its MCP server. Then the newest
+// Claude Code sessions as clauth lists them, with the account each last ran on. Log in, Switch account and Save
+// the current login go through clauth.
 {
   "$schema": "../../docs/api/view.schema.json",
   "name": "accounts",
   "title": "Accounts",
   "intent": "how much of each account's limits is used",
   "space": "agents",
-  "widget": "list",
-  "source": { "op": "agents.accounts.usage" },
-  "columns": ["text"],
-  "group": { "field": "account" },
+  "widget": "stack",
+  "views": [
+    {
+      "name": "account-use",
+      "title": "Use of each account",
+      "widget": "list",
+      "source": { "op": "agents.accounts.usage" },
+      "columns": ["text"],
+      "group": { "field": "account" }
+    },
+    {
+      "name": "clauth-sessions",
+      "title": "Claude Code sessions (clauth)",
+      "widget": "table",
+      "source": { "op": "agents.accounts.sessions" },
+      "columns": ["updated", "profile", "workspace"],
+      "labels": { "updated": "Last written", "profile": "Account", "workspace": "Folder" }
+    }
+  ],
   "actions": [
-    { "label": "Refresh", "op": "agents.accounts.usage", "input": { "fresh": true } },
     { "label": "Log in to an account", "op": "agents.accounts.login", "input": {} },
     { "label": "Switch account", "op": "agents.accounts.switch", "input": {} },
-    { "label": "Save the current login", "op": "agents.accounts.capture", "input": {} }
+    { "label": "Save the current login", "op": "agents.accounts.capture", "input": {} },
+    { "label": "Set up clauth", "op": "setup.apply", "input": { "install_ctx": false } }
   ],
-  "refresh": { "events": ["agents.accounts.*"], "every": 300 }
+  "refresh": { "events": ["agents.accounts.*", "setup.*"], "every": 60 }
 }

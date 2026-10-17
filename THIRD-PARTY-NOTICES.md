@@ -5,9 +5,9 @@ Code that legionctl took from other projects, with their licenses.
 ## clauth 0.17.0
 
 - Source: https://github.com/uwuclxdy/clauth (crate `clauth` 0.17.0).
-- Taken: the account usage endpoints, their request headers and the shapes of their answers (`src/usage/fetch.rs`,
-  `src/usage/codex.rs`, `src/usage/codex_headers.rs`), ported in part to `crates/legionctl-core/src/accounts.rs` and
-  `crates/legionctl-operator/src/accounts.rs` (todo-136).
+- Taken: the ISO 8601 time parser (`iso_to_epoch_secs`), ported to `crates/legionctl-core/src/accounts.rs`. clauth
+  itself is a runtime dependency (the account engine, todo-188): legionctl runs the `clauth` program and reads its
+  files and status feed; no other code of it is in legionctl.
 
 ```text
 MIT License

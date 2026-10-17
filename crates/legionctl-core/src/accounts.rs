@@ -1,15 +1,10 @@
-//! Account usage (todo-136): the rate-limit windows (Claude: 5 h and 7 d; Codex: its primary and secondary windows)
-//! of each Claude Code and Codex login (the current one and clauth's profiles: `Held`),
-//! as the provider reports them, read with the login's own access token. The token is only read: never refreshed
-//! (both agents rotate their refresh tokens, DESIGN-12 wall 1), never written, printed or logged. A read that fails is that account's error with its cause, never zero use.
-//! Each answer, or its error, is kept in the cache (namespace `accounts`) with its fetch time.
-//!
-//! The endpoints, their request headers and the shapes of their answers are ported from clauth 0.17.0
-//! (<https://github.com/uwuclxdy/clauth>: `src/usage/fetch.rs`, `src/usage/codex.rs`, `src/usage/codex_headers.rs`),
-//! MIT License, Copyright (c) 2026 cloudy (THIRD-PARTY-NOTICES.md). Both endpoints are undocumented: a changed
-//! answer is an error that names the field.
+//! The accounts (todo-136, todo-188): clauth (<https://github.com/uwuclxdy/clauth>, a runtime dependency, 0.17) is the
+//! account engine and the only store of the user's logins. legionctl reads clauth's roster and login files (to bind
+//! a profile's login into a sandbox and to see two profiles with one login), asks clauth which profile owns the live
+//! login (`clauth which`), and takes each account's use, its auth state, its fallback chain and its live sessions from
+//! clauth's status feed (`clauth status --json`, schema 2, written by clauth's daemon). Tokens are compared in memory
+//! and dropped, never printed.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -17,37 +12,22 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// `agents.accounts` (only the defaults, /etc/legionctl and the user layer apply).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct AccountsConfig {
-    /// How long an answer (or its error) is kept.
-    pub usage_ttl_s: u64,
-    /// A window at this percent or more is at its limit.
-    pub switch_at: f64,
-    /// Agent (claude, codex) -> the clauth accounts that its operator members switch to, in order.
-    pub fallback: BTreeMap<String, Vec<String>>,
-    pub endpoints: Endpoints,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Endpoints {
-    pub claude: String,
-    pub codex: String,
-}
+/// The clauth versions whose files and status feed legionctl reads.
+pub const CLAUTH_SUPPORTED: &str = "0.17";
+/// The schema of clauth's status feed that legionctl reads.
+const STATUS_SCHEMA: u64 = 2;
 
 /// One rate-limit window.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Window {
-    /// `5h`, `7d`, or the window's length.
+    /// clauth's label of the window (`5h`, `7d`, ...).
     pub name: String,
     pub used_percent: f64,
     /// When the window resets (seconds since the epoch).
     pub resets_at: Option<i64>,
 }
 
-/// One account's use of one agent's provider.
+/// One account's use of one agent's provider, from clauth.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AccountUsage {
     pub account: String,
@@ -57,31 +37,139 @@ pub struct AccountUsage {
     pub active: bool,
     pub agent: String,
     pub windows: Vec<Window>,
-    /// Why the read failed; the windows are empty then.
+    /// Why there is no use to show; the windows are empty then.
     pub error: Option<String>,
-    /// When the provider answered (or the read failed).
-    pub fetched_at: i64,
-    /// One plain sentence for the user: the agent, its use or why there is none, and when it was read.
-    #[serde(default)]
+    /// When clauth read the use (seconds since the epoch).
+    pub fetched_at: Option<i64>,
+    /// One plain sentence for the user: the agent, its use or why there is none, clauth's state of the account, and
+    /// when it was read.
     pub text: String,
 }
 
-impl AccountUsage {
-    /// Why the account is at its limit (`5h at 93%`), when a window is at `switch_at` percent or more.
+/// clauth's status feed (`clauth status --json`, schema 2): the fields legionctl reads.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Status {
+    pub schema: u64,
+    pub clauth_version: String,
+    pub profiles: Vec<ProfileStatus>,
+}
+
+/// One profile in clauth's status feed.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProfileStatus {
+    pub name: String,
+    /// `claude` or `codex`.
+    pub harness: String,
+    pub active: bool,
+    /// A `clauth start` session runs on it.
+    pub has_live_session: bool,
+    /// `ok`, `expired` (the access token is past its time; clauth renews it at its next use) or `broken` (the login
+    /// was refused).
+    pub auth_status: String,
+    pub fetched_at: Option<String>,
+    /// Its place in clauth's fallback chain.
+    pub fallback: Option<Chain>,
+    pub windows: Vec<StatusWindow>,
+}
+
+/// A profile's place in clauth's fallback chain: auto-switch moves on from it at `threshold` percent.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Chain {
+    pub position: usize,
+    pub threshold: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StatusWindow {
+    pub label: String,
+    pub utilization_pct: f64,
+    pub resets_at: Option<String>,
+}
+
+impl ProfileStatus {
+    /// The windows as legionctl shows them.
     #[must_use]
-    pub fn at_limit(&self, switch_at: f64) -> Option<String> {
+    pub fn windows(&self) -> Vec<Window> {
         self.windows
             .iter()
-            .find(|w| w.used_percent >= switch_at)
-            .map(|w| format!("{} at {:.0}%", w.name, w.used_percent))
+            .map(|w| Window {
+                name: w.label.clone(),
+                used_percent: w.utilization_pct,
+                resets_at: w.resets_at.as_deref().and_then(iso_seconds),
+            })
+            .collect()
+    }
+
+    /// Why the account is at its chain's limit (`5h at 93%`), when a window is at its threshold or more.
+    #[must_use]
+    pub fn at_limit(&self) -> Option<String> {
+        let chain = self.fallback.as_ref()?;
+        self.windows
+            .iter()
+            .find(|w| w.utilization_pct >= chain.threshold)
+            .map(|w| format!("{} at {:.0}%", w.label, w.utilization_pct))
+    }
+
+    /// When clauth read the use (seconds since the epoch).
+    #[must_use]
+    pub fn fetched_at(&self) -> Option<i64> {
+        self.fetched_at.as_deref().and_then(iso_seconds)
     }
 }
 
-/// An access token. No `Debug` and no `Serialize`: it never reaches a log or an answer.
-pub struct Login {
-    pub token: String,
-    /// Codex's `ChatGPT` account (the `ChatGPT-Account-ID` header).
-    pub account_id: Option<String>,
+/// The clauth program: on the PATH, else in cargo's folder (`cargo install` puts it there); none when it is not
+/// installed.
+#[must_use]
+pub fn clauth_bin() -> Option<PathBuf> {
+    crate::setup::tool_bin("clauth", ".cargo/bin")
+}
+
+/// `clauth <args>` with no terminal: its output; none when clauth is not installed.
+///
+/// # Errors
+/// clauth fails; the error has clauth's words.
+pub fn clauth(args: &[&str]) -> Result<Option<String>> {
+    let Some(bin) = clauth_bin() else {
+        return Ok(None);
+    };
+    let out = std::process::Command::new(bin)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .context("running clauth")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "clauth {}: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
+}
+
+/// clauth's status feed; none when clauth is not installed.
+///
+/// # Errors
+/// clauth fails, or its feed is not the schema legionctl reads.
+pub fn status() -> Result<Option<Status>> {
+    let Some(text) = clauth(&["status", "--json"])? else {
+        return Ok(None);
+    };
+    let status: Status =
+        serde_json::from_str(&text).context("clauth's status feed is not JSON of its schema")?;
+    anyhow::ensure!(
+        status.schema == STATUS_SCHEMA,
+        "clauth {} writes its status in schema {}; legionctl reads schema {STATUS_SCHEMA} (clauth \
+         {CLAUTH_SUPPORTED})",
+        status.clauth_version,
+        status.schema
+    );
+    Ok(Some(status))
+}
+
+/// clauth's daemon runs (it reads the use and switches at the limit).
+#[must_use]
+pub fn daemon_runs() -> bool {
+    clauth(&["daemon", "--status"]).is_ok_and(|o| o.is_some())
 }
 
 /// One agent's login of an account, and where it is. clauth is the only store of the user's logins (user decision
@@ -97,13 +185,6 @@ pub struct Held {
     /// The clauth profile that holds the same login (the same refresh token): a refresh through one spends the
     /// other's token.
     pub same_as: Option<String>,
-    file: PathBuf,
-}
-
-impl Held {
-    fn bytes(&self) -> Result<Option<Vec<u8>>> {
-        read(&self.file)
-    }
 }
 
 /// A file's bytes; none when it is not there.
@@ -235,14 +316,27 @@ fn refresh_token(agent: &str, bytes: &[u8]) -> Option<String> {
     token.as_str().filter(|t| !t.is_empty()).map(String::from)
 }
 
-/// Every login: the current ones and clauth's other profiles (`Held`).
+/// Every login: the current ones and clauth's other profiles (`Held`); with no clauth installed, the current ones.
 ///
 /// # Errors
-/// HOME is not set, or a login file or clauth's roster cannot be read.
+/// HOME is not set, a login file or clauth's roster cannot be read, or `clauth which` fails.
 pub fn logins() -> Result<Vec<Held>> {
     let mut out = Vec::new();
+    let installed = clauth_bin().is_some();
+    // the owner of Claude Code's live login, as clauth names it (`unknown`: none)
+    let which = if installed {
+        clauth(&["which"])?
+            .map(|w| w.trim().to_string())
+            .filter(|w| w != "unknown")
+    } else {
+        None
+    };
     for agent in ["claude", "codex"] {
-        let (active, names) = clauth_roster(agent)?;
+        let (active, names) = if installed {
+            clauth_roster(agent)?
+        } else {
+            (None, Vec::new())
+        };
         let live = live_file(agent)?;
         let live_token = read(&live)?.map(|b| refresh_token(agent, &b));
         let mut held = Vec::new();
@@ -257,28 +351,30 @@ pub fn logins() -> Result<Vec<Held>> {
                     agent: agent.into(),
                     active: active.as_ref() == Some(name),
                     same_as: None,
-                    file,
                 },
                 token,
             ));
         }
-        // the current login's owner, as clauth sees it (`clauth which`, `live_diverged_and_unsaved`): the profile with
-        // the same refresh token (the one clauth's link points to, else the active one, else the first); else, when
-        // Claude Code replaced clauth's link with a plain file (its refresh writes a new file), the active profile:
-        // the live file is its newer login
+        // the current login's owner: Claude Code's as `clauth which` names it; Codex's (clauth has no which for it)
+        // the profile with the same refresh token, the active one first; else, when Claude Code replaced clauth's
+        // link with a plain file (its refresh writes a new file), the active profile, as clauth's own switch sees it
+        // (`live_diverged_and_unsaved`): the live file is its newer login
         let current = live_token.as_ref().and_then(Option::as_ref);
-        let linked = live.canonicalize().ok();
         let same = |t: &Option<String>| current.is_some() && t.as_ref() == current;
         let diverged = current.is_some()
             && live
                 .symlink_metadata()
                 .is_ok_and(|m| m.file_type().is_file());
-        let owner = held
-            .iter()
-            .position(|(h, t)| same(t) && h.file.canonicalize().ok() == linked)
-            .or_else(|| held.iter().position(|(h, t)| same(t) && h.active))
-            .or_else(|| held.iter().position(|(_, t)| same(t)))
-            .or_else(|| held.iter().position(|(h, _)| h.active).filter(|_| diverged));
+        let owner = if agent == "claude" {
+            which
+                .as_ref()
+                .and_then(|w| held.iter().position(|(h, _)| h.name == *w))
+        } else {
+            held.iter()
+                .position(|(h, t)| same(t) && h.active)
+                .or_else(|| held.iter().position(|(_, t)| same(t)))
+        }
+        .or_else(|| held.iter().position(|(h, _)| h.active).filter(|_| diverged));
         // of the profiles with one login, the owner (else the first) holds it; each other one names it
         let first: Vec<Option<String>> = held
             .iter()
@@ -302,7 +398,6 @@ pub fn logins() -> Result<Vec<Held>> {
                 agent: agent.into(),
                 active: true,
                 same_as: None,
-                file: live,
             });
         }
         out.extend(
@@ -313,17 +408,6 @@ pub fn logins() -> Result<Vec<Held>> {
         );
     }
     Ok(out)
-}
-
-/// The login of `agent` of account `name` (`logins`).
-///
-/// # Errors
-/// No login of `agent` has that name, or the logins cannot be read.
-pub fn held(name: &str, agent: &str) -> Result<Held> {
-    logins()?
-        .into_iter()
-        .find(|h| h.name == name && h.agent == agent)
-        .with_context(|| format!("account {name} has no {} login", named(agent)))
 }
 
 /// legionctl's own account profiles from before clauth kept the logins (`~/.local/share/legionctl/accounts/<name>`):
@@ -340,126 +424,8 @@ pub fn old_profiles() -> Option<(PathBuf, Vec<String>)> {
     Some((root, names))
 }
 
-/// The access token of `held`, unchanged: an expired Claude token is an error (the agent, or clauth, refreshes it at
-/// its next use), never refreshed here.
-///
-/// # Errors
-/// Not logged in, the login file does not parse or has no access token, or the token expired.
-pub fn login(held: &Held, now_ms: i64) -> Result<Login> {
-    let (account, agent) = (&held.name, held.agent.as_str());
-    let Some(bytes) = held.bytes()? else {
-        bail!("login needed: {agent} is not logged in on account {account}");
-    };
-    let file: Value = serde_json::from_slice(&bytes).map_err(|e| {
-        anyhow::anyhow!("the {agent} login file of account {account} is not JSON: {e}")
-    })?;
-    let text = |v: &Value| v.as_str().filter(|t| !t.is_empty()).map(String::from);
-    if agent == "claude" {
-        let oauth = &file["claudeAiOauth"];
-        let token = text(&oauth["accessToken"])
-            .context("the claude login file has no claudeAiOauth.accessToken")?;
-        if oauth["expiresAt"].as_i64().is_some_and(|e| e <= now_ms) {
-            bail!(
-                "login needed: the login of {account} has expired; Claude Code renews it the next time it runs on \
-                 {account}"
-            );
-        }
-        return Ok(Login {
-            token,
-            account_id: None,
-        });
-    }
-    let tokens = &file["tokens"];
-    let token = text(&tokens["access_token"]).context(
-        "the codex login file has no tokens.access_token (an API key login has no ChatGPT usage)",
-    )?;
-    Ok(Login {
-        token,
-        account_id: text(&tokens["account_id"]),
-    })
-}
-
-/// A number field of `v`, or the error that names it.
-fn percent(v: &Value, field: &str) -> Result<f64> {
-    v[field]
-        .as_f64()
-        .with_context(|| format!("the answer has no number {field}"))
-}
-
-/// Claude's windows from `/api/oauth/usage` (clauth `windows_from_raw`): `limits[]`, where `session` is 5h and
-/// `weekly_all` 7d. No other field is read.
-///
-/// # Errors
-/// The answer has no `limits` list, no `session` or `weekly_all` entry, or its `percent` is not a number.
-pub fn claude_windows(body: &Value) -> Result<Vec<Window>> {
-    let limits = body["limits"]
-        .as_array()
-        .context("the answer has no list limits")?;
-    [("5h", "session"), ("7d", "weekly_all")]
-        .into_iter()
-        .map(|(name, kind)| {
-            let i = limits
-                .iter()
-                .position(|l| l["kind"] == kind)
-                .with_context(|| format!("the answer has no limits[] entry of kind {kind}"))?;
-            Ok(Window {
-                name: name.into(),
-                used_percent: percent(&limits[i], "percent")
-                    .with_context(|| format!("limits[{i}] ({kind})"))?,
-                resets_at: limits[i]["resets_at"].as_str().and_then(iso_seconds),
-            })
-        })
-        .collect()
-}
-
-/// A window's name from its length: `5h`, `7d`, `90m`.
-fn length(seconds: i64) -> String {
-    match seconds {
-        s if s % 86_400 == 0 => format!("{}d", s / 86_400),
-        s if s % 3_600 == 0 => format!("{}h", s / 3_600),
-        s => format!("{}m", s / 60),
-    }
-}
-
-/// Codex's windows from `/backend-api/wham/usage` (clauth `map_usage`): `rate_limit.primary_window` and
-/// `secondary_window` (null when the plan has none), named by `limit_window_seconds`; when `limit_reached`, the
-/// fuller one counts as 100%.
-///
-/// # Errors
-/// The answer has no object `rate_limit`, no window, or a window without a number `used_percent` or
-/// `limit_window_seconds`.
-pub fn codex_windows(body: &Value) -> Result<Vec<Window>> {
-    let limit = &body["rate_limit"];
-    anyhow::ensure!(limit.is_object(), "the answer has no object rate_limit");
-    let mut out = Vec::new();
-    for slot in ["primary_window", "secondary_window"] {
-        let w = &limit[slot];
-        if w.is_null() {
-            continue;
-        }
-        let seconds = w["limit_window_seconds"].as_i64().with_context(|| {
-            format!("rate_limit.{slot}: the answer has no number limit_window_seconds")
-        })?;
-        out.push(Window {
-            name: length(seconds),
-            used_percent: percent(w, "used_percent")
-                .with_context(|| format!("rate_limit.{slot}"))?,
-            resets_at: w["reset_at"].as_i64().filter(|at| *at > 0),
-        });
-    }
-    if limit["limit_reached"] == true
-        && let Some(full) = out
-            .iter_mut()
-            .max_by(|a, b| a.used_percent.total_cmp(&b.used_percent))
-    {
-        full.used_percent = full.used_percent.max(100.0);
-    }
-    anyhow::ensure!(!out.is_empty(), "the answer has no rate_limit window");
-    Ok(out)
-}
-
-/// Seconds since the epoch of an ISO 8601 time (`2026-10-17T05:00:00.123+00:00`, `...Z`) (clauth
-/// `iso_to_epoch_secs`).
+/// Seconds since the epoch of an ISO 8601 time (`2026-10-17T05:00:00.123+00:00`, `...Z`), ported from clauth 0.17.0
+/// `iso_to_epoch_secs` (MIT License, Copyright (c) 2026 cloudy; THIRD-PARTY-NOTICES.md).
 fn iso_seconds(text: &str) -> Option<i64> {
     let num = |r: std::ops::Range<usize>| text.get(r)?.parse::<i64>().ok();
     let bytes = text.as_bytes();
@@ -499,36 +465,4 @@ fn iso_seconds(text: &str) -> Option<i64> {
     let of_year = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
     let days = era * 146_097 + of_era * 365 + of_era / 4 - of_era / 100 + of_year - 719_468;
     Some(days * 86_400 + clock - offset)
-}
-
-const NS: &str = "accounts";
-
-/// The kept answer of `held` while it lives.
-///
-/// # Errors
-/// The cache cannot be opened or read, or the kept value does not parse.
-pub fn cached(held: &Held) -> Result<Option<AccountUsage>> {
-    crate::cache::Cache::open()?
-        .get(NS, &format!("{}/{}/{}", held.source, held.name, held.agent))?
-        .map(|e| serde_json::from_slice(&e.value).context("a kept account usage"))
-        .transpose()
-}
-
-/// Keep `usage` for `ttl_s` seconds within `max_bytes` (`cache.accounts.max_bytes`).
-///
-/// # Errors
-/// The cache cannot be opened or written.
-pub fn keep(usage: &AccountUsage, ttl_s: u64, max_bytes: u64) -> Result<()> {
-    crate::cache::Cache::open()?.put(
-        (
-            NS,
-            &format!("{}/{}/{}", usage.source, usage.account, usage.agent),
-        ),
-        &crate::cache::Entry {
-            value: serde_json::to_vec(usage)?,
-            meta: Value::Null,
-        },
-        ttl_s,
-        max_bytes,
-    )
 }

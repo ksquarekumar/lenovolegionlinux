@@ -2,11 +2,13 @@
 //! daemon): it shows the machine, previews the policy change, reports a refused apply, and shows doctor's findings.
 //! Real clicks through GPUI's headless window; the operator answers in real time.
 
+#[path = "common/clauth.rs"]
+mod clauth;
 mod common;
+#[path = "common/plain.rs"]
+mod plain;
 #[path = "common/portal.rs"]
 mod portal;
-#[path = "common/usage.rs"]
-mod usage;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -3076,9 +3078,9 @@ fn the_app_thread_page_updates_from_the_event_stream(cx: &mut TestAppContext) {
 }
 
 /// The thread lab with the clauth profiles work (5h 42%), spare (5h 10%), alt (active, the current login) and side,
-/// each with a Claude login, the stand-in usage endpoint, and two more team threads of vanilla: 2 with teammates (session main is Claude
+/// each with a Claude login, the stand-in clauth with their use, and two more team threads of vanilla: 2 with teammates (session main is Claude
 /// Code's), 3 with operator members (a session of the agent fake) whose observer0 runs on work.
-fn accounts_lab() -> (Operator, PathBuf, PathBuf, common::process::Kill) {
+fn accounts_lab() -> (Operator, PathBuf, PathBuf) {
     let (op, home, repo) = thread_lab("acct");
     // thread 2: teammates (session main is Claude Code's), before observer0's config has an account
     lab_cli(
@@ -3088,17 +3090,16 @@ fn accounts_lab() -> (Operator, PathBuf, PathBuf, common::process::Kill) {
         &["thread", "start", "teammates", "--team", "vanilla"],
         "",
     );
-    let answers = home.join("usage");
-    let (server, port) = usage::usage_server(&answers);
+    clauth::install(&home);
+    write(&home.join("clauth-which"), "alt\n");
     write(
         &home.join(".config/legionctl/accounts.jsonc"),
         &serde_json::json!({
             "session": {"agents": {"fake": ["true"]}},
-            "agents": {"configs": {"thread-observer": {"account": "work"}},
-                       "accounts": {"usage_ttl_s": 3600, "endpoints": {
-                           "claude": format!("http://127.0.0.1:{port}/claude"), "codex": "http://127.0.0.1:1/none"}}}})
+            "agents": {"configs": {"thread-observer": {"account": "work"}}}})
         .to_string(),
     );
+    let mut feed = Vec::new();
     // clauth's layout (0.17.0): alt is active and Claude Code's current login (a link to alt's file)
     for (name, token, five) in [
         ("work", "tok-w", 42.0),
@@ -3112,12 +3113,15 @@ fn accounts_lab() -> (Operator, PathBuf, PathBuf, common::process::Kill) {
                 r#"{{"claudeAiOauth": {{"accessToken": "{token}", "refreshToken": "r-{name}"}}}}"#
             ),
         );
-        write(
-            &answers.join(format!("{token}.json")),
-            &serde_json::json!({"body": {"limits": [{"kind": "session", "percent": five}, {"kind": "weekly_all", "percent": 8.0}]}})
-                .to_string(),
-        );
+        feed.push(clauth::profile(
+            name,
+            "claude",
+            name == "alt",
+            &[("5h", five), ("7d", 8.0)],
+            None,
+        ));
     }
+    clauth::status(&home, &feed);
     write(
         &home.join(".clauth/profiles.toml"),
         "active_profile = \"alt\"\nprofiles = [\"work\", \"spare\", \"alt\", \"side\"]\n",
@@ -3151,7 +3155,7 @@ fn accounts_lab() -> (Operator, PathBuf, PathBuf, common::process::Kill) {
         String::from_utf8_lossy(&as_fake.stderr)
     );
 
-    (op, home, repo, server)
+    (op, home, repo)
 }
 
 /// The member chips show each member's account with its use from the provider, and the account picker sets it with
@@ -3161,7 +3165,7 @@ fn accounts_lab() -> (Operator, PathBuf, PathBuf, common::process::Kill) {
 /// and the operation refuses it (V1).
 #[gpui_kit::test]
 fn the_member_chip_shows_its_account_usage_and_the_picker_sets_it(cx: &mut TestAppContext) {
-    let (op, home, repo, _server) = accounts_lab();
+    let (op, home, repo) = accounts_lab();
     let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
     let cx = &mut vcx;
     app.update(cx, |a, cx| a.open_tab(Tab::Thread { id: 3 }, cx));
@@ -3176,6 +3180,13 @@ fn the_member_chip_shows_its_account_usage_and_the_picker_sets_it(cx: &mut TestA
             .unwrap();
         assert_eq!(observer.account.as_deref(), Some("work"));
         assert_eq!(a.screen.usage_of(Some("work")), "claude 5h 42% 7d 8%");
+        // the chip's tooltip: clauth's state of the account in one plain sentence
+        let state = a.screen.account_state(Some("work"));
+        plain::assert_plain("the accounts", &state);
+        assert_eq!(
+            state,
+            "Claude Code: 5h 42% used, 7d 8% used. Read just now."
+        );
         assert_eq!(
             a.screen.usage_of(None),
             "claude 5h 21% 7d 8%",

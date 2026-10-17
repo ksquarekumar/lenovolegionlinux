@@ -2066,6 +2066,26 @@ impl Render for Vec<crate::AccountUsage> {
     }
 }
 
+impl Render for Vec<crate::ClauthSession> {
+    fn text(&self) -> String {
+        if self.is_empty() {
+            return "no Claude Code session: clauth lists none, or clauth is not installed".into();
+        }
+        self.iter()
+            .map(|s| {
+                format!(
+                    "{}  {}  {}  {}",
+                    s.updated,
+                    s.profile.as_deref().unwrap_or("account unknown"),
+                    s.workspace,
+                    s.id
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
 impl Render for Vec<crate::Account> {
     fn text(&self) -> String {
         if self.is_empty() {

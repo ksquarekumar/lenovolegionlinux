@@ -286,9 +286,6 @@ pub struct AccountUsageIn {
     /// One account; none: each.
     #[serde(default)]
     pub account: Option<String>,
-    /// Read from the providers now, not from the kept answers.
-    #[serde(default)]
-    pub fresh: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1744,6 +1741,18 @@ pub struct Plugin {
     pub scope: String,
     pub enabled: bool,
     pub allowed: bool,
+}
+
+/// A Claude Code session as clauth lists it (`clauth sessions`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ClauthSession {
+    pub id: String,
+    /// The folder it worked in.
+    pub workspace: String,
+    /// When it last wrote (ISO 8601).
+    pub updated: String,
+    /// The clauth account it last ran on; none: clauth does not know.
+    pub profile: Option<String>,
 }
 
 /// An account: the current login (`current`, named by the clauth profile that holds it) or another clauth profile

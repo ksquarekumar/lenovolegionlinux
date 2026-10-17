@@ -165,7 +165,7 @@ install: ## install into DESTDIR; the PKGBUILD calls this (on this machine: `mak
 	install -Dm644 systemd/legionctl-boot-confirm.service "$(DESTDIR)$(UNITDIR)/legionctl-boot-confirm.service"
 	install -d "$(DESTDIR)$(UNITDIR)/graphical.target.wants"
 	ln -sf ../legionctl-boot-confirm.service "$(DESTDIR)$(UNITDIR)/graphical.target.wants/legionctl-boot-confirm.service"
-	install -Dm644 -t "$(DESTDIR)$(USERUNITDIR)" systemd/user/legionctl-operator.service systemd/user/legionctl-operator.socket systemd/user/legionctl-windows-vm.service
+	install -Dm644 -t "$(DESTDIR)$(USERUNITDIR)" systemd/user/legionctl-operator.service systemd/user/legionctl-operator.socket systemd/user/legionctl-windows-vm.service systemd/user/legionctl-clauth.service
 	install -Dm644 systemd/power-profiles-daemon.service.d/10-legionctl.conf "$(DESTDIR)$(UNITDIR)/power-profiles-daemon.service.d/10-legionctl.conf"
 	install -Dm644 dbus/org.legionctl.System1.conf "$(DESTDIR)$(PREFIX)/share/dbus-1/system.d/org.legionctl.System1.conf"
 	install -Dm644 polkit/org.legionctl.policy "$(DESTDIR)$(PREFIX)/share/polkit-1/actions/org.legionctl.policy"

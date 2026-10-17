@@ -11,6 +11,10 @@
 //!   `bun add -g` from `session.acp_packages`.
 //!
 //! - Claude Code: the legionctl plugin from the package's folder (`claude plugin marketplace add`, `install`).
+//! - clauth (the account engine, a runtime dependency): installed with `cargo install clauth --version ~0.17
+//!   --locked` when missing, its daemon started as the user unit `legionctl-clauth.service` (it reads each account's
+//!   use and switches at the limit), and its MCP server in Claude Code (`claude mcp add --scope user clauth`). A
+//!   clauth outside the supported versions is reported, not replaced.
 //! - GNOME Shell: the OSD extension enabled for the user.
 //! - systemd: legionctl-system and the user's legionctl-operator.socket run (the package turns them on; the user can
 //!   turn them off). A start of legionctl-system asks polkit.
@@ -76,7 +80,7 @@ fn home() -> PathBuf {
 
 /// A tool that is usually not on the PATH of non-interactive shells (hooks, MCP servers, the operator): its install
 /// dir under HOME first, then PATH.
-fn tool_bin(name: &str, install_dir: &str) -> Option<PathBuf> {
+pub(crate) fn tool_bin(name: &str, install_dir: &str) -> Option<PathBuf> {
     let local = home().join(install_dir).join(name);
     if local.is_file() {
         return Some(local);
@@ -433,6 +437,7 @@ pub fn check(agents: &Sources, session: &SessionConfig) -> Result<Report> {
     items.extend(claude_plugin_item());
     items.extend(osd_item());
     items.extend(SERVICES.map(service_item));
+    items.extend(clauth_items());
     Ok(Report { ctx_version, items })
 }
 
@@ -550,6 +555,7 @@ pub fn apply(
     done.extend(install_acp_adapters(session)?);
     done.extend(install_claude_plugin()?);
     done.extend(enable_osd()?);
+    done.extend(set_up_clauth()?);
     let folders = path_folders()?;
     if path_item(&folders).status != "current" {
         let conf = path_conf();
@@ -559,6 +565,145 @@ pub fn apply(
             "legionctl PATH: written to {} (active at the next login)",
             conf.display()
         ));
+    }
+    Ok(done)
+}
+
+/// The user unit that runs clauth's daemon.
+const CLAUTH_UNIT: &str = "legionctl-clauth.service";
+
+/// clauth's version (`clauth 0.17.0`), when it is installed.
+fn clauth_version() -> Result<Option<String>> {
+    Ok(crate::accounts::clauth(&["--version"])?
+        .map(|v| v.split_whitespace().nth(1).unwrap_or_default().to_string()))
+}
+
+/// clauth, its daemon, and its MCP server in Claude Code.
+fn clauth_items() -> Vec<Item> {
+    let supported = crate::accounts::CLAUTH_SUPPORTED;
+    let (status, version) = match clauth_version() {
+        Ok(None) => ("not installed".to_string(), None),
+        Ok(Some(v))
+            if v.strip_prefix(supported)
+                .is_some_and(|r| r.starts_with('.')) =>
+        {
+            ("current".into(), Some(v))
+        }
+        Ok(Some(v)) => (
+            format!("version {v}: legionctl reads clauth {supported}"),
+            Some(v),
+        ),
+        Err(e) => (format!("cannot read: {e:#}"), None),
+    };
+    let mut items = vec![Item {
+        what: "clauth".into(),
+        agent: "all".into(),
+        status,
+        path: crate::accounts::clauth_bin()
+            .map(|b| b.display().to_string())
+            .unwrap_or_default(),
+    }];
+    if version.is_none() {
+        return items;
+    }
+    items.push(Item {
+        what: "clauth daemon".into(),
+        agent: "all".into(),
+        status: if crate::accounts::daemon_runs() {
+            "current".into()
+        } else {
+            "not running".into()
+        },
+        path: CLAUTH_UNIT.into(),
+    });
+    if claude_bin().is_some() {
+        items.push(Item {
+            what: "clauth mcp".into(),
+            agent: "claude-code".into(),
+            status: if claude_has_clauth_mcp() {
+                "current".into()
+            } else {
+                "missing".into()
+            },
+            path: home().join(".claude.json").display().to_string(),
+        });
+    }
+    items
+}
+
+/// Claude Code has clauth's MCP server: in `~/.claude.json` or through clauth's own plugin.
+fn claude_has_clauth_mcp() -> bool {
+    let has = |path: PathBuf, pick: &dyn Fn(&serde_json::Value) -> bool| {
+        std::fs::read(path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .is_some_and(|v| pick(&v))
+    };
+    has(home().join(".claude.json"), &|v| {
+        v["mcpServers"]["clauth"].is_object()
+    }) || has(
+        home().join(".claude/plugins/installed_plugins.json"),
+        &|v| {
+            v["plugins"]
+                .as_object()
+                .is_some_and(|p| p.keys().any(|k| k.starts_with("clauth@")))
+        },
+    )
+}
+
+/// `<bin> <args>`, which must succeed.
+fn run(bin: &Path, args: &[&str]) -> Result<()> {
+    let out = Command::new(bin)
+        .args(args)
+        .output()
+        .with_context(|| format!("running {} {}", bin.display(), args.join(" ")))?;
+    ensure!(
+        out.status.success(),
+        "{} {}: {}",
+        bin.display(),
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(())
+}
+
+/// Install clauth when it is missing, start its daemon, and give Claude Code its MCP server.
+fn set_up_clauth() -> Result<Vec<String>> {
+    let mut done = Vec::new();
+    if crate::accounts::clauth_bin().is_none() {
+        let cargo = tool_bin("cargo", ".cargo/bin").context(
+            "clauth is installed with cargo, and cargo is not installed (the rust package has it)",
+        )?;
+        let range = format!("~{}", crate::accounts::CLAUTH_SUPPORTED);
+        run(
+            &cargo,
+            &["install", "clauth", "--version", &range, "--locked"],
+        )?;
+        done.push(format!("clauth: installed ({range}) with cargo"));
+    }
+    for item in clauth_items().into_iter().filter(|i| i.status != "current") {
+        match item.what.as_str() {
+            "clauth daemon" => {
+                run(&systemctl()?, &["--user", "enable", "--now", CLAUTH_UNIT])?;
+                done.push(format!("clauth daemon: started ({CLAUTH_UNIT})"));
+            }
+            "clauth mcp" => {
+                let claude = claude_bin().context("Claude Code is not installed")?;
+                let clauth = crate::accounts::clauth_bin().context("clauth is not installed")?;
+                let clauth = clauth.to_string_lossy();
+                run(
+                    &claude,
+                    &[
+                        "mcp", "add", "--scope", "user", "clauth", "--", &clauth, "mcp",
+                    ],
+                )?;
+                done.push(
+                    "clauth mcp: added to Claude Code (active at the next session start)".into(),
+                );
+            }
+            // a clauth of other versions stays: the check reports it
+            _ => {}
+        }
     }
     Ok(done)
 }

@@ -2,9 +2,11 @@
 //! builder text. A test of a normal journey calls [`assert_plain`] on what the user reads.
 
 /// The words that a normal journey never shows: an error or a raw OS error, a stated limit of legionctl's own work,
-/// and builder text (plan and design ids, config keys and protocol names as the fix).
-const NOT_PLAIN: [&str; 16] = [
+/// a missing value said as "no value", and builder text (plan and design ids, config keys and protocol names as the
+/// fix).
+const NOT_PLAIN: [&str; 17] = [
     "error",
+    "no value",
     "os error",
     "panicked",
     "cannot be bound",

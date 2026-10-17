@@ -293,7 +293,7 @@ wire! {
         resets_at: Option<i64>,
     }
 
-    /// One account's rate-limit windows for one agent, from its provider; or why the read failed.
+    /// One account's rate-limit windows for one agent, from clauth; or why there are none.
     struct AccountUsage from core::accounts::AccountUsage {
         account: String,
         /// Where its login is: `current` (the login Claude Code and Codex use now) or `clauth`.
@@ -303,8 +303,10 @@ wire! {
         agent: String,
         windows: Vec<UsageWindow>,
         error: Option<String>,
-        fetched_at: i64,
-        /// One plain sentence for the user: the agent, its use or why there is none, and when it was read.
+        /// When clauth read the use.
+        fetched_at: Option<i64>,
+        /// One plain sentence for the user: the agent, its use or why there is none, clauth's state of the account,
+        /// and when it was read.
         text: String,
     }
 

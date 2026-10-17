@@ -25,7 +25,7 @@ user-invocable: true
 8. MCP servers come through `legionctl mcp-proxy`: only the allowed tools, and each call is logged.
 9. `--gpu` gives the NVIDIA GPU for this run only. In a VM it needs a polkit dialog, a disk from `workspace pack --as vm
    --gpu`, and a desktop that does not use the GPU. See skill machine-tools for the live rule.
-10. `--account <name>` runs on a clauth account (`agents accounts list`; `agents accounts login <name>` adds one) with its own login and rate limits.
+10. `--account <name>` runs on a clauth account (`agents accounts list`; `agents accounts login <name>` adds one) with its own login and rate limits. clauth is the account engine (`setup apply` installs it): its daemon reads the use and switches at the limit.
     The logins are the agents' own files in the profile; a session sees the real login files, so a token refresh in
     a session reaches them. The keyring holds only the gateway's API keys.
 11. A session has no network of its own: its only way out is the model gateway (`gateway.sock`; the agent's base URLs

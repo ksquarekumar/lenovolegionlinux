@@ -84,8 +84,6 @@ pub struct AppConfig {
 pub struct AgentsConfig {
     /// Config name -> its layer over its archetype file.
     pub configs: BTreeMap<String, crate::archetypes::AgentConfig>,
-    /// Account usage and the switch at the limit (todo-136).
-    pub accounts: crate::accounts::AccountsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

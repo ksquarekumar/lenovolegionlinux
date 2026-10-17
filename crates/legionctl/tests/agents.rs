@@ -4,13 +4,13 @@
 //! and the systemd user manager's PATH (environment.d). `agents accounts usage` reads each account's rate-limit
 //! windows from stand-in providers with the profile's own token, read only (todo-136).
 
+#[path = "common/clauth.rs"]
+mod clauth;
 mod common;
 #[path = "common/keyring.rs"]
 mod keyring;
 #[path = "common/plain.rs"]
 mod plain;
-#[path = "common/usage.rs"]
-mod usage;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -27,6 +27,23 @@ fn write(path: &Path, text: &str) {
 
 fn shipped_plugin() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integrations/agent-plugin")
+}
+
+/// Never a real cargo install: a stand-in cargo puts the stand-in clauth in place and logs its calls (the stand-in
+/// systemctl starts clauth's daemon unit: a file).
+fn stand_in_clauth_setup(home: &Path) {
+    write(&home.join("clauth-template"), clauth::SCRIPT);
+    std::fs::set_permissions(
+        home.join("clauth-template"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let cargo = home.join(".cargo/bin/cargo");
+    write(
+        &cargo,
+        "#!/bin/sh\necho \"$*\" >> \"$HOME/cargo.log\"\n[ \"$1 $2\" = \"install clauth\" ] || exit 64\ncp \"$HOME/clauth-template\" \"$HOME/.cargo/bin/clauth\"\n",
+    );
+    std::fs::set_permissions(&cargo, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 }
 
 /// An operator with its own HOME, a git repository, and the agent plugin at `plugin`.
@@ -109,6 +126,7 @@ case "$1 $2 $3" in
 "plugin install legionctl@lenovolegionlinux")
   market=$(sed 's/.*"path": "\([^"]*\)".*/\1/' "$plugins/known_marketplaces.json")
   printf '{"version": 2, "plugins": {"legionctl@lenovolegionlinux": [{"scope": "user", "installPath": "%s/agent-plugin"}]}}' "$market" > "$plugins/installed_plugins.json" ;;
+"mcp add --scope") printf '{"mcpServers": {"clauth": {"command": "%s", "args": ["mcp"]}}}' "$7" > "$HOME/.claude.json" ;;
 *) exit 64 ;;
 esac
 "#,
@@ -134,6 +152,7 @@ esac
         )
         .unwrap();
         stand_in_systemctl(&home);
+        stand_in_clauth_setup(&home);
         Lab { op, home, repo }
     }
 
@@ -821,8 +840,10 @@ fn setup_check_sees_the_claude_code_plugin_and_apply_installs_it_from_the_packag
     assert_eq!(
         calls(),
         format!(
-            "plugin marketplace add {}\nplugin install legionctl@lenovolegionlinux\n",
-            package.display()
+            "plugin marketplace add {}\nplugin install legionctl@lenovolegionlinux\nmcp add --scope user clauth -- {} \
+             mcp\n",
+            package.display(),
+            lab.home.join(".cargo/bin/clauth").display()
         )
     );
     assert_eq!(row(), "current");
@@ -1003,111 +1024,34 @@ esac
     );
 }
 
-/// An account usage lab: the stand-in usage endpoint of both providers (`usage_ttl_s` 3600) and four clauth profiles
-/// laid out as clauth 0.17.0 keeps them (`profiles.toml`, `codex-profiles.toml`, `profiles/<name>/credentials.json`
-/// and `auth.json`): work and spare (both agents), old (an expired Claude token, a Codex token the provider refuses)
-/// and changed (answers of another shape). `files` are the login files as written.
-struct UsageLab {
+/// An accounts lab: the stand-in clauth (`common/clauth.rs`) and four clauth profiles laid out as clauth 0.17.0 keeps them
+/// (`profiles.toml`, `codex-profiles.toml`, `profiles/<name>/credentials.json` and `auth.json`): work, spare, old and
+/// changed, each with a Claude Code and a Codex login of its own refresh token.
+struct AccountsLab {
     lab: Lab,
-    answers: PathBuf,
-    files: Vec<(PathBuf, String)>,
-    _server: common::process::Kill,
 }
 
-impl UsageLab {
-    fn new(tag: &str) -> UsageLab {
+impl AccountsLab {
+    fn new(tag: &str) -> AccountsLab {
         let lab = Lab::new(tag, &shipped_plugin());
-        let answers = lab.home.join("usage");
-        let (server, port) = usage::usage_server(&answers);
-        let url = |agent: &str| format!("http://127.0.0.1:{port}/{agent}");
-        lab.user_config(
-            &json!({"agents": {"accounts": {"usage_ttl_s": 3600,
-                "endpoints": {"claude": url("claude"), "codex": url("codex")}}}})
-            .to_string(),
-        );
+        let home = lab.home.to_path_buf();
+        clauth::install(&home);
         let roster = "profiles = [\"work\", \"spare\", \"old\", \"changed\"]\n";
-        write(&lab.home.join(".clauth/profiles.toml"), roster);
-        write(&lab.home.join(".clauth/codex-profiles.toml"), roster);
-        let soon = "4102444800000"; // 2100-01-01 in ms
-        let claude = |token: &str, expires: &str| {
-            format!(
-                r#"{{"claudeAiOauth": {{"accessToken": "{token}", "refreshToken": "r-{token}", "expiresAt": {expires}}}}}"#
-            )
-        };
-        let codex = |token: &str| format!(r#"{{"tokens": {{"access_token": "{token}"}}}}"#);
-        let mut files = Vec::new();
-        for (account, agent, text) in [
-            ("work", "claude", claude("tok-work", soon)),
-            (
-                "work",
-                "codex",
-                r#"{"tokens": {"access_token": "tok-workx", "account_id": "acct-1"}}"#.into(),
-            ),
-            ("spare", "claude", claude("tok-spare", soon)),
-            ("spare", "codex", codex("tok-sparex")),
-            ("old", "claude", claude("tok-old", "1000")),
-            ("old", "codex", codex("tok-oldx")),
-            ("changed", "claude", claude("tok-changed", soon)),
-            ("changed", "codex", codex("tok-changedx")),
-        ] {
-            let file = if agent == "claude" {
-                "credentials.json"
-            } else {
-                "auth.json"
-            };
-            let path = lab.home.join(".clauth/profiles").join(account).join(file);
-            write(&path, &text);
-            files.push((path, text));
+        write(&home.join(".clauth/profiles.toml"), roster);
+        write(&home.join(".clauth/codex-profiles.toml"), roster);
+        for name in ["work", "spare", "old", "changed"] {
+            write(
+                &home.join(format!(".clauth/profiles/{name}/credentials.json")),
+                &json!({"claudeAiOauth": {"accessToken": format!("tok-{name}"), "refreshToken": format!("r-{name}")}})
+                    .to_string(),
+            );
+            write(
+                &home.join(format!(".clauth/profiles/{name}/auth.json")),
+                &json!({"tokens": {"access_token": format!("tok-{name}x"), "refresh_token": format!("r-{name}x")}})
+                    .to_string(),
+            );
         }
-        let u = UsageLab {
-            lab,
-            answers,
-            files,
-            _server: server,
-        };
-        u.answer(
-            "tok-work",
-            &json!({"body": {"limits": [
-            {"kind": "session", "percent": 42.0, "resets_at": "2026-10-17T05:00:00.512+00:00"},
-            {"kind": "weekly_all", "percent": 7.5, "resets_at": null}]}}),
-        );
-        u.answer(
-            "tok-spare",
-            &json!({"body": {"limits": [{"kind": "weekly_all", "percent": 80.0},
-            {"kind": "session", "percent": 3.0, "resets_at": "2026-10-17T10:30:00Z"}],
-            "five_hour": {"utilization": 99.0}, "seven_day": {"utilization": 99.0}}}),
-        );
-        u.answer("tok-workx", &json!({"body": {"rate_limit": {"limit_reached": true,
-            "primary_window": {"used_percent": 97.0, "limit_window_seconds": 18_000, "reset_at": 1_800_000_000_i64},
-            "secondary_window": {"used_percent": 20.0, "limit_window_seconds": 604_800}}}}));
-        u.answer(
-            "tok-sparex",
-            &json!({"body": {"plan_type": "plus"}, "headers": {
-            "x-codex-primary-used-percent": "12.5", "x-codex-primary-window-minutes": "300",
-            "x-codex-primary-reset-at": "1800000600", "x-codex-secondary-used-percent": "61",
-            "x-codex-secondary-window-minutes": "10080"}}),
-        );
-        u.answer(
-            "tok-changedx",
-            &json!({"body": {"rate_limit": {"primary_window": {"used_percent": 5.0, "window_minutes": 300}}}}),
-        );
-        u.answer(
-            "tok-oldx",
-            &json!({"status": 401, "body": {"error": "token expired"}}),
-        );
-        u.answer(
-            "tok-changed",
-            &json!({"body": {"five_hour": {"utilization": 3.0}, "seven_day": {"utilization": 1.0}}}),
-        );
-        u
-    }
-
-    /// The provider answers `token` with `answer` from now on.
-    fn answer(&self, token: &str, answer: &Value) {
-        write(
-            &self.answers.join(format!("{token}.json")),
-            &answer.to_string(),
-        );
+        AccountsLab { lab }
     }
 
     /// `agents accounts usage --json <args>`.
@@ -1115,15 +1059,6 @@ impl UsageLab {
         let mut command = vec!["agents", "accounts", "usage", "--json"];
         command.extend(args);
         serde_json::from_str(&self.lab.op.ok(&command)).unwrap()
-    }
-
-    /// The calls the provider got.
-    fn calls(&self) -> Vec<Value> {
-        std::fs::read_to_string(self.answers.join("calls.log"))
-            .unwrap()
-            .lines()
-            .map(|l| serde_json::from_str(l).unwrap())
-            .collect()
     }
 }
 
@@ -1138,158 +1073,230 @@ fn row(usage: &Value, account: &str, agent: &str) -> Value {
         .unwrap_or_else(|| panic!("no {account}/{agent} in {usage:#}"))
 }
 
-/// The windows of a row that has no error.
-fn windows(usage: &Value, account: &str, agent: &str) -> Value {
-    let r = row(usage, account, agent);
-    assert!(r["error"].is_null(), "{account}/{agent}: {r}");
-    r["windows"].clone()
-}
-
-/// `agents accounts usage` reads each logged-in agent of each clauth profile from its provider (both stand-ins) with
-/// the profile's own token, the way the agents' own clients ask (S1 of planning/features/accounts.jsonc): Claude's
-/// `limits[]` (its top-level windows are not read), Codex's `rate_limit` (a reached limit counts as 100%). An expired Claude token is "login needed" and is never
-/// sent (V1); a refused token is "login needed" too; another answer shape (Claude's top-level windows only, Codex's rate-limit
-/// headers only, a window without its length) is that account's error with the field, no zero use (V2, V3). No token is printed, no login file changes. The answers are kept with their fetch time;
-/// `--fresh` reads again; the seed view shows them by account.
+/// todo-188: the use of each account is clauth's (its status feed, which its daemon writes), never a read of
+/// legionctl's own. Each login and agent is one plain sentence with clauth's state of it: the windows, an expired
+/// login (clauth renews it), the place in clauth's fallback chain and its threshold, a live clauth session, when it
+/// was read; a refused login, a profile clauth does not show, no daemon and a use not read yet say so in words. The
+/// CLI text and the seed view hold no error or builder text and no token. A feed of another schema is one error that
+/// names both versions.
 #[test]
-fn account_usage_comes_from_each_provider_read_only_and_a_changed_answer_is_an_error() {
-    let u = UsageLab::new("usage");
-    let usage = u.read(&[]);
+fn account_use_comes_from_clauths_status_feed_in_one_plain_sentence() {
+    use clauth::profile;
+    let a = AccountsLab::new("usage");
+    let home = a.lab.home.to_path_buf();
+    let mut live = profile(
+        "work",
+        "claude",
+        false,
+        &[("5h", 42.0), ("7d", 7.0)],
+        Some((1, 90.0)),
+    );
+    live["has_live_session"] = json!(true);
+    let mut expired = profile("spare", "claude", false, &[("5h", 3.0), ("7d", 80.0)], None);
+    expired["auth_status"] = json!("expired");
+    let mut broken = profile("old", "claude", false, &[], None);
+    broken["auth_status"] = json!("broken");
+    let feed = [
+        live,
+        expired,
+        broken,
+        profile("changed", "claude", false, &[], None),
+        profile("work", "codex", false, &[("5h", 100.0), ("7d", 20.0)], None),
+        profile("old", "codex", false, &[], None),
+        profile("changed", "codex", false, &[], None),
+    ];
+    clauth::status(&home, &feed);
+    let usage = a.read(&[]);
+    let text = |account: &str, agent: &str| {
+        row(&usage, account, agent)["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
     assert_eq!(
         usage.as_array().unwrap().len(),
         8,
-        "each logged-in agent once: {usage:#}"
+        "each login once: {usage:#}"
     );
     assert_eq!(
-        windows(&usage, "work", "claude"),
-        json!([{"name": "5h", "used_percent": 42.0, "resets_at": 1_792_213_200_i64},
-               {"name": "7d", "used_percent": 7.5, "resets_at": null}])
+        text("work", "claude"),
+        "Claude Code: 5h 42% used, 7d 7% used. In clauth's fallback chain at 1: it moves on at 90%. A clauth session \
+         runs on it. Read just now."
     );
     assert_eq!(
-        windows(&usage, "spare", "claude"),
-        json!([{"name": "5h", "used_percent": 3.0, "resets_at": 1_792_233_000_i64},
-               {"name": "7d", "used_percent": 80.0, "resets_at": null}]),
-        "only limits[]: the top-level windows are not read"
+        text("spare", "claude"),
+        "Claude Code: 5h 3% used, 7d 80% used. The login has expired; clauth renews it at its next use. Read just now."
     );
     assert_eq!(
-        windows(&usage, "work", "codex"),
-        json!([{"name": "5h", "used_percent": 100.0, "resets_at": 1_800_000_000_i64},
-               {"name": "7d", "used_percent": 20.0, "resets_at": null}]),
-        "a reached limit counts the fuller window as 100%"
+        text("work", "codex"),
+        "Codex: 5h 100% used, 7d 20% used. Read just now."
     );
-    for (account, agent, text) in [
-        (
-            "old",
-            "claude",
-            "login needed: the login of old has expired; Claude Code renews it",
-        ),
-        (
-            "old",
-            "codex",
-            "login needed: the provider refused the login (401",
-        ),
-        ("changed", "claude", "the answer has no list limits"),
-        (
-            "changed",
-            "codex",
-            "rate_limit.primary_window: the answer has no number limit_window_seconds",
-        ),
-        ("spare", "codex", "the answer has no object rate_limit"),
-    ] {
-        let r = row(&usage, account, agent);
-        let error = r["error"].as_str().unwrap_or_default();
+    assert_eq!(
+        text("old", "claude"),
+        "Claude Code: the provider refused the login of old; log in to it again."
+    );
+    assert_eq!(
+        text("spare", "codex"),
+        "Codex: clauth does not show spare (it is turned off in clauth)."
+    );
+    assert_eq!(
+        text("changed", "claude"),
+        "Claude Code: clauth's daemon does not run, so the use is not read. Set up starts it."
+    );
+    std::fs::write(home.join("legionctl-clauth.service"), "").unwrap();
+    assert_eq!(
+        row(&a.read(&[]), "changed", "claude")["text"],
+        "Claude Code: clauth has not read the use yet."
+    );
+    let cli = a.lab.op.ok(&["agents", "accounts", "usage"]);
+    let seed = a.lab.op.ok(&["views", "render", "accounts"]);
+    // the seed's terminal form ends with its actions for agents (operation names): the rows are the user's
+    let rows: String = seed
+        .lines()
+        .filter(|l| !l.starts_with("actions:"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !usage.to_string().contains("tok-"),
+        "no token in the answer"
+    );
+    for shown in [&cli, &rows] {
+        plain::assert_plain("the accounts", shown);
         assert!(
-            error.contains(text) && r["windows"] == json!([]),
-            "{account}/{agent}: {r}"
+            !shown.contains("tok-") && !shown.contains("r-work"),
+            "{shown}"
         );
     }
-    each_call_is_the_agents_own_and_reads_only(&u, &usage);
-    the_answer_is_kept_until_fresh(&u, &usage);
+    assert!(
+        seed.lines().any(|l| l == "== work (2) =="),
+        "grouped by account:\n{seed}"
+    );
+
+    another_schema_is_one_error(&a);
 }
 
-/// Each call asks as the agent's own client (Claude's beta header, Codex's account id), an expired token is never
-/// sent, no login file changes, and no answer shows a token.
-fn each_call_is_the_agents_own_and_reads_only(u: &UsageLab, usage: &Value) {
-    let calls = u.calls();
+/// A status feed of another schema is one error that names both versions.
+fn another_schema_is_one_error(a: &AccountsLab) {
+    let home = a.lab.home.to_path_buf();
+    let mut other = serde_json::from_str::<Value>(
+        &std::fs::read_to_string(home.join("clauth-status.json")).unwrap(),
+    )
+    .unwrap();
+    other["schema"] = json!(3);
+    other["clauth_version"] = json!("0.18.0");
+    std::fs::write(home.join("clauth-status.json"), other.to_string()).unwrap();
+    let refused = a.lab.op.cli_in(&home, &["agents", "accounts", "usage"]);
     assert!(
-        calls.iter().all(|c| c["token"] != "tok-old"),
-        "an expired token is never sent: {calls:?}"
+        String::from_utf8_lossy(&refused.stderr).contains(
+            "clauth 0.18.0 writes its status in schema 3; legionctl reads schema 2 (clauth 0.17)"
+        ),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
     );
-    let call = |token: &str| calls.iter().find(|c| c["token"] == token).unwrap().clone();
+}
+
+/// todo-188, without clauth: the Accounts view shows the current logins and why there is no use, `setup check` has
+/// clauth as not installed, and `setup apply` installs it with cargo (`~0.17`, locked), starts its daemon as the
+/// user unit and gives Claude Code clauth's MCP server; then the use is clauth's. A clauth of another version is one
+/// plain doctor finding with no action (Set up does not replace the user's clauth).
+#[test]
+fn without_clauth_the_current_logins_show_and_setup_installs_and_starts_it() {
+    let lab = Lab::new("no-clauth", &shipped_plugin());
+    lab.stand_in_ctx();
+    let home = lab.home.to_path_buf();
+    write(
+        &home.join(".claude/.credentials.json"),
+        &json!({"claudeAiOauth": {"accessToken": "tok-live", "refreshToken": "r-live"}})
+            .to_string(),
+    );
+    let usage: Value =
+        serde_json::from_str(&lab.op.ok(&["agents", "accounts", "usage", "--json"])).unwrap();
     assert_eq!(
-        [&call("tok-work")["path"], &call("tok-work")["beta"]],
-        [&json!("/claude"), &json!("oauth-2025-04-20")]
+        row(&usage, "current", "claude")["text"],
+        "Claude Code, the current login: clauth is not installed, so the use is not read. Set up installs it."
     );
-    assert_eq!(
-        [&call("tok-workx")["path"], &call("tok-workx")["account"]],
-        [&json!("/codex"), &json!("acct-1")]
+    let item = |what: &str| -> String {
+        let check: Value = serde_json::from_str(&lab.op.ok(&["setup", "check", "--json"])).unwrap();
+        check["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["what"] == what)
+            .map_or_else(String::new, |i| i["status"].as_str().unwrap().to_string())
+    };
+    assert_eq!(item("clauth"), "not installed");
+    let out = lab.op.cli_in(&home, &["setup", "apply"]);
+    let done = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
-    for (path, text) in &u.files {
-        assert_eq!(
-            &std::fs::read_to_string(path).unwrap(),
-            text,
-            "{}",
-            path.display()
-        );
+    for line in [
+        "clauth: installed (~0.17) with cargo",
+        "clauth daemon: started (legionctl-clauth.service)",
+        "clauth mcp: added to Claude Code",
+    ] {
+        assert!(done.contains(line), "{line}: {done}");
     }
-    let text = u.lab.op.ok(&["agents", "accounts", "usage"]);
-    assert!(
-        !text.contains("tok-") && !usage.to_string().contains("tok-"),
-        "{text}"
+    let log = |name: &str| std::fs::read_to_string(home.join(name)).unwrap_or_default();
+    assert_eq!(
+        log("cargo.log"),
+        "install clauth --version ~0.17 --locked\n"
     );
-    assert!(text.contains("work") && text.contains("5h 42%"), "{text}");
-    let list: Value =
-        serde_json::from_str(&u.lab.op.ok(&["agents", "accounts", "list", "--json"])).unwrap();
-    let work = list
+    assert!(
+        log("systemctl.log").contains("--user enable --now legionctl-clauth.service\n"),
+        "{}",
+        log("systemctl.log")
+    );
+    assert!(
+        log("claude.log").contains(&format!(
+            "mcp add --scope user clauth -- {} mcp",
+            home.join(".cargo/bin/clauth").display()
+        )),
+        "{}",
+        log("claude.log")
+    );
+    assert_eq!(
+        [item("clauth"), item("clauth daemon"), item("clauth mcp")],
+        ["current", "current", "current"]
+    );
+    clauth::status(&home, &[]);
+    let usage: Value =
+        serde_json::from_str(&lab.op.ok(&["agents", "accounts", "usage", "--json"])).unwrap();
+    assert_eq!(
+        row(&usage, "current", "claude")["text"],
+        "Claude Code, the current login: no clauth account holds this login, so clauth does not read its use."
+    );
+
+    std::fs::write(home.join("clauth-version"), "0.18.0").unwrap();
+    let doctor: Value = serde_json::from_str(&lab.op.ok(&["doctor", "--json"])).unwrap();
+    let found: Vec<&Value> = doctor["findings"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|a| a["name"] == "work")
-        .unwrap();
+        .filter(|f| f["text"].as_str().unwrap().starts_with("setup: clauth"))
+        .collect();
+    assert_eq!(found.len(), 1, "{doctor:#}");
     assert_eq!(
-        [&work["claude"], &work["codex"]],
-        [&json!(true), &json!(true)],
-        "{work}"
+        found[0]["text"],
+        "setup: clauth version 0.18.0: legionctl reads clauth 0.17; the accounts may read wrong until clauth 0.17 is \
+         installed"
     );
+    assert_eq!(found[0]["actions"], json!([]));
 }
 
-/// The kept answer, with its fetch time, until `--fresh`; the seed view groups the accounts.
-fn the_answer_is_kept_until_fresh(u: &UsageLab, usage: &Value) {
-    u.answer(
-        "tok-work",
-        &json!({"body": {"limits": [{"kind": "session", "percent": 88.0}, {"kind": "weekly_all", "percent": 9.0}]}}),
-    );
-    let again = u.read(&["--account", "work"]);
-    assert_eq!(
-        row(&again, "work", "claude"),
-        row(usage, "work", "claude"),
-        "the kept answer and its fetch time"
-    );
-    let fresh = u.read(&["--account", "work", "--fresh"]);
-    assert_eq!(windows(&fresh, "work", "claude")[0]["used_percent"], 88.0);
-    let seed = u.lab.op.ok(&["views", "render", "accounts"]);
-    for line in [
-        "== work (2) ==",
-        "Claude Code: 5h 88% used, 7d 9% used. Read just now.",
-        "Codex: 5h 100% used, 7d 20% used. Read just now.",
-        "Claude Code: the use cannot be read: the answer has no list limits. Tried just now.",
-    ] {
-        assert!(seed.lines().any(|l| l == line), "{line} missing:\n{seed}");
-    }
-}
-
-/// todo-179 (5), r324: with no legionctl profile, the accounts were "no account profile has a login" while Claude Code
-/// and Codex were logged in and clauth had two profiles. In a Scratch HOME laid out as clauth 0.17.0 leaves it
-/// (`profiles.toml` with main and alt, alt active, `~/.claude/.credentials.json` a link to alt's file) and a Codex login
-/// that no clauth profile holds: the current logins are accounts (Claude Code's named alt, the profile the link points
-/// to, though main holds the same login), main is a clauth account, each read from the provider with its own token; nothing changes on disk. `agents accounts
-/// capture` never copies a login: alt is kept already, the Codex login is not kept and says how to make a second one;
-/// a Claude Code login that no clauth profile holds goes to `clauth capture <name>` (a stand-in), and with no login
-/// kept at all the call fails.
+/// todo-179 (5), r324: the current logins and clauth's profiles are accounts, in a Scratch HOME laid out as clauth
+/// 0.17.0 leaves it (main and alt, alt active, `~/.claude/.credentials.json` a link to alt's file, main holding the
+/// same login) and a Codex login that no clauth profile holds. Claude Code's owner is the one `clauth which` names;
+/// main says it holds the same login as alt (no read); the Codex login says clauth does not read it. Capture never
+/// copies a login. r340: when Claude Code's refresh replaced the link with a plain file of a new token (`clauth which`:
+/// unknown), the live login is still alt's (clauth's active profile).
 #[test]
 fn the_current_logins_and_clauths_profiles_are_accounts_and_capture_never_copies_a_login() {
-    let u = UsageLab::new("current");
-    let home = u.lab.home.to_path_buf();
+    use clauth::profile;
+    let a = AccountsLab::new("current");
+    let home = a.lab.home.to_path_buf();
     let clauth = |name: &str, token: &str| {
         let path = home.join(format!(".clauth/profiles/{name}/credentials.json"));
         write(
@@ -1303,19 +1310,23 @@ fn the_current_logins_and_clauths_profiles_are_accounts_and_capture_never_copies
         &home.join(".clauth/profiles.toml"),
         "active_profile = \"alt\"\nprofiles = [\"main\", \"alt\"]\n",
     );
-    // main holds the same login as alt (seen live 2026-10-17): the link names the owner, and main stays listed
     clauth("main", "alt");
     let alt = clauth("alt", "alt");
     std::fs::create_dir_all(home.join(".claude")).unwrap();
     std::os::unix::fs::symlink(&alt, home.join(".claude/.credentials.json")).unwrap();
+    write(&home.join("clauth-which"), "alt\n");
     let codex = home.join(".codex/auth.json");
     write(
         &codex,
         r#"{"tokens": {"access_token": "tok-livex", "refresh_token": "r-livex", "account_id": "acct-9"}}"#,
     );
-    let limits = json!({"body": {"limits": [{"kind": "session", "percent": 30.0}, {"kind": "weekly_all", "percent": 4.0}]}});
-    u.answer("tok-alt", &limits);
-    u.answer("tok-livex", &json!({"body": {"rate_limit": {"primary_window": {"used_percent": 11.0, "limit_window_seconds": 18_000}}}}));
+    clauth::status(
+        &home,
+        &[
+            profile("alt", "claude", true, &[("5h", 21.0), ("7d", 27.0)], None),
+            profile("main", "claude", false, &[("5h", 21.0), ("7d", 27.0)], None),
+        ],
+    );
     let disk = || {
         [
             &alt,
@@ -1326,85 +1337,7 @@ fn the_current_logins_and_clauths_profiles_are_accounts_and_capture_never_copies
     };
     let before = disk();
 
-    let usage = u.read(&[]);
-    let r = row(&usage, "alt", "claude");
-    assert_eq!(
-        [&r["source"], &r["active"]],
-        [&json!("current"), &json!(true)],
-        "{r}"
-    );
-    assert_eq!(windows(&usage, "alt", "claude")[0]["used_percent"], 30.0);
-    let r = row(&usage, "main", "claude");
-    assert_eq!(
-        [&r["source"], &r["active"], &r["windows"]],
-        [&json!("clauth"), &json!(false), &json!([])],
-        "{r}"
-    );
-    // two holders of one refresh token: one plain warning that names both, and main is not read
-    assert!(
-        r["error"].as_str().unwrap_or_default().starts_with(
-            "main holds the same login as alt: a refresh through one logs the other out"
-        ),
-        "{r}"
-    );
-    let seed = u.lab.op.ok(&["views", "render", "accounts"]);
-    assert_eq!(
-        seed.matches("holds the same login").count(),
-        1,
-        "one warning:\n{seed}"
-    );
-    assert_eq!(windows(&usage, "current", "codex")[0]["used_percent"], 11.0);
-    assert_eq!(
-        usage
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|r| r["account"] == "alt")
-            .count(),
-        1,
-        "the current login is one account, not also clauth's alt: {usage:#}"
-    );
-    let text = u.lab.op.ok(&["agents", "accounts", "list"]);
-    assert!(
-        text.lines()
-            .any(|l| l.starts_with("alt") && l.contains("current login")),
-        "{text}"
-    );
-
-    capture_never_copies_a_login(&u, &disk, &before);
-}
-
-/// `agents accounts capture` in the layout of the test above: no copy, no write but clauth's own capture.
-fn capture_never_copies_a_login(
-    u: &UsageLab,
-    disk: &dyn Fn() -> [String; 3],
-    before: &[String; 3],
-) {
-    let home = u.lab.home.to_path_buf();
-    // clauth stands in: it logs its call
-    let bin = home.join("keyring-bin/clauth");
-    write(&bin, "#!/bin/sh\necho \"$*\" >> \"$HOME/clauth.log\"\n");
-    std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    let kept = u.lab.op.ok(&["agents", "accounts", "capture", "keep"]);
-    assert!(
-        kept.contains("Claude Code: the current login is clauth account alt already")
-            && kept.contains("Codex: the current login is not kept")
-            && kept.contains("log in to Codex as a new account instead"),
-        "{kept}"
-    );
-    assert_eq!(&disk(), before, "no login file changed");
-    assert!(!home.join("clauth.log").exists(), "clauth was not called");
-
-    // Claude Code's refresh replaced clauth's link with a plain file of a new token (r340, live): as clauth sees it,
-    // the newer login of the active profile alt: one row alt, the current login, read with the new token; main
-    // still holds alt's stored login
-    std::fs::remove_file(home.join(".claude/.credentials.json")).unwrap();
-    write(
-        &home.join(".claude/.credentials.json"),
-        &json!({"claudeAiOauth": {"accessToken": "tok-new", "refreshToken": "r-new"}}).to_string(),
-    );
-    u.answer("tok-new", &json!({"body": {"limits": [{"kind": "session", "percent": 21.0}, {"kind": "weekly_all", "percent": 27.0}]}}));
-    let usage = u.read(&["--fresh"]);
+    let usage = a.read(&[]);
     let claude: Vec<[&Value; 3]> = usage
         .as_array()
         .unwrap()
@@ -1424,29 +1357,73 @@ fn capture_never_copies_a_login(
         row(&usage, "alt", "claude")["text"],
         "Claude Code, the current login: 5h 21% used, 7d 27% used. Read just now."
     );
-    assert!(
-        row(&usage, "main", "claude")["text"]
-            .as_str()
-            .unwrap()
-            .starts_with("Claude Code: main holds the same login as alt"),
+    assert_eq!(
+        row(&usage, "main", "claude")["text"],
+        "Claude Code: main holds the same login as alt: a refresh through one logs the other out. Log in to main again \
+         in clauth, or delete one of the two."
+    );
+    assert_eq!(
+        row(&usage, "current", "codex")["text"],
+        "Codex, the current login: no clauth account holds this login, so clauth does not read its use."
+    );
+    let seed = a.lab.op.ok(&["views", "render", "accounts"]);
+    assert_eq!(
+        seed.matches("holds the same login").count(),
+        1,
+        "one warning:\n{seed}"
+    );
+
+    // r340: Claude Code's refresh replaced clauth's link with a plain file of a new token; clauth which: unknown
+    std::fs::remove_file(home.join(".claude/.credentials.json")).unwrap();
+    write(
+        &home.join(".claude/.credentials.json"),
+        &json!({"claudeAiOauth": {"accessToken": "tok-new", "refreshToken": "r-new"}}).to_string(),
+    );
+    std::fs::remove_file(home.join("clauth-which")).unwrap();
+    let usage = a.read(&[]);
+    assert_eq!(
+        [
+            &row(&usage, "alt", "claude")["source"],
+            &row(&usage, "main", "claude")["source"]
+        ],
+        [&json!("current"), &json!("clauth")],
         "{usage:#}"
     );
+    capture_never_copies_a_login(&a, &disk, &before);
+}
+
+/// `agents accounts capture` in the layout of the test above: no copy, no write but clauth's own capture.
+fn capture_never_copies_a_login(
+    a: &AccountsLab,
+    disk: &dyn Fn() -> [String; 3],
+    before: &[String; 3],
+) {
+    let home = a.lab.home.to_path_buf();
+    let kept = a.lab.op.ok(&["agents", "accounts", "capture", "keep"]);
+    assert!(
+        kept.contains("Claude Code: the current login is clauth account alt already")
+            && kept.contains("Codex: the current login is not kept")
+            && kept.contains("log in to Codex as a new account instead"),
+        "{kept}"
+    );
+    assert_eq!(&disk(), before, "no login file changed");
+    assert!(!home.join("clauth.log").exists(), "clauth was not called");
     // with no active profile, a Claude Code login that no clauth profile holds goes to clauth's capture
     write(
         &home.join(".clauth/profiles.toml"),
         "profiles = [\"main\", \"alt\"]\n",
     );
-    let saved = u.lab.op.ok(&["agents", "accounts", "capture", "fresh"]);
+    let saved = a.lab.op.ok(&["agents", "accounts", "capture", "fresh"]);
     assert!(
         saved.contains("clauth keeps the current login as account fresh"),
         "{saved}"
     );
     assert_eq!(
         std::fs::read_to_string(home.join("clauth.log")).unwrap(),
-        "capture fresh\n"
+        "capture fresh stdin=\n"
     );
     std::fs::remove_file(home.join(".claude/.credentials.json")).unwrap();
-    let none = u
+    let none = a
         .lab
         .op
         .cli_in(&home, &["agents", "accounts", "capture", "none"]);
@@ -1466,7 +1443,7 @@ fn capture_never_copies_a_login(
 /// nothing; a refusal of clauth is the error with clauth's words.
 #[test]
 fn the_old_account_folder_is_one_doctor_finding_and_logins_go_through_clauth() {
-    let u = UsageLab::new("old-folder");
+    let u = AccountsLab::new("old-folder");
     let home = u.lab.home.to_path_buf();
     let old = home.join(".local/share/legionctl/accounts");
     write(&old.join("work/claude/.credentials.json"), "old-work-login");
@@ -1515,12 +1492,7 @@ fn the_old_account_folder_is_one_doctor_finding_and_logins_go_through_clauth() {
     );
     assert!(!doctor.to_string().contains("old-work-login"));
 
-    let bin = home.join("keyring-bin/clauth");
-    write(
-        &bin,
-        "#!/bin/sh\necho \"$* stdin=$(cat)\" >> \"$HOME/clauth.log\"\n[ \"$1\" = switch ] && [ \"$2\" = spare ] && { echo 'spare is in use' >&2; exit 1; }\nexit 0\n",
-    );
-    std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    write(&home.join("clauth-refuse.switch.spare"), "spare is in use");
     let said = u.lab.op.ok(&["agents", "accounts", "login", "work"]);
     assert_eq!(
         said.trim(),
@@ -1559,7 +1531,7 @@ fn the_old_account_folder_is_one_doctor_finding_and_logins_go_through_clauth() {
     );
     assert_eq!(
         std::fs::read_to_string(home.join("clauth.log")).unwrap(),
-        "login work stdin=\nlogin work --codex --browser stdin=\nswitch work stdin=\nswitch spare stdin=\n"
+        "login work stdin=\nlogin work --codex --browser stdin=\nswitch work stdin=\n"
     );
 }
 

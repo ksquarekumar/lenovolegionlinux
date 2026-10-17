@@ -508,11 +508,14 @@ operations! {
     // never as a copy: a refresh rotates the refresh token, and a copy logs one of the two out (DESIGN-12 wall 1);
     // clauth keeps its copy with the refresh in step
     agents_accounts_capture / AgentsAccountsCapture = "agents.accounts.capture", Workspace, AccountIn => Lines;
-    /// Each account's rate-limit windows (Claude: 5h and 7d; Codex: its windows) from the provider, read with the
-    /// account's own access token, never refreshed; a failed read is that account's error with its cause. A clauth
-    /// profile that holds the same login as another is not read: its error names both.
-    /// Answers are kept for `agents.accounts.usage_ttl_s`; `--fresh` reads again.
+    /// Each login's rate-limit windows from clauth's status feed (clauth's daemon reads them), with clauth's state of
+    /// the account (its login, its place in the fallback chain, a live clauth session) in one sentence; with no
+    /// clauth installed, the current logins and why there is no use. A clauth profile that holds the same login as
+    /// another says so, naming both.
     agents_accounts_usage / AgentsAccountsUsage = "agents.accounts.usage", Read, AccountUsageIn => Vec<AccountUsage>;
+    /// The newest Claude Code sessions as clauth lists them (`clauth sessions`), with the account each last ran on;
+    /// none when clauth is not installed.
+    agents_accounts_sessions / AgentsAccountsSessions = "agents.accounts.sessions", Read, Empty => Vec<ClauthSession>;
     /// Claude Code's installed plugins, each marked in or out of the allowlist (`plugins.marketplaces`).
     agents_plugins_list / AgentsPluginsList = "agents.plugins.list", Read, Empty => Vec<Plugin>;
     /// Install a Claude Code plugin that `plugins.marketplaces` allows (`claude plugin install`); a command the

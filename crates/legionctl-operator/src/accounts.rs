@@ -1,254 +1,256 @@
-//! Account usage over HTTP (todo-136): one GET per account and agent to the provider's usage endpoint with the
-//! profile's own access token (`legionctl_core::accounts`), and the switch of an operator member at its limit. The
-//! request headers are those of the agents' own clients, as clauth 0.17.0 sends them (MIT, Copyright (c) 2026
-//! cloudy; THIRD-PARTY-NOTICES.md). Config comes from the layers without the repository's: a repository cannot
-//! point a token at another host or pick an account.
+//! The accounts over clauth (todo-136, todo-188): each login's use, auth state, fallback chain and sessions from
+//! clauth's status feed (its daemon reads the use), the switch of an operator member at its limit along clauth's
+//! fallback chain, and clauth's own login, switch and capture. legionctl reads no provider itself.
 
-use std::time::Duration;
+use std::fmt::Write as _;
 
-use anyhow::{Context, Result, bail};
-use legionctl_core::accounts::{self, AccountUsage, AccountsConfig, Login};
-use legionctl_core::config::{Config, Dirs, resolve};
+use anyhow::{Result, bail};
+use legionctl_core::accounts::{self, AccountUsage, Held, ProfileStatus};
 
-fn now_ms() -> i64 {
+/// `clauth <args>`; clauth must be installed.
+fn clauth(args: &[&str]) -> Result<String> {
+    accounts::clauth(args)?
+        .ok_or_else(|| anyhow::anyhow!("clauth is not installed: Set up installs it"))
+}
+
+fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
-/// The config of the defaults, /etc/legionctl and the user layer.
+/// `agents accounts usage`: each login (`accounts::logins`), or those of `account`, with clauth's state of it.
 ///
 /// # Errors
-/// The config does not resolve.
-pub fn config() -> Result<Config> {
-    Ok(resolve(&Dirs::from_env(), None)?.config)
-}
-
-/// One GET of `agent`'s usage endpoint with `login`'s token, as its agent's client sends it.
-async fn fetch(url: &str, agent: &str, login: &Login) -> Result<Vec<accounts::Window>> {
-    static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    let http = HTTP.get_or_init(reqwest::Client::new);
-    let mut request = http
-        .get(url)
-        .bearer_auth(&login.token)
-        .timeout(Duration::from_secs(15));
-    request = if agent == "claude" {
-        request
-            .header("anthropic-beta", "oauth-2025-04-20")
-            .header("User-Agent", "claude-cli (external, cli)")
-    } else {
-        let request = request.header("User-Agent", "codex_cli_rs");
-        match &login.account_id {
-            Some(id) => request.header("ChatGPT-Account-ID", id),
-            None => request,
-        }
-    };
-    // the error names the host, never the request: it holds the token
-    let response = request
-        .send()
-        .await
-        .map_err(|e| anyhow::anyhow!("{url} does not answer: {}", e.without_url()))?;
-    let status = response.status();
-    let headers = response.headers().clone();
-    let text = response.text().await.context("reading the answer")?;
-    match status.as_u16() {
-        401 | 403 => bail!(
-            "login needed: the provider refused the login ({status}); log in to the account again"
-        ),
-        429 => bail!(
-            "{url} limits the usage reads (429); retry after {} s",
-            headers
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("?")
-        ),
-        s if s >= 400 => bail!(
-            "{url} answered {status}: {}",
-            text.chars().take(200).collect::<String>()
-        ),
-        _ => {}
-    }
-    let body: serde_json::Value =
-        serde_json::from_str(&text).with_context(|| format!("the answer of {url} is not JSON"))?;
-    if agent == "claude" {
-        accounts::claude_windows(&body)
-    } else {
-        accounts::codex_windows(&body)
-    }
-}
-
-/// The usage of `held`: the kept answer, else (or with `fresh`) a read from the provider, kept with its fetch time; a
-/// failed read is the answer's error.
-///
-/// # Errors
-/// The cache fails.
-pub fn usage_of(
-    runtime: &tokio::runtime::Handle,
-    config: &Config,
-    held: &accounts::Held,
-    fresh: bool,
-) -> Result<AccountUsage> {
-    let now = now_ms();
-    if let Some(other) = &held.same_as {
-        // one refresh token in two profiles: no read, the user fixes it in clauth
-        return Ok(AccountUsage {
-            account: held.name.clone(),
-            source: held.source.into(),
-            active: held.active,
-            agent: held.agent.clone(),
-            fetched_at: now / 1000,
-            windows: Vec::new(),
-            error: Some(format!(
-                "{} holds the same login as {other}: a refresh through one logs the other out. Log in to {} again \
-                 in clauth, or delete one of the two",
-                held.name, held.name
-            )),
-            text: String::new(),
-        });
-    }
-    if !fresh && let Some(kept) = accounts::cached(held)? {
-        return Ok(kept);
-    }
-    let a = &config.agents.accounts;
-    let url = if held.agent == "claude" {
-        &a.endpoints.claude
-    } else {
-        &a.endpoints.codex
-    };
-    let read = accounts::login(held, now)
-        .and_then(|login| runtime.block_on(fetch(url, &held.agent, &login)));
-    let usage = AccountUsage {
-        account: held.name.clone(),
-        source: held.source.into(),
-        active: held.active,
-        agent: held.agent.clone(),
-        fetched_at: now / 1000,
-        windows: read.as_ref().map(Clone::clone).unwrap_or_default(),
-        error: read.err().map(|e| format!("{e:#}")),
-        text: String::new(),
-    };
-    let max = config.cache.get("accounts").map_or(0, |c| c.max_bytes);
-    accounts::keep(&usage, a.usage_ttl_s, max)?;
-    Ok(usage)
-}
-
-/// `agents accounts usage`: each login (`accounts::logins`), or those of `account`.
-///
-/// # Errors
-/// No login has that name, a login cannot be read, or the cache fails.
-pub fn usage(
-    runtime: &tokio::runtime::Handle,
-    input: &legionctl_api::AccountUsageIn,
-) -> Result<Vec<AccountUsage>> {
-    let config = config()?;
-    let held: Vec<accounts::Held> = accounts::logins()?
+/// No login has that name, a login cannot be read, or clauth fails or writes another status schema.
+pub fn usage(input: &legionctl_api::AccountUsageIn) -> Result<Vec<AccountUsage>> {
+    let held: Vec<Held> = accounts::logins()?
         .into_iter()
         .filter(|h| input.account.as_ref().is_none_or(|a| *a == h.name))
         .collect();
     if let Some(name) = &input.account {
         anyhow::ensure!(!held.is_empty(), "no account {name} has a login");
     }
-    let now = now_ms() / 1000;
-    held.iter()
+    let status = accounts::status()?;
+    // asked once, and only when a use is missing
+    let mut daemon = None;
+    let now = now();
+    Ok(held
+        .iter()
         .map(|h| {
-            let mut u = usage_of(runtime, &config, h, input.fresh)?;
-            u.text = sentence(&u, h.same_as.is_some(), now);
-            Ok(u)
+            let entry = status.as_ref().and_then(|s| {
+                s.profiles
+                    .iter()
+                    .find(|p| p.name == h.name && p.harness == h.agent)
+            });
+            let (windows, error) = state(h, status.is_some(), entry, || {
+                *daemon.get_or_insert_with(accounts::daemon_runs)
+            });
+            let mut u = AccountUsage {
+                account: h.name.clone(),
+                source: h.source.into(),
+                active: h.active,
+                agent: h.agent.clone(),
+                windows,
+                error,
+                fetched_at: entry.and_then(ProfileStatus::fetched_at),
+                text: String::new(),
+            };
+            u.text = sentence(&u, entry, now);
+            u
         })
-        .collect()
+        .collect())
 }
 
-/// The row's one sentence: `Claude Code, the current login: 5h 21% used, 7d 27% used. Read 4 min ago.`
-fn sentence(u: &AccountUsage, same: bool, now: i64) -> String {
+/// The windows of `h`, or why there are none.
+fn state(
+    h: &Held,
+    installed: bool,
+    entry: Option<&ProfileStatus>,
+    daemon: impl FnOnce() -> bool,
+) -> (Vec<accounts::Window>, Option<String>) {
+    let why = if let Some(other) = &h.same_as {
+        format!(
+            "{} holds the same login as {other}: a refresh through one logs the other out. Log in to {} again in \
+             clauth, or delete one of the two",
+            h.name, h.name
+        )
+    } else if !installed {
+        "clauth is not installed, so the use is not read. Set up installs it".into()
+    } else if h.name == "current" {
+        "no clauth account holds this login, so clauth does not read its use".into()
+    } else if let Some(p) = entry {
+        if p.auth_status == "broken" {
+            format!(
+                "the provider refused the login of {}; log in to it again",
+                h.name
+            )
+        } else if !p.windows.is_empty() {
+            return (p.windows(), None);
+        } else if !daemon() {
+            "clauth's daemon does not run, so the use is not read. Set up starts it".into()
+        } else if p.auth_status == "expired" {
+            "the login has expired; clauth renews it at its next use".into()
+        } else {
+            "clauth has not read the use yet".into()
+        }
+    } else {
+        format!(
+            "clauth does not show {} (it is turned off in clauth)",
+            h.name
+        )
+    };
+    (Vec::new(), Some(why))
+}
+
+/// The row's one sentence: `Claude Code, the current login: 5h 21% used, 7d 27% used. In clauth's fallback chain at
+/// 2: it moves on at 90%. Read 4 min ago.`
+fn sentence(u: &AccountUsage, entry: Option<&ProfileStatus>, now: i64) -> String {
     let agent = accounts::named(&u.agent);
     let who = if u.source == "current" {
         format!("{agent}, the current login")
     } else {
         agent.to_string()
     };
-    let ago = match now - u.fetched_at {
-        s if s < 60 => "just now".to_string(),
-        s if s < 3600 => format!("{} min ago", s / 60),
-        s if s < 86_400 => format!("{} h ago", s / 3600),
-        s => format!("{} d ago", s / 86_400),
+    let Some(e) = entry.filter(|_| u.error.is_none()) else {
+        return format!("{who}: {}.", u.error.as_deref().unwrap_or_default());
     };
-    match &u.error {
-        Some(e) if same => format!("{who}: {e}."),
-        Some(e) => match e.strip_prefix("login needed: ") {
-            Some(why) => format!("{who}: {why}. Tried {ago}."),
-            None => format!("{who}: the use cannot be read: {e}. Tried {ago}."),
-        },
-        None => format!(
-            "{who}: {}. Read {ago}.",
-            u.windows
-                .iter()
-                .map(|w| format!("{} {:.0}% used", w.name, w.used_percent))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+    let mut text = format!(
+        "{who}: {}.",
+        u.windows
+            .iter()
+            .map(|w| format!("{} {:.0}% used", w.name, w.used_percent))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    if e.auth_status == "expired" {
+        text.push_str(" The login has expired; clauth renews it at its next use.");
     }
+    if let Some(chain) = &e.fallback {
+        let _ = write!(
+            text,
+            " In clauth's fallback chain at {}: it moves on at {:.0}%.",
+            chain.position, chain.threshold
+        );
+    }
+    if e.has_live_session {
+        text.push_str(" A clauth session runs on it.");
+    }
+    if let Some(at) = u.fetched_at {
+        let _ = match now - at {
+            s if s < 60 => write!(text, " Read just now."),
+            s if s < 3600 => write!(text, " Read {} min ago.", s / 60),
+            s if s < 86_400 => write!(text, " Read {} h ago.", s / 3600),
+            s => write!(text, " Read {} d ago.", s / 86_400),
+        };
+    }
+    text
+}
+
+/// `agents accounts sessions`: the newest 20 of `clauth sessions`.
+///
+/// # Errors
+/// clauth fails, or its list is not of its shape.
+pub fn sessions() -> Result<Vec<legionctl_api::ClauthSession>> {
+    #[derive(serde::Deserialize)]
+    struct Row {
+        id: String,
+        workspace: String,
+        updated: String,
+        last_ran_profile: Option<String>,
+    }
+    let Some(text) = accounts::clauth(&["sessions", "--json"])? else {
+        return Ok(Vec::new());
+    };
+    let rows: Vec<Row> = serde_json::from_str(&text)
+        .map_err(|e| anyhow::anyhow!("clauth's session list is not of its shape: {e}"))?;
+    Ok(rows
+        .into_iter()
+        .take(20)
+        .map(|r| legionctl_api::ClauthSession {
+            id: r.id,
+            workspace: r.workspace,
+            updated: r.updated,
+            profile: r.last_ran_profile,
+        })
+        .collect())
 }
 
 /// What a wake does with its member's account.
 pub enum Decision {
-    /// It runs on its account (none: the home's logins).
+    /// It runs on its account (none: the current login, which clauth's auto-switch moves along its chain).
     Stay,
     /// Its account is at its limit: it continues on `to`.
     Move { to: String, why: String },
 }
 
-/// What an operator member of `agent` on `account` does at a wake: when its account is at its limit and
-/// `agents.accounts.fallback.<agent>` lists accounts, it moves to the first one under the limit. A member whose
-/// agent has no list, or that runs on the home's logins, stays.
+/// What an operator member of `agent` on `account` does at a wake, along clauth's fallback chain: when its account is
+/// a chain member with a window at the chain's threshold or more, it moves to the next member after it (in chain
+/// order, around) that is under its threshold and has a use clauth read. A member on the current login, or on an
+/// account outside the chain, stays.
 ///
 /// # Errors
-/// The usage of its account cannot be read, or its account is at its limit and every other listed account is too or
-/// cannot be read (the wake fails with this reason), or the config or the cache fails.
-pub fn decide(
-    runtime: &tokio::runtime::Handle,
-    (agent, account): (&str, Option<&str>),
-) -> Result<Decision> {
-    let config = config()?;
-    let AccountsConfig {
-        fallback,
-        switch_at,
-        ..
-    } = &config.agents.accounts;
-    let (Some(order), Some(account)) = (fallback.get(agent), account) else {
+/// clauth is not installed or fails, clauth does not show the account, or the account is at its limit and no other
+/// chain member is under its threshold (the wake fails with this reason).
+pub fn decide(agent: &str, account: Option<&str>) -> Result<Decision> {
+    let Some(account) = account else {
         return Ok(Decision::Stay);
     };
-    let now = usage_of(runtime, &config, &accounts::held(account, agent)?, false)?;
-    if let Some(error) = now.error {
-        bail!("the usage of account {account} cannot be read: {error}");
-    }
-    let Some(full) = now.at_limit(*switch_at) else {
+    let Some(status) = accounts::status()? else {
+        bail!("clauth is not installed, so account {account} cannot run: Set up installs it");
+    };
+    let chain: Vec<&ProfileStatus> = {
+        let mut c: Vec<&ProfileStatus> = status
+            .profiles
+            .iter()
+            .filter(|p| p.harness == agent && p.fallback.is_some())
+            .collect();
+        c.sort_by_key(|p| p.fallback.as_ref().map(|f| f.position));
+        c
+    };
+    let Some(me) = status
+        .profiles
+        .iter()
+        .find(|p| p.name == account && p.harness == agent)
+    else {
+        bail!(
+            "clauth does not show account {account} of {}",
+            accounts::named(agent)
+        );
+    };
+    let Some(full) = me.at_limit() else {
         return Ok(Decision::Stay);
     };
+    let threshold = me.fallback.as_ref().map_or(0.0, |f| f.threshold);
+    let at = chain.iter().position(|p| p.name == account).unwrap_or(0);
     let mut why = Vec::new();
-    for next in order.iter().filter(|n| *n != account) {
-        let u = match accounts::held(next, agent) {
-            Ok(held) => usage_of(runtime, &config, &held, false)?,
-            Err(e) => {
-                why.push(format!("{next}: {e:#}"));
-                continue;
-            }
-        };
-        match (u.error.clone(), u.at_limit(*switch_at)) {
-            (Some(error), _) => why.push(format!("{next}: {error}")),
-            (None, Some(limit)) => why.push(format!("{next}: {limit}")),
-            (None, None) => {
+    for next in chain
+        .iter()
+        .cycle()
+        .skip(at + 1)
+        .take(chain.len().saturating_sub(1))
+    {
+        match (
+            next.at_limit(),
+            next.windows.is_empty() || next.auth_status == "broken",
+        ) {
+            (Some(limit), _) => why.push(format!("{}: {limit}", next.name)),
+            (None, true) => why.push(format!("{}: clauth has no use of it", next.name)),
+            (None, false) => {
                 return Ok(Decision::Move {
-                    to: next.clone(),
-                    why: format!("account {account} has {full} (switch at {switch_at:.0}%)"),
+                    to: next.name.clone(),
+                    why: format!(
+                        "account {account} has {full} (clauth's fallback chain moves on at {threshold:.0}%)"
+                    ),
                 });
             }
         }
     }
     bail!(
-        "account {account} has {full} (switch at {switch_at:.0}%) and no account of agents.accounts.fallback.{agent} \
-         is under it: {}",
+        "account {account} has {full} (clauth's fallback chain moves on at {threshold:.0}%) and no other account of \
+         the chain is under its limit: {}",
         if why.is_empty() {
-            "the list has no other account".to_string()
+            "the chain has no other account".to_string()
         } else {
             why.join("; ")
         }
@@ -303,22 +305,6 @@ pub fn capture(name: &str) -> Result<legionctl_api::Lines> {
     }
     anyhow::ensure!(kept > 0, "no login is kept: {}", lines.join("; "));
     Ok(legionctl_api::Lines { lines })
-}
-
-/// Run clauth with `args`, with no terminal; its error has clauth's words.
-fn clauth(args: &[&str]) -> Result<()> {
-    let out = std::process::Command::new("clauth")
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| anyhow::anyhow!("clauth keeps the logins, and it does not run: {e}"))?;
-    anyhow::ensure!(
-        out.status.success(),
-        "clauth {}: {}",
-        args.join(" "),
-        String::from_utf8_lossy(&out.stderr).trim()
-    );
-    Ok(())
 }
 
 /// `agents accounts login`: clauth's own login of account `name` (`AgentsAccountsLogin`); it ends when the user has

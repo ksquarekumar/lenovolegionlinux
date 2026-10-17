@@ -3,13 +3,15 @@
 //! counts, delivery of the outbox through the prompt, pre-tool and stop hooks, `SendMessage` in the thread log, pace,
 //! an operator restart, and presence.
 
+#[path = "common/clauth.rs"]
+mod clauth;
 mod common;
 #[path = "common/hooks.rs"]
 mod hooks;
 #[path = "common/keyring.rs"]
 mod keyring;
-#[path = "common/usage.rs"]
-mod usage;
+#[path = "common/plain.rs"]
+mod plain;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -1301,6 +1303,8 @@ fn a_similar_intent_opens_the_stored_view_through_rlcd_and_a_failed_rlcd_runs_no
     );
     std::fs::create_dir_all(lab.home.join(".claude")).unwrap();
     std::os::unix::fs::symlink(&alt, lab.home.join(".claude/.credentials.json")).unwrap();
+    clauth::install(&lab.home);
+    write(&lab.home.join("clauth-which"), "alt\n");
     let ask = |pick: &str, intent: &str| {
         rlcd_backends(&lab.home, port, pick);
         lab.ask(&[intent])
@@ -3127,8 +3131,8 @@ fn a_failed_step_wakes_no_acp_and_clears_no_gate(r: &RlcdPool) {
 /// working folder.
 struct AcctLab {
     pool: Pool,
-    answers: PathBuf,
-    _server: common::process::Kill,
+    /// Account -> its 5h use in clauth's status feed.
+    used: std::cell::RefCell<std::collections::BTreeMap<String, f64>>,
     _home: Scratch,
 }
 
@@ -3138,8 +3142,6 @@ impl AcctLab {
             "/var/tmp/legionctl-thread-{tag}x-{}",
             std::process::id()
         ));
-        let answers = home.join("usage");
-        let (server, port) = usage::usage_server(&answers);
         let bin = Path::new(env!("CARGO_BIN_EXE_legionctl"))
             .parent()
             .unwrap()
@@ -3155,11 +3157,11 @@ impl AcctLab {
         );
         let a = AcctLab {
             pool,
-            answers,
-            _server: server,
+            used: std::cell::RefCell::default(),
             _home: home,
         };
         let Pool { lab, main, ws } = &a.pool;
+        clauth::install(&lab.home);
         write(
             &lab.home.join(".clauth/profiles.toml"),
             "profiles = [\"work\", \"spare\", \"third\"]\n",
@@ -3179,16 +3181,13 @@ impl AcctLab {
                     r#"{{"claudeAiOauth": {{"accessToken": "{token}", "expiresAt": 4102444800000}}}}"#
                 ),
             );
-            a.used(token, 10.0);
+            a.used(name, 10.0);
         }
         write(
             &lab.home.join(".config/legionctl/accounts.jsonc"),
             &json!({"agents": {
                 "configs": {"observer-acct": {"archetype": "thread-observer", "harness": "claude", "account": "work",
-                                              "pace": "on-trigger", "capabilities": ["web-read"]}},
-                "accounts": {"usage_ttl_s": 0, "switch_at": 90, "fallback": {"claude": ["work", "spare"]},
-                             "endpoints": {"claude": format!("http://127.0.0.1:{port}/claude"),
-                                           "codex": "http://127.0.0.1:1/none"}}}})
+                                              "pace": "on-trigger", "capabilities": ["web-read"]}}}})
             .to_string(),
         );
         write(
@@ -3209,12 +3208,25 @@ impl AcctLab {
         a
     }
 
-    /// The account of `token` has its 5h window at `five` percent.
-    fn used(&self, token: &str, five: f64) {
-        write(
-            &self.answers.join(format!("{token}.json")),
-            &json!({"body": {"limits": [{"kind": "session", "percent": five}, {"kind": "weekly_all", "percent": 1.0}]}}).to_string(),
-        );
+    /// Account `name` has its 5h window at `five` percent in clauth's status feed, where work, spare and third are
+    /// clauth's fallback chain in that order, moving on at 90%.
+    fn used(&self, name: &str, five: f64) {
+        self.used.borrow_mut().insert(name.into(), five);
+        let feed: Vec<Value> = ["work", "spare", "third"]
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                let five = *self.used.borrow().get(*n)?;
+                Some(clauth::profile(
+                    n,
+                    "claude",
+                    false,
+                    &[("5h", five), ("7d", 1.0)],
+                    Some((i + 1, 90.0)),
+                ))
+            })
+            .collect();
+        clauth::status(&self.pool.lab.home, &feed);
     }
 
     /// The access token of account `name`'s login.
@@ -3244,17 +3256,17 @@ impl AcctLab {
     }
 }
 
-/// An operator member runs under its account and, at its limit, continues under the next account of the user's
-/// fallback list (S2 of planning/features/accounts.jsonc): observer0 wakes on work's login; with work's 5h at 95%
-/// its next wake resumes on spare's login (the first account of agents.accounts.fallback.claude under it) with a
+/// An operator member runs under its account and, at its limit, continues along clauth's fallback chain (todo-188;
+/// S2 of planning/features/accounts.jsonc): observer0 wakes on work's login; with work's 5h at 95% (clauth's chain
+/// moves on at 90%) its next wake resumes on spare's login (the next chain member under its limit) with a
 /// thread.account row, a note to main0 and an agents.accounts.switch event. The user's pick (`thread account`)
-/// takes effect at the next wake. When every listed account is at its limit, the wake fails with the reason and the
-/// member stops (V1).
+/// takes effect at the next wake. When every other chain member is at its limit, the wake fails with the reason and
+/// the member stops (V1).
 #[test]
 fn a_member_runs_under_its_account_and_resumes_under_the_next_at_its_limit() {
     let a = AcctLab::new("acct");
     let Pool { lab, main, ws } = &a.pool;
-    a.used("tok-w", 50.0);
+    a.used("work", 50.0);
     assert_eq!(
         Lab::member(&lab.show(main, 1), "observer0")["account"],
         "work"
@@ -3273,7 +3285,7 @@ fn a_member_runs_under_its_account_and_resumes_under_the_next_at_its_limit() {
         .collect();
     assert_eq!(sets, ["claude-code", "web-read"], "{grant:#}");
 
-    a.used("tok-w", 95.0);
+    a.used("work", 95.0);
     a.wake(2);
     assert_eq!(a.dirs().last(), Some(&AcctLab::profile("spare")));
     let view = lab.show(main, 1);
@@ -3286,15 +3298,20 @@ fn a_member_runs_under_its_account_and_resumes_under_the_next_at_its_limit() {
         .unwrap();
     assert_eq!(
         switch["payload"],
-        json!({"account": "spare", "from": "work", "why": "account work has 5h at 95% (switch at 90%)"})
+        json!({"account": "spare", "from": "work", "why": "account work has 5h at 95% (clauth's fallback chain moves on at 90%)"})
     );
     assert!(
         view["messages"].as_array().unwrap().iter().any(|m| m["kind"] == "note"
             && m["to"] == "main0"
-            && m["body"] == "observer0 continues on account spare: account work has 5h at 95% (switch at 90%)"),
+            && m["body"] == "observer0 continues on account spare: account work has 5h at 95% (clauth's fallback chain moves on at 90%)"),
         "{:#}",
         view["messages"]
     );
+    for m in view["messages"].as_array().unwrap() {
+        if m["kind"] == "note" {
+            plain::assert_plain("the accounts", m["body"].as_str().unwrap());
+        }
+    }
     let events: Value =
         serde_json::from_str(&lab.ok(main, ws, &["events", "--limit", "1000", "--json"])).unwrap();
     assert!(
@@ -3327,19 +3344,19 @@ fn a_member_runs_under_its_account_and_resumes_under_the_next_at_its_limit() {
     no_account_under_the_limit_stops_the_member(&a);
 }
 
-/// V1: no listed account is under the limit: the wake fails with the reason, main0 gets it, and no wake runs.
+/// V1: no other chain member is under its limit: the wake fails with the reason, main0 gets it, and no wake runs.
 fn no_account_under_the_limit_stops_the_member(a: &AcctLab) {
     let Pool { lab, main, ws } = &a.pool;
-    for token in ["tok-w", "tok-s", "tok-t"] {
-        a.used(token, 92.0);
+    for name in ["work", "spare", "third"] {
+        a.used(name, 92.0);
     }
     lab.edit(main, ws, &ws.join("tests/lexer4.rs"));
     until("observer0 stopped", || {
         Lab::member(&lab.show(main, 1), "observer0")["state"] == "failed"
     });
     let view = lab.show(main, 1);
-    let why = "account third has 5h at 92% (switch at 90%) and no account of agents.accounts.fallback.claude is \
-               under it: work: 5h at 92%; spare: 5h at 92%";
+    let why = "account third has 5h at 92% (clauth's fallback chain moves on at 90%) and no other account of the \
+               chain is under its limit: work: 5h at 92%; spare: 5h at 92%";
     assert!(
         view["messages"]
             .as_array()
@@ -3352,23 +3369,20 @@ fn no_account_under_the_limit_stops_the_member(a: &AcctLab) {
     assert_eq!(a.dirs().len(), 3, "no wake ran on an account at its limit");
 }
 
-/// A wake whose member's account usage cannot be read fails with the reason (S2 V3, user decision 2026-10-17): with
-/// work's answer in another shape, observer0's wake does not run on work, it fails, and main0 gets the cause.
+/// A wake whose member's account clauth does not show fails with the reason (S2 V3, user decision 2026-10-17): with
+/// work out of clauth's status feed, observer0's wake does not run on work, it fails, and main0 gets the cause.
 #[test]
-fn a_wake_fails_when_its_account_usage_cannot_be_read() {
+fn a_wake_fails_when_clauth_does_not_show_its_account() {
     let a = AcctLab::new("acctread");
     let Pool { lab, main, ws } = &a.pool;
-    write(
-        &a.answers.join("tok-w.json"),
-        &json!({"body": {"five_hour": {"utilization": 10.0}, "seven_day": {"utilization": 1.0}}})
-            .to_string(),
-    );
+    a.used.borrow_mut().remove("work");
+    a.used("spare", 10.0);
     lab.edit(main, ws, &ws.join("tests/lexer1.rs"));
     until("observer0 failed", || {
         Lab::member(&lab.show(main, 1), "observer0")["state"] == "failed"
     });
     let view = lab.show(main, 1);
-    let why = "the usage of account work cannot be read: the answer has no list limits";
+    let why = "clauth does not show account work of Claude Code";
     assert!(
         view["messages"]
             .as_array()
