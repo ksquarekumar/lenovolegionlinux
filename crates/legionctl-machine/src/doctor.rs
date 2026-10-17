@@ -122,13 +122,7 @@ pub fn doctor(machine: &Machine) -> Vec<Warning> {
         }),
     );
     for volume in crate::windows::dirty_ntfs() {
-        w.push(
-            format!(
-                "the NTFS volume {volume} is marked dirty: start Windows once, and Windows checks it (chkdsk) at the \
-                 start"
-            )
-            .into(),
-        );
+        w.push(crate::windows::dirty_hazard(&volume).into());
     }
     check(&mut w, "GPU", gpu_warnings(machine));
     check(&mut w, "desktop", desktop_warnings());

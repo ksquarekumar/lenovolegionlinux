@@ -664,6 +664,42 @@ fn a_broken_checks_file_and_a_check_that_changes_the_files_refuse_the_checkpoint
     assert_eq!(commits(), "1");
 }
 
+/// EV-review-11 U-15: doctor names a repository's missing check kinds once, not again for each topic worktree (19-22
+/// equal lines on this machine), and a folder workspace on the home, whose agentWorkspaces is the dossier root
+/// itself, is no "legionctl does not replace it" finding.
+#[test]
+fn doctor_names_a_repositorys_missing_checks_once_and_the_home_is_no_link_finding() {
+    let lab = Lab::new("once");
+    let repo = lab.repo("repo", &[(".gitignore", "/agentWorkspaces\n")]);
+    lab.workspace(&repo, "once");
+    for topic in ["t1", "t2"] {
+        lab.ok(&repo, &["workspace", "open", "--topic", topic]);
+    }
+    write(
+        &lab.home.join("root/proc/sys/kernel/random/boot_id"),
+        "00000000-0000-0000-0000-000000000001\n",
+    );
+    let profile = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../profiles/lenovo-82wq-legion-pro-7-16irx8h.json");
+    let doctor = || {
+        text(
+            &lab.op
+                .cli(&["doctor", "--profile", profile.to_str().unwrap()]),
+        )
+        .0
+    };
+    assert_eq!(
+        doctor().matches("no checks of kind").count(),
+        1,
+        "{}",
+        doctor()
+    );
+    lab.ok(&lab.home, &["dossier", "use", "home"]);
+    lab.ok(&lab.home, &["workspace", "open"]);
+    let found = doctor();
+    assert!(!found.contains("legionctl does not replace it"), "{found}");
+}
+
 /// A repository without a required kind (`checks.required`) is a finding in `doctor` and `dossier check`, and the
 /// agent is told at session start; a check whose command is not found (exit 127) is a "check broken" finding, and the
 /// gate names the command and the fix. The checks are the branch's own: once the workspace's file has the kinds, the

@@ -1175,13 +1175,20 @@ fn agent_findings() -> Result<Vec<String>> {
             lock.dossier, lock.session
         ));
     }
+    // the checks of a repository once, from a dossier's own workspace: not again for each topic worktree and dossier
+    // (EV-review-11 U-15: 19-22 equal lines)
+    let mut checked = std::collections::HashSet::new();
     for ws in store.workspaces(None)? {
         // the link of the home (design 23, E1a), where the main checkout and the workspace have one
         for dir in [&ws.repo, &ws.path] {
             w.extend(legionctl_core::home::finding(&store, dir));
         }
         // a missing worktree is the workspace's drift below
-        if !ws.is_folder() && ws.path.is_dir() {
+        if !ws.is_folder()
+            && ws.topic.is_empty()
+            && ws.path.is_dir()
+            && checked.insert(ws.repo.clone())
+        {
             w.extend(store.check_findings(&ws.path));
         }
         let status = store.workspace_status(&ws)?;

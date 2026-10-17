@@ -29,12 +29,8 @@ pub(crate) fn backup_root() -> PathBuf {
 /// The import, the link or the ignore line fails; nothing of the source folder is lost.
 pub(crate) fn link(dossiers: &Dossiers, dir: &Path) -> Result<Vec<String>> {
     let at = dir.join(LINK);
-    // the folder that holds the root (the home), and the root itself, get no link: there it is the root
     let root = dossiers.root.canonicalize()?;
-    let is_link = std::fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink());
-    if (!is_link && at.canonicalize().is_ok_and(|a| a == root))
-        || dir.canonicalize().is_ok_and(|d| d.starts_with(&root))
-    {
+    if holds_root(&root, dir) {
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
@@ -77,9 +73,26 @@ pub(crate) fn link(dossiers: &Dossiers, dir: &Path) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// Why `<dir>/agentWorkspaces` is not the link, for `doctor`; none when it is the link or is not there yet.
+/// The folder that holds the root (the home, where `agentWorkspaces` is the root itself), and the root and the folders
+/// in it, get no link: there it is the root.
+fn holds_root(root: &Path, dir: &Path) -> bool {
+    let at = dir.join(LINK);
+    let is_link = std::fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink());
+    (!is_link && at.canonicalize().is_ok_and(|a| a == root))
+        || dir.canonicalize().is_ok_and(|d| d.starts_with(root))
+}
+
+/// Why `<dir>/agentWorkspaces` is not the link, for `doctor`; none when it is the link, is not there yet, or `dir`
+/// holds the root (EV-review-11 U-15: a workspace on $HOME gave a false finding).
 #[must_use]
 pub fn finding(dossiers: &Dossiers, dir: &Path) -> Option<String> {
+    if dossiers
+        .root
+        .canonicalize()
+        .is_ok_and(|root| holds_root(&root, dir))
+    {
+        return None;
+    }
     let at = dir.join(LINK);
     match std::fs::symlink_metadata(&at) {
         Ok(_) => {}

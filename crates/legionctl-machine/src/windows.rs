@@ -59,6 +59,15 @@ pub fn parse_efibootmgr(text: &str) -> (Option<(String, String)>, Option<String>
     (entry, next)
 }
 
+/// What a dirty NTFS volume means and what to do, in one text for doctor and `windows status`.
+#[must_use]
+pub fn dirty_hazard(volume: &str) -> String {
+    format!(
+        "NTFS volume {volume} is marked dirty: Windows did not shut down fully. Start Windows and shut it down with \
+         Fast Startup off"
+    )
+}
+
 /// NTFS volumes the kernel reported as dirty since boot.
 #[must_use]
 pub fn dirty_ntfs() -> Vec<String> {
@@ -143,10 +152,7 @@ pub fn state(root: &SysRoot) -> Result<WindowsState> {
     );
     let (entry, boot_next) = parse_efibootmgr(&String::from_utf8_lossy(&out.stdout));
     let dirty_ntfs = dirty_ntfs();
-    let mut hazards: Vec<String> = dirty_ntfs
-        .iter()
-        .map(|v| format!("{v} is dirty: turn off Fast Startup in Windows (powercfg /h off), then shut Windows down fully"))
-        .collect();
+    let mut hazards: Vec<String> = dirty_ntfs.iter().map(|v| dirty_hazard(v)).collect();
     if entry.is_none() {
         hazards.push("no firmware boot entry starts Windows Boot Manager".into());
     }
@@ -163,7 +169,7 @@ pub fn state(root: &SysRoot) -> Result<WindowsState> {
         match Hive::open(path).and_then(|h| registry(&h)) {
             Ok((rtc, fast)) => {
                 if !rtc {
-                    hazards.push("Windows keeps the hardware clock in local time, so the clock jumps at each boot: in Windows, run reg add HKLM\\SYSTEM\\CurrentControlSet\\Control\\TimeZoneInformation /v RealTimeIsUniversal /t REG_DWORD /d 1 /f".into());
+                    hazards.push("Windows keeps the hardware clock in local time, so the clock jumps at each boot: in Windows, set the registry value RealTimeIsUniversal (TimeZoneInformation) to 1".into());
                 }
                 if fast {
                     hazards.push("Fast Startup is on, so Windows leaves its volumes dirty: in Windows, run powercfg /h off".into());

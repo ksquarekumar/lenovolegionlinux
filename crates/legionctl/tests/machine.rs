@@ -458,7 +458,7 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
             "- required module legionctl_wmi is missing for kernel 7.2.9-2-cachyos-bore-lto",
             "- /etc/modules-load.d/acpi.conf autoloads acpi_call, which does not exist for 7.2.9-2-cachyos-bore-lto (fails every boot)",
             "- DKMS module legionctl-wmi/0.1.0 is not built for kernel 7.2.9-2-cachyos-bore-lto",
-            "- the NTFS volume nvme0n1p3 is marked dirty: start Windows once, and Windows checks it (chkdsk) at the start",
+            "- NTFS volume nvme0n1p3 is marked dirty: Windows did not shut down fully. Start Windows and shut it down with Fast Startup off",
             "- an external display runs on NVIDIA but the desktop may be drawn on Intel (fix: legionctl gpu primary nvidia)",
             "- the system unit mnt-windows-data.mount failed",
             "- the user unit app-ghostty.service failed",
@@ -1116,8 +1116,8 @@ fn safe_mode_hands_the_machine_to_the_firmware_and_doctor_says_why() {
     assert_eq!(
         doctor.lines().nth(1),
         Some(
-            "- safe mode: legionctl-system failed repeatedly and stopped; set: platform_profile balanced. See \
-             journalctl -u legionctl-system, then systemctl restart legionctl-system"
+            "- safe mode: legionctl-system failed repeatedly and stopped; set: platform_profile balanced. The next \
+             start of the computer starts it again"
         ),
         "{doctor}"
     );
@@ -1381,7 +1381,9 @@ fn windows_status_reads_the_registry_of_the_mounted_windows_volume() {
     );
     assert!(
         text.contains("- Windows keeps the hardware clock in local time")
-            && text.contains("RealTimeIsUniversal /t REG_DWORD /d 1"),
+            && text
+                .contains("set the registry value RealTimeIsUniversal (TimeZoneInformation) to 1")
+            && !text.contains("reg add"),
         "{text}"
     );
     assert!(
@@ -3251,9 +3253,8 @@ mod operator_and_daemon {
             *notices.lock().unwrap(),
             [(
                 "legionctl: safe mode".to_string(),
-                "set: platform_profile balanced\nSee journalctl -u legionctl-system, then systemctl restart \
-                 legionctl-system"
-                    .to_string()
+                // the daemon's reason once, with no shell commands (EV-review-11 U-15)
+                "set: platform_profile balanced".to_string()
             )]
         );
         drop(desktop);

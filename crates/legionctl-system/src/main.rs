@@ -89,8 +89,8 @@ fn safe(root: &SysRoot) -> Result<()> {
     std::fs::write(
         &marker,
         format!(
-            "legionctl-system failed repeatedly and stopped; set: {}. See journalctl -u legionctl-system, then \
-             systemctl restart legionctl-system\n",
+            "legionctl-system failed repeatedly and stopped; set: {}. The next start of the computer starts it \
+             again\n",
             match &set {
                 Ok(done) => (*done).to_string(),
                 Err(e) => format!("nothing: {e:#}"),

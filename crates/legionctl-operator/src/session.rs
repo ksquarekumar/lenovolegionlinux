@@ -65,10 +65,8 @@ async fn safe_mode_notice(session: &zbus::Connection, told: &mut Option<String>)
         *told = reason;
         return;
     }
-    let body = format!(
-        "{}\nSee journalctl -u legionctl-system, then systemctl restart legionctl-system",
-        reason.as_deref().unwrap_or_default().trim()
-    );
+    // the reason says it all once (it was said twice, with shell commands: EV-review-11 U-15)
+    let body = reason.as_deref().unwrap_or_default().trim().to_string();
     match crate::desktop::tell(session, "dialog-warning", "legionctl: safe mode", &body).await {
         Ok(()) => *told = reason,
         Err(e) => eprintln!("operator: safe mode notice not shown: {e:#}"),
