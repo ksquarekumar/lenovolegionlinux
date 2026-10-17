@@ -93,7 +93,40 @@ fn check(view: &View, repo: Option<&Path>) -> Result<()> {
         op.name,
         format!("{:?}", op.class).to_lowercase()
     );
+    // a path that the answer can never have shows only the missing note, and that note then names a wrong cause
+    let output = (op.output)();
+    for path in std::iter::once(&source.path).chain(&view.trend) {
+        ensure!(
+            in_schema(&output, path),
+            "{}'s answer has nothing at {path}",
+            op.name
+        );
+    }
     Ok(())
+}
+
+/// Whether the output schema `schema` can have something at `path` (`$.a.0.[f=v].b`): a field of an object with
+/// fixed properties must be one of them; a map, an untyped value or a union is open.
+fn in_schema(schema: &Value, path: &str) -> bool {
+    let mut at = schema;
+    for step in path
+        .trim_start_matches('$')
+        .split('.')
+        .filter(|s| !s.is_empty())
+    {
+        if !at["items"].is_null() && (step.starts_with('[') || step.parse::<usize>().is_ok()) {
+            at = &at["items"];
+            continue;
+        }
+        match at["properties"].as_object() {
+            Some(fields) => match fields.get(step) {
+                Some(next) => at = next,
+                None => return at["additionalProperties"].is_object(),
+            },
+            None => return true,
+        }
+    }
+    true
 }
 
 fn parsed(text: &str, repo: Option<&Path>) -> Result<View> {
@@ -439,6 +472,9 @@ impl Pass<'_> {
             out.params = given;
             return out;
         }
+        if let Some(asks) = self.code_repository(view, &values, &given) {
+            return asks;
+        }
         let answer = match &view.source {
             Some(source) => view
                 .input(&given)
@@ -448,27 +484,84 @@ impl Pass<'_> {
         let mut out = Rendered::of(view, &values, answer);
         out.params.clone_from(&given);
         if let (Some(h), None) = (&view.highlight, &out.error) {
-            let input = legionctl_core::views::fill_values(&h.source.input, &values);
-            match self
-                .answer(&h.source, input)
-                .and_then(|a| legionctl_core::views::pick(&a, &h.source.path))
-            {
-                Ok(items) => {
-                    let marks: Vec<String> = items
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .flat_map(|i| {
-                            h.fields
-                                .iter()
-                                .filter_map(|f| i[f].as_str().map(String::from))
-                        })
-                        .collect();
-                    out.mark(&marks, legionctl_core::views::fill_text(&h.label, &values));
-                }
-                Err(e) => out.legend = format!("no marks: {e:#}"),
-            }
+            self.highlight(h, &values, &mut out);
         }
+        out
+    }
+}
+
+impl Pass<'_> {
+    /// The marks of a view's highlight (what changed since a ref), or why there are none.
+    fn highlight(
+        &mut self,
+        h: &legionctl_core::views::Highlight,
+        values: &BTreeMap<String, Value>,
+        out: &mut Rendered,
+    ) {
+        let input = legionctl_core::views::fill_values(&h.source.input, values);
+        match self
+            .answer(&h.source, input)
+            .and_then(|a| legionctl_core::views::pick(&a, &h.source.path))
+        {
+            Ok(items) => {
+                let marks: Vec<String> = items
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|i| {
+                        h.fields
+                            .iter()
+                            .filter_map(|f| i[f].as_str().map(String::from))
+                    })
+                    .collect();
+                out.mark(&marks, legionctl_core::views::fill_text(&h.label, values));
+            }
+            Err(e) => out.legend = format!("no marks: {e:#}"),
+        }
+    }
+
+    /// A view that reads the code (the code operations read a git repository) of a folder in none: a question for
+    /// the user, not git's error; none when it can read.
+    fn code_repository(
+        &self,
+        view: &View,
+        values: &BTreeMap<String, Value>,
+        given: &BTreeMap<String, String>,
+    ) -> Option<Rendered> {
+        if !view
+            .source
+            .as_ref()
+            .is_some_and(|s| s.op.starts_with("code."))
+        {
+            return None;
+        }
+        match legionctl_core::workspace::repo_of(self.repo) {
+            Ok(Some(_)) => None,
+            Ok(None) => Some(Self::needs_repository(
+                view,
+                values,
+                given.clone(),
+                self.repo,
+            )),
+            Err(e) => Some(Rendered::failed(view, format!("{e:#}"))),
+        }
+    }
+
+    /// A view of the code whose folder is in no git repository: it asks for one.
+    fn needs_repository(
+        view: &View,
+        values: &BTreeMap<String, Value>,
+        given: BTreeMap<String, String>,
+        folder: &std::path::Path,
+    ) -> Rendered {
+        let mut out = Rendered::of(view, values, Ok(Value::Null));
+        out.error = None;
+        out.needs_repository = true;
+        out.note = format!(
+            "This view shows the code of a git repository. {} is not in one.",
+            folder.display()
+        );
+        out.params = given;
         out
     }
 }
@@ -636,6 +729,79 @@ fn rlcd_pick(engine: &dyn Engine, ctx: &Ctx, intent: &str, repo: &Path, min: f64
                 "rlcd picked {choice} at {p:.2} (counts from {min})"
             )),
         }
+    })
+}
+
+/// The version of view `name` that `intent` asks to go back to (rlcd over the other versions, each by its widget,
+/// title and intent), as `views.version`'s `to`; none when the intent asks for a change that no version shows.
+fn rlcd_version(
+    engine: &dyn Engine,
+    ctx: &Ctx,
+    intent: &str,
+    name: &str,
+    repo: &Path,
+    min: f64,
+) -> Result<Pick> {
+    let clean = |t: &str| t.replace([',', ':', '='], " ");
+    let now = version(name, repo)?;
+    let all: Vec<u32> = legionctl_core::views::seed(name)
+        .map(|_| 0)
+        .into_iter()
+        .chain(legionctl_core::views::versions(name, Some(repo)))
+        .collect();
+    let shown = now.unwrap_or_else(|| all.last().copied().unwrap_or(0));
+    let options: Vec<String> = all
+        .iter()
+        .filter(|v| **v != shown)
+        .filter_map(|v| {
+            let view = legionctl_core::views::find(name, Some(*v), Some(repo)).ok()?;
+            Some(format!(
+                "v{v}={:?} - {} - {}",
+                view.widget,
+                clean(&view.title()),
+                clean(view.intent.as_deref().unwrap_or_default())
+            ))
+        })
+        .collect();
+    if options.is_empty() {
+        return Ok(Pick {
+            view: None,
+            tokens: 0,
+            note: Some("the view has no other version: rlcd was not asked".into()),
+        });
+    }
+    let question = format!(
+        "version:choice:{},none=a change that no earlier version shows:Does the user ask to go back to one of these \
+         earlier versions of the view? none when the user asks for something new.",
+        options.join(",")
+    );
+    let decision = engine.rlcd_ask(
+        ctx,
+        legionctl_api::RlcdAskIn {
+            state: legionctl_api::StdinText(format!("The user asks: {intent}")),
+            questions: vec![question],
+            backend: None,
+            key: None,
+            repo: legionctl_api::ClientPath(repo.to_path_buf()),
+        },
+    )?;
+    let tokens = u64::try_from(decision.input_tokens).unwrap_or(0);
+    let answer = &decision.answers.unwrap_or_default()["version"];
+    let choice = answer["choice"].as_str().unwrap_or("none");
+    let p = answer["probabilities"][choice].as_f64().unwrap_or(0.0);
+    Ok(match choice.strip_prefix('v') {
+        Some(v) if p >= min => Pick {
+            view: Some(v.to_string()),
+            tokens,
+            note: None,
+        },
+        _ => Pick {
+            view: None,
+            tokens,
+            note: Some(format!(
+                "rlcd picked {choice} at {p:.2} (counts from {min})"
+            )),
+        },
     })
 }
 
@@ -1204,7 +1370,8 @@ fn keep(
     let text = serde_json::to_string_pretty(&*view)?;
     let (_, saved) = legionctl_core::views::save(view, &text, layer)?;
     show_version(ctx, &name, saved, layer, &format!("ask: {intent}"))?;
-    if current.is_none() {
+    // the intent finds this view again from any tab, with no composer run (also a change's intent)
+    {
         dossiers()?.fact_add(&New {
             entity: format!("intent:{intent}"),
             attribute: "view".into(),
@@ -1233,6 +1400,15 @@ fn composer_run(
     prompt: &str,
     repo: &Path,
 ) -> Result<legionctl_api::RunOutput> {
+    // the composer works through its view tools: its run gets a scratch folder, never the user's folder (the app's
+    // folder is the home: a run there got a copy-on-write layer of the whole home)
+    let root =
+        legionctl_core::config::resolve(&legionctl_core::config::Dirs::from_env(), Some(repo))?
+            .config
+            .workspace
+            .root;
+    let folder = root.join("composer");
+    std::fs::create_dir_all(&folder).with_context(|| format!("making {}", folder.display()))?;
     engine.session_run(
         ctx,
         legionctl_api::SessionRunIn {
@@ -1240,7 +1416,7 @@ fn composer_run(
             prompt: prompt.to_string(),
             dossier: input.dossier.clone(),
             steal: false,
-            repo: legionctl_api::ClientPath(repo.to_path_buf()),
+            repo: legionctl_api::ClientPath(folder),
             account: input.account.clone(),
             inside: legionctl_api::Inside::Host,
             gpu: false,
@@ -1372,18 +1548,19 @@ fn route(
             steps: Vec::new(),
         })
     };
+    // a stored view whose intent this is word for word answers it, also from another view's tab
+    let started = std::time::Instant::now();
+    let stored = stored(intent, repo);
+    let outcome = match &stored {
+        Ok(Some(_)) => "answered",
+        Ok(None) => "none",
+        Err(_) => "failed",
+    };
+    steps.push(step("stored", outcome, started));
+    if let Some(name) = stored? {
+        return found("stored", name);
+    }
     if input.view.is_none() {
-        let started = std::time::Instant::now();
-        let stored = stored(intent, repo);
-        let outcome = match &stored {
-            Ok(Some(_)) => "answered",
-            Ok(None) => "none",
-            Err(_) => "failed",
-        };
-        steps.push(step("stored", outcome, started));
-        if let Some(name) = stored? {
-            return found("stored", name);
-        }
         if cfg.views.rlcd {
             let started = std::time::Instant::now();
             let pick = rlcd_pick(engine, ctx, intent, repo, cfg.views.rlcd_min);
@@ -1401,6 +1578,31 @@ fn route(
             if let Some(name) = pick?.view {
                 return found("rlcd", name);
             }
+        }
+    } else if let (Some(name), true) = (&input.view, cfg.views.rlcd) {
+        // "go back to the table": an earlier version of the tab's view answers it, with no composer run
+        let started = std::time::Instant::now();
+        let pick = rlcd_version(engine, ctx, intent, name, repo, cfg.views.rlcd_min);
+        let mut done = step("rlcd", "failed", started);
+        match &pick {
+            Ok(p) => {
+                done.outcome = if p.view.is_some() { "answered" } else { "none" }.into();
+                done.tokens_in = p.tokens;
+                done.note.clone_from(&p.note);
+            }
+            Err(e) => done.note = Some(format!("{e:#}")),
+        }
+        steps.push(done);
+        if let Some(to) = pick?.view {
+            version_op(
+                ctx,
+                &ViewVersionIn {
+                    name: name.clone(),
+                    to,
+                    repo: legionctl_api::ClientPath(repo.to_path_buf()),
+                },
+            )?;
+            return found("rlcd", name.clone());
         }
     }
     ensure!(

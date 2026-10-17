@@ -176,7 +176,38 @@ impl Render for Findings {
         if self.findings.is_empty() {
             "doctor: no obvious conflicts".into()
         } else {
-            let lines: String = self.findings.iter().flat_map(|f| ["\n- ", f]).collect();
+            let lines: String = self
+                .findings
+                .iter()
+                .map(|f| {
+                    // shortcut: a string is a positional word and a true bool a flag, as for the fixes of now; an
+                    // action with a named text option needs the CLI's own words from the operation's schema
+                    let fixes: Vec<String> =
+                        f.actions
+                            .iter()
+                            .map(|a| {
+                                let words = a.input.as_object().into_iter().flatten().filter_map(
+                                    |(k, v)| match v {
+                                        serde_json::Value::String(s) => Some(s.clone()),
+                                        serde_json::Value::Bool(true) => {
+                                            Some(format!("--{}", k.replace('_', "-")))
+                                        }
+                                        _ => None,
+                                    },
+                                );
+                                std::iter::once(format!("legionctl {}", a.op.replace('.', " ")))
+                                    .chain(words)
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            })
+                            .collect();
+                    if fixes.is_empty() {
+                        format!("\n- {}", f.text)
+                    } else {
+                        format!("\n- {} (fix: {})", f.text, fixes.join("; "))
+                    }
+                })
+                .collect();
             format!("doctor: warnings{lines}")
         }
     }

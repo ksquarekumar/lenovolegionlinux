@@ -337,12 +337,11 @@ fn doctor_reports_a_mixed_legion_wmi_bind_and_a_missing_platform_profile() {
         [
             "- the Legion WMI devices are bound to legionctl_wmi and to the upstream lenovo_wmi drivers: legionctl_wmi \
              (92549549-4BDE-4F06-AC04-CE8BF898DBAA-5, DC2A8805-3A8C-41BA-A6F7-092E0089CD3B-8); lenovo_wmi_gamezone \
-             (887B54E3-DDDC-4B2C-8B88-68A26A8835D0-4); neither side has all of them (see docs/design/08-kernel.md, \
-             First live load)",
+             (887B54E3-DDDC-4B2C-8B88-68A26A8835D0-4); neither side has all of them",
             "- legionctl_wmi is loaded but does not have the Legion WMI devices 887B54E3-DDDC-4B2C-8B88-68A26A8835D0, \
              7A8F5407-CB67-4D6E-B547-39B3BE018154, D320289E-8FEA-41E0-86F9-911D83151B5F, \
              CE6C0974-0407-4F50-88BA-4FC3B6559AD8: the fan, power mode and firmware attribute files of these devices \
-             are missing (see docs/design/08-kernel.md, What it binds)",
+             are missing",
             "- /sys/class/platform-profile/platform-profile-0/profile is missing while legionctl_wmi, \
              legionctl_wmi_gamezone, lenovo_wmi_gamezone is loaded: legionctl cannot set the power mode",
         ]
@@ -366,7 +365,7 @@ fn doctor_reports_a_mixed_legion_wmi_bind_and_a_missing_platform_profile() {
     let upstream = [
         "- required module legionctl_wmi is not loaded",
         "- /etc/modprobe.d/legionctl-wmi.conf is missing: legionctl_wmi does not load at start, and the fan controls \
-         fail without it (see docs/design/08-kernel.md, First live load, step 6)",
+         fail without it",
     ];
     assert_eq!(doctor(&m), upstream);
 
@@ -388,7 +387,7 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
         "systemctl",
         "if [ \"$1\" = is-active ] && [ \"$2\" = legiond.service ]; then echo active; \
          elif [ \"$1\" = is-active ]; then echo inactive; \
-         elif [ \"$1\" = --failed ]; then echo 'tlp.service loaded failed failed TLP'; \
+         elif [ \"$1\" = --failed ]; then printf '%s\\n' 'mnt-windows\\x2ddata.mount loaded failed failed W'; \
          elif [ \"$2\" = --failed ]; then echo 'app-ghostty.service loaded failed failed Ghostty'; \
          else echo disabled; fi",
     );
@@ -442,7 +441,9 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
         "{agent:?}"
     );
     assert!(
-        agent.contains(&"- setup: ctx for all is not installed; run legionctl setup apply"),
+        agent.contains(
+            &"- setup: ctx for all is not installed (fix: legionctl setup apply --install-ctx)"
+        ),
         "{agent:?}"
     );
     assert_eq!(
@@ -457,15 +458,15 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
             "- required module legionctl_wmi is missing for kernel 7.2.9-2-cachyos-bore-lto",
             "- /etc/modules-load.d/acpi.conf autoloads acpi_call, which does not exist for 7.2.9-2-cachyos-bore-lto (fails every boot)",
             "- DKMS module legionctl-wmi/0.1.0 is not built for kernel 7.2.9-2-cachyos-bore-lto",
-            "- NTFS volume nvme0n1p3 is marked dirty; run chkdsk in Windows (or ntfsfix -d, see docs/design/11-disks.md)",
-            "- an external display runs on NVIDIA but the desktop may be drawn on Intel; try `legionctl gpu primary nvidia`",
-            "- unit tlp.service failed; see systemctl status tlp.service",
-            "- user unit app-ghostty.service failed; see systemctl --user status app-ghostty.service",
-            "- the OSD extension legionctl-osd@legionctl is ERROR; Fn+Q, Fn+R and Fn lock show no OSD (see journalctl --user -b /usr/bin/gnome-shell)",
+            "- the NTFS volume nvme0n1p3 is marked dirty: start Windows once, and Windows checks it (chkdsk) at the start",
+            "- an external display runs on NVIDIA but the desktop may be drawn on Intel (fix: legionctl gpu primary nvidia)",
+            "- the system unit mnt-windows-data.mount failed",
+            "- the user unit app-ghostty.service failed",
+            "- the OSD extension legionctl-osd@legionctl has an error in GNOME Shell; Fn+Q, Fn+R and Fn lock show no OSD",
             "- legionctl-system does not answer (fans, throttle reasons and the eBPF sensor are unknown): connecting to the system bus: Failed to connect to address `unix:path=/nonexistent/bus`: No such file or directory (os error 2): \
              No such file or directory (os error 2)",
-            "- [switcheroo] switcheroo-control does not run: GNOME has no \"Launch using Discrete Graphics Card\" (sudo systemctl enable --now switcheroo-control)",
-            "- [opencl-iris] OpenCL reaches the Intel GPU only through Mesa's rusticl, which needs RUSTICL_ENABLE=iris from the next login (legionctl display fix opencl-iris, or install intel-compute-runtime)",
+            "- the system service switcheroo-control does not run: GNOME has no \"Launch using Discrete Graphics Card\"",
+            "- OpenCL reaches the Intel GPU only through Mesa's rusticl, which needs RUSTICL_ENABLE=iris from the next login (or the package intel-compute-runtime) (fix: legionctl display fix opencl-iris)",
         ]
     );
 }
@@ -1315,7 +1316,7 @@ fn doctor_names_each_gap_of_the_graphics_stack_with_its_fix() {
     let doctor = || String::from_utf8_lossy(&m.legion(&["doctor"]).stdout).to_string();
     let found = doctor();
     for expected in [
-        "[nvidia-modeset] nvidia-drm does not do modesetting",
+        "- nvidia-drm does not do modesetting",
         "the NVIDIA kernel module is 580.178.04 and its libraries are 570.86.16",
         "/usr/share/vulkan/icd.d/intel_icd.json is missing: install the Intel Vulkan driver (vulkan-intel)",
         "OpenCL reaches the Intel GPU only through Mesa's rusticl",
@@ -3643,7 +3644,7 @@ mod operator_and_daemon {
 
         let doctor = String::from_utf8_lossy(&op.cli(&["doctor"]).stdout).to_string();
         assert!(
-            doctor.contains("- the conflict check cannot run: systemctl is-active ")
+            doctor.contains("- the conflict check could not run (systemctl is-active ")
                 && doctor
                     .contains("gave no state: Failed to connect to bus: No such file or directory"),
             "{doctor}"
@@ -6833,7 +6834,10 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         );
         // findings make doctor exit 1
         let doctor = String::from_utf8_lossy(&op.cli(&["doctor"]).stdout).to_string();
-        assert!(doctor.contains("[refresh-DP-3]"), "{doctor}");
+        assert!(
+            doctor.contains("(fix: legionctl display fix refresh-DP-3)"),
+            "{doctor}"
+        );
 
         *state.lock().unwrap() = (1.25, 144.0);
         let fractional = op.ok(&["display", "status"]);
@@ -6863,7 +6867,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         let doctor = String::from_utf8_lossy(&op.cli(&["doctor"]).stdout).to_string();
         ids.iter()
             .copied()
-            .filter(|id| doctor.contains(&format!("[{id}]")))
+            .filter(|id| doctor.contains(&format!("(fix: legionctl display fix {id})")))
             .collect()
     }
 
@@ -6947,8 +6951,11 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         );
         assert_eq!(read(opencl).as_deref(), Some("RUSTICL_ENABLE=iris\n"));
         assert_eq!(state.lock().unwrap().1, 144.0);
-        let ids = [fixable.as_slice(), &["switcheroo"]].concat();
-        assert_eq!(found(&op, &ids), ["switcheroo"]);
+        assert_eq!(found(&op, &fixable), Vec::<&str>::new());
+        // the system change stays a finding, with no fix
+        let doctor = String::from_utf8_lossy(&op.cli(&["doctor"]).stdout).to_string();
+        let switcheroo = "switcheroo-control does not run: GNOME has no \"Launch using Discrete Graphics Card\"\n";
+        assert!(doctor.contains(switcheroo), "{doctor}");
 
         op.ok(&["undo", &event]);
         assert_eq!(

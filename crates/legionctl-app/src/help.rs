@@ -1,4 +1,5 @@
-//! The title bar's Help menu (todo-169): About (the seed view `about` as a tab), Feedback and Keys; and Ctrl+K, the
+//! The title bar's Help menu (todo-169): About (the seed view `about` as a tab), Feedback, Keys and what agents can
+//! change (todo-181); and Ctrl+K, the
 //! command palette: the chat bar with `/`, whose list has the views, the commands and the operations.
 
 use gpui_kit::assets::IconName;
@@ -19,6 +20,13 @@ Ctrl+1 to Ctrl+4: the spaces
 Enter: send; Shift+Enter or Ctrl+J: a new line; Ctrl+Left, Right: the chat bar's width
 Ctrl+C: copy the selected text";
 
+/// What the agents may change in the app, and what stays the app's own.
+const AGENTS: &str = "In a chat tab, a message goes to the agent of the chat.
+In a view tab, a message goes to the agent that makes views: it changes the view of the tab (a new version; \
+\"go back\" shows an earlier one), or it answers in words.
+The agents change only the contents of the tabs: the views and their versions.
+The agents cannot change the window, the spaces, the navigator, the menus, the chat bar, the approvals of a \
+change, or the login screen.";
 impl LegionApp {
     /// The Help menu of the title bar.
     pub(crate) fn help_menu(cx: &mut Context<Self>) -> AnyElement {
@@ -43,6 +51,10 @@ impl LegionApp {
                     .item(item("Feedback", LegionApp::ask_feedback))
                     .item(item("Keys", |app, _, cx| {
                         app.state.message = Some(KEYS.into());
+                        cx.notify();
+                    }))
+                    .item(item("What agents can change", |app, _, cx| {
+                        app.state.message = Some(AGENTS.into());
                         cx.notify();
                     }))
             })

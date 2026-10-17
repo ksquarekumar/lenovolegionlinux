@@ -848,7 +848,10 @@ impl Plan {
             dir: dir.display().to_string(),
             paths: 0,
             plan: dry_run(&machine.apply(None, Options::default())?.1).lines,
-            findings: legionctl_machine::doctor::doctor(&machine),
+            findings: legionctl_machine::doctor::doctor(&machine)
+                .into_iter()
+                .map(|w| w.text)
+                .collect(),
             knobs: knobs::catalog(&machine)?.into_wire(),
             events,
         })
@@ -1114,23 +1117,52 @@ fn jail(
     }
 }
 
-/// The agent side of `doctor`: setup gaps, a Claude Code plugin of another build, stale dossier bindings, workspaces
-/// that drifted from their record.
-fn agent_findings() -> Result<Vec<String>> {
-    let mut w: Vec<String> = setup::check(
+/// The agent setup gaps of `doctor`, each with the action that installs the setup.
+fn setup_findings() -> Result<Vec<legionctl_api::Finding>> {
+    let report = setup::check(
         &Sources::resolve(&Dirs::from_env(), None)?,
         &config(None)?.config.session,
-    )?
-    .needs_attention()
-    .iter()
-    .map(|i| {
-        format!(
-            "setup: {} for {} is {}; run legionctl setup apply",
-            i.what, i.agent, i.status
-        )
-    })
-    .collect();
-    w.extend(legionctl_core::plugin::findings(&home()));
+    )?;
+    report
+        .needs_attention()
+        .iter()
+        .map(|i| {
+            Ok(legionctl_api::Finding {
+                text: format!("setup: {} for {} is {}", i.what, i.agent, i.status),
+                // ctx comes from its own installer, only when the user asks for it
+                actions: vec![crate::resources::action(
+                    if i.what == "ctx" {
+                        "Install ctx"
+                    } else {
+                        "Install the agent setup"
+                    },
+                    "setup.apply",
+                    serde_json::json!({ "install_ctx": i.what == "ctx" }),
+                )?],
+            })
+        })
+        .collect()
+}
+
+/// A finding that legionctl cannot change: its text only.
+fn state(text: String) -> legionctl_api::Finding {
+    legionctl_api::Finding {
+        text,
+        actions: Vec::new(),
+    }
+}
+
+/// A check of `doctor` that could not run: why, and that the next `doctor` tries again.
+fn not_run(name: &str, e: &anyhow::Error) -> legionctl_api::Finding {
+    state(format!(
+        "the {name} check could not run ({e:#}); the next health check runs it again"
+    ))
+}
+
+/// The agent side of `doctor`: a Claude Code plugin of another build, stale dossier bindings, workspaces that drifted
+/// from their record.
+fn agent_findings() -> Result<Vec<String>> {
+    let mut w = legionctl_core::plugin::findings(&home());
     if legionctl_core::migrate::pending() {
         w.push(legionctl_core::migrate::state(&Db::open_default()?));
         return Ok(w);
@@ -1164,6 +1196,9 @@ fn agent_findings() -> Result<Vec<String>> {
             ));
         }
     }
+    // workspaces of one repository give its findings once
+    let mut seen = std::collections::BTreeSet::new();
+    w.retain(|f| seen.insert(f.clone()));
     Ok(w)
 }
 
@@ -1770,40 +1805,76 @@ impl Engine for Operator {
 
     fn doctor(&self, _: &Ctx, input: ProfileIn) -> Result<Findings> {
         // a machine that cannot be planned is a finding; the other checks still run
-        let mut findings = match Plan::load(path(input.profile.as_ref())?) {
-            Ok(plan) => legionctl_machine::doctor::doctor(&plan.machine()),
-            Err(e) => vec![format!("the machine checks cannot run: {e:#}")],
-        };
+        let mut findings: Vec<legionctl_api::Finding> =
+            match Plan::load(path(input.profile.as_ref())?) {
+                Ok(plan) => legionctl_machine::doctor::doctor(&plan.machine())
+                    .into_iter()
+                    .map(|w| {
+                        Ok(legionctl_api::Finding {
+                            text: w.text,
+                            actions: w
+                                .fix
+                                .map(|(label, op, input)| {
+                                    crate::resources::action(label, op, input)
+                                })
+                                .transpose()?
+                                .into_iter()
+                                .collect(),
+                        })
+                    })
+                    .collect::<Result<_>>()?,
+                Err(e) => vec![not_run("machine", &e)],
+            };
         match self.system(async |p| p.sample().await) {
             Ok(json) => {
                 for (sensor, e) in serde_json::from_str::<RootSample>(&json)?.sensor_errors {
-                    findings.push(format!("the eBPF {sensor} sensor does not run: {e}"));
+                    findings.push(state(format!("the eBPF {sensor} sensor does not run: {e}")));
                 }
             }
-            Err(e) => findings.push(format!(
+            Err(e) => findings.push(state(format!(
                 "legionctl-system does not answer (fans, throttle reasons and the eBPF sensor are unknown): {e:#}"
-            )),
+            ))),
         }
         if let Ok(theirs) = self.system(async |p| p.version().await)
             && theirs != legionctl_machine::interface_version()
         {
-            findings.push(
-                "legionctl-system is built from another D-Bus interface than this operator; restart both after an \
-                 upgrade (sudo systemctl restart legionctl-system; systemctl --user restart legionctl-operator)"
+            findings.push(state(
+                "the system service legionctl-system is of another build than this operator: restart the computer \
+                 after an upgrade"
                     .into(),
-            );
+            ));
         }
         match self.display_findings() {
-            Ok(found) => findings.extend(found.iter().map(ToString::to_string)),
-            Err(e) => findings.push(format!("the graphics check cannot run: {e:#}")),
+            Ok(found) => {
+                for f in found {
+                    let actions = if f.fixes.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![crate::resources::action(
+                            "Fix",
+                            "display.fix",
+                            serde_json::json!({ "finding": f.id }),
+                        )?]
+                    };
+                    findings.push(legionctl_api::Finding {
+                        text: f.text,
+                        actions,
+                    });
+                }
+            }
+            Err(e) => findings.push(not_run("graphics", &e)),
+        }
+        match setup_findings() {
+            Ok(found) => findings.extend(found),
+            Err(e) => findings.push(not_run("agent setup", &e)),
         }
         for (name, found) in [
-            ("agent setup", agent_findings()),
+            ("agents and workspaces", agent_findings()),
             ("operator fault", crate::faults::findings()),
         ] {
             match found {
-                Ok(found) => findings.extend(found),
-                Err(e) => findings.push(format!("the {name} check cannot run: {e:#}")),
+                Ok(found) => findings.extend(found.into_iter().map(state)),
+                Err(e) => findings.push(not_run(name, &e)),
             }
         }
         Ok(Findings { findings })

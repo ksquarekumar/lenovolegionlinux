@@ -138,7 +138,10 @@ pub(crate) fn main_checkout(dir: &Path) -> Result<PathBuf> {
 
 /// The main checkout of the repository that contains `dir`; `None` only when git says `dir` is in no repository
 /// (another git failure, such as dubious ownership or a broken `.git`, is an error).
-pub(crate) fn repo_of(dir: &Path) -> Result<Option<PathBuf>> {
+///
+/// # Errors
+/// git does not run, or fails for another cause than a folder in no repository.
+pub fn repo_of(dir: &Path) -> Result<Option<PathBuf>> {
     let out = crate::git::output(crate::git::command(dir).args([
         "rev-parse",
         "--path-format=absolute",

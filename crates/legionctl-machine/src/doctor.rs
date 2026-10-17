@@ -71,18 +71,33 @@ fn module_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// One finding: its text, and the operation (with its input) that fixes it, when legionctl has one.
+pub struct Warning {
+    pub text: String,
+    pub fix: Option<(&'static str, &'static str, serde_json::Value)>,
+}
+
+impl From<String> for Warning {
+    fn from(text: String) -> Self {
+        Self { text, fix: None }
+    }
+}
+
 /// The findings of one check, or the reason why it cannot run (a finding too: a check that cannot run is never
-/// a pass).
-fn check(w: &mut Vec<String>, name: &str, findings: Result<Vec<String>>) {
+/// a pass); the next `doctor` runs it again.
+fn check<T: Into<Warning>>(w: &mut Vec<Warning>, name: &str, findings: Result<Vec<T>>) {
     match findings {
-        Ok(found) => w.extend(found),
-        Err(e) => w.push(format!("the {name} check cannot run: {e:#}")),
+        Ok(found) => w.extend(found.into_iter().map(Into::into)),
+        Err(e) => w.push(
+            format!("the {name} check could not run ({e:#}); the next health check runs it again")
+                .into(),
+        ),
     }
 }
 
 /// Every finding, in a stable order; empty when nothing is wrong.
 #[must_use]
-pub fn doctor(machine: &Machine) -> Vec<String> {
+pub fn doctor(machine: &Machine) -> Vec<Warning> {
     let (root, profile) = (machine.root, machine.profile);
     let mut w = Vec::new();
     check(&mut w, "daemon state", state_warnings(root, profile));
@@ -107,9 +122,13 @@ pub fn doctor(machine: &Machine) -> Vec<String> {
         }),
     );
     for volume in crate::windows::dirty_ntfs() {
-        w.push(format!(
-            "NTFS volume {volume} is marked dirty; run chkdsk in Windows (or ntfsfix -d, see docs/design/11-disks.md)"
-        ));
+        w.push(
+            format!(
+                "the NTFS volume {volume} is marked dirty: start Windows once, and Windows checks it (chkdsk) at the \
+                 start"
+            )
+            .into(),
+        );
     }
     check(&mut w, "GPU", gpu_warnings(machine));
     check(&mut w, "desktop", desktop_warnings());
@@ -276,7 +295,7 @@ fn wmi_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
         let drivers: Vec<&str> = bound.iter().map(|b| b.1.as_str()).collect();
         w.push(format!(
             "the Legion WMI devices are bound to legionctl_wmi and to the upstream lenovo_wmi drivers: {}; neither \
-             side has all of them (see docs/design/08-kernel.md, First live load)",
+             side has all of them",
             drivers.join("; ")
         ));
     }
@@ -287,14 +306,13 @@ fn wmi_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
     let ours_loaded = loaded.iter().any(|d| d.starts_with(WMI_FAMILIES[0]));
     if !ours_loaded && !root.exists(OPT_IN)? {
         w.push(format!(
-            "{OPT_IN} is missing: legionctl_wmi does not load at start, and the fan controls fail without it (see \
-             docs/design/08-kernel.md, First live load, step 6)"
+            "{OPT_IN} is missing: legionctl_wmi does not load at start, and the fan controls fail without it"
         ));
     }
     if ours_loaded && !missing.is_empty() {
         w.push(format!(
             "legionctl_wmi is loaded but does not have the Legion WMI devices {}: the fan, power mode and firmware \
-             attribute files of these devices are missing (see docs/design/08-kernel.md, What it binds)",
+             attribute files of these devices are missing",
             missing.join(", ")
         ));
     }
@@ -308,30 +326,51 @@ fn wmi_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
     Ok(w)
 }
 
+/// A unit's name as people write it: systemd's `\xNN` escapes (`mnt-windows\x2ddata.mount`) as their characters.
+fn unit_name(unit: &str) -> String {
+    let mut out = Vec::new();
+    let mut rest = unit.as_bytes();
+    while let Some(at) = rest.windows(2).position(|w| w == b"\\x") {
+        out.extend_from_slice(&rest[..at]);
+        let byte = rest
+            .get(at + 2..at + 4)
+            .and_then(|hex| u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok());
+        if let Some(byte) = byte {
+            out.push(byte);
+            rest = &rest[at + 4..];
+        } else {
+            out.extend_from_slice(b"\\x");
+            rest = &rest[at + 2..];
+        }
+    }
+    out.extend_from_slice(rest);
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 const OSD_EXTENSION: &str = "legionctl-osd@legionctl";
 
 /// Failed system and user units, and the OSD extension when it is not running.
 fn desktop_warnings() -> Result<Vec<String>> {
     let mut w: Vec<String> = system::failed_units(false)?
         .into_iter()
-        .map(|u| format!("unit {u} failed; see systemctl status {u}"))
+        .map(|u| format!("the system unit {} failed", unit_name(&u)))
         .chain(
             system::failed_units(true)?
                 .into_iter()
-                .map(|u| format!("user unit {u} failed; see systemctl --user status {u}")),
+                .map(|u| format!("the user unit {} failed", unit_name(&u))),
         )
         .collect();
     // ENABLED is the name of ACTIVE before GNOME 45
     if let Some(state) = system::extension_state(OSD_EXTENSION)?
         && !["ACTIVE", "ENABLED"].contains(&state.as_str())
     {
-        let fix = if state == "ERROR" || state == "OUT OF DATE" {
-            "see journalctl --user -b /usr/bin/gnome-shell".to_string()
+        let what = if state == "ERROR" || state == "OUT OF DATE" {
+            "has an error in GNOME Shell"
         } else {
-            format!("gnome-extensions enable {OSD_EXTENSION}, then log in again")
+            "is off: turn it on in GNOME Extensions, then log in again"
         };
         w.push(format!(
-            "the OSD extension {OSD_EXTENSION} is {state}; Fn+Q, Fn+R and Fn lock show no OSD ({fix})"
+            "the OSD extension {OSD_EXTENSION} {what}; Fn+Q, Fn+R and Fn lock show no OSD"
         ));
     }
     Ok(w)
@@ -373,7 +412,7 @@ fn conflict_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
 }
 
 /// Desktop GPU wiring, and NVIDIA power where the layers start its services (on AC).
-fn gpu_warnings(machine: &Machine) -> Result<Vec<String>> {
+fn gpu_warnings(machine: &Machine) -> Result<Vec<Warning>> {
     let (root, profile) = (machine.root, machine.profile);
     let fn_q = machine.ledger.get(Key::Override)?;
     let services = machine
@@ -390,20 +429,27 @@ fn gpu_warnings(machine: &Machine) -> Result<Vec<String>> {
         && external_on_nvidia
         && gpu::desktop_preference(root)? != gpu::DesktopGpu::Nvidia
     {
-        w.push(
-            "an external display runs on NVIDIA but the desktop may be drawn on Intel; try `legionctl gpu primary nvidia`"
-                .into(),
-        );
+        w.push(Warning {
+            text: "an external display runs on NVIDIA but the desktop may be drawn on Intel".into(),
+            fix: Some((
+                "Draw the desktop on NVIDIA",
+                "gpu.primary",
+                serde_json::json!({ "choice": "nvidia" }),
+            )),
+        });
     }
 
     if let Some(power) = gpu::nvidia_power(root)?
         && power.control.as_deref() == Some("on")
     {
-        w.push(
-            "the NVIDIA GPU never sleeps (power/control is on); `legionctl gpu power off` lets it go to D3cold when no \
-             program uses it"
-                .into(),
-        );
+        w.push(Warning {
+            text: "the NVIDIA GPU never sleeps (power/control is on)".into(),
+            fix: Some((
+                "Let the NVIDIA GPU sleep",
+                "gpu.power",
+                serde_json::json!({ "state": "off" }),
+            )),
+        });
     }
     if root
         .read("/proc/driver/nvidia/params")?
@@ -412,6 +458,7 @@ fn gpu_warnings(machine: &Machine) -> Result<Vec<String>> {
         w.push(
             "the nvidia driver has runtime power management off (NVreg_DynamicPowerManagement=0): the GPU never \
              reaches D3cold"
+                .to_string()
                 .into(),
         );
     }
@@ -420,7 +467,7 @@ fn gpu_warnings(machine: &Machine) -> Result<Vec<String>> {
         for unit in ["nvidia-powerd.service", "nvidia-persistenced.service"] {
             let state = system::unit_state("is-active", unit)?;
             if state != "active" {
-                w.push(format!("{unit} is not active on AC"));
+                w.push(format!("{unit} is not active on AC").into());
             }
         }
         // nvidia-powerd Dynamic Boost moves the limit between the base and base+25 W
@@ -431,9 +478,10 @@ fn gpu_warnings(machine: &Machine) -> Result<Vec<String>> {
             .parse::<f64>()
             .is_ok_and(|l| (0.0..=25.0).contains(&(l - expected)))
         {
-            w.push(format!(
-                "NVIDIA power limit is {limit} W, expected around {expected} W on AC"
-            ));
+            w.push(
+                format!("NVIDIA power limit is {limit} W, expected around {expected} W on AC")
+                    .into(),
+            );
         }
     }
     Ok(w)

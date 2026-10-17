@@ -20,7 +20,11 @@ pub struct Finding {
 
 impl std::fmt::Display for Finding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}] {}", self.id, self.text)
+        write!(f, "[{}] {}", self.id, self.text)?;
+        if !self.fixes.is_empty() {
+            write!(f, " (legionctl display fix {})", self.id)?;
+        }
+        Ok(())
     }
 }
 
@@ -182,8 +186,8 @@ fn driver_findings(root: &SysRoot, home: &Path, nvidia: bool, intel: bool) -> Re
     if crate::system::unit_state("is-active", "switcheroo-control.service")? != "active" {
         out.push(Finding::system(
             "switcheroo",
-            "switcheroo-control does not run: GNOME has no \"Launch using Discrete Graphics Card\" (sudo systemctl \
-             enable --now switcheroo-control)"
+            "the system service switcheroo-control does not run: GNOME has no \"Launch using Discrete Graphics \
+             Card\""
                 .into(),
         ));
     }
@@ -212,7 +216,7 @@ fn driver_findings(root: &SysRoot, home: &Path, nvidia: bool, intel: bool) -> Re
         out.push(Finding {
             id: "opencl-iris".into(),
             text: "OpenCL reaches the Intel GPU only through Mesa's rusticl, which needs RUSTICL_ENABLE=iris from \
-                   the next login (legionctl display fix opencl-iris, or install intel-compute-runtime)"
+                   the next login (or the package intel-compute-runtime)"
                 .into(),
             fixes: vec![Fix::File {
                 path: environment.join("legionctl-opencl.conf"),
@@ -279,7 +283,7 @@ pub fn app_findings(root: &SysRoot, home: &Path, fractional: bool) -> Result<Vec
             out.push(Finding {
                 text: format!(
                     "{binary} draws through XWayland, blurry at this fractional scale: add {flag} on its own \
-                     line to ~/.config/{file} (legionctl display fix {id})"
+                     line to ~/.config/{file}"
                 ),
                 id,
                 fixes: vec![Fix::File {
@@ -297,7 +301,7 @@ pub fn app_findings(root: &SysRoot, home: &Path, fractional: bool) -> Result<Vec
         out.push(Finding {
             text: format!(
                 "{binary} draws on Wayland (~/.config/{file}), where its text is grayscale: at integer scales \
-                 XWayland is sharper, remove the --ozone-platform line (legionctl display fix {id})"
+                 XWayland is sharper, remove the --ozone-platform line"
             ),
             id,
             fixes: vec![Fix::File {

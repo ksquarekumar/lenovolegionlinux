@@ -55,6 +55,8 @@ pub struct Pending {
     pub dry_run: bool,
     /// The dry run's text; none when the operation has no dry run (an inline confirm of the operation and input).
     pub plan: Option<String>,
+    /// The operation's name and raw input show (the Details disclosure).
+    pub details: bool,
 }
 
 /// The form of a button's operation (DESIGN-09 G3): its fields from the operation's input schema, the texts, the
@@ -62,12 +64,24 @@ pub struct Pending {
 #[derive(Debug, Clone)]
 pub struct Form {
     pub button: ViewButton,
+    pub then: Then,
     pub fields: Vec<legionctl_api::form::Field>,
     pub values: std::collections::BTreeMap<String, String>,
     pub focused: Option<usize>,
     /// The optional fields show.
     pub all: bool,
     pub error: Option<String>,
+}
+
+/// What a form's Continue does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Then {
+    /// The operation runs, with its class's approval.
+    Run,
+    /// The new chat's environment step: the chat keeps the folder (and the base ref) for its first message.
+    ChatPlace,
+    /// The view tab reads the code of this folder.
+    TabRepo,
 }
 
 /// What the app knows besides the screen.
@@ -258,6 +272,9 @@ impl LegionApp {
                 self.render_view(cx);
             }
             Some(Tab::Thread { .. }) => self.read_thread(cx),
+            Some(Tab::Chat) if !self.screen.view_data.contains_key(thread::PICKER) => {
+                self.load_picker(cx);
+            }
             _ => {}
         }
     }
@@ -367,6 +384,7 @@ impl LegionApp {
             self.state.form = Some(Form {
                 fields: legionctl_api::form::fields(info),
                 values: legionctl_api::form::texts(&button.input),
+                then: Then::Run,
                 button,
                 focused: None,
                 all: false,
@@ -383,10 +401,14 @@ impl LegionApp {
         let Some(form) = self.state.form.as_mut() else {
             return;
         };
+        if form.then != Then::Run {
+            self.submit_place(cx);
+            return;
+        }
         let Some(info) = OPS.iter().find(|o| o.name == form.button.op) else {
             return;
         };
-        match legionctl_api::form::input(info, &form.values, &self.screen.repo) {
+        match legionctl_api::form::input(info, &form.values) {
             Ok(input) => {
                 let mut button = form.button.clone();
                 button.input = input;
@@ -398,11 +420,13 @@ impl LegionApp {
         cx.notify();
     }
 
-    /// `button` with its whole input, in its class's approval.
-    fn confirm(&mut self, button: ViewButton, cx: &mut Context<Self>) {
+    /// `button` with its whole input, in its class's approval. Its paths are the user's, against the app's folder,
+    /// as on the chat bar (the operator takes only absolute paths).
+    fn confirm(&mut self, mut button: ViewButton, cx: &mut Context<Self>) {
         let Some(info) = OPS.iter().find(|o| o.name == button.op) else {
             return;
         };
+        legionctl_api::cli::fill_user_fields(info, &mut button.input, &self.tab_repo());
         let route = legionctl_api::form::route(info);
         let dry_run = route == legionctl_api::form::Route::Plan;
         let class = info.class;
@@ -417,6 +441,7 @@ impl LegionApp {
                 class,
                 dry_run,
                 plan: None,
+                details: false,
             });
             cx.notify();
             return;
@@ -435,6 +460,7 @@ impl LegionApp {
                 class,
                 dry_run,
                 plan: Some(plan),
+                details: false,
             });
         });
     }

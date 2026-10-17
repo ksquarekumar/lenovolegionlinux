@@ -916,6 +916,8 @@ pub struct Rendered {
     pub legend: String,
     /// The parameters it was read with (a graph's click keeps them).
     pub params: BTreeMap<String, String>,
+    /// It reads the code of a git repository, and its folder is in none: the client asks for one.
+    pub needs_repository: bool,
 }
 
 /// A node of a graph.
@@ -1042,6 +1044,9 @@ fn shown(value: &Value, format: Option<&str>) -> String {
     match (format, value) {
         // an empty value says what it is, never a bare dash
         (_, Value::Null) => "no value".into(),
+        // a flag in words, not JSON
+        (_, Value::Bool(true)) => "yes".into(),
+        (_, Value::Bool(false)) => "no".into(),
         (Some("ago"), v) => v.as_i64().map_or_else(|| cell(v), |at| ago(now - at)),
         (Some("time"), v) => v.as_i64().map_or_else(|| cell(v), utc),
         (Some("int"), v) => v.as_f64().map_or_else(|| cell(v), |n| format!("{n:.0}")),
@@ -1248,6 +1253,7 @@ impl Rendered {
             select: view.select.clone(),
             legend: String::new(),
             params: BTreeMap::new(),
+            needs_repository: false,
         }
     }
 

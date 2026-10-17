@@ -404,7 +404,15 @@ pub struct Changes {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct Findings {
     /// Empty when nothing is wrong.
-    pub findings: Vec<String>,
+    pub findings: Vec<Finding>,
+}
+
+/// One finding of `doctor`: what is wrong, in words for the user, and the actions that fix it; with no action it is
+/// a state that legionctl cannot change.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Finding {
+    pub text: String,
+    pub actions: Vec<ResourceAction>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

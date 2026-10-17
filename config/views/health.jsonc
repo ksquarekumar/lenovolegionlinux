@@ -1,5 +1,5 @@
 // Seed (DESIGN-09): doctor's findings by severity, each group with its count: what failed first, then what to check,
-// then the agent setup items with the button that installs them.
+// then the agent setup items. A finding that legionctl can fix has its button; the others are states.
 {
   "$schema": "../../docs/api/view.schema.json",
   "name": "health",
@@ -8,7 +8,9 @@
   "space": "machine",
   "widget": "list",
   "source": { "op": "doctor", "path": "$.findings" },
+  "columns": ["text"],
   "group": {
+    "field": "text",
     "rules": [
       { "group": "Agent setup", "prefix": "setup: " },
       {
@@ -19,6 +21,6 @@
     "rest": "To check",
     "order": ["Failures", "To check", "Agent setup"]
   },
-  "actions": [{ "label": "Install the missing agent setup", "op": "setup.apply", "input": {} }],
+  "row_actions": [{ "label": "{item.name}", "op": "{item.op}", "input": "{item.input}", "each": "actions" }],
   "refresh": { "every": 60 }
 }

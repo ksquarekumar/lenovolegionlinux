@@ -323,7 +323,7 @@ pub fn findings(
             let id = format!("refresh-{}", m.connector);
             Finding {
                 text: format!(
-                    "{} ({}) runs at {:.0} Hz, and {:.0} Hz is available at {}x{} (legionctl display fix {id})",
+                    "{} ({}) runs at {:.0} Hz, and {:.0} Hz is available at {}x{}",
                     m.name, m.connector, m.refresh, m.max_refresh, m.width, m.height
                 ),
                 id,
@@ -348,7 +348,7 @@ pub fn findings(
         out.push(Finding {
             id: "antialiasing".into(),
             text: "fonts use grayscale antialiasing, and every monitor has an integer scale at normal density, where \
-                   subpixel antialiasing (RGB order) is sharper (legionctl display fix antialiasing)"
+                   subpixel antialiasing (RGB order) is sharper"
                 .into(),
             fixes: [("font-antialiasing", "'rgba'"), ("font-rgba-order", "'rgb'")]
                 .map(|(key, value)| Fix::Setting {

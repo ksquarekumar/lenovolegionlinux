@@ -53,10 +53,10 @@
       "name": "fans",
       "title": "Fans",
       "widget": "stat",
-      "source": { "op": "monitor", "input": { "count": 1, "interval_ms": 200 }, "path": "$.0.root.fan_rpm" },
+      "source": { "op": "monitor", "input": { "count": 1, "interval_ms": 200 }, "path": "$.0.fan_rpm" },
       "unit": "rpm",
       "formats": { "value": "join" },
-      "missing": "No fan speed: legionctl-system does not answer"
+      "missing": "No fan speed: the system service does not answer, or the fan module is not loaded"
     },
     {
       "name": "sensors",

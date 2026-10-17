@@ -4409,8 +4409,7 @@ fn dossier_check_finds_dangling_links_unverified_acceptance_and_stale_evidence()
              <path>#<symbol>",
             // the repository declares no checks (design 23, E2 rule 2)
             format!(
-                "{}: this repository has no checks of kind format, lint, build, test: run `legionctl code checks \
-                 detect` and write .legionctl/checks.jsonc",
+                "{}: this repository has no checks of kind format, lint, build, test",
                 home.join("worktrees/repo/port").display()
             )
         ])
@@ -7710,4 +7709,34 @@ fn doctor_names_a_claude_code_plugin_that_is_not_of_this_build() {
         Vec::<String>::new(),
         "the package's own plugin"
     );
+}
+
+/// A session in the home folder itself (a plain folder workspace whose folder is $HOME) has `~/agentWorkspaces` as the
+/// dossiers' home, not as a link to it: r324's doctor said "~/agentWorkspaces is a folder that keeps files that are not
+/// dossiers, not ~/agentWorkspaces" for it.
+#[test]
+fn a_workspace_in_the_home_folder_is_not_a_finding_of_the_dossiers_home() {
+    let (op, home) = operator("home-ws");
+    write(
+        &home.join(".config/legionctl/home-ws.jsonc"),
+        &json!({
+            "session": {"agents": {"probe": ["true"]}, "scope": false, "writable": []},
+            "workspace": {"root": home.join("layers")}
+        })
+        .to_string(),
+    );
+    let started = op.run(
+        &home,
+        &[("HOME", home.to_str().unwrap())],
+        &["session", "start", "probe", "--dossier", "notes", "--json"],
+        "",
+    );
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    assert!(home.join("agentWorkspaces/notes").is_dir());
+    let doctor = String::from_utf8_lossy(&op.cli(&["doctor"]).stdout).to_string();
+    assert!(!doctor.contains("agentWorkspaces is a"), "{doctor}");
 }

@@ -215,7 +215,7 @@ impl LegionApp {
         .detach();
     }
 
-    fn remember_tabs(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn remember_tabs(&mut self, cx: &mut Context<Self>) {
         let layout = Layout {
             tabs: self.screen.tabs.clone(),
             active: self.screen.active,
@@ -234,11 +234,16 @@ impl LegionApp {
 
     /// Open `tab`, or show it when it is open.
     pub fn open_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
+        let before = self.tab().cloned();
         if let Some(i) = self.screen.tabs.iter().position(|t| *t == tab) {
             self.screen.active = i;
         } else {
             self.screen.tabs.push(tab);
             self.screen.active = self.screen.tabs.len() - 1;
+        }
+        // the last result belongs to the tab where it came
+        if self.tab() != before.as_ref() {
+            self.state.message = None;
         }
         self.remember_tabs(cx);
         self.load_tab(cx);
@@ -249,9 +254,13 @@ impl LegionApp {
         if i >= self.screen.tabs.len() {
             return;
         }
+        let shown = i == self.screen.active;
         self.screen.tabs.remove(i);
         if self.screen.active > i || self.screen.active >= self.screen.tabs.len() {
             self.screen.active = self.screen.active.saturating_sub(1);
+        }
+        if shown {
+            self.state.message = None;
         }
         self.remember_tabs(cx);
         self.load_tab(cx);
@@ -274,6 +283,7 @@ impl LegionApp {
     pub fn show_tab(&mut self, i: usize, cx: &mut Context<Self>) {
         if i < self.screen.tabs.len() && i != self.screen.active {
             self.screen.active = i;
+            self.state.message = None;
             self.remember_tabs(cx);
             self.load_tab(cx);
         }
@@ -515,7 +525,7 @@ impl LegionApp {
             }
             Space::Agents => {
                 let now = self.screen.agent();
-                let mut out = vec![Self::nav_section("Agents of the chat bar (session.acp)", t)];
+                let mut out = vec![Self::nav_section("Agents of the chat bar", t)];
                 out.extend(self.screen.agents.iter().map(|a| {
                     let picked = now.as_deref() == Some(a.as_str());
                     let name = a.clone();
@@ -780,6 +790,21 @@ impl LegionApp {
                         "dossier {} · thread {} · {repo} · host sandbox",
                         th.dossier, th.id
                     ),
+                    t.accent,
+                )
+            }
+            (Some(d), None) if self.tab() == Some(&Tab::Chat) => {
+                let folder = self.screen.chat_place.as_ref().map_or_else(
+                    || "no folder".to_string(),
+                    |(f, _)| {
+                        f.file_name().map_or_else(
+                            || f.display().to_string(),
+                            |n| n.to_string_lossy().into_owned(),
+                        )
+                    },
+                );
+                (
+                    format!("dossier {d} · new chat · {folder} · host sandbox"),
                     t.accent,
                 )
             }

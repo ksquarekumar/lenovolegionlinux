@@ -644,7 +644,70 @@
         "findings": {
           "type": "array",
           "items": {
-            "type": "string"
+            "description": "One finding of `doctor`: what is wrong, in words for the user, and the actions that fix it; with no action it is\na state that legionctl cannot change.",
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "actions": {
+                "type": "array",
+                "items": {
+                  "description": "An action of a resource: the operation it runs, with this input.",
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "op": {
+                      "description": "The operation (`knobs.release`), which runs as a call of its own.",
+                      "type": "string"
+                    },
+                    "input": true,
+                    "class": {
+                      "description": "The operation's permission class.",
+                      "oneOf": [
+                        {
+                          "description": "Reads only; no gate.",
+                          "type": "string",
+                          "const": "read"
+                        },
+                        {
+                          "description": "Changes only the caller's own session: its dossier, its workspace, its hooks. An agent calls these freely.",
+                          "type": "string",
+                          "const": "session"
+                        },
+                        {
+                          "description": "Changes the user's files and settings or other sessions; when an agent calls it, the operator asks the user\nfirst (a desktop notification, DESIGN/03).",
+                          "type": "string",
+                          "const": "workspace"
+                        },
+                        {
+                          "description": "Changes the machine; `legionctl-system` asks for polkit approval.",
+                          "type": "string",
+                          "const": "machine"
+                        }
+                      ]
+                    },
+                    "dry_run": {
+                      "description": "The operation has a dry run of its own.",
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "op",
+                    "input",
+                    "class",
+                    "dry_run"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "text",
+              "actions"
+            ]
           },
           "description": "Empty when nothing is wrong."
         }
@@ -18252,6 +18315,10 @@
                 "type": "string"
               },
               "description": "The parameters it was read with."
+            },
+            "needs_repository": {
+              "type": "boolean",
+              "description": "It reads the code of a git repository, and its folder is in none: the client asks for one."
             }
           },
           "required": [
@@ -18280,7 +18347,8 @@
             "nodes",
             "edges",
             "legend",
-            "params"
+            "params",
+            "needs_repository"
           ],
           "description": "The view with its data (the terminal form prints it)."
         },
@@ -18734,6 +18802,10 @@
                 "type": "string"
               },
               "description": "The parameters it was read with."
+            },
+            "needs_repository": {
+              "type": "boolean",
+              "description": "It reads the code of a git repository, and its folder is in none: the client asks for one."
             }
           },
           "required": [
@@ -18762,7 +18834,8 @@
             "nodes",
             "edges",
             "legend",
-            "params"
+            "params",
+            "needs_repository"
           ],
           "description": "A view with its data in the shape of its widget."
         },
@@ -19236,6 +19309,10 @@
             "type": "string"
           },
           "description": "The parameters it was read with."
+        },
+        "needs_repository": {
+          "type": "boolean",
+          "description": "It reads the code of a git repository, and its folder is in none: the client asks for one."
         }
       },
       "required": [
@@ -19264,7 +19341,8 @@
         "nodes",
         "edges",
         "legend",
-        "params"
+        "params",
+        "needs_repository"
       ],
       "description": "A view with its data in the shape of its widget.",
       "title": "ViewData",

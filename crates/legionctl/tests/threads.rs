@@ -986,7 +986,10 @@ fn a_view_cannot_bind_a_change_operation_or_a_widget_outside_the_set() {
     };
     let chart = r#"{"name": "load", "widget": "piechart", "source": {"op": "status"}}"#;
     let change = r#"{"name": "power", "widget": "tree", "source": {"op": "power.apply", "input": {"source": "auto"}}}"#;
+    // r324's Machine now read the fans here and showed "legionctl-system does not answer" while it answered
+    let no_path = r#"{"name": "fans", "widget": "stat", "source": {"op": "monitor", "path": "$.0.root.fan_rpm"}}"#;
     for (view, why) in [
+        (no_path, "monitor's answer has nothing at $.0.root.fan_rpm"),
         (
             chart,
             "unknown variant `piechart`, expected one of `table`, `tree`, `gauge`, `sparkline`, `markdown`, `diff`, `list`, `stack`, `stat`, `chart`",
@@ -1007,6 +1010,21 @@ fn a_view_cannot_bind_a_change_operation_or_a_widget_outside_the_set() {
     }
     let views = lab.home.join(".config/legionctl/views");
     assert!(!views.exists(), "a refused view is not written");
+    // every seed passes the same check: its paths are in its operation's answer
+    let seeds = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/views");
+    for seed in std::fs::read_dir(&seeds).unwrap() {
+        let seed = seed.unwrap().path();
+        let out = run(
+            &["views", "check"],
+            &std::fs::read_to_string(&seed).unwrap(),
+        );
+        assert!(
+            out.status.success(),
+            "{}: {}",
+            seed.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 
     let members = r#"{
   "name": "members",
@@ -1369,6 +1387,80 @@ fn a_similar_intent_opens_the_stored_view_through_rlcd_and_a_failed_rlcd_runs_no
     assert_eq!(lab.composer_runs(), 1);
 
     rlcd_costs_are_recorded(&lab);
+    drop(server);
+}
+
+/// todo-181: "go back to the table" on a tab is rlcd's pick among the other versions of the tab's view (each by its
+/// widget, title and intent), and the view shows that version with no composer run. A new wish ("chart over time")
+/// is rlcd's none: the composer makes the next version.
+#[test]
+fn going_back_to_an_earlier_version_of_a_tabs_view_is_rlcds_pick_with_no_composer_run() {
+    let (lab, port, log, server, views) = ask_lab("ask-back", &json!({"views": {"rlcd": true}}));
+    write(
+        &views.join("memory.jsonc"),
+        r#"{"name": "mem", "title": "Memory", "widget": "table", "source": {"op": "sensors"}, "columns": ["name"]}"#,
+    );
+    write(
+        &views.join("chart.jsonc"),
+        r#"{"name": "mem", "title": "Memory, more", "widget": "list", "source": {"op": "sensors"}, "columns": ["name"]}"#,
+    );
+    let ask = |pick: &str, args: &[&str]| {
+        rlcd_backends(&lab.home, port, pick);
+        let (out, answer) = lab.ask(args);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        answer
+    };
+    let first = ask("none", &["memory use of the machine"]);
+    let name = first["view"].as_str().unwrap().to_string();
+    // the composer's run works in a scratch folder, never in the caller's (the app's is the home: r324 made a
+    // copy-on-write layer of the whole home for it)
+    let sessions = lab.json("main", &["session", "list"]);
+    let folders: Vec<&str> = sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["workdir"].as_str())
+        .collect();
+    assert!(
+        !folders.is_empty() && folders.iter().all(|f| f.ends_with("/composer")),
+        "{sessions}"
+    );
+    let second = ask("none", &["chart over time", "--view", &name]);
+    assert_eq!(second["route"], "composer", "a new wish: {second}");
+    assert_eq!(second["data"]["version"], 2);
+    assert_eq!(lab.composer_runs(), 2);
+
+    let back = ask("v1", &["go back to the table", "--view", &name]);
+    assert_eq!(
+        (
+            back["route"].as_str(),
+            back["view"].as_str(),
+            back["data"]["version"].as_u64()
+        ),
+        (Some("rlcd"), Some(name.as_str()), Some(1)),
+        "{back}"
+    );
+    assert_eq!(lab.composer_runs(), 2, "no composer run to go back");
+    let call = calls(&log).pop().unwrap();
+    let criteria = call["body"]["questions"]["version"]["criteria"]
+        .as_object()
+        .unwrap();
+    assert_eq!(
+        criteria.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["none", "v1"],
+        "the other versions only: {call}"
+    );
+    assert!(
+        criteria["v1"]
+            .as_str()
+            .unwrap()
+            .starts_with("Table - Memory"),
+        "{call}"
+    );
     drop(server);
 }
 

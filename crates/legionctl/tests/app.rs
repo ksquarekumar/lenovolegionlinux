@@ -251,7 +251,12 @@ fn the_seed_views_show_the_machine_and_a_generated_machine_button_asks_as_the_cl
 
 /// Health groups doctor's findings; Bench reads every page of the runs, the newest first, one chart per kind.
 fn health_and_bench(cx: &mut VisualTestContext, app: &Entity<LegionApp>) {
-    // Health: doctor's findings in groups with their counts
+    health_findings(cx, app);
+    bench_runs(cx, app);
+}
+
+/// Health: doctor's findings in groups with their counts, each with the actions that fix it.
+fn health_findings(cx: &mut VisualTestContext, app: &Entity<LegionApp>) {
     cx.update(|window, cx| window.click("nav-health", cx));
     wait(cx, app, "the findings", |a| {
         shown(a, "health").is_some_and(|h| !h.rows.is_empty())
@@ -269,9 +274,70 @@ fn health_and_bench(cx: &mut VisualTestContext, app: &Entity<LegionApp>) {
             health.rows.len(),
             "each finding is in a group"
         );
+        // r324: a fixed "Install the missing agent setup" button stayed when the setup was complete; now only a
+        // finding has a button, and only when legionctl can fix it
+        assert!(health.actions.is_empty(), "{:?}", health.actions);
+        let buttons = |text: &str| -> Vec<(String, String, serde_json::Value)> {
+            let i = health
+                .rows
+                .iter()
+                .position(|r| r[0] == text)
+                .unwrap_or_else(|| panic!("{text}: {:?}", health.rows));
+            health.row_actions[i]
+                .iter()
+                .map(|b| (b.label.clone(), b.op.clone(), b.input.clone()))
+                .collect()
+        };
+        assert_eq!(
+            buttons("an external display runs on NVIDIA but the desktop may be drawn on Intel"),
+            [(
+                "Draw the desktop on NVIDIA".into(),
+                "gpu.primary".into(),
+                serde_json::json!({"choice": "nvidia"})
+            )]
+        );
+        assert_eq!(
+            buttons("setup: ctx for all is not installed"),
+            [(
+                "Install ctx".into(),
+                "setup.apply".into(),
+                serde_json::json!({"install_ctx": true})
+            )]
+        );
+        assert_eq!(
+            buttons("setup: legionctl mcp for codex is missing")[0].2,
+            serde_json::json!({"install_ctx": false})
+        );
+        assert_eq!(
+            buttons("platform_profile is 'max-power', expected 'balanced'"),
+            Vec::<(String, String, serde_json::Value)>::new()
+        );
+        // a check that could not run says so and when it runs again; no row is a command line for a terminal
+        assert_eq!(
+            buttons(
+                "the desktop check could not run (systemctl is not installed); the next health check runs it \
+                 again"
+            ),
+            Vec::<(String, String, serde_json::Value)>::new()
+        );
+        for row in &health.rows {
+            for hint in [
+                "`legionctl",
+                "(legionctl",
+                "run legionctl",
+                "sudo ",
+                "see systemctl",
+                "journalctl",
+                "docs/",
+            ] {
+                assert!(!row[0].contains(hint), "{hint} in {row:?}");
+            }
+        }
     });
+}
 
-    // Bench: every page of the runs, the newest first, one chart per kind
+/// Bench: every page of the runs, the newest first, one chart per kind.
+fn bench_runs(cx: &mut VisualTestContext, app: &Entity<LegionApp>) {
     let db = std::env::temp_dir().join(format!(
         "legionctl-app-{}/home/.local/state/legionctl/operator.db",
         std::process::id()
@@ -494,9 +560,43 @@ fn graph_repo(home: &Path, repo: &Path) {
     lab_git(home, repo, &["commit", "--quiet", "-am", "two adds 2"]);
 }
 
+/// The code tree of a folder in no git repository asks for one (r324 showed git's error); Choose a repository with
+/// `repo` gives the tab its own folder.
+fn choose_the_repository(cx: &mut VisualTestContext, app: &Entity<LegionApp>, repo: &Path) {
+    wait(cx, app, "the question for a repository", |a| {
+        shown(a, "code-tree").is_some_and(|v| v.needs_repository)
+    });
+    app.read_with(cx, |a, _| {
+        let tree = shown(a, "code-tree").unwrap();
+        assert_eq!(tree.error, None, "a question, not git's error");
+        assert!(tree.note.contains("is not in one"), "{}", tree.note);
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("view-code-tree-choose-repo", cx);
+    });
+    wait(cx, app, "the folder's form", |a| a.state.form.is_some());
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("form-field-repo", cx);
+        window.input(repo.to_str().unwrap(), cx);
+        window.click("form-submit", cx);
+    });
+    app.read_with(cx, |a, _| {
+        assert!(
+            a.tab()
+                .is_some_and(|t| t.key().contains(&format!("repo={}", repo.display()))),
+            "the tab keeps its folder: {:?}",
+            a.tab()
+        );
+    });
+}
+
 /// The code graph seed (DESIGN-09 G4, todo-141) on a repository with the ctx stand-in: on branch work, the commit
-/// after main changes `two`. A ctx that cannot index gives no graph: the tree part shows why, not an empty tab. With
-/// the stand-in, the tree's top has the folder src with its symbol count, marked as changed since main (tools is
+/// after main changes `two`. The app starts in the home (as from the desktop), which is in no git repository: the
+/// tree part asks for a repository (r324 showed git's error), and Choose a repository gives the tab its own folder,
+/// which the tab keeps (a click on a node too). A ctx that cannot index gives no graph: the tree part shows why, not
+/// an empty tab. With the stand-in, the tree's top has the folder src with its symbol count, marked as changed since main (tools is
 /// not); a click on src reads its level (src/lib.rs, marked), a click on the file its symbols (two is marked, add is
 /// not); a click on add selects it, and the stack's other part reads what uses it: two.
 #[gpui_kit::test]
@@ -506,7 +606,7 @@ fn the_code_graph_seed_opens_levels_on_click_marks_changes_and_shows_what_uses_a
     let (op, home, repo) = thread_lab("graph");
     graph_repo(&home, &repo);
     broken_ctx(&home);
-    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &home)));
     let cx = &mut vcx;
     let click = |cx: &mut VisualTestContext, id: &str| {
         cx.update(|window, cx| {
@@ -519,6 +619,7 @@ fn the_code_graph_seed_opens_levels_on_click_marks_changes_and_shows_what_uses_a
         a.screen.views.iter().any(|v| v.name == "code-graph")
     });
     click(cx, "nav-code-graph");
+    choose_the_repository(cx, &app, &repo);
     wait(cx, &app, "why there is no graph", |a| {
         shown(a, "code-tree").is_some_and(|v| v.error.is_some())
     });
@@ -603,10 +704,11 @@ fn the_code_graph_seed_opens_levels_on_click_marks_changes_and_shows_what_uses_a
     drop(runtime);
 }
 
-/// The chat bar's text is an intent (DESIGN-09 G5). The intent of a seed opens it from the store: no model runs (no
-/// session.run). A new intent goes to the ui-composer (the chat bar's agent with its model from `views.composer_models`):
-/// its view opens as a tab under a name no layer has, as version 1, and the intent is a fact of the user; the same
-/// intent again opens the stored view with no model.
+/// The chat bar's text in a view tab is a message for the ui-composer (DESIGN-09 G5, user 2026-10-17: one input, one
+/// meaning). The intent of a seed opens it from the store: no model runs (no session.run). A new intent goes to the
+/// ui-composer (the chat bar's agent with its model from `views.composer_models`) with the tab's view: its answer is
+/// the view's next version (Health, version 1), and the intent is a fact of the user; the same intent again, from
+/// another tab, opens that view with no model.
 #[gpui_kit::test]
 fn an_intent_opens_a_stored_view_with_no_model_and_a_new_one_gets_the_composers_view(
     cx: &mut TestAppContext,
@@ -652,13 +754,17 @@ fn an_intent_opens_a_stored_view_with_no_model_and_a_new_one_gets_the_composers_
         let v = a.screen.view().unwrap();
         assert_eq!(
             (v.name.as_str(), v.version),
-            ("health-2", 1),
-            "a name no layer has, version 1"
+            ("health", 1),
+            "the tab's view (Health, from the first intent), its next version"
         );
         let said = a.state.message.clone().unwrap_or_default();
         assert!(
             said.contains("model: fake-small") && said.contains("Here is the view"),
             "{said}"
+        );
+        assert!(
+            !said.contains("tokens in") && !said.contains("(composer"),
+            "the agent's words, not the CLI's route and cost: {said}"
         );
         assert!(
             !said.contains(r#""filter": {"unit": "RPM"}"#),
@@ -682,14 +788,13 @@ fn an_intent_opens_a_stored_view_with_no_model_and_a_new_one_gets_the_composers_
     .unwrap();
     assert_eq!(
         (facts[0]["value"].as_str(), facts[0]["source"].as_str()),
-        (Some("health-2"), Some("user"))
+        (Some("health"), Some("user"))
     );
 
-    cx.update(|window, cx| window.click("nav-machine-now", cx));
+    cx.update(|window, cx| window.click("nav-resources", cx));
     say(cx, "Fan speeds of the machine?");
     wait(cx, &app, "the stored answer", |a| {
-        a.tab()
-            .is_some_and(|t| t.key().starts_with("view:health-2:"))
+        a.tab().is_some_and(|t| t.key().starts_with("view:health:"))
     });
     assert_eq!(
         runs(),
@@ -699,15 +804,9 @@ fn an_intent_opens_a_stored_view_with_no_model_and_a_new_one_gets_the_composers_
     drop(runtime);
 }
 
-/// `/change <words>` (DESIGN-09 G5): the composer's answer is the next version of the tab's view (version 2, the same
-/// name); Undo goes back to version 1. A composed view that fails its check, or has a part with no title, is shown as an
-/// error with its reason, and nothing is saved. A composed view's space follows its source, not the model's word.
-#[gpui_kit::test]
-fn a_change_is_the_next_version_of_the_tabs_view_and_a_bad_view_shows_its_error(
-    cx: &mut TestAppContext,
-) {
-    let (op, home, repo) = thread_lab("change");
-    let views = home.join("fake-views");
+/// The stand-in composer's answers of the change test: two tables, a view outside the widget set, a part with no
+/// title, and a code view that the model puts in the Machine space.
+fn composed_views(views: &Path) {
     let spec = |title: &str| {
         format!(
             r#"{{"name": "anything", "title": "{title}", "widget": "table", "source": {{"op": "sensors"}},
@@ -732,6 +831,17 @@ fn a_change_is_the_next_version_of_the_tabs_view_and_a_bad_view_shows_its_error(
         r#"{"name": "branch-changes", "title": "Branch changes", "space": "machine", "widget": "table",
             "source": {"op": "code.graph.changes", "input": {"base": "main"}}, "columns": ["key"]}"#,
     );
+}
+
+/// A message in a view tab (DESIGN-09 G5): the composer's answer is the next version of the tab's view (version 2,
+/// the same name); Undo goes back to version 1. A composed view that fails its check, or has a part with no title, is shown as an
+/// error with its reason, and nothing is saved. A composed view's space follows its source, not the model's word.
+#[gpui_kit::test]
+fn a_change_is_the_next_version_of_the_tabs_view_and_a_bad_view_shows_its_error(
+    cx: &mut TestAppContext,
+) {
+    let (op, home, repo) = thread_lab("change");
+    composed_views(&home.join("fake-views"));
     let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
     let cx = &mut vcx;
     let say = |cx: &mut VisualTestContext, text: &str| {
@@ -747,7 +857,7 @@ fn a_change_is_the_next_version_of_the_tabs_view_and_a_bad_view_shows_its_error(
         a.screen.view().is_some_and(|v| v.title == "Sensors, plain")
     });
     let name = app.read_with(cx, |a, _| a.screen.view().unwrap().name.clone());
-    say(cx, "/change add the unit");
+    say(cx, "add the unit");
     wait(cx, &app, "version 2", |a| {
         a.screen
             .view()
@@ -757,7 +867,7 @@ fn a_change_is_the_next_version_of_the_tabs_view_and_a_bad_view_shows_its_error(
         let v = a.screen.view().unwrap();
         assert_eq!(
             (v.name.as_str(), v.version, v.versions.clone()),
-            (name.as_str(), 2, vec![1, 2])
+            (name.as_str(), 2, vec![0, 1, 2])
         );
     });
     cx.update(|window, cx| {
@@ -771,34 +881,45 @@ fn a_change_is_the_next_version_of_the_tabs_view_and_a_bad_view_shows_its_error(
         assert_eq!(a.screen.view().unwrap().title, "Sensors, plain");
     });
 
-    say(cx, "/change bad view");
+    say(cx, "bad view");
     wait(cx, &app, "the check's error", |a| {
         a.state
             .message
             .as_deref()
-            .is_some_and(|m| m.contains("the view failed its check"))
+            .is_some_and(|m| m.starts_with("The agent's view is not valid, so nothing changed"))
     });
     app.read_with(cx, |a, _| {
         let said = a.state.message.clone().unwrap();
         assert!(said.contains("piechart"), "{said}");
-        assert_eq!(a.screen.view().unwrap().versions, [1, 2], "nothing saved");
+        assert_eq!(
+            a.screen.view().unwrap().versions,
+            [0, 1, 2],
+            "nothing saved"
+        );
     });
-    say(cx, "/change untitled part");
+    say(cx, "untitled part");
     wait(cx, &app, "the title's error", |a| {
         a.state.message.as_deref().is_some_and(|m| {
             m.contains("each view and each part needs a title in the user's words: temp-stat")
         })
     });
     app.read_with(cx, |a, _| {
-        assert_eq!(a.screen.view().unwrap().versions, [1, 2], "nothing saved");
+        assert_eq!(
+            a.screen.view().unwrap().versions,
+            [0, 1, 2],
+            "nothing saved"
+        );
     });
 
     say(cx, "what changed on this branch");
     wait(cx, &app, "the composed code view in the list", |a| {
-        a.screen.views.iter().any(|v| v.name == "branch-changes")
+        a.screen
+            .views
+            .iter()
+            .any(|v| v.name == name && v.space.as_deref() == Some("work"))
     });
     app.read_with(cx, |a, _| {
-        let listed = a.screen.views.iter().find(|v| v.name == "branch-changes");
+        let listed = a.screen.views.iter().find(|v| v.name == name);
         assert_eq!(listed.and_then(|v| v.space.as_deref()), Some("work"));
     });
     drop(runtime);
@@ -1872,16 +1993,16 @@ fn the_app_chat_bar_offers_the_agents_commands_first_and_runs_a_registry_line(
         window.input("agent:plan x", cx);
         window.press("enter", cx);
     });
-    wait(cx, &app, "the agent command's run", |a| {
-        a.screen.runs.len() == 2 && a.screen.runs[1].1.is_some()
+    // an agent's command in a view tab starts a chat: the chat's run has its own folder, never the app's
+    wait(cx, &app, "the agent command's chat", |a| {
+        a.screen.runs.len() == 2
+            && a.screen.runs[1].1.is_some()
+            && !said(a, "thread.answer").is_empty()
     });
     app.read_with(cx, |a, _| {
-        let answer = a.state.message.clone().unwrap_or_default();
+        assert!(matches!(a.tab(), Some(Tab::Thread { .. })), "{:?}", a.tab());
+        let answer = said(a, "thread.answer").join("\n");
         assert!(answer.contains("prompt: /plan x"), "{answer}");
-        assert!(
-            answer.contains("acp: loaded"),
-            "the same ACP session: {answer}"
-        );
     });
     cx.update(|window, cx| {
         window.input("/thread show 1", cx);
@@ -1897,14 +2018,16 @@ fn the_app_chat_bar_offers_the_agents_commands_first_and_runs_a_registry_line(
             .iter()
             .map(|(l, ok)| (l.as_str(), *ok))
             .collect();
+        // "hello" is the composer's change of Machine now: done, the lab's machine has no sensors for some parts
         assert_eq!(
-            runs,
+            runs[1..],
             [
-                ("hello", Some(true)),
                 ("/agent:plan x", Some(true)),
                 ("/thread show 1", Some(true))
             ]
         );
+        assert_eq!(runs[0].0, "hello");
+        assert!(runs[0].1.is_some());
         let shown = a.state.message.clone().unwrap_or_default();
         assert!(
             shown.contains("thread 1 (open, dossier port): port the parser"),
@@ -1955,10 +2078,10 @@ fn the_app_chat_bar_picks_its_agent_from_session_acp_and_a_new_chat_keeps_the_pi
         assert_eq!(
             entries,
             [
-                ("/agent claude", "Send the prompts to claude (session.acp)"),
-                ("/agent codex", "Send the prompts to codex (session.acp)"),
-                ("/agent fake", "Send the prompts to fake (session.acp, now)"),
-                ("/agent other", "Send the prompts to other (session.acp)"),
+                ("/agent claude", "Send the messages to claude"),
+                ("/agent codex", "Send the messages to codex"),
+                ("/agent fake", "Send the messages to fake (now)"),
+                ("/agent other", "Send the messages to other"),
             ]
             .map(|(t, a)| (t.to_string(), a.to_string()))
         );
@@ -1970,7 +2093,7 @@ fn the_app_chat_bar_picks_its_agent_from_session_acp_and_a_new_chat_keeps_the_pi
     app.read_with(cx, |a, _| {
         let why = a.state.message.clone().unwrap_or_default();
         assert!(
-            why.contains("no agent nobody in session.acp; it has claude, codex, fake, other"),
+            why.contains("No agent named nobody. The agents are: claude, codex, fake, other"),
             "{why}"
         );
         assert_eq!(a.screen.agent().as_deref(), Some("fake"));
@@ -2046,8 +2169,66 @@ fn send(cx: &mut VisualTestContext, line: &str) {
     });
 }
 
-/// No dossier: "Hi" in a new chat says what a dossier is for and opens the Dossiers view; `/dossier add` names the
-/// commands that work; New dossier (the form of dossier.create, an inline confirm) makes appreview, and the app uses it.
+/// A new chat with no dossier: the picker in place (flags in words), "Hi" says to choose one there with no command
+/// in the text, and `/dossier add` is no completion (an agent's work).
+fn the_new_chat_has_the_dossier_picker(cx: &mut VisualTestContext, app: &Entity<LegionApp>) {
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("space-work", cx);
+        window.render_frame(cx);
+        window.click("nav-new-chat", cx);
+    });
+    wait(cx, app, "the dossier picker", |a| {
+        a.screen
+            .view_data
+            .get("view:dossiers:")
+            .is_some_and(|v| v.rows.len() == 2)
+    });
+    app.read_with(cx, |a, _| {
+        let flags: Vec<&str> = a.screen.view_data["view:dossiers:"]
+            .rows
+            .iter()
+            .map(|r| r[1].as_str())
+            .collect();
+        assert_eq!(flags, ["no", "no"], "a flag in words (r324: false)");
+    });
+    send(cx, "Hi");
+    app.read_with(cx, |a, _| {
+        let why = a.state.message.clone().unwrap_or_default();
+        assert!(
+            why.starts_with("Choose a dossier first") && !why.contains('/'),
+            "{why}"
+        );
+        assert_eq!(a.tab(), Some(&Tab::Chat), "the picker is in the chat");
+    });
+    // the result belongs to its tab (r324: a tab's error showed in every tab after it)
+    app.update(cx, |a, cx| a.open_tab(view("machine-now"), cx));
+    app.read_with(cx, |a, _| assert_eq!(a.state.message, None));
+    app.update(cx, |a, cx| a.open_tab(Tab::Chat, cx));
+    cx.update(|window, cx| {
+        window.click("chat", cx);
+        window.input("/dossier ", cx);
+    });
+    app.read_with(cx, |a, _| {
+        let offered: Vec<String> = a.screen.completions().into_iter().map(|e| e.text).collect();
+        assert!(offered.iter().any(|e| e == "/dossier use"), "{offered:?}");
+        assert!(
+            !offered
+                .iter()
+                .any(|e| e == "/dossier add" || e == "/dossier edit"),
+            "an agent's work is no command of the app: {offered:?}"
+        );
+    });
+    cx.update(|window, cx| window.press("escape", cx));
+    app.update(cx, |a, _| a.screen.chat_mut().clear());
+}
+
+/// No dossier (todo-179 1, 4; G-5, G-6, G-7): a new chat shows the dossier picker in place, and "Hi" says to choose
+/// one there, with no command in the text. `/dossier add` is no completion (an agent's work). Use on a row makes it
+/// the user's dossier (r324: the button sent the relative folder "." and the operator refused it). Release, then New
+/// dossier (the form of dossier.create) with no folder: the confirm says what happens in words, with the name as a
+/// labelled value, the raw input only behind Details, and no folder (r324: the app's own folder, the home); Apply
+/// makes appreview, and the app uses it.
 fn make_a_dossier_in_the_app(
     cx: &mut VisualTestContext,
     app: &Entity<LegionApp>,
@@ -2055,35 +2236,21 @@ fn make_a_dossier_in_the_app(
     home: &Path,
     repo: &Path,
 ) {
+    the_new_chat_has_the_dossier_picker(cx, app);
+    let first = app.read_with(cx, |a, _| {
+        a.screen.view_data["view:dossiers:"].rows[0][0].clone()
+    });
     cx.update(|window, cx| {
         window.render_frame(cx);
-        window.click("space-work", cx);
+        window.click("view-dossiers-row-0-action-0", cx);
         window.render_frame(cx);
-        window.click("nav-new-chat", cx);
+        window.click("apply", cx);
     });
-    send(cx, "Hi");
-    app.read_with(cx, |a, _| {
-        let why = a.state.message.clone().unwrap_or_default();
-        assert!(
-            why.starts_with("No dossier: a chat and an agent run keep their record in a dossier")
-                && why.contains("/dossier use <name>")
-                && why.contains("/dossier create <name>"),
-            "{why}"
-        );
-        assert_eq!(a.tab(), Some(&view("dossiers")), "the choice opens");
+    wait(cx, app, "the row's dossier in use", |a| {
+        a.screen.dossier.as_deref() == Some(first.as_str())
     });
-    send(cx, "/dossier add MEMORY notes");
-    app.read_with(cx, |a, _| {
-        let why = a.state.message.clone().unwrap_or_default();
-        assert!(
-            why.contains("an agent does it in its session")
-                && why.contains("choose it: /dossier use <name>"),
-            "{why}"
-        );
-    });
-    wait(cx, app, "the dossiers", |a| {
-        shown(a, "dossiers").is_some_and(|v| v.rows.len() == 2)
-    });
+    send(cx, "/dossier release");
+    wait(cx, app, "no dossier again", |a| a.screen.dossier.is_none());
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.click("view-dossiers-action-0", cx);
@@ -2102,9 +2269,25 @@ fn make_a_dossier_in_the_app(
         let pending = a.state.pending.as_ref().expect("an inline confirm");
         assert_eq!(pending.class, legionctl_api::Class::Workspace);
         assert_eq!(pending.button.input["name"], "appreview");
+        assert!(
+            pending.button.input.get("folder").is_none(),
+            "no folder given, none linked: {}",
+            pending.button.input
+        );
     });
     cx.update(|window, cx| {
         window.render_frame(cx);
+        assert!(
+            window.find("pending-values").visible(),
+            "the input as labelled values"
+        );
+        assert!(
+            window.try_find("pending-raw").is_none(),
+            "the raw input is behind Details"
+        );
+        window.click("pending-details", cx);
+        window.render_frame(cx);
+        assert!(window.find("pending-raw").visible());
         window.click("apply", cx);
     });
     wait(cx, app, "the new dossier in use", |a| {
@@ -2152,7 +2335,7 @@ fn wait_for_the_tab_fact(
     }
 }
 
-/// "Work on a repository" in the thread tab: the form of thread.repo (the repository given or `prefilled` with the
+/// "Change where the chat works" in the thread tab: the environment step (thread.repo) (the repository given or `prefilled` with the
 /// dossier's), base main, the inline confirm; then the thread has its branch.
 fn attach_repository(
     cx: &mut VisualTestContext,
@@ -2182,8 +2365,6 @@ fn attach_repository(
             window.click("form-field-repo", cx);
             window.input(repo.to_str().unwrap(), cx);
         }
-        window.click("form-more", cx);
-        window.render_frame(cx);
         window.click("form-field-base", cx);
         window.input("main", cx);
         window.click("form-submit", cx);
@@ -2320,11 +2501,63 @@ fn a_new_user_chooses_no_dossier_makes_one_in_the_app_and_keeps_two_chats_across
     drop(runtime);
 }
 
+/// A third chat chooses where it works before its first message (the environment step, todo-180 B): the dossier's
+/// repository is offered first; the first run already commits in the chat's own worktree.
+fn a_chat_chooses_where_it_works_first(
+    cx: &mut VisualTestContext,
+    app: &Entity<LegionApp>,
+    repo: &Path,
+) -> (i64, String) {
+    // a third chat chooses where it works before its first message (the environment step, todo-180 B): the dossier's
+    // repository is offered first; the first run already commits in the chat's own worktree
+    app.update(cx, |a, cx| a.open_tab(Tab::Chat, cx));
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("chat-place-change", cx);
+    });
+    wait(cx, app, "the environment step", |a| a.state.form.is_some());
+    app.read_with(cx, |a, _| {
+        let form = a.state.form.as_ref().unwrap();
+        assert_eq!(form.values.get("repo").map(String::as_str), repo.to_str());
+        let shown: Vec<&str> = form.fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(shown, ["repo", "base"], "no thread number to type");
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("form-field-base", cx);
+        window.input("main", cx);
+        window.click("form-submit", cx);
+    });
+    app.read_with(cx, |a, _| {
+        assert_eq!(
+            a.screen.chat_place,
+            Some((repo.to_path_buf(), "main".to_string()))
+        );
+        assert!(
+            a.state.pending.is_none(),
+            "the user's choice is the step itself"
+        );
+    });
+    send(cx, "commit");
+    wait(cx, app, "the third chat's first answer", |a| {
+        !said(a, "thread.answer").is_empty()
+    });
+    let (id, branch) = app.read_with(cx, |a, _| {
+        let answer = &said(a, "thread.answer")[0];
+        assert!(answer.contains("COMMIT_OK"), "{answer}");
+        let t = &a.screen.thread.as_ref().unwrap().thread;
+        (t.id, t.branch.clone().unwrap())
+    });
+    assert_eq!(branch, format!("legionctl/chat--thread-{id}"));
+    (id, branch)
+}
+
 /// todo-174, the thread and code (approved 2026-10-17): a chat starts with no repository (its runs work in a scratch
-/// folder: the stand-in cannot commit there). "Work on a repository" opens the form of thread.repo; with the lab's
+/// folder: the stand-in cannot commit there). "Change where the chat works" opens the environment step; with the lab's
 /// repository and base main, the thread gets its own worktree on its own branch, the title names repository@branch,
 /// and the next run commits there, not on main (the agent gets the conversation so far: it has no session in the new
-/// folder). A second chat's form has that repository first (the dossier's linked one), and it gets a second worktree.
+/// folder). A second chat's form has that repository first (the dossier's linked one), and it gets a second worktree;
+/// a third chat chooses it before its first message.
 #[gpui_kit::test]
 fn a_chat_gets_a_repository_once_and_each_chat_works_in_its_own_worktree(cx: &mut TestAppContext) {
     let (op, home, repo) = thread_lab("code");
@@ -2380,6 +2613,8 @@ fn a_chat_gets_a_repository_once_and_each_chat_works_in_its_own_worktree(cx: &mu
         });
         threads.push((id, branch));
     }
+    let (id, branch) = a_chat_chooses_where_it_works_first(cx, &app, &repo);
+    threads.push((id, branch));
     cx.update(|window, cx| {
         window.render_frame(cx);
         assert!(window.find("place").visible());

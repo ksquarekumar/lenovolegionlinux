@@ -90,8 +90,13 @@ impl LegionApp {
         });
         self.finish(cx, task, |app, (jobs, findings)| {
             app.screen.activity.jobs = jobs;
-            app.screen.activity.failures =
-                Some(findings.into_iter().filter(|f| failure(f)).collect());
+            app.screen.activity.failures = Some(
+                findings
+                    .into_iter()
+                    .map(|f| f.text)
+                    .filter(|f| failure(f))
+                    .collect(),
+            );
         });
     }
 

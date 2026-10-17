@@ -708,6 +708,8 @@ fn a_missing_check_kind_is_a_finding_and_a_session_start_nudge() {
         .0
     };
     assert!(doctor().contains(&finding));
+    // the finding is a state for the user (the app's Health); the command is the agent's nudge alone
+    assert!(!doctor().contains("code checks detect"), "{}", doctor());
 
     assert!(
         lab.ok(&ws, &["code", "checks", "run", "lint"])

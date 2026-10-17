@@ -16,7 +16,7 @@ use gpui_kit::{
     IntoElement, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled, div,
     px, relative,
 };
-use legionctl_api::{ViewButton, ViewData, ViewWidget};
+use legionctl_api::{OPS, ViewButton, ViewData, ViewWidget};
 
 use crate::LegionApp;
 use crate::theme::{
@@ -25,6 +25,13 @@ use crate::theme::{
 
 /// The narrowest stat card; the cards share the width evenly (U9).
 const STAT_WIDTH: f32 = 200.;
+
+/// What a button does, in words: its operation's summary.
+fn about(b: &ViewButton) -> String {
+    OPS.iter()
+        .find(|o| o.name == b.op)
+        .map_or_else(|| b.label.clone(), |o| o.summary().to_string())
+}
 
 /// Text that the user can select with the mouse and copy with Ctrl+C (todo-168); `id` is unique among its siblings.
 // shortcut: gpui-base 0.7.3 selects nothing in a text cut with an ellipsis (a long table cell); the row's copy button
@@ -164,7 +171,12 @@ impl LegionApp {
     }
 
     /// A row of buttons; one action style for every button of a view (U13).
-    fn buttons(view: &str, part: &str, buttons: &[ViewButton], cx: &mut Context<Self>) -> Div {
+    pub(crate) fn buttons(
+        view: &str,
+        part: &str,
+        buttons: &[ViewButton],
+        cx: &mut Context<Self>,
+    ) -> Div {
         div()
             .h_flex()
             .flex_wrap()
@@ -175,9 +187,67 @@ impl LegionApp {
                     .small()
                     .outline()
                     .label(b.label.clone())
-                    .tooltip(format!("{} {}", b.op, b.input))
+                    .tooltip(about(b))
                     .on_click(cx.listener(move |app, _, _, cx| app.act(button.clone(), cx)))
             }))
+    }
+
+    /// A view that cannot be read: why, with a copy button.
+    fn error_card(data: &ViewData, error: &str, t: &Tokens) -> AnyElement {
+        card(t)
+            .id(SharedString::from(format!("view-{}-error", data.name)))
+            .child(heading(data.title.clone(), t))
+            .child(
+                div()
+                    .h_flex()
+                    .items_start()
+                    .gap(S2)
+                    .text_size(T_SM)
+                    .text_color(t.critical)
+                    .child(icon(IconName::CircleX, px(16.), t.critical))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(text("error", format!("cannot read the view: {error}"))),
+                    )
+                    .child(copy_button(
+                        format!("view-{}-error-copy", data.name),
+                        "Copy the error",
+                        error.to_string(),
+                    )),
+            )
+            .test_support()
+            .into_any_element()
+    }
+
+    /// A view of the code whose folder is in no git repository: why, and the choice of one.
+    fn needs_repository(data: &ViewData, t: &Tokens, cx: &mut Context<Self>) -> AnyElement {
+        card(t)
+            .id(SharedString::from(format!("view-{}-repository", data.name)))
+            .child(heading(data.title.clone(), t))
+            .child(
+                div()
+                    .text_size(T_SM)
+                    .text_color(t.text2)
+                    .child(text("needs-repository", data.note.clone())),
+            )
+            .child(
+                div().h_flex().child(
+                    Button::new(SharedString::from(format!(
+                        "view-{}-choose-repo",
+                        data.name
+                    )))
+                    .small()
+                    .primary()
+                    .label("Choose a repository")
+                    .on_click(cx.listener(|app, _, _, cx| {
+                        app.choose_place(crate::Then::TabRepo, None, cx);
+                    })),
+                ),
+            )
+            .test_support()
+            .into_any_element()
     }
 
     /// A view's widget; a part of a stack has its own title.
@@ -189,32 +259,11 @@ impl LegionApp {
         cx: &mut Context<Self>,
         top: bool,
     ) -> AnyElement {
+        if data.needs_repository {
+            return Self::needs_repository(data, t, cx);
+        }
         if let Some(error) = &data.error {
-            return card(t)
-                .id(SharedString::from(format!("view-{}-error", data.name)))
-                .child(heading(data.title.clone(), t))
-                .child(
-                    div()
-                        .h_flex()
-                        .items_start()
-                        .gap(S2)
-                        .text_size(T_SM)
-                        .text_color(t.critical)
-                        .child(icon(IconName::CircleX, px(16.), t.critical))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(text("error", format!("cannot read the view: {error}"))),
-                        )
-                        .child(copy_button(
-                            format!("view-{}-error-copy", data.name),
-                            "Copy the error",
-                            error.clone(),
-                        )),
-                )
-                .test_support()
-                .into_any_element();
+            return Self::error_card(data, error, t);
         }
         let id = |part: &str| SharedString::from(format!("view-{}-{part}", data.name));
         match data.widget {
@@ -369,7 +418,7 @@ impl LegionApp {
                             .small()
                             .outline()
                             .label(b.label.clone())
-                            .tooltip(format!("{} {}", b.op, b.input))
+                            .tooltip(about(b))
                             .on_click(cx.listener(move |app, _, _, cx| app.act(button.clone(), cx)))
                         })),
                 );

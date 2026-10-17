@@ -3,7 +3,6 @@
 //! prompts; both make the input here, with the same checks.
 
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
@@ -14,8 +13,6 @@ use crate::OpInfo;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Kind {
     Text,
-    /// A folder or file; an empty one is the client's folder.
-    Path,
     Integer,
     Number,
     Bool,
@@ -85,8 +82,6 @@ pub fn fields(op: &OpInfo) -> Vec<Field> {
             };
             let kind = if let Some(words) = choices(prop) {
                 Kind::Choice(words)
-            } else if prop["format"] == "path" {
-                Kind::Path
             } else if types.contains(&"boolean") {
                 Kind::Bool
             } else if types.contains(&"integer") {
@@ -122,11 +117,11 @@ pub fn fields(op: &OpInfo) -> Vec<Field> {
 }
 
 /// The input of `op` from the form's texts (`values`, by field): typed, empty optional fields left out (their
-/// defaults apply), a path relative to `cwd`.
+/// defaults apply); the client resolves its paths after ([`crate::cli::fill_user_fields`]).
 ///
 /// # Errors
 /// A required field is empty, or a value is not of its field's kind.
-pub fn input(op: &OpInfo, values: &BTreeMap<String, String>, cwd: &Path) -> Result<Value> {
+pub fn input(op: &OpInfo, values: &BTreeMap<String, String>) -> Result<Value> {
     let mut out = Map::new();
     for field in fields(op) {
         let text = values.get(&field.name).map_or("", |v| v.trim());
@@ -134,15 +129,11 @@ pub fn input(op: &OpInfo, values: &BTreeMap<String, String>, cwd: &Path) -> Resu
             if field.required {
                 bail!("{} is required: {}", field.name, field.help);
             }
-            if field.kind == Kind::Path {
-                out.insert(field.name, Value::from(cwd.to_string_lossy().into_owned()));
-            }
             continue;
         }
         let what = || format!("{}: {text}", field.name);
         let value = match &field.kind {
             Kind::Text => Value::from(text),
-            Kind::Path => Value::from(cwd.join(text).to_string_lossy().into_owned()),
             Kind::Integer => Value::from(
                 text.parse::<i64>()
                     .with_context(|| format!("{} is a whole number", what()))?,

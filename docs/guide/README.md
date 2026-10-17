@@ -67,7 +67,7 @@ for bench and tune.
 | Rail | the spaces Machine, Work and Agents, and Activity |
 | Navigator | the views of the space (in Work: New chat and your chats, newest first); drag its edge to change its width |
 | Tabs | each tab is one view (a seed, yours, or a composed one), or a chat |
-| Chat bar | `/` lists the commands; in a chat, other text is a message to the agent; in a view, it is an intent; `/change <words>` changes the tab's view |
+| Chat bar | `/` lists the commands; other text is a message to the agent: in a chat, to the chat's agent; in a view, to the agent that makes views, which changes the tab's view (a new version; Undo goes back) or answers in words. Help > What agents can change |
 | Feedback | the title bar's Feedback or `/feedback <note>`: your note, the tab's state and a screenshot of the window that you pick go to the dossier as `feedbacks/<NNNN>-<slug>/` (it cannot change after) |
 
 A chat keeps its conversation in a dossier. Choose one with `/dossier use <name>`, or make one with `/dossier create

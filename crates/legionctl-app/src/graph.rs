@@ -212,7 +212,7 @@ impl LegionApp {
                         .into_iter()
                         .map(|(k, v)| format!("{k}={v}"))
                         .collect(),
-                    repo: legionctl_api::ClientPath(self.screen.repo.clone()),
+                    repo: legionctl_api::ClientPath(self.tab_repo()),
                 };
                 let task =
                     self.operator(
@@ -295,6 +295,7 @@ impl LegionApp {
                                 button: button.clone(),
                                 focused: None,
                                 all: false,
+                                then: crate::Then::Run,
                                 error: None,
                             });
                             cx.notify();

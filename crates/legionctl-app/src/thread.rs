@@ -62,8 +62,6 @@ pub struct Screen {
     pub runs: Vec<(String, Option<bool>)>,
     /// The attached agent's commands (from its last run).
     pub commands: Vec<AgentCommand>,
-    /// The session and the ACP session of the agent's last run: the next prompt goes on in it.
-    pub attached: Option<(String, Option<String>)>,
     /// The agents of config `session.acp`, and `app.agent`: the chat bar's agent where the thread has no pick.
     pub agents: Vec<String>,
     pub default_agent: Option<String>,
@@ -73,6 +71,9 @@ pub struct Screen {
     pub dossiers: Vec<String>,
     /// The screen's newest `/agent` pick: a new chat and a view tab's run take it (a thread keeps its own pick).
     pub draft_agent: Option<String>,
+    /// The new chat's environment: a folder (a git repository or a plain folder) and the base ref; none: a scratch
+    /// folder of the chat.
+    pub chat_place: Option<(PathBuf, String)>,
     /// The answer of a thread's run as it comes (`session.output` of its tag), by thread: (tag, text so far).
     pub live: BTreeMap<i64, (String, String)>,
     /// The folder of the views' repository layer and of the config.
@@ -128,12 +129,12 @@ impl Screen {
             thread_error: None,
             runs: Vec::new(),
             commands: Vec::new(),
-            attached: None,
             agents: Vec::new(),
             default_agent: None,
             dossier: None,
             dossiers: Vec::new(),
             draft_agent: None,
+            chat_place: None,
             live: BTreeMap::new(),
             repo,
             view_data: BTreeMap::new(),
@@ -256,18 +257,18 @@ impl Screen {
                 )
             })
             .chain(std::iter::once((
-                "/change ".to_string(),
-                "Change the view of this tab (a new version; undo goes back)".to_string(),
-            )))
-            .chain(std::iter::once((
                 "/feedback ".to_string(),
                 "Keep a note with this tab's state and a screenshot in the dossier".to_string(),
             )))
             .chain(self.agents.iter().map(|a| {
-                let current = if now.as_ref() == Some(a) { ", now" } else { "" };
+                let current = if now.as_ref() == Some(a) {
+                    " (now)"
+                } else {
+                    ""
+                };
                 (
                     format!("/agent {a}"),
-                    format!("Send the prompts to {a} (session.acp{current})"),
+                    format!("Send the messages to {a}{current}"),
                 )
             }))
             .chain(std::iter::once((
@@ -298,7 +299,9 @@ impl Screen {
                 ),
             ])
             .collect();
-        chat::completions(self.chat(), chat::entries(&self.commands, screen))
+        let mut entries = chat::entries(&self.commands, screen);
+        entries.retain(|e| !agents_only(&e.text));
+        chat::completions(self.chat(), entries)
     }
 }
 
@@ -433,6 +436,24 @@ impl LegionApp {
         self.open_tab(tab, cx);
     }
 
+    /// Read the Dossiers view for the new chat's dossier picker.
+    pub(crate) fn load_picker(&mut self, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+        let repo = self.screen.repo.clone();
+        let task = self.operator(cx, async move {
+            client
+                .call::<op::ViewsRender>(&ViewRenderIn {
+                    name: "dossiers".into(),
+                    params: Vec::new(),
+                    repo: ClientPath(repo),
+                })
+                .await
+        });
+        self.finish(cx, task, |app, data| {
+            app.screen.view_data.insert(PICKER.into(), data);
+        });
+    }
+
     /// Read the view of the tab that shows again.
     pub(crate) fn render_view(&mut self, cx: &mut Context<Self>) {
         let Some(Tab::View { name, params }) = self.tab().cloned() else {
@@ -440,7 +461,11 @@ impl LegionApp {
         };
         let key = self.tab_key();
         let client = self.client.clone();
-        let repo = self.screen.repo.clone();
+        let repo = self.tab_repo();
+        let params = params
+            .into_iter()
+            .filter(|p| !p.starts_with(REPO_PARAM))
+            .collect();
         let task = self.operator(cx, async move {
             client
                 .call::<op::ViewsRender>(&ViewRenderIn {
@@ -538,10 +563,13 @@ impl LegionApp {
                                 && let Ok(answer) =
                                     serde_json::from_value::<ViewAnswer>(value.clone())
                             {
+                                let said = answer_words(&answer);
                                 app.answered(answer, cx);
+                                said
+                            } else {
+                                legionctl_api::render(op, value)
+                                    .unwrap_or_else(|e| (format!("{e:#}"), false))
                             }
-                            legionctl_api::render(op, value)
-                                .unwrap_or_else(|e| (format!("{e:#}"), false))
                         }
                         Err(e) => (format!("{e:#}"), false),
                     };
@@ -554,9 +582,8 @@ impl LegionApp {
         .detach();
     }
 
-    /// The agent's run: its session is the chat bar's now, and its commands are offered.
+    /// The agent's run: its commands are offered in the chat bar.
     fn attach(&mut self, run: &RunOutput, cx: &mut Context<Self>) {
-        self.screen.attached = Some((run.id.clone(), run.acp.clone()));
         let client = self.client.clone();
         let input = SessionIdIn { id: run.id.clone() };
         let task = self.operator(cx, async move {
@@ -572,24 +599,22 @@ impl LegionApp {
             return;
         }
         self.keep_line(&line, cx);
-        if let Some(why) = agents_only(&line) {
-            self.state.message = Some(why);
+        // a change of a dossier's files is an agent's work: the line goes to the agent as a message
+        if agents_only(&line) {
+            self.prompt(line.trim_start_matches('/'), line.clone(), cx);
             cx.notify();
             return;
         }
         match chat::action(
             &line,
             &self.screen.commands,
-            &["view", "agent", "change", "chat", "feedback"],
+            &["view", "agent", "chat", "feedback"],
             &self.screen.repo,
         ) {
             Action::Prompt(prompt) => self.prompt(&prompt, line, cx),
             Action::Operation(op, input) => self.start(op.name, input, line, cx),
             Action::Screen(words) if words[0] == "feedback" => {
                 self.feedback(line.trim_start_matches("/feedback").trim(), cx);
-            }
-            Action::Screen(words) if words[0] == "change" => {
-                self.change(&words[1..].join(" "), line, cx);
             }
             Action::Screen(words) => self.screen_command(&words, cx),
             Action::Refused(why) => self.state.message = Some(why),
@@ -623,7 +648,7 @@ impl LegionApp {
                 }
                 None => {
                     self.state.message = Some(format!(
-                        "no agent {name} in session.acp; it has {}",
+                        "No agent named {name}. The agents are: {}",
                         self.screen.agents.join(", ")
                     ));
                 }
@@ -679,47 +704,27 @@ impl LegionApp {
         }
     }
 
-    /// `prompt` to the agent as a headless run on the thread's account, in the agent's last ACP session: an agent's
-    /// command (`/agent:<name>`) as it is; other text is an intent (`ask`): the stored view that answers it, else the
-    /// ui-composer's view, or the next version of the tab's view.
+    /// `prompt` to the agent: every line that is not a command is a message (user 2026-10-17: one input, one
+    /// meaning). In a chat tab it goes to its thread; in a new chat tab it starts the thread; in a view tab the
+    /// ui-composer gets it with the view: it makes the view's next version, or answers in words (an agent's own
+    /// command starts a chat).
     fn prompt(&mut self, prompt: &str, line: String, cx: &mut Context<Self>) {
         let Some(agent) = self.screen.agent() else {
             self.state.message = Some(format!(
-                "no agent: pick one with /agent <name> (session.acp: {})",
+                "No agent for the chat. Choose one: {}",
                 self.screen.agents.join(", ")
             ));
             return;
         };
         match self.tab().cloned() {
-            Some(Tab::Thread { id }) => return self.say(id, &agent, prompt, line, cx),
-            Some(Tab::Chat) => return self.new_chat(agent, prompt, line, cx),
-            _ => {}
-        }
-        // a view tab: an agent's command runs in the user's dossier; an intent opens a stored view, and only a new view
-        // needs a run (with no dossier, only the stored views answer)
-        let account = self.screen.chat_account();
-        let acp = self
-            .screen
-            .attached
-            .as_ref()
-            .and_then(|(_, acp)| acp.clone());
-        if prompt.starts_with('/') {
-            if self.screen.dossier.is_none() {
-                self.no_dossier(cx);
-                return;
+            Some(Tab::Thread { id }) => self.say(id, &agent, prompt, line, cx),
+            // an agent's own command (`/agent:<name>`) is chat work: it starts a chat, whose runs have their own folder
+            Some(Tab::View { .. }) if prompt.starts_with('/') => {
+                self.new_chat(agent, prompt, line, cx);
             }
-            let input = json!({
-                "agent": agent, "prompt": prompt, "dossier": self.screen.dossier, "repo": self.screen.repo,
-                "account": account, "acp": acp,
-            });
-            self.start("session.run", input, line, cx);
-            return;
+            Some(Tab::View { .. }) => self.change(prompt, line, cx),
+            _ => self.new_chat(agent, prompt, line, cx),
         }
-        let input = json!({
-            "intent": prompt, "agent": agent, "dossier": self.screen.dossier, "repo": self.screen.repo,
-            "account": account, "acp": acp, "stored": self.screen.dossier.is_none(),
-        });
-        self.start("ask", input, line, cx);
     }
 
     /// The first message of a new chat: the user's own thread on the user's dossier, with `agent` as its main agent;
@@ -738,6 +743,7 @@ impl LegionApp {
             .collect();
         let client = self.client.clone();
         let repo = ClientPath(self.screen.repo.clone());
+        let place = self.screen.chat_place.clone();
         let (who, words) = (agent.clone(), prompt.to_string());
         let task = self.operator(cx, async move {
             let start = legionctl_api::ThreadStartIn {
@@ -763,11 +769,22 @@ impl LegionApp {
                     repo,
                 })
                 .await?;
+            // the environment step's folder: the user chose it for this chat
+            if let Some((folder, base)) = place {
+                client
+                    .call::<op::ThreadRepo>(&legionctl_api::ThreadRepoIn {
+                        thread: id,
+                        repo: ClientPath(folder),
+                        base: (!base.is_empty()).then_some(base),
+                    })
+                    .await?;
+            }
             Ok(id)
         });
         self.state.message = Some("starting the chat…".into());
         self.finish_with(cx, task, move |app, id: i64, cx| {
             app.state.message = None;
+            app.screen.chat_place = None;
             if let Some(i) = app.screen.tabs.iter().position(|t| *t == Tab::Chat) {
                 app.screen.tabs[i] = Tab::Thread { id };
                 app.screen.active = i;
@@ -824,14 +841,16 @@ impl LegionApp {
         }
     }
 
-    /// No dossier is chosen: say what a dossier is for and how to choose or make one, and open the Dossiers view.
+    /// No dossier is chosen: say what a dossier is for; a new chat has the dossier picker, another tab opens the
+    /// Dossiers view.
     fn no_dossier(&mut self, cx: &mut Context<Self>) {
+        if self.tab() != Some(&Tab::Chat) {
+            self.open_view("dossiers", cx);
+        }
         self.state.message = Some(
-            "No dossier: a chat and an agent run keep their record in a dossier. Choose one with /dossier use <name> \
-             (or Use in the Dossiers tab), or make one with /dossier create <name>. The machine views need none."
+            "Choose a dossier first: a chat keeps its record in a dossier. Click Use on a dossier, or New dossier."
                 .into(),
         );
-        self.open_view("dossiers", cx);
     }
 
     /// What follows an operation that the user ran: a new dossier is the user's dossier at once; a changed choice
@@ -854,25 +873,25 @@ impl LegionApp {
         }
     }
 
-    /// `/change <words>`: the ui-composer makes the next version of the tab's view.
+    /// `words` for the view tab's view: the ui-composer makes its next version (undo goes back), or answers in words.
     fn change(&mut self, words: &str, line: String, cx: &mut Context<Self>) {
-        let (Some(Tab::View { name, params }), Some(agent)) =
-            (self.tab().cloned(), self.screen.agent())
-        else {
-            self.state.message =
-                Some("/change changes the view of the tab, with the chat bar's agent".into());
-            return;
-        };
-        let input = json!({
-            "intent": words, "view": name, "params": params, "agent": agent, "dossier": self.screen.dossier,
-            "repo": self.screen.repo,
-            "account": self.screen.chat_account(),
-            "acp": self.screen.attached.as_ref().and_then(|(_, acp)| acp.clone()),
-        });
         if self.screen.dossier.is_none() {
             self.no_dossier(cx);
             return;
         }
+        let Some(Tab::View { name, params }) = self.tab().cloned() else {
+            return;
+        };
+        let params: Vec<String> = params
+            .into_iter()
+            .filter(|p| !p.starts_with(REPO_PARAM))
+            .collect();
+        // no ACP session to go on in: the chat bar's last run may be a chat's, whose session is no composer's
+        let input = json!({
+            "intent": words, "view": name, "params": params, "agent": self.screen.agent(),
+            "dossier": self.screen.dossier, "repo": self.tab_repo(),
+            "account": self.screen.chat_account(),
+        });
         self.start("ask", input, line, cx);
     }
 
@@ -960,23 +979,38 @@ impl LegionApp {
     }
 }
 
-/// Why a `/dossier` line that only an agent session can run does not run from the app, with the commands that do what
-/// the user means.
-fn agents_only(line: &str) -> Option<String> {
+/// What the agent that makes views said, for the user: its words, or that the view is ready; a view that fails its
+/// check says why (the route, the tokens and the data are the CLI's text, not the app's).
+fn answer_words(answer: &ViewAnswer) -> (String, bool) {
+    let words = answer.text.trim();
+    match (&answer.error, &answer.view) {
+        (Some(error), _) => (
+            format!("The agent's view is not valid, so nothing changed: {error}"),
+            false,
+        ),
+        (None, _) if !words.is_empty() => (words.to_string(), true),
+        (None, Some(_)) => ("The view is ready.".into(), true),
+        (None, None) => ("The agent gave no answer.".into(), false),
+    }
+}
+
+/// A `/dossier` line that changes a dossier's files: an agent's work, not an operation the app runs.
+fn agents_only(line: &str) -> bool {
     let mut words = line.split_whitespace();
-    let (Some("/dossier"), Some(sub)) = (words.next(), words.next()) else {
-        return None;
-    };
-    ["add", "write", "append", "edit"].contains(&sub).then(|| {
-        format!(
-            "dossier {sub} changes a file in an agent session's own dossier; an agent does it in its session. To \
-             work in a dossier, choose it: /dossier use <name>; to make one: /dossier create <name>"
-        )
-    })
+    matches!(
+        (words.next(), words.next()),
+        (Some("/dossier"), Some("add" | "write" | "append" | "edit"))
+    )
 }
 
 /// One line of a keyboard scroll.
 const LINE: f32 = 40.;
+
+/// The key of the Dossiers view that a new chat shows when the user has no dossier: choose one or make one there.
+pub(crate) const PICKER: &str = "view:dossiers:";
+
+/// A view tab's own folder of code, in its parameters (the app takes it out before it reads the view).
+const REPO_PARAM: &str = "repo=";
 
 impl LegionApp {
     /// Scroll the tab's body by `by` (up is positive), within its content.
@@ -1486,16 +1520,12 @@ impl LegionApp {
         let text = match (&th.repo, &th.branch) {
             (Some(repo), Some(branch)) => format!("Works on {repo} at {branch} (its own worktree)"),
             (Some(folder), None) => {
-                format!("Works on the folder {folder} (an overlay: its writes stay in the layer)")
+                format!("Works on the folder {folder} (copy-on-write: its writes stay in a layer)")
             }
-            _ => "No repository: the agent works in a scratch folder of this thread".into(),
+            _ => "No folder: the agent works in a scratch folder of this chat".into(),
         };
-        let (id, dossier) = (th.id, th.dossier.clone());
-        let label = if th.repo.is_some() {
-            "Change the repository"
-        } else {
-            "Work on a repository"
-        };
+        let id = th.id;
+        let label = "Change where the chat works";
         div()
             .h_flex()
             .flex_wrap()
@@ -1503,20 +1533,39 @@ impl LegionApp {
             .text_size(T_XS)
             .text_color(t.muted)
             .child(text)
-            .child("· runs: host sandbox, no network but the gateway")
+            .child("· sandbox on this computer, no network but the model gateway")
             .child(
                 Button::new("thread-repo")
                     .small()
                     .outline()
                     .label(label)
-                    .on_click(
-                        cx.listener(move |app, _, _, cx| app.choose_repo(id, dossier.clone(), cx)),
-                    ),
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        app.choose_place(crate::Then::Run, Some(id), cx);
+                    })),
             )
     }
 
-    /// The form of `thread.repo` for thread `id`, with the dossier's newest workspace's repository first.
-    fn choose_repo(&mut self, id: i64, dossier: String, cx: &mut Context<Self>) {
+    /// The folder of the view tab's code: its own (`repo=` in its parameters, set by the user), else the app's.
+    pub(crate) fn tab_repo(&self) -> PathBuf {
+        match self.tab() {
+            Some(Tab::View { params, .. }) => params
+                .iter()
+                .find_map(|p| p.strip_prefix(REPO_PARAM))
+                .map_or_else(|| self.screen.repo.clone(), PathBuf::from),
+            _ => self.screen.repo.clone(),
+        }
+    }
+
+    /// The environment step (DESIGN-15): the form of a folder (the dossier's linked repository first) and, for a
+    /// chat, the base ref. `then` says what Continue does; for an existing thread (`Then::Run`) it is `thread.repo`
+    /// with its approval.
+    pub(crate) fn choose_place(
+        &mut self,
+        then: crate::Then,
+        thread: Option<i64>,
+        cx: &mut Context<Self>,
+    ) {
+        let dossier = self.screen.dossier.clone();
         let client = self.client.clone();
         let task = self.operator(cx, async move {
             client
@@ -1524,36 +1573,108 @@ impl LegionApp {
                 .await
         });
         self.finish_with(cx, task, move |app, workspaces, cx| {
+            let dossier = app
+                .screen
+                .thread
+                .as_ref()
+                .filter(|_| thread.is_some())
+                .map(|t| t.thread.dossier.clone())
+                .or(dossier);
             // a repository linked to the dossier (a git workspace of it) first; the user confirms or changes it
             let linked = workspaces
                 .iter()
-                .find(|w| w.dossier == dossier && !w.branch.is_empty())
+                .find(|w| Some(&w.dossier) == dossier.as_ref() && !w.branch.is_empty())
                 .map(|w| w.repo.clone());
-            let mut input = json!({"thread": id});
+            let mut input = json!({});
+            if let Some(id) = thread {
+                input["thread"] = json!(id);
+            }
             if let Some(repo) = linked {
                 input["repo"] = json!(repo);
             }
             let Some(info) = legionctl_api::OPS.iter().find(|o| o.name == "thread.repo") else {
                 return;
             };
+            let fields = legionctl_api::form::fields(info)
+                .into_iter()
+                .filter(|f| f.name == "repo" || (f.name == "base" && then != crate::Then::TabRepo))
+                .map(|mut f| {
+                    if f.name == "repo" {
+                        f.help = match then {
+                            crate::Then::TabRepo => "A folder in a git repository: the view shows its code".into(),
+                            _ => "A git repository gets its own worktree on a new branch; a plain folder gets a \
+                                  copy-on-write layer (the agent's writes stay in the layer). Empty: a scratch folder"
+                                .into(),
+                        };
+                        f.required = then == crate::Then::TabRepo;
+                    }
+                    f
+                })
+                .collect();
             app.state.pending = None;
             // the form shows at the top of the tab
             app.body_scroll
                 .set_offset(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)));
             app.state.form = Some(crate::Form {
-                fields: legionctl_api::form::fields(info),
+                fields,
                 values: legionctl_api::form::texts(&input),
                 button: legionctl_api::ViewButton {
-                    label: "Work on a repository".into(),
+                    label: match then {
+                        crate::Then::TabRepo => "Choose a repository",
+                        _ => "Where the chat works",
+                    }
+                    .into(),
                     op: "thread.repo".into(),
                     input,
                 },
+                then,
                 focused: None,
-                all: false,
+                all: true,
                 error: None,
             });
             cx.notify();
         });
+    }
+
+    /// Continue of the environment step: the folder must exist; the chat keeps it, or the view tab reads its code.
+    pub(crate) fn submit_place(&mut self, cx: &mut Context<Self>) {
+        let Some(form) = self.state.form.as_mut() else {
+            return;
+        };
+        let text = |k: &str| form.values.get(k).map_or("", |v| v.trim()).to_string();
+        let (folder, base) = (text("repo"), text("base"));
+        if folder.is_empty() {
+            if form.then == crate::Then::TabRepo {
+                form.error = Some("Give a folder in a git repository".into());
+                cx.notify();
+                return;
+            }
+            self.screen.chat_place = None;
+            self.state.form = None;
+            cx.notify();
+            return;
+        }
+        let path = self.screen.repo.join(&folder);
+        if !path.is_dir() {
+            form.error = Some(format!("{} is not a folder", path.display()));
+            cx.notify();
+            return;
+        }
+        let then = form.then;
+        self.state.form = None;
+        match then {
+            crate::Then::TabRepo => {
+                if let Some(Tab::View { params, .. }) = self.screen.tabs.get_mut(self.screen.active)
+                {
+                    params.retain(|p| !p.starts_with(REPO_PARAM));
+                    params.push(format!("{REPO_PARAM}{}", path.display()));
+                }
+                self.remember_tabs(cx);
+                self.load_tab(cx);
+            }
+            _ => self.screen.chat_place = Some((path, base)),
+        }
+        cx.notify();
     }
 
     /// A thread tab: its title and facts, its members, its rules and its timeline.
@@ -1642,13 +1763,13 @@ impl LegionApp {
         let focused = self.chat_focus.is_focused(window);
         let chat = self.screen.chat();
         let text: Vec<Div> = if chat.is_empty() {
-            // a chat tab takes a message for its agent; a view tab an intent
+            // every tab takes a message for the agent; in a view tab, the agent changes the view or answers
+            let agent = self.screen.agent().unwrap_or_else(|| "the agent".into());
             let hint = match self.tab() {
-                Some(Tab::Chat | Tab::Thread { .. }) => format!(
-                    "Message {}, or / for commands",
-                    self.screen.agent().unwrap_or_else(|| "the agent".into())
-                ),
-                _ => "Ask for a view, or / for commands".into(),
+                Some(Tab::Chat | Tab::Thread { .. }) => {
+                    format!("Message {agent}, or / for commands")
+                }
+                _ => format!("Ask {agent} about this view, or /"),
             };
             vec![
                 div()
@@ -1845,22 +1966,68 @@ impl LegionApp {
             .into_any_element()
     }
 
+    /// A new chat: its dossier and its environment step (where it works, the sandbox), changeable before the first
+    /// message.
+    fn chat_place_card(&self, dossier: &str, t: &Tokens, cx: &mut Context<Self>) -> Div {
+        let place = match &self.screen.chat_place {
+            Some((folder, base)) if base.is_empty() => format!("Works in {}", folder.display()),
+            Some((folder, base)) => format!("Works in {} from {base}", folder.display()),
+            None => "No folder: the agent works in a scratch folder of this chat".into(),
+        };
+        div()
+            .v_flex()
+            .gap(S2)
+            .text_color(t.muted)
+            .child(format!(
+                "A new chat in dossier {dossier}: write your message below. The first message starts the chat; it \
+                 keeps the conversation."
+            ))
+            .child(
+                div()
+                    .id("chat-place")
+                    .h_flex()
+                    .flex_wrap()
+                    .gap(S2)
+                    .text_size(T_XS)
+                    .child(crate::widgets::text("chat-place-text", place))
+                    .child("· sandbox on this computer, no network but the model gateway")
+                    .child(
+                        Button::new("chat-place-change")
+                            .small()
+                            .outline()
+                            .label("Change where the chat works")
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.choose_place(crate::Then::ChatPlace, None, cx);
+                            })),
+                    )
+                    .test_support(),
+            )
+    }
+
     /// The content of the tab that shows.
     pub(crate) fn tab_content(&self, t: &Tokens, width: f32, cx: &mut Context<Self>) -> Div {
         match self.tab().cloned() {
             None => div()
                 .text_color(t.muted)
-                .child("No tab: pick an entry in the navigator, or type an intent below"),
+                .child("No tab: pick an entry in the navigator, or type a message below"),
             Some(Tab::Thread { id }) => self.thread_tab(id, t, cx),
-            Some(Tab::Chat) => div().v_flex().gap(S2).text_color(t.muted).child(match &self.screen.dossier {
-                Some(d) => format!(
-                    "A new chat in dossier {d}: write your message below. The first message starts your thread; it keeps \
-                     the conversation."
-                ),
-                None => "No dossier yet: a chat keeps its conversation in a dossier. Choose one in the Dossiers tab \
-                         (the title bar), or type /dossier create <name>."
-                    .into(),
-            }),
+            Some(Tab::Chat) => match &self.screen.dossier {
+                Some(d) => self.chat_place_card(d, t, cx),
+                None => div()
+                    .v_flex()
+                    .gap(S2)
+                    .child(div().text_color(t.muted).child(
+                        "Choose a dossier for the chat: it keeps the conversation. Click Use on a dossier, or New \
+                         dossier.",
+                    ))
+                    .children(self.screen.view_data.get(PICKER).map(|data| {
+                        div()
+                            .v_flex()
+                            .gap(S2)
+                            .child(Self::buttons(&data.name, "action", &data.actions, cx))
+                            .child(self.widget(data, width, t, cx, false))
+                    })),
+            },
             Some(Tab::View { .. }) => match self.screen.view() {
                 Some(data) => div().child(self.view_tab(data, width, t, cx)),
                 None => div().text_color(t.muted).child("reading the view…"),

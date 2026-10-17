@@ -2,11 +2,12 @@
 //! tab's content, and the last result below it. The kit's icons and the app's extra icons.
 
 use gpui_kit::assets::IconName;
+use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Disableable as _, Sizable as _, StyledExt as _, TitleBar};
 use gpui_kit::{
-    Context, Div, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    Styled as _, Window, div, px,
+    AnyElement, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    SharedString, Styled as _, Window, div, px,
 };
 use legionctl_api::Class;
 
@@ -58,40 +59,40 @@ impl gpui_kit::AssetSource for AppAssets {
 }
 
 impl LegionApp {
-    /// The plan of the pending action, in its class's words, with Apply and Discard (DESIGN-09: a session or
-    /// workspace change confirms inline with its plan; a machine change shows its plan, then polkit asks).
+    /// The pending action in the user's words (DESIGN-09: a session or workspace change confirms inline with its plan;
+    /// a machine change shows its plan, then polkit asks): what the operation does, what its class changes, then the
+    /// dry run's plan, or the input as labelled values; the operation and its raw input only behind Details.
     fn pending(&self, t: &Tokens, cx: &mut Context<Self>) -> Option<Div> {
         let pending = self.state.pending.as_ref()?;
+        let op = legionctl_api::OPS
+            .iter()
+            .find(|o| o.name == pending.button.op)?;
         let what = match pending.class {
             Class::Machine => {
-                "changes the machine; when you apply it, the system asks for your password"
+                "It changes the machine; when you apply it, the system asks for your password."
             }
-            Class::Workspace => "changes your files or settings",
-            Class::Session => "changes this session's own state",
-            Class::Read => "reads only",
-        };
-        let lines: Vec<String> = match &pending.plan {
-            Some(plan) => plan.lines().map(String::from).collect(),
-            None => vec![format!("{} {}", pending.button.op, pending.button.input)],
+            Class::Workspace => "It changes your files or settings.",
+            Class::Session => "It changes a choice of yours in legionctl.",
+            Class::Read => "It reads only.",
         };
         let empty = pending.plan.as_deref().is_some_and(|p| p.trim().is_empty());
+        let lines = Self::pending_lines(pending, op, empty, t);
         // the buttons first: a long plan must not push them out of reach
-        let buttons = div()
-            .h_flex()
-            .flex_none()
-            .gap(S2)
-            .child(
-                Button::new("apply")
-                    .primary()
-                    .label("Apply")
-                    .disabled(empty)
-                    .on_click(cx.listener(|app, _, _, cx| app.apply(cx))),
-            )
-            .child(
-                Button::new("discard")
-                    .label("Discard")
-                    .on_click(cx.listener(|app, _, _, cx| app.discard(cx))),
-            );
+        let buttons = Self::pending_buttons(empty, cx);
+        let details = pending.details.then(|| {
+            let input = serde_json::to_string_pretty(&pending.button.input).unwrap_or_default();
+            div()
+                .id("pending-raw")
+                .px(S3)
+                .py(S2)
+                .rounded(R_SM)
+                .bg(t.window)
+                .text_size(T_SM)
+                .font_family("monospace")
+                .text_color(t.text2)
+                .child(text("details", format!("{}\n{input}", op.name)))
+                .test_support()
+        });
         Some(
             card(t)
                 .bg(t.raised)
@@ -112,28 +113,106 @@ impl LegionApp {
                                     div()
                                         .text_size(T_SM)
                                         .text_color(t.muted)
-                                        .child(format!("{}: {what}", pending.button.op)),
+                                        .child(text("what", format!("{}. {what}", op.summary()))),
                                 ),
                         )
                         .child(buttons),
                 )
                 .child(
                     div()
+                        .id(if pending.plan.is_some() {
+                            "pending-plan"
+                        } else {
+                            "pending-values"
+                        })
                         .v_flex()
                         .gap(px(2.))
                         .text_size(T_SM)
                         .text_color(t.text2)
-                        .children(if empty {
-                            vec![div().child("Nothing: the machine is already in this state")]
+                        .children(lines)
+                        .test_support(),
+                )
+                .child(
+                    Button::new("pending-details")
+                        .ghost()
+                        .small()
+                        .label(if pending.details {
+                            "Hide details"
                         } else {
-                            lines
-                                .into_iter()
-                                .enumerate()
-                                .map(|(i, l)| div().child(text(format!("line-{i}"), l)))
-                                .collect()
-                        }),
-                ),
+                            "Details"
+                        })
+                        .on_click(cx.listener(|app, _, _, cx| {
+                            if let Some(p) = app.state.pending.as_mut() {
+                                p.details = !p.details;
+                            }
+                            cx.notify();
+                        })),
+                )
+                .children(details),
         )
+    }
+
+    /// Apply (off when the plan changes nothing) and Discard.
+    fn pending_buttons(empty: bool, cx: &mut Context<Self>) -> Div {
+        div()
+            .h_flex()
+            .flex_none()
+            .gap(S2)
+            .child(
+                Button::new("apply")
+                    .primary()
+                    .label("Apply")
+                    .disabled(empty)
+                    .on_click(cx.listener(|app, _, _, cx| app.apply(cx))),
+            )
+            .child(
+                Button::new("discard")
+                    .label("Discard")
+                    .on_click(cx.listener(|app, _, _, cx| app.discard(cx))),
+            )
+    }
+
+    /// The pending action's lines: the dry run's plan, or the input as labelled values.
+    fn pending_lines(
+        pending: &crate::Pending,
+        op: &legionctl_api::OpInfo,
+        empty: bool,
+        t: &Tokens,
+    ) -> Vec<AnyElement> {
+        match &pending.plan {
+            Some(_) if empty => vec![
+                div()
+                    .child("Nothing: the machine is already in this state")
+                    .into_any_element(),
+            ],
+            Some(plan) => plan
+                .lines()
+                .enumerate()
+                .map(|(i, l)| {
+                    div()
+                        .child(text(format!("line-{i}"), l.to_string()))
+                        .into_any_element()
+                })
+                .collect(),
+            None => crate::forms::values(op, &pending.button.input)
+                .into_iter()
+                .enumerate()
+                .map(|(i, (label, value))| {
+                    div()
+                        .h_flex()
+                        .gap(S3)
+                        .child(
+                            div()
+                                .w(px(140.))
+                                .flex_none()
+                                .text_color(t.muted)
+                                .child(label),
+                        )
+                        .child(div().min_w_0().child(text(format!("value-{i}"), value)))
+                        .into_any_element()
+                })
+                .collect(),
+        }
     }
 
     /// The operator does not answer: why, and how to start it.

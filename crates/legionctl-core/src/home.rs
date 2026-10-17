@@ -81,16 +81,16 @@ pub(crate) fn link(dossiers: &Dossiers, dir: &Path) -> Result<Vec<String>> {
 #[must_use]
 pub fn finding(dossiers: &Dossiers, dir: &Path) -> Option<String> {
     let at = dir.join(LINK);
-    let meta = match std::fs::symlink_metadata(&at) {
-        Ok(meta) => meta,
+    match std::fs::symlink_metadata(&at) {
+        Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
         Err(e) => return Some(format!("cannot read {}: {e}", at.display())),
-    };
-    // a link that resolves to the home; a link to nowhere never matches
-    if meta.file_type().is_symlink()
-        && at
-            .canonicalize()
-            .is_ok_and(|to| dossiers.root.canonicalize().is_ok_and(|root| to == root))
+    }
+    // a link that resolves to the home, or the home itself (a folder workspace in $HOME); a link to nowhere never
+    // matches
+    if at
+        .canonicalize()
+        .is_ok_and(|to| dossiers.root.canonicalize().is_ok_and(|root| to == root))
     {
         return None;
     }

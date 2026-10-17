@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use crate::engine::{Operator, nvidia_owner, unit_active, windows_qmp};
 
 /// The action `name` runs `op` with `input`; its class and dry run are the operation's own.
-fn action(name: &str, op: &str, input: Value) -> Result<ResourceAction> {
+pub(crate) fn action(name: &str, op: &str, input: Value) -> Result<ResourceAction> {
     let info = OPS
         .iter()
         .find(|o| o.name == op)

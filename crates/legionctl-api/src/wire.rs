@@ -1595,6 +1595,8 @@ wire! {
         legend: String,
         /// The parameters it was read with.
         params: BTreeMap<String, String>,
+        /// It reads the code of a git repository, and its folder is in none: the client asks for one.
+        needs_repository: bool,
     }
 
     /// A node of a graph view.

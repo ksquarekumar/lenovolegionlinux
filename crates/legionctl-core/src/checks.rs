@@ -279,13 +279,19 @@ pub fn missing_kinds(dir: &Path) -> Result<Vec<Kind>> {
         .collect())
 }
 
-/// The one line of a finding and the session-start nudge for `missing` kinds.
+/// The finding for `missing` kinds: a state, for `doctor` and `dossier check`.
+#[must_use]
+pub fn missing_state(missing: &[Kind]) -> String {
+    let kinds: Vec<&str> = missing.iter().map(|k| k.name()).collect();
+    format!("this repository has no checks of kind {}", kinds.join(", "))
+}
+
+/// The agent's line for `missing` kinds (the session-start nudge, a refused test run): the state and the command.
 #[must_use]
 pub fn missing_line(missing: &[Kind]) -> String {
-    let kinds: Vec<&str> = missing.iter().map(|k| k.name()).collect();
     format!(
-        "this repository has no checks of kind {}: run `legionctl code checks detect` and write .legionctl/checks.jsonc",
-        kinds.join(", ")
+        "{}: run `legionctl code checks detect` and write .legionctl/checks.jsonc",
+        missing_state(missing)
     )
 }
 
@@ -901,7 +907,7 @@ impl Dossiers {
         let mut findings = Vec::new();
         let missing = missing_kinds(dir)?;
         if !missing.is_empty() {
-            findings.push(format!("{}: {}", dir.display(), missing_line(&missing)));
+            findings.push(format!("{}: {}", dir.display(), missing_state(&missing)));
         }
         let facts = self.facts(dir)?;
         let repo = repo_key(dir)?;

@@ -132,7 +132,7 @@ impl LegionApp {
                                     .text_color(t.text)
                                     .child(format!(
                                         "{}{}",
-                                        f.name,
+                                        label(&f.name),
                                         if f.required { " *" } else { "" }
                                     )),
                             )
@@ -154,9 +154,10 @@ impl LegionApp {
                 .id("form")
                 .bg(t.raised)
                 .border_color(t.accent.opacity(0.5))
-                .child(form_head(&form.button.label, op, t, cx))
+                .child(form_head(&form.button.label, about(form, op), t, cx))
                 .children(rows)
-                .when(optional > 0, |c| {
+                // the environment step shows all its fields
+                .when(optional > 0 && form.button.op != "thread.repo", |c| {
                     c.child(
                         Button::new("form-more")
                             .ghost()
@@ -188,13 +189,8 @@ impl LegionApp {
     }
 }
 
-/// The form's head: the button's words, the operation and its summary, Continue and Cancel.
-fn form_head(
-    label: &str,
-    op: &legionctl_api::OpInfo,
-    t: &Tokens,
-    cx: &mut Context<LegionApp>,
-) -> Div {
+/// The form's head: the button's words, what the form is for, Continue and Cancel.
+fn form_head(label: &str, about: &'static str, t: &Tokens, cx: &mut Context<LegionApp>) -> Div {
     div()
         .h_flex()
         .justify_between()
@@ -206,11 +202,7 @@ fn form_head(
                 .min_w_0()
                 .gap(S1)
                 .child(heading(label.to_string(), t))
-                .child(div().text_size(T_SM).text_color(t.muted).child(format!(
-                    "{}: {}",
-                    op.name,
-                    op.summary()
-                ))),
+                .child(div().text_size(T_SM).text_color(t.muted).child(about)),
         )
         .child(
             div()
@@ -255,4 +247,48 @@ fn choice(name: &str, words: &[&str], value: &str, cx: &mut Context<LegionApp>) 
                 }))
         }))
         .into_any_element()
+}
+
+/// What the form is for: the operation's summary, or the environment step's own words.
+fn about(form: &crate::Form, op: &legionctl_api::OpInfo) -> &'static str {
+    match form.then {
+        crate::Then::TabRepo => "Choose the git repository whose code this tab shows.",
+        _ if op.name == "thread.repo" => {
+            "Choose where the chat's agent works. You can change it later."
+        }
+        _ => op.summary(),
+    }
+}
+
+/// A field's words for the user: `max_tokens` is "Max tokens".
+fn label(name: &str) -> String {
+    // a `repo` field is a folder in a repository, or a plain folder
+    if name == "repo" {
+        return "Folder".into();
+    }
+    let words = name.replace('_', " ");
+    let mut chars = words.chars();
+    chars
+        .next()
+        .map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
+}
+
+/// The given fields of `input` as (label, value) in the form's order: a flag as yes or no, a list with commas.
+pub(crate) fn values(
+    op: &legionctl_api::OpInfo,
+    input: &serde_json::Value,
+) -> Vec<(String, String)> {
+    let texts = legionctl_api::form::texts(input);
+    legionctl_api::form::fields(op)
+        .into_iter()
+        .filter(|f| input.get(&f.name).is_some_and(|v| !v.is_null()))
+        .map(|f| {
+            let value = match (&f.kind, texts[&f.name].as_str()) {
+                (Kind::Bool, "true") => "yes".to_string(),
+                (Kind::Bool, "false") => "no".to_string(),
+                (_, v) => v.to_string(),
+            };
+            (label(&f.name), value)
+        })
+        .collect()
 }
