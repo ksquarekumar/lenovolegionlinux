@@ -12,6 +12,7 @@ ignore = [
   # zbus 5 parts merged into zbus 6; the GPUI kit (ashpd, accesskit_unix, notify-rust, oo7) has no zbus 6 release yet
   { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained, through GPUI (plan#todo-196)" },
   { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained, through GPUI (plan#todo-196)" },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained, through GPUI (plan#todo-196)" },
 ]
 
 [licenses]
