@@ -836,7 +836,7 @@ impl LegionApp {
     /// The title bar's status (U19): the operator's answer and how old the data is.
     pub(crate) fn status(&self, t: &Tokens) -> AnyElement {
         let (color, text) = match (&self.state.offline, self.screen.updated) {
-            (Some(_), _) => (t.critical, "operator does not answer".to_string()),
+            (Some(_), _) => (t.critical, "operator is off".to_string()),
             (None, None) => (t.muted, "connecting".to_string()),
             (None, Some(at)) => (
                 t.ok,

@@ -14,6 +14,21 @@ const WRAPPER: &str = "../../packaging/install/legionctl-install";
 const SUDOERS: &str = "../../packaging/install/sudoers";
 const PACKAGE: &str = "legionctl-1-1-x86_64.pkg.tar.zst";
 
+/// The stand-in shell script `path` with `body`, written by a child process: a write fd of this process goes into the
+/// fork of a test that starts a process at that moment, and the exec of the script then fails with ETXTBSY.
+fn script(path: &Path, body: &str) {
+    let out = Command::new("sh")
+        .args([
+            "-c",
+            "printf '#!/bin/sh\\n%s\\n' \"$1\" > \"$0\" && chmod 755 \"$0\"",
+        ])
+        .arg(path)
+        .arg(body)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+}
+
 struct Lab {
     dir: Scratch,
 }
@@ -58,10 +73,7 @@ impl Lab {
                 ),
             ),
         ] {
-            let path = bin.join(name);
-            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-            std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-                .unwrap();
+            script(&bin.join(name), &body);
         }
         git(&dir, &["init", "-q", "--bare", "-b", "main", "origin.git"]);
         git(&dir, &["init", "-q", "-b", "main", "work"]);
@@ -229,7 +241,8 @@ fn the_install_wrapper_installs_only_the_package_built_from_main_after_its_ci_pa
 }
 
 /// U-14: the package turns legionctl on and restarts it on upgrade by itself, so no install or upgrade leaves a
-/// systemctl step for the user. The scriptlet runs with stand-ins for systemctl and loginctl: two users are logged in
+/// systemctl step for the user; it says what it turned on, with the line that turns each off (user decision
+/// 2026-10-17), and an upgrade restarts only what runs (try-restart). The scriptlet runs with stand-ins for systemctl and loginctl: two users are logged in
 /// (alice, bob) beside the login screen's user (gdm, uid 120).
 #[test]
 fn the_package_turns_legionctl_on_and_restarts_each_users_operator_on_upgrade() {
@@ -246,14 +259,7 @@ fn the_package_turns_legionctl_on_and_restarts_each_users_operator_on_upgrade() 
             "printf '120 gdm no active\\n1000 alice no active\\n1001 bob no online\\n'".to_string(),
         ),
     ] {
-        let path = bin.join(name);
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::os::unix::fs::PermissionsExt::set_mode(
-            &mut std::fs::metadata(&path).unwrap().permissions(),
-            0o755,
-        );
-        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-            .unwrap();
+        script(&bin.join(name), &body);
     }
     let run = |step: &str| {
         let _ = std::fs::remove_file(dir.join("systemctl.log"));
@@ -299,7 +305,22 @@ fn the_package_turns_legionctl_on_and_restarts_each_users_operator_on_upgrade() 
          --user -M bob@ daemon-reload\n--user -M bob@ start legionctl-operator.socket\n"
         )
     );
-    assert!(!said.contains("systemctl"), "no step to type: {said}");
+    let scx_said = if scx.is_empty() {
+        String::new()
+    } else {
+        ":: on: scx_loader, the CPU scheduler loader (off: sudo systemctl disable --now scx_loader.service)\n"
+            .to_string()
+    };
+    assert_eq!(
+        said,
+        format!(
+            ":: on: legionctl-system, the machine daemon (off: sudo systemctl disable --now legionctl-system.service)\n\
+             {scx_said}\
+             :: on: legionctl-operator, which the commands and the app of each user talk to (off: sudo systemctl \
+             --global disable legionctl-operator.socket legionctl-operator.service)\n\
+             :: As your user, run 'legionctl setup apply' once: it adds the OSD and the agent setup\n"
+        )
+    );
 
     let (said, ran) = run("post_upgrade");
     assert_eq!(
@@ -308,7 +329,11 @@ fn the_package_turns_legionctl_on_and_restarts_each_users_operator_on_upgrade() 
          --user -M alice@ daemon-reload\n--user -M alice@ try-restart legionctl-operator.service\n\
          --user -M bob@ daemon-reload\n--user -M bob@ try-restart legionctl-operator.service\n"
     );
-    assert_eq!(said, "");
+    assert_eq!(
+        said,
+        ":: restarted: legionctl-system and the operator of each logged-in user, where they ran (an off service \
+         stays off)\n"
+    );
 }
 
 #[test]

@@ -463,11 +463,61 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
             "- the system unit mnt-windows-data.mount failed",
             "- the user unit app-ghostty.service failed",
             "- the OSD extension legionctl-osd@legionctl has an error in GNOME Shell; Fn+Q, Fn+R and Fn lock show no OSD",
-            "- legionctl-system does not answer (fans, throttle reasons and the eBPF sensor are unknown): connecting to the system bus: Failed to connect to address `unix:path=/nonexistent/bus`: No such file or directory (os error 2): \
-             No such file or directory (os error 2)",
+            "- legionctl-system does not answer: connecting to the system bus: Failed to connect to address `unix:path=/nonexistent/bus`: No such file or directory (os error 2): \
+             No such file or directory (os error 2) (fans, throttle reasons and the eBPF sensor are unknown)",
             "- the system service switcheroo-control does not run: GNOME has no \"Launch using Discrete Graphics Card\"",
             "- OpenCL reaches the Intel GPU only through Mesa's rusticl, which needs RUSTICL_ENABLE=iris from the next login (or the package intel-compute-runtime) (fix: legionctl display fix opencl-iris)",
         ]
+    );
+}
+
+/// U-14, user decision 2026-10-17: the package turns legionctl-system on, and the user can turn it off. Off (not on
+/// the system bus), each answer that needs it says so with the one line that turns it on: about's daemon row and a
+/// machine change. Doctor says it once, as setup's legionctl-system row (its action is setup turn-on, the app's Turn
+/// on), not again as the daemon's sample failure.
+#[test]
+fn an_off_daemon_says_so_with_the_line_that_turns_it_on() {
+    let m = Machine::new("daemon-off");
+    let path = m.dir.join("bus");
+    let _bus = crate::common::process::Kill::spawn(
+        std::process::Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--nopidfile"])
+            .arg(format!("--address=unix:path={}", path.display())),
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !path.exists() {
+        assert!(std::time::Instant::now() < deadline, "the private bus");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let op = Operator::start(
+        "daemon-off",
+        &[
+            ("PATH", m.dir.join("bin").into()),
+            ("HOME", m.dir.join("home").into()),
+            ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+            (
+                "DBUS_SYSTEM_BUS_ADDRESS",
+                format!("unix:path={}", path.display()).into(),
+            ),
+        ],
+    );
+    let off = "legionctl-system is off; turn it on with `sudo systemctl enable --now legionctl-system.service`";
+    let about = op.ok(&["about"]);
+    assert!(
+        about
+            .lines()
+            .any(|l| l.contains("daemon") && l.contains(off)),
+        "{about}"
+    );
+    let change = op.cli(&["power", "apply", "--source", "auto"]);
+    let err = String::from_utf8_lossy(&change.stderr);
+    assert!(!change.status.success() && err.contains(off), "{err}");
+    let doctor = String::from_utf8(op.cli(&["doctor"]).stdout).unwrap();
+    assert!(
+        doctor
+            .contains("- setup: legionctl-system for machine is off (fix: legionctl setup turn-on legionctl-system)")
+            && !doctor.contains("legionctl-system is off"),
+        "{doctor}"
     );
 }
 

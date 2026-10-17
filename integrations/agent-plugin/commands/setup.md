@@ -1,7 +1,9 @@
 ---
 description: Set up ctx and legionctl for Claude Code and Codex (skills and MCP servers)
 ---
-1. Call the legionctl MCP tool `setup_check` and show what is missing.
+1. Call the legionctl MCP tool `setup_check` and show what is missing. The rows `legionctl-system` (agent `machine`)
+   and `legionctl-operator` (agent `user`) are the services: the package turns them on, and the user can turn them
+   off. A row that is not `current` shows its state and, as its path, the line that turns it on.
 2. If something is missing, tell the user what `setup_apply` changes: the ctx skill and MCP server for Claude Code and
    Codex, legionctl's MCP server in ~/.codex/config.toml (with a backup), and legionctl's skill folders linked into
    ~/.codex/skills, each missing ACP adapter of config `session.acp` (`bun add -g` with its package from
@@ -10,3 +12,6 @@ description: Set up ctx and legionctl for Claude Code and Codex (skills and MCP 
    user's tools after the next login), the legionctl plugin of Claude Code from the package folder, and the OSD
    extension of GNOME Shell. Then call `setup_apply`.
 3. If ctx is not installed, tell the user to run `legionctl setup apply --install-ctx` in a terminal.
+4. If only a service is off, call `setup_turn_on` with that service (`legionctl-system` or `legionctl-operator`). It
+   turns on only that service, also when ctx is missing; polkit asks the user for `legionctl-system`. `setup_apply`
+   also turns on each service that is off, first.

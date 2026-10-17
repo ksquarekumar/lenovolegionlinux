@@ -13,8 +13,9 @@
 5. `legionctl-build` fetches the SHA into `/var/lib/legionctl-build/src`, checks out exactly that SHA (it refuses when
    `HEAD` is an other commit), and runs `makepkg` with `BUILDDIR` and `PKGDEST` in its home. The cargo, rustup and
    target caches stay in that home (mode 0700). Your processes cannot write there.
-6. Root installs that package file with `pacman -U`, then restarts your operator
-   (`systemctl --user -M $SUDO_USER@ restart legionctl-operator.service`).
+6. Root installs that package file with `pacman -U`. The package's scriptlet restarts the daemon and the operator of
+   each logged-in user where they run (`try-restart`; a service that the user turned off stays off), and prints one
+   line that says so.
 7. Each step goes to the journal: `journalctl -t legionctl-install`.
 8. A commit only on your branch or in your folder is never installed. Merge and push it, wait for CI, then install.
    A commit that changes only `*.md` or `docs/design/` has no CI run (`paths-ignore`): the wrapper refuses it.

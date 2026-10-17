@@ -91,8 +91,10 @@ pub struct State {
     pub pending: Option<Pending>,
     /// The last result or error.
     pub message: Option<String>,
-    /// The operator does not answer: the app shows how to start it.
+    /// The operator is off: the app shows why and Turn on.
     pub offline: Option<String>,
+    /// Why the last Turn on failed.
+    pub turn_on: Option<String>,
     pub busy: bool,
 }
 
@@ -233,7 +235,10 @@ impl LegionApp {
                 let _ = this.update(cx, |app, cx| {
                     match result {
                         Ok(_) => {
-                            app.state.offline = None;
+                            // the operator was off at the start: the layout read failed then
+                            if app.state.offline.take().is_some() && !app.screen.restored {
+                                app.read_layout(None, cx);
+                            }
                             app.screen.updated = Some(std::time::Instant::now());
                         }
                         Err(e) => app.state.offline = Some(format!("{e:#}")),
@@ -263,6 +268,48 @@ impl LegionApp {
             self.read_accounts(cx);
         }
         self.screen.ticks += 1;
+    }
+
+    /// The offline card's Turn on: the user's service manager enables and starts the operator's socket, as
+    /// `systemctl --user enable --now legionctl-operator.socket` does (no root); then the app asks the operator again.
+    pub(crate) fn turn_on(&mut self, cx: &mut Context<Self>) {
+        let private = self.client.runtime().join("systemd/private");
+        self.state.turn_on = None;
+        let task = self.operator(cx, async move {
+            let conn = zbus::connection::Builder::address(
+                format!("unix:path={}", private.display()).as_str(),
+            )?
+            .p2p()
+            .build()
+            .await?;
+            manager(
+                &conn,
+                "EnableUnitFiles",
+                &(&["legionctl-operator.socket"][..], false, false),
+            )
+            .await?;
+            manager(&conn, "Reload", &()).await?;
+            manager(
+                &conn,
+                "StartUnit",
+                &("legionctl-operator.socket", "replace"),
+            )
+            .await?;
+            Ok(())
+        });
+        cx.spawn(
+            async move |this: WeakEntity<LegionApp>, cx: &mut AsyncApp| {
+                let result = task.await;
+                let _ = this.update(cx, |app, cx| match result {
+                    Ok(()) => app.refresh(cx),
+                    Err(e) => {
+                        app.state.turn_on = Some(format!("Turn on failed: {e:#}"));
+                        cx.notify();
+                    }
+                });
+            },
+        )
+        .detach();
     }
 
     /// The data of the tab that shows: its view (once; then its refresh), or its thread.
@@ -522,4 +569,19 @@ impl LegionApp {
             app.load_tab(cx);
         });
     }
+}
+
+/// A call to the systemd manager on `conn`.
+async fn manager<B>(conn: &zbus::Connection, method: &str, body: &B) -> zbus::Result<zbus::Message>
+where
+    B: serde::Serialize + zbus::zvariant::DynamicType,
+{
+    conn.call_method(
+        Some("org.freedesktop.systemd1"),
+        "/org/freedesktop/systemd1",
+        Some("org.freedesktop.systemd1.Manager"),
+        method,
+        body,
+    )
+    .await
 }

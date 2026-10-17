@@ -12,8 +12,10 @@
 //!
 //! - Claude Code: the legionctl plugin from the package's folder (`claude plugin marketplace add`, `install`).
 //! - GNOME Shell: the OSD extension enabled for the user.
+//! - systemd: legionctl-system and the user's legionctl-operator.socket run (the package turns them on; the user can
+//!   turn them off). A start of legionctl-system asks polkit.
 //!
-//! `check()` only reports; `apply()` changes user-level files and returns what it did.
+//! `check()` only reports; `apply()` changes user-level files, starts the services and returns what it did.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,6 +30,18 @@ use crate::config::SessionConfig;
 /// ctx names for the agents legionctl sets up.
 pub const AGENTS: [&str; 2] = ["claude-code", "codex"];
 const PLUGIN: &str = "/usr/share/legionctl/agent-plugin";
+/// The step that turns the machine daemon on, for a message that says it is off.
+pub const SYSTEM_ON: &str =
+    "turn it on with `sudo systemctl enable --now legionctl-system.service`";
+/// legionctl's services: the row's name, the `systemctl` arguments before the verb, and the unit.
+const SERVICES: [(&str, &[&str], &str); 2] = [
+    ("legionctl-system", &[], "legionctl-system.service"),
+    (
+        "legionctl-operator",
+        &["--user"],
+        "legionctl-operator.socket",
+    ),
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Item {
@@ -400,6 +414,7 @@ pub fn check(agents: &Sources, session: &SessionConfig) -> Result<Report> {
     items.extend(acp_items(session, &folders));
     items.extend(claude_plugin_item());
     items.extend(osd_item());
+    items.extend(SERVICES.map(service_item));
     Ok(Report { ctx_version, items })
 }
 
@@ -430,7 +445,8 @@ pub fn apply(
     session: &SessionConfig,
 ) -> Result<Vec<String>> {
     let codex_agents = agents.codex_agents()?;
-    let mut done = Vec::new();
+    // the services first: the other steps can stop at a tool that is missing
+    let mut done = turn_on_services()?;
     if ctx_bin().is_none() {
         ensure!(
             install_missing_ctx,
@@ -640,6 +656,88 @@ fn enable_osd() -> Result<Vec<String>> {
     Ok(vec![
         "OSD extension: enabled (it shows at the next login)".to_string(),
     ])
+}
+
+/// A service of legionctl: current when it runs; else its state (off, failed) and, as its path, the line that turns it
+/// on.
+fn service_item((what, scope, unit): (&str, &[&str], &str)) -> Item {
+    let status = match systemctl().and_then(|bin| {
+        Ok(Command::new(bin)
+            .args(scope)
+            .args(["is-active", unit])
+            .output()?)
+    }) {
+        Ok(out) => match String::from_utf8_lossy(&out.stdout).trim() {
+            "active" => "current".into(),
+            "inactive" => "off".into(),
+            "" => format!(
+                "cannot read: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+            state => state.into(),
+        },
+        Err(e) => format!("cannot read: {e:#}"),
+    };
+    let on = if scope.is_empty() {
+        "sudo systemctl"
+    } else {
+        "systemctl --user"
+    };
+    Item {
+        what: what.into(),
+        // the service manager it runs in
+        agent: if scope.is_empty() { "machine" } else { "user" }.into(),
+        status,
+        path: format!("{on} enable --now {unit}"),
+    }
+}
+
+/// systemctl, from PATH (a test puts a stand-in in ~/.local/bin).
+fn systemctl() -> Result<PathBuf> {
+    tool_bin("systemctl", ".local/bin").context("systemctl is not installed")
+}
+
+/// Enable and start each service that does not run; polkit asks for legionctl-system.
+fn turn_on_services() -> Result<Vec<String>> {
+    SERVICES
+        .into_iter()
+        .filter_map(|s| turn_on_one(s).transpose())
+        .collect()
+}
+
+/// Enable and start the service `what` (a row of [`check`]) when it does not run; polkit asks for legionctl-system.
+///
+/// # Errors
+/// `what` is not a service of legionctl, or systemctl is missing or fails.
+pub fn turn_on(what: &str) -> Result<Vec<String>> {
+    let service = SERVICES
+        .into_iter()
+        .find(|s| s.0 == what)
+        .with_context(|| {
+            format!(
+                "{what} is not a service of legionctl; the services are {}",
+                SERVICES.map(|s| s.0).join(", ")
+            )
+        })?;
+    Ok(turn_on_one(service)?.into_iter().collect())
+}
+
+/// One service: its line when this turned it on, none when it ran.
+fn turn_on_one(service @ (what, scope, unit): (&str, &[&str], &str)) -> Result<Option<String>> {
+    if service_item(service).status == "current" {
+        return Ok(None);
+    }
+    let out = Command::new(systemctl()?)
+        .args(scope)
+        .args(["enable", "--now", unit])
+        .output()
+        .context("running systemctl")?;
+    ensure!(
+        out.status.success(),
+        "{what} did not start: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(Some(format!("{what}: turned on")))
 }
 
 /// `bun add -g` for each missing ACP adapter of `session.acp`; one line per adapter.

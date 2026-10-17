@@ -39,6 +39,12 @@ impl Client {
         }
     }
 
+    /// The runtime folder (`$XDG_RUNTIME_DIR`) of this client's operator.
+    #[must_use]
+    pub fn runtime(&self) -> &Path {
+        &self.runtime
+    }
+
     /// Run the operation `name`.
     ///
     /// # Errors
@@ -86,7 +92,7 @@ impl Client {
                 coded(
                     Code::Unavailable,
                     format!(
-                        "legionctl-operator does not answer on {} ({e}); start it with \
+                        "legionctl-operator is off (no answer on {}: {e}); turn it on with \
                      `systemctl --user enable --now legionctl-operator.socket`",
                         self.socket.display()
                     ),

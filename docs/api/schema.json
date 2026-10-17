@@ -3879,6 +3879,45 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "setup.turn-on": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "service": {
+          "type": "string",
+          "description": "The service: legionctl-system or legionctl-operator."
+        }
+      },
+      "required": [
+        "service"
+      ],
+      "title": "ServiceIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines",
+        "dry_run"
+      ],
+      "description": "Lines that say what changed or, in a dry run, what would change.",
+      "title": "Changes",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "reminders.list": {
     "class": "read",
     "internal": false,

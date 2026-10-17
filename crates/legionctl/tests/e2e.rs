@@ -7398,6 +7398,10 @@ fn facts_written_from_one_dossier_are_read_from_another_and_a_rename_keeps_rows_
     );
 }
 
+/// The step that a message about an off operator gives (U-14).
+const OPERATOR_ON: &str =
+    "turn it on with `systemctl --user enable --now legionctl-operator.socket`";
+
 /// The hooks of the shipped plugin (hooks.json, the `PreCompact` block of 2026-10-17, todo-176): each command runs on
 /// this build with each recorded payload of its event. With the operator up, every hook exits 0 and blocks only by its
 /// rule: the dossier gate (prompt) and the dossier nudge (stop) for a session without a dossier, nothing for a session
@@ -7473,7 +7477,8 @@ fn every_plugin_hook_runs_on_this_build_and_blocks_only_by_its_rule() {
             assert!(
                 out.status.code() == Some(1)
                     && out.stdout.is_empty()
-                    && err.starts_with("legionctl hook: legionctl-operator does not answer"),
+                    && err.starts_with("legionctl hook: legionctl-operator is off (no answer on ")
+                    && err.contains(OPERATOR_ON),
                 "{payload:?} {session}, operator down: {out:?}"
             );
         }

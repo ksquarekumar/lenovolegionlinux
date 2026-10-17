@@ -13,14 +13,19 @@ post_install() {
   systemctl daemon-reload
   # the package turns legionctl on itself, so no step is left to type (EV-review-11 U-14)
   systemctl enable --now legionctl-system.service
+  echo ":: on: legionctl-system, the machine daemon (off: sudo systemctl disable --now legionctl-system.service)"
   # scx_loader comes with the optional scx-tools
-  if [ -e /usr/lib/systemd/system/scx_loader.service ]; then systemctl enable --now scx_loader.service; fi
+  if [ -e /usr/lib/systemd/system/scx_loader.service ]; then
+    systemctl enable --now scx_loader.service
+    echo ":: on: scx_loader, the CPU scheduler loader (off: sudo systemctl disable --now scx_loader.service)"
+  fi
   systemctl --global enable legionctl-operator.socket legionctl-operator.service
   for user in $(logged_in); do
     systemctl --user -M "$user@" daemon-reload
     systemctl --user -M "$user@" start legionctl-operator.socket
   done
-  echo ":: legionctl is on. As your user, run 'legionctl setup apply' once: it adds the OSD and the agent setup"
+  echo ":: on: legionctl-operator, which the commands and the app of each user talk to (off: sudo systemctl --global disable legionctl-operator.socket legionctl-operator.service)"
+  echo ":: As your user, run 'legionctl setup apply' once: it adds the OSD and the agent setup"
 }
 
 post_upgrade() {
@@ -33,6 +38,7 @@ post_upgrade() {
     systemctl --user -M "$user@" daemon-reload
     systemctl --user -M "$user@" try-restart legionctl-operator.service
   done
+  echo ":: restarted: legionctl-system and the operator of each logged-in user, where they ran (an off service stays off)"
 }
 
 pre_remove() {

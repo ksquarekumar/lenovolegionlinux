@@ -15,16 +15,16 @@ use legionctl_api::{
     KnobDetail, Knobs, Launch, Lines, Locks, MonitorIn, Readings, RecordIn, Recording, ReplayIn,
     Samples, SensorsIn, SessionExec, SessionId, SessionIdIn, SessionIn, SessionResumeIn,
     SessionStartIn, SessionState, Sessions, ToolCall, ToolCallRow, ToolCallsIn, TuneIn, TuneReport,
-    WindowsState, coded,
+    WindowsState, code_of, coded,
 };
 use legionctl_api::{
     AccountIn, AccountLoginIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath,
     CloseIn, ConfigFiles, ConfigView, Ctx, Empty, Engine, ExplainIn, Explanation, Findings,
     GpuPrimaryIn, GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LayerList, LoadState, MergeIn,
     PowerApplyIn, PowerSource, ProfileIn, ProjectIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn,
-    RunnableGrant, RunnablesCheck, RunnablesCheckIn, RunnablesShowIn, SetupApplyIn, SetupReport,
-    SkillList, Snapshot, StatusIn, Validation, Workspace, WorkspaceIn, WorkspaceOpenIn,
-    WorkspaceStatus, Workspaces,
+    RunnableGrant, RunnablesCheck, RunnablesCheckIn, RunnablesShowIn, ServiceIn, SetupApplyIn,
+    SetupReport, SkillList, Snapshot, StatusIn, Validation, Workspace, WorkspaceIn,
+    WorkspaceOpenIn, WorkspaceStatus, Workspaces,
 };
 use legionctl_api::{
     Autostart, AutostartIn, DisplayFixIn, FanCurveIn, FanState, FirmwareDevices, FirmwareUpdateIn,
@@ -1073,18 +1073,28 @@ impl Operator {
         self.runtime.block_on(async {
             let conn = zbus::Connection::system()
                 .await
-                .context("connecting to the system bus")?;
+                .context("legionctl-system does not answer: connecting to the system bus")?;
             let proxy = System1Proxy::new(&conn).await?;
-            call(&proxy).await.map_err(|e| {
-                let code = match &e {
-                    zbus::Error::FDO(fdo) => match **fdo {
-                        zbus::fdo::Error::AccessDenied(_) => Code::Denied,
-                        zbus::fdo::Error::InvalidArgs(_) => Code::InvalidInput,
-                        _ => Code::Failed,
-                    },
-                    _ => Code::Failed,
-                };
-                coded(code, format!("legionctl-system: {e}"))
+            call(&proxy).await.map_err(|e| match &e {
+                zbus::Error::FDO(fdo) => match **fdo {
+                    zbus::fdo::Error::AccessDenied(_) => {
+                        coded(Code::Denied, format!("legionctl-system: {e}"))
+                    }
+                    zbus::fdo::Error::InvalidArgs(_) => {
+                        coded(Code::InvalidInput, format!("legionctl-system: {e}"))
+                    }
+                    _ => coded(Code::Failed, format!("legionctl-system: {e}")),
+                },
+                // the bus has no daemon: it is off, or its start failed
+                zbus::Error::MethodError(name, ..)
+                    if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown" =>
+                {
+                    coded(
+                        Code::Unavailable,
+                        format!("legionctl-system is off; {}", setup::SYSTEM_ON),
+                    )
+                }
+                _ => coded(Code::Failed, format!("legionctl-system: {e}")),
             })
         })
     }
@@ -1117,6 +1127,22 @@ fn jail(
     }
 }
 
+/// Doctor's findings of the daemon's sample: each eBPF sensor that does not run, or why there is no sample.
+fn sample_findings(op: &Operator) -> Result<Vec<legionctl_api::Finding>> {
+    Ok(match op.system(async |p| p.sample().await) {
+        Ok(json) => serde_json::from_str::<RootSample>(&json)?
+            .sensor_errors
+            .into_iter()
+            .map(|(sensor, e)| state(format!("the eBPF {sensor} sensor does not run: {e}")))
+            .collect(),
+        // an off daemon is the setup finding of legionctl-system, with its Turn on
+        Err(e) if code_of(&e) == Code::Unavailable => Vec::new(),
+        Err(e) => vec![state(format!(
+            "{e:#} (fans, throttle reasons and the eBPF sensor are unknown)"
+        ))],
+    })
+}
+
 /// The agent setup gaps of `doctor`, each with the action that installs the setup.
 fn setup_findings() -> Result<Vec<legionctl_api::Finding>> {
     let report = setup::check(
@@ -1130,15 +1156,24 @@ fn setup_findings() -> Result<Vec<legionctl_api::Finding>> {
             Ok(legionctl_api::Finding {
                 text: format!("setup: {} for {} is {}", i.what, i.agent, i.status),
                 // ctx comes from its own installer, only when the user asks for it
-                actions: vec![crate::resources::action(
-                    if i.what == "ctx" {
-                        "Install ctx"
-                    } else {
-                        "Install the agent setup"
-                    },
-                    "setup.apply",
-                    serde_json::json!({ "install_ctx": i.what == "ctx" }),
-                )?],
+                // a service gets its own step only: a missing ctx does not stop it
+                actions: vec![if matches!(i.agent.as_str(), "machine" | "user") {
+                    crate::resources::action(
+                        "Turn on",
+                        "setup.turn-on",
+                        serde_json::json!({ "service": i.what }),
+                    )?
+                } else {
+                    crate::resources::action(
+                        if i.what == "ctx" {
+                            "Install ctx"
+                        } else {
+                            "Install the agent setup"
+                        },
+                        "setup.apply",
+                        serde_json::json!({ "install_ctx": i.what == "ctx" }),
+                    )?
+                }],
             })
         })
         .collect()
@@ -1698,7 +1733,7 @@ impl Operator {
         let fan = self
             .system(async |p| p.fan_status().await)
             .and_then(|json| Ok(serde_json::from_str::<fan::FanState>(&json)?))
-            .map_err(|e| format!("legionctl-system does not answer: {e:#}"));
+            .map_err(|e| format!("{e:#}"));
         let (profile, _) = profile::load(None)?;
         sensors::view(
             &SysRoot::from_env(),
@@ -1893,16 +1928,7 @@ impl Engine for Operator {
                     .collect::<Result<_>>()?,
                 Err(e) => vec![not_run("machine", &e)],
             };
-        match self.system(async |p| p.sample().await) {
-            Ok(json) => {
-                for (sensor, e) in serde_json::from_str::<RootSample>(&json)?.sensor_errors {
-                    findings.push(state(format!("the eBPF {sensor} sensor does not run: {e}")));
-                }
-            }
-            Err(e) => findings.push(state(format!(
-                "legionctl-system does not answer (fans, throttle reasons and the eBPF sensor are unknown): {e:#}"
-            ))),
-        }
+        findings.extend(sample_findings(self)?);
         if let Ok(theirs) = self.system(async |p| p.version().await)
             && theirs != legionctl_machine::interface_version()
         {
@@ -2719,6 +2745,13 @@ impl Engine for Operator {
         })
     }
 
+    fn setup_turn_on(&self, _: &Ctx, input: ServiceIn) -> Result<Changes> {
+        Ok(Changes {
+            lines: setup::turn_on(&input.service)?,
+            dry_run: false,
+        })
+    }
+
     fn reminders_list(&self, _: &Ctx, input: ProjectIn) -> Result<Reminders> {
         Ok(reminders::list(&config(Some(&input.project))?).into_wire())
     }
@@ -3114,7 +3147,7 @@ impl Engine for Operator {
                 ),
                 false,
             ),
-            Err(e) => item("daemon", format!("legionctl-system does not answer: {e:#}"), false),
+            Err(e) => item("daemon", format!("{e:#}"), false),
         });
         items.push(match Plan::load(None) {
             Ok(plan) => item("machine", format!("profile {}", plan.profile.id), true),

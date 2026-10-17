@@ -1242,8 +1242,25 @@ fn open_app(
     VisualTestContext,
     tokio::runtime::Runtime,
 ) {
+    let (app, mut vcx, runtime) = open_app_at(cx, &op.runtime, width, runs);
+    // the layout facts first: they set the tabs
+    wait(&mut vcx, &app, "the layout", |a| a.screen.restored);
+    (app, vcx, runtime)
+}
+
+/// The app of [`open_app`] with the operator of the runtime folder `operator` (`$XDG_RUNTIME_DIR`), before its layout.
+fn open_app_at(
+    cx: &mut TestAppContext,
+    operator: &Path,
+    width: f32,
+    runs: Option<(&Path, &Path)>,
+) -> (
+    Entity<LegionApp>,
+    VisualTestContext,
+    tokio::runtime::Runtime,
+) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let client = Client::at("app", &op.runtime);
+    let client = Client::at("app", operator);
     let handle = runtime.handle().clone();
     let repo = runs.map_or_else(here, |(_, repo)| repo.to_path_buf());
     cx.update(|cx| {
@@ -1267,10 +1284,152 @@ fn open_app(
     let app: Entity<LegionApp> = window
         .update(cx, |root, _, _| root.view().clone().downcast().unwrap())
         .unwrap();
-    let mut vcx = VisualTestContext::from_window(window.into(), cx);
-    // the layout facts first: they set the tabs
-    wait(&mut vcx, &app, "the layout", |a| a.screen.restored);
+    let vcx = VisualTestContext::from_window(window.into(), cx);
     (app, vcx, runtime)
+}
+
+/// What the stand-in systemd manager was asked, in order.
+type ManagerCalls = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+/// The user's systemd manager on its private socket: `StartUnit` of the socket links the app's runtime folder to the
+/// test operator's (`legionctl/` and the token), as a real start makes the socket answer.
+struct Manager {
+    calls: ManagerCalls,
+    app: PathBuf,
+    operator: PathBuf,
+}
+
+#[zbus::interface(name = "org.freedesktop.systemd1.Manager")]
+impl Manager {
+    fn enable_unit_files(
+        &self,
+        files: Vec<String>,
+        runtime: bool,
+        force: bool,
+    ) -> (bool, Vec<(String, String, String)>) {
+        let mut call = "EnableUnitFiles".to_string();
+        for file in files {
+            call = format!("{call} {file}");
+        }
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("{call} {runtime} {force}"));
+        (true, Vec::new())
+    }
+    fn reload(&self) {
+        self.calls.lock().unwrap().push("Reload".into());
+    }
+    /// The first start fails as for a masked unit; the next one starts it.
+    fn start_unit(
+        &self,
+        name: &str,
+        mode: &str,
+    ) -> zbus::fdo::Result<zbus::zvariant::OwnedObjectPath> {
+        let mut calls = self.calls.lock().unwrap();
+        let first = !calls.iter().any(|c| c.starts_with("StartUnit"));
+        calls.push(format!("StartUnit {name} {mode}"));
+        if first {
+            return Err(zbus::fdo::Error::Failed(
+                "Unit legionctl-operator.socket is masked.".into(),
+            ));
+        }
+        for part in ["legionctl", legionctl_api::USER_TOKEN] {
+            std::os::unix::fs::symlink(self.operator.join(part), self.app.join(part)).unwrap();
+        }
+        Ok(zbus::zvariant::OwnedObjectPath::try_from("/org/freedesktop/systemd1/job/1").unwrap())
+    }
+}
+
+/// U-14, user decision 2026-10-17: when the operator is off, the app shows one card that says so with the line that
+/// turns it on, and Turn on does that step itself: through the user's systemd manager on its private socket (as
+/// `systemctl --user enable --now legionctl-operator.socket` does; no root), with no other call. A failed start shows
+/// its cause in the card; after a start the app finds the operator, the card goes and the layout that could not be read
+/// at the start is read.
+#[gpui_kit::test]
+fn the_offline_card_turns_the_operator_on_through_the_users_service_manager(
+    cx: &mut TestAppContext,
+) {
+    let op = unplugged_machine("turn-on");
+    // the operator's token exists before the app's first answer
+    op.ok(&["load"]);
+    let folder = Scratch::new(format!("/var/tmp/lc-turn-on-app-{}", std::process::id()));
+    let private = folder.join("systemd/private");
+    std::fs::create_dir_all(private.parent().unwrap()).unwrap();
+    let calls = ManagerCalls::default();
+    let (app, mut vcx, runtime) = open_app_at(cx, &folder, 1200., None);
+    let listener = runtime
+        .block_on(async { tokio::net::UnixListener::bind(&private) })
+        .unwrap();
+    let manager = (
+        calls.clone(),
+        folder.to_path_buf(),
+        op.runtime.to_path_buf(),
+    );
+    runtime.spawn(async move {
+        let mut kept = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            let (calls, app, operator) = manager.clone();
+            kept.push(
+                zbus::connection::Builder::unix_stream(stream)
+                    .server(zbus::Guid::generate())
+                    .unwrap()
+                    .p2p()
+                    .serve_at(
+                        "/org/freedesktop/systemd1",
+                        Manager {
+                            calls,
+                            app,
+                            operator,
+                        },
+                    )
+                    .unwrap()
+                    .build()
+                    .await
+                    .unwrap(),
+            );
+        }
+    });
+    let cx = &mut vcx;
+    wait(cx, &app, "the offline card", |a| a.state.offline.is_some());
+    let why = app.read_with(cx, |a, _| a.state.offline.clone().unwrap());
+    assert!(
+        why.starts_with("legionctl-operator is off (no answer on ")
+            && why.ends_with(
+                "turn it on with `systemctl --user enable --now legionctl-operator.socket`"
+            ),
+        "{why}"
+    );
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("turn-on", cx);
+    });
+    // a failed start says why in the card, and the card stays
+    wait(cx, &app, "the failed start", |a| a.state.turn_on.is_some());
+    app.read_with(cx, |a, _| {
+        assert_eq!(
+            a.state.turn_on.as_deref(),
+            Some("Turn on failed: org.freedesktop.DBus.Error.Failed: Unit legionctl-operator.socket is masked.")
+        );
+        assert!(a.state.offline.is_some());
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("turn-on", cx);
+    });
+    wait(cx, &app, "the operator answers", |a| {
+        a.state.offline.is_none() && a.state.turn_on.is_none() && a.screen.restored
+    });
+    assert_eq!(
+        *calls.lock().unwrap(),
+        [
+            "EnableUnitFiles legionctl-operator.socket false false",
+            "Reload",
+            "StartUnit legionctl-operator.socket replace",
+        ]
+        .repeat(2)
+    );
+    drop(runtime);
 }
 
 /// The bounds of the element `id` in the last frame: (x, width, height).

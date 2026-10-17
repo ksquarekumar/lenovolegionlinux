@@ -876,7 +876,9 @@ mod tests {
         );
         assert_eq!(version(&path), 1, "the refused step changed nothing");
         assert!(!bak.exists(), "no backup without a step");
-        // an operator of this build may hold it: its own step goes on
+        // an operator of this build may hold it: its own step goes on. The unlock is explicit: a process that another
+        // test forks at this moment has a copy of `other` until its exec, and a close alone would leave the lock with it
+        flock(&other, FlockOperation::Unlock).unwrap();
         drop(other);
         let held = hold(&path).unwrap();
         drop(Db::open(&path, NEW).unwrap());

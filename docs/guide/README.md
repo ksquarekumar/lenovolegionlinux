@@ -23,8 +23,18 @@ command here is on main. A feature that is not on main has the label "planned (v
    make install-package
    ```
 
-   The package turns on the root daemon, the scheduler loader (with scx-tools) and your operator, and an upgrade
-   restarts them with the new build. You type no systemctl command.
+   The package turns on these services and prints one line for each. An upgrade restarts the ones that run with the
+   new build; a service that you turned off stays off.
+
+   | Service | What it does | Turn it off | Turn it on again |
+   | --- | --- | --- | --- |
+   | `legionctl-system` | the root daemon: power policy, Fn keys, the machine's D-Bus API | `sudo systemctl disable --now legionctl-system.service` | `sudo systemctl enable --now legionctl-system.service` |
+   | `scx_loader` (with scx-tools) | loads the sched_ext CPU scheduler | `sudo systemctl disable --now scx_loader.service` | `sudo systemctl enable --now scx_loader.service` |
+   | `legionctl-operator` | your API: the commands and the app of each user talk to it | `sudo systemctl --global disable legionctl-operator.socket legionctl-operator.service` | `systemctl --user enable --now legionctl-operator.socket` |
+
+   When a service of legionctl is off, the command that needs it says so with its line. In the app, the
+   operator card has **Turn on**, and Health has **Turn on** for the root daemon (polkit asks for your password).
+   `legionctl setup check` shows the state of each.
 
 2. Set up the rest as your user. This enables the OSD (it shows at the next login), installs the Claude Code plugin
    from the package folder (the plugin and the binary are then of one build), and writes the MCP server, the skills

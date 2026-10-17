@@ -11,7 +11,7 @@ legionctl-api = { path = "../legionctl-api", features = ["client", "cli"] }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }
+zbus = { version = "5.19.0", default-features = false, features = ["tokio", "p2p"] }
 gpui-kit = { version = "=0.7.3", features = ["gpui-fast"] }
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "sync", "time"] }
 

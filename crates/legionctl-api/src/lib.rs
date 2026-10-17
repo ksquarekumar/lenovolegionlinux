@@ -559,6 +559,9 @@ operations! {
     setup_check / SetupCheck = "setup.check", Read, Empty => SetupReport;
     /// Set up ctx and legionctl for Claude Code and Codex. Changes user-level config files only, with backups.
     setup_apply / SetupApply = "setup.apply", Workspace, SetupApplyIn => Changes;
+    /// Turn on one service of legionctl that is off (`setup check` lists them): enable and start it; polkit asks for
+    /// legionctl-system.
+    setup_turn_on / SetupTurnOn = "setup.turn-on", Workspace, ServiceIn => Changes;
     /// Reminders that hooks inject into agent sessions, with on/off state and when they fire.
     reminders_list / RemindersList = "reminders.list", Read, ProjectIn => Reminders;
     /// Turn a reminder on.

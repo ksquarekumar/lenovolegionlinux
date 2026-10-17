@@ -88,7 +88,15 @@ legionctl setup apply       # the OSD, the Claude Code plugin, MCP server, skill
 legionctl doctor            # what is wrong now, and the command that fixes each finding
 ```
 
-The [guide](docs/guide/README.md) has the full steps, the plugin, the app and the greeter.
+The package turns on three services and prints a line for each. To turn one off:
+
+- `sudo systemctl disable --now legionctl-system.service` stops the root daemon (power policy, Fn keys).
+- `sudo systemctl disable --now scx_loader.service` stops the CPU scheduler loader (only with scx-tools).
+- `sudo systemctl --global disable legionctl-operator.socket legionctl-operator.service` turns off the operator of
+  each user from their next login (the commands and the app need it).
+
+When one is off, the command or the app that needs it says so and gives the line (or **Turn on**) that starts it
+again. The [guide](docs/guide/README.md) has the full steps, the plugin, the app and the greeter.
 
 ## Do it with legionctl
 

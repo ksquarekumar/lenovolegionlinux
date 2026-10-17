@@ -244,6 +244,12 @@ pub struct SetupApplyIn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ServiceIn {
+    /// The service: legionctl-system or legionctl-operator.
+    pub service: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AccountIn {
     /// The clauth account: a-z, 0-9 and '-'.
     pub name: String,

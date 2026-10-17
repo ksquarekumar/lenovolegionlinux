@@ -7,12 +7,15 @@ user-invocable: true
 # legionctl tool lifecycle
 
 1. The `legionctl` client sends each command to the operator (`legionctl-operator`), your user service on
-   `$XDG_RUNTIME_DIR/legionctl/api.sock`. systemd starts it at the first call.
+   `$XDG_RUNTIME_DIR/legionctl/api.sock`. systemd starts it at the first call. When the user turned it off, each
+   command says "legionctl-operator is off" with the line that turns it on; give the user that line.
 2. Each operation has a permission class (`docs/api/schema.json`). `read` runs at once and changes nothing.
 3. `session` changes only the caller's own session: its dossier, and its workspace except merge. It runs at once.
 4. `workspace` changes your files, settings, containers or other sessions. An agent's call waits for the user: a desktop
    notification with Allow and Deny, 120 s. No answer is a refusal.
-5. `machine` goes to the root daemon (`legionctl-system`) with a polkit dialog. See skill machine-tools.
+5. `machine` goes to the root daemon (`legionctl-system`) with a polkit dialog. See skill machine-tools. When the
+   daemon is off, the call says "legionctl-system is off"; `legionctl setup turn-on legionctl-system` starts it
+   (workspace class; polkit asks).
 6. Each call that is not a read is an event (kind = the operation name) with the actor, the input and the result.
    `events` pages the log (`--cursor`, `--limit`); `trace` follows it live. The app is the only UI;
    agents and scripts read its views with `views render` (text or `--json`).

@@ -28,5 +28,5 @@ W workspace, M machine (polkit). "client" runs in the client only, with no opera
 | `session`, `jobs`, `tools`, `agents`, `gateway` | R, W | systemd scope, bwrap, docker or QEMU; `session run` is a job | `session list`, `jobs`, `trace` | sessions-and-agents |
 | `mcp-proxy` | client | - | `tools calls` | sessions-and-agents |
 | `packages`, `cache`, `images` | R, W | operator, network, docker buildx and compose; `images build` is a job | its `list`/`stats`/`status` | sessions-and-agents |
-| `setup`, `reminders`, `skills`, `config` | R, W | operator, your config files (with backups) | its `check`/`list`/`explain` | - |
+| `setup`, `reminders`, `skills`, `config` | R, W | operator, your config files (with backups); `setup turn-on` starts a service of legionctl (polkit for `legionctl-system`) | its `check`/`list`/`explain` | - |
 | `events`, `trace`, `mcp` | R / client | operator | - | tool-lifecycle |

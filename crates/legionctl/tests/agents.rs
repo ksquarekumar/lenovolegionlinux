@@ -128,6 +128,7 @@ esac
             std::os::unix::fs::PermissionsExt::from_mode(0o755),
         )
         .unwrap();
+        stand_in_systemctl(&home);
         Lab { op, home, repo }
     }
 
@@ -631,6 +632,107 @@ fn setup_check_reports_each_missing_acp_adapter_and_apply_installs_it_with_bun_o
             && stderr.contains(&format!("ACP adapter local-acp for local: {why}")),
         "{stderr}"
     );
+}
+
+/// Never the machine's services: a stand-in `systemctl` in `home`'s ~/.local/bin whose units run while ~/<unit>
+/// exists (both at first).
+fn stand_in_systemctl(home: &Path) {
+    let systemctl = home.join(".local/bin/systemctl");
+    write(
+        &systemctl,
+        r#"#!/bin/sh
+echo "$*" >> "$HOME/systemctl.log"
+[ "$1" = --user ] && shift
+case "$1" in
+is-active) [ -e "$HOME/$2" ] && echo active || { echo inactive; exit 3; } ;;
+enable) [ "$2" = --now ] && touch "$HOME/$3" ;;
+*) exit 64 ;;
+esac
+"#,
+    );
+    std::fs::set_permissions(
+        &systemctl,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    for unit in ["legionctl-system.service", "legionctl-operator.socket"] {
+        write(&home.join(unit), "");
+    }
+}
+
+/// U-14, user decision 2026-10-17: the package turns the services on, and the user can turn them off. `setup check`
+/// has a row for each with its state and the line that turns it on. `setup turn-on <service>` (Health's Turn on) runs
+/// only that service's step, also with ctx missing; `setup apply` turns on only the ones that are off
+/// (`systemctl enable --now`; polkit asks for legionctl-system), and then both are current.
+#[test]
+fn setup_check_shows_each_service_that_is_off_and_apply_turns_it_on() {
+    let lab = Lab::new("services", &shipped_plugin());
+    std::fs::remove_file(lab.home.join("legionctl-system.service")).unwrap();
+    let rows = || -> Vec<(String, String, String)> {
+        let check: Value = serde_json::from_str(&lab.op.ok(&["setup", "check", "--json"])).unwrap();
+        check["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|i| i["agent"] == "machine" || i["agent"] == "user")
+            .map(|i| {
+                let field = |k: &str| i[k].as_str().unwrap().to_string();
+                (field("what"), field("status"), field("path"))
+            })
+            .collect()
+    };
+    let row = |what: &str, status: &str, path: &str| {
+        (what.to_string(), status.to_string(), path.to_string())
+    };
+    assert_eq!(
+        rows(),
+        [
+            row(
+                "legionctl-system",
+                "off",
+                "sudo systemctl enable --now legionctl-system.service"
+            ),
+            row(
+                "legionctl-operator",
+                "current",
+                "systemctl --user enable --now legionctl-operator.socket"
+            ),
+        ]
+    );
+    let log = || std::fs::read_to_string(lab.home.join("systemctl.log")).unwrap();
+    let _ = std::fs::remove_file(lab.home.join("systemctl.log"));
+    let refused = lab.op.cli(&["setup", "turn-on", "sshd"]);
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains(
+            "sshd is not a service of legionctl; the services are legionctl-system, legionctl-operator"
+        ),
+        "{refused:?}"
+    );
+    // no ctx here: its own step only, not the agent setup
+    let out = lab.op.cli(&["setup", "turn-on", "legionctl-system"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        log(),
+        "is-active legionctl-system.service\nenable --now legionctl-system.service\n"
+    );
+    assert!(rows().iter().all(|(_, status, _)| status == "current"));
+
+    lab.stand_in_ctx();
+    std::fs::remove_file(lab.home.join("legionctl-system.service")).unwrap();
+    std::fs::remove_file(lab.home.join("systemctl.log")).unwrap();
+    let out = lab.op.cli_in(&lab.home, &["setup", "apply"]);
+    let done = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && done.contains("legionctl-system: turned on"),
+        "{done}"
+    );
+    assert_eq!(
+        log(),
+        "is-active legionctl-system.service\nenable --now legionctl-system.service\n\
+         --user is-active legionctl-operator.socket\n",
+        "only the service that is off"
+    );
+    assert!(rows().iter().all(|(_, status, _)| status == "current"));
 }
 
 /// U-14: the Claude Code plugin and the OSD extension are part of the setup, not manual steps that `setup check` does

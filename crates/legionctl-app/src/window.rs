@@ -215,8 +215,8 @@ impl LegionApp {
         }
     }
 
-    /// The operator does not answer: why, and how to start it.
-    fn offline(why: &str, t: &Tokens) -> Div {
+    /// The operator is off: why, the line that turns it on, and Turn on, which does it.
+    fn offline(why: &str, failed: Option<&String>, t: &Tokens, cx: &mut Context<Self>) -> Div {
         card(t)
             .max_w(px(640.))
             .child(
@@ -224,7 +224,7 @@ impl LegionApp {
                     .h_flex()
                     .gap(S2)
                     .child(icon(IconName::CircleX, px(18.), t.critical))
-                    .child(heading("legionctl-operator does not answer", t)),
+                    .child(heading("legionctl-operator is off", t)),
             )
             .child(
                 div()
@@ -233,16 +233,19 @@ impl LegionApp {
                     .child(text("why", why.to_string())),
             )
             .child(
-                div()
-                    .px(S3)
-                    .py(S2)
-                    .rounded(R_SM)
-                    .bg(t.raised)
-                    .text_size(T_SM)
-                    .font_family("monospace")
-                    .text_color(t.text)
-                    .child("systemctl --user enable --now legionctl-operator.socket"),
+                div().h_flex().child(
+                    Button::new("turn-on")
+                        .primary()
+                        .label("Turn on")
+                        .on_click(cx.listener(|app, _, _, cx| app.turn_on(cx))),
+                ),
             )
+            .children(failed.map(|f| {
+                div()
+                    .text_size(T_SM)
+                    .text_color(t.critical)
+                    .child(text("turn-on-failed", f.clone()))
+            }))
     }
 }
 
@@ -299,7 +302,7 @@ impl Render for LegionApp {
         let width = (viewport - crate::shell::RAIL - navigator - 48.).clamp(200., 1180.);
         let mut content = div().v_flex().gap(S5);
         if let Some(why) = &self.state.offline {
-            content = content.child(LegionApp::offline(why, &t));
+            content = content.child(LegionApp::offline(why, self.state.turn_on.as_ref(), &t, cx));
         } else {
             content = content
                 .children(self.form(&t, window, cx))
