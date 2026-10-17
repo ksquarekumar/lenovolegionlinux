@@ -1217,9 +1217,12 @@ fn the_cli_asks_for_an_intent_and_prints_the_stored_view() {
     );
 }
 
+/// The user's Codex login in an ask lab.
+const CODEX_LOGIN: &str = r#"{"tokens": {"refresh_token": "r-codex-of-the-user"}}"#;
+
 /// A lab for `ask` (todo-163): the stand-in decision server and keyring, the stand-in ACP agent as the composer
-/// (`fake`, bound by config `session.acp_bind`; `other` the same agent, not bindable), whose answer to an intent is the
-/// view file `<first word>.jsonc` of `views`, and `config` in the user's layer.
+/// (`fake`; `other` the same agent under another name), whose answer to an intent is the view file `<first word>.jsonc`
+/// of `views`, the user's Codex login [`CODEX_LOGIN`], and `config` in the user's layer.
 fn ask_lab(tag: &str, config: &Value) -> (Lab, u16, PathBuf, common::process::Kill, PathBuf) {
     let mut lab = Lab::new(tag);
     let (server, port, log, mut env) = decisions(&lab.home);
@@ -1233,12 +1236,13 @@ fn ask_lab(tag: &str, config: &Value) -> (Lab, u16, PathBuf, common::process::Ki
     let mut all = json!({
         "rlcd": {"backend": "stand"},
         "session": {"acp": {"fake": ["python3", fake], "other": ["python3", fake, "other"]},
-                    "acp_bind": ["fake"], "scope": false, "writable": []},
+                    "scope": false, "writable": []},
         "app": {"agent": "fake"}
     });
     for (k, v) in config.as_object().unwrap() {
         all[k] = v.clone();
     }
+    write(&lab.home.join(".codex/auth.json"), CODEX_LOGIN);
     write(
         &lab.home.join(".config/legionctl/ask.jsonc"),
         &all.to_string(),
@@ -1284,7 +1288,7 @@ fn a_similar_intent_opens_the_stored_view_through_rlcd_and_a_failed_rlcd_runs_no
     let (lab, port, log, server, _) = ask_lab(
         "ask-rlcd",
         &json!({"views": {"rlcd": true}, "app": {"agent": "claude"},
-            "session": {"acp": {"claude": ["python3", fake]}, "acp_bind": ["claude"], "scope": false, "writable": []}}),
+            "session": {"acp": {"claude": ["python3", fake]}, "scope": false, "writable": []}}),
     );
     let alt = lab.home.join(".clauth/profiles/alt/credentials.json");
     write(
@@ -1380,7 +1384,8 @@ fn a_similar_intent_opens_the_stored_view_through_rlcd_and_a_failed_rlcd_runs_no
 
 /// todo-181: "go back to the table" on a tab is rlcd's pick among the other versions of the tab's view (each by its
 /// widget, title and intent), and the view shows that version with no composer run. A new wish ("chart over time")
-/// is rlcd's none: the composer makes the next version.
+/// is rlcd's none: the composer makes the next version. A message that asks for no change ("Hi") gets words and no
+/// version.
 #[test]
 fn going_back_to_an_earlier_version_of_a_tabs_view_is_rlcds_pick_with_no_composer_run() {
     let (lab, port, log, server, views) = ask_lab("ask-back", &json!({"views": {"rlcd": true}}));
@@ -1449,6 +1454,26 @@ fn going_back_to_an_earlier_version_of_a_tabs_view_is_rlcds_pick_with_no_compose
             .starts_with("Table - Memory"),
         "{call}"
     );
+
+    // "Hi" in the tab (the lead's r324 walk made version 3 of it): the composer gives the view back as it is, so
+    // the answer is its words and the tab's view stays at its version
+    write(
+        &views.join("hi.jsonc"),
+        r#"{"name": "mem", "title": "Memory", "intent": "memory use of the machine", "widget": "table",
+            "source": {"op": "sensors"}, "columns": ["name"]}"#,
+    );
+    let hi = ask("none", &["Hi", "--view", &name]);
+    assert_eq!(
+        (hi["route"].as_str(), hi["view"].as_str()),
+        (Some("composer"), None),
+        "{hi}"
+    );
+    assert!(
+        hi["text"].as_str().unwrap().contains("Here is the view."),
+        "{hi}"
+    );
+    let shown = lab.json("main", &["views", "render", &name]);
+    assert_eq!(shown["version"], 1, "no new version: {shown}");
     drop(server);
 }
 
@@ -1533,14 +1558,31 @@ fn composer_is_bound(text: &str) {
                "claudeCode": {"options": {"settingSources": [], "strictMcpConfig": true}}}),
         "no file, shell or web tools, no settings, plugins or other servers: {bound}"
     );
+    // Codex's binding: its own home, with no default environment (no shell, patch or image tool), no web search,
+    // plugins or hooks, and the user's login as the real file
+    let codex = &bound["codex_home"];
+    assert_eq!(
+        codex["environments.toml"], "default = \"none\"\n",
+        "{bound}"
+    );
+    let config = codex["config.toml"].as_str().unwrap_or_default();
+    for line in [
+        "web_search = \"disabled\"",
+        "plugins = false",
+        "hooks = false",
+        "apps = false",
+    ] {
+        assert!(config.lines().any(|l| l == line), "{line}: {bound}");
+    }
+    assert_eq!(codex["auth.json"], CODEX_LOGIN, "{bound}");
 }
 
 /// The parts library and the bound composer (todo-163). A part is a stored one-widget view; a stack places it by
 /// name and version. The composer's request lists the parts that fit the intent; its stack that places a part at
 /// version 1 keeps showing version 1 after the part's version 2; a part it writes in place that the library has
 /// already becomes a reference to that part, and a new one goes into the library. The composer's ACP session gets
-/// legionctl's MCP server with the view tools only, and the adapter is asked for no tools and settings of its own; an
-/// agent whose adapter cannot be bound fails the ask before any run.
+/// legionctl's MCP server with the view tools only, and the adapter is asked for no tools and settings of its own;
+/// every agent of `session.acp` can be the composer (`other` too, a second run).
 #[test]
 fn a_new_view_reuses_a_library_part_by_reference_and_the_composer_is_bound_to_view_tools() {
     let (lab, _, _, server, composed) = ask_lab("ask-parts", &json!({}));
@@ -1627,15 +1669,15 @@ fn a_new_view_reuses_a_library_part_by_reference_and_the_composer_is_bound_to_vi
         "the new part is in the library: {new_part}"
     );
 
-    // an agent that cannot be bound fails the ask before its run
-    let (refused, _) = lab.ask(&["table board again", "--agent", "other"]);
-    assert!(!refused.status.success());
+    // another agent is bound the same way
+    let (again, answer) = lab.ask(&["table board again", "--agent", "other"]);
     assert!(
-        String::from_utf8_lossy(&refused.stderr).contains("agent other cannot be bound to tools"),
+        again.status.success(),
         "{}",
-        String::from_utf8_lossy(&refused.stderr)
+        String::from_utf8_lossy(&again.stderr)
     );
-    assert_eq!(lab.composer_runs(), 1, "no run of the unbound agent");
+    composer_is_bound(answer["text"].as_str().unwrap());
+    assert_eq!(lab.composer_runs(), 2);
     drop(server);
 }
 

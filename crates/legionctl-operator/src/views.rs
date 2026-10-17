@@ -1174,8 +1174,10 @@ fn composer_prompt(
     ];
     if let Some((name, _, text, data)) = current {
         out.push(format!(
-            "Change this view: keep its name \"{}\" (your answer is its next version).\n```json\n{text}\n```\nIts \
-             data now (a sample):\n{}",
+            "The intent is the user's message in this view's tab. Only a message that asks to change the view gets \
+             the changed view (keep its name \"{}\"; it is the view's next version); any other message (a greeting, \
+             a question) gets a plain answer in words and no json block.\n```json\n{text}\n```\nIts data now (a \
+             sample):\n{}",
             name,
             sample(data, 30)
         ));
@@ -1682,6 +1684,18 @@ fn compose(
             return Ok(answer);
         }
     };
+    // the tab's view given back as it is (the answer to a message that asks for no change) is no new version
+    if let Some((name, Some(old), _, _)) = &current {
+        let unchanged = |v: &View| {
+            let mut v = v.clone();
+            v.name.clone_from(name);
+            v.space = None;
+            serde_json::to_value(v)
+        };
+        if unchanged(&view)? == unchanged(old)? {
+            return Ok(answer);
+        }
+    }
     let name = keep(
         ctx,
         &mut view,

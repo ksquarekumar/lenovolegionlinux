@@ -350,7 +350,9 @@ fn path_item(folders: &[PathBuf]) -> Item {
 }
 
 /// One item per ACP adapter command of `session.acp`: current when the command is in `folders` or on PATH (the user
-/// manager's PATH with `path_conf()`), else missing with its package (`session.acp_packages`) as the path.
+/// manager's PATH with `path_conf()`) and comes from its package (`session.acp_packages`: bun links a command into
+/// the package's folder); else missing, or from another package (the Zed codex-acp before the ACP project's, which
+/// gives the same command), with the package as the path.
 fn acp_items(session: &SessionConfig, folders: &[PathBuf]) -> Vec<Item> {
     let mut search = folders.to_vec();
     search.extend(std::env::split_paths(
@@ -371,9 +373,24 @@ fn acp_items(session: &SessionConfig, folders: &[PathBuf]) -> Vec<Item> {
         } else {
             search.iter().map(|d| d.join(command)).find(|p| p.is_file())
         };
+        let package = session.acp_packages.get(command);
         let (status, path) = match found {
+            Some(path)
+                if package.is_some_and(|p| {
+                    !path
+                        .canonicalize()
+                        .unwrap_or_else(|_| path.clone())
+                        .to_string_lossy()
+                        .contains(&format!("/node_modules/{p}/"))
+                }) =>
+            {
+                (
+                    "from another package".to_string(),
+                    package.cloned().unwrap_or_default(),
+                )
+            }
             Some(path) => ("current".to_string(), path.display().to_string()),
-            None => match session.acp_packages.get(command) {
+            None => match package {
                 Some(package) => ("missing".to_string(), package.clone()),
                 None => (
                     "missing (no package in session.acp_packages)".to_string(),
@@ -740,7 +757,8 @@ fn turn_on_one(service @ (what, scope, unit): (&str, &[&str], &str)) -> Result<O
     Ok(Some(format!("{what}: turned on")))
 }
 
-/// `bun add -g` for each missing ACP adapter of `session.acp`; one line per adapter.
+/// `bun add -g` for each ACP adapter of `session.acp` that is missing or from another package (bun links the command
+/// to the new one); one line per adapter.
 fn install_acp_adapters(session: &SessionConfig) -> Result<Vec<String>> {
     let mut done = Vec::new();
     for item in acp_items(session, &path_folders()?) {
@@ -748,7 +766,7 @@ fn install_acp_adapters(session: &SessionConfig) -> Result<Vec<String>> {
             continue;
         }
         ensure!(
-            item.status == "missing",
+            item.status == "missing" || item.status == "from another package",
             "{} for {}: {}",
             item.what,
             item.agent,

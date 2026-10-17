@@ -1861,15 +1861,12 @@ impl Operator {
         let record = store.session(id)?;
         let resolved = resolve(&Dirs::from_env(), Some(&place_of(&record.workdir)))?;
         let token = legionctl_api::random_token()?;
-        let mut launch = store.resume_session(id, &resolved.config, None, &token, true)?;
         // a job from before the binding has no tools: an unbound run, as it was
         let tools: Vec<String> =
             serde_json::from_value::<Option<Vec<String>>>(input["tools"].clone())
                 .context("the job's tools are not a list of operations")?
                 .unwrap_or_default();
-        if !tools.is_empty() {
-            launch.bind(&record.agent, &tools, &resolved.config)?;
-        }
+        let launch = store.resume_session(id, &resolved.config, None, &token, (true, &tools))?;
         Db::open_default()?.issue_token(&launch.id, &token)?;
         let note = format!(
             "A restart of legionctl cut off your work on this task; your workspace and your dossier hold what you did. \
@@ -5035,6 +5032,7 @@ impl Engine for Operator {
             member: None,
             capabilities: &main_agent_sets(&resolved.config, &input.capability),
             parent: None,
+            tools: &[],
         };
         let launch = store.start_session(&start, &resolved.config)?;
         Db::open_default()?.issue_token(&launch.id, &token)?;
@@ -5212,7 +5210,7 @@ impl Engine for Operator {
             &resolved.config,
             input.account.as_deref(),
             &token,
-            false,
+            (false, &[]),
         )?;
         Db::open_default()?.issue_token(&launch.id, &token)?;
         Ok(launch.into_wire())
@@ -5283,6 +5281,7 @@ impl Operator {
             member: None,
             capabilities: &main_agent_sets(&resolved.config, &input.capability),
             parent: None,
+            tools: &input.tools,
         };
         for tool in &input.tools {
             legionctl_api::OPS
@@ -5290,14 +5289,7 @@ impl Operator {
                 .find(|op| op.name == tool && !op.internal())
                 .with_context(|| format!("no operation {tool} to bind the agent to"))?;
         }
-        let mut launch = store.start_session(&start, &resolved.config)?;
-        if !input.tools.is_empty() {
-            launch
-                .bind(agent, &input.tools, &resolved.config)
-                .inspect_err(|_| {
-                    let _ = store.release(&launch.id);
-                })?;
-        }
+        let launch = store.start_session(&start, &resolved.config)?;
         let db = Db::open_default()?;
         db.issue_token(&launch.id, &token)?;
         // `load`: the caller asked to go on in `acp`, so an agent that cannot load it fails the run; `tools`: a resume

@@ -184,6 +184,8 @@ pub struct Start<'a> {
     pub capabilities: &'a [String],
     /// A member's parent: the main agent's sets; none: the user is the parent.
     pub parent: Option<&'a [String]>,
+    /// A bound run's operations ([`bound_mcp`]): the agent's only tools; empty: unbound.
+    pub tools: &'a [String],
 }
 
 /// How the client starts a session in its terminal: `scope` + `sandbox` + `agent`, in that order.
@@ -204,7 +206,7 @@ pub struct Launch {
     pub workdir: PathBuf,
     /// The session's MCP servers (`mcp.json`): legionctl's own and each one behind the proxy.
     pub mcp: serde_json::Value,
-    /// The operations the agent is bound to ([`Launch::bind`]): its only tools; none: unbound.
+    /// The operations the agent is bound to ([`Start::tools`]): its only tools; none: unbound.
     #[serde(default)]
     pub tools: Option<Vec<String>>,
     /// What the session uses (its dossier, new or not; its workspace, branch and size) and the commands that change
@@ -511,6 +513,8 @@ struct Who<'a> {
     member: Option<(&'a str, &'a Path)>,
     /// An ACP adapter with no terminal (`session run`).
     headless: bool,
+    /// A bound run's operations; empty: unbound.
+    tools: &'a [String],
 }
 
 /// A thread member sees the main agent's folder with its own empty upper layer, so its checks never change main's
@@ -992,28 +996,70 @@ fn check_account(account: &str, agent: &str) -> Result<()> {
 pub(crate) const LOGINS: [(&str, &str); 2] =
     [("claude", ".credentials.json"), ("codex", "auth.json")];
 
-impl Launch {
-    /// Bind the run of `agent` to the operations `tools` (DESIGN-11: a bound agent gets only what its binding needs):
-    /// its MCP config is legionctl's server with those tools only, and the ACP client asks the adapter for no tools
-    /// of its own.
-    ///
-    /// # Errors
-    /// The agent's adapter cannot be bound (not in `session.acp_bind`).
-    pub fn bind(&mut self, agent: &str, tools: &[String], config: &Config) -> Result<()> {
-        anyhow::ensure!(
-            config.session.acp_bind.iter().any(|a| a == agent),
-            "agent {agent} cannot be bound to tools: its adapter has no way to turn off its own file and shell tools \
-             (config session.acp_bind: {:?})",
-            config.session.acp_bind
-        );
-        let mut args = vec!["mcp".to_string()];
-        for tool in tools {
-            args.extend(["--only".into(), tool.clone()]);
-        }
-        self.mcp = serde_json::json!({ "mcpServers": { "legionctl": { "command": "legionctl", "args": args } } });
-        self.tools = Some(tools.to_vec());
-        Ok(())
+/// A bound run's MCP config (DESIGN-11: a bound agent gets only what its binding needs): legionctl's server with
+/// the operations `tools` only; no tools: the session's servers `mcp`.
+fn bound_mcp(mcp: serde_json::Value, tools: &[String]) -> serde_json::Value {
+    if tools.is_empty() {
+        return mcp;
     }
+    let mut args = vec!["mcp".to_string()];
+    for tool in tools {
+        args.extend(["--only".into(), tool.clone()]);
+    }
+    serde_json::json!({ "mcpServers": { "legionctl": { "command": "legionctl", "args": args } } })
+}
+
+/// Codex's config in a bound run: no hosted web search, image generation, apps, plugins, hooks, memories or browser
+/// and computer use; the MCP servers come from the ACP client only.
+const CODEX_BOUND_CONFIG: &str = r#"web_search = "disabled"
+[features]
+image_generation = false
+apps = false
+plugins = false
+tool_suggest = false
+hooks = false
+memories = false
+browser_use = false
+computer_use = false
+"#;
+
+/// A bound run's own Codex home (`session-home/<id>/codex-bound`), so Codex reads none of the user's config, plugins,
+/// hooks or MCP servers: its config ([`CODEX_BOUND_CONFIG`]), `environments.toml` with no default environment (Codex
+/// then gives the model no shell, `apply_patch` or `view_image`; the local one stays for the stdio MCP servers), and
+/// the Codex login of clauth account `account` (else the current login) as the real file (DESIGN-12 wall 1). Claude Code ignores it; its binding
+/// is the ACP `_meta` of the run. No tools: unbound, nothing.
+fn codex_bound_home(
+    mounts: &mut Vec<Mount>,
+    env: &mut Vec<(String, String)>,
+    id: &str,
+    (account, tools): (Option<&str>, &[String]),
+) -> Result<()> {
+    if tools.is_empty() {
+        return Ok(());
+    }
+    let dir = session_home(id).join("codex-bound");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("config.toml"), CODEX_BOUND_CONFIG)?;
+    std::fs::write(dir.join("environments.toml"), "default = \"none\"\n")?;
+    mounts.push(Mount::Writable(dir.clone()));
+    // the login as `logins_through` binds it: the clauth account's own file, else the current login's target
+    let live = crate::accounts::live_file("codex")?;
+    let real = match account.and_then(|a| crate::accounts::profile_login(a, "codex").ok()) {
+        Some(own) => Some(own),
+        None if live.is_file() => Some(
+            live.canonicalize()
+                .with_context(|| format!("reading the link {}", live.display()))?,
+        ),
+        None => None,
+    };
+    if let Some(real) = real {
+        let point = dir.join("auth.json");
+        std::fs::write(&point, b"")?;
+        mounts.push(Mount::File(real, point));
+    }
+    env.retain(|(name, _)| name != "CODEX_HOME");
+    env.push(("CODEX_HOME".into(), dir.to_string_lossy().into_owned()));
+    Ok(())
 }
 
 /// Claude Code settings for a session (layer 1 of the gates, note 14): the git gate's refusals and the grant's
@@ -1515,6 +1561,7 @@ impl Dossiers {
                         account: start.account,
                         member: start.member,
                         headless: start.headless,
+                        tools: start.tools,
                     },
                     (mcp_json, skills.as_deref()),
                     (&runs, start.gpu, &grant),
@@ -1526,7 +1573,7 @@ impl Dossiers {
     }
 
     /// Prepare an ended session again: the same id, dossier and workspace, and the agent's resume command
-    /// (`session.resume`), so the agent continues its conversation.
+    /// (`session.resume`), so the agent continues its conversation; `tools` binds the run again ([`Start::tools`]).
     ///
     /// # Errors
     /// No such session, its agent cannot resume, or its dossier is held by another live session.
@@ -1536,7 +1583,7 @@ impl Dossiers {
         config: &Config,
         account: Option<&str>,
         token: &str,
-        headless: bool,
+        (headless, tools): (bool, &[String]),
     ) -> Result<Launch> {
         let mut record = self.session(id)?;
         // a headless session goes on through its agent's ACP adapter, an interactive one through its resume command
@@ -1607,6 +1654,7 @@ impl Dossiers {
                 account: record.account.as_deref(),
                 member: member.as_ref().map(|(m, w)| (m.as_str(), Path::new(w))),
                 headless,
+                tools,
             },
             (mcp_json, skills.as_deref()),
             // the GPU is asked for each start: a resumed session runs without it
@@ -1628,6 +1676,7 @@ impl Dossiers {
             std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?,
         );
         let manifest = &grant.manifest;
+        let mcp_json = bound_mcp(mcp_json, who.tools);
         let [real_git, settings, mcp] =
             session_files(&runtime, &id, (config, manifest), &mcp_json)?;
         let workdir = agent_dir(ws);
@@ -1655,6 +1704,7 @@ impl Dossiers {
             ("LEGIONCTL_TOKEN".to_string(), token.to_string()),
         ];
         let harness_args = harness_parts(manifest, &mut env);
+        codex_bound_home(&mut mounts, &mut env, &id, (who.account, who.tools))?;
         team_role(&mut mounts, &mut env, &id, (who.agent, who.member))?;
         if let Some(skills) = skills {
             skill_mounts(&mut mounts, skills)?;
@@ -1722,7 +1772,7 @@ impl Dossiers {
             lines,
             workdir,
             mcp: mcp_json,
-            tools: None,
+            tools: (!who.tools.is_empty()).then(|| who.tools.to_vec()),
             id,
         })
     }

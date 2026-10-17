@@ -15,8 +15,8 @@ as its first argument ends each answer with the line "agent: <name>" (two sessio
 A ui-composer (DESIGN-09 G5): session/set_model keeps the model, and the answer has the line "model: <model>"; with
 FAKE_ACP_VIEWS set to a folder, a prompt with a line "Intent: <words>" gets the file <first word>.jsonc of that folder
 as a ```json block at the end of the answer (no file: no block). The answer has the line "bound: <json>" with the
-MCP servers (name, command, args) and the _meta of session/new or session/load, so a test can read what the run was
-bound to.
+MCP servers (name, command, args), the _meta of session/new or session/load and the files of $CODEX_HOME (config.toml,
+environments.toml, auth.json), so a test can read what the run was bound to.
 """
 
 import json
@@ -85,6 +85,20 @@ def where():
         return "host"
 
 
+def codex_home():
+    """What Codex would read in $CODEX_HOME: its config, its environments and its login (none: not set)."""
+    home = os.environ.get("CODEX_HOME")
+    if not home:
+        return None
+    def text(name):
+        try:
+            with open(os.path.join(home, name)) as f:
+                return f.read()
+        except OSError:
+            return None
+    return {name: text(name) for name in ("config.toml", "environments.toml", "auth.json")}
+
+
 def run(argv):
     done = subprocess.run(argv, capture_output=True, text=True)
     return done.returncode == 0, done.stdout + done.stderr
@@ -123,7 +137,8 @@ def prompt(params):
         "COMMIT_OK" if committed else "COMMIT_FAILED",
         "PUSH_REFUSED" if (not pushed and "gates.git.deny" in push_output) else "PUSH_NOT_REFUSED",
         "inside: " + where(),
-        "bound: " + json.dumps({"mcp": [{k: s.get(k) for k in ("name", "command", "args")} for s in mcp_servers], "meta": meta}),
+        "bound: " + json.dumps({"mcp": [{k: s.get(k) for k in ("name", "command", "args")} for s in mcp_servers], "meta": meta,
+                                "codex_home": codex_home()}),
     ]
     if len(sys.argv) > 1:
         lines.append(f"agent: {sys.argv[1]}")

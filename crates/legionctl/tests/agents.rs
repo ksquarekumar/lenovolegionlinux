@@ -7,6 +7,8 @@
 mod common;
 #[path = "common/keyring.rs"]
 mod keyring;
+#[path = "common/plain.rs"]
+mod plain;
 #[path = "common/usage.rs"]
 mod usage;
 
@@ -67,8 +69,8 @@ impl Lab {
             ],
         );
         // never the machine's bun (`setup apply` installs the ACP adapters with it): a stand-in that logs each call to
-        // ~/bun.log and keeps its global commands in ~/.cache/.bun/bin, as bun with XDG_CACHE_HOME does; before its
-        // first `add -g` it has no global folder and `pm -g bin` fails as bun 1.x does
+        // ~/bun.log and links its global commands in ~/.cache/.bun/bin to the package's folder, as bun with
+        // XDG_CACHE_HOME does; before its first `add -g` it has no global folder and `pm -g bin` fails as bun 1.x does
         let bun = home.join(".bun/bin/bun");
         write(
             &bun,
@@ -82,7 +84,10 @@ case "$1 $2" in
 "add -g")
   shift 2
   mkdir -p "$global"
-  for p in "$@"; do printf '#!/bin/sh\n' > "$global/${p##*/}"; chmod +x "$global/${p##*/}"; done ;;
+  for p in "$@"; do
+    dir="$HOME/.cache/.bun/install/global/node_modules/$p"; mkdir -p "$dir"
+    printf '#!/bin/sh\n' > "$dir/index.js"; chmod +x "$dir/index.js"; ln -sfn "$dir/index.js" "$global/${p##*/}"
+  done ;;
 *) exit 64 ;;
 esac
 "#,
@@ -530,9 +535,31 @@ fn setup_apply_puts_the_users_tool_folders_before_the_user_managers_path_once() 
     }
 }
 
+/// The `add` calls of the stand-in bun in `home`.
+fn bun_installs(home: &Path) -> Vec<String> {
+    std::fs::read_to_string(home.join("bun.log"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.starts_with("add "))
+        .map(String::from)
+        .collect()
+}
+
+/// r324's codex-acp in `home`: Zed's package, which gives the same command (its Codex 0.137 runs no model of a
+/// `ChatGPT` account today), linked as bun links it.
+fn zed_codex_acp(home: &Path) {
+    let zed = home
+        .join(".cache/.bun/install/global/node_modules/@zed-industries/codex-acp/bin/codex-acp.js");
+    write(&zed, "#!/bin/sh\n");
+    std::fs::set_permissions(&zed, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::fs::create_dir_all(home.join(".cache/.bun/bin")).unwrap();
+    std::os::unix::fs::symlink(&zed, home.join(".cache/.bun/bin/codex-acp")).unwrap();
+}
+
 /// todo-144: the ACP adapters of `session.acp` (headless runs, the app's chat bar). `setup check` reports each adapter
 /// command that is not on the user manager's PATH (with bun's global folder) as missing, with its package from
-/// `session.acp_packages`; `setup apply` installs each with `bun add -g <package>` once, and puts bun's global folder
+/// `session.acp_packages`, and a command that another package gives (r324's Zed codex-acp) as from another package;
+/// `setup apply` installs each with `bun add -g <package>` once, and puts bun's global folder
 /// (`bun pm -g bin`, not on any PATH by itself) into the environment.d PATH file. An adapter with no package is
 /// refused by apply, with its name.
 #[test]
@@ -552,14 +579,7 @@ fn setup_check_reports_each_missing_acp_adapter_and_apply_installs_it_with_bun_o
             .collect()
     };
     let apply = || lab.op.cli_in(&lab.home, &["setup", "apply"]);
-    let installs = || -> Vec<String> {
-        std::fs::read_to_string(lab.home.join("bun.log"))
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.starts_with("add "))
-            .map(String::from)
-            .collect()
-    };
+    let installs = || bun_installs(&lab.home);
     let g = lab.home.join(".cache/.bun/bin").display().to_string();
     let (claude, codex) = ("ACP adapter claude-code-acp", "ACP adapter codex-acp");
 
@@ -572,9 +592,21 @@ fn setup_check_reports_each_missing_acp_adapter_and_apply_installs_it_with_bun_o
                 "missing",
                 "@zed-industries/claude-code-acp"
             ],
-            [codex, "codex", "missing", "@zed-industries/codex-acp"],
+            [codex, "codex", "missing", "@agentclientprotocol/codex-acp"],
         ]
         .map(|row| row.map(String::from))
+    );
+    zed_codex_acp(&lab.home);
+    let other = [
+        codex,
+        "codex",
+        "from another package",
+        "@agentclientprotocol/codex-acp",
+    ];
+    assert!(
+        adapters().contains(&other.map(String::from)),
+        "{:?}",
+        adapters()
     );
     let text = String::from_utf8_lossy(&lab.op.cli(&["setup", "check"]).stdout).into_owned();
     assert!(
@@ -584,15 +616,17 @@ fn setup_check_reports_each_missing_acp_adapter_and_apply_installs_it_with_bun_o
         "{text}"
     );
 
+    plain::assert_plain("setup check", &text);
     let out = apply();
     let done = String::from_utf8_lossy(&out.stdout);
+    plain::assert_plain("setup apply", &done);
     assert!(
         out.status.success()
             && done.contains(&format!(
                 "{claude}: installed @zed-industries/claude-code-acp with bun add -g"
             ))
             && done.contains(&format!(
-                "{codex}: installed @zed-industries/codex-acp with bun add -g"
+                "{codex}: installed @agentclientprotocol/codex-acp with bun add -g"
             )),
         "{done}{}",
         String::from_utf8_lossy(&out.stderr)
@@ -601,7 +635,7 @@ fn setup_check_reports_each_missing_acp_adapter_and_apply_installs_it_with_bun_o
         installs(),
         [
             "add -g @zed-industries/claude-code-acp",
-            "add -g @zed-industries/codex-acp"
+            "add -g @agentclientprotocol/codex-acp"
         ]
     );
     assert_eq!(

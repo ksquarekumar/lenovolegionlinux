@@ -1,6 +1,8 @@
 // The harness Codex (DESIGN-12, needs table and harness profile). A session of agent "codex" requests this set by
 // itself. Its own command sandbox is off (sandbox mode danger-full-access, user decision 2026-10-17): our sandbox, the
-// environment and the gateway are the one boundary; its approval policy stays as the session sets it.
+// environment and the gateway are the one boundary; its approval policy stays as the session sets it. The ACP adapter
+// (codex-acp of the ACP project) takes no -c arguments: its mode agent-full-access is the same setting (sandbox
+// danger-full-access, no approval asks and no auto review).
 {
   "$schema": "../../docs/api/runnable.schema.json",
   "name": "codex",
@@ -28,6 +30,7 @@
       { "host": "api.github.com", "args": ["-c", "check_for_update_on_startup=false"] }
     ],
     // after the agent's command (session.agents, session.acp)
-    "args": ["-c", "sandbox_mode=\"danger-full-access\""]
+    "args": ["-c", "sandbox_mode=\"danger-full-access\""],
+    "env": { "INITIAL_AGENT_MODE": "agent-full-access" }
   }
 }

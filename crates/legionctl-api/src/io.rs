@@ -1105,8 +1105,8 @@ pub struct SessionRunIn {
     #[serde(default)]
     pub thread: Option<i64>,
     /// Bind the agent to these operations: its only tools are legionctl's MCP tools of them (no file, shell or web
-    /// tools of its own, no settings, plugins or other MCP servers). The run fails when the agent's adapter cannot be
-    /// bound (config `session.acp_bind`). None: the agent's own tools and the session's MCP servers.
+    /// tools of its own, no settings, plugins or other MCP servers). None: the agent's own tools and the session's MCP
+    /// servers.
     #[serde(default)]
     pub tools: Vec<String>,
 }

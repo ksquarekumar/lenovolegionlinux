@@ -1118,8 +1118,6 @@ fn thread_lab_on(tag: &str, env: &[(&str, std::ffi::OsString)]) -> (Operator, Pa
             "workspace": {"root": home.join("worktrees")},
             "session": {
                 "acp": {"fake": ["python3", agent], "other": ["python3", agent, "other"]},
-                // the composer's runs are bound to the view tools; the stand-in takes the binding as claude-code-acp
-                "acp_bind": ["fake", "other"],
                 "scope": false,
                 "writable": []
             },

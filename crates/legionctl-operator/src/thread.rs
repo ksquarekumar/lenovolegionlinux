@@ -301,13 +301,20 @@ fn launch(
                     member: Some((&name, &w.workdir)),
                     capabilities: &member_sets(&w.fields)?,
                     parent: Some(&main_sets(&resolved.config)),
+                    tools: &[],
                 },
                 &resolved.config,
             )?;
             store.member_session(w, &launch.id)?;
             launch
         }
-        Some(id) => store.resume_session(id, &resolved.config, account.as_deref(), &token, true)?,
+        Some(id) => store.resume_session(
+            id,
+            &resolved.config,
+            account.as_deref(),
+            &token,
+            (true, &[]),
+        )?,
     };
     Ok((launch, token))
 }

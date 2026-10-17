@@ -369,9 +369,9 @@ fn adapter_error(e: agent_client_protocol::Error) -> anyhow::Error {
     }
 }
 
-/// A bound run's `_meta` for `session/new` and `session/load` (claude-code-acp's keys; `session.acp_bind` names the
-/// agents that take them): no tools of the adapter's own, and no settings files, so no plugin, hook or MCP server of
-/// the user's either; legionctl's MCP server with the bound tools is the only one.
+/// A bound run's `_meta` for `session/new` and `session/load` (claude-code-acp's keys; Codex's adapter has its own
+/// bound home instead and ignores them): no tools of the adapter's own, and no settings files, so no plugin, hook or
+/// MCP server of the user's either; legionctl's MCP server with the bound tools is the only one.
 fn bound(launch: &Launch) -> Option<agent_client_protocol::schema::v1::Meta> {
     launch.tools.as_ref().map(|_| {
         serde_json::json!({

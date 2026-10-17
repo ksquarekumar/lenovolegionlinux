@@ -7,6 +7,8 @@ mod git;
 mod hooks;
 #[path = "common/keyring.rs"]
 mod keyring;
+#[path = "common/plain.rs"]
+mod plain;
 #[path = "common/provider.rs"]
 mod provider;
 
@@ -3367,6 +3369,62 @@ fn session_skills_are_exactly_the_configured_store_skills_read_only() {
             .contains("package kit changed since it was fetched"),
         "{}",
         String::from_utf8_lossy(&refused.stderr)
+    );
+}
+
+/// A headless run on Codex's ACP adapter as it answers live (todo-180 U-39: the bound run on Codex): the replayed
+/// transcript of @agentclientprotocol/codex-acp 2.2.2 with codex 0.160.1, recorded 2026-10-17 in a bound Codex home
+/// (no shell, patch, image or web tool; Luna through `session/set_model`). Its notifications (auth status, session
+/// info, usage, a guarded MCP tool call) are no failure, and the answer is the words of its chunks.
+#[test]
+fn a_run_on_codexs_acp_adapter_takes_its_live_answer_shape() {
+    let (op, home) = operator("codex-live");
+    let repo = repository(&home);
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    let recording = fixtures.join("codex-acp-live.jsonl");
+    write(
+        &home.join(".config/legionctl/run.jsonc"),
+        &json!({"session": {"acp": {"codex": ["python3", fixtures.join("replay-acp-agent.py"), &recording]},
+                            "scope": false, "writable": []}})
+        .to_string(),
+    );
+    let out = op.run(
+        &repo,
+        &[("HOME", home.to_str().unwrap())],
+        &[
+            "session",
+            "run",
+            "codex",
+            "list your tools",
+            "--dossier",
+            "port",
+            "--model",
+            "gpt-6-luna[low]",
+            "--json",
+        ],
+        "",
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let words: String = std::fs::read_to_string(&recording)
+        .unwrap()
+        .lines()
+        .filter_map(|l| {
+            let m: Value = serde_json::from_str(l).unwrap();
+            let u = &m["params"]["update"];
+            (u["sessionUpdate"] == "agent_message_chunk")
+                .then(|| u["content"]["text"].as_str().unwrap().to_string())
+        })
+        .collect();
+    let run: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(run["text"].as_str().unwrap().trim(), words.trim(), "{run}");
+    plain::assert_plain("the answer", &words);
+    assert!(
+        words.contains("echo: hi") && words.contains("shell"),
+        "{words}"
     );
 }
 

@@ -90,8 +90,8 @@ its tokens and time (`legionctl views cost`, the view Composer cost):
    stack places a part by name and version, so a new version of a part does not change the views that pin the old
    one. The view is checked before it is saved; the next ask of the same intent is step 1.
 
-Codex cannot be the composer: codex-acp has no way to turn off its shell, so a bound run on Codex fails (config
-`session.acp_bind`).
+On Codex (`/agent codex`, Luna) the composer runs in its own Codex home: no shell, patch, image or web tool, and
+none of your Codex config, plugins, hooks or MCP servers.
 
 ![Bench page: CPU score over time and the runs](../media/app-bench.webp)
 

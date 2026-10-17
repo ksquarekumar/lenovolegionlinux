@@ -125,23 +125,21 @@
     "resume": {
       "claude": ["claude", "--resume", "{id}", "--settings", "{settings}", "--mcp-config", "{mcp}", "--strict-mcp-config"]
     },
-    // Agent name -> its ACP adapter, for headless runs (legionctl session run): Zed's adapters for Claude Code and
-    // Codex. The adapter gets the session's MCP servers (legionctl's own and the proxied ones) at session/new.
+    // Agent name -> its ACP adapter, for headless runs (legionctl session run): Zed's adapter for Claude Code, the
+    // ACP project's for Codex (on the Codex app server). The adapter gets the session's MCP servers (legionctl's own
+    // and the proxied ones) at session/new. A bound run (such as the ui-composer's) gets only legionctl's MCP server
+    // with its tools: Claude Code through session/new (_meta disableBuiltInTools, settingSources []), Codex through
+    // its own CODEX_HOME (no default environment, so no shell, patch or image tool; no web search, plugins or hooks).
     "acp": {
       "claude": ["claude-code-acp"],
       "codex": ["codex-acp"]
     },
-    // The agents of "acp" whose adapter can be bound to given tools (a bound run, such as the ui-composer's, gets
-    // only legionctl's MCP server with those tools: no file, shell or web tools, no settings, plugins or other MCP
-    // servers). claude-code-acp takes the binding in session/new (_meta disableBuiltInTools, settingSources []);
-    // codex-acp 0.16 has no way to turn off its shell, so a bound run on codex fails.
-    "acp_bind": ["claude"],
     // ACP adapter command -> its npm package. `legionctl setup check` reports an adapter command of "acp" that is not
     // on the PATH of the systemd user manager (with bun's global folder, `bun pm -g bin`); `setup apply` installs it
     // with `bun add -g <package>`.
     "acp_packages": {
       "claude-code-acp": "@zed-industries/claude-code-acp",
-      "codex-acp": "@zed-industries/codex-acp"
+      "codex-acp": "@agentclientprotocol/codex-acp"
     },
     // Each session in its own systemd user scope (legionctl-session-<id>), for limits, pause and stop.
     "scope": true,
@@ -156,7 +154,7 @@
     // adapters) and `client`, a static legionctl (the package installs it) as MCP server, hook client and git gate.
     "container": {
       "base": "public.ecr.aws/docker/library/debian:trixie-slim",
-      "npm": ["@anthropic-ai/claude-code", "@zed-industries/claude-code-acp", "@openai/codex", "@zed-industries/codex-acp"],
+      "npm": ["@anthropic-ai/claude-code", "@zed-industries/claude-code-acp", "@openai/codex", "@agentclientprotocol/codex-acp"],
       "client": "/usr/lib/legionctl/legionctl-static"
     },
     // Sessions in a VM (`--in vm`) run on the repository's disk, made by `legionctl workspace pack --as vm`: a layer
@@ -379,11 +377,10 @@
   // Views (DESIGN-09 G5). An intent typed in a tab's chat bar (or `legionctl ask "<intent>"`) opens the stored view
   // whose intent it is word for word; else, with "rlcd" true, the stored view that rlcd picks with at least
   // "rlcd_min"; else the ui-composer (the chat bar's agent over ACP) makes a view, or a new version of the tab's view.
-  // "composer_models": the composer's model per agent of session.acp (ACP session/set_model): Haiku on Claude Code;
-  // an agent with no entry uses its account's default model (Codex: user 2026-10-16, a ChatGPT account has no
-  // gpt-6-luna and codex-acp 0.16 has no session/set_model).
+  // "composer_models": the composer's model per agent of session.acp (ACP session/set_model): Haiku on Claude Code,
+  // Luna on Codex (its adapter's id is model[effort]); an agent with no entry uses its account's default model.
   "views": {
-    "composer_models": { "claude": "haiku" },
+    "composer_models": { "claude": "haiku", "codex": "gpt-6-luna[low]" },
     "rlcd": false,
     "rlcd_min": 0.7
   }
