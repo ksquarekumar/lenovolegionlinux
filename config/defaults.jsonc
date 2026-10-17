@@ -70,10 +70,11 @@
   // dossier is used gets the link agentWorkspaces -> <root> (design 23, E1a).
   "dossier": {
     "root": "~/agentWorkspaces",
-    // Block every prompt of a session that has no dossier; prompts that run /legionctl:dossier pass.
+    // In a repository where a dossier was used (a linked repository), block each prompt of a session that has no
+    // dossier; prompts that run /legionctl:dossier pass. Elsewhere legionctl never blocks, nudges or binds.
     "gate": true,
-    // At session start (new or resumed), bind the session to the last dossier used in the same repository (or
-    // folder) when no live session holds it; the agent is told which one.
+    // At session start (new or resumed) and at each prompt, bind a session in a linked repository to the last dossier
+    // used there when no live session holds it; the agent is told which one.
     "auto_bind": true,
     // Hook events at which the agent (not the user) is told to set up a session that has no dossier: at the start of
     // the session (in its context, before the first prompt) and before it ends a reply.

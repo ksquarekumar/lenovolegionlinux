@@ -468,9 +468,10 @@ pub fn expand_home(path: &str) -> Result<PathBuf> {
 pub struct DossierConfig {
     /// `~/` is the home folder.
     pub root: String,
+    /// In a repository where a dossier was used, block each prompt of a session that has no dossier.
     pub gate: bool,
-    /// At session start, bind the session to the last dossier used in its repository (or folder) when no live
-    /// session holds it.
+    /// At session start and at each prompt, bind a session in a linked repository to the last dossier used there
+    /// when no live session holds it.
     pub auto_bind: bool,
     /// Hook events at which the agent is told to set up a session that has no dossier.
     pub nudge: Vec<Event>,

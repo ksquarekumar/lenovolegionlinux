@@ -1684,7 +1684,13 @@ impl Dossiers {
         )?;
         let place = place_of(start.dir);
         let bound = self.bind(&id, agent, start.dossier, start.steal, Some(&place))?;
-        let ws = self.open_workspace(&id, start.dir, None, start.topic, &config.workspace.root)?;
+        let ws = self.open_workspace(
+            start.dossier.to_owned(),
+            start.dir,
+            None,
+            start.topic,
+            &config.workspace.root,
+        )?;
         self.db().execute(
             "INSERT INTO sessions (id, agent, dossier, workdir, started, account, scoped, inside) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             // a container tells whether its session is live, as a scope does
@@ -1774,7 +1780,13 @@ impl Dossiers {
             self.settle_logins()?;
             logins_out(account)?;
         }
-        let ws = self.open_workspace(id, &record.workdir, None, None, &config.workspace.root)?;
+        let ws = self.open_workspace(
+            record.dossier.clone(),
+            &record.workdir,
+            None,
+            None,
+            &config.workspace.root,
+        )?;
         let member: Option<(String, String)> = self
             .db()
             .query_row(

@@ -1518,13 +1518,8 @@ impl Dossiers {
             dir.display()
         );
         let topic = format!("thread-{thread}");
-        let ws = self.open_dossier_workspace(
-            info.dossier,
-            dir,
-            base,
-            git.then_some(topic.as_str()),
-            root,
-        )?;
+        let ws =
+            self.open_workspace(info.dossier, dir, base, git.then_some(topic.as_str()), root)?;
         let branch = git.then(|| ws.branch.clone());
         self.db().execute(
             "UPDATE threads SET workdir = ?2 WHERE id = ?1",

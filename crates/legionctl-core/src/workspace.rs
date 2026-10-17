@@ -259,24 +259,19 @@ impl Dossiers {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    fn active_dossier(&self, session: &str) -> Result<String> {
-        self.active(session)?
-            .context("this session has no active dossier; run `legionctl dossier use <name>` first")
-    }
-
-    /// The workspace of this session's dossier for `dir`: with a topic, that topic's workspace in the repository of
+    /// The workspace of `dossier` (the caller's) for `dir`: with a topic, that topic's workspace in the repository of
     /// `dir`; else the workspace that contains `dir`, else the dossier's own workspace in its repository (a plain
     /// folder: by its own path).
     ///
     /// # Errors
-    /// The session has no dossier, or the workspace is not open.
+    /// The workspace is not open.
     pub fn workspace_of(
         &self,
-        session: &str,
+        dossier: &str,
         dir: &Path,
         topic: Option<&str>,
     ) -> Result<Workspace> {
-        let dossier = self.active_dossier(session)?;
+        let dossier = dossier.to_owned();
         let found = if let Some(topic) = topic {
             self.row(&dossier, &main_checkout(dir)?, topic)?
         } else if let Some(other) = self.innermost(dir)?
@@ -284,7 +279,7 @@ impl Dossiers {
         {
             // never the caller's own workspace for a folder in another dossier's (todo-172)
             bail!(
-                "{} is in the workspace {} of dossier {}, not of this session's dossier {dossier}: a session of \
+                "{} is in the workspace {} of dossier {}, not of dossier {dossier}: a session of \
                  dossier {} must do this",
                 dir.display(),
                 other.path.display(),
@@ -320,31 +315,14 @@ impl Dossiers {
             .map(|(_, ws)| ws))
     }
 
-    /// Open (or reopen) the workspace of this session's dossier in the repository that contains `dir`: a worktree on
+    /// Open (or reopen) the workspace of `dossier` in the repository that contains `dir`: a worktree on
     /// `legionctl/<dossier>` from `base` (default: the main checkout's current branch), with the dossier linked in.
     /// With a topic, a separate worktree on `legionctl/<dossier>--<topic>` (created from `base` the first time,
     /// reused after), so that agents of one dossier work in parallel.
     ///
     /// # Errors
-    /// The session has no dossier, the topic is not valid, `dir` is not in a git repository (for a topic), or git
-    /// refuses.
-    pub fn open_workspace(
-        &self,
-        session: &str,
-        dir: &Path,
-        base: Option<&str>,
-        topic: Option<&str>,
-        root: &Path,
-    ) -> Result<Workspace> {
-        let dossier = self.active_dossier(session)?;
-        self.open_dossier_workspace(dossier, dir, base, topic, root)
-    }
-
-    /// [`Dossiers::open_workspace`] of `dossier` (the user's thread names its dossier; no session binds it).
-    ///
-    /// # Errors
     /// The topic is not valid, `dir` is not in a git repository (for a topic), or git refuses.
-    pub fn open_dossier_workspace(
+    pub fn open_workspace(
         &self,
         dossier: String,
         dir: &Path,

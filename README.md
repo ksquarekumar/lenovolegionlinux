@@ -131,7 +131,7 @@ agents from `legionctl setup apply`.
 | --- | --- |
 | MCP tools | one per operation: the command path with `_` (`kernel cmdline set` is `kernel_cmdline_set`) |
 | Skills | `ste100-style`, `glanceable-style`, `dossier-practice`, `tool-lifecycle`, `workspace-practice`, `machine-tools`, `verify-and-ship`, `sessions-and-agents` ([skills](integrations/agent-plugin/skills)) |
-| Hooks | reminders, load and setup notices; the dossier gate (no prompt until the session has a dossier); thread messages at each prompt, tool call and reply end |
+| Hooks | reminders, load and setup notices; the dossier gate (in a repository linked to a dossier: no prompt until the session has one); thread messages at each prompt, tool call and reply end |
 | Agents | archetypes `main-agent`, `thread-observer`, `ui-composer`; team `vanilla` |
 | Commands | `/legionctl:dossier`, `/legionctl:workspace`, `/legionctl:status`, `/legionctl:act`, `/legionctl:setup`, `/legionctl:reminders`, `/legionctl:hooks`, `/legionctl:skills` |
 

@@ -40,16 +40,18 @@ Replaces the "plan workspaces" section of 12-operator. Sessions (14) and sandbox
   and MCP calls take `LEGIONCTL_SESSION`, else `CLAUDE_CODE_SESSION_ID`, which Claude Code sets for the commands it
   starts.
 - `legionctl hook <event>` adapts Claude Code's hooks: `session-start` adds the dossier line to the context, `prompt`
-  blocks (`{"decision":"block"}`) when `dossier.gate` is on and the session has no dossier (a prompt that contains
-  `legionctl:dossier` passes), `pre-tool` denies `Write`, `Edit`, `MultiEdit` and `NotebookEdit` into a dossier that
+  blocks (`{"decision":"block"}`) when `dossier.gate` is on and the session in a linked repository has no dossier
+  (a prompt that contains `legionctl:dossier` passes), `pre-tool` denies `Write`, `Edit`, `MultiEdit` and `NotebookEdit` into a dossier that
   is not the session's, `stop` (before the agent ends a reply) sends a session without a dossier back to set it
   up first, once per reply (`stop_hook_active`), and `session-end` releases the binding. Hook output is for the
   agent first, the user after (decided 2026-10-13); milestone 2 adds the operating directory, branch and copy to
   the `stop` check. Config `dossier.nudge` (default `["session-start", "stop"]`) names the events at which the
   agent is told; at `session-start` it is an instruction in the agent's context before the first prompt.
 - Binding follows the place (decided 2026-10-13): each binding records the repository root (else the folder) where
-  the session works. At session start (new or resumed) the hook binds the session to the last dossier used there,
-  when no live session holds it, and tells the agent (`dossier.auto_bind`, default on). Knowing and using the
+  the session works. A repository where a dossier was used is linked. At session start (new or resumed) and at each
+  prompt, the hook binds a session in a linked repository to the last dossier used there, when no live session
+  holds it, and tells the agent (`dossier.auto_bind`, default on). Outside a linked repository (another project,
+  `~`, `/tmp`, a folder that is not a repository) legionctl does not gate, nudge or bind (U-1, 2026-10-17). Knowing and using the
   dossier is the agent's job; the nudges and the gate step in only when there is none.
 - Milestone 2 (built 2026-10-13): `workspace` replaces `worktree` (15). A workspace is one git worktree per
   dossier and repository at `<workspace.root>/<repo>/<dossier>` on `legionctl/<dossier>`, from a recorded base
@@ -77,7 +79,8 @@ At session start and on each prompt, the plugin's hook asks the operator for the
 - The operating directory is always known (default: the shell's working directory). The brief shows it, with its
   source, copy and branch, so a wrong default is visible at once.
 - With a dossier bound, the agent goes ahead and the hook injects the brief (below).
-- Without a dossier, the prompt is blocked (decided 2026-10-12: everything, not only writes). The block message
+- Without a dossier in a linked repository, the prompt is blocked (decided 2026-10-12: everything, not only writes;
+  2026-10-17: only where legionctl work is linked, EV-review-11 U-1). The block message
   lists recent dossiers for this operating directory and the way forward: `/legionctl:dossier use <name>` (a new
   name makes a new dossier; decided 2026-10-13, no `--create`). It is the only command that passes the gate.
 - Writes outside the operating directory and the dossier are denied (`PreToolUse`), so a session that started in

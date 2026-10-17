@@ -518,11 +518,16 @@ impl Dossiers {
         Ok(out)
     }
 
-    /// The dossier the last session in `place` bound, if it still exists.
+    /// The repository that contains `dir` (its main checkout) and the dossier the last session there bound, if it
+    /// still exists: a repository linked to legionctl work. Outside a repository, or in one where no dossier was used,
+    /// legionctl does not gate, nudge or bind a session.
     ///
     /// # Errors
-    /// The database read fails.
-    pub fn last_in(&self, place: &Path) -> Result<Option<String>> {
+    /// git fails for another reason than "not a repository", or the database read fails.
+    pub fn linked(&self, dir: &Path) -> Result<Option<(PathBuf, String)>> {
+        let Some(place) = crate::workspace::repo_of(dir)? else {
+            return Ok(None);
+        };
         let last: Option<String> = self
             .db
             .conn()
@@ -532,7 +537,9 @@ impl Dossiers {
                 |r| r.get(0),
             )
             .optional()?;
-        Ok(last.filter(|d| self.root.join(d).is_dir()))
+        Ok(last
+            .filter(|d| self.root.join(d).is_dir())
+            .map(|d| (place, d)))
     }
 
     /// # Errors

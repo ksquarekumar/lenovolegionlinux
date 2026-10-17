@@ -905,14 +905,14 @@ fn config_layers_merge_in_order_and_etc_locks_win() {
 }
 
 #[test]
-fn dossier_gate_and_stop_hook_hold_the_agent_until_the_session_has_a_dossier() {
+fn the_dossier_gate_holds_in_a_repository_linked_to_a_dossier_and_nowhere_else() {
     let (op, home) = operator("dossier");
     let out = |o: std::process::Output| String::from_utf8_lossy(&o.stdout).trim().to_string();
     let hook = |event: &str, input: Value| {
         out(op.run(&home, &[], &["hook", event], &claude_hook(event, &input)))
     };
-    let as_session = |session: &str, args: &[&str], stdin: &str| {
-        let o = op.run(&home, &[("LEGIONCTL_SESSION", session)], args, stdin);
+    let as_session = |session: &str, dir: &Path, args: &[&str], stdin: &str| {
+        let o = op.run(dir, &[("LEGIONCTL_SESSION", session)], args, stdin);
         assert!(
             o.status.success(),
             "{args:?}: {}",
@@ -920,36 +920,63 @@ fn dossier_gate_and_stop_hook_hold_the_agent_until_the_session_has_a_dossier() {
         );
         out(o)
     };
+    let blocks = |text: &str| text.contains("\"decision\"");
+    let prompt = |session: &str, dir: &Path, text: &str| {
+        hook(
+            "prompt",
+            json!({"session_id": session, "cwd": dir, "prompt": text}),
+        )
+    };
+    let repo = home.join("repo");
+    let folder = home.join("other");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::create_dir_all(&folder).unwrap();
+    git(&home, &repo, &["init", "--quiet"]);
 
-    // no dossier: the prompt is blocked with the way forward; the command that binds one passes
-    let blocked: Value = serde_json::from_str(&hook(
-        "prompt",
-        json!({"session_id": "s1", "cwd": home, "prompt": "fix the bug"}),
-    ))
-    .unwrap();
-    assert_eq!(blocked["decision"], "block");
-    assert!(
-        blocked["reason"]
-            .as_str()
-            .unwrap()
-            .contains("/legionctl:dossier use <name>"),
-        "{blocked}"
-    );
-    let passing = hook(
-        "prompt",
-        json!({"session_id": "s1", "cwd": home, "prompt": "/legionctl:dossier use port"}),
-    );
-    assert!(passing.starts_with("Reminder:"), "{passing}");
+    // a folder outside any repository, and a repository where no dossier was used: Claude Code works as without
+    // legionctl (U-1: before, every prompt in every folder was blocked)
+    for (n, dir) in [&folder, &repo].into_iter().enumerate() {
+        let s = format!("free{n}");
+        let start = hook("session-start", json!({"session_id": s, "cwd": dir}));
+        assert!(
+            start.starts_with("legionctl dossier: none (no dossier was used in this folder"),
+            "{start}"
+        );
+        let said = prompt(&s, dir, "hello");
+        assert!(!blocks(&said), "{}: {said}", dir.display());
+        assert_eq!(hook("stop", json!({"session_id": s, "cwd": dir})), "");
+    }
 
-    // the agent hears it first: at session start, and before the reply ends (once, so the agent cannot loop)
-    let start = hook("session-start", json!({"session_id": "s1", "cwd": home}));
+    // the user links the repository: a session there binds a dossier, and the next session there takes it by itself
     assert!(
-        start.starts_with("legionctl: this session has no dossier yet. Set it up first"),
+        as_session("s1", &repo, &["dossier", "use", "port"], "").contains("active dossier: port")
+    );
+    hook("session-end", json!({"session_id": "s1"}));
+    let next = hook("session-start", json!({"session_id": "s3", "cwd": repo}));
+    assert!(
+        next.starts_with("legionctl dossier: port (bound by itself"),
+        "{next}"
+    );
+    let said = prompt("s3", &repo, "go on");
+    assert!(!blocks(&said), "{said}");
+
+    // in the linked repository the rule holds: a session that cannot take its dossier (s3 holds it) hears why at
+    // its start, its prompt is blocked with the way forward, and its reply end is stopped once
+    let start = hook("session-start", json!({"session_id": "s4", "cwd": repo}));
+    assert!(
+        start.starts_with("legionctl: the dossier of this repository cannot be bound:"),
         "{start}"
     );
+    let blocked: Value = serde_json::from_str(&prompt("s4", &repo, "fix the bug")).unwrap();
+    assert_eq!(blocked["decision"], "block");
+    let reason = blocked["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("works in dossier port")
+            && reason.contains("/legionctl:dossier use <name>"),
+        "{blocked}"
+    );
     let stop: Value =
-        serde_json::from_str(&hook("stop", json!({"session_id": "s1", "cwd": home}))).unwrap();
-    assert_eq!(stop["decision"], "block");
+        serde_json::from_str(&hook("stop", json!({"session_id": "s4", "cwd": repo}))).unwrap();
     assert!(
         stop["reason"].as_str().unwrap().contains("dossier_use"),
         "{stop}"
@@ -957,56 +984,75 @@ fn dossier_gate_and_stop_hook_hold_the_agent_until_the_session_has_a_dossier() {
     assert_eq!(
         hook(
             "stop",
-            json!({"session_id": "s1", "cwd": home, "stop_hook_active": true})
+            json!({"session_id": "s4", "cwd": repo, "stop_hook_active": true})
         ),
         ""
     );
+    let passing = prompt("s4", &repo, "/legionctl:dossier use other");
+    assert!(!blocks(&passing), "{passing}");
 
-    // bind, add a numbered artifact from stdin, and the gate opens
-    let bound = as_session("s1", &["dossier", "use", "port"], "");
-    assert!(bound.contains("active dossier: port"), "{bound}");
-    assert_eq!(
-        as_session("s1", &["dossier", "add", "MEMORY", "intake"], "# Intake\n"),
-        "port/MEMORY/01-intake.md"
+    // once s3 ends, the next prompt of s4 takes the dossier by itself: nobody binds it by hand
+    hook("session-end", json!({"session_id": "s3"}));
+    let taken = prompt("s4", &repo, "fix the bug");
+    assert!(
+        !blocks(&taken) && taken.contains("legionctl dossier: port (bound by itself"),
+        "{taken}"
     );
     assert_eq!(
-        hook("stop", json!({"session_id": "s1", "cwd": home})),
-        "",
-        "a set-up session ends its reply"
-    );
-    let open = hook(
-        "prompt",
-        json!({"session_id": "s1", "cwd": home, "prompt": "fix the bug"}),
-    );
-    assert!(!open.contains("\"decision\""), "{open}");
-    assert_eq!(
-        as_session("s1", &["dossier", "check"], ""),
+        as_session("s4", &repo, &["dossier", "check"], ""),
         "port/plan.md has every ledger section"
     );
 
-    // the next session where s1 worked is bound at session start, so nobody binds again by hand
-    hook("session-end", json!({"session_id": "s1"}));
-    let next = hook(
-        "session-start",
-        json!({"session_id": "s3", "cwd": home, "source": "resume"}),
-    );
+    // a folder that is not a repository stays free, also where a dossier was once used (the app's runs in $HOME):
+    // no gate, and no dossier bound to the next session in silence
+    as_session("s5", &folder, &["dossier", "use", "notes"], "");
+    hook("session-end", json!({"session_id": "s5"}));
+    let start = hook("session-start", json!({"session_id": "s6", "cwd": folder}));
+    assert!(start.starts_with("legionctl dossier: none"), "{start}");
+    let said = prompt("s6", &folder, "hello");
+    assert!(!blocks(&said), "{said}");
+}
+
+/// U-6: the user (a terminal with no agent session) chooses a dossier once, and every operation on "my dossier" uses
+/// it. Before, `workspace status`, `dossier check` and `workspace open` said "choose it: dossier use" after the user
+/// had done so, with the agents' variable names.
+#[test]
+fn the_dossier_the_user_chose_is_the_one_that_workspace_and_dossier_commands_use() {
+    let (op, home) = operator("chosen");
+    let repo = repository(&home);
+    let run = |args: &[&str]| {
+        let o = op.run(&repo, &[], args, "");
+        (
+            o.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            ),
+        )
+    };
+
+    let (ok, text) = run(&["workspace", "status"]);
     assert!(
-        next.starts_with("legionctl dossier: port (bound at session start"),
-        "{next}"
+        !ok && text
+            .contains("no dossier is chosen: choose one with `legionctl dossier use <name>`"),
+        "{text}"
     );
-    let prompt = hook(
-        "prompt",
-        json!({"session_id": "s3", "cwd": home, "prompt": "go on"}),
-    );
-    assert!(!prompt.contains("\"decision\""), "{prompt}");
-    // a session elsewhere is not bound to it
-    let other = home.join("other");
-    std::fs::create_dir_all(&other).unwrap();
-    let elsewhere = hook("session-start", json!({"session_id": "s4", "cwd": other}));
-    assert!(
-        elsewhere.starts_with("legionctl: this session has no dossier yet"),
-        "{elsewhere}"
-    );
+    assert!(!text.contains("LEGIONCTL_SESSION"), "{text}");
+
+    assert!(run(&["dossier", "create", "demo"]).0);
+    assert!(run(&["dossier", "use", "demo"]).0);
+    let (ok, text) = run(&["workspace", "open"]);
+    assert!(ok && text.contains("legionctl/demo"), "{text}");
+    let (ok, text) = run(&["workspace", "status"]);
+    assert!(ok && text.contains("legionctl/demo"), "{text}");
+    let (ok, text) = run(&["dossier", "check", "--json"]);
+    assert!(ok && text.contains("\"dossier\": \"demo\""), "{text}");
+
+    // a write that only an agent does (it holds the dossier) says so in one line, with no variable names
+    let (ok, text) = run(&["dossier", "add", "MEMORY", "x"]);
+    assert!(!ok && text.contains("only an agent does this"), "{text}");
+    assert!(!text.contains("CLAUDE_CODE_SESSION_ID"), "{text}");
 }
 
 #[test]
@@ -1899,7 +1945,7 @@ fn close_of_another_dossiers_worktree_is_refused_and_keeps_the_callers_work() {
     assert!(
         !closed
             && why.contains(&format!(
-                "is in the workspace {} of dossier other, not of this session's dossier demo",
+                "is in the workspace {} of dossier other, not of dossier demo",
                 other.display()
             )),
         "{why}"
