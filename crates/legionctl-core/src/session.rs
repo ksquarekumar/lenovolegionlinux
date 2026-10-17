@@ -681,6 +681,9 @@ enum Mount {
     Writable(PathBuf),
     /// A file or folder, writable, at another path.
     Bind(PathBuf, PathBuf),
+    /// A file, writable, at a path: a login's real file (a link's target) over the login (`logins_through`), or a
+    /// storage file at its own path. A VM shares it through a hard link (virtiofs shares only folders).
+    File(PathBuf, PathBuf),
     /// A file or folder, read-only, at another path.
     ReadOnly(PathBuf, PathBuf),
     /// A private empty folder.
@@ -701,7 +704,9 @@ fn bwrap_args(args: &mut Vec<String>, mounts: &[Mount], env: &[(String, String)]
     for mount in mounts {
         match mount {
             Mount::Writable(p) => args.extend(["--bind".into(), text(p), text(p)]),
-            Mount::Bind(from, to) => args.extend(["--bind".into(), text(from), text(to)]),
+            Mount::Bind(from, to) | Mount::File(from, to) => {
+                args.extend(["--bind".into(), text(from), text(to)]);
+            }
             Mount::ReadOnly(from, to) => args.extend(["--ro-bind".into(), text(from), text(to)]),
             Mount::Empty(p) => args.extend(["--tmpfs".into(), text(p)]),
             Mount::Device(p) => args.extend(["--dev-bind".into(), text(p), text(p)]),
@@ -733,7 +738,7 @@ fn docker_args(args: &mut Vec<String>, mounts: &[Mount], env: &[(String, String)
     for mount in mounts {
         match mount {
             Mount::Writable(p) => args.extend(["-v".into(), format!("{}:{}", text(p), text(p))]),
-            Mount::Bind(from, to) => {
+            Mount::Bind(from, to) | Mount::File(from, to) => {
                 args.extend(["-v".into(), format!("{}:{}", text(from), text(to))]);
             }
             Mount::ReadOnly(from, to) => {
@@ -965,13 +970,13 @@ fn vm_sandbox(
             Mount::Bind(from, to) if from.is_file() => {
                 guest_mounts.push(GuestMount::File(to, std::fs::read_to_string(&from)?));
             }
-            // virtiofs shares only folders: a login file goes through a hard link in a folder of its own
-            Mount::Writable(p) if p.is_file() => {
-                let (folder, link) = through(id, guest_mounts.len(), &p)?;
+            // virtiofs shares only folders: a writable file goes through a hard link in a folder of its own
+            Mount::File(real, at) => {
+                let (folder, link) = through(id, guest_mounts.len(), &real)?;
                 guest_mounts.push(share(folder.clone(), folder, false));
                 guest_mounts.push(GuestMount::Bind {
                     from: link,
-                    to: p,
+                    to: at,
                     read_only: false,
                 });
             }
@@ -1051,6 +1056,8 @@ fn through(id: &str, n: usize, p: &Path) -> Result<(PathBuf, PathBuf)> {
     let folder = session_home(id).join(format!("through-{n}"));
     let link = folder.join(p.file_name().context("a login file has no name")?);
     crate::folder::clear(&folder)?;
+    // clear makes no folder that is not there (a first start)
+    std::fs::create_dir_all(&folder)?;
     std::fs::hard_link(p, &link).with_context(|| format!("linking {} for the VM", p.display()))?;
     Ok((folder, link))
 }
@@ -1383,6 +1390,9 @@ fn grant_mounts(
                 std::fs::create_dir_all(&path)?;
                 layered(mounts, &path, layer, true)?;
             }
+            Mode::Write | Mode::WriteThrough if path.is_file() => {
+                mounts.push(Mount::File(path.clone(), path));
+            }
             Mode::Write | Mode::WriteThrough => {
                 if !path.exists() {
                     std::fs::create_dir_all(&path)?;
@@ -1479,7 +1489,7 @@ fn layered(mounts: &mut Vec<Mount>, path: &Path, layer: &Path, host: bool) -> Re
             upper: own.join("upper"),
             work: own.join("work"),
         });
-        logins_through(mounts, path);
+        logins_through(mounts, path, &own.join("upper"))?;
         return Ok(());
     }
     if !own.exists() {
@@ -1496,21 +1506,37 @@ fn layered(mounts: &mut Vec<Mount>, path: &Path, layer: &Path, host: bool) -> Re
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    mounts.push(Mount::Bind(own, path.to_path_buf()));
-    logins_through(mounts, path);
-    Ok(())
+    mounts.push(Mount::Bind(own.clone(), path.to_path_buf()));
+    logins_through(mounts, path, &own)
 }
 
 /// The agents' login files in a home folder of theirs (`.credentials.json` of Claude Code, `auth.json` of Codex) are
 /// the real files over the session's layer (DESIGN-12 wall 1): a refresh rotates the refresh token, so a session that
-/// wrote it into its layer would leave the spent token in the real file and log the user's own agent out.
-fn logins_through(mounts: &mut Vec<Mount>, folder: &Path) {
+/// wrote it into its layer would leave the spent token in the real file and log the user's own agent out. A login
+/// that is a link (clauth links `~/.claude/.credentials.json` to its active profile's file) is its target: the session
+/// runs on the account that is live at its start, and a clauth switch later changes the link, not the session. The
+/// link's path in `layer` (the overlay's upper folder, or the session's copy) becomes an empty plain file, the mount
+/// point: no sandbox mounts on a link.
+fn logins_through(mounts: &mut Vec<Mount>, folder: &Path, layer: &Path) -> Result<()> {
     for (_, file) in LOGINS {
         let login = folder.join(file);
-        if login.is_file() {
-            mounts.push(Mount::Writable(login));
+        // a link to no file is no login
+        if !login.is_file() {
+            continue;
         }
+        if login.symlink_metadata()?.file_type().is_symlink() {
+            let point = layer.join(file);
+            if std::fs::symlink_metadata(&point).is_ok() {
+                std::fs::remove_file(&point)?;
+            }
+            std::fs::write(&point, b"")?;
+        }
+        let real = login
+            .canonicalize()
+            .with_context(|| format!("reading the link {}", login.display()))?;
+        mounts.push(Mount::File(real, login));
     }
+    Ok(())
 }
 
 /// What a commit in worktree `workdir` on `branch` writes in the repository's git folder: the objects, the refs and

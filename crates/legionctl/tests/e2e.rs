@@ -3518,7 +3518,10 @@ fn container_repository(home: &Path, (gateway, provider): (u16, u16)) -> PathBuf
                  git push origin main 2>&1 | grep -q gates.git.deny && echo PUSH_REFUSED; \
                  touch \"$HOME/outside\" && touch agentWorkspaces/talk/MEMORY/probe.md && echo WROTE; \
                  [ -f /.dockerenv ] && echo IN_CONTAINER; echo \"SESSION=$LEGIONCTL_SESSION\"; \
-                 grep -q logged-in \"$HOME/.agent-state.json\" && echo STATE_READ; python3 ask-gateway.py";
+                 grep -q logged-in \"$HOME/.agent-state.json\" && echo STATE_READ; \
+                 grep -q old \"$HOME/.claude/.credentials.json\" && \
+                 echo '{\"refresh\": \"new\"}' > \"$HOME/.claude/.credentials.json\" && echo LOGIN_THROUGH; \
+                 python3 ask-gateway.py";
     let client =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/static/release/legionctl");
     assert!(
@@ -3558,13 +3561,18 @@ fn container_repository(home: &Path, (gateway, provider): (u16, u16)) -> PathBuf
     // a writable file of the home, like ~/.claude.json
     let state = home.join(".agent-state.json");
     write(&state, "{\"logged-in\": true}");
+    // Claude Code's login as clauth leaves it: a link to the active profile's file
+    let alt = home.join(".clauth/profiles/alt/credentials.json");
+    write(&alt, "{\"refresh\": \"old\"}");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::os::unix::fs::symlink(&alt, home.join(".claude/.credentials.json")).unwrap();
     write(
         &home.join(".config/legionctl/run.jsonc"),
         &json!({"session": {
             "acp": {"fake": ["python3", "fake-acp-agent.py"]},
             "agents": {"probe": ["sh", "-c", probe]},
             "scope": false,
-            "writable": [state],
+            "writable": [state, home.join(".claude")],
             "container": {"base": "unused", "npm": [], "client": client},
         },
         "gateway": {
@@ -3575,6 +3583,19 @@ fn container_repository(home: &Path, (gateway, provider): (u16, u16)) -> PathBuf
         .to_string(),
     );
     repo
+}
+
+/// The probe refreshed its login (`LOGIN_THROUGH` in its `text`), and the refresh reached the file that clauth's
+/// link points to.
+fn refresh_reached_clauth(home: &Path, text: &str) {
+    assert!(text.contains("LOGIN_THROUGH"), "{text}");
+    assert_eq!(
+        std::fs::read_to_string(home.join(".clauth/profiles/alt/credentials.json"))
+            .unwrap()
+            .trim(),
+        "{\"refresh\": \"new\"}",
+        "the refresh reached the file that clauth's link points to"
+    );
 }
 
 /// The stand-in provider and the gateway's port for `container_repository`; the operator must start again to serve
@@ -3682,6 +3703,7 @@ fn sessions_in_a_container_work_on_the_mounted_workspace_behind_the_git_gate() {
         !home.join("outside").exists(),
         "the container's home is its own"
     );
+    refresh_reached_clauth(&home, &text);
     assert_eq!(
         sandbox_calls(&home),
         1,
@@ -3824,6 +3846,7 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
         );
     }
     assert!(!home.join("outside").exists(), "the VM's home is its own");
+    refresh_reached_clauth(&home, &text);
     assert_eq!(
         sandbox_calls(&home),
         1,
@@ -5555,15 +5578,16 @@ fn jail_files(home: &Path, workspace: &Path) {
 /// DESIGN-12 wall 1: a harness that refreshes its login in a session rotates the refresh token, so the new login
 /// must reach the real file, or the user's own Claude Code or Codex keeps a spent token and is logged out. A stand-in
 /// harness rewrites both login files and a settings file: the logins are new in the real home after the session, the
-/// settings write stays in the session's layer.
+/// settings write stays in the session's layer. Claude Code's login is clauth's link to its active profile's file
+/// (bwrap refused to mount on it, r324): the refresh reaches the profile's file and the link stays clauth's.
 #[test]
 fn a_login_refreshed_in_a_session_reaches_the_real_login_files() {
     let (op, home) = operator("logins");
     let repo = repository(&home);
-    write(
-        &home.join(".claude/.credentials.json"),
-        "{\"refresh\": \"old\"}",
-    );
+    let alt = home.join(".clauth/profiles/alt/credentials.json");
+    write(&alt, "{\"refresh\": \"old\"}");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::os::unix::fs::symlink(&alt, home.join(".claude/.credentials.json")).unwrap();
     write(&home.join(".codex/auth.json"), "{\"refresh\": \"old\"}");
     write(&home.join(".claude/settings.json"), "{}");
     let refresh = "echo '{\"refresh\": \"new\"}' > ~/.claude/.credentials.json && \
@@ -5602,13 +5626,18 @@ fn a_login_refreshed_in_a_session_reaches_the_real_login_files() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    for login in [".claude/.credentials.json", ".codex/auth.json"] {
+    for login in [".clauth/profiles/alt/credentials.json", ".codex/auth.json"] {
         assert_eq!(
             std::fs::read_to_string(home.join(login)).unwrap().trim(),
             "{\"refresh\": \"new\"}",
             "{login}: the refreshed login is the user's"
         );
     }
+    assert_eq!(
+        std::fs::read_link(home.join(".claude/.credentials.json")).unwrap(),
+        alt,
+        "the live login stays clauth's link"
+    );
     assert_eq!(
         std::fs::read_to_string(home.join(".claude/settings.json")).unwrap(),
         "{}",
