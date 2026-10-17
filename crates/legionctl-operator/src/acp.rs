@@ -246,6 +246,32 @@ fn lock(live: &Mutex<Live>) -> MutexGuard<'_, Live> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// The run's ACP session and whether it is new: the loaded one (`acp` of the job), else a new one, kept in the job. A
+/// chat's session that the agent does not know (it started again) is logged and replaced, unless the caller asked to
+/// go on in it (`load`).
+async fn open_session(
+    cx: &agent_client_protocol::ConnectionTo<agent_client_protocol::Agent>,
+    (new, load): (NewSessionRequest, Option<(SessionId, LoadSessionRequest)>),
+    input: &mut serde_json::Value,
+    (live, job): (&Mutex<Live>, i64),
+) -> Result<(SessionId, bool), agent_client_protocol::Error> {
+    if let Some((acp, request)) = load {
+        match cx.send_request(request).block_task().await {
+            Ok(_) => return Ok((acp, false)),
+            Err(e) if input["load"] != true => lock(live).record(
+                "session.load-lost",
+                serde_json::json!({"acp": acp.to_string(), "error": e.to_string()}),
+            ),
+            Err(e) => return Err(e),
+        }
+    }
+    let acp = cx.send_request(new).block_task().await?.session_id;
+    input["acp"] = acp.to_string().into();
+    // without it a resume starts a new ACP session, without the history
+    keep_acp(live, job, input)?;
+    Ok((acp, true))
+}
+
 async fn drive(
     launch: Launch,
     prompt: &str,
@@ -308,16 +334,13 @@ async fn drive(
                 .as_str()
                 .filter(|_| init.agent_capabilities.load_session)
                 .map(|id| SessionId::new(id.to_string()));
-            let acp = if let Some(acp) = loading {
-                cx.send_request(load(acp.clone())).block_task().await?;
-                acp
-            } else {
-                let acp = cx.send_request(new).block_task().await?.session_id;
-                input["acp"] = acp.to_string().into();
-                // without it a resume starts a new ACP session, without the history
-                keep_acp(&live, job, &input)?;
-                acp
-            };
+            let (acp, fresh) = open_session(
+                &cx,
+                (new, loading.map(|id| (id.clone(), load(id)))),
+                &mut input,
+                (&live, job),
+            )
+            .await?;
             // the run's model (the ui-composer's: config views.composer_models); an agent that refuses it fails the run
             if let Some(model) = input["model"].as_str() {
                 let set = agent_client_protocol::UntypedMessage::new(
@@ -327,9 +350,13 @@ async fn drive(
                 cx.send_request(set).block_task().await?;
             }
             lock(&live).prompting = true;
+            let text = match input["history"].as_str() {
+                Some(history) if fresh => history,
+                _ => prompt,
+            };
             cx.send_request(PromptRequest::new(
                 acp.clone(),
-                vec![ContentBlock::Text(TextContent::new(prompt))],
+                vec![ContentBlock::Text(TextContent::new(text))],
             ))
             .block_task()
             .await?;

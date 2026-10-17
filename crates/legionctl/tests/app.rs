@@ -3391,6 +3391,42 @@ fn a_chat_installs_its_missing_adapter_and_retry_tries_again(cx: &mut TestAppCon
     drop(runtime);
 }
 
+/// A chat goes on after the computer started again (user finding r340): the agent's new process does not know the
+/// chat's ACP session; the next message gets an answer (a new ACP session with the chat's history), and the chat shows
+/// no error.
+#[gpui_kit::test]
+fn a_chat_goes_on_after_the_agent_lost_its_session(cx: &mut TestAppContext) {
+    // in the lab's HOME (thread_lab_on's folder)
+    let rebooted = format!(
+        "/var/tmp/legionctl-app-lost-{}/rebooted",
+        std::process::id()
+    );
+    let (op, home, repo) = thread_lab_on("lost", &[("FAKE_ACP_FORGET", rebooted.clone().into())]);
+    assert_eq!(home.join("rebooted"), Path::new(&rebooted));
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1400., Some((&home, &repo)));
+    let cx = &mut vcx;
+    wait(cx, &app, "the dossier", |a| a.screen.dossier.is_some());
+    send(cx, "/chat");
+    send(cx, "first");
+    wait(cx, &app, "the first answer", |a| {
+        said(a, "thread.answer").len() == 1
+    });
+    write(&home.join("rebooted"), "");
+    send(cx, "second");
+    wait(cx, &app, "the answer after the restart", |a| {
+        said(a, "thread.answer").len() == 2
+    });
+    app.read_with(cx, |a, _| {
+        let answer = &said(a, "thread.answer")[1];
+        assert!(
+            answer.contains("acp: new") && answer.contains("user: first"),
+            "{answer}"
+        );
+        assert!(said(a, "thread.fail").is_empty() && a.state.message.is_none());
+    });
+    drop(runtime);
+}
+
 /// A view saved through `views save` and placed on the thread with `views place` shows in pane 3 with its widget:
 /// a table of the thread's members. The screen follows the event stream: a new member (the view refreshes on
 /// thread.*) and a changed view file (views.save) show without a poll.

@@ -3649,6 +3649,77 @@ fn a_headless_run_installs_its_missing_adapter_first() {
     assert_eq!(adapter::installs(&home), ["add -g @test/fake-acp"; 2]);
 }
 
+/// A chat goes on after the computer started again (user finding r340: "Internal error: { \"details\": \"Session not
+/// found\" }"): the new adapter process does not know the chat's ACP session, so the run starts a new one with the
+/// chat's history as its prompt, logs the lost session, and answers; no JSON-RPC error reaches the user.
+#[test]
+fn a_chat_goes_on_when_the_agent_lost_its_session() {
+    let home = home("lost");
+    let rebooted = home.join("rebooted");
+    let mut op = operator_with(
+        "lost",
+        &home,
+        &[("FAKE_ACP_FORGET", rebooted.clone().into())],
+    );
+    let repo = repository(&home);
+    let agent =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-acp-agent.py");
+    write(
+        &home.join(".config/legionctl/run.jsonc"),
+        &json!({"session": {"acp": {"fake": ["python3", agent]}, "scope": false, "writable": []}})
+            .to_string(),
+    );
+    let env = [("HOME", home.to_str().unwrap())];
+    let ok = |args: &[&str]| {
+        let out = op.run(&repo, &env, args, "");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    ok(&["dossier", "create", "chat"]);
+    ok(&["thread", "start", "a chat", "--dossier", "chat"]);
+    let threads: Value = serde_json::from_str(&ok(&["thread", "list", "--json"])).unwrap();
+    let id = threads
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["title"] == "a chat")
+        .unwrap()["id"]
+        .to_string();
+    let say = |text: &str| ok(&["session", "run", "fake", text, "--thread", &id]);
+    assert!(say("first").contains("acp: new"));
+    assert!(
+        say("second").contains("acp: loaded"),
+        "the same process state: the session loads"
+    );
+    write(&rebooted, "");
+    let after = say("third");
+    assert!(
+        after.contains("acp: new")
+            && after.contains("user: first")
+            && after.contains("The user's new message:\nthird"),
+        "a new ACP session with the chat's history: {after}"
+    );
+    let events: Value =
+        serde_json::from_str(&op.ok(&["events", "--limit", "1000", "--json"])).unwrap();
+    assert!(
+        events["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["kind"] == "session.load-lost"
+                && e["payload"]["error"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("Session not found")),
+        "{events}"
+    );
+    op.held.push(home);
+}
+
 /// SIGTERM ends the operator within the stop time (todo-125: on 2026-10-16 systemd killed it after
 /// `TimeoutStopSec=10`): while a headless run holds its ACP agent (a running job) and `trace` follows the event
 /// stream, a stop as systemd makes it (SIGTERM to the unit's processes) ends the operator and its agent within half of

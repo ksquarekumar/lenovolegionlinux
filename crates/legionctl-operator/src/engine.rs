@@ -5135,8 +5135,13 @@ impl Engine for Operator {
             .tag
             .clone()
             .or_else(|| input.thread.map(|id| format!("thread:{id}")));
-        let prompt = match input.thread {
-            Some(id) if acp.is_none() => conversation_prompt(&store, id, dir, &input.prompt)?,
+        // a chat's history: its prompt in a new ACP session, also when the agent lost the chat's session (a restart)
+        let history = match input.thread {
+            Some(id) => Some(conversation_prompt(&store, id, dir, &input.prompt)?),
+            None => None,
+        };
+        let prompt = match &history {
+            Some(history) if acp.is_none() => history.clone(),
             _ => input.prompt.clone(),
         };
         if let Some(id) = input.thread {
@@ -5156,7 +5161,7 @@ impl Engine for Operator {
             &resolved,
             (&input.agent, &dossier, dir, topic.as_deref()),
             &input,
-            (tag, acp, &prompt),
+            (tag, acp, &prompt, history),
         );
         if let Some(id) = input.thread {
             let row = match &out {
@@ -5340,7 +5345,7 @@ impl Operator {
         resolved: &Resolved,
         (agent, dossier, dir, topic): (&str, &str, &Path, Option<&str>),
         input: &SessionRunIn,
-        (tag, acp, prompt): (Option<String>, Option<String>, &str),
+        (tag, acp, prompt, history): (Option<String>, Option<String>, &str, Option<String>),
     ) -> Result<RunOutput> {
         let token = legionctl_api::random_token()?;
         let start = Start {
@@ -5390,10 +5395,11 @@ impl Operator {
         }
         let launch = store.start_session(&start, &resolved.config)?;
         db.issue_token(&launch.id, &token)?;
-        // `load`: the caller asked to go on in `acp`, so an agent that cannot load it fails the run; `tools`: a resume
-        // binds the run again
+        // `load`: the caller asked to go on in `acp`, so an agent that cannot load it fails the run; `history`: the
+        // prompt of a new ACP session when the agent does not know a chat's `acp`; `tools`: a resume binds the run again
         let job_input = serde_json::json!({"session": launch.id, "prompt": prompt, "tag": tag,
-            "acp": acp, "load": acp.is_some(), "model": input.model, "tools": input.tools});
+            "acp": acp, "load": input.acp.is_some(), "history": history, "model": input.model,
+            "tools": input.tools});
         let job = db.job_begin("session.run", &job_input)?;
         let out = self.runtime.block_on(crate::acp::run(
             launch,

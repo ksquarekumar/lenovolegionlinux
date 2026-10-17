@@ -17,6 +17,8 @@ FAKE_ACP_VIEWS set to a folder, a prompt with a line "Intent: <words>" gets the 
 as a ```json block at the end of the answer (no file: no block). The answer has the line "bound: <json>" with the
 MCP servers (name, command, args), the _meta of session/new or session/load and the files of $CODEX_HOME (config.toml,
 environments.toml, auth.json), so a test can read what the run was bound to.
+While the file $FAKE_ACP_FORGET is there, a new process forgets the sessions (the computer started again), and
+session/load of an unknown session fails as claude-code-acp's does ("Session not found").
 """
 
 import json
@@ -174,6 +176,8 @@ def member(session, text, script):
     return {"stopReason": "end_turn"}
 
 
+if os.path.exists(os.environ.get("FAKE_ACP_FORGET", "/nonexistent")) and os.path.exists(SESSIONS):
+    os.remove(SESSIONS)
 for line in sys.stdin:
     message = json.loads(line)
     method, params, ident = message.get("method"), message.get("params", {}), message.get("id")
@@ -189,6 +193,10 @@ for line in sys.stdin:
             update(loaded, "user_message_chunk", content={"type": "text", "text": earlier})
             update(loaded, "agent_message_chunk", content={"type": "text", "text": "REPLAYED\n"})
         result = {}
+    elif method == "session/load":
+        send({"jsonrpc": "2.0", "id": ident,
+              "error": {"code": -32603, "message": "Internal error", "data": {"details": "Session not found"}}})
+        continue
     elif method == "session/prompt":
         result = prompt(params)
     elif method == "session/set_model":
