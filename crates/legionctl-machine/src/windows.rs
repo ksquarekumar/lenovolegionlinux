@@ -186,16 +186,20 @@ pub fn state(root: &SysRoot) -> Result<WindowsState> {
 }
 
 /// Boot Windows once: set `BootNext` to its entry, then reboot. The start after that returns to the default order.
+/// The reboot is the last step; a first step says which waiting start this one replaces.
 ///
 /// # Errors
 /// No entry starts Windows.
-pub fn reboot_plan(state: &WindowsState) -> Result<Vec<Step>> {
+pub fn reboot_plan(state: &WindowsState, boot: &crate::boot::BootState) -> Result<Vec<Step>> {
     let id = state
         .boot_entry
         .clone()
         .context("no firmware boot entry starts Windows Boot Manager")?;
-    Ok(vec![
-        Step::Unit(vec!["efibootmgr".into(), "--bootnext".into(), id]),
-        Step::Run(vec!["systemctl".into(), "reboot".into()]),
-    ])
+    Ok(crate::boot::replaced_by(boot, &id)
+        .into_iter()
+        .chain([
+            Step::Unit(vec!["efibootmgr".into(), "--bootnext".into(), id]),
+            Step::Run(vec!["systemctl".into(), "reboot".into()]),
+        ])
+        .collect())
 }

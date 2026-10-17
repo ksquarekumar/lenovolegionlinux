@@ -380,7 +380,23 @@ impl Render for BootState {
                     .join(", ")
             ),
             match &self.ours {
-                Some(id) => format!("legionctl's entry: {}", label(id)),
+                Some(id) if self.order.first() == Some(id) => {
+                    format!("legionctl's entry: {}, the default", label(id))
+                }
+                Some(id) if self.next.as_ref() == Some(id) => format!(
+                    "legionctl's entry: {}. {}",
+                    label(id),
+                    legionctl_machine::boot::NEXT_START
+                ),
+                Some(id) if self.current.as_ref() == Some(id) => format!(
+                    "legionctl's entry: {}. This start used it: it becomes the default when the login screen is up.",
+                    label(id)
+                ),
+                Some(id) => format!(
+                    "legionctl's entry: {}, not the default: the last start did not use it. To try it again: \
+                     legionctl boot install, then restart.",
+                    label(id)
+                ),
                 None => "legionctl's entry: none (legionctl boot install)".into(),
             },
             format!("ESP: {}", self.esp.as_deref().unwrap_or("not mounted")),

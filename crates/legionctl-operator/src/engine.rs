@@ -3592,10 +3592,6 @@ impl Engine for Operator {
         self.boot_action("install", input.dry_run)
     }
 
-    fn boot_confirm(&self, _: &Ctx, input: DryRunIn) -> Result<Changes> {
-        self.boot_action("confirm", input.dry_run)
-    }
-
     fn boot_rebuild(&self, _: &Ctx, input: DryRunIn) -> Result<Changes> {
         self.boot_action("rebuild", input.dry_run)
     }
@@ -3682,9 +3678,11 @@ impl Engine for Operator {
 
     fn windows_reboot(&self, _: &Ctx, input: DryRunIn) -> Result<Changes> {
         if input.dry_run {
-            return Ok(dry_run(&windows::reboot_plan(&windows::state(
-                &SysRoot::from_env(),
-            )?)?));
+            let root = SysRoot::from_env();
+            return Ok(dry_run(&windows::reboot_plan(
+                &windows::state(&root)?,
+                &legionctl_machine::boot::state(&root)?,
+            )?));
         }
         Ok(Changes {
             lines: self.system(async |p| p.reboot_windows().await)?,

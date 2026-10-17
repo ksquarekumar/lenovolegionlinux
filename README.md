@@ -61,6 +61,7 @@ flowchart LR
 | `legionctl-operator` | you, `legionctl-operator.socket` (user) | the API on `$XDG_RUNTIME_DIR/legionctl/api.sock`: reads, plans, agent tooling, the event log |
 | `legionctl-system` | root, `legionctl-system.service` | power policy at start, charger change, Fn+Q and resume; D-Bus `org.legionctl.System1`; eBPF sensors |
 | `legionctl-safe.service` | root | starts when the daemon fails: `balanced` mode and a desktop warning |
+| `legionctl-boot-confirm.service` | root, each start after `graphical.target` | a start through legionctl's boot entry makes it the default, and a desktop notice says so |
 | `legionctl-greeter` | greetd | the login screen in place of GDM (opt-in: `legionctl greeter install`) |
 | `legionctl-osd@legionctl` | GNOME Shell | the OSD for Fn+Q, Fn+R and Fn lock; the vitals overlay (`legionctl overlay`) |
 | `legionctl_wmi` | kernel, DKMS | our driver for the Legion WMI. The package blacklists it (`/usr/lib/modprobe.d/legionctl-wmi.conf`), so the in-tree `lenovo_wmi_*` drivers stay the default. See [08-kernel](docs/design/08-kernel.md). |

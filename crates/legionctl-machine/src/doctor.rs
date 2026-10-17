@@ -91,6 +91,7 @@ pub fn doctor(machine: &Machine) -> Vec<String> {
     check(&mut w, "kernel module", module_warnings(root, profile));
     check(&mut w, "Legion WMI", wmi_warnings(root, profile));
     check(&mut w, "boot image", crate::boot::unbuilt(root));
+    check(&mut w, "boot entry", crate::boot::not_default(root));
     check(
         &mut w,
         "throttle",

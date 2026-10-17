@@ -96,7 +96,15 @@ one UKI per kernel in `/boot` (`EFI/Linux/legionctl-<kernel>.efi` by `ukify`, si
 and the initramfs, and the kernel's own command line: see "Kernels" below), `loader/loader.conf`
 (the running kernel, from rEFInd's `initrd=`, as default; no menu: hold a key at start for it), and a firmware entry
 `legionctl` made with `--create-only` (not first in the order); then BootNext tries it once, so a failed start falls
-back to the old chain. `boot confirm` puts the entry first only when this start came through it; `boot rebuild` (also
+back to the old chain. The start through the entry makes it the first entry by itself when it reaches
+`graphical.target` (kernel, initramfs, root file system and the login screen came up): the package links
+`legionctl-boot-confirm.service` (`legionctl-system --boot-confirm`, after `graphical.target`) into
+`graphical.target.wants`, so it runs at each start and does nothing without the boot takeover, when the entry leads
+already, or when this start came through another entry. It writes this start's boot id to
+`/run/legionctl/boot-confirmed`, and the operator's session module shows one desktop notice per start ("legionctl's
+boot entry worked and is now the default"; the user's event `machine.boot-default` keeps it to one). The user approved
+this with `boot install`, so polkit is not asked; there is no `boot confirm` (todo-180 G). When the last start came
+through another entry (the firmware went back to rEFInd), `doctor` says so and what to do; `boot rebuild` (also
 the pacman hook `95-legionctl-uki.hook`, after mkinitcpio's) makes the UKIs again, each kernel on its own (a kernel
 whose line fails its check keeps its old image, and the hook writes a warning to its output and to the journal, tag
 `legionctl-system`; `doctor` shows it until the line is correct), and removes those of kernels that are gone; when the
@@ -109,8 +117,9 @@ run again: an install that failed on the way is completed by the next one, which
 it is not there. Windows stays reachable through `windows reboot` (BootNext into its entry) and
 the firmware menu: systemd-boot cannot start the boot manager on the other disk's ESP. e2e (real daemon, a fake ESP,
 a stand-in efibootmgr with its own state, stand-in ukify/sbsign): the dry run changes nothing; install signs the loader
-and each kernel's image with the kernel line, adds the entry not first and sets BootNext (mutation-checked); confirm
-is refused unless this start came through it (mutation-checked); rebuild drops a removed kernel's image; remove leaves
+and each kernel's image with the kernel line, adds the entry not first and sets BootNext (mutation-checked); the
+unit's command after a start through the entry makes it first and the desktop gets one notice, after a start through
+another entry it changes nothing and doctor says so, and a default entry is left alone (mutation-checked); rebuild drops a removed kernel's image; remove leaves
 the old chain as it was. Live: the first install and the test start are the user's.
 
 ## Kernels (built 2026-10-14 and 2026-10-15, todo-84 parts 1 to 4; decided by the user)

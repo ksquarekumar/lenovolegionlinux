@@ -662,11 +662,10 @@ operations! {
     /// and its kernel images.
     boot_status / BootStatus = "boot.status", Read, Empty => BootState;
     /// Add legionctl's boot entry beside the one there is (systemd-boot and a signed kernel image for each kernel,
-    /// started through a copy of shim): Linux first, no wait. The next start tries it once; if that start fails, the
-    /// one after uses the old entry. A human approves it in the polkit dialog.
+    /// started through a copy of shim): Linux first, no wait. The next start tries it once: when the login screen comes
+    /// up, the entry becomes the default by itself; if that start fails, the one after uses the old entry. A human
+    /// approves it in the polkit dialog.
     boot_install / BootInstall = "boot.install", Machine, DryRunIn => Changes;
-    /// After a start through legionctl's entry: make it the first entry.
-    boot_confirm / BootConfirm = "boot.confirm", Machine, DryRunIn => Changes;
     /// Make the kernel images again (the package does it after each kernel change).
     boot_rebuild / BootRebuild = "boot.rebuild", Machine, DryRunIn => Changes;
     /// Remove legionctl's boot entry and its files; the old entry stays as it was.

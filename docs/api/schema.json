@@ -8886,43 +8886,6 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
-  "boot.confirm": {
-    "class": "machine",
-    "internal": false,
-    "input": {
-      "type": "object",
-      "properties": {
-        "dry_run": {
-          "type": "boolean",
-          "description": "Show what would happen; change nothing.",
-          "default": false
-        }
-      },
-      "title": "DryRunIn",
-      "$schema": "https://json-schema.org/draft/2020-12/schema"
-    },
-    "output": {
-      "type": "object",
-      "properties": {
-        "lines": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "dry_run": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "lines",
-        "dry_run"
-      ],
-      "description": "Lines that say what changed or, in a dry run, what would change.",
-      "title": "Changes",
-      "$schema": "https://json-schema.org/draft/2020-12/schema"
-    }
-  },
   "boot.rebuild": {
     "class": "machine",
     "internal": false,

@@ -1,0 +1,11 @@
+[Unit]
+Description=legionctl boot entry: the default after a start through it that reached the login screen
+# a good start: kernel, initramfs, root file system and the login screen came up (graphical.target)
+After=graphical.target
+# the package links it into graphical.target.wants: each start runs it, and it does nothing without the boot takeover
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/legionctl/legionctl-system --boot-confirm
+RuntimeDirectory=legionctl
+RuntimeDirectoryPreserve=yes

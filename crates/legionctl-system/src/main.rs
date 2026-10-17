@@ -607,8 +607,8 @@ fn boot_steps(root: &SysRoot, steps: &[Step]) -> Result<Vec<String>> {
     policy::execute(root, &Ledger::open(root)?, steps)
 }
 
-/// A mode that runs once and ends, instead of the daemon: `--safe` (the safe-mode unit), `--boot-rebuild` (the pacman
-/// hook after a kernel or initramfs change), `--remove-check` (the pacman hook before the package's removal; it fails
+/// A mode that runs once and ends, instead of the daemon: `--safe` (the safe-mode unit), `--boot-confirm` (the unit
+/// after graphical.target), `--boot-rebuild` (the pacman hook after a kernel or initramfs change), `--remove-check` (the pacman hook before the package's removal; it fails
 /// to stop the removal), `--greeter-remove` (the package's removal: GDM back, so the computer keeps a login screen).
 fn one_shot(root: &SysRoot) -> Option<Result<()>> {
     let print = |lines: Vec<String>| {
@@ -618,6 +618,7 @@ fn one_shot(root: &SysRoot) -> Option<Result<()>> {
     };
     match std::env::args().nth(1).as_deref() {
         Some("--safe") => Some(safe(root)),
+        Some("--boot-confirm") => Some(boot_confirm(root)),
         Some("--boot-rebuild") => Some(boot_rebuild(root).map(print)),
         Some("--remove-check") => Some(remove_check(root)),
         Some("--greeter-remove") => Some(greeter::state(root).and_then(|state| {
@@ -815,22 +816,43 @@ fn start_set(root: &SysRoot) {
     }
 }
 
-/// Every kernel's UKI again (the pacman hook); nothing when legionctl does not own the boot. Each warning (a kernel
-/// whose image is not made again) also goes to the journal: the hook's output is gone after pacman ends.
+/// A start through legionctl's entry reached graphical.target (kernel, initramfs, root file system and login screen
+/// came up): the entry becomes the first in the order, and the marker [`boot::CONFIRMED`] tells the user's desktop.
+/// The user approved this with `boot install`, so polkit is not asked. Nothing without the boot takeover.
+fn boot_confirm(root: &SysRoot) -> Result<()> {
+    if boot::default_kernel(root)?.is_none() {
+        return Ok(());
+    }
+    let Some(plan) = boot::confirm_plan(&boot::state(root)?)? else {
+        return Ok(());
+    };
+    for line in boot_steps(root, &plan)? {
+        println!("{line}");
+    }
+    let boot_id = root
+        .read("/proc/sys/kernel/random/boot_id")?
+        .context("no boot id")?;
+    let marker = root.path(boot::CONFIRMED);
+    if let Some(dir) = marker.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("creating the folder of {}", boot::CONFIRMED))?;
+    }
+    std::fs::write(&marker, boot_id).with_context(|| format!("writing {}", boot::CONFIRMED))
+}
+
 /// The plan of the boot action `action` (for `install`: before its `BootNext` step, which needs the new entry): for
 /// its run and its dry run (`Plan`).
 fn boot_plan(root: &SysRoot, action: &str) -> Result<Vec<Step>> {
     let state = boot::state(root)?;
     match action {
         "install" => boot::install_plan(root, &state),
-        "confirm" => boot::confirm_plan(&state),
         "rebuild" if state.ours.is_none() => Ok(vec![Step::Info(
             "no legionctl boot entry: nothing to rebuild".into(),
         )]),
         "rebuild" => boot::rebuild_plan(root, &state),
         "remove" => boot::remove_plan(root, &state),
         other => {
-            anyhow::bail!("boot action must be install, confirm, rebuild or remove, not {other}")
+            anyhow::bail!("boot action must be install, rebuild or remove, not {other}")
         }
     }
 }
@@ -844,6 +866,8 @@ fn greeter_plan(root: &SysRoot, action: &str) -> Result<Vec<Step>> {
     }
 }
 
+/// Every kernel's UKI again (the pacman hook); nothing when legionctl does not own the boot. Each warning (a kernel
+/// whose image is not made again) also goes to the journal: the hook's output is gone after pacman ends.
 fn boot_rebuild(root: &SysRoot) -> Result<Vec<String>> {
     let plan = boot_plan(root, "rebuild")?;
     for step in &plan {
@@ -1444,7 +1468,8 @@ impl System1 {
         Ok(lines)
     }
 
-    /// The boot takeover (todo-80): `install` (then the next start tries it once), `confirm`, `rebuild`, `remove`.
+    /// The boot takeover (todo-80): `install` (then the next start tries it once; a good start makes it the default),
+    /// `rebuild`, `remove`.
     async fn boot(
         &self,
         action: String,
@@ -1460,9 +1485,7 @@ impl System1 {
                     let mut lines = boot_steps(&root, &boot_plan(&root, "install")?)?;
                     let once = boot::try_once(&boot::state(&root)?)?;
                     lines.extend(boot_steps(&root, &[once])?);
-                    lines.push(
-                        "the next start tries legionctl once; after it, run `legionctl boot confirm`".into(),
-                    );
+                    lines.push(boot::NEXT_START.into());
                     Ok(lines)
                 }
                 "rebuild" => boot_rebuild(&root),
@@ -1552,7 +1575,7 @@ impl System1 {
                 other => anyhow::bail!("plan kind must be boot or greeter, not {other}"),
             });
             if kind == "boot" && action == "install" {
-                lines.push("then the next start tries legionctl's entry once (BootNext)".into());
+                lines.push(boot::NEXT_START.into());
             }
             Ok(lines)
         })
@@ -1787,16 +1810,17 @@ impl System1 {
     ) -> zbus::fdo::Result<Vec<String>> {
         authorize(conn, &header, "org.legionctl.windows.reboot").await?;
         let steps = windows::state(&self.root)
-            .and_then(|state| windows::reboot_plan(&state))
+            .and_then(|state| windows::reboot_plan(&state, &boot::state(&self.root)?))
             .map_err(|e| failed(&e))?;
         let ledger = Ledger::open(&self.root).map_err(|e| failed(&e))?;
-        let (boot_next, reboot) = steps.split_at(1);
+        let (boot_next, reboot) = steps.split_at(steps.len() - 1);
         let mut lines = policy::execute(&self.root, &ledger, boot_next)
             .map_err(|e| zbus::fdo::Error::Failed(format!("not rebooting: {e:#}")))?;
         lines.push(format!(
             "BootNext set: {}",
             boot_next
                 .iter()
+                .filter(|s| matches!(s, Step::Unit(_)))
                 .filter_map(policy::describe)
                 .collect::<String>()
         ));

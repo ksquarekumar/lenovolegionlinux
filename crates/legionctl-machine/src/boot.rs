@@ -1,8 +1,8 @@
 //! The boot takeover (todo-80, decided by the user 2026-10-14): systemd-boot and one signed unified kernel image (UKI)
 //! for each kernel, beside the boot chain that is there (firmware -> shim -> rEFInd), so Linux starts first and fast.
 //! A new firmware entry `legionctl` starts a copy of shim, whose second stage is systemd-boot signed with the key
-//! that MOK trusts (the rEFInd key); it is tried once with `BootNext`, and becomes the first entry only after the user
-//! confirms a start through it. Nothing of the old chain changes. Its kernels (todo-84): the default, a one-time
+//! that MOK trusts (the rEFInd key); it is tried once with `BootNext`, and becomes the first entry by itself after a
+//! start through it reaches the desktop (the unit `legionctl-boot-confirm`). Nothing of the old chain changes. Its kernels (todo-84): the default, a one-time
 //! start, and each kernel's own command line, the one source of that kernel's image.
 
 use std::path::Path;
@@ -911,21 +911,23 @@ pub fn try_once(state: &BootState) -> Result<Step> {
     Ok(tools_checked(vec![step])?.remove(0))
 }
 
-/// Plan `boot confirm`: our entry first in the order, after a start through it.
+/// What `boot install` says, and what the next start does.
+pub const NEXT_START: &str = "Restart once: the next start uses legionctl's entry one time. If the desktop comes up, it \
+                              becomes the default by itself. If it fails, the start after uses rEFInd as before.";
+
+/// The marker of a start that made our entry the default (this start's boot id), for the user's desktop notice.
+pub const CONFIRMED: &str = "/run/legionctl/boot-confirmed";
+
+/// Our entry first in the order, when this start came through it and it is not first yet (`None`: nothing to do).
 ///
 /// # Errors
-/// No entry, or this start did not come through it.
-pub fn confirm_plan(state: &BootState) -> Result<Vec<Step>> {
-    let id = state
-        .ours
-        .clone()
-        .context("no legionctl boot entry (legionctl boot install)")?;
-    if state.current.as_deref() != Some(id.as_str()) {
-        bail!(
-            "this start came through entry {}, not legionctl ({id}): restart once through it (it is the next start's \
-             entry after boot install), then confirm",
-            state.current.as_deref().unwrap_or("unknown")
-        );
+/// `efibootmgr` is not installed.
+pub fn confirm_plan(state: &BootState) -> Result<Option<Vec<Step>>> {
+    let Some(id) = state.ours.clone() else {
+        return Ok(None);
+    };
+    if state.current.as_deref() != Some(id.as_str()) || state.order.first() == Some(&id) {
+        return Ok(None);
     }
     let order: Vec<String> = std::iter::once(id.clone())
         .chain(state.order.iter().filter(|e| **e != id).cloned())
@@ -935,6 +937,55 @@ pub fn confirm_plan(state: &BootState) -> Result<Vec<Step>> {
         "--bootorder".into(),
         order.join(","),
     ])])
+    .map(Some)
+}
+
+/// What a new `BootNext` of `next` replaces: the one start through our entry that waits, before it is the default.
+#[must_use]
+pub fn replaced_by(state: &BootState, next: &str) -> Option<Step> {
+    let ours = state.ours.as_ref()?;
+    (state.next.as_ref() == Some(ours) && ours != next && state.order.first() != Some(ours)).then(|| {
+        Step::Info(
+            "this restart replaces the waiting start through legionctl's boot entry, so that entry does not become \
+             the default now. To try it later: legionctl boot install, then restart"
+                .into(),
+        )
+    })
+}
+
+/// Doctor: our entry is installed but not the default, and no start through it is waiting.
+///
+/// # Errors
+/// `efibootmgr` or the ESP cannot be read.
+pub fn not_default(root: &SysRoot) -> Result<Vec<String>> {
+    if default_kernel(root)?.is_none() {
+        return Ok(Vec::new());
+    }
+    let (entries, order, current, next) = parse_efibootmgr(&efibootmgr(&[])?);
+    let Some(ours) = entries
+        .iter()
+        .find(|e| e.label == LABEL)
+        .map(|e| e.id.clone())
+    else {
+        return Ok(Vec::new());
+    };
+    if order.first() == Some(&ours) || next.as_ref() == Some(&ours) {
+        return Ok(Vec::new());
+    }
+    if current.as_ref() == Some(&ours) {
+        return Ok(vec![
+            "this start used legionctl's boot entry, but it did not become the default: see journalctl -u \
+             legionctl-boot-confirm"
+                .into(),
+        ]);
+    }
+    let label = current
+        .and_then(|c| entries.into_iter().find(|e| e.id == c))
+        .map_or_else(|| "another entry".into(), |e| e.label);
+    Ok(vec![format!(
+        "the last start did not use legionctl's boot entry (it used {label}), so rEFInd stays the default. To try \
+         legionctl's entry again: legionctl boot install, then restart. If it fails again: legionctl boot remove"
+    )])
 }
 
 /// Plan `boot rebuild` (the pacman hook): each kernel's UKI again, and the UKIs of kernels that are gone removed. A

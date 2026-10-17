@@ -8,6 +8,7 @@
 //! | `org.legionctl.System1.FnLock` | OSD "fnlock" |
 //! | `legionctl overlay on`, every 2 s | the vitals overlay (OSD "vitals" with the lines; an empty value hides it) |
 //! | `/run/legionctl/safe-mode` appears (the daemon failed and the firmware runs balanced) | a desktop notification |
+//! | `/run/legionctl/boot-confirmed` appears (a start through legionctl's boot entry made it the default) | a desktop notification, once per start |
 //!
 //! The OSD is drawn by the GNOME Shell extension `legionctl-osd@legionctl` (`org.legionctl.Osd.Show`); it is the only
 //! OSD path, so without the extension the operator logs that once and shows nothing.
@@ -72,6 +73,40 @@ async fn safe_mode_notice(session: &zbus::Connection, told: &mut Option<String>)
         Ok(()) => *told = reason,
         Err(e) => eprintln!("operator: safe mode notice not shown: {e:#}"),
     }
+}
+
+/// Tell the user once per start that legionctl's boot entry became the default (the marker `--boot-confirm` writes:
+/// that start's boot id). The notice is an event of the user's log, so a new login in the same start does not tell it
+/// again.
+async fn boot_notice(session: &zbus::Connection) -> Result<()> {
+    let Some(boot) =
+        legionctl_machine::sysroot::SysRoot::from_env().read(legionctl_machine::boot::CONFIRMED)?
+    else {
+        return Ok(());
+    };
+    let boot = boot.trim();
+    let db = legionctl_core::db::Db::open_default()?;
+    let filter = legionctl_core::db::EventFilter {
+        kinds: &["machine.boot-default"],
+        field: Some(("$.boot", boot)),
+        naming: None,
+    };
+    if db.last_event(&filter)?.is_some() {
+        return Ok(());
+    }
+    crate::desktop::tell(
+        session,
+        "dialog-information",
+        "legionctl: boot entry",
+        "legionctl's boot entry worked and is now the default.",
+    )
+    .await?;
+    db.record(
+        "legionctl-system",
+        "machine.boot-default",
+        &serde_json::json!({ "boot": boot }),
+    )?;
+    Ok(())
 }
 
 fn mode_detail(fn_q_choice: bool, source: &str) -> String {
@@ -151,7 +186,12 @@ pub async fn run(
             }
             // the daemon stopping or starting, and a slow check besides (systemd starts legionctl-safe after it)
             Some(_) = owners.next() => safe_mode_notice(&session, &mut told).await,
-            _ = check.tick() => safe_mode_notice(&session, &mut told).await,
+            _ = check.tick() => {
+                safe_mode_notice(&session, &mut told).await;
+                if let Err(e) = boot_notice(&session).await {
+                    eprintln!("operator: boot entry notice not shown: {e:#}");
+                }
+            }
             _ = vitals.tick() => {
                 let on = operator.overlay.load(std::sync::atomic::Ordering::Relaxed);
                 if on || overlay_shown {

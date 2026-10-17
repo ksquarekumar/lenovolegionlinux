@@ -24,7 +24,7 @@ commands take `--dry-run`.
 | `kernel try <name>` | Restarts into the kernel once. The default stays. | Restarts now |
 | `kernel bench <scenario> --all [--seconds <s>]`, `--cancel` | A job: each kernel starts once, the suite runs after login, then the default kernel starts again. It stops at a kernel that does not start. | Restarts now, once per kernel |
 | `kernel build <base> [--config-fragment <file>] [--name <suffix>]` | Builds `linux-cachyos-<suffix>` from the installed base's PKGBUILD in a container (a job, about an hour), then `pacman -U` through the daemon. | Next start (`kernel try`) |
-| `boot install\|confirm\|rebuild\|remove` | legionctl's boot entry (systemd-boot and signed images). After `install`, the next start tries it once; `confirm` makes it first. | Next start |
+| `boot install\|rebuild\|remove` | legionctl's boot entry (systemd-boot and signed images). After `install`, the next start tries it once; when that start reaches the login screen, the entry becomes the default by itself. | Next start |
 | `greeter install\|remove` | legionctl's greeter in place of GDM, or back. | Next start |
 | `windows reboot` | Restarts into Windows once. | Restarts now |
 | `windows vm start\|stop\|pause\|resume`, `windows vm autostart off\|login\|boot`, `windows vm view` (W) | The installed Windows in a VM (its own disk by VFIO); pause and resume stop and continue its CPUs (QMP); view opens a SPICE window. | Now |

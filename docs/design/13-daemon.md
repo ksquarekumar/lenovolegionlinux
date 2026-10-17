@@ -161,8 +161,8 @@ may fail by design. The ledger has one writer: the daemon opens `system.db` for 
 | power-profiles-daemon (`ActiveProfile` over D-Bus, `ppd.rs`; not `powerprofilesctl`, a Python program that aborted at exit under Python 3.14) | power | in the daemon: a D-Bus call; the manager writes its own files |
 | `modprobe`, `cpupower`, `chattr`, `sbverify`, `bsdtar`, `modinfo`, `dkms status`, `nvidia-smi` | VFIO, power, boot checks, telemetry | in the daemon: they read, or write `/sys` |
 
-Not under the unit: the one-shot modes that pacman hooks run (`--boot-rebuild`, `--remove-check`, `--greeter-remove`)
-and `--safe` (`legionctl-safe.service`); they run as root without a sandbox, and their pacman, ukify, sbsign and
+Not under the unit: the one-shot modes that pacman hooks run (`--boot-rebuild`, `--remove-check`, `--greeter-remove`),
+`--safe` (`legionctl-safe.service`) and `--boot-confirm` (`legionctl-boot-confirm.service`); they run as root without a sandbox, and their pacman, ukify, sbsign and
 efibootmgr steps also run as transient units. Open: in a chroot (no running systemd) `systemd-run` fails, so the
 `--boot-rebuild` hook cannot make the images there. Open: a `tune` workload runs as the caller inside the daemon's
 sandbox, so it cannot write `/home` or `/tmp`.

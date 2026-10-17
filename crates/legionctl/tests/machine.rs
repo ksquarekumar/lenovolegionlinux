@@ -4806,7 +4806,7 @@ json.dump(s, open(path, "w"))
 print("BootCurrent: " + s["current"])
 if s["next"]: print("BootNext: " + s["next"])
 print("BootOrder: " + ",".join(s["order"]))
-for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,GPT,x)/File")
+for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,GPT,x)/" + ("\\EFI\\Microsoft\\Boot\\bootmgfw.efi" if v.startswith("Windows") else "File"))
 ' "$@""#,
             state = state.display()
         );
@@ -4829,8 +4829,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
     }
 
     /// The boot takeover (todo-80): legionctl's entry comes beside the old chain, never first and never alone: the
-    /// next start tries it once (`BootNext`), `confirm` puts it first only after a start through it, `rebuild` follows
-    /// the kernels, and `remove` leaves the old chain as it was. Each kernel's image is signed with the MOK key and has
+    /// next start tries it once (`BootNext`), `rebuild` follows the kernels, and `remove` leaves the old chain as it was. Each kernel's image is signed with the MOK key and has
     /// the running system's kernel line; systemd-boot is shim's signed second stage.
     #[tokio::test(flavor = "multi_thread")]
     async fn legionctl_boot_comes_beside_the_old_chain_and_is_tried_once_before_it_leads() {
@@ -4847,7 +4846,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         for expected in [
             "default legionctl-linux-cachyos-bore-lto.efi",
             "--create-only --disk /dev/nvme1n1 --part 1 --label legionctl",
-            "then the next start tries legionctl's entry once",
+            "Restart once: the next start uses legionctl's entry one time.",
         ] {
             assert!(plan.contains(expected), "{expected} missing:\n{plan}");
         }
@@ -4898,19 +4897,6 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         );
         assert_eq!(vars["next"], "0007", "the next start tries it once");
 
-        let refused = op.cli(&["boot", "confirm"]);
-        assert!(
-            String::from_utf8_lossy(&refused.stderr).contains("this start came through entry 0003")
-        );
-        let mut vars = efivars();
-        vars["current"] = "0007".into();
-        std::fs::write(&state, vars.to_string()).unwrap();
-        op.ok(&["boot", "confirm"]);
-        assert_eq!(
-            efivars()["order"],
-            serde_json::json!(["0007", "0003", "0004"])
-        );
-
         // the default kernel's package goes: loader.conf must not start an image that rebuild removes
         op.ok(&["kernel", "default", "linux-cachyos"]);
         std::fs::remove_file(m.dir.join("root/boot/vmlinuz-linux-cachyos")).unwrap();
@@ -4939,6 +4925,129 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         assert!(
             esp.join("EFI/BOOT/bootx64.efi").exists(),
             "the old chain is as it was"
+        );
+    }
+
+    /// The package's unit that runs after each start's login screen: its command's arguments.
+    fn boot_confirm_unit() -> Vec<String> {
+        let unit = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../systemd/legionctl-boot-confirm.service"),
+        )
+        .unwrap();
+        let makefile =
+            std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Makefile"))
+                .unwrap();
+        assert!(
+            unit.lines().any(|l| l == "After=graphical.target")
+                && makefile.contains("graphical.target.wants/legionctl-boot-confirm.service"),
+            "each start runs it after the login screen is up:\n{unit}"
+        );
+        let exec: Vec<String> = unit
+            .lines()
+            .find_map(|l| l.strip_prefix("ExecStart="))
+            .unwrap()
+            .split_whitespace()
+            .map(String::from)
+            .collect();
+        assert_eq!(exec[0], "/usr/lib/legionctl/legionctl-system");
+        exec[1..].to_vec()
+    }
+
+    /// todo-180 G (the user, r324: "wtf is boot confirm"): the start through legionctl's entry makes it the default by
+    /// itself once the login screen is up (the package's unit after graphical.target), and the desktop says so once.
+    /// A start through another entry (the firmware went back to rEFInd) changes nothing and doctor says what to do; a
+    /// start through the entry when it is the default already changes nothing. A restart into Windows says that it
+    /// replaces the waiting start (U-11: one owner of `BootNext`).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_good_start_through_legionctls_entry_makes_it_the_default_and_tells_the_desktop() {
+        let m = Machine::new("bootgood");
+        let state = boot_machine(&m);
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let address = format!("unix:path={}", m.dir.join("bus").display());
+        let (_desktop, told) = crate::desktop::answering(&address, &[]).await;
+        let op = Operator::start(
+            "bootgood",
+            &[
+                ("PATH", m.dir.join("bin").into()),
+                ("HOME", m.dir.join("home").into()),
+                ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+                ("DBUS_SYSTEM_BUS_ADDRESS", address.clone().into()),
+                ("DBUS_SESSION_BUS_ADDRESS", address.into()),
+            ],
+        );
+        let exec = boot_confirm_unit();
+        let started = |current: &str| {
+            let mut vars: Value =
+                serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+            vars["current"] = current.into();
+            vars["next"] = Value::Null;
+            std::fs::write(&state, vars.to_string()).unwrap();
+            let args: Vec<&str> = exec.iter().map(String::as_str).collect();
+            let out = one_shot(&m, &args);
+            assert!(out.status.success(), "{out:?}");
+        };
+        let order = || -> Value {
+            serde_json::from_str::<Value>(&std::fs::read_to_string(&state).unwrap()).unwrap()["order"].clone()
+        };
+        let marker = m.dir.join("root/run/legionctl/boot-confirmed");
+
+        started("0003");
+        assert!(!marker.exists(), "no takeover: nothing");
+        let install = op.ok(&["boot", "install"]);
+        assert!(
+            install.contains("If the desktop comes up, it becomes the default by itself")
+                && !install.contains("confirm"),
+            "{install}"
+        );
+        let windows = op.ok(&["windows", "reboot", "--dry-run"]);
+        assert!(
+            windows
+                .contains("this restart replaces the waiting start through legionctl's boot entry"),
+            "BootNext has one owner: {windows}"
+        );
+
+        started("0003");
+        assert_eq!(
+            order(),
+            serde_json::json!(["0003", "0004"]),
+            "the firmware went back to rEFInd"
+        );
+        assert!(!marker.exists());
+        let doctor = String::from_utf8(op.cli(&["doctor"]).stdout).unwrap();
+        assert!(
+            doctor.contains(
+                "the last start did not use legionctl's boot entry (it used Linpus lite)"
+            ) && doctor
+                .contains("To try legionctl's entry again: legionctl boot install, then restart"),
+            "{doctor}"
+        );
+
+        started("0007");
+        assert_eq!(order(), serde_json::json!(["0007", "0003", "0004"]));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
+        while told.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        let doctor = String::from_utf8(op.cli(&["doctor"]).stdout).unwrap();
+        assert!(!doctor.contains("boot entry"), "{doctor}");
+        assert!(
+            op.ok(&["boot", "status"])
+                .contains("legionctl's entry: 0007 legionctl, the default")
+        );
+
+        started("0007");
+        let writes = std::fs::read_to_string(format!("{}.log", state.display())).unwrap();
+        assert_eq!(
+            writes.matches("--bootorder").count(),
+            1,
+            "the default is left alone:\n{writes}"
+        );
+        // two more checks of the session module (30 s each): one notice for this start
+        tokio::time::sleep(std::time::Duration::from_secs(31)).await;
+        assert_eq!(
+            *told.lock().unwrap(),
+            ["legionctl's boot entry worked and is now the default."]
         );
     }
 
