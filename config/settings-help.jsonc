@@ -18,7 +18,7 @@
   "dossier.auto_bind": "Give an agent the project's last notes by itself when it starts.",
   "dossier.nudge": "When agents get a reminder to write their work into the notes.",
   "dossier.nudge_turns": "How many agent replies may change files before a reminder to write notes.",
-  "dossier.stale_hours": "After how many hours notes count as out of date.",
+  "dossier.stale_hours": "After how many idle hours another agent session can take over a session's notes.",
   "dossier.message_chars": "Long messages between agents get a hint to put the details into the notes.",
   "dossier.classes": "The kinds of records that notes can keep.",
   "dossier.immutable_classes": "Records that cannot change once they are written.",
