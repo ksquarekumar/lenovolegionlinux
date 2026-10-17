@@ -8,9 +8,9 @@ use crate::{
     FirmwareDevices, GpuState, GreeterState, Guard, HookReply, HookTable, KernelBench, Knob,
     KnobDetail, Launch, LayerList, Lines, LoadState, Lock, Manifest, PackageState, PlanView,
     Reading, Recording, Reminder, RgbState, RuleDetail, RuleState, Rules, RunEnv, RunnableGrant,
-    RunnablesCheck, Sample, SessionState, SetupReport, SkillInfo, Snapshot, TestDetail, TestReview,
-    TestRow, ToolCallRow, TuneReport, Validation, VfioDevices, WindowsState, WindowsVmBegun,
-    Workspace, WorkspaceStatus,
+    RunnablesCheck, Sample, SessionState, SettingsView, SetupReport, SkillInfo, Snapshot,
+    TestDetail, TestReview, TestRow, ToolCallRow, TuneReport, Validation, VfioDevices,
+    WindowsState, WindowsVmBegun, Workspace, WorkspaceStatus,
 };
 
 pub trait Render {
@@ -977,6 +977,33 @@ impl Render for Explanation {
                 s.source.layer, s.source.file, s.value
             )
         }));
+        out.join("\n")
+    }
+}
+
+impl Render for SettingsView {
+    fn text(&self) -> String {
+        let mut out = Vec::new();
+        let mut module = "";
+        for row in &self.items {
+            if row.setting.module != module {
+                module = &row.setting.module;
+                out.push(module.to_string());
+            }
+            let changed = if row.from == "defaults" {
+                String::new()
+            } else {
+                format!("  (set in {})", row.from)
+            };
+            out.push(format!("  {} = {}{changed}", row.setting.key, row.value));
+            if !row.setting.help.is_empty() {
+                out.push(format!(
+                    "      {}",
+                    row.setting.help.lines().next().unwrap_or_default()
+                ));
+            }
+        }
+        out.extend(self.problems.iter().cloned());
         out.join("\n")
     }
 }

@@ -14092,6 +14092,94 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "config.settings": {
+    "class": "read",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "type": "string",
+          "format": "path",
+          "description": "Project directory: its agent settings and its repository's .legionctl config layer apply.",
+          "default": "."
+        }
+      },
+      "title": "ProjectIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "description": "One setting.",
+            "type": "object",
+            "properties": {
+              "key": {
+                "description": "Dotted key; a map is one setting (its entries are the user's).",
+                "type": "string"
+              },
+              "module": {
+                "description": "The module that owns it: the key's first part.",
+                "type": "string"
+              },
+              "help": {
+                "description": "What it does, for the user (`config/settings-help.jsonc`; the code's doc comments are for builders).",
+                "type": "string"
+              },
+              "kind": {
+                "description": "The JSON schema of its value."
+              },
+              "default": {
+                "description": "The built-in default (null: none)."
+              },
+              "locked": {
+                "description": "Only the built-in defaults and /etc/legionctl set it.",
+                "type": "boolean"
+              },
+              "approve": {
+                "description": "A repository's file sets it only after the user allowed that file once.",
+                "type": "boolean"
+              },
+              "value": {
+                "description": "The value in use."
+              },
+              "from": {
+                "description": "The layer that set the value in use: defaults, system, user or repo.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "module",
+              "help",
+              "kind",
+              "default",
+              "locked",
+              "approve",
+              "value",
+              "from"
+            ]
+          }
+        },
+        "problems": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "items",
+        "problems"
+      ],
+      "description": "Every setting with its value now and where that value comes from (DESIGN-20).",
+      "title": "SettingsView",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "config.layers": {
     "class": "read",
     "internal": false,

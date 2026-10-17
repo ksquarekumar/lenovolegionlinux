@@ -664,7 +664,7 @@ fn layer_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-fn locked(locks: &[String], key: &str) -> bool {
+pub(crate) fn locked(locks: &[String], key: &str) -> bool {
     locks
         .iter()
         .any(|l| key == l || key.starts_with(&format!("{l}.")))
@@ -804,6 +804,15 @@ fn merge_layers(
     (merged, unapproved)
 }
 
+/// The built-in defaults (`config/defaults.jsonc`, compiled in).
+///
+/// # Errors
+/// They do not parse.
+pub fn defaults() -> Result<Value> {
+    serde_json::from_reader(json_comments::StripComments::new(DEFAULTS.as_bytes()))
+        .context("parsing the built-in defaults")
+}
+
 /// Resolve the config for work in `project` (its repository layer applies), or without a repository.
 ///
 /// # Errors
@@ -811,9 +820,7 @@ fn merge_layers(
 /// [`Config`] (the message names the key), or a layer folder or file cannot be read or is not a JSONC object (a typo
 /// must not drop a setting such as a gate in silence).
 pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
-    let defaults: Value =
-        serde_json::from_reader(json_comments::StripComments::new(DEFAULTS.as_bytes()))
-            .context("parsing the built-in defaults")?;
+    let defaults = defaults()?;
     let system_dir = dirs.system.clone();
     let user_dir = dirs.user.clone();
     let repo_dir = project.and_then(repo_root).map(|r| r.join(".legionctl"));

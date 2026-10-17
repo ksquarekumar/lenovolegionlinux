@@ -897,6 +897,8 @@ operations! {
     config_show / ConfigShow = "config.show", Read, ProjectIn => ConfigView;
     /// Which file set a key, the values it overrode, and whether /etc/legionctl locks it.
     config_explain / ConfigExplain = "config.explain", Read, ExplainIn => Explanation;
+    /// Every setting: what it does, its value, where the value comes from, and its built-in default.
+    config_settings / ConfigSettings = "config.settings", Read, ProjectIn => SettingsView;
     /// The config layers in merge order, their files, and the locked keys.
     config_layers / ConfigLayers = "config.layers", Read, ProjectIn => LayerList;
     /// Each resource of the machine (VMs, GPU, mounts, configsets, sessions and workspaces): its state, what uses it,

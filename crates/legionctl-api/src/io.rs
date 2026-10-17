@@ -54,6 +54,23 @@ pub struct ExplainIn {
     pub project: ClientPath,
 }
 
+/// Every setting with its value now and where that value comes from (DESIGN-20).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SettingsView {
+    pub items: Vec<SettingRow>,
+    pub problems: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SettingRow {
+    #[serde(flatten)]
+    pub setting: legionctl_core::settings::Setting,
+    /// The value in use.
+    pub value: serde_json::Value,
+    /// The layer that set the value in use: defaults, system, user or repo.
+    pub from: String,
+}
+
 /// The merged config and what was not used.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigView {

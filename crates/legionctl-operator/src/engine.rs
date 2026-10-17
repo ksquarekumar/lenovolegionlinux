@@ -5281,6 +5281,29 @@ impl Engine for Operator {
             .into_wire())
     }
 
+    fn config_settings(&self, _: &Ctx, input: ProjectIn) -> Result<legionctl_api::SettingsView> {
+        let resolved = config(Some(&input.project))?;
+        let items = legionctl_core::settings::registry()?
+            .into_iter()
+            .map(|setting| {
+                let explained = resolved.explain(&setting.key);
+                let from = explained
+                    .settings
+                    .last()
+                    .map_or_else(|| "defaults".to_string(), |(_, s)| s.source.layer.clone());
+                legionctl_api::SettingRow {
+                    setting,
+                    value: explained.value,
+                    from,
+                }
+            })
+            .collect();
+        Ok(legionctl_api::SettingsView {
+            items,
+            problems: resolved.problems,
+        })
+    }
+
     fn config_layers(&self, _: &Ctx, input: ProjectIn) -> Result<LayerList> {
         let resolved = config(Some(&input.project))?;
         Ok(LayerList {

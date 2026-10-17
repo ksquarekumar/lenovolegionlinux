@@ -31,6 +31,7 @@ pub mod reminders;
 pub mod rlcd;
 pub mod runnables;
 pub mod session;
+pub mod settings;
 pub mod setup;
 pub mod skills;
 pub mod thread;
