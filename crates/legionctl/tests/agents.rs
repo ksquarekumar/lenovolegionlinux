@@ -782,8 +782,8 @@ fn setup_check_shows_each_service_that_is_off_and_apply_turns_it_on() {
     assert_eq!(
         log(),
         "is-active legionctl-system.service\nenable --now legionctl-system.service\n\
-         --user is-active legionctl-operator.socket\n",
-        "only the service that is off"
+         --user is-active legionctl-operator.socket\n--user enable --now legionctl-clauth.service\n",
+        "only the services that are off (clauth's daemon too: Set up installs clauth)"
     );
     assert!(rows().iter().all(|(_, status, _)| status == "current"));
 }
