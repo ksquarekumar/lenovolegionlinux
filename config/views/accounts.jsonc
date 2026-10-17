@@ -1,28 +1,17 @@
 // Seed (todo-136): the rate-limit windows of each login per agent, from the provider (Claude: 5h then 7d; Codex: its
-// windows by length), with when they were read; a read that failed shows its cause. The logins are clauth's: the
-// current one (named by the clauth profile that holds it) and clauth's other profiles; a profile that holds the same
-// login as another says so. Read again asks the providers now; Log in and Make an account current go through clauth;
-// Keep the current login keeps it as an account, never as a copy.
+// windows by length), one plain sentence per agent with when it was read; a read that failed says why. The logins are
+// clauth's: the current one (named by the clauth profile that holds it) and clauth's other profiles; a profile that
+// holds the same login as another says so. Read again asks the providers now; Log in and Make an account current go
+// through clauth; Keep the current login keeps it as an account, never as a copy.
 {
   "$schema": "../../docs/api/view.schema.json",
   "name": "accounts",
   "title": "Accounts",
   "intent": "how much of each account's limits is used",
   "space": "agents",
-  "widget": "table",
+  "widget": "list",
   "source": { "op": "agents.accounts.usage" },
-  "columns": ["agent", "source", "windows.0.name", "windows.0.used_percent", "windows.1.name", "windows.1.used_percent", "error", "fetched_at"],
-  "labels": {
-    "agent": "Agent",
-    "source": "Login",
-    "windows.0.name": "Window",
-    "windows.0.used_percent": "Used %",
-    "windows.1.name": "Window",
-    "windows.1.used_percent": "Used %",
-    "error": "Problem",
-    "fetched_at": "Read"
-  },
-  "formats": { "windows.0.used_percent": "int", "windows.1.used_percent": "int", "fetched_at": "ago" },
+  "columns": ["text"],
   "group": { "field": "account" },
   "actions": [
     { "label": "Read again", "op": "agents.accounts.usage", "input": { "fresh": true } },

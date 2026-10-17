@@ -52,7 +52,9 @@ async fn fetch(url: &str, agent: &str, login: &Login) -> Result<Vec<accounts::Wi
     let headers = response.headers().clone();
     let text = response.text().await.context("reading the answer")?;
     match status.as_u16() {
-        401 | 403 => bail!("login needed: {url} refused the access token ({status})"),
+        401 | 403 => bail!(
+            "login needed: the provider refused the login ({status}); log in to the account again"
+        ),
         429 => bail!(
             "{url} limits the usage reads (429); retry after {} s",
             headers
@@ -101,6 +103,7 @@ pub fn usage_of(
                  in clauth, or delete one of the two",
                 held.name, held.name
             )),
+            text: String::new(),
         });
     }
     if !fresh && let Some(kept) = accounts::cached(held)? {
@@ -122,6 +125,7 @@ pub fn usage_of(
         fetched_at: now / 1000,
         windows: read.as_ref().map(Clone::clone).unwrap_or_default(),
         error: read.err().map(|e| format!("{e:#}")),
+        text: String::new(),
     };
     let max = config.cache.get("accounts").map_or(0, |c| c.max_bytes);
     accounts::keep(&usage, a.usage_ttl_s, max)?;
@@ -144,9 +148,45 @@ pub fn usage(
     if let Some(name) = &input.account {
         anyhow::ensure!(!held.is_empty(), "no account {name} has a login");
     }
+    let now = now_ms() / 1000;
     held.iter()
-        .map(|h| usage_of(runtime, &config, h, input.fresh))
+        .map(|h| {
+            let mut u = usage_of(runtime, &config, h, input.fresh)?;
+            u.text = sentence(&u, h.same_as.is_some(), now);
+            Ok(u)
+        })
         .collect()
+}
+
+/// The row's one sentence: `Claude Code, the current login: 5h 21% used, 7d 27% used. Read 4 min ago.`
+fn sentence(u: &AccountUsage, same: bool, now: i64) -> String {
+    let agent = accounts::named(&u.agent);
+    let who = if u.source == "current" {
+        format!("{agent}, the current login")
+    } else {
+        agent.to_string()
+    };
+    let ago = match now - u.fetched_at {
+        s if s < 60 => "just now".to_string(),
+        s if s < 3600 => format!("{} min ago", s / 60),
+        s if s < 86_400 => format!("{} h ago", s / 3600),
+        s => format!("{} d ago", s / 86_400),
+    };
+    match &u.error {
+        Some(e) if same => format!("{who}: {e}."),
+        Some(e) => match e.strip_prefix("login needed: ") {
+            Some(why) => format!("{who}: {why}. Tried {ago}."),
+            None => format!("{who}: the use cannot be read: {e}. Tried {ago}."),
+        },
+        None => format!(
+            "{who}: {}. Read {ago}.",
+            u.windows
+                .iter()
+                .map(|w| format!("{} {:.0}% used", w.name, w.used_percent))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 /// What a wake does with its member's account.

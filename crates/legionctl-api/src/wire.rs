@@ -296,7 +296,7 @@ wire! {
     /// One account's rate-limit windows for one agent, from its provider; or why the read failed.
     struct AccountUsage from core::accounts::AccountUsage {
         account: String,
-        /// Where its login is: `current` (the login Claude Code and Codex use now), `clauth` or `legionctl`.
+        /// Where its login is: `current` (the login Claude Code and Codex use now) or `clauth`.
         source: String,
         /// The current login, or clauth's active profile.
         active: bool,
@@ -304,6 +304,8 @@ wire! {
         windows: Vec<UsageWindow>,
         error: Option<String>,
         fetched_at: i64,
+        /// One plain sentence for the user: the agent, its use or why there is none, and when it was read.
+        text: String,
     }
 
     struct UsageReport from core::agents::UsageReport {

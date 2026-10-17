@@ -74,7 +74,7 @@
           "default": null
         },
         "account": {
-          "description": "An `agents accounts` profile.",
+          "description": "A clauth account (`agents accounts list`).",
           "type": [
             "string",
             "null"

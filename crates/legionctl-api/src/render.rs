@@ -2022,21 +2022,7 @@ impl Render for Vec<crate::AccountUsage> {
                 .into();
         }
         self.iter()
-            .map(|u| {
-                let what = u.error.clone().unwrap_or_else(|| {
-                    u.windows
-                        .iter()
-                        .map(|w| format!("{} {:.0}%", w.name, w.used_percent))
-                        .collect::<Vec<_>>()
-                        .join("  ")
-                });
-                format!(
-                    "{:<16} {:<20} {:<7} {what}",
-                    u.account,
-                    from(&u.source, u.active),
-                    u.agent
-                )
-            })
+            .map(|u| format!("{:<16} {}", u.account, u.text))
             .collect::<Vec<_>>()
             .join("\n")
     }

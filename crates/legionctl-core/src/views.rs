@@ -1042,8 +1042,8 @@ fn shown(value: &Value, format: Option<&str>) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
     match (format, value) {
-        // an empty value says what it is, never a bare dash
-        (_, Value::Null) => "no value".into(),
+        // an empty value is an empty cell
+        (_, Value::Null) => String::new(),
         // a flag in words, not JSON
         (_, Value::Bool(true)) => "yes".into(),
         (_, Value::Bool(false)) => "no".into(),

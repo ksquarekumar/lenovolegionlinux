@@ -1126,15 +1126,10 @@ fn a_timeline_and_a_form_view_render_their_terminal_form() {
     let text = lab.ok("main", &lab.repo, &["views", "render", "info", "thread=1"]);
     assert_eq!(
         text.lines().skip(1).collect::<Vec<_>>(),
-        [
-            "3 rows",
-            "Task: port the parser",
-            "state: open",
-            "account: no value"
-        ],
+        ["3 rows", "Task: port the parser", "state: open", "account:"],
         "{text}"
     );
-    // an empty value says what it is, never a bare dash
+    // an empty list says so, never a bare dash
     let empty = r#"{"name": "rules", "params": {"thread": "integer"}, "widget": "list",
         "source": {"op": "thread.show", "input": {"thread": "{thread}"}}, "columns": ["rules"]}"#;
     assert!(save(empty).status.success());

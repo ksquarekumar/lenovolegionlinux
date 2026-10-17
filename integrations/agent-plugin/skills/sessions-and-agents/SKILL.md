@@ -31,7 +31,7 @@ user-invocable: true
 11. A session has no network of its own: its only way out is the model gateway (`gateway.sock`; the agent's base URLs
     point to it). The gateway counts tokens and cost per account and model and enforces `gateway.budgets`
     (`day_usd`, `month_usd`), also in containers (`--network none`) and VMs. `~/.ssh`, credential and token files,
-    `.env` files and other accounts are hidden; git config and hooks are read-only. Logins that need other hosts
+    `.env` files and clauth's store (`~/.clauth`) are hidden; git config and hooks are read-only. Logins that need other hosts
     (OAuth refresh, a ChatGPT login) and remote MCP servers wait for the gateway's connections (plan todo-153).
 12. `session pause` and `session unpause` freeze and thaw a session; its memory stays. `session stop` stops it and
     everything it started.

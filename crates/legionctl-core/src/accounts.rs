@@ -61,6 +61,9 @@ pub struct AccountUsage {
     pub error: Option<String>,
     /// When the provider answered (or the read failed).
     pub fetched_at: i64,
+    /// One plain sentence for the user: the agent, its use or why there is none, and when it was read.
+    #[serde(default)]
+    pub text: String,
 }
 
 impl AccountUsage {
@@ -175,7 +178,8 @@ pub fn clauth_roster(agent: &str) -> Result<(Option<String>, Vec<String>)> {
 }
 
 /// The name of `agent` for the user.
-fn named(agent: &str) -> &'static str {
+#[must_use]
+pub fn named(agent: &str) -> &'static str {
     if agent == "claude" {
         "Claude Code"
     } else {
@@ -258,19 +262,23 @@ pub fn logins() -> Result<Vec<Held>> {
                 token,
             ));
         }
-        // the current login's owner: the profile that clauth's link points to, else the first with the same refresh
-        // token
+        // the current login's owner, as clauth sees it (`clauth which`, `live_diverged_and_unsaved`): the profile with
+        // the same refresh token (the one clauth's link points to, else the active one, else the first); else, when
+        // Claude Code replaced clauth's link with a plain file (its refresh writes a new file), the active profile:
+        // the live file is its newer login
         let current = live_token.as_ref().and_then(Option::as_ref);
         let linked = live.canonicalize().ok();
+        let same = |t: &Option<String>| current.is_some() && t.as_ref() == current;
+        let diverged = current.is_some()
+            && live
+                .symlink_metadata()
+                .is_ok_and(|m| m.file_type().is_file());
         let owner = held
             .iter()
-            .position(|(h, t)| {
-                t.as_ref() == current && current.is_some() && h.file.canonicalize().ok() == linked
-            })
-            .or_else(|| {
-                held.iter()
-                    .position(|(_, t)| t.as_ref() == current && current.is_some())
-            });
+            .position(|(h, t)| same(t) && h.file.canonicalize().ok() == linked)
+            .or_else(|| held.iter().position(|(h, t)| same(t) && h.active))
+            .or_else(|| held.iter().position(|(_, t)| same(t)))
+            .or_else(|| held.iter().position(|(h, _)| h.active).filter(|_| diverged));
         // of the profiles with one login, the owner (else the first) holds it; each other one names it
         let first: Vec<Option<String>> = held
             .iter()
@@ -350,11 +358,10 @@ pub fn login(held: &Held, now_ms: i64) -> Result<Login> {
         let oauth = &file["claudeAiOauth"];
         let token = text(&oauth["accessToken"])
             .context("the claude login file has no claudeAiOauth.accessToken")?;
-        if let Some(expires) = oauth["expiresAt"].as_i64().filter(|e| *e <= now_ms) {
+        if oauth["expiresAt"].as_i64().is_some_and(|e| e <= now_ms) {
             bail!(
-                "login needed: the access token of account {account} expired at {}; Claude Code refreshes it when \
-                 it next runs on the account",
-                expires / 1000
+                "login needed: the login of {account} has expired; Claude Code renews it the next time it runs on \
+                 {account}"
             );
         }
         return Ok(Login {

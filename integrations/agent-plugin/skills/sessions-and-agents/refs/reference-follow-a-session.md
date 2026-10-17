@@ -8,5 +8,5 @@
 5. `legionctl tools calls --session <id>`: the MCP calls it made.
 6. `legionctl workspace status --topic <t>` or `workspace list`: its commits and changes.
 7. `legionctl dossier nudges --of <id>`: whether it kept its dossier current.
-8. `legionctl gateway usage` (each call through the gateway) and `legionctl agents usage [--days <n>] [--account <p>]`
+8. `legionctl gateway usage` (each call through the gateway) and `legionctl agents usage [--days <n>]`
    (tokens from the agents' own transcripts): tokens and cost.

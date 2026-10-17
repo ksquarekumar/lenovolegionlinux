@@ -2121,7 +2121,7 @@
             "type": "string"
           },
           "source": {
-            "description": "Where its login is: `current` (the login Claude Code and Codex use now), `clauth` or `legionctl`.",
+            "description": "Where its login is: `current` (the login Claude Code and Codex use now) or `clauth`.",
             "type": "string"
           },
           "active": {
@@ -2168,6 +2168,10 @@
           "fetched_at": {
             "type": "integer",
             "format": "int64"
+          },
+          "text": {
+            "description": "One plain sentence for the user: the agent, its use or why there is none, and when it was read.",
+            "type": "string"
           }
         },
         "required": [
@@ -2176,7 +2180,8 @@
           "active",
           "agent",
           "windows",
-          "fetched_at"
+          "fetched_at",
+          "text"
         ]
       },
       "title": "Array_of_AccountUsage",

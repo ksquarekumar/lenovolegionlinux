@@ -1869,7 +1869,7 @@ fn help_opens_about_and_the_keys_ctrl_k_searches_and_numbers_show_by_their_unit(
     let rows = shown["rows"].as_array().unwrap();
     assert!(
         rows.iter()
-            .filter(|r| r[1] != "no value")
+            .filter(|r| r[1] != "")
             .all(|r| r[1].as_str().unwrap().ends_with(" ms")
                 || r[1].as_str().unwrap().ends_with(" s")),
         "{rows:?}"

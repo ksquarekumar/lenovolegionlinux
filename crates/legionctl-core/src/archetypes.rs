@@ -76,7 +76,7 @@ pub struct AgentConfig {
     pub agent: Option<String>,
     /// The harness that this config is for; none: both.
     pub harness: Option<Harness>,
-    /// An `agents accounts` profile.
+    /// A clauth account (`agents accounts list`).
     pub account: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,

@@ -1045,9 +1045,13 @@ fn account_usage_comes_from_each_provider_read_only_and_a_changed_answer_is_an_e
         (
             "old",
             "claude",
-            "login needed: the access token of account old expired",
+            "login needed: the login of old has expired; Claude Code renews it",
         ),
-        ("old", "codex", "login needed: http://127.0.0.1"),
+        (
+            "old",
+            "codex",
+            "login needed: the provider refused the login (401",
+        ),
         ("changed", "claude", "the answer has no list limits"),
         (
             "changed",
@@ -1130,9 +1134,9 @@ fn the_answer_is_kept_until_fresh(u: &UsageLab, usage: &Value) {
     let seed = u.lab.op.ok(&["views", "render", "accounts"]);
     for line in [
         "== work (2) ==",
-        "claude | clauth | 5h | 88 | 7d | 9 | no value | now",
-        "codex | clauth | 5h | 100 | 7d | 20 | no value | now",
-        "claude | clauth | no value | no value | no value | no value | the answer has no list limits | now",
+        "Claude Code: 5h 88% used, 7d 9% used. Read just now.",
+        "Codex: 5h 100% used, 7d 20% used. Read just now.",
+        "Claude Code: the use cannot be read: the answer has no list limits. Tried just now.",
     ] {
         assert!(seed.lines().any(|l| l == line), "{line} missing:\n{seed}");
     }
@@ -1255,11 +1259,46 @@ fn capture_never_copies_a_login(
     assert_eq!(&disk(), before, "no login file changed");
     assert!(!home.join("clauth.log").exists(), "clauth was not called");
 
-    // a Claude Code login that no clauth profile holds goes to clauth's capture
+    // Claude Code's refresh replaced clauth's link with a plain file of a new token (r340, live): as clauth sees it,
+    // the newer login of the active profile alt: one row alt, the current login, read with the new token; main
+    // still holds alt's stored login
     std::fs::remove_file(home.join(".claude/.credentials.json")).unwrap();
     write(
         &home.join(".claude/.credentials.json"),
         &json!({"claudeAiOauth": {"accessToken": "tok-new", "refreshToken": "r-new"}}).to_string(),
+    );
+    u.answer("tok-new", &json!({"body": {"limits": [{"kind": "session", "percent": 21.0}, {"kind": "weekly_all", "percent": 27.0}]}}));
+    let usage = u.read(&["--fresh"]);
+    let claude: Vec<[&Value; 3]> = usage
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["agent"] == "claude")
+        .map(|r| [&r["account"], &r["source"], &r["active"]])
+        .collect();
+    assert_eq!(
+        claude,
+        [
+            [&json!("alt"), &json!("current"), &json!(true)],
+            [&json!("main"), &json!("clauth"), &json!(false)]
+        ],
+        "{usage:#}"
+    );
+    assert_eq!(
+        row(&usage, "alt", "claude")["text"],
+        "Claude Code, the current login: 5h 21% used, 7d 27% used. Read just now."
+    );
+    assert!(
+        row(&usage, "main", "claude")["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Claude Code: main holds the same login as alt"),
+        "{usage:#}"
+    );
+    // with no active profile, a Claude Code login that no clauth profile holds goes to clauth's capture
+    write(
+        &home.join(".clauth/profiles.toml"),
+        "profiles = [\"main\", \"alt\"]\n",
     );
     let saved = u.lab.op.ok(&["agents", "accounts", "capture", "fresh"]);
     assert!(
