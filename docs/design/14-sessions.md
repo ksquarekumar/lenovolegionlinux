@@ -87,7 +87,7 @@ outcome `cached`. The e2e test sees ok, cached, then ok again after a file in th
 
 Built (2026-10-13, S3): headless runs. `legionctl session run <agent> <prompt>` prepares the session as `session
 start` does (dossier binding, workspace, sandbox with the hiding and the git gate, generated MCP config), then the
-operator drives the agent's ACP adapter (`session.acp`: Zed's `claude-code-acp` and the ACP project's `codex-acp` by default) with
+operator drives the agent's ACP adapter (`session.acp`: Zed's `claude-code-acp` and the ACP project's `codex-acp` by default, run by bun: `bun --bun x --no-install <adapter>`) with
 its own ACP client on the `agent-client-protocol` crate (protocol v1). The adapter gets the session's MCP servers at
 `session/new`.
 Permission asks are allowed, because the sandbox and the gates are the boundary; each is logged as

@@ -3238,7 +3238,7 @@ fn a_chat_gets_a_repository_once_and_each_chat_works_in_its_own_worktree(cx: &mu
 }
 
 /// todo-174: each failure in the chat names its cause and the command that fixes it, and the conversation keeps the
-/// failure: a dossier name in use, a dossier that is not there, an ACP adapter that is not on the operator's PATH (a
+/// failure: a dossier name in use, a dossier that is not there, an ACP adapter that is not installed (a
 /// chat on `missing`: the thread's log has a thread.fail row with that cause), an adapter that ends before it answers
 /// (its exit and stderr, as a missing login gives them), and a message into an agent session's thread (refused: a run
 /// goes into a thread of the user).
@@ -3308,15 +3308,13 @@ fn each_failure_of_the_chat_names_its_cause(cx: &mut TestAppContext) {
         cx,
         &app,
         "the missing adapter",
-        "the ACP adapter no-such-adapter is not on the operator's PATH",
+        "the agent cannot start: its ACP adapter no-such-adapter is not installed; `legionctl setup apply` installs it",
     );
     wait(cx, &app, "the failure in the conversation", |a| {
         !said(a, "thread.fail").is_empty()
     });
     app.read_with(cx, |a, _| {
-        assert!(
-            said(a, "thread.fail")[0].contains("no-such-adapter is not on the operator's PATH")
-        );
+        assert!(said(a, "thread.fail")[0].contains("ACP adapter no-such-adapter is not installed"));
         assert_eq!(said(a, "thread.say"), ["x"]);
     });
     // an adapter that ends before it answers: its exit and its stderr, not the JSON-RPC envelope

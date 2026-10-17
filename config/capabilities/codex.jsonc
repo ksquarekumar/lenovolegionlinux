@@ -6,7 +6,7 @@
 {
   "$schema": "../../docs/api/runnable.schema.json",
   "name": "codex",
-  "version": 1,
+  "version": 2,
   "description": "Codex in a legionctl session: the model API and the ChatGPT login refresh, the update check off, its own sandbox off.",
   "connections": {
     "out": [
@@ -17,6 +17,8 @@
     "forbidden": ["ab.chatgpt.com", "api.github.com"],
     "mcp": ["legionctl"]
   },
+  // a headless run starts its ACP adapter (session.acp) with bun's runtime: no Node.js
+  "tools": [{ "name": "bun" }],
   "harness": {
     "agent": "codex",
     "versions": ">=0.160 <1",
@@ -29,7 +31,7 @@
     "telemetry": [
       { "host": "api.github.com", "args": ["-c", "check_for_update_on_startup=false"] }
     ],
-    // after the agent's command (session.agents, session.acp)
+    // after the agent's command (session.agents) and after the adapter of session.acp, which bun passes them to
     "args": ["-c", "sandbox_mode=\"danger-full-access\""],
     "env": { "INITIAL_AGENT_MODE": "agent-full-access" }
   }

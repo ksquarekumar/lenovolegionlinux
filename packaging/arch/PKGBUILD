@@ -9,7 +9,7 @@ url="https://github.com/ksquarekumar/lenovolegionlinux"
 install=legionctl.install
 license=("MIT" "GPL-2.0-only")
 depends=("systemd" "systemd-libs" "dkms" "dbus" "polkit" "power-profiles-daemon" "cpupower" "nvidia-utils" "bubblewrap"
-  "libxkbcommon" "libxkbcommon-x11" "libxcb" "wayland" "vulkan-icd-loader" "fontconfig" "sudo" "jq" "curl" "git")
+  "libxkbcommon" "libxkbcommon-x11" "libxcb" "wayland" "vulkan-icd-loader" "fontconfig" "sudo" "jq" "curl" "git" "bun")
 makedepends=("git" "cargo" "clang" "docker")
 # no GCC LTO for the C parts (bundled SQLite): with makepkg's lto, GCC's link step gives a false -Wstringop-overread
 # in sqlite3Strlen30 (a path GCC thinks has a NULL pointer). Cargo's own release profile decides the Rust LTO

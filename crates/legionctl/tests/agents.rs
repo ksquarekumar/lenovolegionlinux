@@ -86,23 +86,26 @@ impl Lab {
             ],
         );
         // never the machine's bun (`setup apply` installs the ACP adapters with it): a stand-in that logs each call to
-        // ~/bun.log and links its global commands in ~/.cache/.bun/bin to the package's folder, as bun with
-        // XDG_CACHE_HOME does; before its first `add -g` it has no global folder and `pm -g bin` fails as bun 1.x does
+        // ~/bun.log and links its global commands in $BUN_INSTALL/bin (else ~/.cache/.bun/bin, as bun with the user's
+        // XDG_CACHE_HOME does) to the package's folder; before its first `add -g` it has no global folder and `pm -g
+        // bin` fails as bun 1.x does
         let bun = home.join(".bun/bin/bun");
         write(
             &bun,
             r#"#!/bin/sh
 echo "$*" >> "$HOME/bun.log"
-global="$HOME/.cache/.bun/bin"
+root="${BUN_INSTALL:-$HOME/.cache/.bun}"
+global="$root/bin"
 case "$1 $2" in
 "pm -g")
-  [ -d "$global" ] || { echo "error: No package.json was found for directory \"$HOME/.cache/.bun/install/global\"" >&2; exit 1; }
+  [ -f "$root/install/global/package.json" ] || { echo "error: No package.json was found for directory \"$root/install/global\"" >&2; exit 1; }
   echo "$global" ;;
 "add -g")
   shift 2
-  mkdir -p "$global"
+  mkdir -p "$global" "$root/install/global"
+  touch "$root/install/global/package.json"
   for p in "$@"; do
-    dir="$HOME/.cache/.bun/install/global/node_modules/$p"; mkdir -p "$dir"
+    dir="$root/install/global/node_modules/$p"; mkdir -p "$dir"
     printf '#!/bin/sh\n' > "$dir/index.js"; chmod +x "$dir/index.js"; ln -sfn "$dir/index.js" "$global/${p##*/}"
   done ;;
 *) exit 64 ;;
@@ -512,7 +515,7 @@ fn setup_apply_puts_the_users_tool_folders_before_the_user_managers_path_once() 
     // apply installs the ACP adapters of session.acp first: bun's global folder then exists
     let want = format!(
         "# Written by `legionctl setup apply`: the user's tool folders for the systemd user manager (the operator's checks)\n\
-         PATH={home}/.local/bin:{home}/.cargo/bin:{home}/.cache/.bun/bin:$PATH\n"
+         PATH={home}/.local/bin:{home}/.cargo/bin:{home}/.bun/bin:$PATH\n"
     );
 
     assert_eq!(status(), "missing");
@@ -567,18 +570,20 @@ fn bun_installs(home: &Path) -> Vec<String> {
 /// r324's codex-acp in `home`: Zed's package, which gives the same command (its Codex 0.137 runs no model of a
 /// `ChatGPT` account today), linked as bun links it.
 fn zed_codex_acp(home: &Path) {
-    let zed = home
-        .join(".cache/.bun/install/global/node_modules/@zed-industries/codex-acp/bin/codex-acp.js");
+    let zed =
+        home.join(".bun/install/global/node_modules/@zed-industries/codex-acp/bin/codex-acp.js");
     write(&zed, "#!/bin/sh\n");
     std::fs::set_permissions(&zed, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    std::fs::create_dir_all(home.join(".cache/.bun/bin")).unwrap();
-    std::os::unix::fs::symlink(&zed, home.join(".cache/.bun/bin/codex-acp")).unwrap();
+    std::fs::create_dir_all(home.join(".bun/bin")).unwrap();
+    std::os::unix::fs::symlink(&zed, home.join(".bun/bin/codex-acp")).unwrap();
+    write(&home.join(".bun/install/global/package.json"), "{}");
 }
 
-/// todo-144: the ACP adapters of `session.acp` (headless runs, the app's chat bar). `setup check` reports each adapter
-/// command that is not on the user manager's PATH (with bun's global folder) as missing, with its package from
-/// `session.acp_packages`, and a command that another package gives (r324's Zed codex-acp) as from another package;
-/// `setup apply` installs each with `bun add -g <package>` once, and puts bun's global folder
+/// todo-144: the ACP adapters of `session.acp` (headless runs, the app's chat bar; the defaults run each with
+/// `bun --bun x --no-install <adapter>`). `setup check` reports each adapter that is not in bun's global folder or on
+/// the user manager's PATH as missing, with its package from `session.acp_packages`, and a command that another
+/// package gives (r324's Zed codex-acp) as from another package; `setup apply` installs each with `bun add -g
+/// <package>` once, and puts bun's global folder
 /// (`bun pm -g bin`, not on any PATH by itself) into the environment.d PATH file. An adapter with no package is
 /// refused by apply, with its name.
 #[test]
@@ -599,7 +604,7 @@ fn setup_check_reports_each_missing_acp_adapter_and_apply_installs_it_with_bun_o
     };
     let apply = || lab.op.cli_in(&lab.home, &["setup", "apply"]);
     let installs = || bun_installs(&lab.home);
-    let g = lab.home.join(".cache/.bun/bin").display().to_string();
+    let g = lab.home.join(".bun/bin").display().to_string();
     let (claude, codex) = ("ACP adapter claude-code-acp", "ACP adapter codex-acp");
 
     assert_eq!(

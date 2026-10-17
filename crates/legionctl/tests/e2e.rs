@@ -3488,9 +3488,36 @@ fn a_run_on_codexs_acp_adapter_takes_its_live_answer_shape() {
     );
 }
 
+/// The ACP command of a stand-in adapter `agent` as Zed's adapters are: a `#!/usr/bin/env node` script in ~/.local/bin,
+/// run by bun as the defaults run them. The `node` there fails, so the script runs only under bun's runtime.
+fn node_script_adapter(home: &Path, agent: &Path) -> Value {
+    let bin = home.join(".local/bin");
+    write(
+        &bin.join("node"),
+        "#!/bin/sh\necho 'node ran' >&2\nexit 97\n",
+    );
+    write(
+        &bin.join("fake-acp"),
+        &format!(
+            "#!/usr/bin/env node\nconst r = require('node:child_process').spawnSync('python3', [{}], \
+             {{stdio: 'inherit'}});\nprocess.exit(r.status ?? 1);\n",
+            json!(agent)
+        ),
+    );
+    for file in ["node", "fake-acp"] {
+        std::fs::set_permissions(
+            bin.join(file),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    json!(["bun", "--bun", "x", "--no-install", "fake-acp"])
+}
+
 /// A headless run through an ACP adapter (a stand-in agent): it gets the session's MCP servers at session/new, its
 /// permission ask is answered and logged, it works inside the same sandbox and git gate as an interactive session,
-/// and its answer comes back.
+/// and its answer comes back. The adapter starts as the defaults start Zed's: bun runs a `#!/usr/bin/env node` script
+/// from a folder of `setup apply` (~/.local/bin) that is not on the operator's PATH, and the `node` there fails.
 #[test]
 fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
     let (op, home) = operator("run");
@@ -3499,8 +3526,9 @@ fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-acp-agent.py");
     write(
         &home.join(".config/legionctl/run.jsonc"),
-        &json!({"session": {"acp": {"fake": ["python3", agent]}, "scope": false, "writable": []}})
-            .to_string(),
+        &json!({"session": {"acp": {"fake": node_script_adapter(&home, &agent)},
+                            "scope": false, "writable": []}})
+        .to_string(),
     );
     let env = [("HOME", home.to_str().unwrap())];
     let out = op.run(

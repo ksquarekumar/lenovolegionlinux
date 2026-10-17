@@ -5,10 +5,10 @@
 //!   agent config as a Codex agent in ~/.codex/agents/<name>.toml (instructions, model and effort only).
 //! - Claude Code gets legionctl's MCP server, hooks and skills from the plugin itself.
 //! - The systemd user manager (and so the operator and its checks) gets ~/.local/bin, ~/.cargo/bin and bun's global
-//!   folder (`bun pm -g bin`) before its PATH through ~/.config/environment.d/99-legionctl.conf; it reads the file
+//!   folder (`bun pm -g bin` with `BUN_INSTALL=~/.bun`) before its PATH through ~/.config/environment.d/99-legionctl.conf; it reads the file
 //!   at the next login.
-//! - The ACP adapters of `session.acp` (headless runs, the app's chat bar): a missing one is installed with
-//!   `bun add -g` from `session.acp_packages`.
+//! - The ACP adapters of `session.acp` (headless runs, the app's chat bar), which bun runs
+//!   (`bun --bun x --no-install <adapter>`): a missing one is installed with `bun add -g` from `session.acp_packages`.
 //!
 //! - Claude Code: the legionctl plugin from the package's folder (`claude plugin marketplace add`, `install`).
 //! - clauth (the account engine, a runtime dependency): installed with `cargo install clauth --version ~0.17
@@ -97,6 +97,14 @@ fn bun_bin() -> Option<PathBuf> {
     tool_bin("bun", ".bun/bin")
 }
 
+/// `bun` with one global folder, `~/.bun` (`BUN_INSTALL`, bun's default): without it bun takes
+/// `$XDG_CACHE_HOME/.bun`, and the user's shell and the operator differ in that variable.
+fn bun_global(bun: &Path) -> Command {
+    let mut command = Command::new(bun);
+    command.env("BUN_INSTALL", home().join(".bun"));
+    command
+}
+
 /// The folder of bun's global commands (`bun pm -g bin`), when bun is installed and has global packages.
 ///
 /// # Errors
@@ -105,7 +113,7 @@ fn bun_global_bin() -> Result<Option<PathBuf>> {
     let Some(bun) = bun_bin() else {
         return Ok(None);
     };
-    let out = Command::new(&bun)
+    let out = bun_global(&bun)
         .args(["pm", "-g", "bin"])
         .output()
         .with_context(|| format!("running {} pm -g bin", bun.display()))?;
@@ -354,18 +362,69 @@ fn path_item(folders: &[PathBuf]) -> Item {
     }
 }
 
-/// One item per ACP adapter command of `session.acp`: current when the command is in `folders` or on PATH (the user
-/// manager's PATH with `path_conf()`) and comes from its package (`session.acp_packages`: bun links a command into
-/// the package's folder); else missing, or from another package (the Zed codex-acp before the ACP project's, which
-/// gives the same command), with the package as the path.
-fn acp_items(session: &SessionConfig, folders: &[PathBuf]) -> Vec<Item> {
-    let mut search = folders.to_vec();
+/// The adapter of ACP command `argv`: the package word after bun's `x` (`bun --bun x --no-install <adapter>`), else
+/// the command itself.
+#[must_use]
+pub fn adapter_program(argv: &[String]) -> Option<&str> {
+    match argv.first() {
+        Some(bun) if Path::new(bun).file_name() == Some("bun".as_ref()) => argv
+            .iter()
+            .skip_while(|a| *a != "x")
+            .skip(1)
+            .find(|a| !a.starts_with('-'))
+            .map(String::as_str),
+        first => first.map(String::as_str),
+    }
+}
+
+/// Where the operator's headless sessions on the host find their programs: the folders of `path_conf()`, then this
+/// process's PATH. The user manager reads `path_conf()` only at its start, so the operator's own PATH can lack them.
+///
+/// # Errors
+/// bun is installed and `bun pm -g bin` fails.
+pub fn session_path() -> Result<Vec<PathBuf>> {
+    let mut search = path_folders()?;
     search.extend(std::env::split_paths(
         &std::env::var_os("PATH").unwrap_or_default(),
     ));
+    Ok(search)
+}
+
+/// `program` in `search`, or the file itself for a path.
+fn find(program: &str, search: &[PathBuf]) -> Option<PathBuf> {
+    if program.contains('/') {
+        Some(PathBuf::from(program)).filter(|p| p.is_file())
+    } else {
+        search.iter().map(|d| d.join(program)).find(|p| p.is_file())
+    }
+}
+
+/// Whether ACP command `argv` can start with the programs in `search`.
+///
+/// # Errors
+/// Its program (bun) or its adapter is not installed: the error names it and the fix.
+pub fn startable(argv: &[String], search: &[PathBuf]) -> Result<()> {
+    let program = argv.first().context("the agent's ACP command is empty")?;
+    let adapter = adapter_program(argv).unwrap_or(program);
+    ensure!(
+        adapter == program || find(program, search).is_some(),
+        "the agent cannot start: {program} is not installed; install the {program} package"
+    );
+    ensure!(
+        find(adapter, search).is_some(),
+        "the agent cannot start: its ACP adapter {adapter} is not installed; `legionctl setup apply` installs it"
+    );
+    Ok(())
+}
+
+/// One item per ACP adapter of `session.acp` ([`adapter_program`]): current when it is in `search`
+/// ([`session_path`]) and comes from its package (`session.acp_packages`: bun links a command into the package's
+/// folder); else missing, or from another package (the Zed codex-acp before the ACP project's, which gives the same
+/// command), with the package as the path.
+fn acp_items(session: &SessionConfig, search: &[PathBuf]) -> Vec<Item> {
     let mut items: Vec<Item> = Vec::new();
     for (agent, argv) in &session.acp {
-        let Some(command) = argv.first() else {
+        let Some(command) = adapter_program(argv) else {
             continue;
         };
         let what = format!("ACP adapter {command}");
@@ -373,12 +432,8 @@ fn acp_items(session: &SessionConfig, folders: &[PathBuf]) -> Vec<Item> {
             item.agent = format!("{},{agent}", item.agent);
             continue;
         }
-        let found = if command.contains('/') {
-            Some(PathBuf::from(command)).filter(|p| p.is_file())
-        } else {
-            search.iter().map(|d| d.join(command)).find(|p| p.is_file())
-        };
         let package = session.acp_packages.get(command);
+        let found = find(command, search);
         let (status, path) = match found {
             Some(path)
                 if package.is_some_and(|p| {
@@ -433,7 +488,7 @@ pub fn check(agents: &Sources, session: &SessionConfig) -> Result<Report> {
     items.extend(codex_agent_items(agents));
     let folders = path_folders()?;
     items.push(path_item(&folders));
-    items.extend(acp_items(session, &folders));
+    items.extend(acp_items(session, &session_path()?));
     items.extend(claude_plugin_item());
     items.extend(osd_item());
     items.extend(SERVICES.map(service_item));
@@ -889,7 +944,7 @@ fn turn_on_one(service @ (what, scope, unit): (&str, &[&str], &str)) -> Result<O
 /// to the new one); one line per adapter.
 fn install_acp_adapters(session: &SessionConfig) -> Result<Vec<String>> {
     let mut done = Vec::new();
-    for item in acp_items(session, &path_folders()?) {
+    for item in acp_items(session, &session_path()?) {
         if item.status == "current" {
             continue;
         }
@@ -906,7 +961,7 @@ fn install_acp_adapters(session: &SessionConfig) -> Result<Vec<String>> {
                 item.what, item.path
             )
         })?;
-        let out = Command::new(&bun)
+        let out = bun_global(&bun)
             .args(["add", "-g", &item.path])
             .output()
             .with_context(|| format!("running {} add -g {}", bun.display(), item.path))?;
@@ -916,7 +971,7 @@ fn install_acp_adapters(session: &SessionConfig) -> Result<Vec<String>> {
             item.path,
             String::from_utf8_lossy(&out.stderr).trim()
         );
-        let after = acp_items(session, &path_folders()?);
+        let after = acp_items(session, &session_path()?);
         ensure!(
             after
                 .iter()

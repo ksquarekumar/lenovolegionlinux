@@ -673,10 +673,10 @@ fn gpu_nodes(args: &mut Vec<String>) -> Result<()> {
 /// processes and has only a loopback device), with the ways out and each `.env` file of the repository and the
 /// workspace hidden, then `mounts` and `env`. A headless sandbox also has a session of its own (no controlling
 /// terminal to push input into); an interactive one keeps the terminal, whose input `dev.tty.legacy_tiocsti = 0`
-/// guards.
+/// guards. With `gpu` it gets the NVIDIA device nodes.
 fn bwrap_sandbox(
     ws: &crate::workspace::Workspace,
-    (runtime, hidden, headless): (&Path, &[String], bool),
+    (runtime, hidden, headless, gpu): (&Path, &[String], bool, bool),
     mounts: &[Mount],
     env: &[(String, String)],
 ) -> Result<Vec<String>> {
@@ -720,6 +720,9 @@ fn bwrap_sandbox(
         "--chdir".into(),
         agent_dir(ws).to_string_lossy().into_owned(),
     ]);
+    if gpu {
+        gpu_nodes(&mut args)?;
+    }
     Ok(args)
 }
 
@@ -1185,6 +1188,24 @@ fn network(env: &mut Vec<(String, String)>, gateway: Option<u16>) -> String {
         ),
     ]);
     format!("network: none but the model gateway (127.0.0.1:{port} in the sandbox)")
+}
+
+/// For a headless run on the host: check that its ACP command can start, and give it the PATH it starts with. The
+/// operator's PATH is the user manager's from its start: the folders of `setup apply` may be new since.
+fn headless_path(
+    env: &mut Vec<(String, String)>,
+    command: &[String],
+    headless: bool,
+) -> Result<()> {
+    if headless {
+        let path = crate::setup::session_path()?;
+        crate::setup::startable(command, &path)?;
+        env.push((
+            "PATH".into(),
+            std::env::join_paths(path)?.to_string_lossy().into_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// The agent command behind `legionctl forward`: the sandbox's own 127.0.0.1:`port` goes to the gateway's `socket`,
@@ -1709,7 +1730,6 @@ impl Dossiers {
         if let Some(skills) = skills {
             skill_mounts(&mut mounts, skills)?;
         }
-
         let gateway = (config.gateway.port != 0).then_some(config.gateway.port);
         lines.push(granted_line(grant));
         lines.push(network(&mut env, gateway));
@@ -1725,18 +1745,15 @@ impl Dossiers {
             .collect();
         let sandbox = match runs {
             Runs::Host => {
+                headless_path(&mut env, who.command, who.headless)?;
                 forward(&mut agent, gateway, &legionctl.join(GATEWAY_SOCKET));
                 mounts.push(Mount::ReadOnly("/usr/bin/git".into(), real_git.clone()));
-                let mut sandbox = bwrap_sandbox(
+                bwrap_sandbox(
                     ws,
-                    (&runtime, &config.session.hidden, who.headless),
+                    (&runtime, &config.session.hidden, who.headless, gpu),
                     &mounts,
                     &env,
-                )?;
-                if gpu {
-                    gpu_nodes(&mut sandbox)?;
-                }
-                sandbox
+                )?
             }
             Runs::Container(image) => docker_sandbox(
                 (&id, image, gateway, gpu),
@@ -1836,7 +1853,12 @@ impl Dossiers {
         );
         let layer = session_home(id).join(format!("run-{}", new_id()?));
         let mounts = self.work_mounts(&ws, config, (&layer, record.account.as_deref()), true)?;
-        let argv = bwrap_sandbox(&ws, (&runtime, &config.session.hidden, true), &mounts, &[])?;
+        let argv = bwrap_sandbox(
+            &ws,
+            (&runtime, &config.session.hidden, true, false),
+            &mounts,
+            &[],
+        )?;
         Ok(Jail {
             argv,
             workdir: record.workdir,

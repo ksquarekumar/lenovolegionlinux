@@ -422,17 +422,6 @@ fn adapter(launch: Launch) -> Result<AcpAgent> {
             ]);
         }
     }
-    // on the host the sandbox runs the adapter from the operator's PATH: a missing one is named, not a bwrap error
-    if launch.inside == Inside::Host
-        && let Some(program) = launch.agent.first()
-        && legionctl_machine::policy::which(program).is_none()
-        && !std::path::Path::new(program).is_file()
-    {
-        anyhow::bail!(
-            "the ACP adapter {program} is not on the operator's PATH: `legionctl setup check` names it and `legionctl \
-             setup apply` installs it (config session.acp names the command)"
-        );
-    }
     let argv = [launch.scope, sandbox, gate, launch.agent].concat();
     Ok(AcpAgent::new(McpServer::Stdio(
         McpServerStdio::new("agent", &argv[0]).args(argv[1..].to_vec()),

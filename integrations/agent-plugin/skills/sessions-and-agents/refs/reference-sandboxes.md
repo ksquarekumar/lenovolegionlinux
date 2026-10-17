@@ -7,3 +7,6 @@
 | `vm` | QEMU on a throwaway layer over the repository's VM disk; the folders are shared with virtiofs. | `legionctl workspace pack --as vm` |
 
 `workspace pack [--as container|vm] [--gpu] [--service <s>]` makes the image or the disk; it is a job.
+The image and the disk get git, Node.js, the agents, their ACP adapters and bun (config `session.container.npm`).
+bun runs the ACP adapter in each sandbox; on the host it finds it in bun's global folder ~/.bun/bin, where `setup
+apply` installs it.

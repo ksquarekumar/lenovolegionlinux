@@ -4,7 +4,7 @@
 {
   "$schema": "../../docs/api/runnable.schema.json",
   "name": "claude-code",
-  "version": 1,
+  "version": 2,
   "description": "Claude Code in a legionctl session: the model API and the login refresh, telemetry and updates off, its own sandbox off.",
   "connections": {
     "out": [
@@ -14,6 +14,8 @@
     "forbidden": ["http-intake.logs.us5.datadoghq.com", "downloads.claude.ai", "storage.googleapis.com"],
     "mcp": ["legionctl"]
   },
+  // a headless run starts its ACP adapter (session.acp) with bun's runtime: no Node.js
+  "tools": [{ "name": "bun" }],
   "harness": {
     "agent": "claude",
     "versions": ">=2.1 <3",

@@ -126,17 +126,18 @@
       "claude": ["claude", "--resume", "{id}", "--settings", "{settings}", "--mcp-config", "{mcp}", "--strict-mcp-config"]
     },
     // Agent name -> its ACP adapter, for headless runs (legionctl session run): Zed's adapter for Claude Code, the
-    // ACP project's for Codex (on the Codex app server). The adapter gets the session's MCP servers (legionctl's own
-    // and the proxied ones) at session/new. A bound run (such as the ui-composer's) gets only legionctl's MCP server
+    // ACP project's for Codex (on the Codex app server), run by bun (`bun --bun x --no-install <adapter>`: bun's
+    // runtime in place of Node.js; a run installs a missing adapter with bun). The adapter gets the session's MCP
+    // servers (legionctl's own and the proxied ones) at session/new. A bound run (such as the ui-composer's) gets only legionctl's MCP server
     // with its tools: Claude Code through session/new (_meta disableBuiltInTools, settingSources []), Codex through
     // its own CODEX_HOME (no default environment, so no shell, patch or image tool; no web search, plugins or hooks).
     "acp": {
-      "claude": ["claude-code-acp"],
-      "codex": ["codex-acp"]
+      "claude": ["bun", "--bun", "x", "--no-install", "claude-code-acp"],
+      "codex": ["bun", "--bun", "x", "--no-install", "codex-acp"]
     },
-    // ACP adapter command -> its npm package. `legionctl setup check` reports an adapter command of "acp" that is not
-    // on the PATH of the systemd user manager (with bun's global folder, `bun pm -g bin`); `setup apply` installs it
-    // with `bun add -g <package>`.
+    // ACP adapter -> its npm package. `legionctl setup check` reports an adapter of "acp" (the word after bun's `x`)
+    // that is not in bun's global folder (`bun pm -g bin`) or on the PATH of the systemd user manager; `setup apply`
+    // installs it with `bun add -g <package>`.
     "acp_packages": {
       "claude-code-acp": "@zed-industries/claude-code-acp",
       "codex-acp": "@agentclientprotocol/codex-acp"
@@ -150,11 +151,13 @@
     // them in their sessions when it eases (`legionctl jobs list` shows them offloaded).
     "policy": { "idle_freeze_minutes": 0, "offload_headless": false },
     // Sessions in a container (`--in container`) run the repository's agent image, made by `legionctl workspace
-    // pack`: the repository's own image (else `base`) plus git, Node.js, these npm packages (the agents and their ACP
-    // adapters) and `client`, a static legionctl (the package installs it) as MCP server, hook client and git gate.
+    // pack`: the repository's own image (else `base`) plus git, Node.js, these npm packages (the agents, their ACP
+    // adapters and bun, which runs the adapters as on the host) and `client`, a static legionctl (the package
+    // installs it) as MCP server, hook client and git gate.
     "container": {
       "base": "public.ecr.aws/docker/library/debian:trixie-slim",
-      "npm": ["@anthropic-ai/claude-code", "@zed-industries/claude-code-acp", "@openai/codex", "@agentclientprotocol/codex-acp"],
+      "npm": ["@anthropic-ai/claude-code", "@zed-industries/claude-code-acp", "@openai/codex", "@agentclientprotocol/codex-acp",
+        "bun"],
       "client": "/usr/lib/legionctl/legionctl-static"
     },
     // Sessions in a VM (`--in vm`) run on the repository's disk, made by `legionctl workspace pack --as vm`: a layer
