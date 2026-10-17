@@ -9,6 +9,9 @@ ignore = [
   { id = "RUSTSEC-2024-0436", reason = "paste, through GPUI" },
   { id = "RUSTSEC-2026-0192", reason = "ttf-parser, through GPUI text shaping" },
   { id = "RUSTSEC-2026-0206", reason = "rustybuzz, through GPUI text shaping" },
+  # zbus 5 parts merged into zbus 6; the GPUI kit (ashpd, accesskit_unix, notify-rust, oo7) has no zbus 6 release yet
+  { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained, through GPUI (plan#todo-196)" },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained, through GPUI (plan#todo-196)" },
 ]
 
 [licenses]
