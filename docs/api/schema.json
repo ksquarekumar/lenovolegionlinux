@@ -1944,7 +1944,7 @@
     "output": {
       "type": "array",
       "items": {
-        "description": "An account: the current login (`current`, named by the clauth profile that holds it), a clauth profile\n(`clauth`), or a legionctl account profile with its own logins and transcripts (`legionctl`).",
+        "description": "An account: the current login (`current`, named by the clauth profile that holds it) or another clauth profile\n(`clauth`).",
         "type": "object",
         "properties": {
           "name": {
@@ -1978,7 +1978,7 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
-  "agents.accounts.add": {
+  "agents.accounts.login": {
     "class": "workspace",
     "internal": false,
     "input": {
@@ -1986,13 +1986,53 @@
       "properties": {
         "name": {
           "type": "string",
-          "description": "Profile name: a-z, 0-9 and '-'."
+          "description": "The clauth account: a-z, 0-9 and '-'; an account clauth has already logs in again."
+        },
+        "codex": {
+          "type": "boolean",
+          "description": "Codex's login, not Claude Code's.",
+          "default": false
         }
       },
       "required": [
         "name"
       ],
-      "title": "AccountAddIn",
+      "title": "AccountLoginIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "agents.accounts.switch": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The clauth account: a-z, 0-9 and '-'."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "AccountIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
@@ -2021,13 +2061,13 @@
       "properties": {
         "name": {
           "type": "string",
-          "description": "Profile name: a-z, 0-9 and '-'."
+          "description": "The clauth account: a-z, 0-9 and '-'."
         }
       },
       "required": [
         "name"
       ],
-      "title": "AccountAddIn",
+      "title": "AccountIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "output": {
@@ -2059,7 +2099,7 @@
             "string",
             "null"
           ],
-          "description": "One account profile; none: each.",
+          "description": "One account; none: each.",
           "default": null
         },
         "fresh": {
@@ -2509,14 +2549,6 @@
           "minimum": 0,
           "description": "Transcripts changed in the last days.",
           "default": 7
-        },
-        "account": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "An account profile's transcripts instead of `~/.claude` and `~/.codex`.",
-          "default": null
         }
       },
       "title": "AgentUsageIn",
@@ -13127,7 +13159,7 @@
             "string",
             "null"
           ],
-          "description": "An account profile (`agents accounts add`): its logins and transcripts instead of `~/.claude` and `~/.codex`.",
+          "description": "A clauth account (`agents accounts list`): its login instead of the current one.",
           "default": null
         },
         "in": {
@@ -13291,7 +13323,7 @@
             "string",
             "null"
           ],
-          "description": "An account profile (`agents accounts add`): its logins and transcripts instead of `~/.claude` and `~/.codex`.",
+          "description": "A clauth account (`agents accounts list`): its login instead of the current one.",
           "default": null
         },
         "in": {
@@ -13452,7 +13484,7 @@
             "format": "int64"
           },
           "account": {
-            "description": "The account profile (`agents accounts add`), if one was chosen.",
+            "description": "The clauth account it runs on; none: the current login.",
             "type": [
               "string",
               "null"
@@ -13752,7 +13784,7 @@
             "string",
             "null"
           ],
-          "description": "Continue on this account profile instead (its rate limits, its login); Claude Code's transcript is copied\nthere, so the conversation goes on."
+          "description": "Continue on this clauth account instead (its rate limits, its login); the conversation goes on."
         }
       },
       "required": [
@@ -15569,7 +15601,7 @@
             "type": "string"
           },
           "account": {
-            "description": "The account profile it runs on: its import's, else its main session's; none for the home's.",
+            "description": "The clauth account it runs on: its import's, else its main session's; none: the current login.",
             "type": [
               "string",
               "null"
@@ -15664,7 +15696,7 @@
                 "string",
                 "null"
               ],
-              "description": "The account profile it runs on: its import's, else its main session's; none for the home's."
+              "description": "The clauth account it runs on: its import's, else its main session's; none: the current login."
             },
             "imported_from": {
               "type": [
@@ -15791,7 +15823,7 @@
                 "type": "string"
               },
               "account": {
-                "description": "The account profile it runs on; none: the home's logins.",
+                "description": "The clauth account it runs on; none: the current login.",
                 "type": [
                   "string",
                   "null"
@@ -16825,7 +16857,7 @@
         },
         "account": {
           "type": "string",
-          "description": "The account profile of the copy (`agents accounts list`)."
+          "description": "The clauth account of the copy (`agents accounts list`)."
         }
       },
       "required": [
@@ -19730,7 +19762,7 @@
             "string",
             "null"
           ],
-          "description": "An account profile (`agents accounts list`); none: the current login.",
+          "description": "A clauth account (`agents accounts list`); none: the current login.",
           "default": null
         }
       },

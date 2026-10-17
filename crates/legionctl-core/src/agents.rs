@@ -365,7 +365,7 @@ fn add(
 /// Tokens per agent, day and model in the transcripts changed in the last `days` days: Claude Code's
 /// `<claude>/projects/**/*.jsonl` (each message once: its usage repeats on every content block) and Codex's
 /// `<codex>/sessions/**/*.jsonl` (`token_count` events, each turn's `last_token_usage`). `claude` and `codex` are
-/// `~/.claude` and `~/.codex`, or an account profile's folders.
+/// `~/.claude` and `~/.codex`.
 #[must_use]
 pub fn usage(claude: &Path, codex: &Path, days: u64) -> UsageReport {
     let since = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);

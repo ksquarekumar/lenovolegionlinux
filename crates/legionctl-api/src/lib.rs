@@ -474,18 +474,23 @@ operations! {
     /// Set one key of an agent's settings file (dotted: `permissions.defaultMode`, `mcp_servers.ctx.command`): the
     /// changed lines, a backup of the file, then the write; with `--dry-run` only the changed lines.
     agents_set / AgentsSet = "agents.set", Workspace, AgentSetIn => Edit;
-    /// Account profiles and which agents are logged in to each.
+    /// The accounts (the current login and clauth's profiles: clauth is the only store of the logins) and which
+    /// agents are logged in to each.
     agents_accounts_list / AgentsAccountsList = "agents.accounts.list", Read, Empty => Vec<Account>;
-    /// Make an account profile (its own Claude Code and Codex logins); `session start --account` uses it.
-    agents_accounts_add / AgentsAccountsAdd = "agents.accounts.add", Workspace, AccountAddIn => Lines;
+    /// Log in to account `name` in clauth (`clauth login`: the browser opens the provider's login page), a new account
+    /// or one that clauth has; `session start --account` and the member pick use it.
+    agents_accounts_login / AgentsAccountsLogin = "agents.accounts.login", Workspace, AccountLoginIn => Lines;
+    /// Make clauth account `name` the current login of Claude Code or Codex (`clauth switch`).
+    agents_accounts_switch / AgentsAccountsSwitch = "agents.accounts.switch", Workspace, AccountIn => Lines;
     /// Keep the current logins of Claude Code and Codex as account `name`, never as a copy (a refresh rotates the
     /// refresh token, and a copy logs one of the two out: DESIGN-12 wall 1): a login that a clauth profile holds is
     /// kept already; Claude Code's other login goes to clauth (`clauth capture <name>`: clauth keeps it in its store
     /// with its refresh in step); a Codex login that no clauth profile holds is not kept, with the way to
     /// make a second login. Fails when no login is kept.
-    agents_accounts_capture / AgentsAccountsCapture = "agents.accounts.capture", Workspace, AccountAddIn => Lines;
-    /// Each account profile's rate-limit windows (Claude: 5h and 7d; Codex: its windows) from the provider, read
-    /// with the profile's own access token, never refreshed; a failed read is that account's error with its cause.
+    agents_accounts_capture / AgentsAccountsCapture = "agents.accounts.capture", Workspace, AccountIn => Lines;
+    /// Each account's rate-limit windows (Claude: 5h and 7d; Codex: its windows) from the provider, read with the
+    /// account's own access token, never refreshed; a failed read is that account's error with its cause. A clauth
+    /// profile that holds the same login as another is not read: its error names both.
     /// Answers are kept for `agents.accounts.usage_ttl_s`; `--fresh` reads again.
     agents_accounts_usage / AgentsAccountsUsage = "agents.accounts.usage", Read, AccountUsageIn => Vec<AccountUsage>;
     /// Claude Code's installed plugins, each marked in or out of the allowlist (`plugins.marketplaces`).
@@ -965,8 +970,7 @@ operations! {
     thread_rules_add / ThreadRulesAdd = "thread.rules.add", Session, RuleAddIn => Lines;
     /// Remove a watch rule.
     thread_rules_rm / ThreadRulesRm = "thread.rules.rm", Session, RuleRmIn => Lines;
-    /// Copy a thread to another account profile: its log, members, messages, watch rules and layout, and its main
-    /// session's transcript. The copy records the thread it came from; the original stays and is read-only.
+    /// Copy a thread to another clauth account: its log, members, messages, watch rules and layout. The copy records the thread it came from; the original stays and is read-only.
     thread_import / ThreadImport = "thread.import", Workspace, ThreadImportIn => Lines;
     /// The operation catalog (DESIGN-09 G3): each public operation with its group, class, summary and whether it has a
     /// dry run; its form comes from its input schema. One line each.

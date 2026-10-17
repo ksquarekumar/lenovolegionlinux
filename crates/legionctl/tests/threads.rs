@@ -857,22 +857,20 @@ fn picked(v: &Value, key: &str, fields: [&str; 3]) -> Vec<[Value; 3]> {
         .collect()
 }
 
-/// `thread import` (design 23, C5): thread 1 runs on the home's account; its import to the account profile `work`
-/// makes thread 2 with the same log rows, members (without their sessions, which run on the old account), messages
-/// and watch rules, then a `thread.import` row; it copies main0's Claude transcript into the account's folders. Thread
-/// 1 is read-only after it: a second import (the copy exists), a message and a layout are refused. The copy refuses
-/// an import to its own account and to an account profile that does not exist.
+/// `thread import` (design 23, C5): thread 1 runs on the current login; its import to clauth account `work` makes
+/// thread 2 with the same log rows, members (without their sessions, which run on the old account), messages and
+/// watch rules, then a `thread.import` row. Thread 1 is read-only after it: a second import (the copy exists), a
+/// message and a layout are refused. The copy refuses an import to its own account and to an account that clauth
+/// does not have.
 #[test]
 fn a_thread_imported_to_another_account_copies_its_log_and_members_and_imports_once() {
     let lab = thread_lab("import");
     lab.thread("main", &["send", "observer0", "note", "check the lint"]);
     lab.thread("main", &["rules", "add", "1", "observer0", "make lint"]);
-    let transcript = lab.home.join(".claude/projects/-repo/main.jsonl");
     write(
-        &transcript,
-        "{\"type\":\"user\",\"message\":\"port the parser\"}\n",
+        &lab.home.join(".clauth/profiles.toml"),
+        "profiles = [\"work\"]\n",
     );
-    lab.ok("main", &lab.repo, &["agents", "accounts", "add", "work"]);
     let before = lab.json("main", &["thread", "show", "1"]);
 
     let out = lab.thread("main", &["import", "1", "work"]);
@@ -909,14 +907,6 @@ fn a_thread_imported_to_another_account_copies_its_log_and_members_and_imports_o
     assert_eq!(copy["messages"][0]["body"], "check the lint");
     assert_eq!(copy["messages"][0]["thread"], 2);
     assert_eq!(copy["rules"][0]["expect"], "make lint");
-    let copied = lab
-        .home
-        .join(".local/share/legionctl/accounts/work/claude/projects/-repo/main.jsonl");
-    assert_eq!(
-        std::fs::read_to_string(&copied).unwrap(),
-        std::fs::read_to_string(&transcript).unwrap(),
-        "main0's transcript in the account's folders"
-    );
     let list = lab.json("main", &["thread", "list"]);
     let info = |id: i64| {
         list.as_array()
@@ -955,7 +945,10 @@ fn a_thread_imported_to_another_account_copies_its_log_and_members_and_imports_o
         "{same}"
     );
     let missing = lab.refused("main", &["thread", "import", "2", "nope"]);
-    assert!(missing.contains("no account profile nope"), "{missing}");
+    assert!(
+        missing.contains("no account nope; the accounts are: work"),
+        "{missing}"
+    );
     assert_eq!(
         lab.json("main", &["thread", "list"])
             .as_array()
@@ -2046,7 +2039,10 @@ fn an_imported_team_thread_keeps_the_runs_and_rules_of_its_members() {
         &ws,
         &["thread", "start", "port the parser", "--team", "vanilla"],
     );
-    lab.ok(&main, &ws, &["agents", "accounts", "add", "work"]);
+    write(
+        &lab.home.join(".clauth/profiles.toml"),
+        "profiles = [\"work\"]\n",
+    );
     lab.ok(&main, &ws, &["thread", "import", "1", "work"]);
     let copy = lab.show(&main, 2);
     let observer = Lab::member(&copy, "observer0");
@@ -3089,8 +3085,9 @@ fn a_failed_step_wakes_no_acp_and_clears_no_gate(r: &RlcdPool) {
 }
 
 /// A team lab for the account tests: team acct (main0, and observer0 of config observer-acct: Claude, account work),
-/// three account profiles with a Claude login each (work, spare, third), the stand-in usage endpoint and keyring, and
-/// the user's fallback list [work, spare] at 90%. observer0 writes the profile it runs in into its working folder.
+/// three clauth profiles with a Claude login each (work, spare, third), the stand-in usage endpoint and keyring, and
+/// the user's fallback list [work, spare] at 90%. observer0 writes the access token of the login it runs on into its
+/// working folder.
 struct AcctLab {
     pool: Pool,
     answers: PathBuf,
@@ -3126,12 +3123,21 @@ impl AcctLab {
             _home: home,
         };
         let Pool { lab, main, ws } = &a.pool;
+        write(
+            &lab.home.join(".clauth/profiles.toml"),
+            "profiles = [\"work\", \"spare\", \"third\"]\n",
+        );
+        // Claude Code's folder, layered as by default: a session on an account gets the account's login there
+        std::fs::create_dir_all(lab.home.join(".claude")).unwrap();
+        let pool = lab.home.join(".config/legionctl/pool.jsonc");
+        let mut config: Value =
+            serde_json::from_str(&std::fs::read_to_string(&pool).unwrap()).unwrap();
+        config["session"]["writable"] = json!(["~/.claude"]);
+        write(&pool, &config.to_string());
         for (name, token) in [("work", "tok-w"), ("spare", "tok-s"), ("third", "tok-t")] {
-            lab.ok(main, ws, &["agents", "accounts", "add", name]);
             write(
-                &lab.home.join(format!(
-                    ".local/share/legionctl/accounts/{name}/claude/.credentials.json"
-                )),
+                &lab.home
+                    .join(format!(".clauth/profiles/{name}/credentials.json")),
                 &format!(
                     r#"{{"claudeAiOauth": {{"accessToken": "{token}", "expiresAt": 4102444800000}}}}"#
                 ),
@@ -3156,7 +3162,7 @@ impl AcctLab {
         );
         write(
             &lab.home.join("scripts/observer0.sh"),
-            "echo \"$CLAUDE_CONFIG_DIR\" >> account-dirs.txt; echo checked\n",
+            "(grep -o 'tok-[a-z]' ~/.claude/.credentials.json || echo no-login) >> account-dirs.txt; echo checked\n",
         );
         lab.ok(
             main,
@@ -3174,16 +3180,12 @@ impl AcctLab {
         );
     }
 
-    fn profile(&self, name: &str) -> String {
-        self.pool
-            .lab
-            .home
-            .join(format!(".local/share/legionctl/accounts/{name}/claude"))
-            .display()
-            .to_string()
+    /// The access token of account `name`'s login.
+    fn profile(name: &str) -> String {
+        format!("tok-{}", &name[..1])
     }
 
-    /// The profiles that observer0's wakes ran in, in order.
+    /// The access tokens of the logins that observer0's wakes ran on, in order.
     fn dirs(&self) -> Vec<String> {
         std::fs::read_to_string(
             self.pool
@@ -3206,8 +3208,8 @@ impl AcctLab {
 }
 
 /// An operator member runs under its account and, at its limit, continues under the next account of the user's
-/// fallback list (S2 of planning/features/accounts.jsonc): observer0 wakes in work's profile; with work's 5h at 95%
-/// its next wake resumes in spare's profile (the first account of agents.accounts.fallback.claude under it) with a
+/// fallback list (S2 of planning/features/accounts.jsonc): observer0 wakes on work's login; with work's 5h at 95%
+/// its next wake resumes on spare's login (the first account of agents.accounts.fallback.claude under it) with a
 /// thread.account row, a note to main0 and an agents.accounts.switch event. The user's pick (`thread account`)
 /// takes effect at the next wake. When every listed account is at its limit, the wake fails with the reason and the
 /// member stops (V1).
@@ -3221,7 +3223,7 @@ fn a_member_runs_under_its_account_and_resumes_under_the_next_at_its_limit() {
         "work"
     );
     a.wake(1);
-    assert_eq!(a.dirs().last(), Some(&a.profile("work")));
+    assert_eq!(a.dirs().last(), Some(&AcctLab::profile("work")));
     // its first wake's session has its config's capability set beside its harness set (DESIGN-13)
     let grant: Value =
         serde_json::from_str(&lab.ok(main, ws, &["runnables", "show", "1/observer0", "--json"]))
@@ -3236,7 +3238,7 @@ fn a_member_runs_under_its_account_and_resumes_under_the_next_at_its_limit() {
 
     a.used("tok-w", 95.0);
     a.wake(2);
-    assert_eq!(a.dirs().last(), Some(&a.profile("spare")));
+    assert_eq!(a.dirs().last(), Some(&AcctLab::profile("spare")));
     let view = lab.show(main, 1);
     assert_eq!(Lab::member(&view, "observer0")["account"], "spare");
     let switch = view["log"]
@@ -3284,7 +3286,7 @@ fn a_member_runs_under_its_account_and_resumes_under_the_next_at_its_limit() {
         ],
     );
     a.wake(3);
-    assert_eq!(a.dirs().last(), Some(&a.profile("third")));
+    assert_eq!(a.dirs().last(), Some(&AcctLab::profile("third")));
     no_account_under_the_limit_stops_the_member(&a);
 }
 

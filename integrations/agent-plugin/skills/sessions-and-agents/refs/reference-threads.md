@@ -18,7 +18,7 @@ watch rules are in the operator's database; they survive restarts and compaction
 | `thread branch <thread> <row>` | A new thread with the log up to that row, the same members, you as `main0`, and a branch at the last checkpoint. |
 | `dossier append --member <name> <path>` | A thread-observer's backfill into main0's dossier: one line, marked `(by <name>)`, only while main0 is idle. |
 | `thread peers [--dossier] [--topic] [--thread]`, `thread observe <peer>` | Who shares your dossier, workspace or thread, with state, last tool and open messages; one peer's events. A subagent is a peer of its own, `<session>/<agent id>`: send to it and observe it by that id; it gets its messages at its next tool call. |
-| `thread import <thread> <account>` | Copy the thread to another account profile: the log, members (without sessions), messages, rules, layout and main0's transcript. The original is read-only after it; a thread is imported once. |
+| `thread import <thread> <account>` | Copy the thread to another clauth account: the log, members (without sessions), messages, rules and layout. The original is read-only after it; a thread is imported once. |
 
 | Kind | Who sends it | The receiver gets it |
 | --- | --- | --- |

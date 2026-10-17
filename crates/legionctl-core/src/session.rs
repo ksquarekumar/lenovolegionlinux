@@ -29,7 +29,7 @@ pub struct SessionRecord {
     pub workdir: PathBuf,
     /// Seconds since the epoch.
     pub started: i64,
-    /// The account profile (`agents accounts add`), if one was chosen.
+    /// The clauth account it runs on; none: the current login.
     pub account: Option<String>,
     pub inside: Inside,
 }
@@ -184,12 +184,6 @@ pub struct Start<'a> {
     pub capabilities: &'a [String],
     /// A member's parent: the main agent's sets; none: the user is the parent.
     pub parent: Option<&'a [String]>,
-}
-
-/// Where account profiles live: `~/.local/share/legionctl/accounts/<name>/{claude,codex}`.
-#[must_use]
-pub fn accounts_root() -> PathBuf {
-    crate::packages::Store::default_root().with_file_name("accounts")
 }
 
 /// How the client starts a session in its terminal: `scope` + `sandbox` + `agent`, in that order.
@@ -449,37 +443,6 @@ fn agent_dir(ws: &crate::workspace::Workspace) -> PathBuf {
     }
 }
 
-/// The folder of account profile `account`.
-///
-/// # Errors
-/// The name is not a profile name, or no such profile exists.
-pub fn account_dir(account: &str) -> Result<PathBuf> {
-    anyhow::ensure!(
-        crate::dossier::valid_name(account),
-        "an account name is a-z, 0-9 and '-', starting with a letter or digit"
-    );
-    let dir = accounts_root().join(account);
-    if dir.is_dir() {
-        return Ok(dir);
-    }
-    for agent in ["claude", "codex"] {
-        if crate::accounts::clauth_roster(agent)?
-            .1
-            .iter()
-            .any(|n| n == account)
-        {
-            // shortcut: no session on a clauth profile that is not the current login; upgrade with clauth's own start
-            anyhow::bail!(
-                "account {account} is a clauth profile: a session runs on it when it is the current login (switch to \
-                 it with `clauth {account}`, then pick the current login)"
-            );
-        }
-    }
-    anyhow::bail!(
-        "no account profile {account}; make it with `legionctl agents accounts add {account}`"
-    )
-}
-
 /// The skills a session gets (`session.skills`): each skill's name and its hash-checked folder in the store; `None`
 /// when the user's own skills stay.
 ///
@@ -524,85 +487,10 @@ pub fn skills(
     Ok(Some(out))
 }
 
-/// Claude Code's and Codex's folders: the account profile's, or `~/.claude` and `~/.codex`.
-fn agent_homes(account: Option<&str>) -> Result<[PathBuf; 2]> {
-    Ok(if let Some(account) = account {
-        let dir = accounts_root().join(account);
-        [dir.join("claude"), dir.join("codex")]
-    } else {
-        let home = PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?);
-        [home.join(".claude"), home.join(".codex")]
-    })
-}
-
-/// Copy Claude Code's transcript of session `id` (`projects/<folder>/<id>.jsonl`, and its `<id>/` folder of
-/// subagent transcripts) from one config folder to another, so `claude --resume` finds it there. The agent can write
-/// these folders, so only regular files and folders are copied: a symlink would bring in a file the sandbox hides.
-fn copy_transcript(from: &Path, to: &Path, id: &str) -> Result<()> {
-    fn copy_tree(from: &Path, to: &Path) -> Result<()> {
-        let kind = std::fs::symlink_metadata(from)?.file_type();
-        if kind.is_dir() {
-            std::fs::create_dir_all(to)?;
-            for entry in std::fs::read_dir(from)? {
-                let entry = entry?;
-                copy_tree(&entry.path(), &to.join(entry.file_name()))?;
-            }
-        } else if kind.is_file() {
-            std::fs::copy(from, to)?;
-        }
-        Ok(())
-    }
-    for project in std::fs::read_dir(from.join("projects"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|p| p.file_type().is_ok_and(|t| t.is_dir()))
-    {
-        let target = to.join("projects").join(project.file_name());
-        for name in [format!("{id}.jsonl"), id.to_string()] {
-            let source = project.path().join(&name);
-            if std::fs::symlink_metadata(&source).is_ok() {
-                std::fs::create_dir_all(&target)?;
-                copy_tree(&source, &target.join(&name))?;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Copy the transcript of session `id` from the folders of account `from` (none: the home's) to account `to`'s.
-pub(crate) fn copy_transcript_to(id: &str, from: Option<&str>, to: &str) -> Result<()> {
-    let [claude, _] = agent_homes(from)?;
-    let from = match from {
-        Some(_) => claude,
-        None => written_home(id, &claude),
-    };
-    let [to, _] = agent_homes(Some(to))?;
-    copy_transcript(&from, &to, id)
-}
-
-/// Where session `id` wrote the home folder `real`: a session that legionctl ran wrote its layer (the overlay's upper
-/// folder on the host, its copy in a container or VM); any other (the user's own agent) wrote the real folder.
-fn written_home(id: &str, real: &Path) -> PathBuf {
-    let layer = session_home(id)
-        .join("home")
-        .join(real.strip_prefix("/").unwrap_or(real));
-    if layer.join("upper").is_dir() {
-        layer.join("upper")
-    } else if layer.is_dir() {
-        layer
-    } else {
-        real.to_path_buf()
-    }
-}
-
-/// The skills folders of Claude Code and Codex (the account's, or the home's) as exactly `skills`, read-only.
-fn skill_mounts(
-    mounts: &mut Vec<Mount>,
-    account: Option<&str>,
-    skills: &[(String, PathBuf)],
-) -> Result<()> {
-    for home in agent_homes(account)? {
+/// The skills folders of Claude Code and Codex as exactly `skills`, read-only.
+fn skill_mounts(mounts: &mut Vec<Mount>, skills: &[(String, PathBuf)]) -> Result<()> {
+    let home = PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?);
+    for home in [home.join(".claude"), home.join(".codex")] {
         // the mount point must exist: the home is read-only in the sandbox
         let dir = home.join("skills");
         std::fs::create_dir_all(&dir)?;
@@ -610,22 +498,6 @@ fn skill_mounts(
         for (name, source) in skills {
             mounts.push(Mount::ReadOnly(source.clone(), dir.join(name)));
         }
-    }
-    Ok(())
-}
-
-/// The account's own logins and transcripts instead of `~/.claude` and `~/.codex`: its folders, writable, and the
-/// variables that point the agents there.
-fn account_mounts(
-    mounts: &mut Vec<Mount>,
-    env: &mut Vec<(String, String)>,
-    account: &str,
-) -> Result<()> {
-    for (agent, variable) in [("claude", "CLAUDE_CONFIG_DIR"), ("codex", "CODEX_HOME")] {
-        let dir = accounts_root().join(account).join(agent);
-        std::fs::create_dir_all(&dir)?;
-        env.push((variable.into(), dir.to_string_lossy().into_owned()));
-        mounts.push(Mount::Writable(dir));
     }
     Ok(())
 }
@@ -1106,111 +978,19 @@ fn packed(dir: &Path) -> Result<String> {
     Ok(image)
 }
 
-/// Each agent's login file in an account profile (A1, decided 2026-10-13): at rest in the keyring
-/// (`legionctl-login <account>/<agent>`), in the profile only while a session of the account runs.
+/// clauth has `account`, with a login of `agent` when it is Claude Code or Codex (an agent of another name gets the
+/// logins that the account has).
+fn check_account(account: &str, agent: &str) -> Result<()> {
+    if LOGINS.iter().any(|(a, _)| *a == agent) {
+        crate::accounts::profile_login(account, agent).map(drop)
+    } else {
+        crate::accounts::exists(account)
+    }
+}
+
+/// Each agent's login file in its home folder.
 pub(crate) const LOGINS: [(&str, &str); 2] =
     [("claude", ".credentials.json"), ("codex", "auth.json")];
-
-pub(crate) fn keyring_get(entry: &str) -> Result<Option<Vec<u8>>> {
-    let out = std::process::Command::new("secret-tool")
-        .args(["lookup", "legionctl-login", entry])
-        .output()
-        .context("running secret-tool")?;
-    Ok((out.status.success() && !out.stdout.is_empty()).then_some(out.stdout))
-}
-
-fn keyring_put(entry: &str, secret: &[u8]) -> Result<()> {
-    use std::io::Write as _;
-    let mut child = std::process::Command::new("secret-tool")
-        .args([
-            "store",
-            &format!("--label=legionctl login {entry}"),
-            "legionctl-login",
-            entry,
-        ])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .context("running secret-tool")?;
-    child
-        .stdin
-        .take()
-        .context("secret-tool stdin")?
-        .write_all(secret)?;
-    anyhow::ensure!(
-        child.wait()?.success(),
-        "secret-tool could not store {entry}"
-    );
-    Ok(())
-}
-
-/// Write the account's logins from the keyring into its profile (0600) for a session; a file already there is newer
-/// (a session of the account runs) and stays.
-fn logins_out(account: &str) -> Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-    for (agent, file) in LOGINS {
-        let path = accounts_root().join(account).join(agent).join(file);
-        if path.exists() {
-            continue;
-        }
-        if let Some(secret) = keyring_get(&format!("{account}/{agent}"))? {
-            std::fs::create_dir_all(path.parent().context("no profile folder")?)?;
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&path)?
-                .write_all(&secret)?;
-        }
-    }
-    Ok(())
-}
-
-impl Dossiers {
-    /// For each account no live session uses: a login file in its profile (a new login, or tokens an agent refreshed)
-    /// goes into the keyring and off the disk. shortcut: a session without a scope (`session.scope` false) counts as
-    /// not live, so its login can go while it runs; keep scopes on with accounts.
-    ///
-    /// # Errors
-    /// The keyring or the sessions table fails.
-    pub fn settle_logins(&self) -> Result<()> {
-        let mut live: Vec<String> = Vec::new();
-        let scoped: Vec<(String, String, String)> = self
-            .db()
-            .prepare(
-                "SELECT id, account, inside FROM sessions WHERE scoped = 1 AND account IS NOT NULL",
-            )?
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-            .collect::<Result<_, _>>()?;
-        for (id, account, inside) in scoped {
-            // a state that cannot be read keeps the login files where they are: the session may run
-            if active(&id, Inside::from_db(&inside))? {
-                live.push(account);
-            }
-        }
-        for entry in std::fs::read_dir(accounts_root())
-            .into_iter()
-            .flatten()
-            .flatten()
-        {
-            let account = entry.file_name().to_string_lossy().into_owned();
-            if live.contains(&account) {
-                continue;
-            }
-            for (agent, file) in LOGINS {
-                let path = entry.path().join(agent).join(file);
-                let Ok(secret) = std::fs::read(&path) else {
-                    continue;
-                };
-                if !secret.is_empty() {
-                    keyring_put(&format!("{account}/{agent}"), &secret)?;
-                }
-                std::fs::remove_file(&path)?;
-            }
-        }
-        Ok(())
-    }
-}
 
 impl Launch {
     /// Bind the run of `agent` to the operations `tools` (DESIGN-11: a bound agent gets only what its binding needs):
@@ -1402,7 +1182,7 @@ fn grant_mounts(
             )),
             Mode::Overlay => {
                 std::fs::create_dir_all(&path)?;
-                layered(mounts, &path, layer, true)?;
+                layered(mounts, &path, (layer, None), true)?;
             }
             Mode::Write | Mode::WriteThrough if path.is_file() => {
                 mounts.push(Mount::File(path.clone(), path));
@@ -1479,12 +1259,17 @@ fn session_home(id: &str) -> PathBuf {
 /// on the host each folder is an overlay over the real one with its writes in `layer`, in a container or VM the
 /// session's copy in `layer` (made at its first start); each file is the session's copy in `layer`. A path that does
 /// not exist is left out.
-fn home_mounts(mounts: &mut Vec<Mount>, config: &Config, layer: &Path, host: bool) -> Result<()> {
+fn home_mounts(
+    mounts: &mut Vec<Mount>,
+    config: &Config,
+    (layer, account): (&Path, Option<&str>),
+    host: bool,
+) -> Result<()> {
     let caches: &[String] = if host { &config.session.caches } else { &[] };
     for entry in config.session.writable.iter().chain(caches) {
         let path = expand_home(entry)?;
         if path.exists() {
-            layered(mounts, &path, layer, host)?;
+            layered(mounts, &path, (layer, account), host)?;
         }
     }
     Ok(())
@@ -1492,7 +1277,12 @@ fn home_mounts(mounts: &mut Vec<Mount>, config: &Config, layer: &Path, host: boo
 
 /// `path` with every write in the session's `layer`: on the host a folder is an overlay over the real one; in a
 /// container or VM (and a file) the session's copy in `layer`, made at its first start.
-fn layered(mounts: &mut Vec<Mount>, path: &Path, layer: &Path, host: bool) -> Result<()> {
+fn layered(
+    mounts: &mut Vec<Mount>,
+    path: &Path,
+    (layer, account): (&Path, Option<&str>),
+    host: bool,
+) -> Result<()> {
     let own = layer.join(path.strip_prefix("/").unwrap_or(path));
     if host && path.is_dir() {
         for part in ["upper", "work"] {
@@ -1503,7 +1293,7 @@ fn layered(mounts: &mut Vec<Mount>, path: &Path, layer: &Path, host: bool) -> Re
             upper: own.join("upper"),
             work: own.join("work"),
         });
-        logins_through(mounts, path, &own.join("upper"))?;
+        logins_through(mounts, path, &own.join("upper"), account)?;
         return Ok(());
     }
     if !own.exists() {
@@ -1521,33 +1311,51 @@ fn layered(mounts: &mut Vec<Mount>, path: &Path, layer: &Path, host: bool) -> Re
         );
     }
     mounts.push(Mount::Bind(own.clone(), path.to_path_buf()));
-    logins_through(mounts, path, &own)
+    logins_through(mounts, path, &own, account)
 }
 
 /// The agents' login files in a home folder of theirs (`.credentials.json` of Claude Code, `auth.json` of Codex) are
 /// the real files over the session's layer (DESIGN-12 wall 1): a refresh rotates the refresh token, so a session that
-/// wrote it into its layer would leave the spent token in the real file and log the user's own agent out. A login
-/// that is a link (clauth links `~/.claude/.credentials.json` to its active profile's file) is its target: the session
-/// runs on the account that is live at its start, and a clauth switch later changes the link, not the session. The
-/// link's path in `layer` (the overlay's upper folder, or the session's copy) becomes an empty plain file, the mount
-/// point: no sandbox mounts on a link.
-fn logins_through(mounts: &mut Vec<Mount>, folder: &Path, layer: &Path) -> Result<()> {
-    for (_, file) in LOGINS {
+/// wrote it into its layer would leave the spent token in the real file and log the user's own agent out. The real
+/// file of a session on clauth account `account` is that profile's own login file (as `clauth start` links it), else
+/// the current login; a link (clauth links `~/.claude/.credentials.json` to its active profile's file) is its target,
+/// so a clauth switch later changes the link, not the session. A login path that is no plain file (a link, or no
+/// login) becomes an empty plain file in `layer` (the overlay's upper folder, or the session's copy), the mount point:
+/// no sandbox mounts on a link.
+fn logins_through(
+    mounts: &mut Vec<Mount>,
+    folder: &Path,
+    layer: &Path,
+    account: Option<&str>,
+) -> Result<()> {
+    for (agent, file) in LOGINS {
         let login = folder.join(file);
-        // a link to no file is no login
-        if !login.is_file() {
-            continue;
-        }
-        if login.symlink_metadata()?.file_type().is_symlink() {
+        let own = match account {
+            // the session's own agent has its login there (checked at its start); the other agent keeps the
+            // current one when the account has none of it
+            Some(account) if login == crate::accounts::live_file(agent)? => {
+                crate::accounts::profile_login(account, agent).ok()
+            }
+            _ => None,
+        };
+        let real = match own {
+            Some(own) => own,
+            // a link to no file is no login
+            None if login.is_file() => login
+                .canonicalize()
+                .with_context(|| format!("reading the link {}", login.display()))?,
+            None => continue,
+        };
+        if !login
+            .symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_file())
+        {
             let point = layer.join(file);
             if std::fs::symlink_metadata(&point).is_ok() {
                 std::fs::remove_file(&point)?;
             }
             std::fs::write(&point, b"")?;
         }
-        let real = login
-            .canonicalize()
-            .with_context(|| format!("reading the link {}", login.display()))?;
         mounts.push(Mount::File(real, login));
     }
     Ok(())
@@ -1660,9 +1468,7 @@ impl Dossiers {
             )
         })?;
         if let Some(account) = start.account {
-            account_dir(account)?;
-            self.settle_logins()?;
-            logins_out(account)?;
+            check_account(account, agent)?;
         }
         // a server whose package is missing or changed stops the session before anything is bound
         let store = crate::packages::Store::new(crate::packages::Store::default_root());
@@ -1768,17 +1574,12 @@ impl Dossiers {
         self.keep_grant(id, &grant)?;
         // after the bind: a refused resume leaves the session on its account
         if let Some(new) = account.filter(|a| record.account.as_deref() != Some(*a)) {
-            account_dir(new)?;
-            copy_transcript_to(id, record.account.as_deref(), new)?;
+            check_account(new, &record.agent)?;
             self.db().execute(
                 "UPDATE sessions SET account = ?1 WHERE id = ?2",
                 params![new, id],
             )?;
             record.account = Some(new.to_string());
-        }
-        if let Some(account) = record.account.as_deref() {
-            self.settle_logins()?;
-            logins_out(account)?;
         }
         let ws = self.open_workspace(
             record.dossier.clone(),
@@ -1840,7 +1641,8 @@ impl Dossiers {
             Mount::Empty(legionctl.join("sessions")),
             Mount::ReadOnly(own.clone(), own),
         ];
-        mounts.extend(self.work_mounts(ws, config, &session_home(&id).join("home"), host)?);
+        let layer = session_home(&id).join("home");
+        mounts.extend(self.work_mounts(ws, config, (&layer, who.account), host)?);
         let mut lines = uses(bound, ws, &workdir);
         lines.extend(grant_mounts(
             &mut mounts,
@@ -1853,12 +1655,9 @@ impl Dossiers {
             ("LEGIONCTL_TOKEN".to_string(), token.to_string()),
         ];
         let harness_args = harness_parts(manifest, &mut env);
-        if let Some(account) = who.account {
-            account_mounts(&mut mounts, &mut env, account)?;
-        }
         team_role(&mut mounts, &mut env, &id, (who.agent, who.member))?;
         if let Some(skills) = skills {
-            skill_mounts(&mut mounts, who.account, skills)?;
+            skill_mounts(&mut mounts, skills)?;
         }
 
         let gateway = (config.gateway.port != 0).then_some(config.gateway.port);
@@ -1934,7 +1733,7 @@ impl Dossiers {
         &self,
         ws: &crate::workspace::Workspace,
         config: &Config,
-        layer: &Path,
+        (layer, account): (&Path, Option<&str>),
         host: bool,
     ) -> Result<Vec<Mount>> {
         let dossier = ws.dossier.as_str();
@@ -1957,7 +1756,7 @@ impl Dossiers {
             mounts.push(Mount::Writable(workdir.clone()));
             git_mounts(&mut mounts, &workdir, &ws.branch)?;
         }
-        home_mounts(&mut mounts, config, layer, host)?;
+        home_mounts(&mut mounts, config, (layer, account), host)?;
         Ok(mounts)
     }
 
@@ -1986,7 +1785,7 @@ impl Dossiers {
             std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?,
         );
         let layer = session_home(id).join(format!("run-{}", new_id()?));
-        let mounts = self.work_mounts(&ws, config, &layer, true)?;
+        let mounts = self.work_mounts(&ws, config, (&layer, record.account.as_deref()), true)?;
         let argv = bwrap_sandbox(&ws, (&runtime, &config.session.hidden, true), &mounts, &[])?;
         Ok(Jail {
             argv,

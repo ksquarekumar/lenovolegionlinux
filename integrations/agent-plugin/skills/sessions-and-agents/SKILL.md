@@ -1,6 +1,6 @@
 ---
 name: sessions-and-agents
-description: How to run a coding agent in a legionctl session (a sandbox on the host, in a container or a VM, with the git gate, its own dossier and workspace, an optional GPU, an account profile and the model gateway) instead of a plain subagent, and how to follow it. Use when you plan to give work to another agent, when a task must run headless or isolated, and when you check what a session did.
+description: How to run a coding agent in a legionctl session (a sandbox on the host, in a container or a VM, with the git gate, its own dossier and workspace, an optional GPU, a clauth account and the model gateway) instead of a plain subagent, and how to follow it. Use when you plan to give work to another agent, when a task must run headless or isolated, and when you check what a session did.
 user-invocable: true
 ---
 
@@ -25,7 +25,7 @@ user-invocable: true
 8. MCP servers come through `legionctl mcp-proxy`: only the allowed tools, and each call is logged.
 9. `--gpu` gives the NVIDIA GPU for this run only. In a VM it needs a polkit dialog, a disk from `workspace pack --as vm
    --gpu`, and a desktop that does not use the GPU. See skill machine-tools for the live rule.
-10. `--account <profile>` uses an account profile (`agents accounts add <name>`) with its own logins and rate limits.
+10. `--account <name>` runs on a clauth account (`agents accounts list`; `agents accounts login <name>` adds one) with its own login and rate limits.
     The logins are the agents' own files in the profile; a session sees the real login files, so a token refresh in
     a session reaches them. The keyring holds only the gateway's API keys.
 11. A session has no network of its own: its only way out is the model gateway (`gateway.sock`; the agent's base URLs
@@ -35,7 +35,7 @@ user-invocable: true
     (OAuth refresh, a ChatGPT login) and remote MCP servers wait for the gateway's connections (plan todo-153).
 12. `session pause` and `session unpause` freeze and thaw a session; its memory stays. `session stop` stops it and
     everything it started.
-13. `session resume <id> [--account <profile>]` continues an ended session with the same id, dossier and workspace.
+13. `session resume <id> [--account <name>]` continues an ended session with the same id, dossier and workspace.
 14. These commands are class workspace, so an agent cannot start, pause or stop a session without the user (skill
     tool-lifecycle).
 15. The operator resumes a job that a restart cut off, three times at most.

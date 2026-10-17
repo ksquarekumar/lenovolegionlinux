@@ -244,14 +244,23 @@ pub struct SetupApplyIn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct AccountAddIn {
-    /// Profile name: a-z, 0-9 and '-'.
+pub struct AccountIn {
+    /// The clauth account: a-z, 0-9 and '-'.
     pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AccountLoginIn {
+    /// The clauth account: a-z, 0-9 and '-'; an account clauth has already logs in again.
+    pub name: String,
+    /// Codex's login, not Claude Code's.
+    #[serde(default)]
+    pub codex: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AccountUsageIn {
-    /// One account profile; none: each.
+    /// One account; none: each.
     #[serde(default)]
     pub account: Option<String>,
     /// Read from the providers now, not from the kept answers.
@@ -266,7 +275,7 @@ pub struct ThreadAccountIn {
     /// An operator member: it runs on the account from its next wake. None: the chat bar's account.
     #[serde(default)]
     pub member: Option<String>,
-    /// An account profile (`agents accounts list`); none: the current login.
+    /// A clauth account (`agents accounts list`); none: the current login.
     #[serde(default)]
     pub account: Option<String>,
 }
@@ -1017,7 +1026,7 @@ pub struct SessionStartIn {
     /// A folder in the repository to work on.
     #[serde(default = "here")]
     pub repo: ClientPath,
-    /// An account profile (`agents accounts add`): its logins and transcripts instead of `~/.claude` and `~/.codex`.
+    /// A clauth account (`agents accounts list`): its login instead of the current one.
     #[serde(default)]
     pub account: Option<String>,
     /// Where the session runs: host (a bwrap sandbox) or container (the repository's agent image from `legionctl
@@ -1057,7 +1066,7 @@ pub struct SessionRunIn {
     /// A folder in the repository to work on.
     #[serde(default = "here")]
     pub repo: ClientPath,
-    /// An account profile (`agents accounts add`): its logins and transcripts instead of `~/.claude` and `~/.codex`.
+    /// A clauth account (`agents accounts list`): its login instead of the current one.
     #[serde(default)]
     pub account: Option<String>,
     /// Where the session runs: host (a bwrap sandbox) or container (the repository's agent image from `legionctl
@@ -1155,8 +1164,7 @@ pub struct SessionExec {
 pub struct SessionResumeIn {
     /// Session id (`session list`).
     pub id: String,
-    /// Continue on this account profile instead (its rate limits, its login); Claude Code's transcript is copied
-    /// there, so the conversation goes on.
+    /// Continue on this clauth account instead (its rate limits, its login); the conversation goes on.
     pub account: Option<String>,
 }
 
@@ -1691,9 +1699,6 @@ pub struct AgentUsageIn {
     /// Transcripts changed in the last days.
     #[serde(default = "seven")]
     pub days: u64,
-    /// An account profile's transcripts instead of `~/.claude` and `~/.codex`.
-    #[serde(default)]
-    pub account: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1718,8 +1723,8 @@ pub struct Plugin {
     pub allowed: bool,
 }
 
-/// An account: the current login (`current`, named by the clauth profile that holds it), a clauth profile
-/// (`clauth`), or a legionctl account profile with its own logins and transcripts (`legionctl`).
+/// An account: the current login (`current`, named by the clauth profile that holds it) or another clauth profile
+/// (`clauth`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Account {
     pub name: String,
@@ -2498,7 +2503,7 @@ pub struct ThreadGateIn {
 pub struct ThreadImportIn {
     /// The thread's id (`thread list`).
     pub thread: i64,
-    /// The account profile of the copy (`agents accounts list`).
+    /// The clauth account of the copy (`agents accounts list`).
     pub account: String,
 }
 

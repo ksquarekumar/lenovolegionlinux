@@ -3,8 +3,6 @@
 //! Real clicks through GPUI's headless window; the operator answers in real time.
 
 mod common;
-#[path = "common/keyring.rs"]
-mod keyring;
 #[path = "common/portal.rs"]
 mod portal;
 #[path = "common/usage.rs"]
@@ -2834,18 +2832,11 @@ fn the_app_thread_page_updates_from_the_event_stream(cx: &mut TestAppContext) {
     drop(runtime);
 }
 
-/// The thread lab with account profiles work (5h 42%) and spare (5h 10%), each with a Claude login, the stand-in
-/// usage endpoint and keyring, and two more team threads of vanilla: 2 with teammates (session main is Claude
+/// The thread lab with the clauth profiles work (5h 42%), spare (5h 10%), alt (active, the current login) and side,
+/// each with a Claude login, the stand-in usage endpoint, and two more team threads of vanilla: 2 with teammates (session main is Claude
 /// Code's), 3 with operator members (a session of the agent fake) whose observer0 runs on work.
 fn accounts_lab() -> (Operator, PathBuf, PathBuf, common::process::Kill) {
     let (op, home, repo) = thread_lab("acct");
-    // a stand-in keyring on the operator's PATH (the home's own tools come first): never the user's
-    keyring::keyring_path(&home, &std::ffi::OsString::new());
-    std::fs::copy(
-        home.join("keyring-bin/secret-tool"),
-        home.join(".local/bin/secret-tool"),
-    )
-    .unwrap();
     // thread 2: teammates (session main is Claude Code's), before observer0's config has an account
     lab_cli(
         &op,
@@ -2865,24 +2856,13 @@ fn accounts_lab() -> (Operator, PathBuf, PathBuf, common::process::Kill) {
                            "claude": format!("http://127.0.0.1:{port}/claude"), "codex": "http://127.0.0.1:1/none"}}}})
         .to_string(),
     );
-    for (name, token, five) in [("work", "tok-w", 42.0), ("spare", "tok-s", 10.0)] {
-        lab_cli(&op, &home, &repo, &["agents", "accounts", "add", name], "");
-        write(
-            &home.join(format!(
-                ".local/share/legionctl/accounts/{name}/claude/.credentials.json"
-            )),
-            &format!(
-                r#"{{"claudeAiOauth": {{"accessToken": "{token}", "expiresAt": 4102444800000}}}}"#
-            ),
-        );
-        write(
-            &answers.join(format!("{token}.json")),
-            &serde_json::json!({"body": {"limits": [{"kind": "session", "percent": five}, {"kind": "weekly_all", "percent": 8.0}]}})
-                .to_string(),
-        );
-    }
-    // clauth's layout (0.17.0): alt is active and Claude Code's current login (a link to alt's file); side is not
-    for (name, token, five) in [("alt", "tok-a", 21.0), ("side", "tok-c", 5.0)] {
+    // clauth's layout (0.17.0): alt is active and Claude Code's current login (a link to alt's file)
+    for (name, token, five) in [
+        ("work", "tok-w", 42.0),
+        ("spare", "tok-s", 10.0),
+        ("alt", "tok-a", 21.0),
+        ("side", "tok-c", 5.0),
+    ] {
         write(
             &home.join(format!(".clauth/profiles/{name}/credentials.json")),
             &format!(
@@ -2897,7 +2877,7 @@ fn accounts_lab() -> (Operator, PathBuf, PathBuf, common::process::Kill) {
     }
     write(
         &home.join(".clauth/profiles.toml"),
-        "active_profile = \"alt\"\nprofiles = [\"alt\", \"side\"]\n",
+        "active_profile = \"alt\"\nprofiles = [\"work\", \"spare\", \"alt\", \"side\"]\n",
     );
     let live = home.join(".claude/.credentials.json");
     std::fs::create_dir_all(home.join(".claude")).unwrap();
@@ -2997,15 +2977,19 @@ fn the_member_chip_shows_its_account_usage_and_the_picker_sets_it(cx: &mut TestA
         a.screen.chat_account().as_deref() == Some("work")
     });
 
-    // the current login (clauth's alt) is an account; clauth's side shows, and a click on it picks nothing
+    // the current login (clauth's alt) is an account; clauth's side is not the current login and picks the same way
     reveal(cx, "account-");
     cx.update(|window, cx| window.click("account-", cx));
     reveal(cx, "pick-side");
     cx.update(|window, cx| window.click("pick-side", cx));
-    cx.run_until_parked();
-    app.read_with(cx, |a, _| {
-        assert!(a.state.pending.is_none(), "side is not the current login");
+    wait(cx, &app, "side's approval", |a| a.state.pending.is_some());
+    cx.update(|window, cx| window.click("apply", cx));
+    wait(cx, &app, "the chat bar on side", |a| {
+        a.screen.chat_account().as_deref() == Some("side")
     });
+    reveal(cx, "account-");
+    cx.update(|window, cx| window.click("account-", cx));
+    reveal(cx, "pick-current");
     cx.update(|window, cx| window.click("pick-current", cx));
     wait(cx, &app, "the current login's approval", |a| {
         a.state.pending.is_some()

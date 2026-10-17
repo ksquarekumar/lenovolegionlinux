@@ -609,7 +609,7 @@ wire! {
         workdir: PathBuf,
         /// Seconds since the epoch.
         started_at: i64 = started,
-        /// The account profile (`agents accounts add`), if one was chosen.
+        /// The clauth account it runs on; none: the current login.
         account: Option<String>,
         inside: Inside,
     }
@@ -1643,7 +1643,7 @@ wire! {
         created_at: i64 = created,
         /// open, or imported (read-only: `thread import` copied it to another account).
         state: String,
-        /// The account profile it runs on: its import's, else its main session's; none for the home's.
+        /// The clauth account it runs on: its import's, else its main session's; none: the current login.
         account: Option<String>,
         /// The thread it is a copy of (`thread import`).
         imported_from: Option<i64>,
@@ -1674,7 +1674,7 @@ wire! {
         /// self (its own session runs it), operator (an operator session, one prompt per wake), teammate (Claude
         /// Code team mode) or subagent (a Codex subagent).
         run: String,
-        /// The account profile it runs on; none: the home's logins.
+        /// The clauth account it runs on; none: the current login.
         account: Option<String>,
     }
 

@@ -1197,9 +1197,9 @@ agents and scripts).
 
 ### C5. Threads per account, import
 
-A thread belongs to one account profile (`threads.account`). A thread does not change account. `thread import <id>
---account <profile>` makes a new thread on the other account: it copies the main session's transcript (the code of
-`session resume --account`), the thread log, the messages and the layout, and records `imported_from`. The original
+A thread belongs to one clauth account (`threads.account`). A thread does not change account. `thread import <id>
+--account <name>` makes a new thread on the other account: it copies the thread log, the messages and the layout,
+and records `imported_from` (the transcripts are in one store, so none is copied). The original
 thread stays and is read-only after the import.
 
 ### C6. Failure and restart

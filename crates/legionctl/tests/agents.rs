@@ -867,10 +867,10 @@ esac
     );
 }
 
-/// An account usage lab: the stand-in usage endpoint of both providers (`usage_ttl_s` 3600) and four profiles:
-/// work (Claude in its profile, Codex at rest in the keyring), spare (both in its profile), old (an expired Claude
-/// token, a Codex token the provider refuses) and changed (answers of another shape). `files` are the login
-/// files as written.
+/// An account usage lab: the stand-in usage endpoint of both providers (`usage_ttl_s` 3600) and four clauth profiles
+/// laid out as clauth 0.17.0 keeps them (`profiles.toml`, `codex-profiles.toml`, `profiles/<name>/credentials.json`
+/// and `auth.json`): work and spare (both agents), old (an expired Claude token, a Codex token the provider refuses)
+/// and changed (answers of another shape). `files` are the login files as written.
 struct UsageLab {
     lab: Lab,
     answers: PathBuf,
@@ -889,9 +889,9 @@ impl UsageLab {
                 "endpoints": {"claude": url("claude"), "codex": url("codex")}}}})
             .to_string(),
         );
-        for name in ["work", "spare", "old", "changed"] {
-            lab.op.ok(&["agents", "accounts", "add", name]);
-        }
+        let roster = "profiles = [\"work\", \"spare\", \"old\", \"changed\"]\n";
+        write(&lab.home.join(".clauth/profiles.toml"), roster);
+        write(&lab.home.join(".clauth/codex-profiles.toml"), roster);
         let soon = "4102444800000"; // 2100-01-01 in ms
         let claude = |token: &str, expires: &str| {
             format!(
@@ -902,6 +902,11 @@ impl UsageLab {
         let mut files = Vec::new();
         for (account, agent, text) in [
             ("work", "claude", claude("tok-work", soon)),
+            (
+                "work",
+                "codex",
+                r#"{"tokens": {"access_token": "tok-workx", "account_id": "acct-1"}}"#.into(),
+            ),
             ("spare", "claude", claude("tok-spare", soon)),
             ("spare", "codex", codex("tok-sparex")),
             ("old", "claude", claude("tok-old", "1000")),
@@ -910,24 +915,14 @@ impl UsageLab {
             ("changed", "codex", codex("tok-changedx")),
         ] {
             let file = if agent == "claude" {
-                ".credentials.json"
+                "credentials.json"
             } else {
                 "auth.json"
             };
-            let path = lab
-                .home
-                .join(".local/share/legionctl/accounts")
-                .join(account)
-                .join(agent)
-                .join(file);
+            let path = lab.home.join(".clauth/profiles").join(account).join(file);
             write(&path, &text);
             files.push((path, text));
         }
-        // work's Codex login rests in the keyring (no session of the account runs)
-        write(
-            &lab.home.join("keyring/work_codex"),
-            r#"{"tokens": {"access_token": "tok-workx", "account_id": "acct-1"}}"#,
-        );
         let u = UsageLab {
             lab,
             answers,
@@ -1014,12 +1009,11 @@ fn windows(usage: &Value, account: &str, agent: &str) -> Value {
     r["windows"].clone()
 }
 
-/// `agents accounts usage` reads each logged-in agent of each profile from its provider (both stand-ins) with the
-/// profile's own token, the way the agents' own clients ask (S1 of planning/features/accounts.jsonc): Claude's
-/// `limits[]` (its top-level windows are not read), Codex's `rate_limit` (a reached limit counts as 100%); a login at
-/// rest in the keyring counts. An expired Claude token is "login needed" and is never
+/// `agents accounts usage` reads each logged-in agent of each clauth profile from its provider (both stand-ins) with
+/// the profile's own token, the way the agents' own clients ask (S1 of planning/features/accounts.jsonc): Claude's
+/// `limits[]` (its top-level windows are not read), Codex's `rate_limit` (a reached limit counts as 100%). An expired Claude token is "login needed" and is never
 /// sent (V1); a refused token is "login needed" too; another answer shape (Claude's top-level windows only, Codex's rate-limit
-/// headers only, a window without its length) is that account's error with the field, no zero use (V2, V3). No token is printed, no login file or keyring entry changes. The answers are kept with their fetch time;
+/// headers only, a window without its length) is that account's error with the field, no zero use (V2, V3). No token is printed, no login file changes. The answers are kept with their fetch time;
 /// `--fresh` reads again; the seed view shows them by account.
 #[test]
 fn account_usage_comes_from_each_provider_read_only_and_a_changed_answer_is_an_error() {
@@ -1074,7 +1068,7 @@ fn account_usage_comes_from_each_provider_read_only_and_a_changed_answer_is_an_e
 }
 
 /// Each call asks as the agent's own client (Claude's beta header, Codex's account id), an expired token is never
-/// sent, no login file or keyring entry changes, no answer shows a token, and a login at rest in the keyring counts.
+/// sent, no login file changes, and no answer shows a token.
 fn each_call_is_the_agents_own_and_reads_only(u: &UsageLab, usage: &Value) {
     let calls = u.calls();
     assert!(
@@ -1098,17 +1092,6 @@ fn each_call_is_the_agents_own_and_reads_only(u: &UsageLab, usage: &Value) {
             path.display()
         );
     }
-    let home = &u.lab.home;
-    assert!(
-        !home
-            .join(".local/share/legionctl/accounts/work/codex/auth.json")
-            .exists()
-    );
-    assert_eq!(
-        std::fs::read_dir(home.join("keyring")).unwrap().count(),
-        1,
-        "nothing went into the keyring"
-    );
     let text = u.lab.op.ok(&["agents", "accounts", "usage"]);
     assert!(
         !text.contains("tok-") && !usage.to_string().contains("tok-"),
@@ -1126,7 +1109,7 @@ fn each_call_is_the_agents_own_and_reads_only(u: &UsageLab, usage: &Value) {
     assert_eq!(
         [&work["claude"], &work["codex"]],
         [&json!(true), &json!(true)],
-        "a login at rest in the keyring is a login: {work}"
+        "{work}"
     );
 }
 
@@ -1147,9 +1130,9 @@ fn the_answer_is_kept_until_fresh(u: &UsageLab, usage: &Value) {
     let seed = u.lab.op.ok(&["views", "render", "accounts"]);
     for line in [
         "== work (2) ==",
-        "claude | legionctl | 5h | 88 | 7d | 9 | no value | now",
-        "codex | legionctl | 5h | 100 | 7d | 20 | no value | now",
-        "claude | legionctl | no value | no value | no value | no value | the answer has no list limits | now",
+        "claude | clauth | 5h | 88 | 7d | 9 | no value | now",
+        "codex | clauth | 5h | 100 | 7d | 20 | no value | now",
+        "claude | clauth | no value | no value | no value | no value | the answer has no list limits | now",
     ] {
         assert!(seed.lines().any(|l| l == line), "{line} missing:\n{seed}");
     }
@@ -1213,9 +1196,22 @@ fn the_current_logins_and_clauths_profiles_are_accounts_and_capture_never_copies
     assert_eq!(windows(&usage, "alt", "claude")[0]["used_percent"], 30.0);
     let r = row(&usage, "main", "claude");
     assert_eq!(
-        [&r["source"], &r["active"]],
-        [&json!("clauth"), &json!(false)],
+        [&r["source"], &r["active"], &r["windows"]],
+        [&json!("clauth"), &json!(false), &json!([])],
         "{r}"
+    );
+    // two holders of one refresh token: one plain warning that names both, and main is not read
+    assert!(
+        r["error"].as_str().unwrap_or_default().starts_with(
+            "main holds the same login as alt: a refresh through one logs the other out"
+        ),
+        "{r}"
+    );
+    let seed = u.lab.op.ok(&["views", "render", "accounts"]);
+    assert_eq!(
+        seed.matches("holds the same login").count(),
+        1,
+        "one warning:\n{seed}"
     );
     assert_eq!(windows(&usage, "current", "codex")[0]["used_percent"], 11.0);
     assert_eq!(
@@ -1251,17 +1247,13 @@ fn capture_never_copies_a_login(
     std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let kept = u.lab.op.ok(&["agents", "accounts", "capture", "keep"]);
     assert!(
-        kept.contains("Claude Code: the current login is clauth profile alt already")
+        kept.contains("Claude Code: the current login is clauth account alt already")
             && kept.contains("Codex: the current login is not kept")
-            && kept.contains("clauth login keep --codex --browser"),
+            && kept.contains("log in to Codex as a new account instead"),
         "{kept}"
     );
     assert_eq!(&disk(), before, "no login file changed");
     assert!(!home.join("clauth.log").exists(), "clauth was not called");
-    assert!(
-        !home.join(".local/share/legionctl/accounts/keep").exists(),
-        "no copy"
-    );
 
     // a Claude Code login that no clauth profile holds goes to clauth's capture
     std::fs::remove_file(home.join(".claude/.credentials.json")).unwrap();
@@ -1271,7 +1263,7 @@ fn capture_never_copies_a_login(
     );
     let saved = u.lab.op.ok(&["agents", "accounts", "capture", "fresh"]);
     assert!(
-        saved.contains("clauth keeps the current login as profile fresh"),
+        saved.contains("clauth keeps the current login as account fresh"),
         "{saved}"
     );
     assert_eq!(
@@ -1289,6 +1281,110 @@ fn capture_never_copies_a_login(
                 .contains("no login is kept: Codex: the current login is not kept"),
         "{}",
         String::from_utf8_lossy(&none.stderr)
+    );
+}
+
+/// clauth is the only store of the logins (user decision 2026-10-17). legionctl's old account folder is not read and
+/// not moved in silence: doctor says once which profiles it holds, with a Log in action for each, and the folder stays
+/// as it was. Log in and switch go to clauth (a stand-in that logs its calls and its stdin: no terminal, so clauth's
+/// own browser door is the way in); a switch to an account that clauth does not have names the accounts and calls
+/// nothing; a refusal of clauth is the error with clauth's words.
+#[test]
+fn the_old_account_folder_is_one_doctor_finding_and_logins_go_through_clauth() {
+    let u = UsageLab::new("old-folder");
+    let home = u.lab.home.to_path_buf();
+    let old = home.join(".local/share/legionctl/accounts");
+    write(&old.join("work/claude/.credentials.json"), "old-work-login");
+    std::fs::create_dir_all(old.join("spare/codex")).unwrap();
+    let doctor: Value = serde_json::from_str(&u.lab.op.ok(&["doctor", "--json"])).unwrap();
+    let found: Vec<&Value> = doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["text"].as_str().unwrap().contains("accounts"))
+        .collect();
+    assert_eq!(found.len(), 1, "{doctor:#}");
+    assert_eq!(
+        found[0]["text"],
+        format!(
+            "{} holds legionctl's old account profiles spare, work, not used: clauth keeps the logins now. Log in to \
+             each of them in clauth, then delete the folder",
+            old.display()
+        )
+    );
+    let actions: Vec<[&Value; 3]> = found[0]["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| [&a["name"], &a["op"], &a["input"]])
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            [
+                &json!("Log in to spare"),
+                &json!("agents.accounts.login"),
+                &json!({"name": "spare"})
+            ],
+            [
+                &json!("Log in to work"),
+                &json!("agents.accounts.login"),
+                &json!({"name": "work"})
+            ],
+        ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(old.join("work/claude/.credentials.json")).unwrap(),
+        "old-work-login",
+        "nothing moved"
+    );
+    assert!(!doctor.to_string().contains("old-work-login"));
+
+    let bin = home.join("keyring-bin/clauth");
+    write(
+        &bin,
+        "#!/bin/sh\necho \"$* stdin=$(cat)\" >> \"$HOME/clauth.log\"\n[ \"$1\" = switch ] && [ \"$2\" = spare ] && { echo 'spare is in use' >&2; exit 1; }\nexit 0\n",
+    );
+    std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let said = u.lab.op.ok(&["agents", "accounts", "login", "work"]);
+    assert_eq!(
+        said.trim(),
+        "clauth keeps the Claude Code login of account work"
+    );
+    u.lab
+        .op
+        .ok(&["agents", "accounts", "login", "work", "--codex"]);
+    let ghost = u
+        .lab
+        .op
+        .cli_in(&home, &["agents", "accounts", "switch", "ghost"]);
+    assert!(
+        String::from_utf8_lossy(&ghost.stderr)
+            .contains("no account ghost; the accounts are: work, spare, old, changed"),
+        "{}",
+        String::from_utf8_lossy(&ghost.stderr)
+    );
+    assert_eq!(
+        u.lab
+            .op
+            .ok(&["agents", "accounts", "switch", "work"])
+            .trim(),
+        "account work is the current login"
+    );
+    let refused = u
+        .lab
+        .op
+        .cli_in(&home, &["agents", "accounts", "switch", "spare"]);
+    assert!(
+        !refused.status.success()
+            && String::from_utf8_lossy(&refused.stderr)
+                .contains("clauth switch spare: spare is in use"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("clauth.log")).unwrap(),
+        "login work stdin=\nlogin work --codex --browser stdin=\nswitch work stdin=\nswitch spare stdin=\n"
     );
 }
 

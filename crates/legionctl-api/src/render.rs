@@ -2018,7 +2018,7 @@ fn from(source: &str, active: bool) -> String {
 impl Render for Vec<crate::AccountUsage> {
     fn text(&self) -> String {
         if self.is_empty() {
-            return "no login: Claude Code and Codex are not logged in, and no clauth or legionctl account has a login"
+            return "no login: Claude Code and Codex are not logged in, and no clauth account has a login"
                 .into();
         }
         self.iter()
@@ -2045,7 +2045,7 @@ impl Render for Vec<crate::AccountUsage> {
 impl Render for Vec<crate::Account> {
     fn text(&self) -> String {
         if self.is_empty() {
-            return "no login: Claude Code and Codex are not logged in, and no clauth or legionctl account has a login"
+            return "no login: Claude Code and Codex are not logged in, and no clauth account has a login"
                 .into();
         }
         self.iter()

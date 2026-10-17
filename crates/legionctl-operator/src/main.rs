@@ -137,8 +137,8 @@ async fn run() -> Result<()> {
             }
             Err(e) => faults::failed("retention", RETENTION, &e),
         }
-        // account logins left in profiles (a new login, a session that ended) go into the keyring; the dossier
-        // registry reads the folders (a folder renamed by hand keeps its rows); both wait for the dossier migration
+        // the dossier registry reads the folders (a folder renamed by hand keeps its rows); it waits for the dossier
+        // migration
         if !legionctl_core::migrate::pending() {
             let settled =
                 legionctl_core::config::resolve(&legionctl_core::config::Dirs::from_env(), None)
@@ -147,15 +147,11 @@ async fn run() -> Result<()> {
                         for finding in store.sync_registry()? {
                             eprintln!("operator: {finding}");
                         }
-                        store.settle_logins()
+                        Ok(())
                     });
             match settled {
                 Ok(()) => faults::works("registry"),
-                Err(e) => faults::failed(
-                    "registry",
-                    "the dossier registry or the account logins are not settled",
-                    &e,
-                ),
+                Err(e) => faults::failed("registry", "the dossier registry is not settled", &e),
             }
         }
     })

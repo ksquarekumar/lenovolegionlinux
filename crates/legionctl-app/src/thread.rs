@@ -100,7 +100,7 @@ pub struct Screen {
     pub updated: Option<std::time::Instant>,
     /// The refreshes since the start (the Activity reads its slow parts each 15th).
     pub ticks: u32,
-    /// The accounts (the current login, clauth's and legionctl's profiles) and their usage (`agents accounts list`,
+    /// The accounts (the current login and clauth's other profiles) and their usage (`agents accounts list`,
     /// `agents accounts usage`, todo-136).
     pub accounts: Vec<legionctl_api::Account>,
     pub usage: Vec<legionctl_api::AccountUsage>,
@@ -675,7 +675,7 @@ impl LegionApp {
         }
     }
 
-    /// Read the account profiles and their usage (kept by the operator for `agents.accounts.usage_ttl_s`): the
+    /// Read the accounts and their usage (kept by the operator for `agents.accounts.usage_ttl_s`): the
     /// member chips and the account picker show them.
     pub(crate) fn read_accounts(&mut self, cx: &mut Context<Self>) {
         let client = self.client.clone();
@@ -1319,9 +1319,8 @@ impl LegionApp {
             .into_any_element()
     }
 
-    /// The accounts with their use, for `member` of `thread` (none: the chat bar): the current login and the
-    /// legionctl profiles; a pick runs `thread.account` with its approval. A clauth profile that is not the current
-    /// login shows, and says how to switch to it: a session runs on it only as the current login.
+    /// The accounts with their use, for `member` of `thread` (none: the chat bar): the current login and clauth's
+    /// other profiles; a pick runs `thread.account` with its approval.
     fn account_picker(
         &self,
         thread: i64,
@@ -1368,16 +1367,6 @@ impl LegionApp {
                 } else {
                     format!("{text} · {usage}")
                 });
-            if let Some(a) = account.as_ref().filter(|a| a.source == "clauth") {
-                let why = SharedString::from(format!(
-                    "A clauth profile: to run on it, switch to it with `clauth {}` and pick the current login",
-                    a.name
-                ));
-                return chip
-                    .text_color(t.muted)
-                    .tooltip(move |window, cx| Tooltip::new(why.clone()).build(window, cx))
-                    .test_support();
-            }
             let pick = account.map(|a| a.name);
             let input = json!({"thread": thread, "member": member, "account": pick});
             let label = match (member, &pick) {
@@ -1411,7 +1400,7 @@ impl LegionApp {
                     div()
                         .text_size(T_XS)
                         .text_color(t.muted)
-                        .child("No login: log in to Claude Code or Codex, or add an account (legionctl agents accounts add <name>)"),
+                        .child("No login: log in to an account on the Accounts page"),
                 )
             })
             .children(picks)

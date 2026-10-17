@@ -5787,301 +5787,128 @@ fn gpu_on_request(op: &Operator, home: &Path, repo: &Path) {
     }
 }
 
-/// A session continues on another account: `session resume --account` copies Claude Code's transcript into that
-/// profile and runs the agent there, and the session keeps the new account; an unknown profile is refused.
+/// A session on a clauth account (user decision 2026-10-17: clauth is the only store of the logins): in a Scratch HOME
+/// laid out as clauth 0.17.0 keeps it (main the current login through clauth's link, work and spare other profiles,
+/// cx with a Codex login only), `session start claude --account work` runs on work's own login file, its refresh
+/// goes into work's file (no copy, the link and main's login stay), and clauth's store is hidden in the sandbox;
+/// `session resume --account spare` goes on with the same transcript on spare's login and keeps the account. An
+/// account that clauth does not have, and one with no Claude Code login, are refused in plain words.
 #[test]
-fn a_resumed_session_continues_on_another_account_with_its_transcript() {
-    let (op, home) = operator("switch");
+fn a_session_on_a_clauth_account_runs_on_its_login_and_resumes_on_another() {
+    let (op, home) = operator("clauth");
     let repo = repository(&home);
     // the sessions' scopes are gone when a later start asks (no user manager in a test: systemd's answer stands in)
     stand_in(&home, "systemctl", "#!/bin/sh\necho inactive\nexit 3\n");
     let env = [("HOME", home.to_str().unwrap())];
     let cli = |args: &[&str]| op.run(&repo, &env, args, "");
-    // the agent appends a turn to its transcript; the resumed one reads it back and says where it runs
-    let transcript = "$CLAUDE_CONFIG_DIR/projects/p/$LEGIONCTL_SESSION.jsonl";
+    let profile = |name: &str| home.join(format!(".clauth/profiles/{name}/credentials.json"));
     write(
-        &home.join(".config/legionctl/session.jsonc"),
-        &json!({"session": {
-            // the agent also plants links to a file outside, which the copy must not follow
-            "agents": {"probe": ["sh", "-c", format!("mkdir -p \"$CLAUDE_CONFIG_DIR/projects/p/$LEGIONCTL_SESSION\" && echo turn-1 >> \"{transcript}\" && \
-                ln -s \"$HOME/secret\" \"$CLAUDE_CONFIG_DIR/projects/p/$LEGIONCTL_SESSION/leak\" && \
-                ln -s \"$HOME/elsewhere\" \"$CLAUDE_CONFIG_DIR/projects/linked\"")]},
-            "resume": {"probe": ["sh", "-c", format!("cat \"{transcript}\"; echo \"CONFIG=$CLAUDE_CONFIG_DIR\"")]},
-            "writable": []
-        }})
-        .to_string(),
+        &home.join(".clauth/profiles.toml"),
+        "active_profile = \"main\"\nprofiles = [\"main\", \"work\", \"spare\"]\n",
     );
-    for name in ["first", "second"] {
-        assert!(cli(&["agents", "accounts", "add", name]).status.success());
+    write(
+        &home.join(".clauth/codex-profiles.toml"),
+        "profiles = [\"cx\"]\n",
+    );
+    write(&home.join(".clauth/profiles/cx/auth.json"), "codex-cx");
+    for name in ["main", "work", "spare"] {
+        write(&profile(name), &format!("{name}-1"));
     }
-    write(&home.join("secret"), "hidden from the sandbox\n");
-    let started = cli(&[
-        "session",
-        "start",
-        "probe",
-        "--dossier",
-        "switch",
-        "--account",
-        "first",
-        "--json",
-    ]);
-    assert!(
-        started.status.success(),
-        "{}",
-        String::from_utf8_lossy(&started.stderr)
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::os::unix::fs::symlink(profile("main"), home.join(".claude/.credentials.json")).unwrap();
+    // the agent says which login it got and "refreshes" it, appends a turn and tries clauth's store; the resumed one
+    // reads its transcript back
+    let login = "~/.claude/.credentials.json";
+    let transcript = "~/.claude/projects/p/$LEGIONCTL_SESSION.jsonl";
+    let start = format!(
+        "echo \"LOGIN=$(cat {login})\"; printf 'r%s' \"$(cat {login})\" > {login}; mkdir -p ~/.claude/projects/p && \
+         echo turn-1 >> {transcript}; cat ~/.clauth/profiles/spare/credentials.json || echo HIDDEN"
     );
-    let launch: Value = serde_json::from_slice(&started.stdout).unwrap();
-    run_launch(&op, &home, &launch);
-    let id = launch["id"].as_str().unwrap();
-
-    let refused = cli(&["session", "resume", id, "--account", "ghost"]);
-    assert!(String::from_utf8_lossy(&refused.stderr).contains("no account profile ghost"));
-    let resumed = cli(&["session", "resume", id, "--account", "second", "--json"]);
-    assert!(
-        resumed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&resumed.stderr)
-    );
-    let out = run_launch(
-        &op,
-        &home,
-        &serde_json::from_slice(&resumed.stdout).unwrap(),
-    );
-    let second = home.join(".local/share/legionctl/accounts/second/claude");
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        format!("turn-1\nCONFIG={}\n", second.display()),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let sessions: Value =
-        serde_json::from_slice(&cli(&["session", "list", "--json"]).stdout).unwrap();
-    assert_eq!(sessions[0]["account"], "second", "{sessions}");
-    let planted = home.join(".local/share/legionctl/accounts/first/claude/projects");
-    assert!(
-        planted.join("linked").is_symlink() && planted.join(format!("p/{id}/leak")).is_symlink()
-    );
-    let copied = second.join("projects");
-    assert!(
-        !copied.join(format!("p/{id}/leak")).exists() && !copied.join("linked").exists(),
-        "a planted link was followed"
-    );
-}
-
-/// `agents accounts` sees the login in profile `work`; `agents usage` counts its transcript, not `~/.claude`.
-fn profile_listed_and_counted(op: &Operator, repo: &Path) {
-    let accounts: Value = serde_json::from_slice(
-        &op.run(repo, &[], &["agents", "accounts", "list", "--json"], "")
-            .stdout,
-    )
-    .unwrap();
-    assert_eq!(accounts[0]["name"], "work");
-    assert_eq!(
-        (
-            accounts[0]["claude"].as_bool(),
-            accounts[0]["codex"].as_bool()
-        ),
-        (Some(true), Some(false))
-    );
-    let usage = op.run(
-        repo,
-        &[],
-        &[
-            "agents",
-            "usage",
-            "--account",
-            "work",
-            "--days",
-            "100000",
-            "--json",
-        ],
-        "",
-    );
-    let usage = String::from_utf8_lossy(&usage.stdout);
-    assert!(usage.contains("claude-x") && usage.contains('7'), "{usage}");
-}
-
-/// Account logins rest in the keyring (A1): a login made in a profile moves into the keyring when no session of the
-/// account runs; a session gets it in the profile; the token the agent refreshed goes back to the keyring, and off
-/// the disk, when the operator next looks (another session's start, or the operator's start). A stand-in
-/// `secret-tool` keeps entries as files.
-#[test]
-fn account_logins_rest_in_the_keyring_and_come_back_refreshed() {
-    let home = Scratch::new(format!(
-        "/var/tmp/legionctl-e2e-keyring-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&home).unwrap();
-    let keyring = home.join("keyring");
-    let path = path_with_keyring(&home);
-    std::fs::create_dir_all(home.join("root")).unwrap();
-    let env = |tag: &str| {
-        Operator::start(
-            tag,
-            &[
-                ("HOME", home.as_os_str().to_owned()),
-                ("LEGIONCTL_SYSROOT", home.join("root").into()),
-                ("PATH", path.clone()),
-            ],
-        )
-    };
-    let op = env("keyring");
-    let repo = repository(&home);
-    // the sessions' scopes are gone when a later start asks (no user manager in a test: systemd's answer stands in)
-    stand_in(&home, "systemctl", "#!/bin/sh\necho inactive\nexit 3\n");
-    // the agent prints the login it got, then "refreshes" it
-    let probe = "f=\"$CLAUDE_CONFIG_DIR/.credentials.json\"; cat \"$f\"; echo; printf 'r%s' \"$(cat \"$f\")\" > \"$f\"";
+    let resume = format!("cat {transcript}; echo \"LOGIN=$(cat {login})\"");
     write(
         &home.join(".config/legionctl/session.jsonc"),
-        &json!({"session": {"agents": {"probe": ["sh", "-c", probe]}, "writable": []}}).to_string(),
-    );
-    assert!(
-        op.run(&repo, &[], &["agents", "accounts", "add", "work"], "")
-            .status
-            .success()
-    );
-    let login = home.join(".local/share/legionctl/accounts/work/claude/.credentials.json");
-    write(&login, "login-1");
-    let session = |op: &Operator, dossier: &str| -> String {
-        let started = op.run(
-            &repo,
-            &[("HOME", home.to_str().unwrap())],
-            &[
-                "session",
-                "start",
-                "probe",
-                "--dossier",
-                dossier,
-                "--account",
-                "work",
-                "--json",
-            ],
-            "",
-        );
-        assert!(
-            started.status.success(),
-            "{}",
-            String::from_utf8_lossy(&started.stderr)
-        );
-        let launch: Value = serde_json::from_slice(&started.stdout).unwrap();
-        String::from_utf8_lossy(&run_launch(op, &home, &launch).stdout)
-            .trim()
-            .to_string()
-    };
-    let kept = || std::fs::read_to_string(keyring.join("work_claude")).unwrap_or_default();
-    assert_eq!(session(&op, "keys-1"), "login-1");
-    assert_eq!(
-        kept(),
-        "login-1",
-        "the login made in the profile went into the keyring first"
-    );
-    assert_eq!(
-        session(&op, "keys-2"),
-        "rlogin-1",
-        "the next session gets the refreshed token"
-    );
-    assert_eq!(kept(), "rlogin-1");
-    drop(op);
-    // the first call starts the operator (socket activation), which settles the logins before it serves
-    env("keyring2").ok(&["dossier", "list"]);
-    assert!(!login.exists(), "at rest the login is not on the disk");
-    assert_eq!(kept(), "rrlogin-1");
-}
-
-#[test]
-fn an_account_profile_gives_the_session_its_own_agent_logins_and_usage() {
-    let (op, home) = operator("account");
-    let repo = repository(&home);
-    // the sessions' scopes are gone when a later start asks (no user manager in a test: systemd's answer stands in)
-    stand_in(&home, "systemctl", "#!/bin/sh\necho inactive\nexit 3\n");
-    // the agent "logs in" and writes a transcript where its variables point; $HOME stays read-only
-    let probe = "printf '{}' > \"$CLAUDE_CONFIG_DIR/.credentials.json\" && mkdir -p \"$CLAUDE_CONFIG_DIR/projects/p\" && \
-                 printf '%s\\n' \"$1\" > \"$CLAUDE_CONFIG_DIR/projects/p/t.jsonl\" && echo \"CODEX=$CODEX_HOME\"";
-    let transcript = json!({"timestamp": "2026-10-13T10:00:00Z", "message": {"id": "m1", "model": "claude-x",
-        "usage": {"input_tokens": 7, "output_tokens": 3}}});
-    write(
-        &home.join(".config/legionctl/session.jsonc"),
-        &json!({"session": {"agents": {"probe": ["sh", "-c", probe, "probe", transcript.to_string()]}, "resume": {"probe": ["true"]}, "writable": []}})
+        &json!({"session": {"agents": {"claude": ["sh", "-c", start]}, "resume": {"claude": ["sh", "-c", resume]}}})
             .to_string(),
     );
-    let start = |account: &str| {
-        op.run(
-            &repo,
-            &[("HOME", home.to_str().unwrap())],
-            &[
-                "session",
-                "start",
-                "probe",
-                "--dossier",
-                "acct",
-                "--account",
-                account,
-                "--json",
-            ],
-            "",
-        )
+    let session = |account: &str| {
+        cli(&[
+            "session",
+            "start",
+            "claude",
+            "--dossier",
+            "clauth",
+            "--account",
+            account,
+            "--json",
+        ])
     };
-    // a missing profile and a name that leaves the profiles folder are refused before any session is made
     for (account, error) in [
-        ("work", "no account profile work"),
-        ("..", "an account name is"),
+        (
+            "ghost",
+            "no account ghost; the accounts are: main, work, spare, cx",
+        ),
+        ("cx", "account cx has no Claude Code login"),
     ] {
-        let refused = start(account);
+        let refused = session(account);
         assert!(
             !refused.status.success() && String::from_utf8_lossy(&refused.stderr).contains(error),
             "{account}: {}",
             String::from_utf8_lossy(&refused.stderr)
         );
     }
-    assert!(
-        !op.run(&repo, &[], &["agents", "accounts", "add", "../x"], "")
-            .status
-            .success()
-    );
-    assert!(
-        op.run(&repo, &[], &["agents", "accounts", "add", "work"], "")
-            .status
-            .success()
-    );
-
-    let started = start("work");
+    let started = session("work");
     assert!(
         started.status.success(),
         "{}",
         String::from_utf8_lossy(&started.stderr)
     );
     let launch: Value = serde_json::from_slice(&started.stdout).unwrap();
-    let out = run_launch(&op, &home, &launch);
-    let profile = home.join(".local/share/legionctl/accounts/work");
+    let out = String::from_utf8_lossy(&run_launch(&op, &home, &launch).stdout).into_owned();
     assert!(
-        String::from_utf8_lossy(&out.stdout)
-            .contains(&format!("CODEX={}", profile.join("codex").display())),
-        "{}\n{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+        out.contains("LOGIN=work-1") && out.contains("HIDDEN") && !out.contains("spare-1"),
+        "{out}"
     );
-    assert!(
-        !home.join(".claude").exists(),
-        "the login stayed in the profile"
+    let read = |name: &str| std::fs::read_to_string(profile(name)).unwrap();
+    assert_eq!(
+        [read("work"), read("main")],
+        ["rwork-1", "main-1"],
+        "the refresh is work's own"
+    );
+    assert_eq!(
+        std::fs::read_link(home.join(".claude/.credentials.json")).unwrap(),
+        profile("main"),
+        "the current login stays clauth's link"
     );
 
-    profile_listed_and_counted(&op, &repo);
-    // the account survives a resume
-    let id = launch["id"].as_str().unwrap();
-    let resumed: Value = serde_json::from_slice(
-        &op.run(
-            &repo,
-            &[("HOME", home.to_str().unwrap())],
-            &["session", "resume", id, "--json"],
-            "",
-        )
-        .stdout,
-    )
-    .unwrap();
+    resumes_on_spare(&op, &home, &repo, launch["id"].as_str().unwrap());
+}
+
+/// `session resume --account` of the test above: an account with no Claude Code login is refused; on spare the same
+/// transcript goes on with spare's login, and the session keeps the account.
+fn resumes_on_spare(op: &Operator, home: &Path, repo: &Path, id: &str) {
+    let cli = |args: &[&str]| op.run(repo, &[("HOME", home.to_str().unwrap())], args, "");
+    let refused = cli(&["session", "resume", id, "--account", "cx"]);
     assert!(
-        resumed["sandbox"].to_string().contains("CLAUDE_CONFIG_DIR"),
-        "{resumed}"
+        String::from_utf8_lossy(&refused.stderr).contains("account cx has no Claude Code login"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
     );
+    let resumed = cli(&["session", "resume", id, "--account", "spare", "--json"]);
+    assert!(
+        resumed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    let out = run_launch(op, home, &serde_json::from_slice(&resumed.stdout).unwrap());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "turn-1\nLOGIN=spare-1\n",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let sessions: Value =
+        serde_json::from_slice(&cli(&["session", "list", "--json"]).stdout).unwrap();
+    assert_eq!(sessions[0]["account"], "spare", "{sessions}");
 }
 
 /// Run QEMU on `disk` with the read-only `iso` until the guest powers off (it may restart before); the serial console

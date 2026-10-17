@@ -56,8 +56,7 @@ allowed tool), changes a store file and sees the refusal.
 
 Built (2026-10-13): skills from the store. `session.skills` lists `<package>` or `<package>/<folder in it>`, each a
 folder with `SKILL.md`. When set, `session start` and `session resume` check each package's hash, then the sandbox
-puts an empty tmpfs over Claude Code's and Codex's skills folders (`~/.claude/skills` and `~/.codex/skills`, or the
-account profile's) and binds each skill read-only into it, so the agents see exactly that set; null keeps the
+puts an empty tmpfs over Claude Code's and Codex's skills folders (`~/.claude/skills` and `~/.codex/skills`) and binds each skill read-only into it, so the agents see exactly that set; null keeps the
 user's own. An entry with no package, with `..`, without `SKILL.md`, a repeated name, or a changed package stops the
 session before a dossier is bound. The skills folders are made on the host if missing (mount points in a read-only
 home). Fixed with it: a `path` package of a folder was stored one level down, under the folder's name; its contents
@@ -138,20 +137,20 @@ Hardened (2026-10-16, EV-review-08, user decision "approve all, do it first"):
 - S-2: `legionctl/` of the runtime folder is read-only, and of `sessions/` only the session's own folder is there.
 - S-3: `session.writable` (`~/.claude`, `~/.claude.json`, `~/.codex`) and `session.caches` (`~/.cache`) are never
   the real files: on the host each folder is an overlay whose writes stay in
-  `~/.local/state/legionctl/session-home/<id>/home` (kept for a resume; the transcript for `resume --account` comes
-  from there), each file the session's copy; a container or VM gets copies of `writable` and no caches. An account
-  profile stays writable: it is the session's own. The login files (`~/.claude/.credentials.json`,
+  `~/.local/state/legionctl/session-home/<id>/home` (kept for a resume, also on another account), each file the
+  session's copy; a container or VM gets copies of `writable` and no caches. The login files (`~/.claude/.credentials.json`,
   `~/.codex/auth.json`) are the real files over the layer (DESIGN-12 wall 1: a refresh rotates the refresh token);
   a login that is a link (clauth links `.credentials.json` to its active profile's file) is the link's target at
   the session's start, over an empty file in the layer (no sandbox mounts on a link), so a clauth switch later
-  changes the link and not a running session; a VM gets them through a hard link in a share of their own. In a VM the read-only git links are read-only bind
+  changes the link and not a running session; a session on a clauth account (`--account`) gets that profile's login
+  file there instead (12-operator); a VM gets them through a hard link in a share of their own. In a VM the read-only git links are read-only bind
   mounts in the guest, and the reflogs are one writable folder (a VM shares only folders).
 - S-4: of the repository's git folder only the objects, `refs/` (but not the folders of other branches, tags and
   remotes), the refs and reflogs folder of the session's branch, the stash reflog and the worktree's own folder are
   writable; config, hooks, info, `commondir`, `gitdir` and the worktree's `.git` stay read-only. `git stash` works;
   `git gc` cannot pack refs.
 - S-6, S-8: `session.hidden` also has the system bus, `~/.ssh`, `~/.gnupg`, credentials and token files,
-  `~/.local/state/legionctl` and the other accounts; each `.env*` file at the top of the repository and the
+  `~/.local/state/legionctl` and clauth's store (`~/.clauth`); each `.env*` file at the top of the repository and the
   workspace is hidden.
 - O-1: the repository's commands for a session (checks, test runs, the checkpoint's commit with the commit hooks,
   repository layer hooks) run in a sandbox of the session (`session::Jail`: the same mounts with a throwaway home
@@ -167,7 +166,7 @@ One row per session in the user database (plus child tables), changed only throu
 | Field | Content |
 | --- | --- |
 | id, agent | legionctl id; agent (claude-code, codex, any ACP agent) and its ACP session id |
-| account | account profile (12-operator) the session bills to |
+| account | clauth account (12-operator) the session runs on; none: the current login |
 | state | `running`, `paused`, `offloaded`, `archived`, `failed` |
 | workdir | source path, copy path, copy method (worktree, overlay, reflink), base ref, branch |
 | tools | MCP servers (pinned package or URL), allowed tools per server, skills (pinned) |

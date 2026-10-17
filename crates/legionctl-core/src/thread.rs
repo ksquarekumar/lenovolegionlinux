@@ -185,7 +185,7 @@ pub struct Member {
     pub config: Option<String>,
     /// How it runs: self, operator, teammate or subagent.
     pub run: String,
-    /// The account profile it runs on (an operator member's pick, else its session's); none: the home's logins.
+    /// The clauth account it runs on (an operator member's pick, else its session's); none: the current login.
     pub account: Option<String>,
 }
 
@@ -1229,13 +1229,13 @@ impl Dossiers {
             .collect::<Result<_, _>>()?)
     }
 
-    /// Copy `thread` to the account profile `account` (design 23, C5): a new thread with its log, members (without
-    /// their sessions, which run on the old account), messages and watch rules, and the main session's transcript in
-    /// the account's folders. The copy's log ends with `thread.import`; the original becomes `imported`, read-only.
+    /// Copy `thread` to the clauth account `account` (design 23, C5): a new thread with its log, members (without
+    /// their sessions, which run on the old account), messages and watch rules. The copy's log ends with
+    /// `thread.import`; the original becomes `imported`, read-only.
     ///
     /// # Errors
-    /// No such thread, it was imported already (the copy exists), it runs on `account`, no such account profile, or
-    /// a copy or the database write fails.
+    /// No such thread, it was imported already (the copy exists), it runs on `account`, clauth has no such account,
+    /// or the database write fails.
     pub fn thread_import(&self, thread: i64, account: &str) -> Result<i64> {
         let info = self
             .threads()?
@@ -1262,7 +1262,7 @@ impl Dossiers {
             info.account.as_deref() != Some(account),
             "thread {thread} runs on account {account} already"
         );
-        crate::session::account_dir(account)?;
+        crate::accounts::exists(account)?;
         let main: Option<String> = self
             .db()
             .query_row(
@@ -1272,9 +1272,6 @@ impl Dossiers {
             )
             .optional()?
             .flatten();
-        if let Some(session) = &main {
-            crate::session::copy_transcript_to(session, info.account.as_deref(), account)?;
-        }
         let tx = self.begin()?;
         // each column but the id and the state: the team, its flow (gates, stops, restart), the workdir, the parent
         tx.execute(
@@ -1373,7 +1370,7 @@ impl Dossiers {
     /// limit (todo-136): main0 gets it as a note.
     ///
     /// # Errors
-    /// No such thread or member, it is read-only, the member is not an operator member, no such account profile, or
+    /// No such thread or member, it is read-only, the member is not an operator member, clauth has no such account, or
     /// the database write fails.
     pub fn thread_account(
         &self,
@@ -1384,7 +1381,7 @@ impl Dossiers {
     ) -> Result<()> {
         self.writable(thread)?;
         if let Some(account) = account {
-            crate::session::account_dir(account)?;
+            crate::accounts::exists(account)?;
         }
         let tx = self.begin()?;
         let Some(member) = member else {

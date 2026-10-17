@@ -86,6 +86,23 @@ pub fn usage_of(
     held: &accounts::Held,
     fresh: bool,
 ) -> Result<AccountUsage> {
+    let now = now_ms();
+    if let Some(other) = &held.same_as {
+        // one refresh token in two profiles: no read, the user fixes it in clauth
+        return Ok(AccountUsage {
+            account: held.name.clone(),
+            source: held.source.into(),
+            active: held.active,
+            agent: held.agent.clone(),
+            fetched_at: now / 1000,
+            windows: Vec::new(),
+            error: Some(format!(
+                "{} holds the same login as {other}: a refresh through one logs the other out. Log in to {} again \
+                 in clauth, or delete one of the two",
+                held.name, held.name
+            )),
+        });
+    }
     if !fresh && let Some(kept) = accounts::cached(held)? {
         return Ok(kept);
     }
@@ -95,7 +112,6 @@ pub fn usage_of(
     } else {
         &a.endpoints.codex
     };
-    let now = now_ms();
     let read = accounts::login(held, now)
         .and_then(|login| runtime.block_on(fetch(url, &held.agent, &login)));
     let usage = AccountUsage {
@@ -126,10 +142,7 @@ pub fn usage(
         .filter(|h| input.account.as_ref().is_none_or(|a| *a == h.name))
         .collect();
     if let Some(name) = &input.account {
-        anyhow::ensure!(
-            !held.is_empty(),
-            "no account {name} has a login (`legionctl agents accounts list` lists the accounts)"
-        );
+        anyhow::ensure!(!held.is_empty(), "no account {name} has a login");
     }
     held.iter()
         .map(|h| usage_of(runtime, &config, h, input.fresh))
@@ -164,12 +177,7 @@ pub fn decide(
     let (Some(order), Some(account)) = (fallback.get(agent), account) else {
         return Ok(Decision::Stay);
     };
-    let now = usage_of(
-        runtime,
-        &config,
-        &accounts::Held::profile(account, agent),
-        false,
-    )?;
+    let now = usage_of(runtime, &config, &accounts::held(account, agent)?, false)?;
     if let Some(error) = now.error {
         bail!("the usage of account {account} cannot be read: {error}");
     }
@@ -178,12 +186,13 @@ pub fn decide(
     };
     let mut why = Vec::new();
     for next in order.iter().filter(|n| *n != account) {
-        let u = usage_of(
-            runtime,
-            &config,
-            &accounts::Held::profile(next, agent),
-            false,
-        )?;
+        let u = match accounts::held(next, agent) {
+            Ok(held) => usage_of(runtime, &config, &held, false)?,
+            Err(e) => {
+                why.push(format!("{next}: {e:#}"));
+                continue;
+            }
+        };
         match (u.error.clone(), u.at_limit(*switch_at)) {
             (Some(error), _) => why.push(format!("{next}: {error}")),
             (None, Some(limit)) => why.push(format!("{next}: {limit}")),
@@ -227,44 +236,85 @@ pub fn capture(name: &str) -> Result<legionctl_api::Lines> {
         None => lines.push("Codex is not logged in".to_string()),
         Some(h) if h.name != "current" => {
             kept += 1;
-            lines.push(format!("Codex: the current login is clauth profile {} already", h.name));
+            lines.push(format!("Codex: the current login is clauth account {} already", h.name));
         }
-        Some(_) => lines.push(format!(
-            "Codex: the current login is not kept: no clauth profile holds it, and a copy of it logs one of the two \
-             out (its refresh token rotates); make a second login for the account: `clauth login {name} --codex \
-             --browser`, or `legionctl agents accounts add {name}` and log in there"
-        )),
+        Some(_) => lines.push(
+            "Codex: the current login is not kept: no clauth account holds it, and a copy of it logs one of the two \
+             out (its refresh token rotates); log in to Codex as a new account instead"
+                .to_string(),
+        ),
     }
     match current("claude") {
         None => lines.push("Claude Code is not logged in".into()),
         Some(h) if h.name != "current" => {
             kept += 1;
             lines.push(format!(
-                "Claude Code: the current login is clauth profile {} already",
+                "Claude Code: the current login is clauth account {} already",
                 h.name
             ));
         }
         Some(_) => {
-            let out = std::process::Command::new("clauth")
-                .args(["capture", name])
-                .output()
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "Claude Code: keeping the current login needs clauth (`cargo install clauth`), which keeps it \
-                         with its refresh in step; legionctl makes no copy of it: {e}"
-                    )
-                })?;
-            anyhow::ensure!(
-                out.status.success(),
-                "clauth capture {name}: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
+            clauth(&["capture", name])?;
             kept += 1;
             lines.push(format!(
-                "Claude Code: clauth keeps the current login as profile {name} (`clauth capture`)"
+                "Claude Code: clauth keeps the current login as account {name}"
             ));
         }
     }
     anyhow::ensure!(kept > 0, "no login is kept: {}", lines.join("; "));
     Ok(legionctl_api::Lines { lines })
+}
+
+/// Run clauth with `args`, with no terminal; its error has clauth's words.
+fn clauth(args: &[&str]) -> Result<()> {
+    let out = std::process::Command::new("clauth")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| anyhow::anyhow!("clauth keeps the logins, and it does not run: {e}"))?;
+    anyhow::ensure!(
+        out.status.success(),
+        "clauth {}: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(())
+}
+
+/// `agents accounts login`: clauth's own login of account `name` (`AgentsAccountsLogin`); it ends when the user has
+/// logged in on the provider's page, which clauth opens in the browser.
+///
+/// # Errors
+/// The name is not an account name, clauth does not run, or the login fails.
+pub fn login(input: &legionctl_api::AccountLoginIn) -> Result<legionctl_api::Lines> {
+    let name = input.name.as_str();
+    anyhow::ensure!(
+        legionctl_core::dossier::valid_name(name),
+        "an account name is a-z, 0-9 and '-', starting with a letter or digit"
+    );
+    // --browser: a new Codex login of clauth's own, not a copy of the current one (two holders of one token)
+    let args: &[&str] = if input.codex {
+        &["login", name, "--codex", "--browser"]
+    } else {
+        &["login", name]
+    };
+    clauth(args)?;
+    Ok(legionctl_api::Lines {
+        lines: vec![format!(
+            "clauth keeps the {} login of account {name}",
+            if input.codex { "Codex" } else { "Claude Code" }
+        )],
+    })
+}
+
+/// `agents accounts switch`: clauth account `name` becomes the current login (`AgentsAccountsSwitch`).
+///
+/// # Errors
+/// clauth has no such account, does not run, or refuses.
+pub fn switch(name: &str) -> Result<legionctl_api::Lines> {
+    accounts::exists(name)?;
+    clauth(&["switch", name])?;
+    Ok(legionctl_api::Lines {
+        lines: vec![format!("account {name} is the current login")],
+    })
 }

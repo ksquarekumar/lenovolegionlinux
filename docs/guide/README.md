@@ -174,7 +174,7 @@ legionctl session list
 | `--in container` | docker; run `legionctl workspace pack` first |
 | `--in vm` | QEMU; run `legionctl workspace pack --as vm` first |
 | `--gpu` | the NVIDIA GPU for this run only |
-| `--account <profile>` | another account profile, with its own logins and limits |
+| `--account <name>` | another clauth account, with its own login and limits |
 
 In each sandbox `git` is the git gate: local commands run; push, fetch, `reset --hard`, rebase and other history or
 remote commands are refused. MCP servers come through `legionctl mcp-proxy`, which logs each call. When

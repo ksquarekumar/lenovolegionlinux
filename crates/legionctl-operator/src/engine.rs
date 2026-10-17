@@ -18,13 +18,13 @@ use legionctl_api::{
     WindowsState, coded,
 };
 use legionctl_api::{
-    AccountAddIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath, CloseIn,
-    ConfigFiles, ConfigView, Ctx, Empty, Engine, ExplainIn, Explanation, Findings, GpuPrimaryIn,
-    GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LayerList, LoadState, MergeIn, PowerApplyIn,
-    PowerSource, ProfileIn, ProjectIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn, RunnableGrant,
-    RunnablesCheck, RunnablesCheckIn, RunnablesShowIn, SetupApplyIn, SetupReport, SkillList,
-    Snapshot, StatusIn, Validation, Workspace, WorkspaceIn, WorkspaceOpenIn, WorkspaceStatus,
-    Workspaces,
+    AccountIn, AccountLoginIn, CapabilityList, Changes, CheckpointIn, CleanupIn, ClientPath,
+    CloseIn, ConfigFiles, ConfigView, Ctx, Empty, Engine, ExplainIn, Explanation, Findings,
+    GpuPrimaryIn, GpuState, HookAddIn, HookBindIn, HookTable, IdIn, LayerList, LoadState, MergeIn,
+    PowerApplyIn, PowerSource, ProfileIn, ProjectIn, ReminderAddIn, Reminders, RunEnv, RunEnvIn,
+    RunnableGrant, RunnablesCheck, RunnablesCheckIn, RunnablesShowIn, SetupApplyIn, SetupReport,
+    SkillList, Snapshot, StatusIn, Validation, Workspace, WorkspaceIn, WorkspaceOpenIn,
+    WorkspaceStatus, Workspaces,
 };
 use legionctl_api::{
     Autostart, AutostartIn, DisplayFixIn, FanCurveIn, FanState, FirmwareDevices, FirmwareUpdateIn,
@@ -1936,6 +1936,34 @@ impl Engine for Operator {
             Ok(found) => findings.extend(found),
             Err(e) => findings.push(not_run("agent setup", &e)),
         }
+        // nothing moves in silence: the user logs in to each old profile in clauth (user decision 2026-10-17)
+        if let Some((folder, names)) = legionctl_core::accounts::old_profiles() {
+            findings.push(legionctl_api::Finding {
+                text: if names.is_empty() {
+                    format!(
+                        "{} is legionctl's old folder of account profiles, empty and not used: delete it",
+                        folder.display()
+                    )
+                } else {
+                    format!(
+                        "{} holds legionctl's old account profiles {}, not used: clauth keeps the logins now. Log in \
+                         to each of them in clauth, then delete the folder",
+                        folder.display(),
+                        names.join(", ")
+                    )
+                },
+                actions: names
+                    .iter()
+                    .map(|n| {
+                        crate::resources::action(
+                            &format!("Log in to {n}"),
+                            "agents.accounts.login",
+                            serde_json::json!({ "name": n }),
+                        )
+                    })
+                    .collect::<Result<_>>()?,
+            });
+        }
         for (name, found) in [
             ("agents and workspaces", agent_findings()),
             ("operator fault", crate::faults::findings()),
@@ -2314,14 +2342,7 @@ impl Engine for Operator {
     }
 
     fn agents_usage(&self, _: &Ctx, input: AgentUsageIn) -> Result<UsageReport> {
-        let (claude, codex) = match &input.account {
-            Some(account) => {
-                let profile = legionctl_core::session::account_dir(account)?;
-                (profile.join("claude"), profile.join("codex"))
-            }
-            None => (home().join(".claude"), home().join(".codex")),
-        };
-        Ok(agents::usage(&claude, &codex, input.days).into_wire())
+        Ok(agents::usage(&home().join(".claude"), &home().join(".codex"), input.days).into_wire())
     }
 
     fn agents_plugins_list(&self, _: &Ctx, _: Empty) -> Result<Vec<Plugin>> {
@@ -2406,25 +2427,10 @@ impl Engine for Operator {
                 a.codex = true;
             }
         }
-        // the legionctl profiles with no login yet are accounts too
-        for name in legionctl_core::accounts::profiles()? {
-            if !out
-                .iter()
-                .any(|a| a.name == name && a.source == "legionctl")
-            {
-                out.push(Account {
-                    name,
-                    source: "legionctl".into(),
-                    active: false,
-                    claude: false,
-                    codex: false,
-                });
-            }
-        }
         Ok(out)
     }
 
-    fn agents_accounts_capture(&self, _: &Ctx, input: AccountAddIn) -> Result<Lines> {
+    fn agents_accounts_capture(&self, _: &Ctx, input: AccountIn) -> Result<Lines> {
         crate::accounts::capture(&input.name)
     }
 
@@ -2436,29 +2442,12 @@ impl Engine for Operator {
         Ok(crate::accounts::usage(&self.runtime, &input)?.into_wire())
     }
 
-    fn agents_accounts_add(&self, _: &Ctx, input: AccountAddIn) -> Result<Lines> {
-        anyhow::ensure!(
-            legionctl_core::dossier::valid_name(&input.name),
-            "an account name is a-z, 0-9 and '-', starting with a letter or digit"
-        );
-        let dir = legionctl_core::session::accounts_root().join(&input.name);
-        for agent in ["claude", "codex"] {
-            std::fs::create_dir_all(dir.join(agent))?;
-        }
-        Ok(Lines {
-            lines: vec![
-                format!("account profile {}", dir.display()),
-                format!(
-                    "log in: CLAUDE_CONFIG_DIR={}/claude claude, then /login",
-                    dir.display()
-                ),
-                format!("        CODEX_HOME={}/codex codex login", dir.display()),
-                format!(
-                    "use it: legionctl session start claude --account {}",
-                    input.name
-                ),
-            ],
-        })
+    fn agents_accounts_login(&self, _: &Ctx, input: AccountLoginIn) -> Result<Lines> {
+        crate::accounts::login(&input)
+    }
+
+    fn agents_accounts_switch(&self, _: &Ctx, input: AccountIn) -> Result<Lines> {
+        crate::accounts::switch(&input.name)
     }
 
     fn workspace_open(&self, _: &Ctx, input: WorkspaceOpenIn) -> Result<Workspace> {

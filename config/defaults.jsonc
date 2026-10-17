@@ -189,7 +189,7 @@
       "~/.ssh", "~/.gnupg", "~/.git-credentials", "~/.netrc", "~/.config/gh", "~/.docker", "~/.npmrc", "~/.pypirc",
       "~/.cargo/credentials.toml", "~/.cargo/credentials", "~/.aws", "~/.kube", "~/.local/share/keyrings",
       "~/.password-store", "~/.mozilla", "~/.config/google-chrome", "~/.config/chromium",
-      "~/.local/state/legionctl", "~/.local/share/legionctl/accounts"
+      "~/.local/state/legionctl", "~/.clauth"
     ]
   },
 
@@ -276,10 +276,10 @@
       "thread-observer": { "archetype": "thread-observer", "pace": "on-trigger", "budget": { "tokens_per_day": 2000000 } },
       "ui-composer": { "archetype": "ui-composer", "pace": "on-trigger", "budget": { "tokens_per_day": 500000 } }
     },
-    // Account usage and the switch at the limit (todo-136). `legionctl agents accounts usage` reads each profile's
-    // 5 h and 7 d use from the provider with the profile's own access token (never refreshed: the agents rotate
-    // their refresh tokens) and keeps each answer, or its error, for "usage_ttl_s" seconds. "fallback": agent
-    // (claude, codex) -> account profiles in order; none: no switch. With a list, an operator member whose account
+    // Account usage and the switch at the limit (todo-136). The accounts are clauth's. `legionctl agents accounts
+    // usage` reads each account's 5 h and 7 d use from the provider with the account's own access token (never
+    // refreshed: the agents rotate their refresh tokens) and keeps each answer, or its error, for "usage_ttl_s"
+    // seconds. "fallback": agent (claude, codex) -> clauth accounts in order; none: no switch. With a list, an operator member whose account
     // has a window at "switch_at" percent or more continues on the first account of the list that is under it
     // (session resume --account), with a thread note; when no account is under it, or its use cannot be read, the
     // wake fails with the reason. Only the defaults, /etc/legionctl and the user layer apply: a repository cannot

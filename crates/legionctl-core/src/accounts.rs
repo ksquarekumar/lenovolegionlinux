@@ -1,5 +1,5 @@
 //! Account usage (todo-136): the rate-limit windows (Claude: 5 h and 7 d; Codex: its primary and secondary windows)
-//! of each Claude Code and Codex login (the current one, clauth's profiles and legionctl's account profiles: `Held`),
+//! of each Claude Code and Codex login (the current one and clauth's profiles: `Held`),
 //! as the provider reports them, read with the login's own access token. The token is only read: never refreshed
 //! (both agents rotate their refresh tokens, DESIGN-12 wall 1), never written, printed or logged. A read that fails is that account's error with its cause, never zero use.
 //! Each answer, or its error, is kept in the cache (namespace `accounts`) with its fetch time.
@@ -10,14 +10,12 @@
 //! answer is an error that names the field.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
-use crate::session::{LOGINS, accounts_root, keyring_get};
 
 /// `agents.accounts` (only the defaults, /etc/legionctl and the user layer apply).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -27,7 +25,7 @@ pub struct AccountsConfig {
     pub usage_ttl_s: u64,
     /// A window at this percent or more is at its limit.
     pub switch_at: f64,
-    /// Agent (claude, codex) -> the account profiles that its operator members switch to, in order.
+    /// Agent (claude, codex) -> the clauth accounts that its operator members switch to, in order.
     pub fallback: BTreeMap<String, Vec<String>>,
     pub endpoints: Endpoints,
 }
@@ -53,7 +51,7 @@ pub struct Window {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AccountUsage {
     pub account: String,
-    /// Where its login is: `current`, `clauth` or `legionctl` (`Held`).
+    /// Where its login is: `current` or `clauth` (`Held`).
     pub source: String,
     /// The current login, or clauth's active profile.
     pub active: bool,
@@ -83,42 +81,34 @@ pub struct Login {
     pub account_id: Option<String>,
 }
 
-/// One agent's login of an account, and where it is:
+/// One agent's login of an account, and where it is. clauth is the only store of the user's logins (user decision
+/// 2026-10-17):
 /// - `current`: the login Claude Code and Codex use now (`~/.claude/.credentials.json`, `~/.codex/auth.json`), named
 ///   by the clauth profile that holds it (as `clauth which` does: the same refresh token), else `current`;
-/// - `clauth`: another profile of clauth (`~/.clauth/profiles/<name>`, read only; `active`: clauth's active one);
-/// - `legionctl`: an account profile of `agents accounts add`.
+/// - `clauth`: another profile of clauth (`~/.clauth/profiles/<name>`, read only; `active`: clauth's active one).
 pub struct Held {
     pub name: String,
     pub source: &'static str,
     pub agent: String,
     pub active: bool,
-    /// The login file; none: a legionctl profile's (`login_file`).
-    file: Option<PathBuf>,
+    /// The clauth profile that holds the same login (the same refresh token): a refresh through one spends the
+    /// other's token.
+    pub same_as: Option<String>,
+    file: PathBuf,
 }
 
 impl Held {
-    /// `agent`'s login in legionctl account profile `name`.
-    #[must_use]
-    pub fn profile(name: &str, agent: &str) -> Self {
-        Self {
-            name: name.into(),
-            source: "legionctl",
-            agent: agent.into(),
-            active: false,
-            file: None,
-        }
-    }
-
     fn bytes(&self) -> Result<Option<Vec<u8>>> {
-        match &self.file {
-            None => login_file(&self.name, &self.agent),
-            Some(path) => match std::fs::read(path) {
-                Ok(bytes) => Ok(Some(bytes)),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
-            },
-        }
+        read(&self.file)
+    }
+}
+
+/// A file's bytes; none when it is not there.
+fn read(path: &Path) -> Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
     }
 }
 
@@ -184,6 +174,52 @@ pub fn clauth_roster(agent: &str) -> Result<(Option<String>, Vec<String>)> {
     Ok((active, names))
 }
 
+/// The name of `agent` for the user.
+fn named(agent: &str) -> &'static str {
+    if agent == "claude" {
+        "Claude Code"
+    } else {
+        "Codex"
+    }
+}
+
+/// The login file of `agent` in clauth account `name`, for a session that runs on it.
+///
+/// # Errors
+/// clauth has no such account, or it has no login of `agent`.
+pub fn profile_login(name: &str, agent: &str) -> Result<PathBuf> {
+    exists(name)?;
+    let file = clauth_file(name, agent)?;
+    anyhow::ensure!(
+        clauth_roster(agent)?.1.iter().any(|n| n == name) && file.is_file(),
+        "account {name} has no {} login",
+        named(agent)
+    );
+    Ok(file)
+}
+
+/// clauth has account `name` (of Claude Code or Codex).
+///
+/// # Errors
+/// It has not; the error lists the accounts it has.
+pub fn exists(name: &str) -> Result<()> {
+    let mut all = Vec::new();
+    for agent in ["claude", "codex"] {
+        for n in clauth_roster(agent)?.1 {
+            if !all.contains(&n) {
+                all.push(n);
+            }
+        }
+    }
+    if all.iter().any(|n| n == name) {
+        return Ok(());
+    }
+    if all.is_empty() {
+        bail!("no account {name}: clauth has no accounts yet; log in to one first");
+    }
+    bail!("no account {name}; the accounts are: {}", all.join(", "))
+}
+
 /// The refresh token of a login file of `agent`, compared and dropped, never kept.
 fn refresh_token(agent: &str, bytes: &[u8]) -> Option<String> {
     let file: Value = serde_json::from_slice(bytes).ok()?;
@@ -195,104 +231,105 @@ fn refresh_token(agent: &str, bytes: &[u8]) -> Option<String> {
     token.as_str().filter(|t| !t.is_empty()).map(String::from)
 }
 
-/// Every login: the current ones, clauth's other profiles, and the legionctl profiles' (`Held`).
+/// Every login: the current ones and clauth's other profiles (`Held`).
 ///
 /// # Errors
-/// HOME is not set, a login file, clauth's roster, the profiles folder or the keyring cannot be read.
+/// HOME is not set, or a login file or clauth's roster cannot be read.
 pub fn logins() -> Result<Vec<Held>> {
     let mut out = Vec::new();
     for agent in ["claude", "codex"] {
         let (active, names) = clauth_roster(agent)?;
         let live = live_file(agent)?;
-        let mut current = Held {
-            name: "current".into(),
-            source: "current",
-            agent: agent.into(),
-            active: true,
-            file: Some(live.clone()),
-        };
-        let live_login = current.bytes()?;
-        let token = live_login.as_deref().and_then(|b| refresh_token(agent, b));
-        // the owner: the profile that clauth's link points to, else the first with the same refresh token; two
-        // profiles with one login (two holders of one rotating token) both stay listed
-        let linked = live.canonicalize().ok();
-        let mut matching = Vec::new();
+        let live_token = read(&live)?.map(|b| refresh_token(agent, &b));
+        let mut held = Vec::new();
         for name in &names {
             let file = clauth_file(name, agent)?;
-            let held = Held {
-                name: name.clone(),
-                source: "clauth",
+            let Some(bytes) = read(&file)? else { continue };
+            let token = refresh_token(agent, &bytes);
+            held.push((
+                Held {
+                    name: name.clone(),
+                    source: "clauth",
+                    agent: agent.into(),
+                    active: active.as_ref() == Some(name),
+                    same_as: None,
+                    file,
+                },
+                token,
+            ));
+        }
+        // the current login's owner: the profile that clauth's link points to, else the first with the same refresh
+        // token
+        let current = live_token.as_ref().and_then(Option::as_ref);
+        let linked = live.canonicalize().ok();
+        let owner = held
+            .iter()
+            .position(|(h, t)| {
+                t.as_ref() == current && current.is_some() && h.file.canonicalize().ok() == linked
+            })
+            .or_else(|| {
+                held.iter()
+                    .position(|(_, t)| t.as_ref() == current && current.is_some())
+            });
+        // of the profiles with one login, the owner (else the first) holds it; each other one names it
+        let first: Vec<Option<String>> = held
+            .iter()
+            .enumerate()
+            .map(|(i, (_, t))| {
+                let t = t.as_ref()?;
+                let holder = owner
+                    .filter(|o| held[*o].1.as_ref() == Some(t))
+                    .or_else(|| held.iter().position(|(_, u)| u.as_ref() == Some(t)))?;
+                (holder != i).then(|| held[holder].0.name.clone())
+            })
+            .collect();
+        for ((h, _), same) in held.iter_mut().zip(first) {
+            h.same_as = same;
+        }
+        if live_token.is_some() {
+            let name = owner.map_or_else(|| "current".to_string(), |o| held[o].0.name.clone());
+            out.push(Held {
+                name,
+                source: "current",
                 agent: agent.into(),
-                active: active.as_ref() == Some(name),
-                file: Some(file.clone()),
-            };
-            let Some(bytes) = held.bytes()? else { continue };
-            if token.is_some() && refresh_token(agent, &bytes) == token {
-                matching.push((linked.as_ref() == file.canonicalize().ok().as_ref(), held));
-            } else {
-                out.push(held);
-            }
+                active: true,
+                same_as: None,
+                file: live,
+            });
         }
-        // the linked one first, else the roster's order
-        matching.sort_by_key(|(link, _)| !*link);
-        let mut matching = matching.into_iter().map(|(_, h)| h);
-        if live_login.is_some() {
-            if let Some(owner) = matching.next() {
-                current.name = owner.name;
-            }
-            out.push(current);
-        }
-        out.extend(matching);
-    }
-    for name in profiles()? {
-        for agent in ["claude", "codex"] {
-            if login_file(&name, agent)?.is_some() {
-                out.push(Held::profile(&name, agent));
-            }
-        }
+        out.extend(
+            held.into_iter()
+                .enumerate()
+                .filter(|(i, _)| Some(*i) != owner)
+                .map(|(_, (h, _))| h),
+        );
     }
     Ok(out)
 }
 
-/// The account profiles, by name.
+/// The login of `agent` of account `name` (`logins`).
 ///
 /// # Errors
-/// The profiles folder cannot be read.
-pub fn profiles() -> Result<Vec<String>> {
-    let root = accounts_root();
-    let entries = match std::fs::read_dir(&root) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        entries => entries.with_context(|| format!("listing {}", root.display()))?,
-    };
-    let mut out = Vec::new();
-    for entry in entries {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            out.push(entry.file_name().to_string_lossy().into_owned());
-        }
-    }
-    out.sort();
-    Ok(out)
+/// No login of `agent` has that name, or the logins cannot be read.
+pub fn held(name: &str, agent: &str) -> Result<Held> {
+    logins()?
+        .into_iter()
+        .find(|h| h.name == name && h.agent == agent)
+        .with_context(|| format!("account {name} has no {} login", named(agent)))
 }
 
-/// The login file of `agent` in profile `account`: in the profile while a session of the account runs, else at rest
-/// in the keyring (`legionctl-login <account>/<agent>`, design 12 A1); none when the agent never logged in there.
-///
-/// # Errors
-/// The agent is not claude or codex, the file cannot be read, or secret-tool does not run.
-pub fn login_file(account: &str, agent: &str) -> Result<Option<Vec<u8>>> {
-    let (_, file) = LOGINS
-        .iter()
-        .find(|(a, _)| *a == agent)
-        .with_context(|| format!("{agent} has no login file: use claude or codex"))?;
-    let path = accounts_root().join(account).join(agent).join(file);
-    match std::fs::read(&path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            keyring_get(&format!("{account}/{agent}"))
-        }
-        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
-    }
+/// legionctl's own account profiles from before clauth kept the logins (`~/.local/share/legionctl/accounts/<name>`):
+/// the folder and the names in it, when it is there. Nothing reads them now; doctor says what to do.
+#[must_use]
+pub fn old_profiles() -> Option<(PathBuf, Vec<String>)> {
+    let root = crate::packages::Store::default_root().with_file_name("accounts");
+    let mut names: Vec<String> = std::fs::read_dir(&root)
+        .ok()?
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    Some((root, names))
 }
 
 /// The access token of `held`, unchanged: an expired Claude token is an error (the agent, or clauth, refreshes it at
