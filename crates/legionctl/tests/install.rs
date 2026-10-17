@@ -205,10 +205,8 @@ fn the_install_wrapper_installs_only_the_package_built_from_main_after_its_ci_pa
         lab.log("pacman.log"),
         format!("|-U --noconfirm {}|{first}\n", built.display())
     );
-    assert_eq!(
-        lab.log("systemctl.log"),
-        "--user -M alice@ daemon-reload\n--user -M alice@ restart legionctl-operator.service\n"
-    );
+    // the package's scriptlet restarts the operators, not the wrapper (one place for it)
+    assert_eq!(lab.log("systemctl.log"), "");
     assert_eq!(lab.log("rustup.log"), "legionctl-build default stable\n");
 
     // main moves: the next install fetches into the same clone and installs the new commit only
@@ -228,6 +226,84 @@ fn the_install_wrapper_installs_only_the_package_built_from_main_after_its_ci_pa
     );
     assert_eq!(lab.log("pacman.log").lines().count(), 2);
     assert!(!lab.log("pacman.log").contains("decoy"));
+}
+
+/// U-14: the package turns legionctl on and restarts it on upgrade by itself, so no install or upgrade leaves a
+/// systemctl step for the user. The scriptlet runs with stand-ins for systemctl and loginctl: two users are logged in
+/// (alice, bob) beside the login screen's user (gdm, uid 120).
+#[test]
+fn the_package_turns_legionctl_on_and_restarts_each_users_operator_on_upgrade() {
+    let dir = Scratch::new(
+        std::env::temp_dir().join(format!("legionctl-scriptlet-{}", std::process::id())),
+    );
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let d = dir.display();
+    for (name, body) in [
+        ("systemctl", format!("echo \"$*\" >> {d}/systemctl.log")),
+        (
+            "loginctl",
+            "printf '120 gdm no active\\n1000 alice no active\\n1001 bob no online\\n'".to_string(),
+        ),
+    ] {
+        let path = bin.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::os::unix::fs::PermissionsExt::set_mode(
+            &mut std::fs::metadata(&path).unwrap().permissions(),
+            0o755,
+        );
+        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+    }
+    let run = |step: &str| {
+        let _ = std::fs::remove_file(dir.join("systemctl.log"));
+        let out = Command::new("sh")
+            .args(["-c", &format!(". \"$0\" && {step}")])
+            .arg(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../packaging/arch/legionctl.install"),
+            )
+            .env_clear()
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            std::fs::read_to_string(dir.join("systemctl.log")).unwrap_or_default(),
+        )
+    };
+
+    let (said, ran) = run("post_install");
+    // scx_loader only where scx-tools installed it
+    let scx = if Path::new("/usr/lib/systemd/system/scx_loader.service").exists() {
+        "enable --now scx_loader.service\n"
+    } else {
+        ""
+    };
+    assert_eq!(
+        ran,
+        format!(
+            "daemon-reload\nenable --now legionctl-system.service\n{scx}\
+         --global enable legionctl-operator.socket legionctl-operator.service\n\
+         --user -M alice@ daemon-reload\n--user -M alice@ start legionctl-operator.socket\n\
+         --user -M bob@ daemon-reload\n--user -M bob@ start legionctl-operator.socket\n"
+        )
+    );
+    assert!(!said.contains("systemctl"), "no step to type: {said}");
+
+    let (said, ran) = run("post_upgrade");
+    assert_eq!(
+        ran,
+        "daemon-reload\ntry-restart legionctl-system.service\n\
+         --user -M alice@ daemon-reload\n--user -M alice@ try-restart legionctl-operator.service\n\
+         --user -M bob@ daemon-reload\n--user -M bob@ try-restart legionctl-operator.service\n"
+    );
+    assert_eq!(said, "");
 }
 
 #[test]

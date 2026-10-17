@@ -10,6 +10,9 @@
 //! - The ACP adapters of `session.acp` (headless runs, the app's chat bar): a missing one is installed with
 //!   `bun add -g` from `session.acp_packages`.
 //!
+//! - Claude Code: the legionctl plugin from the package's folder (`claude plugin marketplace add`, `install`).
+//! - GNOME Shell: the OSD extension enabled for the user.
+//!
 //! `check()` only reports; `apply()` changes user-level files and returns what it did.
 
 use std::path::{Path, PathBuf};
@@ -395,6 +398,8 @@ pub fn check(agents: &Sources, session: &SessionConfig) -> Result<Report> {
     let folders = path_folders()?;
     items.push(path_item(&folders));
     items.extend(acp_items(session, &folders));
+    items.extend(claude_plugin_item());
+    items.extend(osd_item());
     Ok(Report { ctx_version, items })
 }
 
@@ -509,6 +514,8 @@ pub fn apply(
 
     done.extend(write_codex_agents(&codex_agents)?);
     done.extend(install_acp_adapters(session)?);
+    done.extend(install_claude_plugin()?);
+    done.extend(enable_osd()?);
     let folders = path_folders()?;
     if path_item(&folders).status != "current" {
         let conf = path_conf();
@@ -520,6 +527,119 @@ pub fn apply(
         ));
     }
     Ok(done)
+}
+
+/// Claude Code (`claude`): its installer puts it in ~/.local/bin.
+fn claude_bin() -> Option<PathBuf> {
+    tool_bin("claude", ".local/bin")
+}
+
+/// The legionctl plugin of Claude Code, when Claude Code is installed: current when Claude Code has it from the
+/// package's folder and its hooks are of this build (doctor's plugin findings say what else is wrong).
+fn claude_plugin_item() -> Option<Item> {
+    claude_bin()?;
+    let home = home();
+    let status = match crate::plugin::claude_plugin_dir(&home) {
+        None => "missing",
+        Some(_) if crate::plugin::findings(&home).is_empty() => "current",
+        Some(_) => "not of this build",
+    };
+    Some(Item {
+        what: "legionctl plugin".into(),
+        agent: "claude-code".into(),
+        status: status.into(),
+        path: crate::plugin::package_marketplace().display().to_string(),
+    })
+}
+
+/// `claude <args>`, which must succeed.
+fn claude(claude: &Path, args: &[&str]) -> Result<()> {
+    let out = Command::new(claude)
+        .args(args)
+        .output()
+        .with_context(|| format!("running claude {}", args.join(" ")))?;
+    ensure!(
+        out.status.success(),
+        "claude {}: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(())
+}
+
+/// Install the legionctl plugin into Claude Code from the package's folder (the marketplace of the same name from
+/// another folder goes first), so the plugin and this legionctl are one build.
+fn install_claude_plugin() -> Result<Vec<String>> {
+    let Some(item) = claude_plugin_item().filter(|i| i.status != "current") else {
+        return Ok(Vec::new());
+    };
+    let bin = claude_bin().context("Claude Code is not installed")?;
+    let (market, key) = (crate::plugin::MARKETPLACE, crate::plugin::PLUGIN_KEY);
+    if crate::plugin::marketplace_source(&home()).is_some() {
+        claude(&bin, &["plugin", "marketplace", "remove", market])?;
+    }
+    claude(&bin, &["plugin", "marketplace", "add", &item.path])?;
+    claude(&bin, &["plugin", "install", key])?;
+    Ok(vec![format!(
+        "legionctl plugin: installed into Claude Code from {} (active at the next session start)",
+        item.path
+    )])
+}
+
+/// The OSD GNOME Shell extension of the package.
+const OSD: &str = "legionctl-osd@legionctl";
+
+/// The OSD extension, where GNOME Shell's `gnome-extensions` is: current when it is enabled for the user.
+fn osd_item() -> Option<Item> {
+    let bin = tool_bin("gnome-extensions", ".local/bin")?;
+    let status = match Command::new(&bin).args(["info", OSD]).output() {
+        Ok(out) if out.status.success() => {
+            if String::from_utf8_lossy(&out.stdout).contains("Enabled: Yes") {
+                "current".into()
+            } else {
+                "not enabled".into()
+            }
+        }
+        Ok(out) => format!(
+            "cannot read: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+        Err(e) => format!("cannot read: {e}"),
+    };
+    Some(Item {
+        what: "OSD extension".into(),
+        agent: "gnome-shell".into(),
+        status,
+        path: OSD.into(),
+    })
+}
+
+/// Enable the OSD extension (it shows at the next login).
+fn enable_osd() -> Result<Vec<String>> {
+    let Some(item) = osd_item().filter(|i| i.status != "current") else {
+        return Ok(Vec::new());
+    };
+    ensure!(
+        item.status == "not enabled",
+        "{} {}: {}",
+        item.what,
+        OSD,
+        item.status
+    );
+    let bin =
+        tool_bin("gnome-extensions", ".local/bin").context("gnome-extensions is not installed")?;
+    let out = Command::new(&bin)
+        .args(["enable", OSD])
+        .output()
+        .context("running gnome-extensions enable")?;
+    ensure!(
+        out.status.success(),
+        "gnome-extensions enable {OSD}: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(vec![
+        "OSD extension: enabled (it shows at the next login)".to_string(),
+    ])
 }
 
 /// `bun add -g` for each missing ACP adapter of `session.acp`; one line per adapter.

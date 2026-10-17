@@ -22,8 +22,20 @@ pub const HOOK_EVENTS: [&str; 10] = [
 ];
 
 /// The marketplace (its name in its marketplace.json) and the plugin, as Claude Code's registry names them.
-const MARKETPLACE: &str = "lenovolegionlinux";
-const PLUGIN_KEY: &str = "legionctl@lenovolegionlinux";
+pub(crate) const MARKETPLACE: &str = "lenovolegionlinux";
+pub(crate) const PLUGIN_KEY: &str = "legionctl@lenovolegionlinux";
+
+/// The package's marketplace: the folder of its marketplace.json, with the plugin in ./agent-plugin.
+pub(crate) fn package_marketplace() -> PathBuf {
+    let plugin = plugin_root();
+    plugin.parent().map_or(plugin.clone(), Path::to_path_buf)
+}
+
+/// The folder of Claude Code's marketplace of legionctl, when it is a folder marketplace.
+pub(crate) fn marketplace_source(home: &Path) -> Option<PathBuf> {
+    json(&home.join(".claude/plugins/known_marketplaces.json"))
+        .and_then(|m| m[MARKETPLACE]["source"]["path"].as_str().map(PathBuf::from))
+}
 
 fn json(path: &Path) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
@@ -55,17 +67,11 @@ pub fn findings(home: &Path) -> Vec<String> {
     let Some(dir) = claude_plugin_dir(home) else {
         return Vec::new();
     };
-    // the package's marketplace: the folder of its marketplace.json, with the plugin in ./agent-plugin
-    let package = plugin_root();
-    let package = package.parent().unwrap_or(&package);
-    let fix = format!(
-        "install it from the package: claude plugin marketplace remove {MARKETPLACE}; claude plugin marketplace add {}; \
-         claude plugin install {PLUGIN_KEY}",
-        package.display()
-    );
+    let package = package_marketplace();
+    let package = package.as_path();
+    let fix = "legionctl setup apply installs it from the package";
     let mut out = Vec::new();
-    let source = json(&home.join(".claude/plugins/known_marketplaces.json"))
-        .and_then(|m| m[MARKETPLACE]["source"]["path"].as_str().map(PathBuf::from));
+    let source = marketplace_source(home);
     if source.as_deref() != Some(package) {
         out.push(format!(
             "the Claude Code marketplace {MARKETPLACE} is {}, not the package folder {}: its plugin and this legionctl \

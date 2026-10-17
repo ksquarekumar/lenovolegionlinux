@@ -30,8 +30,6 @@ refuse() {
 as_build() { runuser -u legionctl-build -- env HOME="$home" "$@"; }
 
 [ $# -eq 0 ] || refuse "this command takes no arguments"
-user=${SUDO_USER:-}
-[ -n "$user" ] && [ "$user" != root ] || refuse "run it as your user with sudo, so that it can restart your operator"
 cd "$home"
 exec 9>"$home/lock"
 flock -n 9 || refuse "an other legionctl-install runs"
@@ -68,7 +66,6 @@ pkg=$(cd "$src/packaging/arch" && as_build BUILDDIR="$home/build" PKGDEST="$home
 [ -f "$pkg" ] || refuse "makepkg built no package at $pkg"
 
 say "installing $pkg"
+# the package's scriptlet restarts the daemon and the operator of each user that is logged in
 pacman -U --noconfirm "$pkg"
-systemctl --user -M "$user@" daemon-reload
-systemctl --user -M "$user@" restart legionctl-operator.service
-say "installed $sha and restarted the operator of $user"
+say "installed $sha"

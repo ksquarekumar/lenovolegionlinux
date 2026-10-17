@@ -89,6 +89,45 @@ esac
         );
         std::fs::set_permissions(&bun, std::os::unix::fs::PermissionsExt::from_mode(0o755))
             .unwrap();
+        // never the machine's Claude Code: a stand-in `claude plugin` that logs each call to ~/claude.log and keeps
+        // its marketplace and install records where Claude Code keeps them
+        let claude = home.join(".local/bin/claude");
+        write(
+            &claude,
+            r#"#!/bin/sh
+echo "$*" >> "$HOME/claude.log"
+plugins="$HOME/.claude/plugins"
+mkdir -p "$plugins"
+case "$1 $2 $3" in
+"plugin marketplace add") printf '{"lenovolegionlinux": {"source": {"source": "directory", "path": "%s"}}}' "$4" > "$plugins/known_marketplaces.json" ;;
+"plugin marketplace remove") rm "$plugins/known_marketplaces.json" ;;
+"plugin install legionctl@lenovolegionlinux")
+  market=$(sed 's/.*"path": "\([^"]*\)".*/\1/' "$plugins/known_marketplaces.json")
+  printf '{"version": 2, "plugins": {"legionctl@lenovolegionlinux": [{"scope": "user", "installPath": "%s/agent-plugin"}]}}' "$market" > "$plugins/installed_plugins.json" ;;
+*) exit 64 ;;
+esac
+"#,
+        );
+        std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        // never the desktop's GNOME Shell: a stand-in `gnome-extensions` whose enabled state is ~/osd-enabled
+        let extensions = home.join(".local/bin/gnome-extensions");
+        write(
+            &extensions,
+            r#"#!/bin/sh
+echo "$*" >> "$HOME/gnome-extensions.log"
+case "$1" in
+info) [ -e "$HOME/osd-enabled" ] && echo "  Enabled: Yes" || echo "  Enabled: No" ;;
+enable) touch "$HOME/osd-enabled" ;;
+*) exit 64 ;;
+esac
+"#,
+        );
+        std::fs::set_permissions(
+            &extensions,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
         Lab { op, home, repo }
     }
 
@@ -592,6 +631,96 @@ fn setup_check_reports_each_missing_acp_adapter_and_apply_installs_it_with_bun_o
             && stderr.contains(&format!("ACP adapter local-acp for local: {why}")),
         "{stderr}"
     );
+}
+
+/// U-14: the Claude Code plugin and the OSD extension are part of the setup, not manual steps that `setup check` does
+/// not see. With Claude Code and no plugin, check has a missing row; apply installs it from the package's folder and
+/// enables the OSD; a marketplace of the same name from a checkout (the 2026-10-17 incident's cause) is not of this
+/// build, and apply replaces it.
+#[test]
+fn setup_check_sees_the_claude_code_plugin_and_apply_installs_it_from_the_package() {
+    let lab = Lab::new("cc-plugin", &shipped_plugin());
+    lab.stand_in_ctx();
+    let row = || -> String {
+        let check: Value = serde_json::from_str(&lab.op.ok(&["setup", "check", "--json"])).unwrap();
+        let rows: Vec<&Value> = check["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|i| i["what"] == "legionctl plugin" && i["agent"] == "claude-code")
+            .collect();
+        assert_eq!(rows.len(), 1, "{check}");
+        rows[0]["status"].as_str().unwrap().to_string()
+    };
+    let apply = || {
+        let out = lab.op.cli_in(&lab.home, &["setup", "apply"]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let calls = || std::fs::read_to_string(lab.home.join("claude.log")).unwrap_or_default();
+    let package = shipped_plugin().parent().unwrap().to_path_buf();
+
+    let osd = || -> String {
+        let check: Value = serde_json::from_str(&lab.op.ok(&["setup", "check", "--json"])).unwrap();
+        check["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["what"] == "OSD extension")
+            .map(|i| i["status"].as_str().unwrap().to_string())
+            .unwrap_or_default()
+    };
+    assert_eq!((row().as_str(), osd().as_str()), ("missing", "not enabled"));
+    let done = apply();
+    assert!(
+        done.contains("legionctl plugin: installed into Claude Code from")
+            && done.contains("OSD extension: enabled (it shows at the next login)"),
+        "{done}"
+    );
+    assert_eq!(osd(), "current");
+    assert_eq!(
+        calls(),
+        format!(
+            "plugin marketplace add {}\nplugin install legionctl@lenovolegionlinux\n",
+            package.display()
+        )
+    );
+    assert_eq!(row(), "current");
+    assert!(
+        !apply().contains("legionctl plugin"),
+        "nothing to do once current"
+    );
+
+    // a checkout as the marketplace: its plugin can be of another build
+    let checkout = lab.home.join("checkout");
+    write(
+        &checkout.join(".claude-plugin/marketplace.json"),
+        r#"{"name": "lenovolegionlinux", "plugins": [{"name": "legionctl", "source": "./agent-plugin"}]}"#,
+    );
+    write(
+        &checkout.join("agent-plugin/hooks/hooks.json"),
+        r#"{"hooks": {}}"#,
+    );
+    write(
+        &lab.home.join(".claude/plugins/known_marketplaces.json"),
+        &serde_json::json!({"lenovolegionlinux": {"source": {"source": "directory", "path": checkout}}}).to_string(),
+    );
+    assert_eq!(row(), "not of this build");
+    std::fs::remove_file(lab.home.join("claude.log")).unwrap();
+    apply();
+    assert_eq!(
+        calls(),
+        format!(
+            "plugin marketplace remove lenovolegionlinux\nplugin marketplace add {}\nplugin install \
+             legionctl@lenovolegionlinux\n",
+            package.display()
+        )
+    );
+    assert_eq!(row(), "current");
 }
 
 #[test]

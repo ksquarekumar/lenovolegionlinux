@@ -1,17 +1,36 @@
+# The users that are logged in now (uid 1000 and up): their user managers get the steps at once, the others at their
+# next login (the user units are enabled for every user with --global).
+logged_in() {
+  loginctl list-users --no-legend | awk '$1 >= 1000 { print $2 }'
+}
+
 post_install() {
   systemctl daemon-reload
-  echo ":: enable the daemon:    systemctl enable --now legionctl-system.service scx_loader.service"
-  echo ":: per user:             systemctl --user enable --now legionctl-operator.socket legionctl-operator.service"
-  echo ":: OSD (next login):     gnome-extensions enable legionctl-osd@legionctl"
+  # the package turns legionctl on itself, so no step is left to type (EV-review-11 U-14)
+  systemctl enable --now legionctl-system.service
+  # scx_loader comes with the optional scx-tools
+  if [ -e /usr/lib/systemd/system/scx_loader.service ]; then systemctl enable --now scx_loader.service; fi
+  systemctl --global enable legionctl-operator.socket legionctl-operator.service
+  for user in $(logged_in); do
+    systemctl --user -M "$user@" daemon-reload
+    systemctl --user -M "$user@" start legionctl-operator.socket
+  done
+  echo ":: legionctl is on. As your user, run 'legionctl setup apply' once: it adds the OSD and the agent setup"
 }
 
 post_upgrade() {
   systemctl daemon-reload
   systemctl try-restart legionctl-system.service
-  echo ":: per user:             systemctl --user daemon-reload && systemctl --user restart legionctl-operator.service"
+  # each running operator restarts with the new build
+  for user in $(logged_in); do
+    systemctl --user -M "$user@" daemon-reload
+    systemctl --user -M "$user@" try-restart legionctl-operator.service
+  done
 }
 
 pre_remove() {
+  systemctl --global disable legionctl-operator.socket legionctl-operator.service
+  systemctl disable --now legionctl-system.service
   # the daemon's pinned eBPF sensors (they detach when the daemon stops)
   rm -rf /sys/fs/bpf/legionctl
   # GDM back in place of legionctl's greeter (legionctl greeter install), so the computer keeps a login screen

@@ -127,13 +127,11 @@ LEGIONCTL_INSTALL := /usr/lib/legionctl/legionctl-install
 
 .PHONY: install-package
 ifneq ($(wildcard $(LEGIONCTL_INSTALL)),)
-install-package: ## install origin/main's package when its CI passed (legionctl-install, no password); restarts your operator
+install-package: ## install origin/main's package when its CI passed (legionctl-install, no password); the package restarts your operator
 	sudo -n $(LEGIONCTL_INSTALL)
 else
 install-package: package
 	sudo pacman -U --noconfirm "$$(ls -t packaging/arch/legionctl-*.pkg.tar.zst | head -1)"
-	systemctl --user daemon-reload
-	systemctl --user restart legionctl-operator.service
 endif
 
 .PHONY: lint-pkg

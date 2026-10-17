@@ -7728,11 +7728,7 @@ fn doctor_names_a_claude_code_plugin_that_is_not_of_this_build() {
             .to_string(),
     );
     let package = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integrations");
-    let fix = format!(
-        "install it from the package: claude plugin marketplace remove lenovolegionlinux; claude plugin marketplace \
-         add {}; claude plugin install legionctl@lenovolegionlinux",
-        package.display()
-    );
+    let fix = "legionctl setup apply installs it from the package";
     assert_eq!(
         plugin_findings(),
         [

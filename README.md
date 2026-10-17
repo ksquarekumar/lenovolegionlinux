@@ -83,10 +83,8 @@ and `~/agentWorkspaces/<dossier>/` (each with `.state/dossier.db`). Configuratio
 ## Start
 
 ```bash
-make install-package        # build and install the Arch package (sudo password the first time)
-sudo systemctl enable --now legionctl-system.service scx_loader.service
-systemctl --user enable --now legionctl-operator.socket legionctl-operator.service
-legionctl setup apply       # MCP server, skills, agents and ACP adapters for Claude Code and Codex
+make install-package        # build and install the Arch package (sudo password the first time); it turns legionctl on
+legionctl setup apply       # the OSD, the Claude Code plugin, MCP server, skills, agents and ACP adapters
 legionctl doctor            # what is wrong now, and the command that fixes each finding
 ```
 
@@ -121,10 +119,10 @@ changes the mode until the charger changes, a restart, or `legionctl power apply
 
 ## Agents
 
-Install the Claude Code plugin from the package folder, so that the plugin and the binary are of one build:
-`claude plugin marketplace add /usr/share/legionctl`, then `claude plugin install legionctl@lenovolegionlinux`. Claude
-Code reads the plugin from that folder at each session start, so a package upgrade also upgrades the plugin.
-`legionctl doctor` tells you when the plugin comes from another folder. Codex gets the same MCP server, skills and
+`legionctl setup apply` installs the Claude Code plugin from the package folder (/usr/share/legionctl), so that the
+plugin and the binary are of one build. Claude Code reads the plugin from that folder at each session start, so a
+package upgrade also upgrades the plugin. `legionctl setup check` and `legionctl doctor` tell you when the plugin is
+missing or comes from another folder. Codex gets the same MCP server, skills and
 agents from `legionctl setup apply`.
 
 | Part | What |

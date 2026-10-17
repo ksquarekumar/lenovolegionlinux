@@ -23,36 +23,20 @@ command here is on main. A feature that is not on main has the label "planned (v
    make install-package
    ```
 
-2. Start the root daemon and the scheduler loader.
+   The package turns on the root daemon, the scheduler loader (with scx-tools) and your operator, and an upgrade
+   restarts them with the new build. You type no systemctl command.
 
-   ```bash
-   sudo systemctl enable --now legionctl-system.service scx_loader.service
-   ```
-
-3. Start your operator. systemd starts it again at the first call after a stop.
-
-   ```bash
-   systemctl --user enable --now legionctl-operator.socket legionctl-operator.service
-   ```
-
-4. Enable the OSD. It shows at the next login.
-
-   ```bash
-   gnome-extensions enable legionctl-osd@legionctl
-   ```
-
-5. Set up the agents. This writes the MCP server, the skills and the agents for Claude Code and Codex, and installs
-   the ACP adapters (`claude-code-acp`, `codex-acp`) with bun. It changes only your user files, with backups.
+2. Set up the rest as your user. This enables the OSD (it shows at the next login), installs the Claude Code plugin
+   from the package folder (the plugin and the binary are then of one build), and writes the MCP server, the skills
+   and the agents for Claude Code and Codex, and installs the ACP adapters (`claude-code-acp`, `codex-acp`) with bun.
+   It changes only your user files, with backups.
 
    ```bash
    legionctl setup apply
    legionctl setup check     # each line "current", then "all set up"
    ```
 
-6. Add the Claude Code plugin from the package folder (the plugin and the binary are then of one build):
-   `claude plugin marketplace add /usr/share/legionctl`, then `claude plugin install legionctl@lenovolegionlinux`.
-
-7. Run `legionctl doctor`. Each finding names the command that fixes it.
+3. Run `legionctl doctor`. Each finding names the command that fixes it.
 
 Optional packages enable more parts (`pacman -Qi legionctl` lists them): `greetd` and `cage` for the greeter,
 `systemd-ukify` and `sbsigntools` for the boot entry, `docker` or `qemu-base` for sandboxed sessions, `stress-ng`
