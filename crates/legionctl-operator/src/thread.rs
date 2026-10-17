@@ -54,7 +54,7 @@ pub fn start(input: &ThreadStartIn) -> Result<Lines> {
     };
     let dir = input.repo.get()?;
     let sources = Sources::resolve(&Dirs::from_env(), Some(dir))?;
-    let path = sources.team_path(team).with_context(|| {
+    let path = sources.team_path(team)?.with_context(|| {
         format!("no team {team} in .legionctl/teams, your teams or the plugin's teams")
     })?;
     // a session that legionctl did not start is Claude Code's: only its hooks reach the operator

@@ -420,7 +420,13 @@ fn servers(launch: &Launch) -> Result<Vec<McpServer>> {
         .map(|(name, server)| {
             let mut stdio = server.clone();
             stdio["name"] = name.clone().into();
-            stdio["env"] = serde_json::json!([]);
+            // ACP takes the environment as a list of name and value
+            stdio["env"] = server["env"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(name, value)| serde_json::json!({"name": name, "value": value}))
+                .collect();
             serde_json::from_value::<McpServer>(stdio).with_context(|| format!("MCP server {name}"))
         })
         .collect()

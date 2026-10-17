@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    ACTOR_HEADER, API_HEADER, ApiError, Code, Op, SOCKET, TOKEN_ENV, api_fingerprint, coded,
-    user_token,
+    ACTOR_HEADER, AGENT_HEADER, API_HEADER, ApiError, Code, Op, SOCKET, TOKEN_ENV, api_fingerprint,
+    coded, user_token,
 };
 use anyhow::{Context, Result};
 use http_body_util::{BodyExt, Full};
@@ -98,11 +98,18 @@ impl Client {
                     ),
                 )
             })?;
-        // a session's sandbox has its own token; everywhere else the user's
-        let token = match std::env::var(TOKEN_ENV) {
-            Ok(t) if !t.is_empty() => t,
-            _ => user_token(&self.runtime)?,
+        // a session's sandbox has its own token; everywhere else the user's, which an agent's client marks as the
+        // agent's (its MCP server and hooks always run for one; the CLI does in an agent's shell)
+        let (token, agent) = match std::env::var(TOKEN_ENV) {
+            Ok(t) if !t.is_empty() => (t, None),
+            _ => (
+                user_token(&self.runtime)?,
+                crate::session_from_env().or_else(|| {
+                    matches!(self.actor, "mcp" | "hook").then(|| self.actor.to_string())
+                }),
+            ),
         };
+        let agent = agent.filter(|_| self.actor != "app");
         let (mut sender, connection) =
             hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream)).await?;
         tokio::spawn(connection);
@@ -117,6 +124,9 @@ impl Client {
             hyper::header::HeaderValue::from_static(api_fingerprint()),
         );
         headers.insert("authorization", format!("Bearer {token}").parse()?);
+        if let Some(agent) = agent {
+            headers.insert(AGENT_HEADER, agent.parse()?);
+        }
         let response = sender.send_request(request).await?;
         if response
             .headers()

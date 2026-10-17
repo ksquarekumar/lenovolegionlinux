@@ -15,6 +15,7 @@ static ASKING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 /// The runtime that asks; set once at the operator's start.
 pub fn init(runtime: tokio::runtime::Handle) {
     let _ = RUNTIME.set(runtime);
+    legionctl_core::config::set_asker(ask);
 }
 
 /// Ask the user about each file of `unapproved` that is not asked about already, in the background. An answer is
@@ -36,8 +37,8 @@ pub fn ask(unapproved: &[Unapproved]) {
         let file = file.clone();
         runtime.spawn(async move {
             let body = format!(
-                "The repository config {} sets {}. Allow this content? Deny keeps these keys unused until the \
-                 file changes.",
+                "The repository file {} sets: {}. Allow this content? If you deny, legionctl does not use it \
+                 until the file changes.",
                 file.file,
                 file.keys.join(", ")
             );

@@ -690,7 +690,7 @@
                           "const": "workspace"
                         },
                         {
-                          "description": "Changes the machine; `legionctl-system` asks for polkit approval.",
+                          "description": "Changes the machine; `legionctl-system` asks for polkit approval. An operation that changes something without\nthe daemon (your own rule layers, a kernel build, the Windows VM's guest or overlay) is `Workspace`: polkit\nasks only for the daemon's part of it.",
                           "type": "string",
                           "const": "machine"
                         }
@@ -6575,7 +6575,7 @@
     }
   },
   "rules.edit": {
-    "class": "machine",
+    "class": "workspace",
     "internal": false,
     "input": {
       "type": "object",
@@ -6635,7 +6635,7 @@
     }
   },
   "rules.reset": {
-    "class": "machine",
+    "class": "workspace",
     "internal": false,
     "input": {
       "type": "object",
@@ -7239,7 +7239,7 @@
     }
   },
   "undo": {
-    "class": "machine",
+    "class": "workspace",
     "internal": false,
     "input": {
       "type": "object",
@@ -9700,7 +9700,7 @@
     }
   },
   "kernel.build": {
-    "class": "machine",
+    "class": "workspace",
     "internal": false,
     "input": {
       "type": "object",
@@ -10247,7 +10247,7 @@
     }
   },
   "windows.vm.overlay": {
-    "class": "machine",
+    "class": "workspace",
     "internal": false,
     "input": {
       "type": "object",
@@ -10337,7 +10337,7 @@
     }
   },
   "windows.vm.recovery": {
-    "class": "machine",
+    "class": "workspace",
     "internal": false,
     "input": {
       "type": "object",
@@ -10363,7 +10363,7 @@
     }
   },
   "windows.repair": {
-    "class": "machine",
+    "class": "workspace",
     "internal": false,
     "input": {
       "type": "object",
@@ -10444,7 +10444,7 @@
     }
   },
   "windows.restore.apply": {
-    "class": "machine",
+    "class": "workspace",
     "internal": false,
     "input": {
       "type": "object",
@@ -14363,7 +14363,7 @@
                           "const": "workspace"
                         },
                         {
-                          "description": "Changes the machine; `legionctl-system` asks for polkit approval.",
+                          "description": "Changes the machine; `legionctl-system` asks for polkit approval. An operation that changes something without\nthe daemon (your own rule layers, a kernel build, the Windows VM's guest or overlay) is `Workspace`: polkit\nasks only for the daemon's part of it.",
                           "type": "string",
                           "const": "machine"
                         }
@@ -17116,7 +17116,7 @@
                 "const": "workspace"
               },
               {
-                "description": "Changes the machine; `legionctl-system` asks for polkit approval.",
+                "description": "Changes the machine; `legionctl-system` asks for polkit approval. An operation that changes something without\nthe daemon (your own rule layers, a kernel build, the Windows VM's guest or overlay) is `Workspace`: polkit\nasks only for the daemon's part of it.",
                 "type": "string",
                 "const": "machine"
               }

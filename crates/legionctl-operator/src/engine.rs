@@ -144,10 +144,7 @@ fn path(p: Option<&ClientPath>) -> Result<Option<&Path>> {
 /// arguments and, for a tool that reads the working copy, its git state.
 fn tool_key(ctx: &Ctx, call: &CachedCall) -> Result<String> {
     use blake2::{Blake2b, Digest, digest::consts::U16};
-    let scope = match &ctx.principal {
-        Principal::User => String::new(),
-        Principal::Session(id) => id.clone(),
-    };
+    let scope = ctx.principal.agent().unwrap_or_default();
     let state = match &call.workspace {
         Some(dir) => legionctl_core::workspace::git_state(dir.get()?)?,
         None => String::new(),
@@ -1123,7 +1120,7 @@ fn jail(
 ) -> Result<Option<legionctl_core::session::Jail>> {
     match &ctx.principal {
         Principal::Session(id) => Ok(Some(store.jail(id, &config(project)?.config)?)),
-        Principal::User => Ok(None),
+        Principal::User | Principal::Agent(_) => Ok(None),
     }
 }
 
@@ -1320,6 +1317,7 @@ fn compaction_journal(
             kinds: &[legionctl_core::codegraph::COMMIT_EVENT],
             field: Some(("$.session", session)),
             naming: None,
+            session: None,
         },
         0,
         200,
@@ -1741,12 +1739,73 @@ fn main_agent_sets(config: &legionctl_core::config::Config, flags: &[String]) ->
         .collect()
 }
 
+/// The repository's own compose file `own` runs on the host only after the user allowed its content (as docker compose
+/// reads it); the question names each service that gets root on the machine (privileged, host namespaces, devices,
+/// added capabilities, a bind of `/`).
+fn compose_allowed(repo: &Path, own: &str, project: &str) -> Result<()> {
+    let out = Command::new("docker")
+        .current_dir(repo)
+        .args([
+            "compose", "-p", project, "-f", own, "config", "--format", "json",
+        ])
+        .output()
+        .context("running docker compose config")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "docker compose config: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    let model: serde_json::Value =
+        serde_json::from_slice(&out.stdout).context("docker compose config is not JSON")?;
+    let mut what = vec!["containers that docker compose starts".to_string()];
+    for (name, service) in model["services"].as_object().into_iter().flatten() {
+        let root = service["privileged"] == true
+            || ["network_mode", "pid", "ipc"]
+                .iter()
+                .any(|k| service[*k] == "host")
+            || service["devices"].as_array().is_some_and(|d| !d.is_empty())
+            || service["cap_add"].as_array().is_some_and(|c| !c.is_empty())
+            || service["volumes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|v| v["source"] == "/");
+        if root {
+            what.push(format!("service {name} with root on this machine"));
+        }
+    }
+    legionctl_core::config::allowed(&repo.join(own), &model, &what)
+}
+
+/// The config of a hook's folder, or the hook's reply without it: the migration's, or the held prompt of [`held`].
+fn hook_config(input: &HookRunIn) -> Result<std::result::Result<Resolved, HookReply>> {
+    if let Some(reply) = unmigrated(input.event.into()) {
+        return Ok(Err(reply));
+    }
+    match config(Some(&input.project)) {
+        Ok(resolved) => Ok(Ok(resolved)),
+        Err(e) => held(input.event.into(), e).map(Err),
+    }
+}
+
+/// A hook whose folder's config does not resolve: a prompt waits until the file is fixed (a broken file must not
+/// turn the prompt gate off); every other hook fails with the cause.
+fn held(event: Event, e: anyhow::Error) -> Result<HookReply> {
+    if event != Event::Prompt {
+        return Err(e);
+    }
+    Ok(HookReply {
+        text: String::new(),
+        block: Some(format!(
+            "legionctl cannot read the config of this folder: {e:#}. Fix that file, then send the prompt again."
+        )),
+    })
+}
+
 /// The config for work in `project`; a repository layer file with keys that wait for the user's first answer gets
-/// its question (O-2), and resolves without them until then.
+/// its question (O-2, through the asker that the operator sets), and resolves without them until then.
 pub(crate) fn config(project: Option<&ClientPath>) -> Result<Resolved> {
-    let resolved = resolve(&Dirs::from_env(), path(project)?)?;
-    crate::trust::ask(&resolved.unapproved);
-    Ok(resolved)
+    resolve(&Dirs::from_env(), path(project)?)
 }
 
 impl Operator {
@@ -2375,7 +2434,7 @@ impl Engine for Operator {
         let team = match &input.team {
             Some(name) => Some((
                 name.as_str(),
-                sources.team_path(name).with_context(|| {
+                sources.team_path(name)?.with_context(|| {
                     format!("no team {name} in .legionctl/teams, your teams or the plugin's teams")
                 })?,
             )),
@@ -2701,8 +2760,9 @@ impl Engine for Operator {
         })
     }
 
-    fn code_tests_mutant_run(&self, _: &Ctx, input: WorkspaceIn) -> Result<Lines> {
+    fn code_tests_mutant_run(&self, ctx: &Ctx, input: WorkspaceIn) -> Result<Lines> {
         let store = dossiers()?;
+        let jail = jail(ctx, &store, Some(&input.repo))?;
         let ws = store.workspace_of(
             &dossier_of(&input.session)?,
             input.repo.get()?,
@@ -2712,7 +2772,7 @@ impl Engine for Operator {
         let job_input = serde_json::json!({"workspace": ws.path, "base": ws.base});
         let job = db.job_begin("code.tests.mutant.run", &job_input)?;
         let out = store
-            .run_mutants(&ws.path, &ws.base, |done, total| {
+            .run_mutants((&ws.path, &ws.base), jail.as_ref(), |done, total| {
                 let mut step = job_input.clone();
                 step["progress"] = serde_json::json!({"done": done, "total": total});
                 let _ = db.job_step(job, &step);
@@ -2854,10 +2914,10 @@ impl Engine for Operator {
     }
 
     fn hooks_run(&self, ctx: &Ctx, input: HookRunIn) -> Result<HookReply> {
-        if let Some(reply) = unmigrated(input.event.into()) {
-            return Ok(reply);
-        }
-        let resolved = config(Some(&input.project))?;
+        let resolved = match hook_config(&input)? {
+            Ok(resolved) => resolved,
+            Err(reply) => return Ok(reply),
+        };
         let store = Dossiers::open(&resolved.config.dossier)?;
         let session = input.session.as_ref().filter(|s| !s.0.is_empty());
         if input.again {
@@ -3319,6 +3379,7 @@ impl Engine for Operator {
             kinds: &["dossier.nudge", "dossier.ack"],
             field: input.of.as_deref().map(|s| ("$.session", s)),
             naming: None,
+            session: None,
         };
         Ok(page(
             Db::open_default()?.events_page(&filter, after, limit)?,
@@ -3402,8 +3463,25 @@ impl Engine for Operator {
                 )),
             });
         }
+        // the user's settings and trust answers change through legionctl, which asks the user, never by an agent's write
+        let state = legionctl_core::db::default_path();
+        let target = Path::new(&input.path);
+        if [
+            Dirs::from_env().user.as_path(),
+            state.parent().unwrap_or(&state),
+        ]
+        .iter()
+        .any(|d| target.starts_with(d))
+        {
+            return Ok(Guard {
+                refusal: Some(format!(
+                    "{} holds your legionctl settings or answers: change them with legionctl (it asks you), not with a file write",
+                    input.path
+                )),
+            });
+        }
         Ok(Guard {
-            refusal: dossiers()?.write_refusal(session(&input.session)?, Path::new(&input.path))?,
+            refusal: dossiers()?.write_refusal(session(&input.session)?, target)?,
         })
     }
 
@@ -3427,10 +3505,18 @@ impl Engine for Operator {
         Ok(self.readings()?.into_wire())
     }
 
-    fn events(&self, _: &Ctx, input: EventsIn) -> Result<Page<EventRow>> {
+    fn events(&self, ctx: &Ctx, input: EventsIn) -> Result<Page<EventRow>> {
         let (after, limit) = page_of(input.cursor.as_deref(), input.limit)?;
+        // a sandbox sees its own events only: the log holds every session's command lines
+        let session = match &ctx.principal {
+            Principal::Session(id) => Some(id.as_str()),
+            Principal::User | Principal::Agent(_) => None,
+        };
         Ok(page(Db::open_default()?.events_page(
-            &EventFilter::default(),
+            &EventFilter {
+                session,
+                ..EventFilter::default()
+            },
             after,
             limit,
         )?))
@@ -3532,6 +3618,7 @@ impl Engine for Operator {
             kinds: &["internal.tools.record"],
             field: input.session.as_deref().map(|s| ("$.input.session", s)),
             naming: None,
+            session: None,
         };
         let (rows, next) = Db::open_default()?.events_page(&filter, after, limit)?;
         Ok(Page {
@@ -3619,6 +3706,7 @@ impl Engine for Operator {
         up.current_dir(repo).args(["compose", "-p", &project]);
         // the repository's own file first: legionctl's file only adds the built tags
         if let Some(own) = &scan.compose_file {
+            compose_allowed(repo, own, &project)?;
             up.args(["-f", own]);
         }
         let out = up
@@ -5051,6 +5139,7 @@ impl Engine for Operator {
         let (after, limit) = page_of(input.cursor.as_deref(), input.limit)?;
         let filter = EventFilter {
             naming: Some(&knob.path),
+            session: None,
             ..EventFilter::default()
         };
         let history = page(Db::open_default()?.events_page(&filter, after, limit)?);
@@ -5211,6 +5300,7 @@ impl Engine for Operator {
             kinds: &["session.commands"],
             field: Some(("$.session", &input.id)),
             naming: None,
+            session: None,
         })?;
         Ok(match newest {
             Some(event) => serde_json::from_value(event.payload["commands"].clone())?,
@@ -5228,6 +5318,7 @@ impl Engine for Operator {
             kinds: &["session.exec", "session.open"],
             field: Some(("$.session", &input.id)),
             naming: None,
+            session: None,
         };
         let (rows, next) = Db::open_default()?.events_page(&filter, after, limit)?;
         Ok(Page {

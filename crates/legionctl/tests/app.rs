@@ -479,10 +479,11 @@ fn an_operation_of_the_catalog_runs_through_the_form_of_its_input_schema(cx: &mu
     click(cx, "form-more".into());
     click(cx, "form-scope-project".into());
     click(cx, "form-submit".into());
-    // a change of the user's own session runs at once: no confirm
+    // a change of the user's own session from a view's form confirms too (A-4)
     app.read_with(cx, |a, _| {
-        assert!(a.state.form.is_none() && a.state.pending.is_none());
+        assert!(a.state.form.is_none() && a.state.pending.is_some());
     });
+    click(cx, "apply".into());
     wait(cx, &app, "the fact", |a| {
         a.state
             .message
@@ -822,9 +823,10 @@ fn an_intent_opens_a_stored_view_with_no_model_and_a_new_one_gets_the_composers_
         "",
     ))
     .unwrap();
+    // the composer made it: its intent is an agent's fact, which a user's own choice beats (A-4, A-10)
     assert_eq!(
         (facts[0]["value"].as_str(), facts[0]["source"].as_str()),
-        (Some("health"), Some("user"))
+        (Some("health"), Some("agent:fake"))
     );
 
     cx.update(|window, cx| window.click("nav-resources", cx));
@@ -1092,13 +1094,18 @@ fn a_view_keeps_its_versions_and_the_tab_undoes_redoes_pins_and_resets_them(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/views/health.jsonc"),
     )
     .unwrap();
+    // the user saves in a terminal: the user's version facts win over an agent's (A-10)
     let save = |title: &str| {
-        lab_cli(
-            &op,
-            &home,
+        let out = op.run(
             &repo,
+            &[("HOME", home.to_str().unwrap())],
             &["views", "save"],
             &seed.replace("\"title\": \"Health\"", &format!("\"title\": \"{title}\"")),
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
         );
     };
     save("Health, mine");
@@ -2817,10 +2824,19 @@ fn make_a_dossier_in_the_app(
     });
     cx.update(|window, cx| {
         window.render_frame(cx);
-        // Use is a change of the user's own session: it runs at once, with no confirm
+        // a view's button confirms even a change of the user's own session (A-4): its view is a file
         window.click("view-dossiers-row-0-action-0", cx);
     });
-    app.read_with(cx, |a, _| assert!(a.state.pending.is_none(), "no confirm"));
+    app.read_with(cx, |a, _| {
+        assert_eq!(
+            a.state.pending.as_ref().expect("a confirm").class,
+            legionctl_api::Class::Session
+        );
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("apply", cx);
+    });
     wait(cx, app, "the row's dossier in use", |a| {
         a.screen.dossier.as_deref() == Some(first.as_str())
     });

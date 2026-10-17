@@ -407,6 +407,11 @@ fn new_id() -> Result<String> {
 /// A `~/` path and no HOME.
 pub fn hide(args: &mut Vec<String>, runtime: &Path, hidden: &[String]) -> Result<()> {
     args.extend(["--tmpfs".into(), runtime.to_string_lossy().into_owned()]);
+    hide_paths(args, hidden)
+}
+
+/// Each `hidden` path that exists as an empty tmpfs (a folder) or `/dev/null` (a file or socket).
+fn hide_paths(args: &mut Vec<String>, hidden: &[String]) -> Result<()> {
     // the real paths, once each: bwrap cannot mount through a symlink like /var/run -> /run
     let mut real: Vec<PathBuf> = Vec::new();
     for h in hidden {
@@ -707,7 +712,19 @@ fn bwrap_sandbox(
     }
     let mut hidden = hidden.to_vec();
     hidden.extend(env_files(&[&ws.repo, &agent_dir(ws)]));
-    hide(&mut args, runtime, &hidden)?;
+    // a hidden path inside a folder that a mount replaces (the cache overlay) is hidden again over that mount
+    let inside = |h: &String| {
+        expand_home(h).is_ok_and(|p| {
+            mounts.iter().any(|m| match m {
+                Mount::Writable(f) | Mount::Overlay { folder: f, .. } => {
+                    p.starts_with(f) && p != *f
+                }
+                _ => false,
+            })
+        })
+    };
+    let (over, below): (Vec<String>, Vec<String>) = hidden.into_iter().partition(inside);
+    hide(&mut args, runtime, &below)?;
     if mounts.iter().any(|m| matches!(m, Mount::Overlay { .. })) {
         let help = std::process::Command::new("bwrap").arg("--help").output()?;
         anyhow::ensure!(
@@ -716,6 +733,7 @@ fn bwrap_sandbox(
         );
     }
     bwrap_args(&mut args, mounts, env);
+    hide_paths(&mut args, &over)?;
     args.extend([
         "--chdir".into(),
         agent_dir(ws).to_string_lossy().into_owned(),
@@ -1101,6 +1119,10 @@ fn merge_json(into: &mut serde_json::Value, over: &serde_json::Value) {
     }
 }
 
+/// The environment variable of `legionctl mcp-proxy` with the remote server's keyring headers, a JSON object of name
+/// and value.
+pub const HEADERS_ENV: &str = "LEGIONCTL_MCP_HEADERS";
+
 /// The session's MCP config: legionctl's own server, and every configured server behind `legionctl mcp-proxy` with
 /// its allowlist, as resolved now. A package server runs from its hash-checked store folder, without network unless
 /// the package allows it.
@@ -1124,6 +1146,8 @@ pub fn mcp_config(config: &Config, store: &crate::packages::Store) -> Result<ser
         }
         if let Some(url) = &server.url {
             args.extend(["--url".into(), url.clone()]);
+            // secret values go in the proxy's environment, never in its command line (the exec sensor records argv)
+            let mut headers = serde_json::Map::new();
             for (header, entry) in &server.keyring_headers {
                 let out = std::process::Command::new("secret-tool")
                     .args(["lookup", "legionctl-mcp", entry])
@@ -1133,15 +1157,16 @@ pub fn mcp_config(config: &Config, store: &crate::packages::Store) -> Result<ser
                     out.status.success() && !out.stdout.is_empty(),
                     "mcp.servers.{name}: no keyring entry legionctl-mcp {entry} (secret-tool store --label=... legionctl-mcp {entry})"
                 );
-                args.extend([
-                    "--header".into(),
-                    format!("{header}={}", String::from_utf8_lossy(&out.stdout).trim()),
-                ]);
+                headers.insert(
+                    header.clone(),
+                    String::from_utf8_lossy(&out.stdout).trim().into(),
+                );
             }
-            servers.insert(
-                name.clone(),
-                serde_json::json!({ "command": "legionctl", "args": args }),
-            );
+            let mut entry = serde_json::json!({ "command": "legionctl", "args": args });
+            if !headers.is_empty() {
+                entry["env"] = serde_json::json!({ HEADERS_ENV: serde_json::Value::Object(headers).to_string() });
+            }
+            servers.insert(name.clone(), entry);
             continue;
         }
         let command = match &server.package {

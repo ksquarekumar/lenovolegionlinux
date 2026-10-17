@@ -494,6 +494,9 @@ pub struct Meta {
     /// Keys or key prefixes that a repository layer file sets only after the user allowed that file's content once
     /// (trust on first use, O-2): until then, and after a Deny, the file's values of these keys are not used.
     pub approve: Vec<String>,
+    /// Keys or key prefixes that a repository layer file never sets, also after the user allowed it (who pays for an
+    /// agent); `*` is one key part.
+    pub repo_never: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -595,6 +598,21 @@ impl Approvals {
         }
     }
 
+    /// The name of the repository file `file` in the answers (its path in the repository's main checkout, so an
+    /// answer holds in every worktree), the hash of its content `value`, and the user's answer to that content:
+    /// allowed, denied, or none yet.
+    #[must_use]
+    pub fn of(&self, file: &Path, value: &Value) -> (String, String, Option<bool>) {
+        let name = main_checkout_path(file).display().to_string();
+        let hash = content_hash(value);
+        let answer = self
+            .0
+            .get(&name)
+            .filter(|(h, _)| *h == hash)
+            .map(|(_, allowed)| *allowed);
+        (name, hash, answer)
+    }
+
     /// Record the user's answer for `file` at content `hash`.
     ///
     /// # Errors
@@ -610,9 +628,62 @@ impl Approvals {
     }
 }
 
+/// Who asks the user about repository files that wait for an answer: the operator sets it once at its start, so every
+/// path that reads a repository file asks (other processes only read).
+static ASKER: std::sync::OnceLock<fn(&[Unapproved])> = std::sync::OnceLock::new();
+
+/// Set the one asker of this process.
+pub fn set_asker(ask: fn(&[Unapproved])) {
+    let _ = ASKER.set(ask);
+}
+
+/// Ask the user about `unapproved` through the process's asker, if it has one.
+pub(crate) fn ask(unapproved: &[Unapproved]) {
+    if let (Some(ask), false) = (ASKER.get(), unapproved.is_empty()) {
+        ask(unapproved);
+    }
+}
+
+/// `file` as in the main checkout of its repository when it is in a worktree (whose `.git` file names
+/// `<main>/.git/worktrees/<name>`), else `file`.
+fn main_checkout_path(file: &Path) -> PathBuf {
+    let main = repo_root(file).and_then(|root| {
+        let link = std::fs::read_to_string(root.join(".git")).ok()?;
+        let gitdir = PathBuf::from(link.strip_prefix("gitdir:")?.trim());
+        let worktrees = gitdir.parent()?;
+        let dot_git = worktrees.parent()?;
+        if worktrees.file_name()? != "worktrees" || dot_git.file_name()? != ".git" {
+            return None;
+        }
+        Some(dot_git.parent()?.join(file.strip_prefix(&root).ok()?))
+    });
+    main.unwrap_or_else(|| file.to_path_buf())
+}
+
+/// Use the repository file `file` with the content `value` only after the user allowed that content; the first use asks
+/// the user about `what` it sets (trust on first use, as for the repository's config layer).
+///
+/// # Errors
+/// The content waits for the user's answer, the user denied it, or the answers cannot be read.
+pub fn allowed(file: &Path, value: &Value, what: &[String]) -> Result<()> {
+    let (name, hash, answer) = Approvals::read()?.of(file, value);
+    match answer {
+        Some(true) => Ok(()),
+        Some(false) => bail!("you denied {name}; a changed file asks again"),
+        None => {
+            ask(&[Unapproved {
+                file: name.clone(),
+                hash,
+                keys: what.to_vec(),
+            }]);
+            bail!("{name} is not used until you allow it (legionctl asks you once on the desktop)")
+        }
+    }
+}
+
 /// The content hash of a parsed layer file: what is merged, so a file that changes between its read and the hash
 /// cannot pass with another content's answer.
-pub(crate) fn content_hash(value: &Value) -> String {
+fn content_hash(value: &Value) -> String {
     use blake2::{Blake2b, Digest, digest::consts::U32};
     format!("{:x}", Blake2b::<U32>::digest(value.to_string()))
 }
@@ -662,10 +733,22 @@ fn layer_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+/// Whether `key` is one of `locks` or below one; `*` in a lock is any one key part.
 pub(crate) fn locked(locks: &[String], key: &str) -> bool {
-    locks
-        .iter()
-        .any(|l| key == l || key.starts_with(&format!("{l}.")))
+    locks.iter().any(|l| {
+        let mut parts = key.split('.');
+        l.split('.')
+            .all(|w| parts.next().is_some_and(|p| w == "*" || w == p))
+    })
+}
+
+/// Whether a `null` at `key` would remove one of `locks` (it is a key above it).
+fn above(locks: &[String], key: &str) -> bool {
+    locks.iter().any(|l| {
+        let mut parts = l.split('.');
+        key.split('.')
+            .all(|k| parts.next().is_some_and(|p| p == "*" || p == k))
+    })
 }
 
 /// What one merge pass needs besides the two values.
@@ -674,6 +757,8 @@ struct Merge<'a> {
     /// The defaults and /etc/legionctl may set `config` and locked keys.
     trusted: bool,
     locks: &'a [String],
+    /// The keys that no repository layer file sets.
+    repo_never: &'a [String],
     /// A repository layer file: the `config.approve` keys and the user's answer to this content (none yet: `None`).
     approve: Option<(&'a [String], Option<bool>)>,
     /// The `config.approve` keys this file set that wait for an answer.
@@ -694,11 +779,20 @@ impl Merge<'_> {
             } else {
                 format!("{prefix}.{key}")
             };
+            let removes =
+                |locks: &[String]| locked(locks, &path) || (value.is_null() && above(locks, &path));
             if !self.trusted
-                && (path == "config" || path.starts_with("config.") || locked(self.locks, &path))
+                && (path == "config" || path.starts_with("config.") || removes(self.locks))
             {
                 self.problems.push(format!(
                     "{}: {path} is set only by the defaults and /etc/legionctl (locked); ignored",
+                    self.source.file
+                ));
+                continue;
+            }
+            if self.approve.is_some() && removes(self.repo_never) {
+                self.problems.push(format!(
+                    "{}: {path} is set only outside a repository (who pays for an agent); ignored",
                     self.source.file
                 ));
                 continue;
@@ -763,7 +857,7 @@ impl Merge<'_> {
 /// file's `config.approve` keys only when the user allowed its content; the files whose keys wait for an answer.
 fn merge_layers(
     ordered: Vec<(Source, bool, Value)>,
-    (locks, approve, approvals): (&[String], &[String], &Approvals),
+    (locks, repo_never, approve, approvals): (&[String], &[String], &[String], &Approvals),
     trace: &mut BTreeMap<String, Vec<Setting>>,
     problems: &mut Vec<String>,
 ) -> (Map<String, Value>, Vec<Unapproved>) {
@@ -771,19 +865,19 @@ fn merge_layers(
     let mut unapproved = Vec::new();
     for (source, trusted, value) in ordered {
         // only a repository layer file needs the user's answer for its content
-        let hash = (source.layer == "repo").then(|| content_hash(&value));
-        let answer = hash.as_ref().map(|hash| {
-            approvals
-                .0
-                .get(&source.file)
-                .filter(|(h, _)| h == hash)
-                .map(|(_, allowed)| *allowed)
-        });
+        let (name, hash, answer) = match source.layer.as_str() {
+            "repo" => {
+                let (name, hash, answer) = approvals.of(Path::new(&source.file), &value);
+                (name, Some(hash), Some(answer))
+            }
+            _ => (String::new(), None, None),
+        };
         if let Value::Object(map) = value {
             let mut merge = Merge {
                 source: &source,
                 trusted,
                 locks,
+                repo_never,
                 approve: answer.map(|answer| (approve, answer)),
                 held: Vec::new(),
                 trace,
@@ -792,7 +886,7 @@ fn merge_layers(
             merge.object(&mut merged, map, "");
             if let (false, Some(hash)) = (merge.held.is_empty(), hash) {
                 unapproved.push(Unapproved {
-                    file: source.file.clone(),
+                    file: name,
                     hash,
                     keys: merge.held,
                 });
@@ -848,12 +942,11 @@ pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
             .find_map(|(_, v)| v["config"].get(key).cloned())
             .unwrap_or_else(|| defaults["config"][key].clone())
     };
-    let precedence: Vec<String> =
-        serde_json::from_value(trusted_meta("precedence")).context("config.precedence")?;
-    let locks: Vec<String> =
-        serde_json::from_value(trusted_meta("locked")).context("config.locked")?;
-    let approve: Vec<String> =
-        serde_json::from_value(trusted_meta("approve")).context("config.approve")?;
+    let list = |key: &str| -> Result<Vec<String>> {
+        serde_json::from_value(trusted_meta(key)).with_context(|| format!("config.{key}"))
+    };
+    let (precedence, locks) = (list("precedence")?, list("locked")?);
+    let (approve, repo_never) = (list("approve")?, list("repo_never")?);
     // the repository's config files and capability sets need the user's answers
     let approvals = if repo_dir.is_some() {
         Approvals::read()?
@@ -898,19 +991,20 @@ pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
     let mut trace = BTreeMap::new();
     let (merged, unapproved) = merge_layers(
         ordered,
-        (&locks, &approve, &approvals),
+        (&locks, &repo_never, &approve, &approvals),
         &mut trace,
         &mut problems,
     );
     let value = Value::Object(merged);
-    let mut config: Config =
-        serde_json::from_value(value.clone()).context("the merged config is not valid")?;
+    let mut config = typed(&value, &trace)?;
     let mut unapproved = unapproved;
     let mut set_layers = vec![("system", system_dir.clone()), ("user", user_dir.clone())];
     set_layers.extend(repo_dir.iter().map(|d| ("repo", d.clone())));
     config.capabilities =
         crate::runnables::load(&set_layers, &approvals, &mut problems, &mut unapproved)?;
     config.gateway.check()?;
+    drop_unfit_reminders(&mut config, &mut problems);
+    ask(&unapproved);
     Ok(Resolved {
         config,
         value,
@@ -920,6 +1014,40 @@ pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
         unapproved,
         user_dir,
     })
+}
+
+/// The merged `value` as a [`Config`]; a value that does not fit names its key and the file that set it.
+///
+/// # Errors
+/// The value does not fit the config's shape.
+fn typed(value: &Value, trace: &BTreeMap<String, Vec<Setting>>) -> Result<Config> {
+    serde_path_to_error::deserialize(value.clone()).map_err(|e| {
+        // the file that set the key that does not fit, so the user knows what to fix
+        let key = e.path().to_string();
+        let file = trace
+            .iter()
+            .filter(|(k, _)| {
+                **k == key || k.starts_with(&format!("{key}.")) || key.starts_with(&format!("{k}."))
+            })
+            .filter_map(|(_, settings)| settings.last())
+            .map(|s| s.source.file.clone())
+            .find(|f| f != "built in")
+            .unwrap_or_else(|| "built in".into());
+        anyhow::anyhow!("{file}: {key}: {}", e.inner()).context("the merged config is not valid")
+    })
+}
+
+/// A reminder goes into every prompt: one that does not fit is not used, from whichever file it came.
+fn drop_unfit_reminders(config: &mut Config, problems: &mut Vec<String>) {
+    config
+        .reminders
+        .retain(|id, r| match crate::reminders::check(id, &r.text) {
+            Ok(()) => true,
+            Err(e) => {
+                problems.push(format!("reminders.{id}: {e:#}; not used"));
+                false
+            }
+        });
 }
 
 /// What `legionctl config explain` shows for one key.

@@ -5,6 +5,7 @@
   "config.precedence": "The order in which settings files apply, from the built-in defaults to the project.",
   "config.locked": "Settings that only this computer's administrator can change.",
   "config.approve": "Settings that a project can change only after you allow its files once.",
+  "config.repo_never": "Settings that a project never changes, also after you allow its files: who pays for an agent.",
 
   "workspace.root": "The folder where legionctl makes the working copies of your projects.",
   "workspace.nudge": "When agents get a reminder to work in their own working copy.",

@@ -693,15 +693,30 @@ impl View {
     }
 }
 
-/// The view folders, highest layer first: the repository's (when `repo` is in one), then the user's.
+/// The view folders, highest layer first: the user's, then the repository's (when `repo` is in one).
 #[must_use]
 pub fn dirs(repo: Option<&Path>) -> Vec<(&'static str, PathBuf)> {
-    let mut dirs = Vec::new();
+    let mut dirs = vec![("user", crate::config::Dirs::from_env().user.join("views"))];
     if let Some(root) = repo.and_then(crate::config::repo_root) {
         dirs.push(("repository", root.join(".legionctl/views")));
     }
-    dirs.push(("user", crate::config::Dirs::from_env().user.join("views")));
     dirs
+}
+
+/// Whether a view file of `layer` may be used: a repository's view (its buttons run operations) only after the user
+/// allowed its content; the first use asks.
+///
+/// # Errors
+/// The repository's view waits for the user's answer, the user denied it, or it cannot be read.
+fn trusted(layer: &str, file: &Path) -> Result<()> {
+    if layer != "repository" {
+        return Ok(());
+    }
+    crate::config::allowed(
+        file,
+        &legionctl_machine::profile::read_jsonc(file)?,
+        &["a view (its buttons run legionctl operations)".into()],
+    )
 }
 
 /// Every view of the layers and the seeds: (layer, file, the view or why it is not one). A name in a higher layer
@@ -725,8 +740,8 @@ pub fn list(repo: Option<&Path>) -> Vec<(&'static str, PathBuf, Result<View>)> {
             {
                 continue;
             }
-            let view = std::fs::read_to_string(&file)
-                .map_err(anyhow::Error::from)
+            let view = trusted(layer, &file)
+                .and_then(|()| Ok(std::fs::read_to_string(&file)?))
                 .and_then(|text| View::parse(&text));
             out.push((layer, file, view));
         }
@@ -746,12 +761,21 @@ pub fn list(repo: Option<&Path>) -> Vec<(&'static str, PathBuf, Result<View>)> {
     out
 }
 
-/// The folder and the file of the view `name` of the highest layer that has it, if any.
+/// The folder and the file of the view `name` of the highest layer that has it and may use it, if any.
 fn file_of(name: &str, repo: Option<&Path>) -> Option<(PathBuf, PathBuf)> {
-    dirs(repo).into_iter().find_map(|(_, dir)| {
+    dirs(repo).into_iter().find_map(|(layer, dir)| {
         let file = dir.join(format!("{name}.jsonc"));
-        file.exists().then_some((dir, file))
+        (file.exists() && trusted(layer, &file).is_ok()).then_some((dir, file))
     })
+}
+
+/// Whether the view `name` that shows is the repository's (its versions are facts of the project).
+#[must_use]
+pub fn in_repository(name: &str, repo: Option<&Path>) -> bool {
+    let repo_dir = repo
+        .and_then(crate::config::repo_root)
+        .map(|r| r.join(".legionctl/views"));
+    file_of(name, repo).is_some_and(|(dir, _)| Some(dir) == repo_dir)
 }
 
 /// The history folder of the view `name` in the layer folder `dir`.

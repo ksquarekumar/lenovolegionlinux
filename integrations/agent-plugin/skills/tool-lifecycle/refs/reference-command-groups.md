@@ -8,9 +8,10 @@ W workspace, M machine (polkit). "client" runs in the client only, with no opera
 | `status`, `load`, `sensors`, `doctor`, `capabilities`, `monitor`, `plan` | R | operator | the app, `doctor` | machine-tools |
 | `validate` | R | operator | - | verify-and-ship |
 | `gpu`, `vfio`, `knobs`, `fan`, `battery` | R, M | daemon | its `status`/`show` | machine-tools |
-| `power`, `cleanup`, `tune`, `undo` | M | daemon (`undo` of `display.change`: as you) | `events`, `plan` | machine-tools |
-| `rules` (with `sets`) | R, M | daemon; your own layer as you, then a reload | `rules list`, `plan` | machine-tools |
-| `boot`, `kernel`, `greeter` | R, M | daemon; the next start | its `status`/`list` | machine-tools |
+| `power`, `cleanup`, `tune` | M | daemon | `events`, `plan` | machine-tools |
+| `undo` | W | daemon (`undo` of `display.change`: as you) | `events`, `plan` | machine-tools |
+| `rules` (with `sets`) | R, W (`edit`, `reset`), M | daemon; your own layer as you, then a reload | `rules list`, `plan` | machine-tools |
+| `boot`, `kernel`, `greeter` | R, W (`kernel build`), M | daemon; the next start | its `status`/`list` | machine-tools |
 | `windows` | R, W, M | daemon, QEMU | `windows vm status` | machine-tools |
 | `display` | R, W | operator, as you | `events`, `undo` | machine-tools |
 | `virt` | R, W | docker, virsh, as you | `virt status` | machine-tools |

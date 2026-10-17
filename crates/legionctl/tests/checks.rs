@@ -7,6 +7,8 @@ mod common;
 mod desktop;
 #[path = "common/git.rs"]
 mod git;
+#[path = "common/trust.rs"]
+mod trust;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -87,11 +89,14 @@ impl Lab {
         git(&self.home, dir, args)
     }
 
-    /// A repository `name` with these files in its first commit on main.
+    /// A repository `name` with these files in its first commit on main; the user allowed its `.legionctl` files.
     fn repo(&self, name: &str, files: &[(&str, &str)]) -> PathBuf {
         let repo = self.home.join(name);
         for (file, content) in files {
             write(&repo.join(file), content);
+            if file.starts_with(".legionctl/") {
+                trust::allow(&self.home, &repo.join(file));
+            }
         }
         self.git(&self.home, &["init", "--quiet", repo.to_str().unwrap()]);
         self.git(&repo, &["add", "."]);
@@ -324,6 +329,7 @@ fn two_languages_an_unknown_one_and_the_written_proposal(lab: &Lab, rust_text: &
     let rust = lab.home.join("rust");
     assert!(!rust.join(".legionctl").exists());
     write(&rust.join(".legionctl/checks.jsonc"), rust_text);
+    trust::allow(&lab.home, &rust.join(".legionctl/checks.jsonc"));
     let listed = lab.ok(&rust, &["code", "checks", "list"]);
     assert!(
         listed.contains(&format!(
@@ -510,9 +516,10 @@ fn a_merge_refuses_without_passing_build_and_test_runs_at_the_rebased_head() {
 
 /// The merge gate tests only what the merge ships (R3-2, R3-7): an untracked file that makes the test pass refuses
 /// the merge (fast-forward ships the commits without it, and main would not pass), and a branch that rewrites its
-/// own gate in `.legionctl/` is refused to the agent with the user's exact command. The user (a terminal with no agent
-/// session, todo-147) runs that command: the same merge gate runs, then a desktop dialog asks; Deny keeps main, Allow
-/// fast-forwards it. main stays at its commit until the user allows.
+/// own gate in `.legionctl/` is refused to the agent with the user's exact command. The rewritten gate is not used
+/// until the user allows its content (A-5): the checkpoint waits for that answer. The user (a terminal with no agent
+/// session, todo-147) runs the merge command: the same merge gate runs, then a desktop dialog asks; Deny keeps main,
+/// Allow fast-forwards it. main stays at its commit until the user allows.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_merge_gate_refuses_an_untracked_file_and_a_branch_that_sets_its_own_gate() {
     let runtime = Scratch::new(format!("/var/tmp/lc-ships-bus-{}", std::process::id()));
@@ -528,7 +535,7 @@ async fn a_merge_gate_refuses_an_untracked_file_and_a_branch_that_sets_its_own_g
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     let address = format!("unix:path={}", bus_path.display());
-    let (_desktop, asked) = desktop::answering(&address, &["deny", "allow"]).await;
+    let (_desktop, asked) = desktop::answering(&address, &["allow", "deny", "allow"]).await;
     let lab = Lab::with_env("ships", &[("DBUS_SESSION_BUS_ADDRESS", address.into())]);
     let repo = lab.repo(
         "repo",
@@ -556,7 +563,7 @@ async fn a_merge_gate_refuses_an_untracked_file_and_a_branch_that_sets_its_own_g
         &ws.join(".legionctl/checks.jsonc"),
         r#"{ "checks": { "unit": { "kind": "test", "run": "echo run >> \"$HOME/unit-runs\"", "gate": "merge" } } }"#,
     );
-    lab.ok(&ws, &["workspace", "checkpoint", "drop the gate"]);
+    checkpoint_after_the_users_answer(&lab, &ws, "drop the gate");
     let refused = lab.run(&ws, &["workspace", "merge"]);
     let command = format!(
         "legionctl workspace merge --repo {} --dossier ships",
@@ -569,9 +576,10 @@ async fn a_merge_gate_refuses_an_untracked_file_and_a_branch_that_sets_its_own_g
         "{refused:?}"
     );
     assert_eq!(lab.git(&repo, &["log", "-1", "--format=%s"]), "start");
-    assert!(
-        asked.lock().unwrap().is_empty(),
-        "the agent's merge asks nobody"
+    assert_eq!(
+        asked.lock().unwrap().len(),
+        1,
+        "the agent's merge asks nobody (one question: the rewritten gate)"
     );
 
     // the user's terminal, anywhere: the command from the refusal
@@ -596,9 +604,36 @@ async fn a_merge_gate_refuses_an_untracked_file_and_a_branch_that_sets_its_own_g
     );
     let asked = asked.lock().unwrap().clone();
     assert!(
-        asked.len() == 2 && asked[0].contains(".legionctl/checks.jsonc"),
+        asked.len() == 3
+            && asked[0].contains(".legionctl/checks.jsonc")
+            && asked[1].contains("merge"),
         "{asked:?}"
     );
+}
+
+/// A checkpoint of `ws` whose changed `.legionctl` waits for the user (A-5): refused with the reason, then, once the
+/// user's answer is stored, committed.
+fn checkpoint_after_the_users_answer(lab: &Lab, ws: &Path, message: &str) {
+    let approvals = || {
+        std::fs::read_to_string(lab.home.join(".local/state/legionctl/approvals.json"))
+            .unwrap_or_default()
+    };
+    let before = approvals();
+    let waits = lab.run(ws, &["workspace", "checkpoint", message]);
+    assert!(
+        !waits.status.success()
+            && text(&waits)
+                .1
+                .contains("not used until you allow this file"),
+        "{waits:?}"
+    );
+    for _ in 0..200 {
+        if approvals() != before {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    lab.ok(ws, &["workspace", "checkpoint", message]);
 }
 
 /// A gate passes only on evidence (R3-3, R3-8, R3-9): a syntax error in the repository's `checks.jsonc` refuses the
@@ -639,6 +674,7 @@ fn a_broken_checks_file_and_a_check_that_changes_the_files_refuse_the_checkpoint
         &ws.join(".legionctl/checks.jsonc"),
         r#"{ "checks": { "install": { "kind": "install", "run": "touch installed", "gate": "checkpoint" } } }"#,
     );
+    trust::allow(&lab.home, &ws.join(".legionctl/checks.jsonc"));
     let refused = lab.run(&ws, &["workspace", "checkpoint", "install gate"]);
     assert!(
         !refused.status.success()
@@ -653,6 +689,8 @@ fn a_broken_checks_file_and_a_check_that_changes_the_files_refuse_the_checkpoint
         &ws.join(".legionctl/checks.jsonc"),
         r#"{ "checks": { "fmt": { "kind": "format", "run": "echo formatted >> code.txt", "gate": "checkpoint" } } }"#,
     );
+
+    trust::allow(&lab.home, &ws.join(".legionctl/checks.jsonc"));
     write(&ws.join("code.txt"), "code\n");
     let refused = lab.run(&ws, &["workspace", "checkpoint", "formatted"]);
     let err = text(&refused).1;
@@ -779,6 +817,7 @@ fn a_missing_check_kind_is_a_finding_and_a_session_start_nudge() {
         &ws.join(".legionctl/checks.jsonc"),
         r#"{ "checks": { "lint": { "kind": "lint", "run": "make lint", "gate": "checkpoint" } } }"#,
     );
+    trust::allow(&lab.home, &ws.join(".legionctl/checks.jsonc"));
     refusal("2");
 
     write(
@@ -787,6 +826,8 @@ fn a_missing_check_kind_is_a_finding_and_a_session_start_nudge() {
   "format": { "kind": "format", "run": "true" }, "lint": { "kind": "lint", "run": "true" },
   "build": { "kind": "build", "run": "true" }, "test": { "kind": "test", "run": "true" } } }"#,
     );
+
+    trust::allow(&lab.home, &ws.join(".legionctl/checks.jsonc"));
     assert!(!lab.session_start(&ws).contains("no checks of kind"));
     let checked = lab.findings(&ws, &["dossier", "check"]);
     assert!(

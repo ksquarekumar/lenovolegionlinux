@@ -15,7 +15,11 @@
     // Keys or prefixes that a repository's .legionctl file sets only after you allow that file once (trust on first
     // use): legionctl asks with a desktop notification the first time, and again when the file changes. Until you
     // allow it, and after Deny, the file's values of these keys are not used (`legionctl config layers` says so).
-    "approve": ["hooks", "session", "gates", "gateway", "mcp", "packages", "plugins", "dossier", "workspace", "runnables"]
+    "approve": ["hooks", "session", "gates", "gateway", "mcp", "packages", "plugins", "dossier", "workspace", "runnables",
+                "reminders", "agents", "checks", "views", "app"],
+    // Keys or prefixes that a repository's .legionctl file never sets, also after you allow the file: who pays for an
+    // agent (its account). "*" stands for one key part.
+    "repo_never": ["agents.configs.*.account", "agents.accounts"]
   },
 
   "workspace": {
@@ -183,14 +187,15 @@
     // Hidden in the sandbox (`~/` is the home): a container or VM manager or the system bus would let the agent act on
     // the host, keys and tokens would let it act as you. The runtime folder (session bus, systemd, GnuPG, ssh and
     // keyring agents) is hidden always, but legionctl's part; so is each .env file at the top of the repository and
-    // the workspace. Agents that push use the git gate, not your credentials.
+    // the workspace. Agents that push use the git gate, not your credentials. ~/.cache/legionctl holds the answers
+    // that the gateway and MCP servers gave other sessions.
     "hidden": [
       "/run/docker.sock", "/var/run/docker.sock", "/run/containerd", "/run/podman", "/run/libvirt", "/var/run/libvirt",
       "/run/dbus/system_bus_socket",
       "~/.ssh", "~/.gnupg", "~/.git-credentials", "~/.netrc", "~/.config/gh", "~/.docker", "~/.npmrc", "~/.pypirc",
       "~/.cargo/credentials.toml", "~/.cargo/credentials", "~/.aws", "~/.kube", "~/.local/share/keyrings",
       "~/.password-store", "~/.mozilla", "~/.config/google-chrome", "~/.config/chromium",
-      "~/.local/state/legionctl", "~/.clauth"
+      "~/.local/state/legionctl", "~/.clauth", "~/.local/share/legionctl/accounts", "~/.cache/legionctl"
     ]
   },
 

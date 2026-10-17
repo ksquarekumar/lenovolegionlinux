@@ -58,6 +58,15 @@ fn validate_text(text: &str) -> Result<()> {
     Ok(())
 }
 
+/// A reminder as every layer must give it (checked when the config loads): its id and one short line.
+///
+/// # Errors
+/// The id or the text does not fit.
+pub(crate) fn check(id: &str, text: &str) -> Result<()> {
+    validate_id(id)?;
+    validate_text(text)
+}
+
 #[must_use]
 pub fn list(config: &Resolved) -> Vec<Reminder> {
     config

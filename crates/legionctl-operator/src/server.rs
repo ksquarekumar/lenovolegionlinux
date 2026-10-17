@@ -12,8 +12,8 @@ use axum::routing::{get, post};
 use std::fmt::Write as _;
 
 use legionctl_api::{
-    ACTOR_HEADER, API_HEADER, Acted, ApiError, Class, Code, Ctx, DispatchError, OPS, Op, OpInfo,
-    Principal, api_fingerprint, op, user_token,
+    ACTOR_HEADER, AGENT_HEADER, API_HEADER, Acted, ApiError, Class, Code, Ctx, DispatchError, OPS,
+    Op, OpInfo, Principal, api_fingerprint, op, user_token,
 };
 use legionctl_core::db::Db;
 use serde_json::{Value, json};
@@ -43,7 +43,8 @@ pub fn router(operator: Arc<Operator>) -> axum::Router {
         .with_state(operator)
 }
 
-/// The principal of a call's bearer token: the user token file, else a session's token; no valid token is denied.
+/// The principal of a call's bearer token: the user token file (an agent's when its client names the agent), else a
+/// session's token; no valid token is denied.
 fn principal(headers: &HeaderMap) -> Result<Principal, ApiError> {
     let denied = |message: &str| ApiError {
         code: Code::Denied,
@@ -61,7 +62,12 @@ fn principal(headers: &HeaderMap) -> Result<Principal, ApiError> {
         .map_err(|e| denied(&format!("the user token: {e:#}")))?;
     // hashes, so the comparison takes the same time for every token
     if legionctl_core::db::token_hash(token) == legionctl_core::db::token_hash(&user) {
-        return Ok(Principal::User);
+        return Ok(
+            match headers.get(AGENT_HEADER).and_then(|v| v.to_str().ok()) {
+                Some(agent) => Principal::Agent(agent.to_string()),
+                None => Principal::User,
+            },
+        );
     }
     match Db::open_default().and_then(|db| db.token_session(token)) {
         Ok(Some(session)) => Ok(Principal::Session(session)),
@@ -114,21 +120,30 @@ pub(crate) fn own_session(op: &OpInfo, principal: &Principal, input: &mut Value)
     }
 }
 
-/// An agent's call outside its own session (a `workspace` op, or a field marked `x-approval` set) goes ahead only
-/// when the user allows it; the user's own calls and machine changes (polkit asks) go ahead.
+/// A sandboxed agent's call outside its own session (a `workspace` op, or a field marked `x-approval` set), and an
+/// unsandboxed agent's change of what runs or is said in every session (hooks, reminders), go ahead only when the
+/// user allows it; the user's own calls and machine changes (polkit asks) go ahead.
 async fn approved(op: &OpInfo, principal: &Principal, input: &Value) -> Result<(), ApiError> {
-    let Principal::Session(session) = principal else {
+    let asks = match principal {
+        Principal::User => false,
+        Principal::Session(_) => {
+            let schema = (op.input)();
+            op.class == Class::Workspace
+                || schema["properties"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .any(|(field, prop)| prop["x-approval"] == true && input[field] == true)
+        }
+        // it is the user's own process otherwise: the gate is on what reaches every later session
+        Principal::Agent(_) => {
+            op.class == Class::Workspace
+                && matches!(op.name.split('.').next(), Some("hooks" | "reminders"))
+        }
+    };
+    let Some(session) = principal.agent().filter(|_| asks) else {
         return Ok(());
     };
-    let schema = (op.input)();
-    let marked = schema["properties"]
-        .as_object()
-        .into_iter()
-        .flatten()
-        .any(|(field, prop)| prop["x-approval"] == true && input[field] == true);
-    if op.class != Class::Workspace && !marked {
-        return Ok(());
-    }
     let denied = |message: String| ApiError {
         code: Code::Denied,
         message,
@@ -177,7 +192,7 @@ fn refusal(error: &ApiError) -> (StatusCode, Json<Value>) {
 
 /// The event log as a stream (Durable Streams semantics): `GET /v1/events?offset=<id>` sends every event after that
 /// id, then each new one as it comes, as server-sent events whose id is the event id; `offset=now` starts at the
-/// newest, and a reconnect with `Last-Event-ID` goes on where it stopped. For the user only: the log holds every
+/// newest, and a reconnect with `Last-Event-ID` goes on where it stopped. Not for a sandbox: the log holds every
 /// session's calls.
 async fn events(
     headers: HeaderMap,
@@ -188,7 +203,10 @@ async fn events(
     >,
     (StatusCode, Json<Value>),
 > {
-    if principal(&headers).map_err(|e| refusal(&e))? != Principal::User {
+    if matches!(
+        principal(&headers).map_err(|e| refusal(&e))?,
+        Principal::Session(_)
+    ) {
         return Err(refusal(&ApiError {
             code: Code::Denied,
             message: "the event stream is for the user; a session reads its events with the events operation".into(),

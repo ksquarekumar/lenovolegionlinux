@@ -274,6 +274,8 @@ pub struct EventFilter<'a> {
     pub field: Option<(&'a str, &'a str)>,
     /// Only events whose payload contains this text (`*` matches any text, for per-CPU files).
     pub naming: Option<&'a str>,
+    /// Only the events of this session: what it ran and opened, and its own calls.
+    pub session: Option<&'a str>,
 }
 
 /// The first `limit` rows, and the id of the last one when the query found more (it asks for one more).
@@ -492,6 +494,13 @@ impl Db {
             sql.push_str(" AND json_extract(payload, ?) = ?");
             args.push(Box::new(path.to_string()));
             args.push(Box::new(value.to_string()));
+        }
+        if let Some(session) = filter.session {
+            sql.push_str(
+                " AND (json_extract(payload, '$.session') = ? OR json_extract(payload, '$.principal.session') = ?)",
+            );
+            args.push(Box::new(session.to_string()));
+            args.push(Box::new(session.to_string()));
         }
         if let Some(text) = filter.naming {
             let escaped = text

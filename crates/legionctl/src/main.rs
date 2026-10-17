@@ -37,7 +37,6 @@ fn client_only() -> Vec<Command> {
             )
             .arg(Arg::new("no-network").long("no-network").action(ArgAction::SetTrue).help("Run the server without network"))
             .arg(Arg::new("url").long("url").help("A remote server (streamable HTTP) instead of a command"))
-            .arg(Arg::new("header").long("header").action(ArgAction::Append).help("name=value for the remote server"))
             .arg(
                 Arg::new("command")
                     .num_args(1..)
@@ -295,6 +294,22 @@ fn start_session(mut launch: Launch) -> Result<()> {
     Err(err).with_context(|| format!("running {}", argv[0]))
 }
 
+/// The remote MCP server's headers from the proxy's environment (never its command line, where the exec sensor sees
+/// them).
+fn proxy_headers() -> Result<Vec<(String, String)>> {
+    let Ok(json) = std::env::var(legionctl_core::session::HEADERS_ENV) else {
+        return Ok(Vec::new());
+    };
+    let headers: std::collections::BTreeMap<String, String> = serde_json::from_str(&json)
+        .with_context(|| {
+            format!(
+                "{} is not a JSON object of strings",
+                legionctl_core::session::HEADERS_ENV
+            )
+        })?;
+    Ok(headers.into_iter().collect())
+}
+
 fn main() -> Result<()> {
     if std::env::args_os()
         .next()
@@ -333,14 +348,7 @@ fn main() -> Result<()> {
                 match sub.get_one::<String>("url") {
                     Some(url) => proxy::Upstream::Url {
                         url: url.clone(),
-                        headers: strings("header")
-                            .iter()
-                            .map(|h: &String| {
-                                h.split_once('=')
-                                    .map(|(n, v)| (n.to_string(), v.to_string()))
-                            })
-                            .collect::<Option<_>>()
-                            .context("--header wants name=value")?,
+                        headers: proxy_headers()?,
                     },
                     None => proxy::Upstream::Command {
                         argv: strings("command"),

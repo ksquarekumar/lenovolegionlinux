@@ -4,7 +4,6 @@
 use anyhow::{Context, Result};
 use legionctl_api::{
     Ctx, Fact, FactChange, FactSetIn, FactsAtIn, FactsDiffIn, FactsHistoryIn, IntoWire, Lines,
-    Principal,
 };
 use legionctl_core::facts::{self, At, New, Scope};
 
@@ -55,10 +54,7 @@ fn at(
 }
 
 pub fn set(ctx: &Ctx, input: &FactSetIn) -> Result<Lines> {
-    let session = match &ctx.principal {
-        Principal::Session(s) => Some(s.as_str()),
-        Principal::User => None,
-    };
+    let session = ctx.principal.agent();
     let source = facts::source(&ctx.actor, session);
     let value: serde_json::Value =
         serde_json::from_str(&input.value).context("the value must be JSON")?;

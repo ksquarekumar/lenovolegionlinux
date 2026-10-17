@@ -14,7 +14,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::config::{Approvals, Config, Source, Unapproved, content_hash};
+use crate::config::{Approvals, Config, Source, Unapproved};
 use crate::session::Inside;
 
 /// The step to operator.db v15: each session's granted connections, where the gateway reads them (JSON of
@@ -383,13 +383,13 @@ pub(crate) fn load(
             } else if set.powerful().is_empty() {
                 Trust::Plain
             } else {
-                let hash = content_hash(&value);
-                match approvals.0.get(&source.file).filter(|(h, _)| *h == hash) {
-                    Some((_, true)) => Trust::Allowed,
-                    Some((_, false)) => Trust::Denied,
+                let (name, hash, answer) = approvals.of(&file, &value);
+                match answer {
+                    Some(true) => Trust::Allowed,
+                    Some(false) => Trust::Denied,
                     None => {
                         unapproved.push(Unapproved {
-                            file: source.file.clone(),
+                            file: name,
                             hash,
                             keys: set
                                 .powerful()

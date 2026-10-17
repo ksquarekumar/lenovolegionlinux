@@ -7525,10 +7525,10 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
     }
 
     /// The operator of `a_repository_sets_a_powerful_key_only_after_the_user_allows_its_content` on the private bus
-    /// (also its session bus, for the desktop), and its repository with a hooks file and a checks file.
+    /// (also its session bus, for the desktop), and its repository with a hooks file.
     fn tofu_operator(
         m: &Machine,
-        address: String,
+        (tag, address): (&str, String),
     ) -> (Operator, std::path::PathBuf, std::path::PathBuf) {
         let home = m.dir.join("home");
         let repo = home.join("repo");
@@ -7542,18 +7542,13 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
                 .success()
         );
         hooks_layer(&repo, "echo PROBE_FIRST");
-        std::fs::write(
-            repo.join(".legionctl/checks.jsonc"),
-            r#"{"checks": {"lint": {"kind": "lint", "run": "true"}}}"#,
-        )
-        .unwrap();
         let path = std::env::join_paths(
             std::iter::once(m.dir.join("bin"))
                 .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
         )
         .unwrap();
         let op = Operator::start(
-            "tofu",
+            tag,
             &[
                 ("PATH", path),
                 ("HOME", home.clone().into()),
@@ -7568,15 +7563,17 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
     /// Trust on first use (O-2, user decision 2026-10-16): a repository's `.legionctl` file that sets a powerful key
     /// (here a hook command on every prompt) is not used for it until the user allows that content once, through the
     /// desktop question; the next prompts run it without a question. A changed file asks again, and after Deny its
-    /// command does not run and nobody is asked again for that content. A safe key (checks) in the same layer works
-    /// at once and asks nothing.
+    /// command does not run and nobody is asked again for that content. A repository's checks (shell commands that
+    /// the user's checks and merge gates run on the host, A-5) wait for an answer too: until then they do not
+    /// resolve, so no check runs and no gate passes.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_repository_sets_a_powerful_key_only_after_the_user_allows_its_content() {
         let m = Machine::new("tofu");
         let (_stand_ins, _asked, (_bus, _daemon)) = start(&m).await;
         let address = format!("unix:path={}", m.dir.join("bus").display());
-        let (_desktop, asked) = crate::desktop::answering(&address, &["allow", "deny"]).await;
-        let (op, home, repo) = tofu_operator(&m, address);
+        let (_desktop, asked) =
+            crate::desktop::answering(&address, &["allow", "deny", "deny"]).await;
+        let (op, home, repo) = tofu_operator(&m, (m.tag, address));
         let layer = |command: &str| hooks_layer(&repo, command);
         let env = [
             ("LEGIONCTL_SESSION", "s1"),
@@ -7655,13 +7652,468 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             2,
             "a changed file asks again, a denied content does not"
         );
-        let checks = op.run(&repo, &env, &["code", "checks", "list"], "");
+        a_repositorys_check_waits(&op, (&home, &repo), &env, &asked);
+    }
+
+    /// A-5: a repository's check (a shell command on the host for the user) does not run until the user allows its
+    /// file; the attempt asks (the third question of `asked`).
+    fn a_repositorys_check_waits(
+        op: &Operator,
+        (home, repo): (&std::path::Path, &std::path::Path),
+        env: &[(&str, &str)],
+        asked: &std::sync::Mutex<Vec<String>>,
+    ) {
+        std::fs::write(
+            repo.join(".legionctl/checks.jsonc"),
+            r#"{"checks": {"lint": {"kind": "lint", "run": "touch PWNED"}}}"#,
+        )
+        .unwrap();
+        let checks = op.run(repo, env, &["code", "checks", "run"], "");
         assert!(
-            String::from_utf8_lossy(&checks.stdout).contains("lint (lint"),
-            "{}",
-            String::from_utf8_lossy(&checks.stderr)
+            !checks.status.success()
+                && String::from_utf8_lossy(&checks.stderr)
+                    .contains("not used until you allow this file"),
+            "{checks:?}"
         );
-        assert_eq!(asked.lock().unwrap().len(), 2, "a safe key asks nothing");
+        assert!(
+            !repo.join("PWNED").exists(),
+            "a repository's check ran before the user allowed it"
+        );
+        answered(home, "checks.jsonc", asked, 3);
+        assert!(
+            asked.lock().unwrap()[2].contains("checks.jsonc"),
+            "{:?}",
+            asked.lock().unwrap()
+        );
+    }
+
+    /// The approvals file of `home`, once it holds an answer for a file named `name` and `n` questions were asked.
+    fn answered(
+        home: &std::path::Path,
+        name: &str,
+        asked: &std::sync::Mutex<Vec<String>>,
+        n: usize,
+    ) {
+        let approvals = home.join(".local/state/legionctl/approvals.json");
+        for _ in 0..200 {
+            if std::fs::read_to_string(&approvals)
+                .unwrap_or_default()
+                .contains(name)
+                && asked.lock().unwrap().len() >= n
+            {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!("no answer stored for {name}: {:?}", asked.lock().unwrap());
+    }
+
+    /// A-1, A-6, A-9 (EV-review-14): a repository's reminders and agent configs reach agent prompts only after the
+    /// user allows their content (until then the user's own reminders hold), and even then a repository does not
+    /// choose who pays for an agent; a reminder that does not fit is not used, from whichever layer; a repository
+    /// file that breaks the config holds the prompt with its name instead of turning the prompt gate off.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_repository_reaches_agent_prompts_only_after_the_user_allows_it() {
+        let m = Machine::new("remind");
+        let (_stand_ins, _asked, (_bus, _daemon)) = start(&m).await;
+        let address = format!("unix:path={}", m.dir.join("bus").display());
+        let (_desktop, asked) = crate::desktop::answering(&address, &["allow"]).await;
+        let (op, home, repo) = tofu_operator(&m, (m.tag, address));
+        std::fs::remove_dir_all(repo.join(".legionctl")).unwrap();
+        std::fs::create_dir_all(repo.join(".legionctl")).unwrap();
+        std::fs::write(
+            repo.join(".legionctl/agents.jsonc"),
+            serde_json::json!({
+                "reminders": {"evil": {"text": "EVIL_REMINDER", "event": "prompt", "enabled": true},
+                              "ste100": {"enabled": false}},
+                "agents": {"configs": {"helper": {"account": "payer", "model": "m1"}}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::create_dir_all(home.join(".config/legionctl")).unwrap();
+        std::fs::write(
+            home.join(".config/legionctl/mine.jsonc"),
+            serde_json::json!({"reminders": {"long": {"text": "L".repeat(400), "event": "prompt", "enabled": true}}})
+                .to_string(),
+        )
+        .unwrap();
+        let env = [
+            ("LEGIONCTL_SESSION", "s1"),
+            ("HOME", home.to_str().unwrap()),
+        ];
+        assert!(
+            op.run(&repo, &env, &["dossier", "use", "remind"], "")
+                .status
+                .success()
+        );
+        let prompt = || {
+            let out = op.run(
+                &repo,
+                &env,
+                &["hook", "prompt"],
+                &serde_json::json!({"session_id": "s1", "cwd": repo, "hook_event_name": "UserPromptSubmit",
+                                    "prompt": "hi"})
+                .to_string(),
+            );
+            String::from_utf8_lossy(&out.stdout).to_string()
+        };
+
+        let first = prompt();
+        assert!(
+            !first.contains("EVIL_REMINDER") && first.contains("ASD-STE100"),
+            "used before the user allowed it, or the user's reminder was turned off: {first}"
+        );
+        assert!(
+            !first.contains("LLLL"),
+            "a reminder over the limit: {first}"
+        );
+        answered(&home, "agents.jsonc", &asked, 1);
+        let allowed = prompt();
+        assert!(
+            allowed.contains("EVIL_REMINDER") && !allowed.contains("ASD-STE100"),
+            "{allowed}"
+        );
+        assert!(
+            asked.lock().unwrap()[0].contains("reminders"),
+            "{:?}",
+            asked.lock().unwrap()
+        );
+        let helper: Value = serde_json::from_slice(
+            &op.run(
+                &repo,
+                &env,
+                &["config", "explain", "agents.configs.helper", "--json"],
+                "",
+            )
+            .stdout,
+        )
+        .unwrap();
+        assert_eq!(helper["value"]["model"], "m1", "{helper}");
+        assert!(
+            helper["value"]["account"].is_null(),
+            "a repository chose who pays: {helper}"
+        );
+
+        std::fs::write(repo.join(".legionctl/broken.jsonc"), r#"{"load": 5}"#).unwrap();
+        let held = prompt();
+        assert!(
+            held.contains(r#""decision":"block""#)
+                && held.contains("broken.jsonc")
+                && held.contains("load"),
+            "a broken file must hold the prompt and name itself: {held}"
+        );
+    }
+
+    /// A-6: a repository team of the plugin's name is not the one used; its own name waits for the user's answer.
+    fn repository_teams_wait(
+        op: &Operator,
+        (home, repo): (&std::path::Path, &std::path::Path),
+        asked: &std::sync::Mutex<Vec<String>>,
+    ) {
+        let env = [("HOME", home.to_str().unwrap())];
+        // a repository team of the plugin's name is not the one used; its own name waits for the user
+        std::fs::create_dir_all(repo.join(".legionctl/teams")).unwrap();
+        std::fs::write(repo.join(".legionctl/teams/vanilla.jsonc"), "not a team").unwrap();
+        let vanilla = op.run(
+            repo,
+            &env,
+            &["runnables", "check", "--team", "vanilla", "--json"],
+            "",
+        );
+        assert!(vanilla.status.success(), "the plugin's team: {vanilla:?}");
+        std::fs::write(
+            repo.join(".legionctl/teams/rogue.jsonc"),
+            r#"{"name": "rogue", "members": {"main0": {"agent": "main-agent"}}}"#,
+        )
+        .unwrap();
+        let rogue = op.run(
+            repo,
+            &env,
+            &["runnables", "check", "--team", "rogue", "--json"],
+            "",
+        );
+        assert!(
+            !rogue.status.success()
+                && String::from_utf8_lossy(&rogue.stderr).contains("not used until you allow it"),
+            "{rogue:?}"
+        );
+        answered(home, "rogue.jsonc", asked, 2);
+        assert!(
+            asked.lock().unwrap()[1].contains("team rogue"),
+            "{:?}",
+            asked.lock().unwrap()
+        );
+        let allowed = op.run(
+            repo,
+            &env,
+            &["runnables", "check", "--team", "rogue", "--json"],
+            "",
+        );
+        assert!(allowed.status.success(), "{allowed:?}");
+    }
+
+    /// A-4, A-6 (EV-review-14): a repository's view (its buttons run operations) and its team (agents, models,
+    /// instructions) are used only after the user allows their content, and neither hides the user's or the plugin's
+    /// of the same name: the user's view shows over the repository's, the plugin's team over the repository's.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_repositorys_views_and_teams_wait_for_the_user_and_hide_none_of_the_users() {
+        let m = Machine::new("rviews");
+        let (_stand_ins, _asked, (_bus, _daemon)) = start(&m).await;
+        let address = format!("unix:path={}", m.dir.join("bus").display());
+        let (_desktop, asked) = crate::desktop::answering(&address, &["allow", "allow"]).await;
+        let (op, home, repo) = tofu_operator(&m, (m.tag, address));
+        std::fs::remove_dir_all(repo.join(".legionctl")).unwrap();
+        let view = |name: &str, title: &str| {
+            serde_json::json!({"name": name, "title": title, "widget": "list", "source": {"op": "about"},
+                               "columns": ["part"],
+                               "actions": [{"label": "Go", "op": "hooks.add", "input": {"id": "x", "command": "true"}}]})
+            .to_string()
+        };
+        std::fs::create_dir_all(repo.join(".legionctl/views")).unwrap();
+        std::fs::create_dir_all(home.join(".config/legionctl/views")).unwrap();
+        std::fs::write(
+            repo.join(".legionctl/views/panel.jsonc"),
+            view("panel", "Repo panel"),
+        )
+        .unwrap();
+        std::fs::write(
+            repo.join(".legionctl/views/shared.jsonc"),
+            view("shared", "Repo shared"),
+        )
+        .unwrap();
+        std::fs::write(
+            home.join(".config/legionctl/views/shared.jsonc"),
+            view("shared", "My shared"),
+        )
+        .unwrap();
+        let env = [("HOME", home.to_str().unwrap())];
+        let list = || -> Value {
+            serde_json::from_slice(&op.run(&repo, &env, &["views", "list", "--json"], "").stdout)
+                .unwrap()
+        };
+        let find = |all: &Value, name: &str| -> Value {
+            all.as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["name"] == name)
+                .cloned()
+                .unwrap_or(Value::Null)
+        };
+        let before = list();
+        assert!(
+            find(&before, "panel")["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("not used until you allow it")),
+            "{before:#}"
+        );
+        assert_eq!(find(&before, "shared")["title"], "My shared", "{before:#}");
+        assert_eq!(find(&before, "shared")["layer"], "user", "{before:#}");
+        answered(&home, "panel.jsonc", &asked, 1);
+        let after = list();
+        assert_eq!(find(&after, "panel")["title"], "Repo panel", "{after:#}");
+        assert_eq!(
+            find(&after, "shared")["title"],
+            "My shared",
+            "the user's view stays over the repository's"
+        );
+
+        // the user's own save into the repository's layer is the user's answer for that content: no question
+        let saved = op.run(
+            &repo,
+            &env,
+            &["views", "save", "--repo", "."],
+            &view("panel", "Repo panel, mine"),
+        );
+        assert!(saved.status.success(), "{saved:?}");
+        assert_eq!(find(&list(), "panel")["title"], "Repo panel, mine");
+        assert_eq!(
+            asked.lock().unwrap().len(),
+            1,
+            "{:?}",
+            asked.lock().unwrap()
+        );
+
+        repository_teams_wait(&op, (&home, &repo), &asked);
+    }
+
+    /// The operator of the compose test on the private bus (also its desktop) with this machine's Docker, and its
+    /// repository with one commit.
+    fn compose_operator(
+        m: &Machine,
+        address: String,
+    ) -> (Operator, std::path::PathBuf, std::path::PathBuf) {
+        let home = m.dir.join("home");
+        let repo = home.join("trustcompose");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [
+            &["init", "-q"][..],
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "start",
+            ],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(&repo)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let path = std::env::join_paths(
+            std::iter::once(m.dir.join("bin"))
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        let op = Operator::start(
+            "compose",
+            &[
+                ("PATH", path),
+                ("HOME", home.clone().into()),
+                ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+                ("DBUS_SYSTEM_BUS_ADDRESS", address.clone().into()),
+                ("DBUS_SESSION_BUS_ADDRESS", address.into()),
+                (
+                    "DOCKER_HOST",
+                    std::env::var_os("DOCKER_HOST")
+                        .unwrap_or_else(|| "unix:///var/run/docker.sock".into()),
+                ),
+            ],
+        );
+        (op, home, repo)
+    }
+
+    /// A-5 (EV-review-14): `images run` starts a repository's own compose file on the host only after the user
+    /// allowed its content (as docker compose reads it), and the question names each service that gets root on the
+    /// machine; after Deny nothing starts, a changed file asks again, and after Allow compose runs (here it stops at
+    /// the image that is not there, so no container starts). This machine's Docker reads the files; nothing runs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_repositorys_compose_file_runs_only_after_the_user_allows_it_and_names_its_root_services()
+     {
+        let m = Machine::new("compose");
+        let (_stand_ins, _asked, (_bus, _daemon)) = start(&m).await;
+        let address = format!("unix:path={}", m.dir.join("bus").display());
+        let (_desktop, asked) = crate::desktop::answering(&address, &["deny", "allow"]).await;
+        let (op, home, repo) = compose_operator(&m, address);
+        let compose = |privileged: bool| {
+            std::fs::write(
+                repo.join("compose.yaml"),
+                format!(
+                    "services:\n  app:\n    image: localhost/trustcompose-missing:none\n    pull_policy: never\n\
+                     \x20   privileged: {privileged}\n"
+                ),
+            )
+            .unwrap();
+        };
+        let env = [("HOME", home.to_str().unwrap())];
+        let run = || op.run(&repo, &env, &["images", "run"], "");
+        compose(true);
+        let first = run();
+        assert!(
+            !first.status.success()
+                && String::from_utf8_lossy(&first.stderr).contains("not used until you allow it"),
+            "{first:?}"
+        );
+        answered(&home, "compose.yaml", &asked, 1);
+        assert!(
+            asked.lock().unwrap()[0].contains("service app with root on this machine"),
+            "{:?}",
+            asked.lock().unwrap()
+        );
+        let denied = run();
+        assert!(
+            String::from_utf8_lossy(&denied.stderr).contains("you denied"),
+            "{denied:?}"
+        );
+        compose(false);
+        let _ = run();
+        answered(&home, "compose.yaml", &asked, 2);
+        let approvals = home.join(".local/state/legionctl/approvals.json");
+        for _ in 0..200 {
+            if std::fs::read_to_string(&approvals)
+                .unwrap_or_default()
+                .contains("true")
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            !asked.lock().unwrap()[1].contains("with root"),
+            "{:?}",
+            asked.lock().unwrap()
+        );
+        let allowed = run();
+        let _ = std::process::Command::new("docker")
+            .current_dir(&repo)
+            .args([
+                "compose",
+                "-p",
+                "trustcompose",
+                "-f",
+                "compose.yaml",
+                "-f",
+                ".legionctl/compose.json",
+                "down",
+            ])
+            .output();
+        assert!(
+            String::from_utf8_lossy(&allowed.stderr).contains("docker compose up"),
+            "past the gate, compose itself refuses the missing image: {allowed:?}"
+        );
+    }
+
+    /// B-1 (EV-review-14): a sandbox reads only its own events (what it ran and its own calls): the log holds the
+    /// command lines of every session; the user reads all of them.
+    #[test]
+    fn a_sandbox_reads_only_its_own_events() {
+        let home = Scratch::new(format!("/var/tmp/legionctl-evs-{}", std::process::id()));
+        let op = Operator::start("evs", &[("HOME", home.as_os_str().to_owned())]);
+        op.ok(&["events"]);
+        add_session_token(&home, "agent-token", "agent-1");
+        let added = std::process::Command::new("python3")
+            .args([
+                "-c",
+                "import json, sqlite3, sys; c = sqlite3.connect(sys.argv[1]); \
+                 [c.execute('INSERT INTO events (ts, actor, kind, payload) VALUES (0, ?, ?, ?)', r) for r in [\
+                 ('daemon', 'session.exec', json.dumps({'session': 'agent-1', 'pid': 1, 'argv': ['OWN_RUN']})), \
+                 ('daemon', 'session.exec', json.dumps({'session': 'other', 'pid': 2, 'argv': ['OTHER_SECRET']})), \
+                 ('cli', 'hooks.add', json.dumps({'principal': {'session': 'agent-1'}, 'input': 'OWN_CALL'}))]]; c.commit()",
+            ])
+            .arg(home.join(".local/state/legionctl/operator.db"))
+            .status()
+            .unwrap();
+        assert!(added.success());
+        let agent = op.run(
+            &home,
+            &[
+                ("LEGIONCTL_TOKEN", "agent-token"),
+                ("HOME", home.to_str().unwrap()),
+            ],
+            &["events", "--json"],
+            "",
+        );
+        let seen = String::from_utf8_lossy(&agent.stdout);
+        assert!(
+            seen.contains("OWN_RUN") && seen.contains("OWN_CALL") && !seen.contains("OTHER_SECRET"),
+            "{seen} {}",
+            String::from_utf8_lossy(&agent.stderr)
+        );
+        let all = op.ok(&["events", "--json"]);
+        assert!(
+            all.contains("OTHER_SECRET") && all.contains("OWN_RUN"),
+            "{all}"
+        );
+        drop(op);
     }
 
     /// U-12: a question that waits for the user can be answered outside its desktop notice (the app's Activity, a
@@ -7736,6 +8188,185 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         assert!(
             String::from_utf8_lossy(&again.stderr).contains("does not wait now"),
             "{again:?}"
+        );
+    }
+
+    /// The pre-tool hook of agent session `plain-1` (Claude Code's Write) denies a write into the user's legionctl
+    /// answers and settings, and lets a write elsewhere through.
+    fn agent_writes_into_the_settings_are_denied(
+        home: &std::path::Path,
+        agent: &impl Fn(&[&str], &str) -> Output,
+    ) {
+        for file in [
+            home.join(".local/state/legionctl/approvals.json"),
+            home.join(".config/legionctl/managed.jsonc"),
+        ] {
+            let write = agent(
+            &["hook", "pre-tool"],
+            &serde_json::json!({"session_id": "plain-1", "cwd": home, "hook_event_name": "PreToolUse",
+                                "tool_name": "Write", "tool_input": {"file_path": file, "content": "{}"}})
+            .to_string(),
+        );
+            let answer = String::from_utf8_lossy(&write.stdout);
+            assert!(
+                answer.contains(r#""permissionDecision":"deny""#)
+                    && answer.contains("change them with legionctl"),
+                "{}: {answer} {}",
+                file.display(),
+                String::from_utf8_lossy(&write.stderr)
+            );
+        }
+        let elsewhere = agent(
+        &["hook", "pre-tool"],
+        &serde_json::json!({"session_id": "plain-1", "cwd": home, "hook_event_name": "PreToolUse",
+                            "tool_name": "Write", "tool_input": {"file_path": home.join("notes.md"), "content": "x"}})
+        .to_string(),
+    );
+        assert!(
+            !String::from_utf8_lossy(&elsewhere.stdout).contains("deny"),
+            "{elsewhere:?}"
+        );
+    }
+
+    /// A-3 (EV-review-14): an agent that is not sandboxed (Claude Code in the user's terminal) holds the user's token
+    /// but is not the user. Its change of the reminders that every session gets waits for the user (Deny refuses it,
+    /// Allow lets it go on); it cannot answer a question; the pre-tool hook denies its file writes into the user's
+    /// legionctl settings and answers. The user's own terminal asks nothing and answers the question.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unsandboxed_agent_is_not_the_user_for_questions_reminders_and_hooks() {
+        let m = Machine::new("plain");
+        let (_stand_ins, _asked, (_bus, _daemon)) = start(&m).await;
+        let address = format!("unix:path={}", m.dir.join("bus").display());
+        let (_desktop, asked) =
+            crate::desktop::answering(&address, &["deny", "allow", "wait"]).await;
+        let home = m.dir.join("home");
+        let op = std::sync::Arc::new(Operator::start(
+            "plain",
+            &[
+                ("PATH", m.dir.join("bin").into()),
+                ("HOME", home.clone().into()),
+                ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+                ("DBUS_SYSTEM_BUS_ADDRESS", address.clone().into()),
+                ("DBUS_SESSION_BUS_ADDRESS", address.into()),
+            ],
+        ));
+        op.ok(&["events"]);
+        let agent = {
+            let (op, home) = (op.clone(), home.clone());
+            move |args: &[&str], stdin: &str| {
+                op.run(
+                    &home,
+                    &[
+                        ("CLAUDE_CODE_SESSION_ID", "plain-1"),
+                        ("HOME", home.to_str().unwrap()),
+                    ],
+                    args,
+                    stdin,
+                )
+            }
+        };
+        let user = |args: &[&str]| op.run(&home, &[("HOME", home.to_str().unwrap())], args, "");
+        let add = ["reminders", "add", "greet", "Say hello first"];
+        let denied = agent(&add, "");
+        assert!(
+            !denied.status.success()
+                && String::from_utf8_lossy(&denied.stderr).contains("the user did not allow it"),
+            "{denied:?}"
+        );
+        let allowed = agent(&add, "");
+        assert!(allowed.status.success(), "{allowed:?}");
+        assert_eq!(
+            asked.lock().unwrap().len(),
+            2,
+            "{:?}",
+            asked.lock().unwrap()
+        );
+        assert!(
+            asked.lock().unwrap()[0].contains("plain-1"),
+            "{:?}",
+            asked.lock().unwrap()
+        );
+        let off = user(&["reminders", "off", "greet"]);
+        assert!(off.status.success(), "{off:?}");
+        assert_eq!(
+            asked.lock().unwrap().len(),
+            2,
+            "the user's own call asks nothing"
+        );
+
+        let waiting = {
+            let agent = agent.clone();
+            std::thread::spawn(move || agent(&["hooks", "add", "greet", "echo hello"], ""))
+        };
+        let ask = loop {
+            let events: Value = serde_json::from_str(&op.ok(&["events", "--json"])).unwrap();
+            if let Some(e) = events["items"].as_array().unwrap().iter().find(|e| {
+                e["kind"] == "approval.ask"
+                    && e["payload"]["what"].to_string().contains("echo hello")
+            }) {
+                break e["payload"]["ask"].as_u64().unwrap().to_string();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        };
+        let refused = agent(&["approval", "answer", &ask, "allow"], "");
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("only the user answers a question"),
+            "{refused:?}"
+        );
+        assert!(
+            user(&["approval", "answer", &ask, "allow"])
+                .status
+                .success()
+        );
+        assert!(waiting.join().unwrap().status.success());
+
+        agent_writes_into_the_settings_are_denied(&home, &agent);
+    }
+
+    /// C-8 (EV-review-14): an operation that changes the user's files without the daemon (here the user's own rule
+    /// layer, which the root daemon then applies) is no machine change that polkit guards: a sandboxed agent's call
+    /// waits for the user, and after Deny no layer is written. The user's own call applies at once (the configsets
+    /// test above).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_agent_asks_the_user_before_it_writes_the_users_rule_layer() {
+        let m = Machine::new("ownlayer");
+        let (_stand_ins, _asked, (_bus, _daemon)) = start(&m).await;
+        let address = format!("unix:path={}", m.dir.join("bus").display());
+        let (_desktop, asked) = crate::desktop::answering(&address, &["deny"]).await;
+        let home = m.dir.join("home");
+        let op = Operator::start(
+            "ownlayer",
+            &[
+                ("PATH", m.dir.join("bin").into()),
+                ("HOME", home.clone().into()),
+                ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+                ("DBUS_SYSTEM_BUS_ADDRESS", address.clone().into()),
+                ("DBUS_SESSION_BUS_ADDRESS", address.into()),
+            ],
+        );
+        op.ok(&["events"]);
+        add_session_token(&home, "agent-token", "agent-1");
+        let denied = op.run(
+            &home,
+            &[
+                ("LEGIONCTL_TOKEN", "agent-token"),
+                ("HOME", home.to_str().unwrap()),
+            ],
+            &["rules", "edit", "50-mine", "sysctl.vm.swappiness=60"],
+            "",
+        );
+        assert!(
+            !denied.status.success()
+                && String::from_utf8_lossy(&denied.stderr).contains(
+                    "rules.edit changes more than this session, and the user did not allow it"
+                ),
+            "{denied:?}"
+        );
+        assert_eq!(asked.lock().unwrap().len(), 1);
+        assert!(
+            !home
+                .join(".config/legionctl/configsets/50-mine.jsonc")
+                .exists()
         );
     }
 

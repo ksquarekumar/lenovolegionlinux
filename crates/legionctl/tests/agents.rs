@@ -11,6 +11,8 @@ mod common;
 mod keyring;
 #[path = "common/plain.rs"]
 mod plain;
+#[path = "common/trust.rs"]
+mod trust;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -289,6 +291,7 @@ fn vanilla_resolves_its_three_members_through_their_layers_and_a_layer_that_wide
             "main0": { "agent": "main-agent", "tools": { "allow": ["Read", "Bash"] }, "capabilities": ["web-read"] },
             "observer0": { "agent": "thread-observer", "budget": { "wake_tokens": 1000 } } } }"#,
     );
+    trust::allow(&lab.home, &lab.repo.join(".legionctl/teams/narrow.jsonc"));
     let (narrow, ok) = lab.check(&["--team", "narrow"]);
     assert!(ok && refused(&narrow).is_empty(), "{narrow:#}");
     assert_eq!(
@@ -307,6 +310,7 @@ fn vanilla_resolves_its_three_members_through_their_layers_and_a_layer_that_wide
             "ui0": { "agent": "ui-composer" } },
             "flow": { "may": { "ui0": ["note", "hard-block"] } } }"#,
     );
+    trust::allow(&lab.home, &lab.repo.join(".legionctl/teams/wide.jsonc"));
     let (wide, ok) = lab.check(&["--team", "wide"]);
     assert!(!ok);
     assert_eq!(
@@ -324,6 +328,7 @@ fn vanilla_resolves_its_three_members_through_their_layers_and_a_layer_that_wide
         &lab.repo.join(".legionctl/agents.jsonc"),
         r#"{ "agents": { "configs": { "main-agent": { "commands": { "deny": [] } } } } }"#,
     );
+    trust::allow(&lab.home, &lab.repo.join(".legionctl/agents.jsonc"));
     let (repo, ok) = lab.check(&["--team", "vanilla"]);
     assert!(!ok);
     assert_eq!(

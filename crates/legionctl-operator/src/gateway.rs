@@ -25,6 +25,46 @@ use serde_json::{Value, json};
 
 use crate::translate::{self, Direction};
 
+/// Who calls the gateway: a session (its process is in the session's scope, from the socket's peer), else the host.
+#[derive(Clone, Debug)]
+struct Caller {
+    who: String,
+}
+
+impl
+    axum::extract::connect_info::Connected<
+        axum::serve::IncomingStream<'_, tokio::net::UnixListener>,
+    > for Caller
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, tokio::net::UnixListener>) -> Caller {
+        let session = stream
+            .io()
+            .peer_cred()
+            .ok()
+            .and_then(|c| c.pid())
+            .and_then(|pid| std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok())
+            .and_then(|cgroup| {
+                cgroup.split(['/', '\n']).find_map(|part| {
+                    part.strip_prefix("legionctl-session-")?
+                        .strip_suffix(".scope")
+                        .map(String::from)
+                })
+            });
+        Caller {
+            who: session.map_or_else(|| "host".into(), |id| format!("session:{id}")),
+        }
+    }
+}
+
+impl
+    axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, tokio::net::TcpListener>>
+    for Caller
+{
+    fn connect_info(_: axum::serve::IncomingStream<'_, tokio::net::TcpListener>) -> Caller {
+        Caller { who: "host".into() }
+    }
+}
+
 /// The finding of a gateway cache that cannot be used (user decision Q3).
 const GATEWAY_CACHE: &str = "the gateway cache fails, so its calls go upstream";
 
@@ -169,20 +209,29 @@ pub async fn serve(bound: Bound, ready: crate::Ready) -> Result<()> {
         token,
     };
     let app = axum::Router::new()
-        .route("/v1/messages", post(|s, h, b| call(s, Api::Messages, h, b)))
+        .route(
+            "/v1/messages",
+            post(|s, c, h, b| call(s, c, Api::Messages, h, b)),
+        )
         .route(
             "/v1/chat/completions",
-            post(|s, h, b| call(s, Api::Chat, h, b)),
+            post(|s, c, h, b| call(s, c, Api::Chat, h, b)),
         )
         .route(
             "/v1/responses",
-            post(|s, h, b| call(s, Api::Responses, h, b)),
+            post(|s, c, h, b| call(s, c, Api::Responses, h, b)),
         )
         .with_state(gateway);
     ready.set();
     tokio::try_join!(
-        axum::serve(tcp, app.clone()).into_future(),
-        axum::serve(local, app).into_future()
+        axum::serve(
+            tcp,
+            app.clone()
+                .layer(axum::middleware::from_fn(local_only))
+                .into_make_service_with_connect_info::<Caller>()
+        )
+        .into_future(),
+        axum::serve(local, app.into_make_service_with_connect_info::<Caller>()).into_future()
     )?;
     Ok(())
 }
@@ -246,13 +295,12 @@ fn record(row: &GatewayUsage) {
     }
 }
 
+/// An account that may serve a call: its name, the model there, and the translation to its API.
+type Candidate = (String, String, Option<Direction>);
+
 /// The accounts that may serve `model` for `api`: the named one, or the pool entry (then `*`), with the translation
 /// each needs.
-fn candidates(
-    config: &GatewayConfig,
-    api: Api,
-    model: &str,
-) -> Result<Vec<(String, String, Option<Direction>)>, String> {
+fn candidates(config: &GatewayConfig, api: Api, model: &str) -> Result<Vec<Candidate>, String> {
     if let Some((account, bare)) = model.split_once('/') {
         let a = config
             .accounts
@@ -448,7 +496,13 @@ fn provider_body(api: Api, direction: Option<Direction>, request: &Value) -> Res
     translate::request(d, request)
 }
 
-async fn call(State(gw): State<Gateway>, api: Api, headers: HeaderMap, body: Bytes) -> Response {
+async fn call(
+    State(gw): State<Gateway>,
+    axum::extract::ConnectInfo(caller): axum::extract::ConnectInfo<Caller>,
+    api: Api,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let started = Instant::now();
     let Ok(mut request) = serde_json::from_slice::<Value>(&body) else {
         return refuse(StatusCode::BAD_REQUEST, "the body is not JSON");
@@ -471,8 +525,8 @@ async fn call(State(gw): State<Gateway>, api: Api, headers: HeaderMap, body: Byt
         &gw,
         &config,
         &cache_mode,
-        (api, &model, &accounts[0].1),
-        (&request, &headers),
+        (api, &model, &accounts),
+        (&request, &headers, &caller.who),
     )
     .await
     {
@@ -550,6 +604,40 @@ async fn call(State(gw): State<Gateway>, api: Api, headers: HeaderMap, body: Byt
     no_account(&model, &refusals)
 }
 
+/// The TCP port serves local programs only: a browser's request has an Origin, a rebound name another Host.
+async fn local_only(request: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let headers = request.headers();
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .map(|h| h.rsplit_once(':').map_or(h, |(name, _)| name));
+    if headers.contains_key("origin") || !matches!(host, Some("127.0.0.1" | "localhost")) {
+        return refuse(
+            StatusCode::FORBIDDEN,
+            "the gateway takes calls from local programs only (Host 127.0.0.1 or localhost, no Origin)",
+        );
+    }
+    next.run(request).await
+}
+
+/// The model of the first of `accounts` that would serve this caller now; none when each is blocked.
+///
+/// # Errors
+/// A budget cannot be read.
+fn first_open(
+    config: &GatewayConfig,
+    accounts: &[Candidate],
+    headers: &HeaderMap,
+    token: &str,
+) -> Result<Option<String>, String> {
+    for (name, bare, _) in accounts {
+        if blocked(config, &config.accounts[name], name, bare, headers, token)?.is_none() {
+            return Ok(Some(bare.clone()));
+        }
+    }
+    Ok(None)
+}
+
 /// No account served the call: 401 when a key needed the gateway token, else 429; every account's reason.
 fn no_account(model: &str, refusals: &[String]) -> Response {
     let status = if refusals.iter().any(|r| r.contains("gateway token")) {
@@ -582,17 +670,22 @@ async fn cached(
     gw: &Gateway,
     config: &GatewayConfig,
     cache_mode: &str,
-    (api, model, served): (Api, &str, &str),
-    (request, headers): (&Value, &HeaderMap),
+    (api, model, accounts): (Api, &str, &[Candidate]),
+    (request, headers, caller): (&Value, &HeaderMap, &str),
 ) -> Result<Response, ToKeep> {
-    // the key: the API and the request (keys sorted), not the account: any account's answer replays
+    // the key: the caller, the API and the request (keys sorted), not the account: any account's answer replays, to
+    // the caller that asked only (another session's answers are not its to read or to poison)
     let key = format!(
         "{:x}",
-        Blake2b::<U16>::digest(format!("{}{request}", api.path()).as_bytes())
+        Blake2b::<U16>::digest(format!("{caller}\n{}{request}", api.path()).as_bytes())
     );
+    // a kept answer replays only to a caller that an account would serve now (its token, its budget)
+    let Ok(Some(served)) = first_open(config, accounts, headers, &gw.token) else {
+        return Err((key, None));
+    };
     if (cache_mode == "on" || cache_mode == "semantic")
         && config.cache_ttl_s > 0
-        && let Some(response) = replay(&key, served, "hit")
+        && let Some(response) = replay(&key, &served, "hit")
     {
         return Ok(response);
     }
@@ -643,7 +736,7 @@ async fn cached(
         }
     }
     let scope = format!(
-        "{}{model}{:x}",
+        "{caller}\n{}{model}{:x}",
         api.path(),
         Blake2b::<U16>::digest(rest.to_string().as_bytes())
     );
@@ -656,7 +749,7 @@ async fn cached(
             None
         }
     };
-    match nearest.and_then(|kept| replay(&kept, served, "semantic")) {
+    match nearest.and_then(|kept| replay(&kept, &served, "semantic")) {
         Some(response) => Ok(response),
         None => Err((key, Some((scope, vector)))),
     }

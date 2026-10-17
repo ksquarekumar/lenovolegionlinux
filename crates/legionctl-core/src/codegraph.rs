@@ -971,6 +971,7 @@ fn commits(dir: &Path, range: &str) -> Result<Vec<CommitRow>> {
                 kinds: &[COMMIT_EVENT],
                 field: Some(("$.patch_id", patch)),
                 naming: None,
+                session: None,
             })?,
             None => None,
         };

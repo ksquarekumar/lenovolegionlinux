@@ -156,8 +156,38 @@ Hardened (2026-10-16, EV-review-08, user decision "approve all, do it first"):
   repository layer hooks) run in a sandbox of the session (`session::Jail`: the same mounts with a throwaway home
   layer, no runtime folder and no network), never on the host. The user's own calls run on the host.
 - O-2: a repository layer file sets the keys of `config.approve` (hooks, session, gates, gateway, mcp, packages,
-  plugins, dossier, workspace) only after the user allowed its content once (desktop question, answer in
-  `approvals.json` with the content hash); a changed file asks again.
+  plugins, dossier, workspace, runnables, reminders, agents, checks, views, app) only after the user allowed its
+  content once (desktop question, answer in `approvals.json` with the content hash, named by the file's path in the
+  main checkout, so one answer holds in every worktree); a changed file asks again. Every path that reads the
+  repository layer asks (the operator's asker in core). `config.repo_never` (who pays: `agents.configs.*.account`,
+  `agents.accounts`) is never taken from a repository.
+
+Trust fixes (2026-10-17, EV-review-14, plan#todo-198):
+- A-1, A-6, A-4, A-5: the repository's reminders, agent configs, checks (and so the branch's own gates at merge),
+  team files, view files and its own compose file (as `docker compose config` reads it; the question names each
+  service with root on the machine) wait for the same first-use answer. The user's and the plugin's teams, and the
+  user's views, are never hidden by a repository's of the same name. A reminder that does not fit (one line, 300
+  characters) is not used, from any layer.
+- A-3: an agent that is not sandboxed holds the user token, and its clients say so (`x-legionctl-agent` from the MCP
+  server, the hooks and the CLI in its shell): `Principal::Agent`. Only the user answers a question; its hooks and
+  reminders changes ask the user; the pre-tool hook denies its file writes into `~/.config/legionctl` and
+  `~/.local/state/legionctl`. Limit: the agent runs as the user, so a hostile process can still read the user token
+  or write the files with its shell; this guards a prompt-injected agent that uses legionctl's tools.
+- A-4: a view button runs at once only for a read; every change confirms by its class. A line the user types in the
+  chat bar runs a change of the user's own session at once. The composer's views go into the user's layer and its
+  facts have the source `agent:<composer>`.
+- A-2: `code tests mutant run` of a session runs cargo-mutants in its sandbox.
+- A-9: a folder whose config does not resolve holds each prompt with the file and key that broke it.
+- A-10: a user's fact wins over every other fact; `--corrects` only by the fact's own source or the user.
+- B-1: a sandbox reads only its own events; a remote MCP server's keyring headers reach `mcp-proxy` in its
+  environment (`LEGIONCTL_MCP_HEADERS`), never in a command line.
+- B-2, B-3: `~/.cache/legionctl` is hidden in a sandbox also under the cache overlay; the gateway keys kept answers by
+  the caller (`session:<id>` from the socket peer's scope, else `host`), replays only to a caller that an account
+  serves now (token, budget), and its TCP port refuses a request with an Origin or a Host other than 127.0.0.1 or
+  localhost.
+- C-8: operations that change the user's files without the daemon (`rules.edit`, `rules.reset`, `undo`,
+  `kernel.build`, `windows.vm.overlay`, `windows.vm.recovery`, `windows.repair`, `windows.restore.apply`) are
+  Workspace class: an agent's call asks the user; polkit still asks for the daemon's part.
 
 ## Session record
 

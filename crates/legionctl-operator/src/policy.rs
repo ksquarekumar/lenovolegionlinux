@@ -105,6 +105,7 @@ fn freeze_idle() -> Result<Vec<(String, u32)>> {
             kinds: &["internal.hooks.run"],
             field: Some(("$.input.session", &session.id)),
             naming: None,
+            session: None,
         };
         let Some(last) = db.last_event(&filter)? else {
             continue;
@@ -118,6 +119,7 @@ fn freeze_idle() -> Result<Vec<(String, u32)>> {
                 kinds: &[kind],
                 field: Some((path, &session.id)),
                 naming: None,
+                session: None,
             };
             Ok(db.last_event(&filter)?.is_some_and(|e| e.id > last.id))
         };

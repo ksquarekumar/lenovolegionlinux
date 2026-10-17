@@ -232,8 +232,16 @@ step.
 | --- | --- | --- |
 | `read` | nobody; it changes nothing | `status`, `doctor`, `plan`, `dossier read` |
 | `session` | nobody; only the caller's own session | `dossier write`, `workspace checkpoint` |
-| `workspace` | you, for an agent: a desktop notification, 120 s | `session start`, `workspace merge`, `setup apply` |
+| `workspace` | you, for a sandboxed agent: a desktop notification, 120 s | `session start`, `workspace merge`, `rules edit` |
 | `machine` | you, in a polkit dialog; an agent cannot | `power apply`, `kernel try`, `boot install`, `fan max` |
+
+More rules:
+
+- A repository's `.legionctl` files (config, checks, teams, views) and its compose file are used only after you
+  allow them once. legionctl asks on the desktop the first time, and again when a file changes. A repository never
+  chooses the account that pays, and never hides your teams or views.
+- An agent outside a sandbox cannot answer a question. Its change of your hooks or reminders asks you.
+- A view button runs at once only when it reads. Every other button asks you first.
 
 Your rules for agents:
 

@@ -291,6 +291,59 @@ fn the_gateway_refuses_over_budget_without_token_and_across_apis() {
     );
 }
 
+/// The status of a POST of `body` to /v1/messages with these exact header lines (the Host among them).
+fn status_with(port: u16, lines: &[&str], body: &Value) -> u16 {
+    let body = body.to_string();
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let head = lines.join("\r\n");
+    let request = format!(
+        "POST /v1/messages HTTP/1.1\r\n{head}\r\nconnection: close\r\ncontent-type: application/json\r\n\
+         x-api-key: caller-key\r\nanthropic-version: 2023-06-01\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response.split_whitespace().nth(1).unwrap().parse().unwrap()
+}
+
+/// B-3 (EV-review-14): a kept answer replays only to a caller that an account would serve now: an answer made with a
+/// keyring key for a caller with the gateway token does not replay to a caller without it, who is refused as before;
+/// and the port refuses a browser's request (an Origin, or a Host that is not this machine: DNS rebinding), while a
+/// local program's request with either Host name is served.
+#[test]
+fn a_kept_answer_replays_only_to_a_caller_an_account_serves_and_the_port_refuses_browsers() {
+    let s = setup("gw-scope");
+    let token =
+        std::fs::read_to_string(s.home.join(".local/state/legionctl/gateway-token")).unwrap();
+    let with = [CALLER[0], CALLER[1], ("x-legionctl-token", token.trim())];
+    let keyed = ask("keyed/claude-x", "kept for the token");
+    let (status, cache, body) = post(s.port, "/v1/messages", &with, &keyed);
+    assert_eq!((status, cache.as_str()), (200, "miss"), "{body}");
+    assert_eq!(post(s.port, "/v1/messages", &with, &keyed).1, "hit");
+    let (status, cache, body) = post(s.port, "/v1/messages", &CALLER, &keyed);
+    assert!(
+        status == 401 && cache != "hit" && body.contains("gateway token"),
+        "replayed to a caller without the token: {status} {cache} {body}"
+    );
+
+    let hi = ask("claude-z", "hi");
+    assert_eq!(status_with(s.port, &["host: 127.0.0.1:1234"], &hi), 200);
+    assert_eq!(status_with(s.port, &["host: localhost"], &hi), 200);
+    assert_eq!(
+        status_with(s.port, &["host: attacker.example:4711"], &hi),
+        403
+    );
+    assert_eq!(
+        status_with(
+            s.port,
+            &["host: localhost", "origin: http://attacker.example"],
+            &hi
+        ),
+        403
+    );
+}
+
 /// Failover is for a rate limit only (19-gateway; todo-142 F-10, F-11): an account that cannot be reached fails the
 /// call at once with 502 and its reason, and the next account of the pool is not used; a budget that cannot be read
 /// (here its usage table is gone) fails the call with 500 and the reason, and the provider is not called. Before, a

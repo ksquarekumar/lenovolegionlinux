@@ -40,7 +40,7 @@ pub fn entries(commands: &[AgentCommand], screen: Vec<(String, String)>) -> Vec<
         .map(|e| e.text.trim_end().to_string())
         .collect();
     // an agent's call of a workspace operation waits for the user's approval
-    let asks = crate::cli::session_from_env().is_some();
+    let asks = crate::session_from_env().is_some();
     let registry = OPS
         .iter()
         .filter(move |op| {

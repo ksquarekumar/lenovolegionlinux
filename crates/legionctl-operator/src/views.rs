@@ -10,8 +10,8 @@ use std::fmt::Write as _;
 
 use anyhow::{Context, Result, bail, ensure};
 use legionctl_api::{
-    Class, Ctx, Engine, IntoWire, Lines, OPS, Principal, ViewData, ViewInfo, ViewPlaceIn,
-    ViewRenderIn, ViewSaveIn, ViewTextIn, ViewVersionIn, ViewsListIn,
+    Class, Ctx, Engine, IntoWire, Lines, OPS, ViewData, ViewInfo, ViewPlaceIn, ViewRenderIn,
+    ViewSaveIn, ViewTextIn, ViewVersionIn, ViewsListIn,
 };
 use legionctl_core::facts::{self, New, Scope};
 use legionctl_core::views::{Part, Placed, Rendered, Source, View, Widget};
@@ -200,19 +200,15 @@ pub fn check_text(input: &ViewTextIn) -> Result<Lines> {
 
 /// A fact's source from the caller.
 fn source(ctx: &Ctx) -> String {
-    let session = match &ctx.principal {
-        Principal::Session(s) => Some(s.as_str()),
-        Principal::User => None,
-    };
+    let session = ctx.principal.agent();
     facts::source(&ctx.actor, session)
 }
 
 /// Write the fact that `name` shows `version`, in the scope of the layer (project for the repository's).
 fn show_version(
     ctx: &Ctx,
-    name: &str,
-    version: u32,
-    project: Option<&Path>,
+    source: &str,
+    (name, version, project): (&str, u32, Option<&Path>),
     why: &str,
 ) -> Result<()> {
     let scope = match project.and_then(facts::repository) {
@@ -224,7 +220,7 @@ fn show_version(
         attribute: "version".into(),
         value: Value::from(version),
         scope,
-        source: source(ctx),
+        source: source.to_string(),
         evidence: serde_json::json!({"actor": ctx.actor, "why": why}),
         confidence: 1.0,
         valid_from: facts::now_ms(),
@@ -241,7 +237,13 @@ pub fn save(ctx: &Ctx, input: &ViewSaveIn) -> Result<Lines> {
     let repo = input.repo.as_ref().map(|r| r.get()).transpose()?;
     let view = parsed(&input.content.0, repo)?;
     let (file, version) = legionctl_core::views::save(&view, &input.content.0, repo)?;
-    show_version(ctx, &view.name, version, repo, "views save")?;
+    // the user's own save into a repository is the user's answer for that content; an agent's waits for one
+    if repo.is_some() && ctx.principal == legionctl_api::Principal::User {
+        let approvals = legionctl_core::config::Approvals::read()?;
+        let (name, hash, _) = approvals.of(&file, &legionctl_machine::profile::read_jsonc(&file)?);
+        legionctl_core::config::Approvals::answer(&name, &hash, true)?;
+    }
+    show_version(ctx, &source(ctx), (&view.name, version, repo), "views save")?;
     Ok(Lines {
         lines: vec![format!(
             "view {} saved as version {version}: {}",
@@ -323,18 +325,12 @@ pub fn version_op(ctx: &Ctx, input: &ViewVersionIn) -> Result<Lines> {
         &legionctl_core::views::text_of(name, Some(to), Some(repo))?,
         Some(repo),
     )?;
-    let saved_in = (to > 0
-        && legionctl_core::views::dirs(Some(repo))
-            .first()
-            .is_some_and(|(layer, dir)| {
-                *layer == "repository" && dir.join(format!("{name}.jsonc")).exists()
-            }))
-    .then_some(repo);
+    let saved_in =
+        (to > 0 && legionctl_core::views::in_repository(name, Some(repo))).then_some(repo);
     show_version(
         ctx,
-        name,
-        to,
-        saved_in,
+        &source(ctx),
+        (name, to, saved_in),
         &format!("views version {}", input.to),
     )?;
     Ok(Lines {
@@ -1350,17 +1346,11 @@ fn keep(
     (intent, agent): (&str, &str),
     repo: &Path,
 ) -> Result<String> {
-    // a change is the next version of the tab's view; a new view gets a name no layer has
-    let (name, layer) = match current {
-        Some(old) => {
-            let in_repo = legionctl_core::views::dirs(Some(repo))
-                .first()
-                .is_some_and(|(l, d)| {
-                    *l == "repository" && d.join(format!("{old}.jsonc")).exists()
-                });
-            (old.to_string(), in_repo.then_some(repo))
-        }
-        None => (unique(&view.name, repo), None),
+    // a change is the next version of the tab's view; a new view gets a name no layer has. Model output goes into
+    // the user's layer only (above the repository's), never into a repository's files
+    let name = match current {
+        Some(old) => old.to_string(),
+        None => unique(&view.name, repo),
     };
     view.name.clone_from(&name);
     // its space follows its sources (View::space), not the model's word
@@ -1368,10 +1358,17 @@ fn keep(
     if view.intent.is_none() && current.is_none() {
         view.intent = Some(intent.to_string());
     }
-    into_library(view, repo, layer)?;
+    into_library(view, repo, None)?;
     let text = serde_json::to_string_pretty(&*view)?;
-    let (_, saved) = legionctl_core::views::save(view, &text, layer)?;
-    show_version(ctx, &name, saved, layer, &format!("ask: {intent}"))?;
+    let (_, saved) = legionctl_core::views::save(view, &text, None)?;
+    // the composer made it, not the user: its facts lose to the user's own
+    let made_by = format!("agent:{agent}");
+    show_version(
+        ctx,
+        &made_by,
+        (&name, saved, None),
+        &format!("ask: {intent}"),
+    )?;
     // the intent finds this view again from any tab, with no composer run (also a change's intent)
     {
         dossiers()?.fact_add(&New {
@@ -1379,7 +1376,7 @@ fn keep(
             attribute: "view".into(),
             value: Value::from(name.clone()),
             scope: (Scope::Global, String::new()),
-            source: source(ctx),
+            source: made_by,
             evidence: serde_json::json!({"actor": ctx.actor, "why": "ask", "agent": agent}),
             confidence: 1.0,
             valid_from: facts::now_ms(),

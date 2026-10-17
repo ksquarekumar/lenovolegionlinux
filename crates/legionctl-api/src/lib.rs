@@ -90,6 +90,17 @@ pub fn random_token() -> Result<String> {
 }
 /// HTTP header that says which surface made a call: cli, mcp or app.
 pub const ACTOR_HEADER: &str = "x-legionctl-actor";
+/// The agent session of this process: `LEGIONCTL_SESSION`, else Claude Code's `CLAUDE_CODE_SESSION_ID`.
+#[must_use]
+pub fn session_from_env() -> Option<String> {
+    ["LEGIONCTL_SESSION", "CLAUDE_CODE_SESSION_ID"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+}
+
+/// HTTP header with which a client that runs for an agent (its MCP server, its hooks, the CLI in its shell) names
+/// that agent's session; the user token then acts as [`Principal::Agent`].
+pub const AGENT_HEADER: &str = "x-legionctl-agent";
 /// The fingerprint of the operation registry a client and the operator were built with ([`api_fingerprint`]).
 pub const API_HEADER: &str = "x-legionctl-api";
 
@@ -131,7 +142,9 @@ pub enum Class {
     /// desktop notice.
     // DESIGN/03: the gate of agent calls
     Workspace,
-    /// Changes the machine; `legionctl-system` asks for polkit approval.
+    /// Changes the machine; `legionctl-system` asks for polkit approval. An operation that changes something without
+    /// the daemon (your own rule layers, a kernel build, the Windows VM's guest or overlay) is `Workspace`: polkit
+    /// asks only for the daemon's part of it.
     Machine,
 }
 
@@ -228,10 +241,25 @@ pub struct Ctx {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Principal {
-    /// The user token: the CLI and app, and the hooks and MCP of agents that are not sandboxed.
+    /// The user token from the user: the app, and the CLI outside an agent.
     User,
     /// The token of a session's sandbox: the agent and everything it starts.
     Session(String),
+    /// The user token from an agent that is not sandboxed (its MCP server, its hooks, the CLI in its shell, which say
+    /// so with [`AGENT_HEADER`]): it acts as the user, but only the user answers a question, and it asks before it
+    /// changes what runs or is said in every session (hooks, reminders).
+    Agent(String),
+}
+
+impl Principal {
+    /// The agent session of an agent's call (sandboxed or not); none for the user.
+    #[must_use]
+    pub fn agent(&self) -> Option<&str> {
+        match self {
+            Principal::User => None,
+            Principal::Session(id) | Principal::Agent(id) => Some(id),
+        }
+    }
 }
 
 /// A filesystem path in an input. Clients resolve a relative path against their own working directory before they
@@ -641,10 +669,10 @@ operations! {
     rules_disable / RulesDisable = "rules.disable", Machine, RuleIn => Changes;
     /// Set or remove knobs in your own layer (or a system layer: polkit asks), then apply the layers. A layer that fails
     /// its checks is refused.
-    rules_edit / RulesEdit = "rules.edit", Machine, RuleEditIn => Changes;
+    rules_edit / RulesEdit = "rules.edit", Workspace, RuleEditIn => Changes;
     /// Back to the shipped state: remove your layers and holds (for one knob, or all); with `--system`, the system
     /// layers and the layers' on/off states. Holds and system changes go through polkit.
-    rules_reset / RulesReset = "rules.reset", Machine, RuleResetIn => Changes;
+    rules_reset / RulesReset = "rules.reset", Workspace, RuleResetIn => Changes;
     /// Keep the layer states and the knob holds of now as a saved set. With `--boot`, each kernel's image gets a boot
     /// entry for the set (hold a key at start for the menu).
     rules_sets_save / RulesSetsSave = "rules.sets.save", Machine, SetSaveIn => Changes;
@@ -678,7 +706,7 @@ operations! {
     /// Turn back the writes of a machine change in the event log: each file goes back to what it was before and is
     /// held there (`knobs release` gives it back to the policy). A change of your own settings (`display fix`) goes
     /// back without the daemon, and its undo is an event too.
-    undo / Undo = "undo", Machine, UndoIn => Changes;
+    undo / Undo = "undo", Workspace, UndoIn => Changes;
     /// The package store: each configured package, its pin, and whether its folder still has the hash recorded at
     /// fetch time.
     packages_list / PackagesList = "packages.list", Read, Empty => Packages;
@@ -763,7 +791,7 @@ operations! {
     /// Build a `linux-cachyos` kernel package from an installed one (its PKGBUILD at the installed version, makepkg in a
     /// container), with a configuration fragment, as `linux-cachyos-<name>`, then install it (pacman -U through the
     /// daemon: its signed image and DKMS modules follow). A job; a human approves the install in the polkit dialog.
-    kernel_build / KernelBuild = "kernel.build", Machine, KernelBuildIn => Changes;
+    kernel_build / KernelBuild = "kernel.build", Workspace, KernelBuildIn => Changes;
     /// The login screen: legionctl's greeter (greetd) or GDM, and what the greeter needs that is not installed.
     greeter_status / GreeterStatus = "greeter.status", Read, Empty => GreeterState;
     /// Put legionctl's greeter in place of GDM at the next start (GDM stays installed and disabled; the old greetd
@@ -798,20 +826,20 @@ operations! {
     /// The copy-on-write overlay of the Windows disk that repairs run on: `status`, `create` (each VM start then
     /// writes to it and the disk stays as it is), `commit` (written into the disk; a human approves it in the polkit
     /// dialog) or `drop` (the disk stays as it was). Refused while the VM runs.
-    windows_vm_overlay / WindowsVmOverlay = "windows.vm.overlay", Machine, WindowsOverlayIn => Lines;
+    windows_vm_overlay / WindowsVmOverlay = "windows.vm.overlay", Workspace, WindowsOverlayIn => Lines;
     /// A full image of the Windows disk into a new qcow2 file, with its `BLAKE2b` hash; the disk is only read. Refused
     /// while the VM runs. A human approves it in the polkit dialog.
     windows_vm_image / WindowsVmImage = "windows.vm.image", Machine, WindowsImageIn => Lines;
     /// Restart the Windows VM into Windows RE (Windows' recovery) through the guest agent; only on an overlay. Its console:
     /// `windows vm view`.
-    windows_vm_recovery / WindowsVmRecovery = "windows.vm.recovery", Machine, Empty => Lines;
+    windows_vm_recovery / WindowsVmRecovery = "windows.vm.recovery", Workspace, Empty => Lines;
     /// A repair in the Windows VM, only on an overlay: sfc, dism or chkdsk through the guest agent (a job; its output
     /// comes as `windows.repair.output` events), or boot (bcdboot typed into Windows RE's open command prompt).
-    windows_repair / WindowsRepair = "windows.repair", Machine, WindowsRepairIn => Lines;
+    windows_repair / WindowsRepair = "windows.repair", Workspace, WindowsRepairIn => Lines;
     /// Windows' System Restore points, through the guest agent of the running VM.
     windows_restore_list / WindowsRestoreList = "windows.restore.list", Read, Empty => Lines;
     /// Restore Windows to a restore point (Windows restarts in the VM); only on an overlay.
-    windows_restore_apply / WindowsRestoreApply = "windows.restore.apply", Machine, WindowsRestoreIn => Lines;
+    windows_restore_apply / WindowsRestoreApply = "windows.restore.apply", Workspace, WindowsRestoreIn => Lines;
     /// A host action that Windows in the VM asks for on its channel: the user allows it in a desktop question, then
     /// the host's own approval applies.
     internal_windows_host / InternalWindowsHost = "internal.windows_host", Machine, WindowsHostIn => Lines;

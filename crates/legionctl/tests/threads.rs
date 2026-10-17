@@ -1072,7 +1072,7 @@ fn a_view_cannot_bind_a_change_operation_or_a_widget_outside_the_set() {
     assert_eq!(placed["payload"]["view"], "members");
     assert_eq!(placed["payload"]["params"], json!({"thread": "1"}));
 
-    repository_layer_first(&lab, members);
+    repository_layer_below_the_users(&lab, members);
 }
 
 /// The timeline and form widgets (DESIGN-09 G4) in their terminal form, which agents and the CLI read: a thread's
@@ -1685,8 +1685,9 @@ fn a_new_view_reuses_a_library_part_by_reference_and_the_composer_is_bound_to_vi
     drop(server);
 }
 
-/// A view in the repository's layer hides the user's view of that name, and lists first.
-fn repository_layer_first(lab: &Lab, members: &str) {
+/// A repository's view does not hide the user's view of that name (A-4): an agent's save into the repository's layer
+/// leaves the user's view the one that shows and lists, and the repository's file waits for the user's answer.
+fn repository_layer_below_the_users(lab: &Lab, members: &str) {
     let run = |args: &[&str], stdin: &str| {
         lab.op.run(
             &lab.repo,
@@ -1710,17 +1711,19 @@ fn repository_layer_first(lab: &Lab, members: &str) {
         &lab.repo,
         &["views", "render", "members", "thread=1"],
     );
-    assert_eq!(
-        text,
-        "members (table, version 1)\n2 rows: name\nmain0\nobserver0"
+    assert!(
+        text.contains("2 rows: name | archetype"),
+        "the user's view shows: {text}"
     );
     let listed = lab.json("main", &["views", "list"]);
-    let layers = listed.as_array().unwrap().iter().map(|v| &v["layer"]);
-    assert_eq!(layers.filter(|l| *l != "seed").count(), 1, "{listed}");
-    assert_eq!(
-        listed[0]["layer"], "repository",
-        "the saved view before the seeds"
-    );
+    let layers: Vec<&Value> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| &v["layer"])
+        .filter(|l| *l != "seed")
+        .collect();
+    assert_eq!(layers, [&json!("user")], "{listed}");
 }
 
 /// What observer0 does at a wake (the stand-in ACP agent runs it with the wake prompt): it records its environment,
@@ -2047,7 +2050,8 @@ fn a_wake_that_fails_before_its_prompt_counts_against_the_restart_limit() {
     );
     write(
         &ws.join(".legionctl/broken.jsonc"),
-        r#"{ "checks": { "keep_runs": "many" } }"#,
+        // a key that needs no answer of the user: its wrong value breaks the config at once
+        r#"{ "load": { "disk_busy_percent": "many" } }"#,
     );
     lab.edit(&main, &ws, &ws.join("tests/lexer.rs"));
     until("observer0 failed", || {

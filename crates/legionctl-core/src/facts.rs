@@ -170,10 +170,13 @@ pub fn now_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
-/// The rank of a source among facts of one scope: a user fact always wins over an agent fact.
+/// The rank of the user's own facts.
+const USER: u8 = 3;
+
+/// The rank of a source: a user fact always wins over an agent fact.
 fn rank(source: &str) -> u8 {
     match source.split(':').next().unwrap_or_default() {
-        "user" => 3,
+        "user" => USER,
         "rule" => 2,
         "seed" => 0,
         _ => 1,
@@ -387,7 +390,7 @@ impl Dossiers {
         Ok(id)
     }
 
-    /// Correct the fact `id` (bitemporal): its recorded time closes and a row with the new value and the same valid
+    /// Correct the fact `id` (bitemporal), as its own source or the user: its recorded time closes and a row with the new value and the same valid
     /// times, refs and anchor takes its place, so a query of an earlier recorded time still sees the old value.
     ///
     /// # Errors
@@ -405,6 +408,11 @@ impl Dossiers {
             .with_context(|| {
                 format!("no fact {id} that is still recorded (`facts history` shows its rows)")
             })?;
+        ensure!(
+            source == old.source || rank(source) == USER,
+            "fact {id} is from {}: only it or the user corrects it; set a new fact instead",
+            old.source
+        );
         let recorded = now_ms();
         // IMMEDIATE: it reads the open facts, then writes; a deferred one fails at once (SQLITE_BUSY) when another
         // writer (a run's output events) commits between its read and its write
@@ -459,8 +467,17 @@ impl Dossiers {
             let key = (f.entity.clone(), f.attribute.clone());
             let better = best.get(&key).is_none_or(|&j| {
                 let o = &rows[j];
-                (f.scope, rank(&f.source), f.valid_from, f.id)
-                    > (o.scope, rank(&o.source), o.valid_from, o.id)
+                // a user fact wins over every other; among the rest the nearest scope, then the source
+                let key = |f: &Fact| {
+                    (
+                        rank(&f.source) == USER,
+                        f.scope,
+                        rank(&f.source),
+                        f.valid_from,
+                        f.id,
+                    )
+                };
+                key(f) > key(o)
             });
             if better {
                 best.insert(key, i);

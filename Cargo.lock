@@ -4371,6 +4371,7 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "similar 3.2.0",
  "syn 2.0.119",
  "toml 1.1.8+spec-1.1.0",

@@ -647,6 +647,7 @@ impl LegionApp {
                         op: op.name.to_string(),
                         input,
                     },
+                    true,
                     cx,
                 );
             }

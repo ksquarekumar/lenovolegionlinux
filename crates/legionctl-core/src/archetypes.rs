@@ -720,20 +720,30 @@ impl Sources {
         })
     }
 
-    /// The first team file named `name`: the repository's `.legionctl/teams/`, the user's `teams/`, then the
-    /// plugin's.
-    #[must_use]
-    pub fn team_path(&self, name: &str) -> Option<PathBuf> {
-        let mut dirs: Vec<PathBuf> = self
-            .repo
-            .iter()
-            .map(|r| r.join(".legionctl/teams"))
-            .collect();
-        dirs.push(self.user_dir.join("teams"));
-        dirs.push(self.plugin.join("teams"));
-        dirs.into_iter()
+    /// The team file named `name`: the user's `teams/`, the plugin's, then the repository's `.legionctl/teams/`. A
+    /// repository adds team names and hides none; its team is used only after the user allowed its content (it picks
+    /// agents, models and instructions), and the first use asks.
+    ///
+    /// # Errors
+    /// The repository's team waits for the user's answer, the user denied it, or it cannot be read.
+    pub fn team_path(&self, name: &str) -> Result<Option<PathBuf>> {
+        let repo = self.repo.as_ref().map(|r| r.join(".legionctl/teams"));
+        let found = [self.user_dir.join("teams"), self.plugin.join("teams")]
+            .into_iter()
+            .chain(repo.clone())
             .map(|d| d.join(format!("{name}.jsonc")))
-            .find(|p| p.is_file())
+            .find(|p| p.is_file());
+        let Some(path) = found else {
+            return Ok(None);
+        };
+        if repo.is_some_and(|r| path.starts_with(r)) {
+            crate::config::allowed(
+                &path,
+                &legionctl_machine::profile::read_jsonc(&path)?,
+                &[format!("team {name} (its agents, models and instructions)")],
+            )?;
+        }
+        Ok(Some(path))
     }
 }
 

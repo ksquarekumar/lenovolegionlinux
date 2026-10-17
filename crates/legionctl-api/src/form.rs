@@ -210,8 +210,8 @@ pub enum Route {
 /// The route of `op`.
 #[must_use]
 pub fn route(op: &OpInfo) -> Route {
-    // a read, or a change of the caller's own session (its dossier choice, its hooks): nothing to confirm
-    if matches!(op.class, crate::Class::Read | crate::Class::Session) {
+    // a read: nothing to confirm; every change confirms (a view's buttons come from files and model output)
+    if op.class == crate::Class::Read {
         Route::Run
     } else if (op.input)()["properties"].get("dry_run").is_some() {
         Route::Plan

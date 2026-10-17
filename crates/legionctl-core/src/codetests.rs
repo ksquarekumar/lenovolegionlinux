@@ -927,8 +927,8 @@ impl Dossiers {
     /// The change set has no source file, cargo-mutants cannot start or fails, or its output does not parse.
     pub fn run_mutants(
         &self,
-        dir: &Path,
-        base: &str,
+        (dir, base): (&Path, &str),
+        jail: Option<&crate::session::Jail>,
         mut progress: impl FnMut(u64, u64),
     ) -> Result<Vec<String>> {
         let (repo, head) = (repo_key(dir)?, git(dir, &["rev-parse", "HEAD"])?);
@@ -949,18 +949,27 @@ impl Dossiers {
         let _ = std::fs::remove_dir_all(&results);
         std::fs::create_dir_all(&out)?;
         let log = std::fs::File::create(out.join("cargo-mutants.log"))?;
-        let mut cmd = Command::new("cargo-mutants");
-        cmd.args([
+        let out_dir = out.display().to_string();
+        let mut argv = vec![
+            "cargo-mutants",
             "mutants",
             "--no-shuffle",
             "--test-workspace=true",
             "--cargo-test-arg=--no-fail-fast",
             "-o",
-        ])
-        .arg(&out);
+            &out_dir,
+        ];
         for f in &files {
-            cmd.args(["--file", f]);
+            argv.extend(["--file", f]);
         }
+        // a session's mutants build and run its code: in its sandbox, as its checks and tests (O-1)
+        let mut cmd = if let Some(jail) = jail {
+            jail.command(dir, &argv)
+        } else {
+            let mut cmd = Command::new(argv[0]);
+            cmd.args(&argv[1..]);
+            cmd
+        };
         let mut child = cmd
             .current_dir(dir)
             .stdout(log.try_clone()?)

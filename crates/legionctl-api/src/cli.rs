@@ -350,14 +350,6 @@ pub fn parse(matches: &ArgMatches) -> Option<(&'static OpInfo, Value)> {
     Some((op, Value::Object(input)))
 }
 
-/// The agent session of this process: `LEGIONCTL_SESSION`, else Claude Code's `CLAUDE_CODE_SESSION_ID`.
-#[must_use]
-pub fn session_from_env() -> Option<String> {
-    ["LEGIONCTL_SESSION", "CLAUDE_CODE_SESSION_ID"]
-        .iter()
-        .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
-}
-
 /// Fill what only the calling process knows: path fields become absolute against its working directory (with path
 /// defaults such as `.`, and a path field with `x-env` from that environment variable when not given), session fields
 /// come from its environment, and with `stdin` a missing text field is read
@@ -388,7 +380,7 @@ pub fn fill_client_fields(op: &OpInfo, input: &mut Value, stdin: bool) -> Result
         }
         match field.kind {
             Kind::Session => {
-                if let Some(id) = session_from_env() {
+                if let Some(id) = crate::session_from_env() {
                     map.insert(field.key.to_string(), Value::from(id));
                 }
             }

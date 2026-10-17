@@ -13,6 +13,8 @@ mod keyring;
 mod plain;
 #[path = "common/provider.rs"]
 mod provider;
+#[path = "common/trust.rs"]
+mod trust;
 
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
@@ -793,6 +795,19 @@ fn write(path: &Path, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 
+/// Allowed by the user, the repository layer of `repo` applies anywhere inside the repository, and only there.
+fn applies_once_allowed(op: &Operator, home: &Path, repo: &Path) {
+    trust::allow(home, &repo.join(".legionctl/rules.jsonc"));
+    let (inside, outside) = (
+        hook_out(op, &repo.join("crates/a"), "prompt"),
+        hook_out(op, home, "prompt"),
+    );
+    assert!(
+        inside.contains("Use the make targets.") && !outside.contains("make targets"),
+        "{inside}\n{outside}"
+    );
+}
+
 #[test]
 fn config_layers_merge_in_order_and_etc_locks_win() {
     let (op, home) = operator("config");
@@ -847,11 +862,9 @@ fn config_layers_merge_in_order_and_etc_locks_win() {
         .status
         .success()
     );
+    // a repository's reminders and hooks wait for the user's first answer (O-2, A-1)
     let inside = hook_out(&op, &sub, "prompt");
-    assert!(inside.contains("Use the make targets."), "{inside}");
-    let outside = hook_out(&op, &home, "prompt");
-    assert!(!outside.contains("make targets"), "{outside}");
-    // a repository's hooks wait for the user's first answer (O-2); its reminder needs none
+    assert!(!inside.contains("Use the make targets."), "{inside}");
     assert_eq!(
         json(&repo, &["config", "explain", "hooks.bindings.prompt"])["value"],
         json!(["reminders", "load-if-busy"]),
@@ -878,10 +891,12 @@ fn config_layers_merge_in_order_and_etc_locks_win() {
         problems.contains("mine.jsonc: config is set only by"),
         "{problems}"
     );
+    let held = |key| format!("rules.jsonc: {key} is not used until you allow this file");
     assert!(
-        problems.contains("rules.jsonc: hooks is not used until you allow this file"),
+        problems.contains(&held("hooks")) && problems.contains(&held("reminders")),
         "{problems}"
     );
+    applies_once_allowed(&op, &home, &repo);
     assert_eq!(
         json(&repo, &["config", "explain", "workspace.root"])["value"],
         "/srv/worktrees"
@@ -2668,6 +2683,7 @@ fn a_test_run_records_each_test_with_its_file_result_and_ref() {
     let repo = repository(&home);
     cargo_of_two_crates(&home, &repo);
     write(&repo.join(".legionctl/checks.jsonc"), TEST_CHECK);
+    trust::allow(&home, &repo.join(".legionctl/checks.jsonc"));
     // the runs go into the dossier attached to the repository
     let bound = op.run(
         &repo,
@@ -2810,6 +2826,7 @@ fn a_test_run_that_does_not_build_fails_with_the_compiler_error() {
         "{none:?}"
     );
     write(&repo.join(".legionctl/checks.jsonc"), TEST_CHECK);
+    trust::allow(&home, &repo.join(".legionctl/checks.jsonc"));
     // the runs go into the dossier attached to the repository
     let bound = op.run(
         &repo,
@@ -2961,9 +2978,9 @@ fn the_proxy_reaches_a_remote_server_with_its_header() {
                 "docs",
                 "--url",
                 &url,
-                "--header",
-                "x-api-key=abc",
             ])
+            // the header's value comes in the environment, never in the command line
+            .env("LEGIONCTL_MCP_HEADERS", r#"{"x-api-key": "abc"}"#)
             .env("XDG_RUNTIME_DIR", &op.runtime)
             .env("HOME", &home)
             .env("LEGIONCTL_SESSION", "s-remote");
@@ -3241,6 +3258,54 @@ fn mcp_tools(op: &Operator, home: &Path, args: &[String]) -> Vec<String> {
             .map(|t| t.name.to_string())
             .collect()
     })
+}
+
+/// B-1 (EV-review-14): a remote MCP server's keyring header reaches its proxy in the proxy's environment, never in a
+/// command line (the exec sensor records every session's argv, and `events` shows them): the session's MCP config
+/// has the value only under the server's env.
+#[test]
+fn a_remote_servers_keyring_header_is_never_in_a_command_line() {
+    let (op, home) = operator("mcphdr");
+    let repo = repository(&home);
+    write(&home.join("keyring/remote-key"), "HEADER_SECRET_VALUE");
+    write(
+        &home.join(".config/legionctl/mcp.jsonc"),
+        &json!({"mcp": {"servers": {"remote": {"url": "http://127.0.0.1:9/mcp",
+                                                "keyring_headers": {"x-api-key": "remote-key"}}}}})
+        .to_string(),
+    );
+    let env = [("HOME", home.to_str().unwrap())];
+    let started = op.run(
+        &repo,
+        &env,
+        &["session", "start", "claude", "--dossier", "hdr", "--json"],
+        "",
+    );
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let id = serde_json::from_slice::<Value>(&started.stdout).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mcp: Value = serde_json::from_slice(
+        &std::fs::read(op.runtime.join(format!("legionctl/sessions/{id}/mcp.json"))).unwrap(),
+    )
+    .unwrap();
+    let remote = &mcp["mcpServers"]["remote"];
+    assert!(
+        !remote["args"].to_string().contains("HEADER_SECRET_VALUE"),
+        "a secret in a command line: {remote}"
+    );
+    let headers: Value =
+        serde_json::from_str(remote["env"]["LEGIONCTL_MCP_HEADERS"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        headers,
+        json!({"x-api-key": "HEADER_SECRET_VALUE"}),
+        "{remote}"
+    );
 }
 
 /// A package from the store behind the proxy: fetched and pinned, run from the store without network by the command
@@ -5499,6 +5564,26 @@ fn images_run_of_a_compose_project_overrides_only_the_built_tags() {
         "{}",
         String::from_utf8_lossy(&built.stderr)
     );
+    // the user allowed the repository's compose file (A-5), as docker compose reads it
+    let model = Command::new("docker")
+        .current_dir(&repo)
+        .args([
+            "compose",
+            "-p",
+            "repo",
+            "-f",
+            "compose.yaml",
+            "config",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    trust::allow_value(
+        &home,
+        &repo.join("compose.yaml"),
+        &serde_json::from_slice(&model.stdout).unwrap(),
+    );
     // db comes from the repository's file and may not be pulled: compose refuses it, and the refusal comes back
     let run = op.run(&repo, &env, &["images", "run"], "");
     assert!(
@@ -5586,7 +5671,7 @@ print("GATEWAY_" + str(r.status))'
         echo 'touch /tmp/pwn' > $3/hooks/post-checkout 2>/dev/null && echo GIT_HOOK_WRITTEN
         echo 0000000000000000000000000000000000000000 > $3/refs/heads/main 2>/dev/null && echo MAIN_MOVED
         echo 'gitdir: /tmp' > .git 2>/dev/null && echo GIT_LINK_WRITTEN
-        cat ~/.ssh/id_test ~/.git-credentials $4/.env 2>/dev/null | grep -q SECRET && echo SECRET_READ
+        cat ~/.ssh/id_test ~/.git-credentials $4/.env ~/.cache/legionctl/answers 2>/dev/null | grep -q SECRET && echo SECRET_READ
         rm -f $XDG_RUNTIME_DIR/legionctl/api.sock 2>/dev/null
         [ -S $XDG_RUNTIME_DIR/legionctl/api.sock ] && echo API_SOCKET_KEPT
         echo "SESSION_FOLDERS=$(ls $XDG_RUNTIME_DIR/legionctl/sessions | wc -l)"
@@ -5603,6 +5688,8 @@ fn home_with_secrets(home: &Path, repo: &Path) {
         "https://user:SECRET@github.com",
     );
     write(&repo.join(".env"), "OPENAI_API_KEY=SECRET");
+    // beside cache.db: the gateway's and MCP servers' answers to other sessions
+    write(&home.join(".cache/legionctl/answers"), "SECRET answer");
 }
 
 /// The probe agent of `a_sandboxed_agent_finds_no_way_out_and_still_commits_calls_the_model_and_the_operator`, and the
@@ -5630,7 +5717,7 @@ fn escape_config(home: &Path, repo: &Path, (gateway, provider): (u16, u16), serv
 /// A hostile agent in a host session tries each way out that the security review found (EV-review-08: S-1 host
 /// processes, S-2 the operator's socket, S-3 the real agent config and caches, S-4 the repository's git config,
 /// hooks, other branches and git links, S-5 a service on the host's loopback, S-6 keys and tokens of the home and the
-/// repository's .env) and each fails, while the work still works: a commit through the git gate, a model call
+/// repository's .env, B-2 legionctl's cache under the cache overlay) and each fails, while the work still works: a commit through the git gate, a model call
 /// through the gateway (the only network), and calls to the operator. The writes to the agents' own folders stay in
 /// the session's layer; the real files keep their content.
 #[test]
@@ -5816,7 +5903,7 @@ fn a_session_runs_the_agent_in_a_sandbox_where_the_git_gate_and_read_only_home_h
 }
 
 /// What the agent of `a_sessions_repository_commands_run_in_its_sandbox_never_on_the_host` copies into `workspace`:
-/// its escape script, a checks file, a hooks file (allowed by the user, O-2) and a prompt hook's input.
+/// its escape script, a checks file and a hooks file (both allowed by the user, O-2) and a prompt hook's input.
 fn jail_files(home: &Path, workspace: &Path) {
     let h = home.display();
     let escape = format!(
@@ -5836,22 +5923,11 @@ fn jail_files(home: &Path, workspace: &Path) {
         "actions": {"probe": {"command": "sh ./escape.sh hook", "timeout": 10}},
         "bindings": {"prompt": ["probe"]}
     }});
-    // the user allowed this content of the repository's hooks file (O-2); the agent cannot write the answers
-    let hash = Command::new("python3")
-        .args([
-            "-c",
-            "import hashlib, json, sys; v = json.loads(sys.argv[1]); \
-             print(hashlib.blake2b(json.dumps(v, separators=(',', ':')).encode(), digest_size=32).hexdigest())",
-            &hooks.to_string(),
-        ])
-        .output()
-        .unwrap();
-    write(
-        &home.join(".local/state/legionctl/approvals.json"),
-        &json!({workspace.join(".legionctl/hooks.jsonc").to_string_lossy():
-                [String::from_utf8_lossy(&hash.stdout).trim(), true]})
-        .to_string(),
-    );
+    // the user allowed these contents of the repository's hooks and checks files (O-2, A-5), in its main checkout,
+    // which holds for each worktree; the agent cannot write the answers
+    let main = home.join("repo/.legionctl");
+    trust::allow_value(home, &main.join("hooks.jsonc"), &hooks);
+    trust::allow_value(home, &main.join("checks.jsonc"), &checks);
     write(&workspace.with_file_name("escape.sh"), &escape);
     write(
         &workspace.with_file_name("checks.jsonc"),
@@ -5936,8 +6012,9 @@ fn a_login_refreshed_in_a_session_reaches_the_real_login_files() {
 
 /// O-1 (EV-review-08): the commands of a repository's config that legionctl runs for a sandboxed agent run in that
 /// session's sandbox, never on the host: its checks (`code checks run`), its test runs (`code tests run`), the user's
-/// commit hook at `workspace checkpoint` (which runs a script of the working tree, as pre-commit does) and a command
-/// hook of the repository layer (allowed by the user, O-2). The agent writes each of them to escape: write the real
+/// commit hook at `workspace checkpoint` (which runs a script of the working tree, as pre-commit does), a command
+/// hook of the repository layer (allowed by the user, O-2) and its mutants (`code tests mutant run`, which builds and
+/// runs the agent's code: A-2, a stand-in cargo-mutants here). The agent writes each of them to escape: write the real
 /// home, read a key, see a host process. Each runs (its line in the dossier), none escapes, and the commit lands.
 #[test]
 fn a_sessions_repository_commands_run_in_its_sandbox_never_on_the_host() {
@@ -5949,10 +6026,20 @@ fn a_sessions_repository_commands_run_in_its_sandbox_never_on_the_host() {
     std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let workspace = home.join("worktrees/repo/jail");
     jail_files(&home, &workspace);
+    write(
+        &home.join("keyring-bin/cargo-mutants"),
+        "#!/bin/sh\nexec sh ./escape.sh mutant\n",
+    );
+    std::fs::set_permissions(
+        home.join("keyring-bin/cargo-mutants"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
     let agent = "mkdir -p .legionctl && cp ../escape.sh . && cp ../checks.jsonc ../hooks.jsonc .legionctl/ && \
-                 echo 'sh ./escape.sh commit' > commit-check.sh && \
+                 echo 'sh ./escape.sh commit' > commit-check.sh && echo 'pub fn x() {}' > lib.rs && \
                  legionctl code checks run escape && legionctl code tests run && \
-                 legionctl workspace checkpoint probe && legionctl hook prompt < ../prompt.json";
+                 legionctl workspace checkpoint probe && legionctl hook prompt < ../prompt.json; \
+                 legionctl code tests mutant run";
     write(
         &home.join(".config/legionctl/session.jsonc"),
         &json!({"session": {"agents": {"probe": ["sh", "-c", agent]}, "writable": [], "scope": false}})
@@ -5986,10 +6073,10 @@ fn a_sessions_repository_commands_run_in_its_sandbox_never_on_the_host() {
     let dossier = home.join("agentWorkspaces/jail");
     assert_eq!(
         std::fs::read_to_string(dossier.join("ran.log")).unwrap_or_default(),
-        "ran-check\nran-test\nran-commit\nran-hook\n",
+        "ran-check\nran-test\nran-commit\nran-hook\nran-mutant\n",
         "{why}"
     );
-    for what in ["check", "test", "commit", "hook"] {
+    for what in ["check", "test", "commit", "hook", "mutant"] {
         assert!(
             !home.join(format!("pwned-{what}")).exists(),
             "{what} wrote the home: {why}"

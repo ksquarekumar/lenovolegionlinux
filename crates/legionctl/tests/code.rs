@@ -3,6 +3,8 @@
 //! installed ctx is a manual check (dossier EVIDENCE/validation/37-manual-tool-contract-checks).
 
 mod common;
+#[path = "common/trust.rs"]
+mod trust;
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -1061,8 +1063,20 @@ fn facts_hold_by_ref_anchor_and_time_and_a_user_fact_wins_over_an_agent_fact() {
 }
 
 /// `facts set <args>` in the workspace.
+/// A fact that the user sets in a terminal (no agent session).
 fn fact(lab: &Lab, ws: &Path, args: &[&str]) -> String {
-    lab.ok(ws, &[&["facts", "set"][..], args].concat())
+    let out = lab.op.run(
+        ws,
+        &[("HOME", lab.home.to_str().unwrap())],
+        &[&["facts", "set"][..], args].concat(),
+        "",
+    );
+    assert!(
+        out.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 /// The state of the one fact of `entity` at `rev`.
@@ -1254,6 +1268,30 @@ fn facts_in_time(lab: &Lab, ws: &Path) {
     assert!(
         both.contains(&("0.5".into(), "agent:mcp".into(), false)),
         "{both:?}"
+    );
+    // A-10: nor at a nearer scope, and an agent does not correct the user's fact
+    let nearer = serde_json::json!({"entity": "app", "attribute": "width", "value": "0.6", "repo": ws,
+                                    "scope": "workspace"});
+    assert_ne!(agent_fact(lab, ws, &nearer)["isError"], true);
+    let winner = app_facts(lab, ws, &[]).into_iter().find(|f| f.2).unwrap();
+    assert_eq!(winner, ("0.3".into(), "user".into(), true));
+    let user_fact = lab.json(ws, &["facts", "history", "app"]);
+    let user_id = user_fact
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["value"] == 0.3 && f["recorded_to"].is_null())
+        .unwrap()["id"]
+        .clone();
+    let correct = serde_json::json!({"entity": "app", "attribute": "width", "value": "0.9", "repo": ws,
+                                     "corrects": user_id});
+    let refused = agent_fact(lab, ws, &correct);
+    assert!(
+        refused["isError"] == true
+            && refused
+                .to_string()
+                .contains("only it or the user corrects it"),
+        "{refused}"
     );
 
     // a newer user fact supersedes the older one from its valid time on; an earlier time shows the older value
@@ -1596,6 +1634,7 @@ fn a_failed_run_keeps_its_item_open(lab: &Lab, ws: &Path) {
         &ws.join(".legionctl/checks.jsonc"),
         r#"{ "checks": { "e2e": { "kind": "test", "run": "cargo test --message-format=json", "runner": { "format": "libtest" } } } }"#,
     );
+    trust::allow(&lab.home, &ws.join(".legionctl/checks.jsonc"));
     lab.ok(ws, &["code", "tests", "run"]);
     let status = lab.json(ws, &["code", "plan", "status"]);
     let (w1, w2) = (item(&status, "W1"), item(&status, "W2"));

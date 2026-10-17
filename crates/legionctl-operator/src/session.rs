@@ -88,6 +88,7 @@ async fn boot_notice(session: &zbus::Connection) -> Result<()> {
         kinds: &["machine.boot-default"],
         field: Some(("$.boot", boot)),
         naming: None,
+        session: None,
     };
     if db.last_event(&filter)?.is_some() {
         return Ok(());
