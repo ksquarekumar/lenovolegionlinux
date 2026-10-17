@@ -68,8 +68,10 @@ impl Operator {
         let mut cmd = Command::new("systemd-socket-activate");
         cmd.env_clear().arg("-l").arg(&socket);
         // the buses and Docker point nowhere unless the test gives its own: no test reaches the user's own containers
-        // (WinBoat) or buses by default
+        // (WinBoat) or buses by default; the plugin is the checkout's, never the installed package's
+        let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integrations/agent-plugin");
         let defaults = [
+            ("LEGIONCTL_PLUGIN", plugin.into_os_string()),
             ("DBUS_SESSION_BUS_ADDRESS", nowhere.clone()),
             ("DBUS_SYSTEM_BUS_ADDRESS", nowhere),
             ("DOCKER_HOST", "unix:///nonexistent/docker.sock".into()),

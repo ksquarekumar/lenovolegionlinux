@@ -88,7 +88,6 @@ fn docker() -> [(&'static str, OsString); 1] {
 }
 
 fn operator_with(tag: &str, home: &Path, extra: &[(&str, OsString)]) -> Operator {
-    let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integrations/agent-plugin");
     // an empty machine: no /etc/legionctl unless a test writes one; the load and memory that every Linux has
     let root = home.join("root");
     std::fs::create_dir_all(root.join("proc")).unwrap();
@@ -104,7 +103,6 @@ fn operator_with(tag: &str, home: &Path, extra: &[(&str, OsString)]) -> Operator
         ("LEGIONCTL_SYSROOT", root.into()),
         ("HOME", home.into()),
         ("PATH", path_with_keyring(home)),
-        ("LEGIONCTL_PLUGIN", OsString::from(plugin)),
     ];
     env.extend(extra.iter().cloned());
     Operator::start(tag, &env)
