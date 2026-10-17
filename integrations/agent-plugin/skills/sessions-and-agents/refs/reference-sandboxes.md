@@ -8,5 +8,5 @@
 
 `workspace pack [--as container|vm] [--gpu] [--service <s>]` makes the image or the disk; it is a job.
 The image and the disk get git, Node.js, the agents, their ACP adapters and bun (config `session.container.npm`).
-bun runs the ACP adapter in each sandbox; on the host it finds it in bun's global folder ~/.bun/bin, where `setup
-apply` installs it.
+bun runs the ACP adapter in each sandbox; on the host it finds it in bun's global folder ~/.bun/bin, where a run or
+`setup apply` installs a missing one.

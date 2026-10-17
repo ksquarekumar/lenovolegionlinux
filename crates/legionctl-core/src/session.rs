@@ -1190,16 +1190,18 @@ fn network(env: &mut Vec<(String, String)>, gateway: Option<u16>) -> String {
     format!("network: none but the model gateway (127.0.0.1:{port} in the sandbox)")
 }
 
-/// For a headless run on the host: check that its ACP command can start, and give it the PATH it starts with. The
-/// operator's PATH is the user manager's from its start: the folders of `setup apply` may be new since.
-fn headless_path(
-    env: &mut Vec<(String, String)>,
-    command: &[String],
-    headless: bool,
-) -> Result<()> {
-    if headless {
+/// For a headless run on the host: make its ACP command ready ([`crate::setup::ready`]: a missing adapter is
+/// installed), and give it the PATH it starts with. The operator's PATH is the user manager's from its start: the
+/// folders of `setup apply` may be new since.
+fn headless_path(env: &mut Vec<(String, String)>, config: &Config, who: &Who) -> Result<()> {
+    if who.headless {
+        crate::setup::ready(
+            &config.session,
+            who.command,
+            &crate::setup::session_path()?,
+            &mut |_| {},
+        )?;
         let path = crate::setup::session_path()?;
-        crate::setup::startable(command, &path)?;
         env.push((
             "PATH".into(),
             std::env::join_paths(path)?.to_string_lossy().into_owned(),
@@ -1745,7 +1747,7 @@ impl Dossiers {
             .collect();
         let sandbox = match runs {
             Runs::Host => {
-                headless_path(&mut env, who.command, who.headless)?;
+                headless_path(&mut env, config, who)?;
                 forward(&mut agent, gateway, &legionctl.join(GATEWAY_SOCKET));
                 mounts.push(Mount::ReadOnly("/usr/bin/git".into(), real_git.clone()));
                 bwrap_sandbox(

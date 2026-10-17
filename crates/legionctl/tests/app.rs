@@ -2,6 +2,8 @@
 //! daemon): it shows the machine, previews the policy change, reports a refused apply, and shows doctor's findings.
 //! Real clicks through GPUI's headless window; the operator answers in real time.
 
+#[path = "common/adapter.rs"]
+mod adapter;
 #[path = "common/clauth.rs"]
 mod clauth;
 mod common;
@@ -3308,13 +3310,13 @@ fn each_failure_of_the_chat_names_its_cause(cx: &mut TestAppContext) {
         cx,
         &app,
         "the missing adapter",
-        "the agent cannot start: its ACP adapter no-such-adapter is not installed; `legionctl setup apply` installs it",
+        "Install the agent's adapter no-such-adapter, or name its npm package in config session.acp_packages",
     );
     wait(cx, &app, "the failure in the conversation", |a| {
         !said(a, "thread.fail").is_empty()
     });
     app.read_with(cx, |a, _| {
-        assert!(said(a, "thread.fail")[0].contains("ACP adapter no-such-adapter is not installed"));
+        assert!(said(a, "thread.fail")[0].contains("Install the agent's adapter no-such-adapter"));
         assert_eq!(said(a, "thread.say"), ["x"]);
     });
     // an adapter that ends before it answers: its exit and its stderr, not the JSON-RPC envelope
@@ -3338,6 +3340,54 @@ fn each_failure_of_the_chat_names_its_cause(cx: &mut TestAppContext) {
         "the agent's thread",
         "thread 1 is the thread of session main",
     );
+    drop(runtime);
+}
+
+/// A chat whose adapter is not installed (the move from ~/.cache/.bun to ~/.bun, a stand-in bun): the install fails
+/// (the registry does not answer), the chat says why in one line and shows Retry; Retry sends the message again, the
+/// chat shows "Installing the Fresh adapter…" while bun installs it, and the agent answers.
+#[gpui_kit::test]
+fn a_chat_installs_its_missing_adapter_and_retry_tries_again(cx: &mut TestAppContext) {
+    let (op, home, repo) = thread_lab("install");
+    adapter::stand_in_bun(&home);
+    let config = home.join(".config/legionctl/app.jsonc");
+    let mut value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    value["session"]["acp"]["fresh"] = serde_json::json!(adapter::COMMAND);
+    value["session"]["acp_packages"] = serde_json::json!({"fake-acp": "@test/fake-acp"});
+    write(&config, &value.to_string());
+    write(&home.join("install-fails"), "");
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1400., Some((&home, &repo)));
+    let cx = &mut vcx;
+    wait(cx, &app, "the agents and the dossier", |a| {
+        a.screen.agents.iter().any(|n| n == "fresh") && a.screen.dossier.is_some()
+    });
+    send(cx, "/agent fresh");
+    send(cx, "/chat");
+    send(cx, "hi");
+    wait(cx, &app, "the failed install, and the run ended", |a| {
+        a.screen.live.is_empty() && said(a, "thread.fail").iter().any(|f| {
+            f == "Installing the adapter fake-acp failed: error: GET https://registry.npmjs.org/@test/fake-acp - 503"
+        })
+    });
+    std::fs::remove_file(home.join("install-fails")).unwrap();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("retry", cx);
+    });
+    wait(cx, &app, "the install note", |a| {
+        a.screen
+            .live
+            .values()
+            .any(|(_, text)| text.starts_with("Installing the Fresh adapter…"))
+    });
+    wait(cx, &app, "the answer", |a| {
+        said(a, "thread.answer")
+            .iter()
+            .any(|t| t.contains("The user's new message:\nhi"))
+    });
+    assert_eq!(adapter::installs(&home), ["add -g @test/fake-acp"; 2]);
+    app.read_with(cx, |a, _| assert_eq!(said(a, "thread.say"), ["hi", "hi"]));
     drop(runtime);
 }
 

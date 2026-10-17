@@ -5164,9 +5164,11 @@ impl Engine for Operator {
                     "thread.answer",
                     serde_json::json!({"text": run.text, "acp": run.acp, "session": run.id, "ms": run.ms}),
                 ),
+                // an adapter install that failed can be tried again (the app's Retry)
                 Err(e) => (
                     "thread.fail",
-                    serde_json::json!({"error": format!("{e:#}")}),
+                    serde_json::json!({"error": format!("{e:#}"),
+                        "retry": e.chain().any(<dyn std::error::Error>::is::<legionctl_core::setup::InstallFailed>)}),
                 ),
             };
             store.thread_note(id, &input.agent, row.0, &row.1)?;
@@ -5363,8 +5365,30 @@ impl Operator {
                 .find(|op| op.name == tool && !op.internal())
                 .with_context(|| format!("no operation {tool} to bind the agent to"))?;
         }
-        let launch = store.start_session(&start, &resolved.config)?;
         let db = Db::open_default()?;
+        if let Some(command) = resolved.config.session.acp.get(agent)
+            && start.inside == legionctl_core::session::Inside::Host
+        {
+            // a missing adapter is installed first; the chat shows it as the answer's first line
+            let mut announce = |_: &str| {
+                let mut name = agent.to_string();
+                name[..1].make_ascii_uppercase();
+                let text = format!("Installing the {name} adapter…\n");
+                let _ = db.record(
+                    "acp",
+                    "session.output",
+                    &serde_json::json!({"tag": tag, "text": text, "note": true}),
+                );
+            };
+            let search = legionctl_core::setup::session_path()?;
+            legionctl_core::setup::ready(
+                &resolved.config.session,
+                command,
+                &search,
+                &mut announce,
+            )?;
+        }
+        let launch = store.start_session(&start, &resolved.config)?;
         db.issue_token(&launch.id, &token)?;
         // `load`: the caller asked to go on in `acp`, so an agent that cannot load it fails the run; `tools`: a resume
         // binds the run again

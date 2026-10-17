@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -1693,6 +1693,36 @@ impl LegionApp {
                 self.log_row(r, changed, now, t, cx)
             })
             .collect();
+        // an adapter install that failed: the same message again
+        if !self.screen.live.contains_key(&id)
+            && let Some(fail) = v
+                .log
+                .last()
+                .filter(|r| r.kind == "thread.fail" && r.payload["retry"] == true)
+            && let Some(prompt) = v
+                .log
+                .iter()
+                .rev()
+                .find(|r| r.kind == "thread.say")
+                .and_then(|r| r.payload["text"].as_str())
+        {
+            let (agent, prompt) = (fail.member.clone(), prompt.to_string());
+            rows.push(
+                div()
+                    .h_flex()
+                    .pl(px(32.))
+                    .child(
+                        Button::new("retry")
+                            .small()
+                            .primary()
+                            .label("Retry")
+                            .on_click(cx.listener(move |app, _, _, cx| {
+                                app.say(id, &agent, &prompt, prompt.clone(), cx);
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
         // the answer as the agent writes it
         if let Some((_, so_far)) = self.screen.live.get(&id) {
             let agent = self.screen.agent().unwrap_or_else(|| "agent".into());

@@ -390,6 +390,17 @@ pub fn session_path() -> Result<Vec<PathBuf>> {
     Ok(search)
 }
 
+/// Whether the adapter at `path` comes from npm package `package` (bun links a command into the package's folder);
+/// true with no package.
+fn of_package(path: &Path, package: Option<&str>) -> bool {
+    package.is_none_or(|p| {
+        path.canonicalize()
+            .unwrap_or_else(|_| path.to_path_buf())
+            .to_string_lossy()
+            .contains(&format!("/node_modules/{p}/"))
+    })
+}
+
 /// `program` in `search`, or the file itself for a path.
 fn find(program: &str, search: &[PathBuf]) -> Option<PathBuf> {
     if program.contains('/') {
@@ -399,22 +410,73 @@ fn find(program: &str, search: &[PathBuf]) -> Option<PathBuf> {
     }
 }
 
-/// Whether ACP command `argv` can start with the programs in `search`.
+/// An install of an ACP adapter failed: trying again can help (the network, the npm registry).
+#[derive(Debug)]
+pub struct InstallFailed(pub String);
+
+impl std::fmt::Display for InstallFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for InstallFailed {}
+
+/// Install ACP adapter `adapter` from npm package `package` with `bun add -g` into bun's global folder.
 ///
 /// # Errors
-/// Its program (bun) or its adapter is not installed: the error names it and the fix.
-pub fn startable(argv: &[String], search: &[PathBuf]) -> Result<()> {
+/// bun is not installed, or the install fails or gives no `adapter` ([`InstallFailed`]).
+fn add_adapter(adapter: &str, package: &str) -> Result<()> {
+    let bun = bun_bin().context(
+        "Install bun (the bun package): legionctl installs and runs the agent's adapter with it",
+    )?;
+    let out = bun_global(&bun)
+        .args(["add", "-g", package])
+        .output()
+        .with_context(|| format!("running {} add -g {package}", bun.display()))?;
+    if !out.status.success() {
+        return Err(InstallFailed(format!(
+            "Installing the adapter {adapter} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+        .into());
+    }
+    if !find(adapter, &session_path()?).is_some_and(|path| of_package(&path, Some(package))) {
+        return Err(InstallFailed(format!(
+            "Installing the adapter {adapter} failed: bun add -g {package} gave no {adapter}"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+/// Make ACP command `argv` ready to start with the programs in `search`: a missing adapter with a package in
+/// `session.acp_packages` is installed first, after `announce` got its name.
+///
+/// # Errors
+/// Its program (bun) is not installed, the adapter has no package, or its install fails ([`InstallFailed`]).
+pub fn ready(
+    session: &SessionConfig,
+    argv: &[String],
+    search: &[PathBuf],
+    announce: &mut dyn FnMut(&str),
+) -> Result<()> {
     let program = argv.first().context("the agent's ACP command is empty")?;
     let adapter = adapter_program(argv).unwrap_or(program);
     ensure!(
         adapter == program || find(program, search).is_some(),
-        "the agent cannot start: {program} is not installed; install the {program} package"
+        "Install {program} (the {program} package): the agent's adapter starts with it"
     );
-    ensure!(
-        find(adapter, search).is_some(),
-        "the agent cannot start: its ACP adapter {adapter} is not installed; `legionctl setup apply` installs it"
-    );
-    Ok(())
+    let package = session.acp_packages.get(adapter);
+    // an adapter of another package (r324's Zed codex-acp) is replaced by the configured one
+    if find(adapter, search).is_some_and(|path| of_package(&path, package.map(String::as_str))) {
+        return Ok(());
+    }
+    let package = package.with_context(|| {
+        format!("Install the agent's adapter {adapter}, or name its npm package in config session.acp_packages")
+    })?;
+    announce(adapter);
+    add_adapter(adapter, package)
 }
 
 /// One item per ACP adapter of `session.acp` ([`adapter_program`]): current when it is in `search`
@@ -435,20 +497,10 @@ fn acp_items(session: &SessionConfig, search: &[PathBuf]) -> Vec<Item> {
         let package = session.acp_packages.get(command);
         let found = find(command, search);
         let (status, path) = match found {
-            Some(path)
-                if package.is_some_and(|p| {
-                    !path
-                        .canonicalize()
-                        .unwrap_or_else(|_| path.clone())
-                        .to_string_lossy()
-                        .contains(&format!("/node_modules/{p}/"))
-                }) =>
-            {
-                (
-                    "from another package".to_string(),
-                    package.cloned().unwrap_or_default(),
-                )
-            }
+            Some(path) if !of_package(&path, package.map(String::as_str)) => (
+                "from another package".to_string(),
+                package.cloned().unwrap_or_default(),
+            ),
             Some(path) => ("current".to_string(), path.display().to_string()),
             None => match package {
                 Some(package) => ("missing".to_string(), package.clone()),
@@ -955,31 +1007,7 @@ fn install_acp_adapters(session: &SessionConfig) -> Result<Vec<String>> {
             item.agent,
             item.status
         );
-        let bun = bun_bin().with_context(|| {
-            format!(
-                "{} is missing and bun is not installed to install {}",
-                item.what, item.path
-            )
-        })?;
-        let out = bun_global(&bun)
-            .args(["add", "-g", &item.path])
-            .output()
-            .with_context(|| format!("running {} add -g {}", bun.display(), item.path))?;
-        ensure!(
-            out.status.success(),
-            "bun add -g {}: {}",
-            item.path,
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-        let after = acp_items(session, &session_path()?);
-        ensure!(
-            after
-                .iter()
-                .any(|i| i.what == item.what && i.status == "current"),
-            "bun add -g {} gave no {}",
-            item.path,
-            item.what.trim_start_matches("ACP adapter ")
-        );
+        add_adapter(item.what.trim_start_matches("ACP adapter "), &item.path)?;
         done.push(format!(
             "{}: installed {} with bun add -g",
             item.what, item.path

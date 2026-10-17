@@ -243,7 +243,10 @@ async fn run_streamed(
             {
                 print!("{text}");
                 let _ = std::io::Write::flush(&mut std::io::stdout());
-                shown.push_str(text);
+                // a note (the adapter's install) is not part of the answer
+                if payload["note"] != true {
+                    shown.push_str(text);
+                }
             }
         });
         tokio::pin!(follow);

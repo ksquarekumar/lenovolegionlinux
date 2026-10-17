@@ -1,5 +1,7 @@
 //! End-to-end: the binary as the agent plugin uses it (hook dispatch, MCP over stdio), in an isolated HOME.
 
+#[path = "common/adapter.rs"]
+mod adapter;
 mod common;
 #[path = "common/git.rs"]
 mod git;
@@ -3488,32 +3490,6 @@ fn a_run_on_codexs_acp_adapter_takes_its_live_answer_shape() {
     );
 }
 
-/// The ACP command of a stand-in adapter `agent` as Zed's adapters are: a `#!/usr/bin/env node` script in ~/.local/bin,
-/// run by bun as the defaults run them. The `node` there fails, so the script runs only under bun's runtime.
-fn node_script_adapter(home: &Path, agent: &Path) -> Value {
-    let bin = home.join(".local/bin");
-    write(
-        &bin.join("node"),
-        "#!/bin/sh\necho 'node ran' >&2\nexit 97\n",
-    );
-    write(
-        &bin.join("fake-acp"),
-        &format!(
-            "#!/usr/bin/env node\nconst r = require('node:child_process').spawnSync('python3', [{}], \
-             {{stdio: 'inherit'}});\nprocess.exit(r.status ?? 1);\n",
-            json!(agent)
-        ),
-    );
-    for file in ["node", "fake-acp"] {
-        std::fs::set_permissions(
-            bin.join(file),
-            std::os::unix::fs::PermissionsExt::from_mode(0o755),
-        )
-        .unwrap();
-    }
-    json!(["bun", "--bun", "x", "--no-install", "fake-acp"])
-}
-
 /// A headless run through an ACP adapter (a stand-in agent): it gets the session's MCP servers at session/new, its
 /// permission ask is answered and logged, it works inside the same sandbox and git gate as an interactive session,
 /// and its answer comes back. The adapter starts as the defaults start Zed's: bun runs a `#!/usr/bin/env node` script
@@ -3522,11 +3498,11 @@ fn node_script_adapter(home: &Path, agent: &Path) -> Value {
 fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
     let (op, home) = operator("run");
     let repo = repository(&home);
-    let agent =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-acp-agent.py");
+    let script = adapter::node_script(&home);
+    adapter::executable(&home.join(".local/bin/fake-acp"), &script);
     write(
         &home.join(".config/legionctl/run.jsonc"),
-        &json!({"session": {"acp": {"fake": node_script_adapter(&home, &agent)},
+        &json!({"session": {"acp": {"fake": adapter::COMMAND},
                             "scope": false, "writable": []}})
         .to_string(),
     );
@@ -3621,6 +3597,56 @@ fn a_headless_run_drives_an_acp_agent_in_the_session_sandbox() {
         !rest.contains("prompt:") && rest.contains("PUSH_REFUSED") && rest.ends_with(" ms"),
         "each line once, then the result: {rest}"
     );
+}
+
+/// A chat or run whose adapter is not installed (the move from ~/.cache/.bun to ~/.bun): legionctl installs it with
+/// bun from config `session.acp_packages`, then starts it, and the run's first output line says so (a stand-in bun).
+/// A failed install fails the run with its cause; the next run installs again; an installed adapter stays.
+#[test]
+fn a_headless_run_installs_its_missing_adapter_first() {
+    let (op, home) = operator("install");
+    let repo = repository(&home);
+    adapter::stand_in_bun(&home);
+    write(
+        &home.join(".config/legionctl/run.jsonc"),
+        &json!({"session": {"acp": {"fake": adapter::COMMAND}, "acp_packages": {"fake-acp": "@test/fake-acp"},
+                            "scope": false, "writable": []}})
+        .to_string(),
+    );
+    let env = [("HOME", home.to_str().unwrap())];
+    let run = || {
+        op.run(
+            &repo,
+            &env,
+            &["session", "run", "fake", "hi", "--dossier", "port"],
+            "",
+        )
+    };
+    write(&home.join("install-fails"), "");
+    let failed = run();
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(
+        !failed.status.success()
+            && stderr.contains(
+                "Installing the adapter fake-acp failed: error: GET https://registry.npmjs.org/@test/fake-acp - 503"
+            ),
+        "{stderr}"
+    );
+    std::fs::remove_file(home.join("install-fails")).unwrap();
+    let out = run();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.starts_with("Installing the Fake adapter…\nprompt: hi\n")
+            && stdout.matches("prompt: hi").count() == 1,
+        "the note, then the answer once: {stdout}"
+    );
+    assert!(run().status.success());
+    assert_eq!(adapter::installs(&home), ["add -g @test/fake-acp"; 2]);
 }
 
 /// SIGTERM ends the operator within the stop time (todo-125: on 2026-10-16 systemd killed it after
