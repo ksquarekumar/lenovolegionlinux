@@ -59,7 +59,9 @@ impl Lab {
                 // a stand-in keyring: never the user's
                 (
                     "PATH",
-                    keyring::keyring_path(&home, &std::env::var_os("PATH").unwrap()),
+                    // the system's folders only: the user's own tool folders (~/.cache/.bun/bin) hold the real ACP
+                    // adapters, which setup would find instead of the stand-in bun's
+                    keyring::keyring_path(&home, &system_path()),
                 ),
                 ("LEGIONCTL_PLUGIN", OsString::from(plugin)),
             ],
@@ -1224,4 +1226,13 @@ fn the_plugin_text_names_only_commands_of_this_build() {
         unknown.is_empty(),
         "plugin text names commands that this build does not have: {unknown:?}"
     );
+}
+
+/// This process's `PATH` without the folders in the user's home.
+fn system_path() -> OsString {
+    let home = std::env::var_os("HOME").unwrap();
+    std::env::join_paths(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap()).filter(|p| !p.starts_with(&home)),
+    )
+    .unwrap()
 }
