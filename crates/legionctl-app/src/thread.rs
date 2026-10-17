@@ -612,11 +612,12 @@ impl LegionApp {
             &self.screen.repo,
         ) {
             Action::Prompt(prompt) => self.prompt(&prompt, line, cx),
-            // a change from the chat bar or Ctrl+K takes the same plan or confirm as its button (U-13)
+            // a change from the chat bar or Ctrl+K takes the same plan or confirm as its button (U-13); no form: the
+            // parser has refused a missing required field, and an optional one left out keeps its default
             Action::Operation(op, input)
                 if op.class != legionctl_api::Class::Read && input["dry_run"] != true =>
             {
-                self.act(
+                self.confirm(
                     legionctl_api::ViewButton {
                         label: op.summary().to_string(),
                         op: op.name.to_string(),

@@ -451,15 +451,10 @@ fn an_operation_of_the_catalog_runs_through_the_form_of_its_input_schema(cx: &mu
     click(cx, "form-more".into());
     click(cx, "form-scope-project".into());
     click(cx, "form-submit".into());
+    // a change of the user's own session runs at once: no confirm
     app.read_with(cx, |a, _| {
-        assert!(a.state.form.is_none());
-        let pending = a.state.pending.as_ref().unwrap();
-        assert_eq!(pending.class, legionctl_api::Class::Session);
-        assert!(pending.plan.is_none(), "no dry run: an inline confirm");
-        assert_eq!(pending.button.input["entity"], "color");
-        assert_eq!(pending.button.input["scope"], "project");
+        assert!(a.state.form.is_none() && a.state.pending.is_none());
     });
-    click(cx, "apply".into());
     wait(cx, &app, "the fact", |a| {
         a.state
             .message
@@ -2242,10 +2237,10 @@ fn make_a_dossier_in_the_app(
     });
     cx.update(|window, cx| {
         window.render_frame(cx);
+        // Use is a change of the user's own session: it runs at once, with no confirm
         window.click("view-dossiers-row-0-action-0", cx);
-        window.render_frame(cx);
-        window.click("apply", cx);
     });
+    app.read_with(cx, |a, _| assert!(a.state.pending.is_none(), "no confirm"));
     wait(cx, app, "the row's dossier in use", |a| {
         a.screen.dossier.as_deref() == Some(first.as_str())
     });
@@ -2706,7 +2701,8 @@ fn each_failure_of_the_chat_names_its_cause(cx: &mut TestAppContext) {
         "the name in use",
         "dossier chat exists already: choose it with dossier use chat",
     );
-    confirm(cx, &app, "/dossier use nobody", "dossier.use");
+    // a session change (the user's own dossier choice) runs at once: no confirm
+    send(cx, "/dossier use nobody");
     message(
         cx,
         &app,
