@@ -35,7 +35,8 @@ optdepends=(
   "scx-tools: scx_loader service"
 )
 conflicts=("LenovoLegion" "lenovolegionlinux-git" "lenovolegionlinux-dkms-git" "lenovo-legion-wmi-dkms-git")
-backup=("etc/scx_loader.toml")
+# the greeter's two files are the daemon's to change: an upgrade keeps them (a new version comes as .pacnew)
+backup=("etc/scx_loader.toml" "etc/systemd/system/greetd.service" "etc/modules-load.d/nvidia-580xx-utils.conf")
 source=()
 sha256sums=()
 

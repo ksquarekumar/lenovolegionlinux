@@ -112,6 +112,7 @@ pub fn doctor(machine: &Machine) -> Vec<Warning> {
     }
     check(&mut w, "GPU", gpu_warnings(machine));
     check(&mut w, "desktop", desktop_warnings());
+    check(&mut w, "login screen", crate::greeter::findings(root));
     w
 }
 

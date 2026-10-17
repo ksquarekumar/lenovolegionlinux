@@ -23,10 +23,17 @@ it waits for todo-17, and the screen shows nothing for it.
 - The NVIDIA driver loads beside the boot, not before it. Boot b: systemd-modules-load loaded nvidia, nvidia_modeset,
   nvidia_uvm and nvidia_drm for 3.29 s, and sysinit.target (so greetd) waited. udev loads the driver by itself
   (modalias of nvidia and nvidia_drm; nvidia-utils' 60-nvidia.rules loads nvidia_uvm when nvidia binds). legionctl
-  hides each module list of a package that loads nvidia (`/usr/lib/modules-load.d/<name>`) with an empty list of
-  the same name in `/etc/modules-load.d`; greetd's unit runs `udevadm settle --timeout=10` first, so the monitors
-  on the NVIDIA GPU are there when cage starts. A list in `/etc` of another owner (here `nvidia.conf`, of no package)
-  is not changed: install and upgrade say the one step (`sudo rm <file>`).
+  empties `/etc/modules-load.d/nvidia-580xx-utils.conf`, which hides the list of nvidia-580xx-utils of the same name
+  in `/usr/lib`; greetd's unit runs `udevadm settle --timeout=10` first, so the monitors on the NVIDIA GPU are there
+  when cage starts.
+- The daemon writes only two files for this (user decision 2026-10-18): `/etc/systemd/system/greetd.service` and
+  `/etc/modules-load.d/nvidia-580xx-utils.conf`. The package owns both (backup files) with greetd's own unit and
+  nvidia-580xx-utils' list in them, so they change nothing until `greeter install`; `remove` writes them back; the
+  daemon's `ReadWritePaths` has the two files, not their folders.
+- A list in `/etc` of another owner (here `nvidia.conf`, of no package) is not changed. No package file can win
+  over it: `/etc` is the first place systemd-modules-load reads, and a file of the same name in `/etc` is that file.
+  So it is the user's one step: install and upgrade print it, and doctor (Health) has it as a finding with the
+  command (`sudo rm <file>`) while legionctl's greeter is the login screen.
 - The screen is dark and shows little text (todo-150, 2026-10-17): the people of the computer as avatars (uid 1000 to
   65533 with a login shell), the session chips, and a bar with "Before login" at the left and Suspend, Restart and
   Power off at the right.
@@ -128,7 +135,7 @@ Install does these steps in this order:
 2. It writes `/etc/greetd/config.toml` (first line `# legionctl greeter`): VT 1,
    `systemd-cat -t legionctl-greeter cage -s -m last -- env -u DISPLAY FONTCONFIG_FILE=<fonts.conf> legionctl-greeter`
    as `greeter`.
-3. It writes `/etc/systemd/system/greetd.service` and the empty NVIDIA module lists (above).
+3. It writes `/etc/systemd/system/greetd.service` and empties the NVIDIA module list (above).
 4. `systemctl disable gdm.service`. GDM stays installed.
 5. `systemctl enable greetd.service`. The `display-manager.service` alias is one link, so GDM must go first.
 

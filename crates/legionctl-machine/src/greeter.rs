@@ -21,12 +21,17 @@ const MARK: &str = "# legionctl greeter";
 pub const STATE: &str = "/var/lib/legionctl-greeter";
 /// The alias that `systemctl enable` of a display manager makes.
 const DISPLAY_MANAGER: &str = "/etc/systemd/system/display-manager.service";
-/// legionctl's greetd unit: it replaces the unit of greetd's package (a drop-in cannot take away its
-/// `After=plymouth-quit-wait.service`).
+/// greetd's unit in `/etc`: it wins over the unit of greetd's package (a drop-in cannot take away its
+/// `After=plymouth-quit-wait.service`). The legionctl package owns the file with greetd's own unit in it, so the
+/// daemon may write only this file; install writes legionctl's unit, remove puts the package's back.
 pub const UNIT: &str = "/etc/systemd/system/greetd.service";
+const UNIT_BEFORE: &str = include_str!("../../../packaging/greeter/greetd.service");
 /// Where systemd-modules-load reads its lists: a file of the same name in `/etc` hides the package's.
 const MODULES_ETC: &str = "/etc/modules-load.d";
-const MODULES_USR: &str = "/usr/lib/modules-load.d";
+/// The NVIDIA package's list in `/etc`, owned by the legionctl package with that list in it; install empties it.
+/// shortcut: one name, nvidia-580xx-utils' (this machine's driver); a new driver package needs its name here.
+pub const MODULES: &str = "/etc/modules-load.d/nvidia-580xx-utils.conf";
+const MODULES_BEFORE: &str = include_str!("../../../packaging/greeter/nvidia-modules.conf");
 const GDM: &str = "gdm.service";
 const GREETD: &str = "greetd.service";
 
@@ -119,13 +124,13 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
         });
     }
     steps.extend(
-        files(root)?
+        files()
             .into_iter()
             .map(|(path, content)| Step::Create { path, content }),
     );
     steps.push(systemctl("disable", GDM));
     steps.push(systemctl("enable", GREETD));
-    steps.extend(nvidia_held(root)?);
+    steps.extend(nvidia_held(root)?.map(Step::Info));
     Ok(steps)
 }
 
@@ -140,7 +145,7 @@ pub fn update_plan(root: &SysRoot) -> Result<Vec<Step>> {
         return Ok(Vec::new());
     }
     let mut changed = Vec::new();
-    for (path, content) in files(root)? {
+    for (path, content) in files() {
         // the root's read trims the text
         if root.read(&path)?.as_deref() != Some(content.trim()) {
             changed.push(Step::Create { path, content });
@@ -165,32 +170,24 @@ pub fn update_plan(root: &SysRoot) -> Result<Vec<Step>> {
          it"
         .into(),
     ));
-    steps.extend(nvidia_held(root)?);
+    steps.extend(nvidia_held(root)?.map(Step::Info));
     Ok(steps)
 }
 
-/// legionctl's files of the greeter, each with its content: greetd's configuration and unit, and for each module
-/// list of a package that loads the NVIDIA driver, an empty list of the same name in `/etc` (a list of another owner
-/// there stays as it is).
-fn files(root: &SysRoot) -> Result<Vec<(String, String)>> {
-    let mut files = vec![(CONFIG.to_string(), config()), (UNIT.to_string(), unit())];
-    for name in lists(root, MODULES_USR)?
-        .into_iter()
-        .filter(|(_, text)| loads_nvidia(text))
-        .map(|(name, _)| name)
-    {
-        let path = format!("{MODULES_ETC}/{name}");
-        if root.read(&path)?.is_none_or(|t| t.starts_with(MARK)) {
-            files.push((
-                path,
-                format!(
-                    "{MARK}: the NVIDIA driver of {MODULES_USR}/{name} loads from udev beside the boot (its \
-                     60-nvidia.rules loads nvidia-uvm), not before the login screen\n"
-                ),
-            ));
-        }
-    }
-    Ok(files)
+/// legionctl's files of the greeter, each with its content: greetd's configuration and unit, and the NVIDIA
+/// package's module list emptied.
+fn files() -> Vec<(String, String)> {
+    vec![
+        (CONFIG.to_string(), config()),
+        (UNIT.to_string(), unit()),
+        (
+            MODULES.to_string(),
+            format!(
+                "{MARK}: the NVIDIA driver loads from udev beside the boot (nvidia-utils' 60-nvidia.rules loads \
+                 nvidia-uvm), not before the login screen\n"
+            ),
+        ),
+    ]
 }
 
 /// The `*.conf` files of the folder `dir` with their text, by name.
@@ -221,20 +218,34 @@ fn loads_nvidia(text: &str) -> bool {
     text.lines().any(|l| l.trim_start().starts_with("nvidia"))
 }
 
+/// Doctor's finding while legionctl's greeter is the login screen and a list in `/etc` of another owner still loads
+/// the NVIDIA driver before it: the one command that ends it.
+///
+/// # Errors
+/// greetd's configuration or `/etc/modules-load.d` cannot be read.
+pub fn findings(root: &SysRoot) -> Result<Vec<String>> {
+    if !state(root)?.installed {
+        return Ok(Vec::new());
+    }
+    Ok(nvidia_held(root)?.into_iter().collect())
+}
+
 /// The user's one step when a list in `/etc` that is not legionctl's still loads the NVIDIA driver before the login
 /// screen: legionctl does not change a file of another owner.
-fn nvidia_held(root: &SysRoot) -> Result<Option<Step>> {
+fn nvidia_held(root: &SysRoot) -> Result<Option<String>> {
     let held: Vec<String> = lists(root, MODULES_ETC)?
         .into_iter()
-        .filter(|(_, text)| !text.starts_with(MARK) && loads_nvidia(text))
-        .map(|(name, _)| format!("{MODULES_ETC}/{name}"))
+        .map(|(name, text)| (format!("{MODULES_ETC}/{name}"), text))
+        // the package's own list is legionctl's to empty, also before install empties it
+        .filter(|(path, text)| path != MODULES && loads_nvidia(text))
+        .map(|(path, _)| path)
         .collect();
     Ok((!held.is_empty()).then(|| {
-        Step::Info(format!(
+        format!(
             "the NVIDIA driver still loads before the login screen: remove {} once (udev loads the driver): sudo rm {}",
             held.join(" and "),
             held.join(" ")
-        ))
+        )
     }))
 }
 
@@ -330,13 +341,10 @@ pub fn remove_plan(root: &SysRoot) -> Result<Vec<Step>> {
         }],
     };
     steps.push(systemctl("disable", GREETD));
-    steps.push(Step::Remove { path: UNIT.into() });
-    for (name, _) in lists(root, MODULES_ETC)?
-        .into_iter()
-        .filter(|(_, text)| text.starts_with(MARK))
-    {
-        steps.push(Step::Remove {
-            path: format!("{MODULES_ETC}/{name}"),
+    for (path, content) in [(UNIT, UNIT_BEFORE), (MODULES, MODULES_BEFORE)] {
+        steps.push(Step::Create {
+            path: path.into(),
+            content: content.into(),
         });
     }
     steps.push(systemctl_reload());

@@ -6525,6 +6525,14 @@ fn under_its_own_unit_the_daemon_writes_the_greeter_the_esp_and_the_rules() {
             "legionctl-splash-quit.service",
         ),
         (
+            repo.join("packaging/greeter/greetd.service"),
+            "greetd.service",
+        ),
+        (
+            repo.join("packaging/greeter/nvidia-modules.conf"),
+            "nvidia-modules.conf",
+        ),
+        (
             repo.join(format!("profiles/{profile}.json")),
             &format!("profiles/{profile}.json"),
         ),

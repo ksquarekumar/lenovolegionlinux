@@ -164,6 +164,10 @@ install: ## install into DESTDIR; the PKGBUILD calls this (on this machine: `mak
 	install -Dm644 systemd/legionctl-safe.service "$(DESTDIR)$(UNITDIR)/legionctl-safe.service"
 	install -Dm644 systemd/legionctl-boot-confirm.service "$(DESTDIR)$(UNITDIR)/legionctl-boot-confirm.service"
 	install -Dm644 systemd/legionctl-splash-quit.service "$(DESTDIR)$(UNITDIR)/legionctl-splash-quit.service"
+# the two files the daemon may write for the greeter (its unit's ReadWritePaths): greetd's own unit and the NVIDIA
+# package's module list, as they are; greeter install writes legionctl's, remove puts these back
+	install -Dm644 packaging/greeter/greetd.service "$(DESTDIR)$(SYSCONFDIR)/systemd/system/greetd.service"
+	install -Dm644 packaging/greeter/nvidia-modules.conf "$(DESTDIR)$(SYSCONFDIR)/modules-load.d/nvidia-580xx-utils.conf"
 	install -d "$(DESTDIR)$(UNITDIR)/graphical.target.wants"
 	ln -sf ../legionctl-boot-confirm.service "$(DESTDIR)$(UNITDIR)/graphical.target.wants/legionctl-boot-confirm.service"
 	install -Dm644 -t "$(DESTDIR)$(USERUNITDIR)" systemd/user/legionctl-operator.service systemd/user/legionctl-operator.socket systemd/user/legionctl-windows-vm.service systemd/user/legionctl-clauth.service

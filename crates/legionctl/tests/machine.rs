@@ -6291,6 +6291,12 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         );
         let users_list = r340_module_lists(&m);
         handover_files(&root, &op.ok(&["greeter", "install"]));
+        // Health has the user's one step while legionctl's greeter is the login screen
+        let doctor = String::from_utf8_lossy(&op.cli(&["doctor"]).stdout).into_owned();
+        assert!(
+            doctor.contains("sudo rm /etc/modules-load.d/nvidia.conf"),
+            "{doctor}"
+        );
         let ours = config();
         assert!(
             ours.starts_with("# legionctl greeter")
@@ -6357,6 +6363,17 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
     /// r340's module lists (boot b of 2026-10-17): nvidia-utils' list, the user's list of no package (returned), and
     /// another.
     fn r340_module_lists(m: &Machine) -> &'static str {
+        // the legionctl package's two files, as make install puts them
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/greeter");
+        for (from, to) in [
+            ("greetd.service", "/etc/systemd/system/greetd.service"),
+            (
+                "nvidia-modules.conf",
+                "/etc/modules-load.d/nvidia-580xx-utils.conf",
+            ),
+        ] {
+            m.set(to, &std::fs::read_to_string(repo.join(from)).unwrap());
+        }
         m.set(
             "/usr/lib/modules-load.d/nvidia-580xx-utils.conf",
             "nvidia-uvm",
@@ -6367,14 +6384,23 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         users_list
     }
 
-    /// After remove: greetd's own unit is back and the hidden list is shown again; the user's list stays.
+    /// After remove: the package's two files have their content of the package again (greetd's own unit, the NVIDIA
+    /// list); the user's list stays.
     fn handover_files_gone(root: &Path, users_list: &str) {
-        assert!(!root.join("etc/systemd/system/greetd.service").exists());
-        assert!(
-            !root
-                .join("etc/modules-load.d/nvidia-580xx-utils.conf")
-                .exists()
-        );
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/greeter");
+        for (package, path) in [
+            ("greetd.service", "etc/systemd/system/greetd.service"),
+            (
+                "nvidia-modules.conf",
+                "etc/modules-load.d/nvidia-580xx-utils.conf",
+            ),
+        ] {
+            assert_eq!(
+                std::fs::read_to_string(root.join(path)).unwrap(),
+                std::fs::read_to_string(repo.join(package)).unwrap(),
+                "{path}"
+            );
+        }
         assert_eq!(
             std::fs::read_to_string(root.join("etc/modules-load.d/nvidia.conf"))
                 .unwrap()
@@ -6388,8 +6414,9 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
     /// NVIDIA list is hidden by an empty one; another list stays; the user's own list is one step in `said`.
     fn handover_files(root: &Path, said: &str) {
         assert!(
-            said.contains("sudo rm /etc/modules-load.d/nvidia.conf"),
-            "the one step for the list legionctl does not change: {said}"
+            said.contains("sudo rm /etc/modules-load.d/nvidia.conf")
+                && !said.contains("rm /etc/modules-load.d/nvidia-580xx-utils.conf"),
+            "the one step for the list legionctl does not change, not for its own: {said}"
         );
         let unit = std::fs::read_to_string(root.join("etc/systemd/system/greetd.service")).unwrap();
         for line in [

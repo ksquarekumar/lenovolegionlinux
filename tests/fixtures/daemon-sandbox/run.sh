@@ -38,6 +38,8 @@ install -Dm644 "$here/org.legionctl.System1.conf" /usr/share/dbus-1/system.d/org
 install -Dm644 "$here/org.legionctl.policy" /usr/share/polkit-1/actions/org.legionctl.policy
 install -Dm644 "$here/50-legionctl-greeter.rules" /usr/share/polkit-1/rules.d/50-legionctl-greeter.rules
 install -Dm644 "$here/legionctl-splash-quit.service" /usr/lib/systemd/system/legionctl-splash-quit.service
+install -Dm644 "$here/greetd.service" /etc/systemd/system/greetd.service
+install -Dm644 "$here/nvidia-modules.conf" /etc/modules-load.d/nvidia-580xx-utils.conf
 install -Dm644 -t /usr/share/legionctl/profiles "$here"/profiles/*.json
 mkdir -p /usr/share/legionctl/configsets && cp -r "$here/configsets/." /usr/share/legionctl/configsets/
 install -dm755 /etc/greetd
@@ -47,9 +49,8 @@ systemctl reload dbus
 
 # greetd (with the user greeter that its package makes), cage and the greeter are there; GDM is the display manager
 for f in /usr/bin/greetd /usr/bin/cage /usr/lib/legionctl/legionctl-greeter /usr/bin/plymouth; do install -Dm755 /bin/true "$f"; done
-# the greeter's fonts, and a package's module list that loads the NVIDIA driver (nvidia-utils')
+# the greeter's font
 install -Dm644 /dev/null /usr/share/fonts/noto/NotoSans-Regular.ttf
-echo nvidia-uvm | install -Dm644 /dev/stdin /usr/lib/modules-load.d/nvidia-utils.conf
 id greeter >/dev/null 2>&1 || useradd --system --no-create-home --home-dir / greeter
 for unit in gdm greetd; do
   printf '[Service]\nExecStart=/bin/true\n\n[Install]\nAlias=display-manager.service\n' >"/usr/lib/systemd/system/$unit.service"
@@ -168,7 +169,7 @@ greeter_order() {
   fi
 }
 check greeter-unit greeter_order
-check greeter-modules sh -c "grep -q '^# legionctl greeter' /etc/modules-load.d/nvidia-utils.conf && ! grep -q '^nvidia' /etc/modules-load.d/nvidia-utils.conf"
+check greeter-modules sh -c "grep -q '^# legionctl greeter' /etc/modules-load.d/nvidia-580xx-utils.conf && ! grep -q '^nvidia' /etc/modules-load.d/nvidia-580xx-utils.conf"
 # polkit lets the user greeter start the splash's end and nothing else
 check greeter-splash-quit runuser -u greeter -- systemctl --no-ask-password start legionctl-splash-quit.service
 check greeter-other-unit-refused sh -c '! runuser -u greeter -- systemctl --no-ask-password start gdm.service'

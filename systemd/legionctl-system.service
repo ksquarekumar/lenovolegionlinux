@@ -21,8 +21,8 @@ RuntimeDirectoryPreserve=yes
 # (docs/design/13-daemon.md, Sandbox). The ESP is at /efi (may not exist), /boot or /boot/efi (under /boot).
 ProtectSystem=strict
 ConfigurationDirectory=legionctl
-# the greeter: its greetd unit in /etc/systemd/system and the NVIDIA module lists it hides in /etc/modules-load.d
-ReadWritePaths=/etc/udev/rules.d /etc/polkit-1/rules.d /etc/greetd /etc/systemd/system -/etc/modules-load.d -/efi /boot
+# the greeter: the two files of the package that it may write (greetd's unit, the NVIDIA module list), no folder
+ReadWritePaths=/etc/udev/rules.d /etc/polkit-1/rules.d /etc/greetd -/etc/systemd/system/greetd.service -/etc/modules-load.d/nvidia-580xx-utils.conf -/efi /boot
 
 [Install]
 WantedBy=multi-user.target
