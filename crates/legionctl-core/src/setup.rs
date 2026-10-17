@@ -473,7 +473,7 @@ pub fn ready(
         return Ok(());
     }
     let package = package.with_context(|| {
-        format!("Install the agent's adapter {adapter}, or name its npm package in config session.acp_packages")
+        format!("Install the agent's adapter {adapter}: legionctl does not know its package, so it cannot install it")
     })?;
     announce(adapter);
     add_adapter(adapter, package)

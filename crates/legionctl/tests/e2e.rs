@@ -3645,6 +3645,7 @@ fn a_headless_run_installs_its_missing_adapter_first() {
             && stdout.matches("prompt: hi").count() == 1,
         "the note, then the answer once: {stdout}"
     );
+    plain::assert_plain("the run with its install note", &stdout);
     assert!(run().status.success());
     assert_eq!(adapter::installs(&home), ["add -g @test/fake-acp"; 2]);
 }

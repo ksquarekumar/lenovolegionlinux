@@ -3310,7 +3310,7 @@ fn each_failure_of_the_chat_names_its_cause(cx: &mut TestAppContext) {
         cx,
         &app,
         "the missing adapter",
-        "Install the agent's adapter no-such-adapter, or name its npm package in config session.acp_packages",
+        "Install the agent's adapter no-such-adapter: legionctl does not know its package, so it cannot install it",
     );
     wait(cx, &app, "the failure in the conversation", |a| {
         !said(a, "thread.fail").is_empty()
