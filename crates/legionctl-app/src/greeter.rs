@@ -651,7 +651,7 @@ impl Greeter {
                         .cloned(),
                     self.user.clone(),
                 ) else {
-                    self.message = Some(format!("No session in {WAYLAND_SESSIONS}"));
+                    self.message = Some("No Wayland desktop is installed.".into());
                     return;
                 };
                 let remembered = self.remembered.clone();

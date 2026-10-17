@@ -45,7 +45,7 @@
   </action>
 
   <action id="org.legionctl.rules">
-    <description>Change the system power rules (configset layers and saved sets)</description>
+    <description>Change the system power rules</description>
     <message>Authentication is required to change the system power rules</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
@@ -56,7 +56,7 @@
 
   <action id="org.legionctl.windows.vm">
     <description>Start the installed Windows in a virtual machine or end it, or attach its disk to Linux or detach it</description>
-    <message>Authentication is required to give the Windows disk to a virtual machine</message>
+    <message>Authentication is required to start or stop the Windows VM, or to attach or detach the Windows disk</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
@@ -75,7 +75,7 @@
   </action>
 
   <action id="org.legionctl.boot">
-    <description>Add, rebuild or remove legionctl's boot entry (systemd-boot and signed kernel images), choose its kernel, change a kernel's command line, install a kernel that legionctl built, or add boot entries for saved sets</description>
+    <description>Change how the computer starts: legionctl's boot entry, its kernels and their command lines</description>
     <message>Authentication is required to change how the computer starts</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
@@ -144,8 +144,8 @@
   </action>
   <!-- a raw EC write that can stop fan control: no kept authorization -->
   <action id="org.legionctl.fan.lock">
-    <description>Lock or release the EC fan controller</description>
-    <message>Authentication is required to write the EC fan lock</message>
+    <description>Lock or release fan control</description>
+    <message>Authentication is required to lock or release fan control</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>

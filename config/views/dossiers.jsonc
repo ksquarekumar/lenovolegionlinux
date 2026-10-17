@@ -9,11 +9,11 @@
   "widget": "table",
   "source": { "op": "dossier.list" },
   "columns": ["name", "chosen", "has_plan"],
-  "labels": { "name": "Dossier", "chosen": "Yours now", "has_plan": "Has a plan" },
+  "labels": { "name": "Dossier", "chosen": "In use", "has_plan": "Has a plan" },
   "row_actions": [{ "label": "Use", "op": "dossier.use", "input": { "name": "{row.name}" } }],
   "actions": [
     { "label": "New dossier", "op": "dossier.create", "input": {} },
-    { "label": "Choose none", "op": "dossier.release", "input": { "reason": null } }
+    { "label": "Use no dossier", "op": "dossier.release", "input": { "reason": null } }
   ],
   "refresh": { "events": ["dossier.*", "facts.*"] }
 }

@@ -712,7 +712,7 @@ pub struct WindowsVmBegun {
     pub devices: Vec<String>,
     /// The firmware's MSDM table (the Windows license) for the VM's ACPI tables.
     pub msdm: Vec<u8>,
-    /// The VM runs on this overlay (a repair, todo-151), not on the disk itself.
+    /// The VM runs on this overlay (a repair), not on the disk itself.
     pub overlay: Option<OverlayDisk>,
 }
 
@@ -807,7 +807,7 @@ pub struct DossierCreateIn {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DossierUseIn {
     /// Dossier name: a-z, 0-9 and '-'. For a session, a name that does not exist makes a new dossier from the
-    /// pattern; for the user (no session), the dossier must exist (dossier create).
+    /// pattern; with no session (the app, a terminal), the dossier must exist (dossier create).
     pub name: String,
     /// Take it over from another live session; for an agent, the operator asks the user first.
     #[serde(default)]
@@ -933,13 +933,13 @@ pub struct AboutItem {
     /// What the row is about: operator, daemon, machine, licenses, source.
     pub part: String,
     pub value: String,
-    /// ok, or warn when the part needs the user (a daemon of another build, or no daemon).
+    /// ok, or warn when the part needs you (a daemon that does not match, or no daemon).
     pub state: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FeedbackIn {
-    /// What the user says.
+    /// What you see or want.
     pub note: String,
     /// The dossier of the entry.
     pub dossier: String,
@@ -950,7 +950,7 @@ pub struct FeedbackIn {
     /// The app's state as JSON (the tab's view, its data, errors): state.json, with the operator's last events.
     #[serde(default)]
     pub state: Option<String>,
-    /// Ask the desktop for a screenshot (the user picks the window): screenshot.png.
+    /// Ask the desktop for a screenshot (you pick the window): screenshot.png.
     #[serde(default)]
     pub screenshot: bool,
 }
@@ -1701,7 +1701,7 @@ pub struct AgentSetIn {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RunnablesCheckIn {
-    /// A team file (`teams/<team>.jsonc` of the repository's .legionctl, the user's config or the plugin); none:
+    /// A team file (`teams/<team>.jsonc` of the repository's .legionctl, your config or the plugin); none:
     /// each agent config alone.
     #[serde(default)]
     pub team: Option<String>,
@@ -2540,7 +2540,7 @@ pub struct ViewTextIn {
 pub struct ViewSaveIn {
     /// The view file's JSONC text (stdin when not given).
     pub content: StdinText,
-    /// Save into this repository's layer (`.legionctl/views/`), shared with the code; default: the user's layer.
+    /// Save into this repository's layer (`.legionctl/views/`), shared with the code; default: your layer.
     #[serde(default)]
     pub repo: Option<ClientPath>,
 }
@@ -2610,7 +2610,7 @@ pub struct ViewInfo {
 pub struct ViewVersionIn {
     /// The view's name (`views list`).
     pub name: String,
-    /// undo, redo, reset (to the pinned version, else the seed), pin (reset goes back to the version that shows), or
+    /// undo, redo, reset (to the pinned version, or else the original), pin (reset goes back to the version that shows), or
     /// a version number.
     pub to: String,
     /// A folder in a repository: its layer comes first.
@@ -2659,7 +2659,7 @@ pub struct FactSetIn {
     pub attribute: String,
     /// The value as JSON.
     pub value: String,
-    /// Where it holds: global (the user), project (the repository of --repo), workspace (its worktree), dossier
+    /// Where it holds: global (all your work), project (the repository of --repo), workspace (its worktree), dossier
     /// (--dossier) or thread (--thread).
     #[serde(default = "global")]
     pub scope: FactScope,
@@ -2874,7 +2874,7 @@ pub struct ViewPartsIn {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PartInfo {
     pub name: String,
-    /// The version that shows now (0: the seed); a stack pins one with `{"name": .., "version": ..}`.
+    /// The version that shows now (0: the original); a stack pins one with `{"name": .., "version": ..}`.
     pub version: u32,
     pub title: String,
     pub widget: ViewWidget,

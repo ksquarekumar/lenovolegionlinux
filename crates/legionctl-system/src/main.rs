@@ -82,18 +82,17 @@ fn safe(root: &SysRoot) -> Result<()> {
         }
         std::fs::write(root.path(&profile.paths.platform_profile), "balanced\n")
             .with_context(|| format!("writing {}", profile.paths.platform_profile))?;
-        Ok("platform_profile balanced")
+        Ok("the firmware mode is now balanced")
     })();
     let marker = root.path(SAFE_MODE);
     std::fs::create_dir_all(marker.parent().context("no parent")?)?;
     std::fs::write(
         &marker,
         format!(
-            "legionctl-system failed repeatedly and stopped; set: {}. The next start of the computer starts it \
-             again\n",
+            "legionctl's machine service stopped after repeated failures; {}. Restart the computer to start it again\n",
             match &set {
                 Ok(done) => (*done).to_string(),
-                Err(e) => format!("nothing: {e:#}"),
+                Err(e) => format!("the firmware mode did not change: {e:#}"),
             }
         ),
     )?;

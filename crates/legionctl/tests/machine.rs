@@ -466,7 +466,7 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
             "- platform_profile is 'max-power', expected 'balanced'",
             "- 32 cpufreq policies are not using governor 'powersave'",
             "- 32 cpufreq policies are not using EPP 'balance_power'",
-            "- conflicting unit legiond.service: active=active, enabled=disabled",
+            "- legiond.service fights legionctl (active, disabled): run legionctl cleanup",
             "- conflicting package is installed: lenovolegionlinux-git",
             "- required module legionctl_wmi is missing for kernel 7.2.9-2-cachyos-bore-lto",
             "- /etc/modules-load.d/acpi.conf autoloads acpi_call, which does not exist for 7.2.9-2-cachyos-bore-lto (fails every boot)",
@@ -474,7 +474,7 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
             "- NTFS volume nvme0n1p3 is marked dirty: Windows did not shut down fully. Start Windows and shut it down with Fast Startup off",
             "- an external display runs on NVIDIA but the desktop may be drawn on Intel (fix: legionctl gpu primary nvidia)",
             "- the system unit mnt-windows-data.mount failed",
-            "- the user unit app-ghostty.service failed",
+            "- the unit app-ghostty.service of your login failed",
             "- legionctl-system does not answer: connecting to the system bus: Failed to connect to address `unix:path=/nonexistent/bus`: No such file or directory (os error 2): \
              No such file or directory (os error 2) (fans, throttle reasons and the eBPF sensor are unknown)",
             "- the system service switcheroo-control does not run: GNOME has no \"Launch using Discrete Graphics Card\"",
@@ -1169,7 +1169,7 @@ fn safe_mode_hands_the_machine_to_the_firmware_and_doctor_says_why() {
     assert!(!out.status.success(), "{out:?}");
     assert!(
         m.file("/run/legionctl/safe-mode").contains(
-            "set: nothing: /sys/class/platform-profile/platform-profile-0/choices is missing."
+            "the firmware mode did not change: /sys/class/platform-profile/platform-profile-0/choices is missing."
         ),
         "{}",
         m.file("/run/legionctl/safe-mode")
@@ -1190,8 +1190,8 @@ fn safe_mode_hands_the_machine_to_the_firmware_and_doctor_says_why() {
     assert_eq!(
         doctor.lines().nth(1),
         Some(
-            "- safe mode: legionctl-system failed repeatedly and stopped; set: platform_profile balanced. The next \
-             start of the computer starts it again"
+            "- safe mode: legionctl's machine service stopped after repeated failures; the firmware mode is now \
+             balanced. Restart the computer to start it again"
         ),
         "{doctor}"
     );
@@ -3438,7 +3438,7 @@ mod operator_and_daemon {
             before.as_str()
         );
         let again = op.ok(&["power", "apply", "--source", "ac"]);
-        assert!(again.contains("is held at"), "{again}");
+        assert!(again.contains("you hold it"), "{again}");
         assert_eq!(m.file(epp0), before, "the policy leaves a held file alone");
 
         op.ok(&["knobs", "release", "cpu.epp"]);
@@ -5747,10 +5747,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         let op = login(&m, "stops", op, "7.2.9-2-cachyos");
         std::thread::sleep(std::time::Duration::from_secs(3));
         assert_eq!((restarts(&m), bench_runs(&op).len()), (2, 1));
-        assert_eq!(
-            last_job(&op, "kernel.bench")["error"],
-            "cancelled by the user"
-        );
+        assert_eq!(last_job(&op, "kernel.bench")["error"], "you cancelled it");
 
         m.set(OSRELEASE, "7.2.9-2-cachyos-bore-lto");
         let newer: Value =
@@ -6278,7 +6275,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         let why = String::from_utf8_lossy(&refused.stderr);
         assert!(
             why.contains("cage (pacman -S cage)")
-                && why.contains("the user greeter")
+                && why.contains("the system account greeter")
                 && why.contains("pacman -S noto-fonts"),
             "{why}"
         );

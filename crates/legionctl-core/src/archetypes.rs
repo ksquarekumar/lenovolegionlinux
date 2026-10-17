@@ -95,14 +95,14 @@ pub struct AgentConfig {
     pub sandbox: Option<String>,
     /// Codex approval policy of an operator session.
     pub approval: Option<String>,
-    /// What answers a wake of an operator member, in order (todo-138): `rlcd` (a System One decision on the events;
+    /// What answers a wake of an operator member, in order: `rlcd` (a System One decision on the events;
     /// escalate wakes the next step with its answer as a brief) and `acp` (the member's session). A step that is not
     /// configured is skipped; a step that fails is reported, and the next step does not run in its place. None:
     /// `acp`.
     pub route: Vec<String>,
     /// The rlcd step of the route.
     pub rlcd: Option<MemberRlcd>,
-    /// Capability sets it requests at its start (DESIGN-13); a higher layer may only narrow them.
+    /// Capability sets it requests at its start; a higher layer may only narrow them.
     pub capabilities: Vec<String>,
 }
 

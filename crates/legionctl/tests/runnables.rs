@@ -245,7 +245,7 @@ fn a_start_that_requests_sets_it_may_not_have_is_refused_with_each_reason() {
     for reason in [
         "capability sets refused at start",
         "no-such-set: no such capability set",
-        "deploy: the user layer does not allow it (runnables.allow)",
+        "deploy: your config layer does not allow it (runnables.allow)",
         "vm-only: it runs only in vm; this session runs in host",
         "keys: storage ~/.ssh/known: it reaches",
     ] {
@@ -285,7 +285,7 @@ fn a_start_that_requests_sets_it_may_not_have_is_refused_with_each_reason() {
         .unwrap_or_else(|| panic!("{check:#}"));
     assert_eq!(
         deploy["refusal"],
-        "the user layer does not allow it (runnables.allow)"
+        "your config layer does not allow it (runnables.allow)"
     );
 
     let launch = launch(&lab.start("probe", "refuse", &[]));
@@ -450,7 +450,7 @@ async fn a_repository_set_with_a_powerful_part_is_granted_only_after_the_user_al
     let waits = start("tofu-1");
     assert!(
         !waits.status.success()
-            && text(&waits).contains("sets connections and waits for the user's first answer"),
+            && text(&waits).contains("sets connections and waits for your first answer"),
         "{}",
         text(&waits)
     );
@@ -474,14 +474,14 @@ async fn a_repository_set_with_a_powerful_part_is_granted_only_after_the_user_al
     mirror("other.example.com");
     let changed = start("tofu-2");
     assert!(
-        !changed.status.success() && text(&changed).contains("waits for the user's first answer"),
+        !changed.status.success() && text(&changed).contains("waits for your first answer"),
         "{}",
         text(&changed)
     );
     answered("false", 2);
     let denied = start("tofu-2");
     assert!(
-        !denied.status.success() && text(&denied).contains("the user denied the content of"),
+        !denied.status.success() && text(&denied).contains("you denied the content of"),
         "{}",
         text(&denied)
     );

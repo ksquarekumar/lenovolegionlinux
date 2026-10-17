@@ -52,8 +52,7 @@ pub fn legacy_root() -> Result<PathBuf> {
 }
 
 /// The refusal of each dossier operation until the migration is done.
-pub const NOT_MIGRATED: &str =
-    "the dossiers are not migrated yet: the user runs legionctl dossier migrate";
+pub const NOT_MIGRATED: &str = "the dossiers are not migrated yet: run legionctl dossier migrate";
 
 /// Whether the migration has work to do: the old root has its database or a dossier folder (other files there
 /// alone do not refuse the dossier operations).

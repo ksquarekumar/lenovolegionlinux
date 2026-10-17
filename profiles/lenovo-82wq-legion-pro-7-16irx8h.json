@@ -32,7 +32,7 @@
     {
       "id": "fn_q_power_mode",
       "name": "Fn+Q power mode switch",
-      "status": "built; the live Fn+Q check is the user's (todo-17 step 4)",
+      "status": "built; not yet checked on this machine",
       "current_owner": "legionctl_wmi (WMI event 0xE7 gives a platform_profile change notice) and legionctl-system (follows the Fn+Q choice)",
       "planned_owner": "legionctl_wmi (WMI event 0xE7 gives a platform_profile change notice) and legionctl-system (follows the Fn+Q choice)",
       "notes": "Hardware toggles Lenovo thermal/power mode. legionctl_wmi turns the firmware's mode event into a platform_profile notice; legionctl-system keeps the choice as the Fn+Q override and sets the fan table again on entry to custom mode."
@@ -64,15 +64,15 @@
     {
       "id": "fan_telemetry",
       "name": "Real fan RPM/temperature telemetry",
-      "status": "fan RPM built (legionctl_wmi hwmon); firmware temperatures wait for the WMI probe (todo-93)",
+      "status": "fan speeds work; firmware temperatures are not read yet",
       "current_owner": "legionctl_wmi hwmon (fan1_input, fan2_input); thinkpad_acpi fan data is ignored",
-      "planned_owner": "legionctl_wmi hwmon temperature channels (todo-93)",
+      "planned_owner": "legionctl_wmi hwmon temperature channels",
       "notes": "Bolekjar hwmon reads CPU/GPU/SYS fan RPM and temperatures via Legion WMI methods; the sensor ids of this firmware are not known yet."
     },
     {
       "id": "fan_control",
       "name": "Fan max/full-speed and fan curve control",
-      "status": "built; the first live writes are the user's (todo-17 step 4), then fan.curve_verified",
+      "status": "built; locked until its first writes are checked on this machine",
       "current_owner": "legionctl fan (legionctl-system through the legionctl_wmi hwmon)",
       "planned_owner": "legionctl fan (legionctl-system through the legionctl_wmi hwmon)",
       "notes": "VPC2004 fan_mode is ineffective here. Fan curve (custom mode only), fan max mode and full speed go through WMI; the EC fan lock stays refused until fan.ec_fan_lock_verified is true."

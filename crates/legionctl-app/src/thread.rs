@@ -268,12 +268,12 @@ impl Screen {
                 };
                 (
                     format!("/agent {a}"),
-                    format!("Send the messages to {a}{current}"),
+                    format!("Send your messages to {a}{current}"),
                 )
             }))
             .chain(std::iter::once((
                 "/chat".to_string(),
-                "Open a new chat with the agent (a thread of yours in the dossier)".to_string(),
+                "Open a new chat with the agent".to_string(),
             )))
             .chain(self.dossiers.iter().map(|d| {
                 let current = if self.dossier.as_ref() == Some(d) {
@@ -289,14 +289,10 @@ impl Screen {
             .chain([
                 (
                     "/dossier create ".to_string(),
-                    "Make a new dossier: <name> [--folder <repository>]; the app then uses it"
-                        .to_string(),
+                    "Make a dossier and use it".to_string(),
                 ),
                 ("/dossier list".to_string(), "List the dossiers".to_string()),
-                (
-                    "/dossier release".to_string(),
-                    "Choose no dossier (the machine views need none)".to_string(),
-                ),
+                ("/dossier release".to_string(), "Use no dossier".to_string()),
             ])
             .collect();
         let mut entries = chat::entries(&self.commands, screen);
@@ -658,7 +654,7 @@ impl LegionApp {
                 // a new chat or a view tab: the pick holds for this screen until a thread keeps it
                 None if self.screen.agents.iter().any(|a| a == name) => {
                     self.screen.draft_agent = Some(name.to_string());
-                    self.state.message = Some(format!("the next chat and view runs go to {name}"));
+                    self.state.message = Some(format!("Your next messages go to {name}"));
                 }
                 None => {
                     self.state.message = Some(format!(
@@ -775,7 +771,9 @@ impl LegionApp {
                 .into_iter()
                 .find(|t| t.owner.is_none() && t.dossier == dossier && t.title == title)
                 .map(|t| t.id)
-                .ok_or_else(|| anyhow::anyhow!("the new thread is not in thread list"))?;
+                .ok_or_else(|| {
+                    anyhow::anyhow!("the new chat is not in the list of chats; try again")
+                })?;
             client
                 .call::<op::ThreadAgent>(&legionctl_api::ThreadAgentIn {
                     thread: id,
@@ -795,7 +793,7 @@ impl LegionApp {
             }
             Ok(id)
         });
-        self.state.message = Some("starting the chat…".into());
+        self.state.message = Some("Starting the chat…".into());
         self.finish_with(cx, task, move |app, id: i64, cx| {
             app.state.message = None;
             app.screen.chat_place = None;
@@ -1220,7 +1218,7 @@ impl LegionApp {
                 },
             ),
             div().text_color(t.muted).child(format!(
-                "thread {} · dossier {}",
+                "chat {} · dossier {}",
                 v.thread.id, v.thread.dossier
             )),
         ];
@@ -1279,9 +1277,7 @@ impl LegionApp {
             None | Some("operator") => None,
             Some("teammate") => Some("A teammate runs on the account of its lead"),
             Some("subagent") => Some("A Codex subagent runs on the account of its main session"),
-            Some(_) => {
-                Some("This member runs its own session: session resume <id> --account <name>")
-            }
+            Some(_) => Some("Resume its session on another account to change this"),
         };
         let chip = div()
             .id(SharedString::from(format!("account-{who}")))
@@ -1304,9 +1300,7 @@ impl LegionApp {
         }
         let who = who.to_string();
         chip.cursor_pointer()
-            .tooltip(|window, cx| {
-                Tooltip::new("Pick the account (the next wake runs on it)").build(window, cx)
-            })
+            .tooltip(|window, cx| Tooltip::new("Choose an account").build(window, cx))
             .on_click(cx.listener(move |app, _, _, cx| {
                 app.screen.picking = match &app.screen.picking {
                     Some(p) if *p == who => None,
@@ -1523,9 +1517,9 @@ impl LegionApp {
         let text = match (&th.repo, &th.branch) {
             (Some(repo), Some(branch)) => format!("Works on {repo} at {branch} (its own worktree)"),
             (Some(folder), None) => {
-                format!("Works on the folder {folder} (copy-on-write: its writes stay in a layer)")
+                format!("Works on a copy of {folder}: its changes stay in the copy")
             }
-            _ => "No folder: the agent works in a scratch folder of this chat".into(),
+            _ => "No folder: the agent works in a new empty folder".into(),
         };
         let id = th.id;
         let label = "Change where the chat works";
@@ -1536,7 +1530,7 @@ impl LegionApp {
             .text_size(T_XS)
             .text_color(t.muted)
             .child(text)
-            .child("· sandbox on this computer, no network but the model gateway")
+            .child("· sandbox, model gateway only")
             .child(
                 Button::new("thread-repo")
                     .small()
@@ -1605,8 +1599,7 @@ impl LegionApp {
                     if f.name == "repo" {
                         f.help = match then {
                             crate::Then::TabRepo => "A folder in a git repository: the view shows its code".into(),
-                            _ => "A git repository gets its own worktree on a new branch; a plain folder gets a \
-                                  copy-on-write layer (the agent's writes stay in the layer). Empty: a scratch folder"
+                            _ => "A git repository gets its own branch; a plain folder gets a copy. Empty: a new folder"
                                 .into(),
                         };
                         f.required = then == crate::Then::TabRepo;
@@ -1686,8 +1679,8 @@ impl LegionApp {
             return div()
                 .text_color(t.muted)
                 .child(match &self.screen.thread_error {
-                    Some(e) => format!("cannot read thread {id}: {e}"),
-                    None => "reading the thread…".into(),
+                    Some(e) => format!("Cannot read chat {id}: {e}"),
+                    None => "Reading the chat…".into(),
                 });
         };
         let now = unix_now();
@@ -1745,7 +1738,7 @@ impl LegionApp {
                     .v_flex()
                     .children(rows)
                     .when(v.log.is_empty(), |d| {
-                        d.child(div().text_color(t.muted).child("Nothing in the thread yet"))
+                        d.child(div().text_color(t.muted).child("No messages yet"))
                     })
                     .test_support(),
             )
@@ -1810,10 +1803,8 @@ impl LegionApp {
                 px(12.),
                 if agent.is_some() { t.accent } else { t.warn },
             ))
-            .child(agent.clone().unwrap_or_else(|| "pick an agent".into()))
-            .tooltip(|window, cx| {
-                Tooltip::new("The agent of this chat bar: /agent <name>").build(window, cx)
-            })
+            .child(agent.clone().unwrap_or_else(|| "Choose an agent".into()))
+            .tooltip(|window, cx| Tooltip::new("Choose the agent").build(window, cx))
             .on_click(cx.listener(|app, _, window, cx| {
                 *app.screen.chat_mut() = "/agent ".into();
                 app.chat_focus.focus(window, cx);
@@ -1975,7 +1966,7 @@ impl LegionApp {
         let place = match &self.screen.chat_place {
             Some((folder, base)) if base.is_empty() => format!("Works in {}", folder.display()),
             Some((folder, base)) => format!("Works in {} from {base}", folder.display()),
-            None => "No folder: the agent works in a scratch folder of this chat".into(),
+            None => "No folder: the agent works in a new empty folder".into(),
         };
         div()
             .v_flex()
@@ -1993,7 +1984,7 @@ impl LegionApp {
                     .gap(S2)
                     .text_size(T_XS)
                     .child(crate::widgets::text("chat-place-text", place))
-                    .child("· sandbox on this computer, no network but the model gateway")
+                    .child("· sandbox, model gateway only")
                     .child(
                         Button::new("chat-place-change")
                             .small()
@@ -2012,7 +2003,7 @@ impl LegionApp {
         match self.tab().cloned() {
             None => div()
                 .text_color(t.muted)
-                .child("No tab: pick an entry in the navigator, or type a message below"),
+                .child("Choose an item on the left, or type a message"),
             Some(Tab::Thread { id }) => self.thread_tab(id, t, cx),
             Some(Tab::Chat) => match &self.screen.dossier {
                 Some(d) => self.chat_place_card(d, t, cx),
@@ -2033,7 +2024,7 @@ impl LegionApp {
             },
             Some(Tab::View { .. }) => match self.screen.view() {
                 Some(data) => div().child(self.view_tab(data, width, t, cx)),
-                None => div().text_color(t.muted).child("reading the view…"),
+                None => div().text_color(t.muted).child("Reading the view…"),
             },
         }
     }

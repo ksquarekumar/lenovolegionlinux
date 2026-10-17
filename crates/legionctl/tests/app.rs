@@ -110,24 +110,33 @@ fn unplugged_machine(tag: &'static str) -> Operator {
     op
 }
 
-/// Scroll the tab's body until the element `id` shows.
+/// Scroll the tab's body until the element `id` is whole inside it: a click goes to an element's centre, and the
+/// centre of an element cut at the body's edge hits whatever is there (a group head that did not open).
 fn reveal(cx: &mut VisualTestContext, id: &str) {
     for _ in 0..60 {
-        let shown = cx.update(|window, cx| {
+        // None: shown; else the scroll toward it (down while it is not there yet)
+        let step = cx.update(|window, cx| {
             window.render_frame(cx);
-            window
-                .try_find(SharedString::from(id.to_string()))
-                .is_some_and(|e| e.visible())
+            let body = window.find("body").bounds();
+            match window.try_find(SharedString::from(id.to_string())) {
+                // an element outside the body (the title bar, the chat bar) shows without a scroll
+                Some(e) if e.visible() && !e.path().contains(&"body".into()) => None,
+                Some(e) if e.visible() => {
+                    let b = e.bounds();
+                    if b.top() < body.top() {
+                        Some(px(100.))
+                    } else if b.bottom() > body.bottom() {
+                        Some(-(b.bottom() - body.bottom() + px(20.)).min(px(200.)))
+                    } else {
+                        None
+                    }
+                }
+                _ => Some(px(-200.)),
+            }
         });
-        if shown {
-            return;
-        }
+        let Some(dy) = step else { return };
         cx.update(|window, cx| {
-            window.scroll(
-                "body",
-                gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-200.))),
-                cx,
-            );
+            window.scroll("body", gpui_kit::ScrollDelta::Pixels(point(px(0.), dy)), cx);
         });
     }
     panic!("{id} does not show");
@@ -642,7 +651,7 @@ fn the_code_graph_seed_opens_levels_on_click_marks_changes_and_shows_what_uses_a
         let impact = shown(a, "code-impact").unwrap();
         assert_eq!(
             impact.note,
-            "Click a symbol in the tree to see what uses it"
+            "Click a symbol in the tree to see what calls it"
         );
     });
     click(cx, "node-code-tree:src");
@@ -1939,9 +1948,47 @@ fn copy_puts_a_row_on_the_clipboard_and_feedback_keeps_the_note_state_and_screen
     drop(runtime);
 }
 
-/// todo-169: the title bar's Help menu opens About as a tab (the seed view of the read operation `about`: the
-/// operator's build, a daemon that does not answer as a part that needs the user, the machine profile, the licenses
-/// and the source) and shows the keys; Ctrl+K is the command palette (the chat bar with `/`, which lists the views and
+/// todo-184: the Help menu's FAQ shows every topic, and each topic names a view or an operation that exists, so a
+/// topic of a removed or renamed feature fails here (the FAQ is collateral of the features, as the skills are).
+#[gpui_kit::test]
+fn every_help_topic_shows_and_names_a_feature_that_exists(cx: &mut TestAppContext) {
+    let (op, home, repo) = thread_lab("faq");
+    let (app, mut vcx, runtime) = open_app(cx, &op, 1200., Some((&home, &repo)));
+    let cx = &mut vcx;
+    wait(cx, &app, "the views", |a| !a.screen.views.is_empty());
+    cx.update(|window, cx| window.click("help", cx));
+    cx.update(|window, cx| window.within("popup-menu").click(3usize, cx));
+    app.read_with(cx, |a, _| {
+        let shown = a.state.message.clone().unwrap_or_default();
+        for topic in legionctl_app::help::FAQ {
+            assert!(
+                shown.contains(topic.question),
+                "{} in {shown}",
+                topic.question
+            );
+            for feature in topic.features {
+                let exists = match *feature {
+                    legionctl_app::help::Feature::View(name) => {
+                        a.screen.views.iter().any(|v| v.name == name)
+                    }
+                    legionctl_app::help::Feature::Op(name) => legionctl_api::OPS
+                        .iter()
+                        .any(|o| o.name == name && !o.internal()),
+                };
+                assert!(
+                    exists,
+                    "Help topic {:?} names {feature:?}, which the app does not have",
+                    topic.question
+                );
+            }
+        }
+    });
+    drop(runtime);
+}
+
+/// todo-169, todo-184: the title bar's Help menu opens About as a tab (the seed view of the read operation `about`:
+/// legionctl's version, a machine daemon that does not answer, the machine, the licenses, the source and the build
+/// details) and shows the keys; Ctrl+K is the command palette (the chat bar with `/`, which lists the views and
 /// the operations). A view's `ms` and `bytes` formats show a duration and a size; a format outside the set is refused.
 #[gpui_kit::test]
 fn help_opens_about_and_the_keys_ctrl_k_searches_and_numbers_show_by_their_unit(
@@ -1955,7 +2002,7 @@ fn help_opens_about_and_the_keys_ctrl_k_searches_and_numbers_show_by_their_unit(
     wait(cx, &app, "the About tab", |a| {
         a.screen
             .view()
-            .is_some_and(|v| v.name == "about" && v.rows.len() == 5)
+            .is_some_and(|v| v.name == "about" && v.rows.len() == 6)
     });
     let rows = app.read_with(cx, |a, _| a.screen.view().unwrap().rows.clone());
     // a list row: part · what · state
@@ -1967,19 +2014,21 @@ fn help_opens_about_and_the_keys_ctrl_k_searches_and_numbers_show_by_their_unit(
         line.unwrap_or_else(|| panic!("no {part} in {rows:?}"))
     };
     assert!(
-        row("operator").starts_with("operator · legionctl 0.")
-            && row("operator").ends_with(" · ok")
-    );
-    assert!(
-        row("daemon").starts_with("daemon · legionctl-system does not answer")
-            && row("daemon").ends_with(" · warn"),
+        row("legionctl").starts_with("legionctl · 0.") && row("legionctl").ends_with(" · ok"),
         "{rows:?}"
     );
-    assert_eq!(
-        row("machine"),
-        "machine · profile lenovo-82wq-legion-pro-7-16irx8h · ok"
+    assert!(
+        row("machine daemon").starts_with("machine daemon · does not answer")
+            && row("machine daemon").ends_with(" · warn"),
+        "{rows:?}"
+    );
+    assert!(
+        row("machine").contains("profile lenovo-82wq-legion-pro-7-16irx8h"),
+        "{rows:?}"
     );
     assert!(row("licenses").contains("/usr/share/licenses/legionctl"));
+    // the build hashes are in the details row only
+    assert!(row("details").contains("API build "), "{rows:?}");
 
     cx.update(|window, cx| window.click("help", cx));
     cx.update(|window, cx| window.within("popup-menu").click(2usize, cx));
@@ -2228,10 +2277,10 @@ fn the_app_chat_bar_picks_its_agent_from_session_acp_and_a_new_chat_keeps_the_pi
         assert_eq!(
             entries,
             [
-                ("/agent claude", "Send the messages to claude"),
-                ("/agent codex", "Send the messages to codex"),
-                ("/agent fake", "Send the messages to fake (now)"),
-                ("/agent other", "Send the messages to other"),
+                ("/agent claude", "Send your messages to claude"),
+                ("/agent codex", "Send your messages to codex"),
+                ("/agent fake", "Send your messages to fake (now)"),
+                ("/agent other", "Send your messages to other"),
             ]
             .map(|(t, a)| (t.to_string(), a.to_string()))
         );
@@ -2448,7 +2497,7 @@ fn make_a_dossier_in_the_app(
     assert!(
         listed
             .lines()
-            .any(|l| l.starts_with("appreview") && l.ends_with("(the user's dossier)")),
+            .any(|l| l.starts_with("appreview") && l.ends_with("(your dossier)")),
         "{listed}"
     );
 }

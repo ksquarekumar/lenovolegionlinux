@@ -1233,12 +1233,6 @@ fn agent_findings() -> Result<Vec<String>> {
     }
     let store = dossiers()?;
     w.extend(store.sync_registry()?);
-    for lock in store.locks()?.iter().filter(|l| l.stale) {
-        w.push(format!(
-            "dossier {} is bound to session {}, idle past dossier.stale_hours; the next session that uses it takes it over",
-            lock.dossier, lock.session
-        ));
-    }
     // the checks of a repository once, from a dossier's own workspace: not again for each topic worktree and dossier
     // (EV-review-11 U-15: 19-22 equal lines)
     let mut checked = std::collections::HashSet::new();
@@ -1456,7 +1450,7 @@ fn work_dossier(store: &Dossiers, dir: &Path) -> Result<String> {
 pub(crate) fn dossier_of(id: &SessionId) -> Result<String> {
     if id.0.is_empty() {
         return user_dossier()?.context(
-            "no dossier is chosen: choose one with `legionctl dossier use <name>` (legionctl dossier list)",
+            "you have no dossier: choose one with legionctl dossier use <name> (legionctl dossier list)",
         );
     }
     dossiers()?
@@ -2374,9 +2368,7 @@ impl Engine for Operator {
             Some(name) => Some((
                 name.as_str(),
                 sources.team_path(name).with_context(|| {
-                    format!(
-                        "no team {name} in .legionctl/teams, the user's teams or the plugin's teams"
-                    )
+                    format!("no team {name} in .legionctl/teams, your teams or the plugin's teams")
                 })?,
             )),
             None => None,
@@ -2977,10 +2969,7 @@ impl Engine for Operator {
             dossiers()?.known(&input.name)?;
             user_dossier_set(ctx, &input.repo, Some(&input.name))?;
             return Ok(Lines {
-                lines: vec![format!(
-                    "the user's dossier: {} (the app's new chats and agent runs work in it)",
-                    input.name
-                )],
+                lines: vec![format!("your dossier: {}", input.name)],
             });
         }
         let lines = dossiers()?.bind(
@@ -2997,9 +2986,9 @@ impl Engine for Operator {
         if input.session.0.is_empty() {
             return Ok(Lines {
                 lines: vec![match user_dossier()? {
-                    Some(d) => format!("the user's dossier: {d}"),
-                    None => "the user has no dossier: choose one with dossier use <name> (dossier list), or make one \
-                             with dossier create <name>"
+                    Some(d) => format!("your dossier: {d}"),
+                    None => "you have no dossier: choose one with dossier use <name> (dossier list), or make one with \
+                             dossier create <name>"
                         .into(),
                 }],
             });
@@ -3020,8 +3009,8 @@ impl Engine for Operator {
             user_dossier_set(ctx, &ClientPath(PathBuf::from("/")), None)?;
             return Ok(Lines {
                 lines: vec![had.map_or_else(
-                    || "the user had no dossier".into(),
-                    |d| format!("the user's dossier {d} is no longer chosen"),
+                    || "you had no dossier".into(),
+                    |d| format!("{d} is no longer your dossier"),
                 )],
             });
         }
@@ -3158,31 +3147,29 @@ impl Engine for Operator {
             value,
             state: if ok { "ok" } else { "warn" }.into(),
         };
-        let mut items = vec![item(
-            "operator",
-            format!(
-                "legionctl {} (API build {})",
-                env!("CARGO_PKG_VERSION"),
-                legionctl_api::api_fingerprint()
-            ),
-            true,
-        )];
+        let mut items = vec![item("legionctl", legionctl_api::version(), true)];
         let ours = legionctl_machine::interface_version();
-        items.push(match self.system(async |p| p.version().await) {
-            Ok(v) if v == ours => item("daemon", format!("legionctl-system, interface {v}: the same build"), true),
-            Ok(v) => item(
-                "daemon",
-                format!(
-                    "legionctl-system, interface {v}; this operator has {ours}: install the matching package and \
-                     restart both"
-                ),
+        let daemon = self.system(async |p| p.version().await);
+        items.push(match &daemon {
+            Ok(v) if *v == ours => item("machine daemon", "matches this legionctl".into(), true),
+            Ok(_) => item(
+                "machine daemon",
+                "does not match: restart the computer".into(),
                 false,
             ),
-            Err(e) => item("daemon", format!("{e:#}"), false),
+            Err(e) => item("machine daemon", format!("{e:#}"), false),
         });
         items.push(match Plan::load(None) {
-            Ok(plan) => item("machine", format!("profile {}", plan.profile.id), true),
-            Err(e) => item("machine", format!("no machine profile: {e:#}"), false),
+            Ok(plan) => item(
+                "machine",
+                format!("supported, profile {}", plan.profile.id),
+                true,
+            ),
+            Err(e) => item(
+                "machine",
+                format!("no profile for this machine: {e:#}"),
+                false,
+            ),
         });
         items.push(item(
             "licenses",
@@ -3193,6 +3180,20 @@ impl Engine for Operator {
         items.push(item(
             "source",
             "https://github.com/ksquarekumar/lenovolegionlinux".into(),
+            true,
+        ));
+        // the hashes that tell builds apart, for a bug report; the lines above say what they mean
+        items.push(item(
+            "details",
+            format!(
+                "API build {}, machine interface {ours}{}",
+                legionctl_api::api_fingerprint(),
+                daemon
+                    .ok()
+                    .filter(|v| *v != ours)
+                    .map(|v| format!(" (the daemon has {v})"))
+                    .unwrap_or_default()
+            ),
             true,
         ));
         Ok(items)
@@ -3234,7 +3235,7 @@ impl Engine for Operator {
         let mut head = vec![
             "class: feedbacks".to_string(),
             "immutable: true".to_string(),
-            format!("time: {}", legionctl_core::views::utc(now)),
+            format!("time: {}", legionctl_core::views::local(now)),
             format!(
                 "operator: {} api {}",
                 env!("CARGO_PKG_VERSION"),
@@ -3950,7 +3951,7 @@ impl Engine for Operator {
             }
             anyhow::ensure!(
                 std::time::Instant::now() < deadline,
-                "the Windows VM did not start in 2 minutes; see journalctl --user -u {unit}"
+                "the Windows VM did not start in 2 minutes (log: {unit} in the journal)"
             );
             std::thread::sleep(std::time::Duration::from_millis(250));
         }

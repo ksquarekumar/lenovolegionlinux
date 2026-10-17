@@ -1,7 +1,7 @@
 # Use legionctl
 
 This guide tells you how to install legionctl, use the app, and give work to agents safely. Each
-command here is on main. A feature that is not on main has the label "planned (v1)" and its plan row.
+command here is on main. A feature that is not on main has the label "planned (v1)".
 
 | Section | You want to |
 | --- | --- |
@@ -60,7 +60,7 @@ for bench and tune.
 | --- | --- |
 | Rail | the spaces Machine, Work and Agents, and Activity |
 | Navigator | the views of the space (in Work: New chat and your chats, newest first); drag its edge to change its width |
-| Tabs | each tab is one view (a seed, yours, or a composed one), or a chat |
+| Tabs | each tab is one view (one that comes with legionctl, one of yours, or one that an agent made), or a chat |
 | Chat bar | `/` lists the commands; other text is a message to the agent: in a chat, to the chat's agent; in a view, to the agent that makes views, which changes the tab's view (a new version; Undo goes back) or answers in words. Help > What agents can change |
 | Feedback | the title bar's Feedback or `/feedback <note>`: your note, the tab's state and a screenshot of the window that you pick go to the dossier as `feedbacks/<NNNN>-<slug>/` (it cannot change after) |
 
@@ -79,7 +79,7 @@ is a row of the thread's log, so every app window on the thread uses the same ag
 (default `claude`).
 
 Each screen is a view (`legionctl views list`). An intent opens a view in three steps; each step is recorded with
-its tokens and time (`legionctl views cost`, the view Composer cost):
+its tokens and time (`legionctl views cost`, the view Cost of the views that agents make):
 
 1. Stored: the view whose intent it is word for word. No model runs.
 2. rlcd (config `views.rlcd`, off by default; for development, `rlcd.backend` `openrouter-free` is the free
@@ -165,8 +165,7 @@ is in the keyring. The state leaves the machine with its secrets removed. A team
 `route: ["rlcd", "acp"]` wakes its agent only when rlcd escalates. A failed rlcd call fails; the next step does not
 run in its place.
 
-Planned (v1): the `api` route step and rlcd on hot paths such as gateway model choice and the chat bar
-(plan#todo-139).
+Planned (v1): the `api` route step and rlcd on hot paths such as gateway model choice and the chat bar.
 
 ## Sessions and sandboxes
 
@@ -191,7 +190,7 @@ remote commands are refused. MCP servers come through `legionctl mcp-proxy`, whi
 `gateway.port` is set, the model gateway counts tokens and cost and enforces budgets. Details: skill
 `sessions-and-agents`.
 
-Planned (v1, plan#todo-153): environments with no network except through the gateway, declared connections, and
+Planned (v1): environments with no network except through the gateway, declared connections, and
 snapshots with write-back and undo.
 
 ## Greeter and boot entry
@@ -205,8 +204,8 @@ legionctl greeter install        # at the next start; legionctl greeter remove b
 ```
 
 It lists the desktops of `/usr/share/wayland-sessions` and comes back after you log out. Before login, it can start
-or stop the Windows VM, attach the Windows disk and set the desktop GPU, each through the root daemon. Planned (v1,
-plan#todo-150): it remembers your last desktop.
+or stop the Windows VM, attach the Windows disk and set the desktop GPU, each through the root daemon. It
+remembers your last desktop.
 
 The boot entry is systemd-boot with a signed kernel image per kernel, started through a copy of shim, beside the
 entry you have now. `kernel default` and `kernel try` need it. After the install, restart once: that start uses
@@ -219,8 +218,8 @@ legionctl boot install --dry-run
 legionctl boot install           # then restart once
 ```
 
-Caution: install `systemd-ukify` and `sbsigntools` before `boot install`. On main, a missing tool stops the install
-at its step (plan#todo-149; the fix is built on the topic branch `v1-bugs`).
+Caution: install `systemd-ukify` and `sbsigntools` before `boot install`. A missing tool stops the install at its
+step.
 
 ## Safety
 
@@ -231,13 +230,13 @@ at its step (plan#todo-149; the fix is built on the topic branch `v1-bugs`).
 | `workspace` | you, for an agent: a desktop notification, 120 s | `session start`, `workspace merge`, `setup apply` |
 | `machine` | you, in a polkit dialog; an agent cannot | `power apply`, `kernel try`, `boot install`, `fan max` |
 
-The rules the user set for agents:
+Your rules for agents:
 
 - Do not guess ACPI or WMI write calls on the real firmware.
 - Do not run `windows reboot`, tune sweeps or polkit writes live.
-- Do not pause the user's WinBoat VM.
+- Do not pause your WinBoat VM.
 - Never return secrets.
 - Make only safe live writes: read-only checks, recorded runs, containers without a GPU, short stress runs.
 
 What stays with you: each polkit dialog, merges of `.legionctl/` changes, the first `boot install`, fan curve writes
-(the WMI calls are not verified, plan#todo-17), and the first live use of a GPU in a VM.
+(the WMI calls are not verified yet), and the first live use of a GPU in a VM.

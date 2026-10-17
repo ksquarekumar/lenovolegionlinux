@@ -296,7 +296,7 @@ impl Operator {
             let (id, series) = series
                 .filter(|(_, s)| s.scenario == input.scenario)
                 .context("no kernel bench series of this suite runs")?;
-            db.job_end(id, &Err("cancelled by the user".into()))?;
+            db.job_end(id, &Err("you cancelled it".into()))?;
             return Ok(answer(
                 vec![format!(
                     "series job {id} stopped before its bench on {}; the default kernel {} starts at the next start",

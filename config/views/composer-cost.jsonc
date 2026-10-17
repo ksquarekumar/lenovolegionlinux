@@ -3,7 +3,7 @@
 {
   "$schema": "../../docs/api/view.schema.json",
   "name": "composer-cost",
-  "title": "Composer cost",
+  "title": "Cost of the views that agents make",
   "intent": "what do generated views cost",
   "space": "agents",
   "widget": "table",

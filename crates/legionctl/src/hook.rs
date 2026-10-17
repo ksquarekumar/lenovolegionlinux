@@ -271,10 +271,10 @@ pub fn run(args: &[String]) {
 fn not_known(args: &[String]) -> anyhow::Error {
     let exe = std::env::current_exe().map_or_else(|e| e.to_string(), |p| p.display().to_string());
     anyhow::anyhow!(
-        "this legionctl ({exe} {}, API build {}) does not know `hook {}`: the legionctl plugin is newer than \
-         this legionctl, and the hook did nothing; run legionctl doctor\nthe events of this legionctl: {}",
-        env!("CARGO_PKG_VERSION"),
-        legionctl_api::api_fingerprint(),
+        "this legionctl ({exe} {}) does not know `hook {}`: the legionctl plugin is newer than this legionctl, \
+         and the hook did nothing: run legionctl setup apply\nthe events of this \
+         legionctl: {}",
+        legionctl_api::version(),
         args.join(" "),
         HOOK_EVENTS.join(", ")
     )

@@ -15,7 +15,7 @@ change the machine without you.
 
 ## Why it is different
 
-- **One operator, one API.** Each capability is one operation: 199 public operations at main `e8ccd09` (86 read, 25
+- **One operator, one API.** Each capability is one operation: 199 public operations (86 read, 25
   session, 45 workspace, 43 machine). The desktop app (the only UI), the CLI, the MCP server and the agent hooks are
   adapters to the same operation, with the same permission and the same event log.
 - **Safety by design.** An agent can read everything. It cannot change the machine: each machine change goes to a
@@ -75,10 +75,10 @@ and `~/agentWorkspaces/<dossier>/` (each with `.state/dossier.db`). Configuratio
 
 | State | What |
 | --- | --- |
-| Built, on main | power policy and configset rules, knobs, plan, undo; sensors, monitor, eBPF sensors, bench, tune, record, replay; fan reads and fan max; GPU, display fixes, VFIO; kernels (list, try, command line, bench, build); boot entry (systemd-boot beside rEFInd); greeter; dual boot and the installed Windows as a VM; resources; dossiers, workspaces, code graph and planned graph, test gate, project checks; sessions (host, container, VM), model gateway, threads, team `vanilla`; generative UI G1-G6 (rail, spaces, tabs, views as screens, the composer, view history); rlcd core |
-| Building, on topic branches | generative UI cost and reuse (rlcd intent match, parts library, bound composer, cost per step: todo-163); v1 bug fixes |
+| Built, on main | power policy and configset rules, knobs, plan, undo; sensors, monitor, eBPF sensors, bench, tune, record, replay; fan reads and fan max; GPU, display fixes, VFIO; kernels (list, try, command line, bench, build); boot entry (systemd-boot beside rEFInd); greeter; dual boot and the installed Windows as a VM; resources; dossiers, workspaces, code graph and planned graph, test gate, project checks; sessions (host, container, VM), model gateway, threads, team `vanilla`; generative UI (rail, spaces, tabs, views as screens, the composer, view history); rlcd core |
+| Building, on topic branches | generative UI cost and reuse (rlcd intent match, parts library, bound composer, cost per step); v1 bug fixes |
 | Planned (v1) | the answer envelope, the temporal graph, projects, environments with network isolation, accounts, rlcd on hot paths, Windows repair, language tooling: [design index](docs/design/README.md#planned-v1) |
-| Waits for you | fan curve writes (WMI calls to verify, todo-17), the first `legionctl boot install`, the first live polkit dialogs |
+| Waits for you | fan curve writes (the WMI calls are not verified yet), the first `legionctl boot install`, the first live polkit dialogs |
 
 ## Start
 
@@ -117,7 +117,7 @@ Each command takes `--json`. `legionctl <group> --help` lists the commands of a 
 
 ```console
 $ legionctl load
-System load: Normal; load 4.5 on 32 CPUs, 18.5 GiB of 31.1 GiB free. I/O wait without disk I/O from docker/09bd9c9baa5f (86%); not counted.
+System load: Normal; load 4.5 on 32 CPUs, 18.5 GiB of 31.1 GiB memory free. I/O wait without disk I/O from docker/09bd9c9baa5f (86%); not counted.
 $ legionctl monitor --count 1
 pkg 90 W  cpu 98 °C 3016 MHz  gpu active 24 W 54 °C  fans 5100/5100 rpm  throttle thermal  runq p99 e 4096 p 4096 µs  top rustc 41%  psi cpu/mem/io 16%/1%/11%
 ```
@@ -154,5 +154,5 @@ make app-shots SHOTS=<dir>   # a screenshot of each app page, in a private headl
 ```
 
 After the first install, `make install-package` runs `sudo -n /usr/lib/legionctl/legionctl-install` with no
-password. It installs only the newest commit of `origin/main` whose CI run passed, built by the user
+password. It installs only the newest commit of `origin/main` whose CI run passed, built by the system account
 `legionctl-build`. Details and limits: skill verify-and-ship, `refs/reference-install.md`.

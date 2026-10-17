@@ -170,7 +170,7 @@ impl LegionApp {
                             .pl(px(f32::from(u16::try_from(depth + 1).unwrap_or(0)) * 18.))
                             .text_size(T_SM)
                             .text_color(t.critical)
-                            .child(format!("cannot read it: {e}"))
+                            .child(format!("Cannot read it: {e}"))
                             .into_any_element(),
                     ),
                     (true, None) => out.push(
@@ -254,31 +254,32 @@ impl LegionApp {
         let Some(info) = legionctl_api::OPS.iter().find(|o| o.name == button.op) else {
             return div()
                 .text_color(t.critical)
-                .child(format!("no operation {}", button.op))
+                .child(format!("Unknown operation {}", button.op))
                 .into_any_element();
         };
         let fields = legionctl_api::form::fields(info);
         let required: Vec<String> = fields
             .iter()
             .filter(|f| f.required)
-            .map(|f| f.name.clone())
+            .map(|f| crate::forms::label(&f.name))
             .collect();
         card(t)
             .id(SharedString::from(format!("view-{}-form", data.name)))
             .child(heading(data.title.clone(), t))
-            .child(div().text_size(T_SM).text_color(t.muted).child(format!(
-                "{}: {}",
-                info.name,
-                info.summary()
-            )))
+            .child(
+                div()
+                    .text_size(T_SM)
+                    .text_color(t.muted)
+                    .child(info.summary()),
+            )
             .child(
                 div()
                     .text_size(T_SM)
                     .text_color(t.text2)
                     .child(if required.is_empty() {
-                        format!("{} fields, none required", fields.len())
+                        "All fields are optional".to_string()
                     } else {
-                        format!("{} fields; required: {}", fields.len(), required.join(", "))
+                        format!("Required: {}", required.join(", "))
                     }),
             )
             .child(

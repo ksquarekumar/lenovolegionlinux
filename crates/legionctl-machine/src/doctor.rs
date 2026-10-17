@@ -142,7 +142,7 @@ fn state_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
         ));
     }
     if !dmi_mismatches(root, profile)?.is_empty() {
-        w.push("DMI does not match this repo profile".into());
+        w.push("this machine does not match legionctl's machine profile".into());
     }
     Ok(w)
 }
@@ -335,7 +335,7 @@ fn desktop_warnings() -> Result<Vec<String>> {
         .chain(
             system::failed_units(true)?
                 .into_iter()
-                .map(|u| format!("the user unit {} failed", unit_name(&u))),
+                .map(|u| format!("the unit {} of your login failed", unit_name(&u))),
         )
         .collect())
 }
@@ -348,7 +348,7 @@ fn conflict_warnings(root: &SysRoot, profile: &Profile) -> Result<Vec<String>> {
         let enabled = system::unit_state("is-enabled", unit)?;
         if !unit_quiet(&active, &enabled) {
             w.push(format!(
-                "conflicting unit {unit}: active={active}, enabled={enabled}"
+                "{unit} fights legionctl ({active}, {enabled}): run legionctl cleanup"
             ));
         }
     }

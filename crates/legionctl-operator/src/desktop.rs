@@ -120,7 +120,7 @@ async fn notice_answer(
 ) -> Result<Option<bool>> {
     let bus = zbus::Connection::session()
         .await
-        .context("no session bus to ask the user")?;
+        .context("no session bus to show the question")?;
     // listen before the notification is shown, so a fast answer is not lost
     let rule = zbus::MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
@@ -148,7 +148,7 @@ async fn notice_answer(
             &args,
         )
         .await
-        .context("no desktop notification service to ask the user")?;
+        .context("no desktop notification service to show the question")?;
     let id: u32 = reply.body().deserialize()?;
     note(
         "approval.ask",

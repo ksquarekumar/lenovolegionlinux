@@ -61,9 +61,9 @@ pub async fn run(ready: Ready, operator: std::sync::Arc<crate::engine::Operator>
                 for (id, minutes) in sessions {
                     let short = &id[..id.len().min(8)];
                     let body = format!(
-                        "No prompt for {minutes} min after its last reply. Thaw it with: legionctl session unpause {id}"
+                        "No prompt for {minutes} min. To go on: legionctl session unpause {id}"
                     );
-                    let summary = format!("legionctl: session {short} frozen");
+                    let summary = format!("legionctl: session {short} paused");
                     if let Err(e) =
                         crate::desktop::tell(bus, "media-playback-pause", &summary, &body).await
                     {
@@ -181,8 +181,8 @@ fn offload(operator: &std::sync::Arc<crate::engine::Operator>) -> Result<Vec<(St
                     &serde_json::json!({"job": job.id, "session": job.input["session"]}),
                 )?;
                 told.push((
-                    format!("legionctl: headless run {} offloaded", job.id),
-                    "Memory is under pressure; it goes on in its session when memory eases (legionctl jobs list).".into(),
+                    format!("legionctl: agent run {} waits for free memory", job.id),
+                    "It goes on by itself.".into(),
                 ));
             }
         }

@@ -790,7 +790,7 @@ pub fn text_of(name: &str, version: Option<u32>, repo: Option<&Path>) -> Result<
     match version {
         Some(0) => seed(name)
             .map(String::from)
-            .with_context(|| format!("view {name} has no seed (version 0)")),
+            .with_context(|| format!("view {name} has no original version (version 0)")),
         Some(n) => {
             let (dir, _) = file_of(name, repo).with_context(|| format!("no view {name}"))?;
             let file = history(&dir, name).join(format!("{n}.jsonc"));
@@ -1048,7 +1048,7 @@ fn shown(value: &Value, format: Option<&str>) -> String {
         (_, Value::Bool(true)) => "yes".into(),
         (_, Value::Bool(false)) => "no".into(),
         (Some("ago"), v) => v.as_i64().map_or_else(|| cell(v), |at| ago(now - at)),
-        (Some("time"), v) => v.as_i64().map_or_else(|| cell(v), utc),
+        (Some("time"), v) => v.as_i64().map_or_else(|| cell(v), local),
         (Some("int"), v) => v.as_f64().map_or_else(|| cell(v), |n| format!("{n:.0}")),
         (Some("1dp"), v) => v.as_f64().map_or_else(|| cell(v), |n| format!("{n:.1}")),
         (Some("count"), Value::Array(items)) => items.len().to_string(),
@@ -1076,24 +1076,26 @@ fn ago(seconds: i64) -> String {
     }
 }
 
-/// Seconds since the epoch as a UTC date and time: 2026-10-16 15:18.
+/// Seconds since the epoch as a date and time in this computer's time zone: 2026-10-16 17:18.
 #[must_use]
-pub fn utc(at: i64) -> String {
-    // the civil date of a day count (Howard Hinnant's days_from_civil, reversed)
-    let z = at.div_euclid(86_400) + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    let secs = at.rem_euclid(86_400);
+pub fn local(at: i64) -> String {
+    let t: libc::time_t = at;
+    // SAFETY: tm is plain integers and a pointer that localtime_r sets, so all zeros is a valid value; localtime_r
+    // writes only into tm and is thread-safe
+    let tm = unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&raw const t, &raw mut tm).is_null() {
+            return format!("{at} s after 1970");
+        }
+        tm
+    };
     format!(
-        "{year}-{month:02}-{day:02} {:02}:{:02}",
-        secs / 3600,
-        secs / 60 % 60
+        "{}-{:02}-{:02} {:02}:{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min
     )
 }
 
@@ -1579,7 +1581,7 @@ impl Rendered {
             let label = match view.formats.get(x).map(String::as_str) {
                 Some("time") => field(item, x)
                     .as_i64()
-                    .map_or_else(|| cell(field(item, x)), |at| utc(at)[5..].to_string()),
+                    .map_or_else(|| cell(field(item, x)), |at| local(at)[5..].to_string()),
                 format => shown(field(item, x), format),
             };
             let name = view

@@ -19,7 +19,7 @@ impl LegionApp {
     /// `/feedback <note>`: keep the note, the state and a screenshot (the desktop asks which window).
     pub(crate) fn feedback(&mut self, note: &str, cx: &mut Context<Self>) {
         if note.is_empty() {
-            self.state.message = Some("/feedback <what you see or want>".into());
+            self.state.message = Some("Type /feedback and your note".into());
             return;
         }
         let Some(dossier) = self
@@ -74,7 +74,7 @@ impl LegionApp {
             cx,
             async move { client.call::<op::FeedbackNew>(&input).await },
         );
-        self.state.message = Some("Feedback: pick the window in the screenshot dialog".into());
+        self.state.message = Some("Feedback: choose the window in the screenshot dialog".into());
         self.finish(cx, task, |app, lines| {
             app.state.message = Some(lines.lines.join("\n"));
         });

@@ -474,7 +474,7 @@
             "type": "string"
           },
           "state": {
-            "description": "ok, or warn when the part needs the user (a daemon of another build, or no daemon).",
+            "description": "ok, or warn when the part needs you (a daemon that does not match, or no daemon).",
             "type": "string"
           }
         },
@@ -685,7 +685,7 @@
                           "const": "session"
                         },
                         {
-                          "description": "Changes the user's files and settings or other sessions; when an agent calls it, the operator asks the user\nfirst (a desktop notification, DESIGN/03).",
+                          "description": "Changes your files and settings or other sessions; when an agent calls it, legionctl asks you first in a\ndesktop notice.",
                           "type": "string",
                           "const": "workspace"
                         },
@@ -2311,7 +2311,7 @@
             "string",
             "null"
           ],
-          "description": "A team file (`teams/<team>.jsonc` of the repository's .legionctl, the user's config or the plugin); none:\neach agent config alone.",
+          "description": "A team file (`teams/<team>.jsonc` of the repository's .legionctl, your config or the plugin); none:\neach agent config alone.",
           "default": null
         },
         "harness": {
@@ -10559,7 +10559,7 @@
             "file",
             "disk"
           ],
-          "description": "The VM runs on this overlay (a repair, todo-151), not on the disk itself."
+          "description": "The VM runs on this overlay (a repair), not on the disk itself."
         }
       },
       "required": [
@@ -12041,7 +12041,7 @@
       "properties": {
         "name": {
           "type": "string",
-          "description": "Dossier name: a-z, 0-9 and '-'. For a session, a name that does not exist makes a new dossier from the\npattern; for the user (no session), the dossier must exist (dossier create)."
+          "description": "Dossier name: a-z, 0-9 and '-'. For a session, a name that does not exist makes a new dossier from the\npattern; with no session (the app, a terminal), the dossier must exist (dossier create)."
         },
         "steal": {
           "type": "boolean",
@@ -12676,7 +12676,7 @@
       "properties": {
         "note": {
           "type": "string",
-          "description": "What the user says."
+          "description": "What you see or want."
         },
         "dossier": {
           "type": "string",
@@ -12700,7 +12700,7 @@
         },
         "screenshot": {
           "type": "boolean",
-          "description": "Ask the desktop for a screenshot (the user picks the window): screenshot.png.",
+          "description": "Ask the desktop for a screenshot (you pick the window): screenshot.png.",
           "default": false
         }
       },
@@ -14317,7 +14317,7 @@
                           "const": "session"
                         },
                         {
-                          "description": "Changes the user's files and settings or other sessions; when an agent calls it, the operator asks the user\nfirst (a desktop notification, DESIGN/03).",
+                          "description": "Changes your files and settings or other sessions; when an agent calls it, legionctl asks you first in a\ndesktop notice.",
                           "type": "string",
                           "const": "workspace"
                         },
@@ -17070,7 +17070,7 @@
                 "const": "session"
               },
               {
-                "description": "Changes the user's files and settings or other sessions; when an agent calls it, the operator asks the user\nfirst (a desktop notification, DESIGN/03).",
+                "description": "Changes your files and settings or other sessions; when an agent calls it, legionctl asks you first in a\ndesktop notice.",
                 "type": "string",
                 "const": "workspace"
               },
@@ -17137,7 +17137,7 @@
             "workspace",
             "thread"
           ],
-          "description": "Where it holds: global (the user), project (the repository of --repo), workspace (its worktree), dossier\n(--dossier) or thread (--thread).",
+          "description": "Where it holds: global (all your work), project (the repository of --repo), workspace (its worktree), dossier\n(--dossier) or thread (--thread).",
           "default": "global"
         },
         "repo": {
@@ -18059,7 +18059,7 @@
             "null"
           ],
           "format": "path",
-          "description": "Save into this repository's layer (`.legionctl/views/`), shared with the code; default: the user's layer.",
+          "description": "Save into this repository's layer (`.legionctl/views/`), shared with the code; default: your layer.",
           "default": null
         }
       },
@@ -19118,7 +19118,7 @@
         },
         "to": {
           "type": "string",
-          "description": "undo, redo, reset (to the pinned version, else the seed), pin (reset goes back to the version that shows), or\na version number."
+          "description": "undo, redo, reset (to the pinned version, or else the original), pin (reset goes back to the version that shows), or\na version number."
         },
         "repo": {
           "type": "string",
@@ -19704,7 +19704,7 @@
             "type": "string"
           },
           "version": {
-            "description": "The version that shows now (0: the seed); a stack pins one with `{\"name\": .., \"version\": ..}`.",
+            "description": "The version that shows now (0: the original); a stack pins one with `{\"name\": .., \"version\": ..}`.",
             "type": "integer",
             "format": "uint32",
             "minimum": 0

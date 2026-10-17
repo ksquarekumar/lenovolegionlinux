@@ -14,7 +14,7 @@
       "widget": "stat",
       "source": { "op": "status", "input": { "fast": true }, "path": "$.platform_profile" },
       "note": "on {power_source}",
-      "missing": "No firmware mode: the kernel offers no platform_profile now (Health says why)"
+      "missing": "No firmware mode: see Health"
     },
     {
       "name": "cpu-power",
@@ -24,7 +24,7 @@
       "unit": "W",
       "formats": { "value": "int" },
       "trend": "$.[name=CPU package power].history",
-      "note": "package"
+      "note": "whole CPU"
     },
     {
       "name": "cpu-temperature",
@@ -36,7 +36,7 @@
       "critical": 95,
       "formats": { "value": "int" },
       "trend": "$.[name=Package id 0].history",
-      "note": "package, warning at 85 °C"
+      "note": "whole CPU, warning at 85 °C"
     },
     {
       "name": "gpu-power",
@@ -56,7 +56,7 @@
       "source": { "op": "monitor", "input": { "count": 1, "interval_ms": 200 }, "path": "$.0.fan_rpm" },
       "unit": "rpm",
       "formats": { "value": "join" },
-      "missing": "No fan speed: the system service does not answer, or the fan module is not loaded"
+      "missing": "No fan speed: see Health"
     },
     {
       "name": "sensors",
@@ -66,7 +66,12 @@
       "columns": ["name", "value|text", "unit"],
       "labels": { "name": "Sensor", "value|text": "Value", "unit": "Unit" },
       "formats": { "value|text": "1dp" },
-      "group": { "field": "source", "order": ["CPU", "RAPL", "nvidia-smi", "fans"], "fold": 8 },
+      "group": {
+        "field": "source",
+        "labels": { "RAPL": "Power draw", "nvidia-smi": "NVIDIA GPU", "fans": "Fans" },
+        "order": ["CPU", "RAPL", "nvidia-smi", "fans"],
+        "fold": 8
+      },
       "levels": [{ "column": "value|text", "warn": 85, "critical": 95, "when": { "unit": "°C" } }]
     }
   ],

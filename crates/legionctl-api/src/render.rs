@@ -221,16 +221,12 @@ impl Render for Findings {
 
 impl Render for CapabilityList {
     fn text(&self) -> String {
+        // the plan of each feature (planned owner, notes) is in --json; here what it is and what handles it now
         let or = |v: &Option<String>| v.clone().unwrap_or_else(|| "unknown".into());
-        let mut out = vec![format!("profile: {}", self.profile_id)];
+        let mut out = vec![format!("machine profile: {}", self.profile_id)];
         for c in &self.capabilities {
-            out.push(format!("{}: {}", c.id, c.name));
-            out.push(format!("  status: {}", or(&c.status)));
-            out.push(format!("  current_owner: {}", or(&c.current_owner)));
-            out.push(format!("  planned_owner: {}", or(&c.planned_owner)));
-            if let Some(notes) = &c.notes {
-                out.push(format!("  notes: {notes}"));
-            }
+            out.push(format!("{}: {}", c.name, or(&c.status)));
+            out.push(format!("  handled by: {}", or(&c.current_owner)));
         }
         out.join("\n")
     }
@@ -254,9 +250,9 @@ impl Render for Validation {
 impl Render for GpuState {
     fn text(&self) -> String {
         let mut out = vec![
-            format!("gpu_mode: {}", self.mode),
+            format!("GPU mode: {}", self.mode),
             format!(
-                "desktop GPU preference: {} (Mutter reads it at login)",
+                "GPU that draws the desktop: {} (from the next login)",
                 self.desktop_gpu
             ),
         ];
@@ -848,11 +844,21 @@ impl Render for SetupReport {
             "ctx: {}",
             self.ctx_version.as_deref().unwrap_or("not installed")
         )];
-        out.extend(
-            self.items
-                .iter()
-                .map(|i| format!("{:<26} {:<12} {:<14} {}", i.what, i.agent, i.status, i.path)),
+        // columns as wide as their longest cell (skill names are long)
+        let width = |f: fn(&crate::SetupItem) -> &str| {
+            self.items.iter().map(|i| f(i).len()).max().unwrap_or(0)
+        };
+        let (w1, w2, w3) = (
+            width(|i| &i.what),
+            width(|i| &i.agent),
+            width(|i| &i.status),
         );
+        out.extend(self.items.iter().map(|i| {
+            format!(
+                "{:<w1$}  {:<w2$}  {:<w3$}  {}",
+                i.what, i.agent, i.status, i.path
+            )
+        }));
         let todo = self.items.iter().filter(|i| i.status != "current").count();
         out.push(if todo == 0 {
             "all set up".into()
@@ -1079,16 +1085,11 @@ impl Render for Vec<DossierInfo> {
     fn text(&self) -> String {
         self.iter()
             .map(|d| {
-                let id = d.id.as_deref().unwrap_or("(no id)");
-                let chosen = if d.chosen {
-                    "  (the user's dossier)"
-                } else {
-                    ""
-                };
+                let chosen = if d.chosen { "  (your dossier)" } else { "" };
                 if d.has_plan {
-                    format!("{}  {id}{chosen}", d.name)
+                    format!("{}{chosen}", d.name)
                 } else {
-                    format!("{}  {id}  (no plan.md){chosen}", d.name)
+                    format!("{}  (no plan.md){chosen}", d.name)
                 }
             })
             .collect::<Vec<_>>()
@@ -1235,8 +1236,11 @@ impl Render for Vec<EventRow> {
         self.iter()
             .map(|e| {
                 format!(
-                    "{:>6} {} {:<16} {:<28} {}",
-                    e.id, e.at, e.actor, e.kind, e.payload
+                    "{:>6} {} {:<16} {}",
+                    e.id,
+                    legionctl_core::views::local(e.at),
+                    e.actor,
+                    in_words(&e.kind, &e.payload)
                 )
             })
             .collect::<Vec<_>>()
@@ -1696,16 +1700,15 @@ impl Render for Vec<ToolCallRow> {
             .map(|r| {
                 let c = &r.call;
                 format!(
-                    "{:>6} {} {:<10} {}.{:<24} {:<8} {:>6} ms {:>8} B  {}",
+                    "{:>6} {} {:<10} {}.{:<24} {:<8} {:>6} ms {:>8} B",
                     r.id,
-                    r.at,
+                    legionctl_core::views::local(r.at),
                     &c.session.0[..c.session.0.len().min(8)],
                     c.server,
                     c.tool,
                     wire_name(&c.outcome),
                     c.ms,
                     c.bytes,
-                    c.args_hash
                 )
             })
             .collect::<Vec<_>>()
@@ -1725,7 +1728,7 @@ impl Render for Vec<PackageState> {
             .map(|p| {
                 let state = match (&p.manifest, p.intact) {
                     (None, _) => "not fetched".to_string(),
-                    (Some(m), Some(true)) => format!("ok {}", &m.hash[..16]),
+                    (Some(_), Some(true)) => "ok".to_string(),
                     (Some(_), _) => "CHANGED since fetch".to_string(),
                 };
                 format!(
@@ -1830,7 +1833,7 @@ impl Render for Vec<crate::GatewayUsage> {
                 format!(
                     "{:>6} {} {:<14} {:<24} in {:>7} out {:>7} ${:.4} {} {} {} ms",
                     u.id,
-                    u.at,
+                    legionctl_core::views::local(u.at),
                     u.account,
                     u.model,
                     u.tokens_in,
@@ -2085,6 +2088,15 @@ impl Render for Vec<crate::Account> {
 }
 
 /// An enum value as the wire names it (`cached`, `vm`).
+/// What an event or a job did, in words: an operation's sentence with its values (`OpInfo::sentence`), else its
+/// kind; the raw input is in `--json`.
+fn in_words(kind: &str, input: &serde_json::Value) -> String {
+    crate::OPS
+        .iter()
+        .find(|op| op.name == kind)
+        .map_or_else(|| kind.to_string(), |op| op.sentence(input))
+}
+
 fn wire_name<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_value(value)
         .ok()
@@ -2146,13 +2158,17 @@ impl Render for Vec<crate::Job> {
 impl Render for crate::Job {
     fn text(&self) -> String {
         let end = match (&self.result, &self.error) {
-            (Some(result), _) => result.to_string(),
+            (Some(result), _) => crate::render(&self.kind, result.clone())
+                .map_or_else(|_| "done".into(), |(text, _)| text),
             (None, Some(error)) => error.clone(),
             (None, None) => "running".into(),
         };
         format!(
-            "job {} {} {} (attempt {})\ninput: {}\n{end}",
-            self.id, self.kind, self.state, self.attempts, self.input
+            "job {} {} (attempt {}): {}\n{end}",
+            self.id,
+            self.state,
+            self.attempts,
+            in_words(&self.kind, &self.input)
         )
     }
 }
@@ -2171,11 +2187,7 @@ impl Render for crate::ResourceList {
                 out.push(format!("    used by: {}", r.users.join(", ")));
             }
             if !r.actions.is_empty() {
-                let actions: Vec<String> = r
-                    .actions
-                    .iter()
-                    .map(|a| format!("{} ({})", a.name, a.op))
-                    .collect();
+                let actions: Vec<String> = r.actions.iter().map(|a| a.name.clone()).collect();
                 out.push(format!("    actions: {}", actions.join(", ")));
             }
         }
@@ -2189,8 +2201,8 @@ impl Render for crate::Acted {
         match &self.output {
             // as the routed operation shows it
             Some(output) => crate::render(&self.op, output.clone())
-                .map_or_else(|e| format!("{}: {e:#}", self.op), |(text, _)| text),
-            None => format!("dry run: would run {} {}", self.op, self.input),
+                .map_or_else(|e| format!("{e:#}"), |(text, _)| text),
+            None => format!("dry run, not done: {}", in_words(&self.op, &self.input)),
         }
     }
 
@@ -2808,7 +2820,7 @@ fn timeline_text(v: &crate::ViewData) -> Vec<String> {
         .chain(v.rows.iter().map(|r| {
             let at = r[0]
                 .parse::<i64>()
-                .map_or_else(|_| r[0].clone(), legionctl_core::views::utc);
+                .map_or_else(|_| r[0].clone(), legionctl_core::views::local);
             format!("{at} {} {}: {}", r[1], r[2], r[3])
         }))
         .collect()
@@ -2817,7 +2829,11 @@ fn timeline_text(v: &crate::ViewData) -> Vec<String> {
 impl Render for crate::ViewData {
     /// The terminal form of a view (DESIGN-09 Rule 1): counts and the point first, one line each.
     fn text(&self) -> String {
-        let head = format!("{} ({}, version {})", self.title, self.widget, self.version);
+        let version = match self.version {
+            0 => "original".to_string(),
+            n => format!("version {n}"),
+        };
+        let head = format!("{} ({}, {version})", self.title, self.widget);
         if let Some(error) = &self.error {
             return format!("{head}: cannot read: {error}");
         }
@@ -2901,14 +2917,16 @@ impl Render for Vec<crate::ViewInfo> {
                     (None, Some(e)) => format!("not a view: {e}"),
                     (None, None) => String::new(),
                 };
+                // the layer in words: a view legionctl ships, yours, or the repository's
+                let layer = match v.layer.as_str() {
+                    "seed" => "built-in",
+                    "user" => "yours",
+                    other => other,
+                };
                 format!(
-                    "{:<24} {:<10} {what}  {}{}",
+                    "{:<24} {layer:<10} {what}  {}",
                     v.name,
-                    v.layer,
                     v.title.as_deref().unwrap_or_default(),
-                    v.intent
-                        .as_deref()
-                        .map_or_else(String::new, |i| format!(" (intent: {i})"))
                 )
             })
             .collect::<Vec<_>>()

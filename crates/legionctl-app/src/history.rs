@@ -82,7 +82,7 @@ impl LegionApp {
         cx.spawn(async move |this, cx| {
             if let Err(e) = task.await {
                 let _ = this.update(cx, |app: &mut LegionApp, cx| {
-                    app.state.message = Some(format!("cannot keep the chat line: {e:#}"));
+                    app.state.message = Some(format!("Cannot save the chat line: {e:#}"));
                     cx.notify();
                 });
             }

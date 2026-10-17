@@ -10,7 +10,7 @@
   "views": [
     {
       "name": "bench-cpu",
-      "title": "CPU score (bogo ops/s) over time, by kind of run",
+      "title": "CPU score over time, by kind of run",
       "widget": "chart",
       "source": { "op": "bench.list", "input": { "limit": 1000 }, "path": "$.items", "all": true },
       "x": "at",
@@ -42,7 +42,7 @@
     }
   ],
   "actions": [
-    { "label": "Run a 30 s CPU bench", "op": "bench.run", "input": { "scenario": "cpu", "seconds": 30, "label": "app" } }
+    { "label": "Run a 30 s CPU test", "op": "bench.run", "input": { "scenario": "cpu", "seconds": 30, "label": "app" } }
   ],
   "refresh": { "events": ["bench.*"] }
 }

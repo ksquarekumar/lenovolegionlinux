@@ -155,10 +155,8 @@ impl LegionApp {
                 None => {}
             }
             if !bad.is_empty() {
-                app.state.message = Some(format!(
-                    "the kept layout cannot be read: {}",
-                    bad.join("; ")
-                ));
+                app.state.message =
+                    Some(format!("Cannot read the saved layout: {}", bad.join("; ")));
             }
             if let Some(nav) = value("navigator") {
                 if let Ok(width) = serde_json::from_value::<f32>(nav["width"].clone()) {
@@ -207,7 +205,7 @@ impl LegionApp {
         cx.spawn(async move |this, cx| {
             if let Err(e) = task.await {
                 let _ = this.update(cx, |app: &mut LegionApp, cx| {
-                    app.state.message = Some(format!("cannot keep the layout: {e:#}"));
+                    app.state.message = Some(format!("Cannot save the layout: {e:#}"));
                     cx.notify();
                 });
             }
@@ -525,7 +523,7 @@ impl LegionApp {
             }
             Space::Agents => {
                 let now = self.screen.agent();
-                let mut out = vec![Self::nav_section("Agents of the chat bar", t)];
+                let mut out = vec![Self::nav_section("Agents", t)];
                 out.extend(self.screen.agents.iter().map(|a| {
                     let picked = now.as_deref() == Some(a.as_str());
                     let name = a.clone();
@@ -534,7 +532,7 @@ impl LegionApp {
                         (
                             IconName::Bot,
                             a.clone(),
-                            picked.then(|| ("chat bar".to_string(), t.accent)),
+                            picked.then(|| ("in use".to_string(), t.accent)),
                         ),
                         false,
                         t,
@@ -546,12 +544,12 @@ impl LegionApp {
                     .test_support()
                     .into_any_element()
                 }));
-                out.push(Self::nav_section("Threads of agent sessions", t));
+                out.push(Self::nav_section("Agent chats", t));
                 out.extend(self.screen.threads.iter().filter_map(|th| {
                     let owner = th.owner.as_deref()?;
                     Some(self.thread_entry(th, Some(owner), t, cx))
                 }));
-                out.push(Self::nav_section("Views that agents made", t));
+                out.push(Self::nav_section("Views", t));
                 out.extend(self.view_entries("agents", t, cx));
                 out
             }
@@ -615,7 +613,7 @@ impl LegionApp {
             .collect();
         if listed.is_empty() {
             return vec![Self::nav_note(
-                "No view yet: ask for one in the chat bar",
+                "No view yet. Ask for one in the chat bar.",
                 t,
             )];
         }
@@ -629,8 +627,9 @@ impl LegionApp {
                 let selected = active.as_ref() == Some(&tab);
                 let value = match (&v.error, v.layer.as_str()) {
                     (Some(_), _) => Some(("not a view".to_string(), t.critical)),
-                    (None, "seed") => None,
-                    (None, layer) => Some((layer.to_string(), t.muted)),
+                    (None, "user") => Some(("changed".to_string(), t.muted)),
+                    (None, "repository") => Some(("from the repository".to_string(), t.muted)),
+                    (None, _) => None,
                 };
                 let glyph = match v.widget {
                     Some(legionctl_api::ViewWidget::Chart) => IconName::ChartLine,
@@ -764,7 +763,7 @@ impl LegionApp {
                 .threads
                 .iter()
                 .find(|t| t.id == *id)
-                .map_or_else(|| format!("Thread {id}"), |t| t.title.clone()),
+                .map_or_else(|| format!("Chat {id}"), |t| t.title.clone()),
             Tab::Chat => "New chat".into(),
         }
     }
@@ -783,13 +782,10 @@ impl LegionApp {
                         format!("{name}@{branch}")
                     }
                     (Some(folder), None) => folder.clone(),
-                    _ => "no repository".into(),
+                    _ => "no folder".into(),
                 };
                 (
-                    format!(
-                        "dossier {} · thread {} · {repo} · host sandbox",
-                        th.dossier, th.id
-                    ),
+                    format!("dossier {} · chat {} · {repo} · sandbox", th.dossier, th.id),
                     t.accent,
                 )
             }
@@ -804,12 +800,12 @@ impl LegionApp {
                     },
                 );
                 (
-                    format!("dossier {d} · new chat · {folder} · host sandbox"),
+                    format!("dossier {d} · new chat · {folder} · sandbox"),
                     t.accent,
                 )
             }
             (Some(d), None) => (format!("dossier {d}"), t.accent),
-            (None, None) => ("No dossier: choose one".to_string(), t.warn),
+            (None, None) => ("Choose a dossier".to_string(), t.warn),
         };
         div()
             .id("place")
@@ -824,10 +820,7 @@ impl LegionApp {
             .cursor_pointer()
             .child(icon(IconName::FolderGit2, px(12.), color))
             .child(text)
-            .tooltip(|window, cx| {
-                Tooltip::new("Where chats and agent runs keep their record: click to choose")
-                    .build(window, cx)
-            })
+            .tooltip(|window, cx| Tooltip::new("Choose a dossier").build(window, cx))
             .on_click(cx.listener(|app, _, _, cx| app.open_view("dossiers", cx)))
             .test_support()
             .into_any_element()

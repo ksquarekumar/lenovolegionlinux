@@ -877,7 +877,7 @@ fn config_layers_merge_in_order_and_etc_locks_win() {
         "{problems}"
     );
     assert!(
-        problems.contains("rules.jsonc: hooks is not used until the user allows this file"),
+        problems.contains("rules.jsonc: hooks is not used until you allow this file"),
         "{problems}"
     );
     assert_eq!(
@@ -1036,8 +1036,7 @@ fn the_dossier_the_user_chose_is_the_one_that_workspace_and_dossier_commands_use
 
     let (ok, text) = run(&["workspace", "status"]);
     assert!(
-        !ok && text
-            .contains("no dossier is chosen: choose one with `legionctl dossier use <name>`"),
+        !ok && text.contains("you have no dossier: choose one with legionctl dossier use <name>"),
         "{text}"
     );
     assert!(!text.contains("LEGIONCTL_SESSION"), "{text}");
@@ -1462,6 +1461,62 @@ fn trace_shows_each_change_as_it_happens() {
     assert!(
         latency < std::time::Duration::from_millis(1500),
         "{latency:?} from the event to its line"
+    );
+}
+
+/// Each operation's doc comment is what you read: its help, and its first sentence is the confirm, the approval
+/// notice and the tooltip. So no doc holds a design or plan ref (they go into `//` comments), and no first sentence
+/// holds an operation's dotted name or a hash.
+#[test]
+fn every_operation_speaks_to_you_without_builder_text() {
+    let words = |text: &str| -> Vec<String> {
+        text.split(|c: char| c.is_whitespace() || "(),;:`'\"".contains(c))
+            .map(|w| w.trim_end_matches('.').to_string())
+            .filter(|w| !w.is_empty())
+            .collect()
+    };
+    let digit_after = |w: &str, head: &str| {
+        w.strip_prefix(head)
+            .is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()))
+    };
+    let names: Vec<&str> = legionctl_api::OPS
+        .iter()
+        .map(|o| o.name)
+        .filter(|n| n.contains('.'))
+        .collect();
+    let mut wrong = Vec::new();
+    for op in legionctl_api::OPS.iter().filter(|o| !o.internal()) {
+        for w in words(op.text()) {
+            if w.contains("DESIGN")
+                || w.starts_with("EV-")
+                || w.contains("plan#")
+                || digit_after(&w, "todo-")
+                || ["U-", "G", "R"]
+                    .iter()
+                    .any(|h| digit_after(&w, h) && w.len() <= 5)
+            {
+                wrong.push(format!("{}: ref {w}", op.name));
+            }
+        }
+        for w in words(op.summary()) {
+            if names.contains(&w.as_str()) || w.starts_with("internal.") {
+                wrong.push(format!(
+                    "{}: operation name {w} in its first sentence",
+                    op.name
+                ));
+            }
+            if w.len() >= 12
+                && w.chars().all(|c| c.is_ascii_hexdigit())
+                && w.chars().any(|c| c.is_ascii_digit())
+            {
+                wrong.push(format!("{}: hash {w} in its first sentence", op.name));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "builder text in the help:\n{}",
+        wrong.join("\n")
     );
 }
 
@@ -6739,8 +6794,7 @@ fn start_again(home: &Path, n: u32) -> Operator {
 }
 
 /// The refusal of each dossier operation until the migration is done.
-const NOT_MIGRATED: &str =
-    "the dossiers are not migrated yet: the user runs legionctl dossier migrate";
+const NOT_MIGRATED: &str = "the dossiers are not migrated yet: run legionctl dossier migrate";
 
 /// `dossier migrate` failed at the step that `why` names, and the old root is still there.
 fn migration_failed(op: &Operator, home: &Path, why: &str) {

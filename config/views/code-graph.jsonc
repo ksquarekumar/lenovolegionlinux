@@ -13,13 +13,13 @@
     { "name": "code-tree", "params": { "since": "{since}", "key": "{key}" } },
     {
       "name": "code-impact",
-      "title": "What uses the selected symbol (callers, one level)",
+      "title": "What calls the selected symbol",
       "widget": "table",
       "params": { "key": "string" },
       "source": { "op": "code.graph.impact", "input": { "key": "{key}", "depth": 1, "build": true }, "path": "$.nodes" },
       "columns": ["key", "kind", "file", "line"],
       "labels": { "key": "Symbol", "kind": "Kind", "file": "File", "line": "Line" },
-      "missing": "Click a symbol in the tree to see what uses it"
+      "missing": "Click a symbol in the tree to see what calls it"
     }
   ]
 }

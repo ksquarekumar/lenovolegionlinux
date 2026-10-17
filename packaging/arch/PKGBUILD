@@ -47,8 +47,9 @@ pkgver() {
 export CARGO_TARGET_DIR="${startdir}/../../target/package"
 
 # all cores: the environment variable wins over `[build] jobs` of the user's ~/.cargo/config.toml (a limit for agents)
+# LEGIONCTL_PKGVER: `legionctl --version` and `about` show this package version (0.2.0 r340)
 build() {
-  CARGO_BUILD_JOBS="$(nproc)" make -C "${startdir}/../.." build
+  CARGO_BUILD_JOBS="$(nproc)" LEGIONCTL_PKGVER="${pkgver}" make -C "${startdir}/../.." build
 }
 
 package() {

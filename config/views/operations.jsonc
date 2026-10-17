@@ -9,7 +9,7 @@
   "widget": "table",
   "source": { "op": "ops.list" },
   "columns": ["name", "class", "summary"],
-  "labels": { "name": "Operation", "class": "Class", "summary": "What it does" },
+  "labels": { "name": "Operation", "class": "What it changes", "summary": "What it does" },
   "group": { "field": "group", "fold": 0 },
   "row_actions": [{ "label": "Open", "op": "{row.name}", "input": {} }]
 }

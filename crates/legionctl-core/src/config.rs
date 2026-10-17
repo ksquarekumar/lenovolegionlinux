@@ -711,11 +711,11 @@ impl Merge<'_> {
             {
                 self.problems.push(match answer {
                     Some(_) => format!(
-                        "{}: {path} is not used: the user denied this content (a changed file asks again)",
+                        "{}: {path} is not used: you denied this content (a changed file asks again)",
                         self.source.file
                     ),
                     None => format!(
-                        "{}: {path} is not used until the user allows this file (legionctl asks once)",
+                        "{}: {path} is not used until you allow this file (legionctl asks once)",
                         self.source.file
                     ),
                 });

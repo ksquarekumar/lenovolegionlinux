@@ -109,9 +109,14 @@ async fn boot_notice(session: &zbus::Connection) -> Result<()> {
 
 fn mode_detail(fn_q_choice: bool, source: &str) -> String {
     if fn_q_choice {
-        "Fn+Q choice until unplug or reboot".into()
+        "Fn+Q choice until the charger changes or you restart".into()
     } else {
-        format!("{} default", if source == "ac" { "AC" } else { "battery" })
+        if source == "ac" {
+            "Default on AC"
+        } else {
+            "Default on battery"
+        }
+        .into()
     }
 }
 

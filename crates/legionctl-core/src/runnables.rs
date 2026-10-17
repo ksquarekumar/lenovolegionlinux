@@ -428,15 +428,15 @@ pub fn refusal(config: &Config, name: &str) -> Option<String> {
     };
     match loaded.trust {
         Trust::Layer if !config.runnables.allow.iter().any(|a| a == name) => {
-            Some("the user layer does not allow it (runnables.allow)".into())
+            Some("your config layer does not allow it (runnables.allow)".into())
         }
         Trust::Waits => Some(format!(
-            "{} sets {} and waits for the user's first answer (legionctl asks once)",
+            "{} sets {} and waits for your first answer (legionctl asks once)",
             loaded.source.file,
             loaded.set.powerful().join(", ")
         )),
         Trust::Denied => Some(format!(
-            "the user denied the content of {} (a changed file asks again)",
+            "you denied the content of {} (a changed file asks again)",
             loaded.source.file
         )),
         Trust::Layer | Trust::Plain | Trust::Allowed => None,

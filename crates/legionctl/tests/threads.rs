@@ -1192,11 +1192,11 @@ fn the_cli_asks_for_an_intent_and_prints_the_stored_view() {
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines[0], "operations (stored)", "{text}");
     assert!(
-        lines[1].starts_with("Operations (table, version 0)"),
+        lines[1].starts_with("Operations (table, original)"),
         "{text}"
     );
     assert!(
-        lines[2].ends_with("rows: Operation | Class | What it does"),
+        lines[2].ends_with("rows: Operation | What it changes | What it does"),
         "{text}"
     );
     let out = lab.op.run(

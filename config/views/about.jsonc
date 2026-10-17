@@ -9,5 +9,5 @@
   "widget": "list",
   "source": { "op": "about" },
   "columns": ["part", "value", "state"],
-  "labels": { "part": "Part", "value": "What", "state": "State" }
+  "labels": { "part": "Part", "value": "Details", "state": "State" }
 }

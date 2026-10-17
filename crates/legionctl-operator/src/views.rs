@@ -283,7 +283,7 @@ pub fn version_op(ctx: &Ctx, input: &ViewVersionIn) -> Result<Lines> {
         "reset" => match pinned {
             Some(p) => p,
             None if seed => 0,
-            None => bail!("view {name} has no seed and no pinned version to reset to"),
+            None => bail!("view {name} has no original and no pinned version to go back to"),
         },
         "pin" => {
             store.fact_add(&New {

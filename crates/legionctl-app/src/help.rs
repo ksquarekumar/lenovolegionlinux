@@ -1,5 +1,5 @@
-//! The title bar's Help menu (todo-169): About (the seed view `about` as a tab), Feedback, Keys and what agents can
-//! change (todo-181); and Ctrl+K, the
+//! The title bar's Help menu (todo-169): About (the seed view `about` as a tab), Feedback, Keys and the FAQ
+//! (todo-181, todo-184); and Ctrl+K, the
 //! command palette: the chat bar with `/`, whose list has the views, the commands and the operations.
 
 use gpui_kit::assets::IconName;
@@ -20,13 +20,80 @@ Ctrl+1 to Ctrl+4: the spaces
 Enter: send; Shift+Enter or Ctrl+J: a new line; Ctrl+Left, Right: the chat bar's width
 Ctrl+C: copy the selected text";
 
-/// What the agents may change in the app, and what stays the app's own.
-const AGENTS: &str = "In a chat tab, a message goes to the agent of the chat.
-In a view tab, a message goes to the agent that makes views: it changes the view of the tab (a new version; \
-\"go back\" shows an earlier one), or it answers in words.
-The agents change only the contents of the tabs: the views and their versions.
-The agents cannot change the window, the spaces, the navigator, the menus, the chat bar, the approvals of a \
-change, or the login screen.";
+/// What a Help topic is about: a view or an operation that the app has. An app test fails for a topic whose feature
+/// is gone, so the FAQ never answers for a removed feature.
+#[derive(Debug, Clone, Copy)]
+pub enum Feature {
+    View(&'static str),
+    Op(&'static str),
+}
+
+/// A question of the FAQ, its short answer and the features it names.
+#[derive(Debug)]
+pub struct Topic {
+    pub question: &'static str,
+    pub answer: &'static str,
+    pub features: &'static [Feature],
+}
+
+/// The FAQ of the Help menu: short answers in the user's words; the agents handle the tricky cases.
+pub const FAQ: &[Topic] = &[
+    Topic {
+        question: "How do I chat with an agent?",
+        answer: "Click New chat in Work and type a message.",
+        features: &[Feature::Op("thread.start")],
+    },
+    Topic {
+        question: "What is a dossier?",
+        answer: "A folder that keeps the record of your chats and agent work. Choose one in Dossiers.",
+        features: &[Feature::View("dossiers"), Feature::Op("dossier.use")],
+    },
+    Topic {
+        question: "What can agents change?",
+        answer: "Only the views in the tabs. In a view tab, a message asks the agent to change the view. \
+                 Agents cannot change the window, the menus, the chat bar or your approvals.",
+        features: &[Feature::Op("views.save")],
+    },
+    Topic {
+        question: "How do I undo a change to a view?",
+        answer: "Use the arrows next to the view's title. Pin keeps a version; Reset goes back to it.",
+        features: &[Feature::Op("views.version")],
+    },
+    Topic {
+        question: "Why does a change ask for my password?",
+        answer: "It changes the machine, so the system asks first.",
+        features: &[Feature::Op("power.apply")],
+    },
+    Topic {
+        question: "Where do I see problems?",
+        answer: "Open Health in Machine.",
+        features: &[Feature::View("health")],
+    },
+    Topic {
+        question: "Which GPU draws the desktop?",
+        answer: "Open Apps and GPU. A change applies at your next login.",
+        features: &[Feature::View("apps-gpu"), Feature::Op("gpu.primary")],
+    },
+    Topic {
+        question: "How do I tell what is wrong in the app?",
+        answer: "Click Feedback, or type /feedback and your note.",
+        features: &[Feature::Op("feedback.new")],
+    },
+    Topic {
+        question: "Which version do I have?",
+        answer: "Help > About legionctl.",
+        features: &[Feature::View("about")],
+    },
+];
+
+/// The FAQ as the text of the message card.
+fn faq() -> String {
+    FAQ.iter()
+        .map(|t| format!("{}\n{}", t.question, t.answer))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 impl LegionApp {
     /// The Help menu of the title bar.
     pub(crate) fn help_menu(cx: &mut Context<Self>) -> AnyElement {
@@ -53,8 +120,8 @@ impl LegionApp {
                         app.state.message = Some(KEYS.into());
                         cx.notify();
                     }))
-                    .item(item("What agents can change", |app, _, cx| {
-                        app.state.message = Some(AGENTS.into());
+                    .item(item("Questions", |app, _, cx| {
+                        app.state.message = Some(faq());
                         cx.notify();
                     }))
             })

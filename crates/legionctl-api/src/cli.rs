@@ -273,7 +273,7 @@ impl Node {
 #[must_use]
 pub fn command(client_only: Vec<Command>) -> Command {
     let root = Command::new("legionctl")
-        .version(env!("CARGO_PKG_VERSION"))
+        .version(crate::version())
         .about("Operate this Legion and the coding agents on it: machine state, load, dossiers and workspaces, agent setup")
         .subcommand_required(true)
         .arg_required_else_help(true)

@@ -59,7 +59,7 @@ pub fn state(root: &SysRoot) -> Result<GreeterState> {
     // greetd's package makes its user; greetd runs the greeter as it, and its folder is its
     let users = root.read("/etc/passwd")?.unwrap_or_default();
     if !users.lines().any(|l| l.starts_with("greeter:")) {
-        missing.push("the user greeter (the greetd package makes it)".into());
+        missing.push("the system account greeter (the greetd package makes it)".into());
     }
     Ok(GreeterState {
         installed: root.read(CONFIG)?.is_some_and(|c| c.starts_with(MARK)),

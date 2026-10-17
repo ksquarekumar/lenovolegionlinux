@@ -93,6 +93,16 @@ pub const ACTOR_HEADER: &str = "x-legionctl-actor";
 /// The fingerprint of the operation registry a client and the operator were built with ([`api_fingerprint`]).
 pub const API_HEADER: &str = "x-legionctl-api";
 
+/// The version a person reads: `0.2.0 r340` from the package's `pkgver` (`0.2.0.r340.g79bf2fd`, set by the
+/// PKGBUILD at build time), or `0.2.0 (built from source)` for a build outside the package.
+#[must_use]
+pub fn version() -> String {
+    match option_env!("LEGIONCTL_PKGVER").and_then(|v| v.split_once(".r")) {
+        Some((base, rest)) => format!("{base} r{}", rest.split('.').next().unwrap_or(rest)),
+        None => format!("{} (built from source)", env!("CARGO_PKG_VERSION")),
+    }
+}
+
 /// FNV-1a over every operation's name, class, input schema and output schema: equal for a client and an operator of
 /// the same build, and different after a change of the wire format until the running operator restarts.
 pub fn api_fingerprint() -> &'static str {
@@ -117,8 +127,9 @@ pub enum Class {
     Read,
     /// Changes only the caller's own session: its dossier, its workspace, its hooks. An agent calls these freely.
     Session,
-    /// Changes the user's files and settings or other sessions; when an agent calls it, the operator asks the user
-    /// first (a desktop notification, DESIGN/03).
+    /// Changes your files and settings or other sessions; when an agent calls it, legionctl asks you first in a
+    /// desktop notice.
+    // DESIGN/03: the gate of agent calls
     Workspace,
     /// Changes the machine; `legionctl-system` asks for polkit approval.
     Machine,
@@ -178,14 +189,7 @@ impl OpInfo {
                     && value.as_str() != Some("")
                     && value.as_array().is_none_or(|a| !a.is_empty())
             })
-            .map(|(field, value)| {
-                let value = match value {
-                    Value::String(s) => s.clone(),
-                    Value::Bool(true) => "yes".into(),
-                    other => other.to_string(),
-                };
-                format!("{} {value}", field.replace('_', " "))
-            })
+            .map(|(field, value)| format!("{} {}", field.replace('_', " "), words(value)))
             .collect();
         let summary = self.summary().trim_end_matches('.');
         if given.is_empty() {
@@ -193,6 +197,22 @@ impl OpInfo {
         } else {
             format!("{summary} ({}).", given.join(", "))
         }
+    }
+}
+
+/// A value in words, not JSON: a list joined with commas, an object as its fields and values.
+fn words(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Bool(true) => "yes".into(),
+        Value::Bool(false) => "no".into(),
+        Value::Array(items) => items.iter().map(words).collect::<Vec<_>>().join(", "),
+        Value::Object(fields) => fields
+            .iter()
+            .map(|(k, v)| format!("{} {}", k.replace('_', " "), words(v)))
+            .collect::<Vec<_>>()
+            .join(", "),
+        other => other.to_string(),
     }
 }
 
@@ -407,15 +427,15 @@ macro_rules! operations {
 operations! {
     /// Power source, thermal mode, firmware limits, CPU policy, temperature, GPU wiring and load.
     status / Status = "status", Read, StatusIn => Snapshot;
-    /// About legionctl: the operator's version and API build, whether the machine daemon is of the same build, the
-    /// machine profile, the licenses and the links; one row each, with its state.
+    /// About legionctl: its version, whether the machine daemon matches it, the machine profile, the licenses and the
+    /// links; one row each, with its state. The last row has the build hashes for a bug report.
     about / About = "about", Read, Empty => Vec<AboutItem>;
     /// Load level (idle, normal, busy, overloaded) and why, from CPU, memory and I/O pressure. Check it before
     /// builds, test suites or parallel jobs.
     load / Load = "load", Read, Empty => LoadState;
     /// Read-only health checks: power policy drift, conflicting units, packages and modules, GPU wiring.
     doctor / Doctor = "doctor", Read, ProfileIn => Findings;
-    /// Known and planned capability coverage from the profile.
+    /// What each key and feature of this machine does now, and what handles it (from the machine profile).
     capabilities / Capabilities = "capabilities", Read, ProfileIn => CapabilityList;
     /// Check the profile's structure and its shipped configset layers: knobs, values and the ac/battery rule (no
     /// hardware access).
@@ -482,11 +502,11 @@ operations! {
     agents_accounts_login / AgentsAccountsLogin = "agents.accounts.login", Workspace, AccountLoginIn => Lines;
     /// Make clauth account `name` the current login of Claude Code or Codex (`clauth switch`).
     agents_accounts_switch / AgentsAccountsSwitch = "agents.accounts.switch", Workspace, AccountIn => Lines;
-    /// Keep the current logins of Claude Code and Codex as account `name`, never as a copy (a refresh rotates the
-    /// refresh token, and a copy logs one of the two out: DESIGN-12 wall 1): a login that a clauth profile holds is
-    /// kept already; Claude Code's other login goes to clauth (`clauth capture <name>`: clauth keeps it in its store
-    /// with its refresh in step); a Codex login that no clauth profile holds is not kept, with the way to
-    /// make a second login. Fails when no login is kept.
+    /// Keep the current logins of Claude Code and Codex as account `name`. A login that a clauth profile holds is
+    /// kept already; Claude Code's other login goes to clauth (`clauth capture <name>`); a Codex login that no clauth
+    /// profile holds is not kept, with the way to make a second login. Fails when no login is kept.
+    // never as a copy: a refresh rotates the refresh token, and a copy logs one of the two out (DESIGN-12 wall 1);
+    // clauth keeps its copy with the refresh in step
     agents_accounts_capture / AgentsAccountsCapture = "agents.accounts.capture", Workspace, AccountIn => Lines;
     /// Each account's rate-limit windows (Claude: 5h and 7d; Codex: its windows) from the provider, read with the
     /// account's own access token, never refreshed; a failed read is that account's error with its cause. A clauth
@@ -499,7 +519,7 @@ operations! {
     /// marketplace declares still needs a person to accept it.
     agents_plugins_install / AgentsPluginsInstall = "agents.plugins.install", Workspace, PluginInstallIn => Lines;
     /// Resolve the agent configs of a team (or each config alone) for a harness: the archetype file, then
-    /// `agents.configs.<name>`, then the team; and the capability sets of the layers (DESIGN-13). Refuses, with the
+    /// `agents.configs.<name>`, then the team; and the capability sets of the layers. Refuses, with the
     /// field named, each field that a member's run path cannot apply, each layer that widens tools, commands, budgets,
     /// message kinds or capabilities, and each capability that a grant would refuse.
     runnables_check / RunnablesCheckOp = "runnables.check", Read, RunnablesCheckIn => RunnablesCheck;
@@ -816,12 +836,12 @@ operations! {
     /// refused. It binds nothing: choose it with dossier use.
     dossier_create / DossierCreate = "dossier.create", Workspace, DossierCreateIn => Lines;
     /// Bind this session to a dossier (one writable dossier per session); a new name makes it from the pattern. With
-    /// no session (the app, a terminal) it chooses the user's dossier, an existing one: the app's new chats and agent
-    /// runs work in it.
+    /// no session (the app, a terminal) it chooses your dossier, an existing one: the app's new chats and agent runs
+    /// work in it.
     dossier_use / DossierUse = "dossier.use", Session, DossierUseIn => Lines;
-    /// This session's active dossier; with no session, the user's dossier.
+    /// This session's active dossier; with no session (the app, a terminal), your dossier.
     dossier_active / DossierActive = "dossier.active", Read, SessionIn => Lines;
-    /// Give up this session's dossier; with no session, the user's dossier choice.
+    /// Give up this session's dossier; with no session (the app, a terminal), your dossier choice.
     dossier_release / DossierRelease = "dossier.release", Session, DossierReleaseIn => Lines;
     /// Which session holds which dossier, and stale bindings.
     dossier_locks / DossierLocks = "dossier.locks", Read, Empty => Locks;
@@ -845,13 +865,13 @@ operations! {
     dossier_edit / DossierEdit = "dossier.edit", Session, DossierEditIn => Lines;
     /// Create the next numbered artifact <CLASS>/NN-<slug>.md in this session's dossier (content from stdin).
     dossier_add / DossierAdd = "dossier.add", Session, DossierAddIn => Lines;
-    /// Keep the user's feedback on the app as an immutable entry feedbacks/<NNNN>-<slug>/ of a dossier: note.md (the
-    /// note with its front matter: time, builds, what the app showed), state.json, and screenshot.png (the window
-    /// that the user picks in the desktop's screenshot dialog). Its event feedback.new is for the agents.
+    /// Keep your feedback on the app as an entry feedbacks/<NNNN>-<slug>/ of a dossier that does not change: note.md
+    /// (the note with the time, the builds and what the app showed), state.json, and screenshot.png (the window that
+    /// you pick in the desktop's screenshot dialog). The dossier's agents get it as an event.
     feedback_new / FeedbackNew = "feedback.new", Workspace, FeedbackIn => Lines;
-    /// Answer a question that waits for the user (an agent's change outside its session, a repository's config, a
-    /// merge) from the app or a terminal, as Allow or Deny in its desktop notice does; the notice closes. For the user
-    /// only.
+    /// Answer a question that waits for you (an agent's change outside its session, a repository's config, a merge)
+    /// from the app or a terminal, as Allow or Deny in its desktop notice does; the notice closes. An agent cannot
+    /// answer.
     // class Session: the operation refuses an agent itself; Workspace would turn its call into one more question
     approval_answer / ApprovalAnswer = "approval.answer", Session, ApprovalAnswerIn => Lines;
     /// Ledger findings for a dossier (default: this session's): a missing plan.md or plan section.
@@ -917,7 +937,7 @@ operations! {
     code_graph_query / CodeGraphQuery = "code.graph.query", Read, GraphQueryIn => CodeNodes;
     /// What depends on a symbol (by its stable key) in the code graph of a ref.
     code_graph_impact / CodeGraphImpact = "code.graph.impact", Read, GraphImpactIn => CodeNodes;
-    /// One level of the code tree of a ref (DESIGN-09 G4, counts first): the folders and files under a folder with
+    /// One level of the code tree of a ref, counts first: the folders and files under a folder with
     /// the number of symbols in each, or the symbols of a file in file order.
     code_graph_tree / CodeGraphTree = "code.graph.tree", Read, GraphTreeIn => CodeTree;
     /// The changes between refs by stable key: added, removed, modified and moved symbols and files, each with the
@@ -940,10 +960,9 @@ operations! {
     /// Start a thread: one task with this session as its main agent `main0`, on the caller's dossier. With `--team`,
     /// the team file's members join asleep and its flow applies: a Claude main agent leads them as an agent team,
     /// a Codex one as Codex subagents, any other agent gets them as operator sessions that wake on their triggers.
-    /// With no session (the app, a terminal) it is the user's own thread (a chat) on the dossier that `--dossier`
-    /// names.
+    /// With no session (the app, a terminal) it is your own thread (a chat) on the dossier that `--dossier` names.
     thread_start / ThreadStart = "thread.start", Workspace, ThreadStartIn => Lines;
-    /// The user's thread works on a repository (its own worktree on a branch from a base ref) or a plain folder (an
+    /// Your thread (a chat) works on a repository (its own worktree on a branch from a base ref) or a plain folder (an
     /// overlay); its next runs work there. A thread starts with none (a scratch folder).
     thread_repo / ThreadRepo = "thread.repo", Workspace, ThreadRepoIn => Lines;
     /// Every thread, newest first.
@@ -977,10 +996,10 @@ operations! {
     thread_rules_rm / ThreadRulesRm = "thread.rules.rm", Session, RuleRmIn => Lines;
     /// Copy a thread to another clauth account: its log, members, messages, watch rules and layout. The copy records the thread it came from; the original stays and is read-only.
     thread_import / ThreadImport = "thread.import", Workspace, ThreadImportIn => Lines;
-    /// The operation catalog (DESIGN-09 G3): each public operation with its group, class, summary and whether it has a
+    /// The operation catalog: each public operation with its group, class, summary and whether it has a
     /// dry run; its form comes from its input schema. One line each.
     ops_list / OpsList = "ops.list", Read, OpsListIn => Vec<OpEntry>;
-    /// Add a fact (DESIGN-10): an entity's attribute with a value, where it holds (scope), when (valid time), at
+    /// Add a fact: an entity's attribute with a value, where it holds (scope), when (valid time), at
     /// which commits (ref range) and while which code is the same (anchor); it supersedes the open fact of the same
     /// entity, attribute, scope and source. `--corrects <id>` corrects a fact and keeps the old row in the history.
     facts_set / FactsSet = "facts.set", Session, FactSetIn => Lines;
@@ -993,14 +1012,14 @@ operations! {
     facts_diff / FactsDiff = "facts.diff", Read, FactsDiffIn => Vec<FactChange>;
     /// The anchored facts whose code changed (stale) or went away (absent) at a ref.
     facts_stale / FactsStale = "facts.stale", Read, FactsAtIn => Vec<Fact>;
-    /// The view files of the repository's layer and the user's (design 23, C4); a higher layer hides the same name.
+    /// The view files of the repository's layer and yours; a higher layer hides the same name.
     views_list / ViewsList = "views.list", Read, ViewsListIn => Vec<ViewInfo>;
     /// Check a view file: the format, a widget of the closed set, a read operation as its source, its parameters.
     views_check / ViewsCheck = "views.check", Read, ViewTextIn => Lines;
-    /// Check a view file and save it into the user's layer, or the repository's (`--repo`), as the next version of the
+    /// Check a view file and save it into your layer, or the repository's (`--repo`), as the next version of the
     /// view of that name; that version shows, and the screens that show the view read it again.
     views_save / ViewsSave = "views.save", Workspace, ViewSaveIn => Lines;
-    /// An intent's view (DESIGN-09 G5): the stored view whose intent it is word for word; else, with config
+    /// An intent's view: the stored view whose intent it is word for word; else, with config
     /// `views.rlcd`, the stored view that rlcd picks among the stored intents that share a word with it; else the
     /// ui-composer (the agent over ACP, with its model from `views.composer_models`, bound to the view tools) makes a
     /// view from the parts library and new parts, or with `--view` the next version of that view. The view is checked
@@ -1008,13 +1027,13 @@ operations! {
     /// the composer does not run in its place. The state given to models has its secrets removed; each ask is an
     /// event `views.ask` with each step's cost.
     ask / Ask = "ask", Workspace, AskIn => ViewAnswer;
-    /// Show another version of a view: undo, redo, reset (to the pinned version, else the seed), pin, or a number.
+    /// Show another version of a view: undo, redo, reset (to the pinned version, or else the original), pin, or a number.
     views_version / ViewsVersion = "views.version", Session, ViewVersionIn => Lines;
     /// A view with its data in the shape of its widget; the text is for agents and terminals.
     views_render / ViewsRender = "views.render", Read, ViewRenderIn => ViewData;
     /// Show a view in pane 3 of a thread's screens: the thread's layout, kept in its log.
     views_place / ViewsPlace = "views.place", Session, ViewPlaceIn => Lines;
-    /// The parts library (todo-163): each stored view with one widget and one source, with the version that shows; with
+    /// The parts library: each stored view with one widget and one source, with the version that shows; with
     /// an intent, the parts that share a word with it, best first. A stack places a part by name and version, so a
     /// new view reuses it and a new version of the part does not change the views that pin the old one.
     views_parts / ViewsParts = "views.parts", Read, ViewPartsIn => Vec<PartInfo>;
@@ -1046,7 +1065,7 @@ operations! {
     /// Team mode hooks of a lead: `TeammateIdle` (the teammate's new messages) and `TaskCompleted` (the task gate); the
     /// refusal is the text that keeps the teammate working or holds the task.
     thread_teammate / ThreadTeammate = "internal.thread.teammate", Session, TeammateIn => Guard;
-    /// Ask a System One decision model typed questions on a state (todo-138): one call to the backend, with the
+    /// Ask a System One decision model typed questions on a state: one call to the backend, with the
     /// state's secrets removed; the decision is stored. The state leaves the machine. A failed or timed-out call fails
     /// with its error; no other backend runs in its place.
     rlcd_ask / RlcdAsk = "rlcd.ask", Session, RlcdAskIn => RlcdDecision;

@@ -479,7 +479,7 @@ impl Machine<'_> {
             .map(|step| match &step {
                 Step::Write { path, .. } => match holds.iter().find(|(p, _)| held_by(p, path)) {
                     Some((_, value)) => {
-                        Step::Info(format!("{path} is held at {} by the user", quoted(value)))
+                        Step::Info(format!("{path} stays at {}: you hold it", quoted(value)))
                     }
                     None => step,
                 },

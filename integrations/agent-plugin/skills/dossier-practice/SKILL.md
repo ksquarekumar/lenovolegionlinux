@@ -44,7 +44,7 @@ user-invocable: false
 23. The first dossier use in a directory links the home there as `agentWorkspaces`, and imports a real
     `agentWorkspaces/` folder first. In a repository, `/agentWorkspaces` goes into `.git/info/exclude`; the checkout
     does not change.
-24. When a dossier operation or a hook says "the dossiers are not migrated yet: the user runs legionctl dossier migrate", tell
+24. When a dossier operation or a hook says "the dossiers are not migrated yet: run legionctl dossier migrate", tell
     the user and go on without dossier writes; the hooks do not block you. The migration moves every dossier
     (class workspace): run it only when the user says so, `legionctl dossier migrate --dry-run` first, then
     `legionctl dossier migrate`. Your session keeps its dossier after the move.

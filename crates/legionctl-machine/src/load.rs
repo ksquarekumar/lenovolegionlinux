@@ -230,6 +230,12 @@ pub fn brief_of(
         Level::Busy => " Prefer light commands; limit parallelism (e.g. -j4).",
         _ => "",
     };
+    // the load figure follows in the line itself, so a load reason does not show twice
+    let reasons: Vec<&str> = reasons
+        .iter()
+        .map(String::as_str)
+        .filter(|r| !r.starts_with("load "))
+        .collect();
     let why = if reasons.is_empty() {
         String::new()
     } else {
@@ -239,7 +245,7 @@ pub fn brief_of(
         format!(" I/O wait without disk I/O from {src}; not counted.")
     });
     format!(
-        "System load: {level:?}{why}; load {load1:.1} on {cpus} CPUs, {} of {} free.{advice}{stall}",
+        "System load: {level:?}{why}; load {load1:.1} on {cpus} CPUs, {} of {} memory free.{advice}{stall}",
         crate::human_bytes(available),
         crate::human_bytes(total)
     )

@@ -61,7 +61,7 @@ fn mark(state: &str, t: &Tokens) -> Hsla {
 }
 
 impl LegionApp {
-    /// The view of a tab: its head (title, intent, version and history buttons, its buttons), then its widget.
+    /// The view of a tab: its head (title, version and history buttons, its buttons), then its widget.
     pub(crate) fn view_tab(
         &self,
         data: &ViewData,
@@ -75,23 +75,13 @@ impl LegionApp {
             .justify_between()
             .gap(S3)
             .child(
-                div()
-                    .v_flex()
-                    .gap(S1)
-                    .min_w_0()
-                    .child(
-                        div()
-                            .text_size(T_LG)
-                            .font_semibold()
-                            .text_color(t.text)
-                            .child(data.title.clone()),
-                    )
-                    .children(data.intent.as_ref().map(|i| {
-                        div()
-                            .text_size(T_SM)
-                            .text_color(t.muted)
-                            .child(format!("Answers: {i}"))
-                    })),
+                div().v_flex().gap(S1).min_w_0().child(
+                    div()
+                        .text_size(T_LG)
+                        .font_semibold()
+                        .text_color(t.text)
+                        .child(data.title.clone()),
+                ),
             );
         if !data.versions.is_empty() {
             head = head.child(Self::history_bar(data, t, cx));
@@ -134,37 +124,36 @@ impl LegionApp {
             .gap(S1)
             .text_size(T_XS)
             .text_color(t.muted)
-            .child(format!(
-                "version {}{} of {}",
-                data.version,
-                if data.version == 0 { " (seed)" } else { "" },
-                data.versions.len()
-            ))
+            .child(if data.version == 0 {
+                "Original".to_string()
+            } else {
+                format!("Version {} of {last}", data.version)
+            })
             .child(step(
                 "view-undo",
                 IconName::Undo2,
-                "Undo: the version before",
+                "Go back one version",
                 "undo",
                 data.version > first,
             ))
             .child(step(
                 "view-redo",
                 IconName::Redo2,
-                "Redo: the version after",
+                "Go forward one version",
                 "redo",
                 data.version < last,
             ))
             .child(step(
                 "view-reset",
                 IconName::RotateCw,
-                "Reset to the pinned version, else the seed",
+                "Go back to the pinned version, or to the original",
                 "reset",
                 true,
             ))
             .child(step(
                 "view-pin",
                 IconName::Pin,
-                "Pin this version: reset comes back to it",
+                "Pin this version: Reset comes back to it",
                 "pin",
                 true,
             ))
@@ -209,7 +198,7 @@ impl LegionApp {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .child(text("error", format!("cannot read the view: {error}"))),
+                            .child(text("error", format!("Cannot read the view: {error}"))),
                     )
                     .child(copy_button(
                         format!("view-{}-error-copy", data.name),

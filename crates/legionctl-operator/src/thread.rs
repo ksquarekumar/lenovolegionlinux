@@ -31,12 +31,12 @@ pub fn start(input: &ThreadStartIn) -> Result<Lines> {
     // no session: the user's own thread (the app's chat), on the dossier that the user names
     if input.session.0.is_empty() && input.team.is_none() {
         let dossier = input.dossier.as_deref().context(
-            "the user's thread needs its dossier: give --dossier <name> (dossier list; a new one: dossier create <name>)",
+            "your thread needs a dossier: give --dossier <name> (dossier list; a new one: dossier create <name>)",
         )?;
         store.known(dossier)?;
         let id = store.thread_start(None, &input.title, dossier)?;
         return Ok(lines(vec![format!(
-            "thread {id} started on dossier {dossier}: the user's thread"
+            "thread {id} started on dossier {dossier}: your thread"
         )]));
     }
     let me = session(&input.session)?;
@@ -55,7 +55,7 @@ pub fn start(input: &ThreadStartIn) -> Result<Lines> {
     let dir = input.repo.get()?;
     let sources = Sources::resolve(&Dirs::from_env(), Some(dir))?;
     let path = sources.team_path(team).with_context(|| {
-        format!("no team {team} in .legionctl/teams, the user's teams or the plugin's teams")
+        format!("no team {team} in .legionctl/teams, your teams or the plugin's teams")
     })?;
     // a session that legionctl did not start is Claude Code's: only its hooks reach the operator
     let main_agent = store
@@ -449,7 +449,7 @@ pub fn agent(input: &legionctl_api::ThreadAgentIn) -> Result<Lines> {
     let names: Vec<&String> = config.config.session.acp.keys().collect();
     anyhow::ensure!(
         names.contains(&&input.agent),
-        "no agent {} in session.acp; it has {}",
+        "no agent {}; the agents are: {}",
         input.agent,
         names
             .iter()

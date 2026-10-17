@@ -7,7 +7,7 @@ mod feedback;
 mod forms;
 mod graph;
 pub mod greeter;
-mod help;
+pub mod help;
 mod history;
 pub mod shell;
 pub mod theme;
@@ -416,10 +416,7 @@ impl LegionApp {
     /// asks inline with its operation and input. Apply runs it; for the machine, polkit asks.
     pub fn act(&mut self, button: ViewButton, cx: &mut Context<Self>) {
         let Some(info) = OPS.iter().find(|o| o.name == button.op && !o.internal()) else {
-            self.state.message = Some(format!(
-                "the button {} names no operation {}",
-                button.label, button.op
-            ));
+            self.state.message = Some(format!("{}: unknown operation {}", button.label, button.op));
             cx.notify();
             return;
         };

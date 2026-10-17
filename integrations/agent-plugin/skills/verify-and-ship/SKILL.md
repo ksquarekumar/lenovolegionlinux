@@ -13,9 +13,9 @@ user-invocable: true
    them as a job and keeps each log and profile (`code checks show <run>`), and checkpoint and merge run their gates.
    The file is optional. Without it, checkpoint and merge run no check (only the test gate), `dossier check` reports
    the missing kinds, and you run the checks of this skill by hand. `code checks detect` proposes a file; review it,
-   then write it. legionctl's own file waits for the user's merge of topic repo-checks (todo-147): until then, run
+   then write it. legionctl's own file waits for the user's merge of topic repo-checks: until then, run
    rules 3-7 by hand. Never run a binary of a workspace build with the real HOME, XDG folders, sockets or state: use
-   a temporary HOME (todo-122).
+   a temporary HOME.
 3. Build first: `cargo build --profile test-fast --workspace --bins --locked`. `cargo test -p legionctl` does not build
    the operator and daemon again, so without this the tests run old binaries. Each test command uses the profile
    `test-fast` (`Cargo.toml`): it compiles fast after an edit and runs the suite as fast as release. The package and

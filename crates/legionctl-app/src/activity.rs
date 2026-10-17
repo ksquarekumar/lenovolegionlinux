@@ -105,7 +105,7 @@ impl LegionApp {
         let mut out = vec![Self::nav_section("Waiting for you", t)];
         let approvals = a.approvals();
         if approvals.is_empty() {
-            out.push(Self::nav_note("No approval waits", t));
+            out.push(Self::nav_note("Nothing waits for you", t));
         }
         out.extend(approvals.into_iter().map(|e| {
             Self::nav_entry(
@@ -113,7 +113,7 @@ impl LegionApp {
                 (
                     IconName::TriangleAlert,
                     e.payload["what"].as_str().unwrap_or_default().to_string(),
-                    Some(("asks".into(), t.warn)),
+                    Some(("waiting".into(), t.warn)),
                 ),
                 false,
                 t,
@@ -123,7 +123,7 @@ impl LegionApp {
         out.push(Self::nav_section("Failures", t));
         match &a.failures {
             None => out.push(Self::nav_note("Checking…", t)),
-            Some(f) if f.is_empty() => out.push(Self::nav_note("No failure", t)),
+            Some(f) if f.is_empty() => out.push(Self::nav_note("No failures", t)),
             Some(f) => out.extend(f.iter().enumerate().map(|(i, line)| {
                 Self::nav_entry(
                     format!("failure-{i}"),
@@ -138,7 +138,7 @@ impl LegionApp {
         }
         out.push(Self::nav_section("Running jobs", t));
         if a.jobs.is_empty() {
-            out.push(Self::nav_note("No job runs", t));
+            out.push(Self::nav_note("No jobs are running", t));
         }
         out.extend(a.jobs.iter().map(|j| {
             Self::nav_entry(
@@ -153,9 +153,9 @@ impl LegionApp {
             )
             .into_any_element()
         }));
-        out.push(Self::nav_section("Events since the start", t));
+        out.push(Self::nav_section("Recent events", t));
         if a.events.is_empty() {
-            out.push(Self::nav_note("No event yet", t));
+            out.push(Self::nav_note("No events yet", t));
         }
         let now = crate::thread::unix_now();
         out.extend(a.events.iter().rev().map(|e| {
