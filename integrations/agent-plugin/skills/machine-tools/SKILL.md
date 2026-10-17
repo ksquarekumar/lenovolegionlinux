@@ -27,7 +27,7 @@ user-invocable: true
 5. So: read freely. For a change, give the user the exact command and its `--dry-run` output. The user runs it.
 6. Test a change against a recording (`record`, `replay`) or in the e2e tests, not on the live firmware.
 7. Do not use a GPU (`--gpu`, `gpu give`, `vfio bind`) live without the user's agreement.
-8. Do not use `fan lock`. It is a raw EC write, refused until the profile marks it verified.
+8. Do not use `fan lock`. It is a raw EC write, and it is not available on this machine.
 9. A `power` layer must also set its knobs for the other power source (or a layer without `power`), else the check
    refuses it.
 10. Some changes apply at the next login or the next start, not now. The changes reference says when.

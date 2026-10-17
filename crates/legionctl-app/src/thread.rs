@@ -857,7 +857,7 @@ impl LegionApp {
 
     /// No dossier is chosen: say what a dossier is for; a new chat has the dossier picker, another tab opens the
     /// Dossiers view.
-    fn no_dossier(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn no_dossier(&mut self, cx: &mut Context<Self>) {
         if self.tab() != Some(&Tab::Chat) {
             self.open_view("dossiers", cx);
         }

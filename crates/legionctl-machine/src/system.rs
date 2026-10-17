@@ -2,6 +2,7 @@
 //! does not run or fails is an error with its cause; only an answer the tool gives (a unit that is not found, a
 //! package that is not installed) is a state.
 
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
@@ -53,29 +54,51 @@ pub fn failed_units(user: bool) -> Result<Vec<String>> {
         .collect())
 }
 
-/// A GNOME Shell extension's `State:` (ACTIVE, ERROR, ...), `not installed`, or `None` without `gnome-extensions`.
+/// The package's OSD GNOME Shell extension.
+pub const OSD_EXTENSION: &str = "legionctl-osd@legionctl";
+
+/// The OSD extension's state as `setup check` and `doctor` say it: `current` (it runs, or runs from the next login),
+/// `not installed`, `not enabled` or [`OSD_BROKEN`]; `None` without `gnome_extensions`.
 ///
 /// # Errors
 /// `gnome-extensions` fails for another reason (no GNOME Shell on the session bus).
-pub fn extension_state(uuid: &str) -> Result<Option<String>> {
-    let Some(out) = output("gnome-extensions", &["info", uuid])? else {
-        return Ok(None);
+pub fn osd_status(gnome_extensions: &Path) -> Result<Option<&'static str>> {
+    let out = match Command::new(gnome_extensions)
+        .args(["info", OSD_EXTENSION])
+        .output()
+    {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        out => out.context("running gnome-extensions")?,
     };
-    if !out.ok {
-        if format!("{}{}", out.stdout, out.stderr).contains("doesn't exist") {
-            return Ok(Some("not installed".into()));
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    if !out.status.success() {
+        if format!("{stdout}{stderr}").contains("doesn't exist") {
+            return Ok(Some("not installed"));
         }
         bail!(
-            "gnome-extensions info {uuid} failed (does GNOME Shell run in this session?): {}",
-            out.stderr
+            "GNOME Shell does not answer in this session: {}",
+            stderr.trim()
         );
     }
-    out.stdout
-        .lines()
-        .find_map(|l| l.trim().strip_prefix("State:"))
-        .map(|s| Some(s.trim().to_string()))
-        .with_context(|| format!("gnome-extensions info {uuid} gave no State: {}", out.stdout))
+    let field = |name: &str| {
+        stdout
+            .lines()
+            .find_map(|l| l.trim().strip_prefix(name))
+            .map(str::trim)
+    };
+    Ok(Some(match (field("State:"), field("Enabled:")) {
+        // ENABLED is the name of ACTIVE before GNOME 45
+        (Some("ERROR" | "OUT OF DATE"), _) => OSD_BROKEN,
+        (Some("ACTIVE" | "ENABLED"), _) | (_, Some("Yes")) => "current",
+        _ => "not enabled",
+    }))
 }
+
+/// The OSD extension failed in this GNOME Shell: legionctl's OSD is broken here, and no setup step mends it.
+pub const OSD_BROKEN: &str = "broken in this GNOME Shell: Fn+Q, Fn+R and Fn lock show no OSD";
 
 /// Whether pacman has the package `package` installed.
 ///

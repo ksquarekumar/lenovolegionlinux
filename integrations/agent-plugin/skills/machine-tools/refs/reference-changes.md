@@ -10,7 +10,7 @@ commands take `--dry-run`.
 | `rules edit <layer> [knob=value]... [--when <conditions>] [--system]` | Your configset layer (or a system layer). `knob=` removes a knob. Conditions: `power`, `fnq`, `workload`, `kernel`, or `always`. | Now |
 | `rules enable\|disable <layer>`, `rules reset [--knob <knob>] [--system]` | A layer on or off (`rules enable tuned` uses the `tune` result); back to the shipped state. | Now |
 | `rules sets save <name> [--boot]`, `rules sets switch <name>`, `rules sets remove <name>` | A saved set of layer states and holds. A switch is one change; `switch previous` is its undo. `--boot` adds a hidden boot entry for each kernel (needs `boot install`). | Now; a boot entry at the next start |
-| `fan curve set <10 levels>`, `fan curve reset`, `fan max on\|off`, `fan clean on\|off` | Fan curve (custom mode only), fan max mode, dust-clean speed. | Now; set again after resume |
+| `fan curve set <10 levels>`, `fan curve reset`, `fan max on\|off`, `fan clean on\|off` | Fan curve (custom mode only), fan max mode, dust-clean speed. The fan table and full speed are not available on this machine (`--dry-run` shows the writes). | Now; set again after resume |
 | `battery mode standard\|conservation\|rapid`, `battery usb-charging on\|off` | Charge mode; USB power while off. | Now |
 | `gpu primary nvidia\|intel\|auto [--release-nvidia]` | The GPU that draws the desktop. | Next login |
 | `gpu power off\|on` | off: the NVIDIA GPU sleeps (D3cold) when no program uses it; refused while one does. on: it stays powered. | Now |

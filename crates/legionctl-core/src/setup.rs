@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, ensure};
+use legionctl_machine::system;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -619,55 +620,37 @@ fn install_claude_plugin() -> Result<Vec<String>> {
     )])
 }
 
-/// The OSD GNOME Shell extension of the package.
-const OSD: &str = "legionctl-osd@legionctl";
-
-/// The OSD extension, where GNOME Shell's `gnome-extensions` is: current when it is enabled for the user.
+/// The OSD extension, where GNOME Shell's `gnome-extensions` is (doctor shows the same row).
 fn osd_item() -> Option<Item> {
     let bin = tool_bin("gnome-extensions", ".local/bin")?;
-    let status = match Command::new(&bin).args(["info", OSD]).output() {
-        Ok(out) if out.status.success() => {
-            if String::from_utf8_lossy(&out.stdout).contains("Enabled: Yes") {
-                "current".into()
-            } else {
-                "not enabled".into()
-            }
-        }
-        Ok(out) => format!(
-            "cannot read: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ),
-        Err(e) => format!("cannot read: {e}"),
+    let status = match system::osd_status(&bin) {
+        Ok(status) => status?.into(),
+        Err(e) => format!("cannot read: {e:#}"),
     };
     Some(Item {
         what: "OSD extension".into(),
         agent: "gnome-shell".into(),
         status,
-        path: OSD.into(),
+        path: system::OSD_EXTENSION.into(),
     })
 }
 
 /// Enable the OSD extension (it shows at the next login).
 fn enable_osd() -> Result<Vec<String>> {
-    let Some(item) = osd_item().filter(|i| i.status != "current") else {
+    // the other states are no step of setup: check shows them
+    if osd_item().is_none_or(|i| i.status != "not enabled") {
         return Ok(Vec::new());
-    };
-    ensure!(
-        item.status == "not enabled",
-        "{} {}: {}",
-        item.what,
-        OSD,
-        item.status
-    );
+    }
     let bin =
         tool_bin("gnome-extensions", ".local/bin").context("gnome-extensions is not installed")?;
     let out = Command::new(&bin)
-        .args(["enable", OSD])
+        .args(["enable", system::OSD_EXTENSION])
         .output()
         .context("running gnome-extensions enable")?;
     ensure!(
         out.status.success(),
-        "gnome-extensions enable {OSD}: {}",
+        "gnome-extensions enable {}: {}",
+        system::OSD_EXTENSION,
         String::from_utf8_lossy(&out.stderr).trim()
     );
     Ok(vec![

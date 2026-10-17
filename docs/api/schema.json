@@ -193,7 +193,14 @@
           "items": {
             "type": "string"
           },
-          "description": "Throttle reasons logged since boot (needs root)."
+          "description": "Throttle reasons logged since boot, as `legionctl-system` reads them (the MSR is root's)."
+        },
+        "throttle_unknown": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why `throttle_reasons` is unknown."
         },
         "package_temp_c": {
           "type": [

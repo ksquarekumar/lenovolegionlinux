@@ -1127,14 +1127,38 @@ fn jail(
     }
 }
 
-/// Doctor's findings of the daemon's sample: each eBPF sensor that does not run, or why there is no sample.
+/// The throttle reasons logged since boot, as `legionctl-system` reads them (the MSR is root's); `Err`: why they are
+/// unknown. Doctor says more about a daemon that does not answer.
+fn throttle_logged(op: &Operator) -> std::result::Result<Vec<String>, String> {
+    match op.system(async |p| p.sample().await) {
+        Ok(json) => serde_json::from_str::<RootSample>(&json)
+            .map_err(|e| format!("legionctl-system sent a sample of another build: {e}"))?
+            .throttle_logged
+            .ok_or_else(|| "load the msr module: there is no /dev/cpu/0/msr".into()),
+        Err(e) if code_of(&e) == Code::Unavailable => Err("legionctl-system is off".into()),
+        Err(_) => Err("legionctl-system does not answer".into()),
+    }
+}
+
+/// Doctor's findings of the daemon's sample: CPU throttling of note logged since boot, each eBPF sensor that does not
+/// run, or why there is no sample.
 fn sample_findings(op: &Operator) -> Result<Vec<legionctl_api::Finding>> {
     Ok(match op.system(async |p| p.sample().await) {
-        Ok(json) => serde_json::from_str::<RootSample>(&json)?
-            .sensor_errors
-            .into_iter()
-            .map(|(sensor, e)| state(format!("the eBPF {sensor} sensor does not run: {e}")))
-            .collect(),
+        Ok(json) => {
+            let sample = serde_json::from_str::<RootSample>(&json)?;
+            sample
+                .throttle_logged
+                .filter(|r| {
+                    r.iter()
+                        .any(|r| ["PROCHOT", "critical temperature"].contains(&r.as_str()))
+                })
+                .map(|r| state(format!("CPU throttling logged: {}", r.join(", "))))
+                .into_iter()
+                .chain(sample.sensor_errors.into_iter().map(|(sensor, e)| {
+                    state(format!("the eBPF {sensor} sensor does not run: {e}"))
+                }))
+                .collect()
+        }
         // an off daemon is the setup finding of legionctl-system, with its Turn on
         Err(e) if code_of(&e) == Code::Unavailable => Vec::new(),
         Err(e) => vec![state(format!(
@@ -1153,8 +1177,13 @@ fn setup_findings() -> Result<Vec<legionctl_api::Finding>> {
         .needs_attention()
         .iter()
         .map(|i| {
+            let text = format!("setup: {} for {} is {}", i.what, i.agent, i.status);
+            // no setup step mends an extension that GNOME Shell refused
+            if i.status == legionctl_machine::system::OSD_BROKEN {
+                return Ok(state(text));
+            }
             Ok(legionctl_api::Finding {
-                text: format!("setup: {} for {} is {}", i.what, i.agent, i.status),
+                text,
                 // ctx comes from its own installer, only when the user asks for it
                 // a service gets its own step only: a missing ctx does not stop it
                 actions: vec![if matches!(i.agent.as_str(), "machine" | "user") {
@@ -1895,6 +1924,7 @@ impl Engine for Operator {
             &plan.profile,
             detail,
             &config(None)?.config.load,
+            throttle_logged(self),
         )?
         .into_wire())
     }
@@ -2906,10 +2936,14 @@ impl Engine for Operator {
             lines.push(line);
         }
         let make = || jail(ctx, &store, Some(&input.project));
-        let ran = hooks::run(&resolved, input.event.into(), &mut hooks::Jail::new(&make));
-        if !ran.is_empty() {
-            lines.push(ran);
-        }
+        let mut jail = hooks::Jail::new(&make);
+        lines.push(hooks::run(
+            &resolved,
+            input.event.into(),
+            active.is_some(),
+            &mut jail,
+        ));
+        lines.retain(|l| !l.is_empty());
         Ok(HookReply {
             text: lines.join("\n"),
             block: None,
@@ -4130,6 +4164,7 @@ impl Engine for Operator {
             &plan.profile,
             Detail::Full,
             &config(None)?.config.load,
+            throttle_logged(self),
         )?;
         let mut recording = plan.decisions(dir, events)?;
         let tree = dir.join("root");

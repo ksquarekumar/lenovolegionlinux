@@ -11,7 +11,7 @@ use crate::policy::Machine;
 use crate::profile::Profile;
 use crate::snapshot::{cpufreq_counts, dmi_mismatches};
 use crate::sysroot::SysRoot;
-use crate::{firmware, system};
+use crate::system;
 
 fn quoted(s: &str) -> String {
     format!("'{s}'")
@@ -107,20 +107,6 @@ pub fn doctor(machine: &Machine) -> Vec<Warning> {
     check(&mut w, "Legion WMI", wmi_warnings(root, profile));
     check(&mut w, "boot image", crate::boot::unbuilt(root));
     check(&mut w, "boot entry", crate::boot::not_default(root));
-    check(
-        &mut w,
-        "throttle",
-        firmware::logged_throttle_reasons(root).map(|reasons| {
-            reasons
-                .filter(|r| {
-                    r.iter()
-                        .any(|r| ["PROCHOT", "critical temperature"].contains(r))
-                })
-                .map(|r| format!("CPU throttling logged: {}", r.join(", ")))
-                .into_iter()
-                .collect()
-        }),
-    );
     for volume in crate::windows::dirty_ntfs() {
         w.push(crate::windows::dirty_hazard(&volume).into());
     }
@@ -341,11 +327,9 @@ fn unit_name(unit: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-const OSD_EXTENSION: &str = "legionctl-osd@legionctl";
-
-/// Failed system and user units, and the OSD extension when it is not running.
+/// Failed system and user units (the OSD extension is a row of `setup check`, which doctor shows).
 fn desktop_warnings() -> Result<Vec<String>> {
-    let mut w: Vec<String> = system::failed_units(false)?
+    Ok(system::failed_units(false)?
         .into_iter()
         .map(|u| format!("the system unit {} failed", unit_name(&u)))
         .chain(
@@ -353,21 +337,7 @@ fn desktop_warnings() -> Result<Vec<String>> {
                 .into_iter()
                 .map(|u| format!("the user unit {} failed", unit_name(&u))),
         )
-        .collect();
-    // ENABLED is the name of ACTIVE before GNOME 45
-    if let Some(state) = system::extension_state(OSD_EXTENSION)?
-        && !["ACTIVE", "ENABLED"].contains(&state.as_str())
-    {
-        let what = if state == "ERROR" || state == "OUT OF DATE" {
-            "has an error in GNOME Shell"
-        } else {
-            "is off: turn it on in GNOME Extensions, then log in again"
-        };
-        w.push(format!(
-            "the OSD extension {OSD_EXTENSION} {what}; Fn+Q, Fn+R and Fn lock show no OSD"
-        ));
-    }
-    Ok(w)
+        .collect())
 }
 
 /// Units, packages and modules that fight legionctl over the same knobs.

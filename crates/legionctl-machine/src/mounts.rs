@@ -7,6 +7,10 @@ use anyhow::Result;
 
 use crate::sysroot::{SysRoot, denied};
 
+/// The host's mount table: PID 1's. A reader's own table can differ: legionctl-system's sandbox binds some folders
+/// again (`ProtectSystem`, `ReadWritePaths`), and those binds are no use of the device.
+pub const HOST_MOUNTS: &str = "/proc/1/mounts";
+
 /// One mount point.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mount {
@@ -52,7 +56,7 @@ pub fn list(root: &SysRoot) -> Result<(Vec<Mount>, usize)> {
             .collect())
     };
     // an automount point is no mount: its file system mounts at the first access
-    let table_now: Vec<(String, PathBuf, String)> = table("/proc/self/mounts")?
+    let table_now: Vec<(String, PathBuf, String)> = table(HOST_MOUNTS)?
         .into_iter()
         .filter(|(_, _, fstype)| fstype != "autofs")
         .collect();

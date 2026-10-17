@@ -92,7 +92,7 @@ pub fn dirty_ntfs() -> Vec<String> {
 /// # Errors
 /// The mount table or `/etc/fstab` is there but cannot be read.
 pub fn volume(root: &SysRoot) -> Result<Option<(String, PathBuf)>> {
-    for table in ["/proc/self/mounts", "/etc/fstab"] {
+    for table in [crate::mounts::HOST_MOUNTS, "/etc/fstab"] {
         let Some(text) = root.read(table)? else {
             continue;
         };

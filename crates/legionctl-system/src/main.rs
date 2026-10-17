@@ -1490,9 +1490,9 @@ impl System1 {
             match action.as_str() {
                 "install" => {
                     let mut lines = boot_steps(&root, &boot_plan(&root, "install")?)?;
-                    let once = boot::try_once(&boot::state(&root)?)?;
-                    lines.extend(boot_steps(&root, &[once])?);
-                    lines.push(boot::NEXT_START.into());
+                    let state = boot::state(&root)?;
+                    lines.extend(boot_steps(&root, &[boot::try_once(&state)?])?);
+                    lines.push(boot::next_start(&state.started_by()));
                     Ok(lines)
                 }
                 "rebuild" => boot_rebuild(&root),
@@ -1582,7 +1582,7 @@ impl System1 {
                 other => anyhow::bail!("plan kind must be boot or greeter, not {other}"),
             });
             if kind == "boot" && action == "install" {
-                lines.push(boot::NEXT_START.into());
+                lines.push(boot::next_start(&boot::state(&root)?.started_by()));
             }
             Ok(lines)
         })

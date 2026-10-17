@@ -911,9 +911,29 @@ pub fn try_once(state: &BootState) -> Result<Step> {
     Ok(tools_checked(vec![step])?.remove(0))
 }
 
-/// What `boot install` says, and what the next start does.
-pub const NEXT_START: &str = "Restart once: the next start uses legionctl's entry one time. If the desktop comes up, it \
-                              becomes the default by itself. If it fails, the start after uses rEFInd as before.";
+/// What `boot install` says, and what the next start does: on a failure the firmware starts `before` (the label of
+/// the entry that started this computer) as before.
+#[must_use]
+pub fn next_start(before: &str) -> String {
+    format!(
+        "Restart once: the next start uses legionctl's entry one time. If the desktop comes up, it becomes the \
+         default by itself. If it fails, the start after uses {before} as before."
+    )
+}
+
+impl BootState {
+    /// The label of the entry that started this computer (`BootCurrent`).
+    #[must_use]
+    pub fn started_by(&self) -> String {
+        self.current
+            .as_ref()
+            .and_then(|c| self.entries.iter().find(|e| e.id == *c))
+            .map_or_else(
+                || "the entry that started this computer".into(),
+                |e| e.label.clone(),
+            )
+    }
+}
 
 /// The marker of a start that made our entry the default (this start's boot id), for the user's desktop notice.
 pub const CONFIRMED: &str = "/run/legionctl/boot-confirmed";
@@ -979,12 +999,15 @@ pub fn not_default(root: &SysRoot) -> Result<Vec<String>> {
                 .into(),
         ]);
     }
-    let label = current
-        .and_then(|c| entries.into_iter().find(|e| e.id == c))
-        .map_or_else(|| "another entry".into(), |e| e.label);
+    let label = |id: Option<&String>| {
+        id.and_then(|c| entries.iter().find(|e| e.id == *c))
+            .map_or_else(|| "another entry".into(), |e| e.label.clone())
+    };
     Ok(vec![format!(
-        "the last start did not use legionctl's boot entry (it used {label}), so rEFInd stays the default. To try \
-         legionctl's entry again: legionctl boot install, then restart. If it fails again: legionctl boot remove"
+        "the last start did not use legionctl's boot entry (it used {}), so {} stays the default. To try \
+         legionctl's entry again: legionctl boot install, then restart. If it fails again: legionctl boot remove",
+        label(current.as_ref()),
+        label(order.first())
     )])
 }
 

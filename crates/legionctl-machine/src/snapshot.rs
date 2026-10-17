@@ -94,8 +94,10 @@ pub struct Snapshot {
     pub nvidia_power_limit_w: Option<String>,
     /// Fan RPM from the `legionctl-wmi` module's hwmon device; `None` without the module.
     pub fan_rpm: Option<BTreeMap<String, u64>>,
-    /// Throttle reasons logged since boot (needs root).
+    /// Throttle reasons logged since boot, as `legionctl-system` reads them (the MSR is root's).
     pub throttle_reasons: Option<Vec<String>>,
+    /// Why `throttle_reasons` is unknown.
+    pub throttle_unknown: Option<String>,
     pub package_temp_c: Option<f64>,
     pub outputs: Vec<Output>,
     pub gpu_mode: gpu::GpuMode,
@@ -183,7 +185,7 @@ fn usb_c_online(root: &SysRoot) -> Result<bool> {
 }
 
 impl Snapshot {
-    /// The machine now.
+    /// The machine now, with the throttle reasons that `legionctl-system` read (`Err`: why they are unknown).
     ///
     /// # Errors
     /// A machine file or the ledger cannot be read.
@@ -192,6 +194,7 @@ impl Snapshot {
         profile: &Profile,
         detail: Detail,
         thresholds: &Thresholds,
+        throttle: std::result::Result<Vec<String>, String>,
     ) -> Result<Snapshot> {
         let full = detail == Detail::Full;
         let outputs = gpu::outputs(root)?;
@@ -256,8 +259,8 @@ impl Snapshot {
             rapl: rapl(root)?,
             nvidia_power_limit_w: full.then(system::nvidia_power_limit).flatten(),
             fan_rpm,
-            throttle_reasons: firmware::logged_throttle_reasons(root)?
-                .map(|r| r.into_iter().map(String::from).collect()),
+            throttle_unknown: throttle.as_ref().err().cloned(),
+            throttle_reasons: throttle.ok(),
             package_temp_c: crate::telemetry::cpu_temp(root)?,
             gpu_mode: gpu::mode(&outputs),
             outputs,

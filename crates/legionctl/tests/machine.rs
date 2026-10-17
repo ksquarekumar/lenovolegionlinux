@@ -446,6 +446,19 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
         ),
         "{agent:?}"
     );
+    // one check of the OSD extension, one answer: setup check says what doctor says (it said "current" before)
+    let osd = "OSD extension for gnome-shell is broken in this GNOME Shell: Fn+Q, Fn+R and Fn lock show no OSD";
+    assert!(
+        agent.contains(&format!("- setup: {osd}").as_str()),
+        "{agent:?}"
+    );
+    let check = String::from_utf8(m.legion(&["setup", "check"]).stdout).unwrap();
+    assert!(
+        check
+            .lines()
+            .any(|l| l.contains("OSD extension") && l.contains("broken in this GNOME Shell")),
+        "{check}"
+    );
     assert_eq!(
         machine,
         [
@@ -462,7 +475,6 @@ fn doctor_lists_every_drift_and_conflict_in_a_broken_state() {
             "- an external display runs on NVIDIA but the desktop may be drawn on Intel (fix: legionctl gpu primary nvidia)",
             "- the system unit mnt-windows-data.mount failed",
             "- the user unit app-ghostty.service failed",
-            "- the OSD extension legionctl-osd@legionctl has an error in GNOME Shell; Fn+Q, Fn+R and Fn lock show no OSD",
             "- legionctl-system does not answer: connecting to the system bus: Failed to connect to address `unix:path=/nonexistent/bus`: No such file or directory (os error 2): \
              No such file or directory (os error 2) (fans, throttle reasons and the eBPF sensor are unknown)",
             "- the system service switcheroo-control does not run: GNOME has no \"Launch using Discrete Graphics Card\"",
@@ -502,6 +514,17 @@ fn an_off_daemon_says_so_with_the_line_that_turns_it_on() {
         ],
     );
     let off = "legionctl-system is off; turn it on with `sudo systemctl enable --now legionctl-system.service`";
+    // the MSR is root's: status reads it through the daemon only, never itself (here the file is readable)
+    let msr = m.dir.join("root/dev/cpu/0/msr");
+    std::fs::create_dir_all(msr.parent().unwrap()).unwrap();
+    let mut bytes = vec![0u8; 0x1B1 + 8];
+    bytes[0x1B1] = 0b1000;
+    std::fs::write(&msr, bytes).unwrap();
+    let status = op.ok(&["status"]);
+    assert!(
+        status.contains("throttle logged: unknown (legionctl-system is off)"),
+        "{status}"
+    );
     let about = op.ok(&["about"]);
     assert!(
         about
@@ -516,7 +539,8 @@ fn an_off_daemon_says_so_with_the_line_that_turns_it_on() {
     assert!(
         doctor
             .contains("- setup: legionctl-system for machine is off (fix: legionctl setup turn-on legionctl-system)")
-            && !doctor.contains("legionctl-system is off"),
+            && !doctor.contains("legionctl-system is off")
+            && !doctor.contains("CPU throttling logged"),
         "{doctor}"
     );
 }
@@ -894,7 +918,7 @@ fn virt_status_reads_docker_libvirt_and_the_kernel() {
 fn resources_show_a_mounted_tmpfs_and_give_a_running_container_no_start() {
     let (m, _docker, op) = virt_machine("resstate", 20);
     m.set(
-        "/proc/self/mounts",
+        "/proc/1/mounts",
         "/dev/nvme1n1p2 / ext4 rw 0 0\ntmpfs /tmp tmpfs rw 0 0\nsystemd-1 /mnt/share autofs rw 0 0\n",
     );
     m.set(
@@ -2196,11 +2220,11 @@ mod operator_and_daemon {
         let m = Machine::new("telemetry");
         // on battery, so that Apply("ac") has changes to announce (no change, no Changed signal)
         m.set("/sys/class/power_supply/ADP0/online", "0");
-        // the MSR with the thermal bits set (status bit 0, log bit 1) at IA32_PACKAGE_THERM_STATUS
+        // the MSR at IA32_PACKAGE_THERM_STATUS: thermal now and logged (status bit 0, log bit 1), PROCHOT logged (bit 3)
         let msr = m.dir.join("root/dev/cpu/0/msr");
         std::fs::create_dir_all(msr.parent().unwrap()).unwrap();
         let mut bytes = vec![0u8; 0x1B1 + 8];
-        bytes[0x1B1] = 0b11;
+        bytes[0x1B1] = 0b1011;
         std::fs::write(&msr, bytes).unwrap();
         m.set("/sys/class/hwmon/hwmon8/name", "coretemp");
         m.set("/sys/class/hwmon/hwmon8/temp1_input", "55000");
@@ -2228,8 +2252,22 @@ mod operator_and_daemon {
             serde_json::json!(["thermal"]),
             "{sample}"
         );
-        assert_eq!(sample["throttle_logged"], serde_json::json!(["thermal"]));
+        assert_eq!(
+            sample["throttle_logged"],
+            serde_json::json!(["thermal", "PROCHOT"])
+        );
         assert_eq!(sample["cpu_temp_c"], 55.0);
+        // status and doctor say the daemon's reading (one source; the user process cannot read the MSR live)
+        let status = op.ok(&["status"]);
+        assert!(
+            status.contains("throttle logged: thermal, PROCHOT"),
+            "{status}"
+        );
+        let doctor = String::from_utf8(op.cli(&["doctor"]).stdout).unwrap();
+        assert!(
+            doctor.contains("- CPU throttling logged: thermal, PROCHOT"),
+            "{doctor}"
+        );
 
         // the first request starts the operator (socket activation) and with it the recorder; give it time to subscribe
         json(&["events"]);
@@ -3483,7 +3521,7 @@ mod operator_and_daemon {
         m.set("/proc/4242/comm", "gnome-shell");
         link("proc/4242/fd/7", "/dev/dri/card0");
         m.set(
-            "/proc/self/mounts",
+            "/proc/1/mounts",
             "/dev/nvme1n1p2 / btrfs rw 0 0\n/dev/nvme0n1p3 /mnt/windows-system ntfs3 ro 0 0",
         );
         m.set("/proc/swaps", "Filename Type Size Used Priority");
@@ -3526,10 +3564,17 @@ mod operator_and_daemon {
     /// VM gets only a whole group, nothing the host uses (a process on the GPU, a mounted partition), and a memory lock
     /// only for a process of the caller; then the group is bound to vfio-pci (the kernel's driver link checked),
     /// `/dev/vfio/<group>` is the caller's, the runner may lock the VM's memory, and `vfio unbind` gives it back.
+    /// What uses a device is the host's mount table (PID 1's), not the daemon's own: the binds of its sandbox (live
+    /// r340: "/dev/nvme1n1p2 is mounted at /etc/greetd, /root, /var/lib/legionctl", EV-review-12) are no use.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_whole_unused_iommu_group_goes_to_a_vm_and_back() {
         let m = Machine::new("vfio");
         let _kernel = pci_machine(&m);
+        m.set(
+            "/proc/self/mounts",
+            "/dev/nvme1n1p2 / btrfs rw 0 0\n/dev/nvme0n1p3 /mnt/windows-system ntfs3 ro 0 0\n\
+             /dev/nvme0n1p3 /var/lib/legionctl ntfs3 rw 0 0",
+        );
         let (_stand_ins, _asked, _processes) = start(&m).await;
         let op = on_bus(&m, "vfio");
         let status = op.ok(&["vfio", "status"]);
@@ -3541,6 +3586,10 @@ mod operator_and_daemon {
         ] {
             assert!(status.contains(expected), "{expected} missing:\n{status}");
         }
+        assert!(
+            !status.contains("/var/lib/legionctl"),
+            "a sandbox bind as a use:\n{status}"
+        );
         let refused = |args: &[&str], why: &str| {
             let out = op.cli(&[&["vfio", "bind"], args].concat());
             let text = String::from_utf8_lossy(&out.stderr).to_string();
@@ -3619,7 +3668,7 @@ mod operator_and_daemon {
         );
     }
 
-    /// The host-use guard needs the mount table (todo-142 F-1, F-6): when `/proc/self/mounts` cannot be read
+    /// The host-use guard needs the mount table (todo-142 F-1, F-6): when `/proc/1/mounts` cannot be read
     /// (permission denied), the bind of the `NVMe` controller is refused with the reason, nothing is written, and its
     /// driver stays; it never reads as "nothing mounted".
     #[tokio::test(flavor = "multi_thread")]
@@ -3629,13 +3678,13 @@ mod operator_and_daemon {
         let _kernel = pci_machine(&m);
         let (_stand_ins, _asked, _processes) = start(&m).await;
         let op = on_bus(&m, "vfio-unread");
-        let mounts = m.dir.join("root/proc/self/mounts");
+        let mounts = m.dir.join("root/proc/1/mounts");
         std::fs::set_permissions(&mounts, std::fs::Permissions::from_mode(0o000)).unwrap();
         let out = op.cli(&["vfio", "bind", "0000:06:00.0"]);
         let text = String::from_utf8_lossy(&out.stderr);
         assert!(!out.status.success(), "{text}");
         assert!(
-            text.contains("cannot read /proc/self/mounts: the host-use check cannot run")
+            text.contains("cannot read /proc/1/mounts: the host-use check cannot run")
                 && text.contains("Permission denied"),
             "{text}"
         );
@@ -4045,7 +4094,7 @@ mod operator_and_daemon {
             "only the Windows disk's automounts: {log}"
         );
 
-        m.set("/proc/self/mounts", "/dev/nvme1n1p2 / btrfs rw 0 0");
+        m.set("/proc/1/mounts", "/dev/nvme1n1p2 / btrfs rw 0 0");
         std::fs::remove_file(m.dir.join("systemctl.log")).unwrap();
         let out = windows_runner(&m, &op);
         assert!(!out.status.success());
@@ -4201,7 +4250,7 @@ mod operator_and_daemon {
         );
         assert_eq!(mode(), mode_before, "a refusal changes nothing");
 
-        m.set("/proc/self/mounts", "/dev/nvme1n1p2 / btrfs rw 0 0");
+        m.set("/proc/1/mounts", "/dev/nvme1n1p2 / btrfs rw 0 0");
         let out = windows_runner(&m, &op);
         assert!(out.status.success(), "{}", windows_state(&m));
         let args = std::fs::read_to_string(m.dir.join("qemu.args")).unwrap();
@@ -4250,7 +4299,7 @@ mod operator_and_daemon {
         let _kernel = windows_machine(&m);
         let (_stand_ins, _asked, _processes) = start(&m).await;
         let op = on_bus(&m, "wincommit");
-        m.set("/proc/self/mounts", "/dev/nvme1n1p2 / btrfs rw 0 0");
+        m.set("/proc/1/mounts", "/dev/nvme1n1p2 / btrfs rw 0 0");
         let before = disk(&m);
         let systemctl = || std::fs::read_to_string(m.dir.join("systemctl.log")).unwrap_or_default();
         op.ok(&["windows", "vm", "overlay", "create"]);
@@ -4314,7 +4363,7 @@ mod operator_and_daemon {
         let _kernel = windows_machine(&m);
         let (_stand_ins, _asked, _processes) = start(&m).await;
         let op = on_bus(&m, "winimage");
-        m.set("/proc/self/mounts", "/dev/nvme1n1p2 / btrfs rw 0 0");
+        m.set("/proc/1/mounts", "/dev/nvme1n1p2 / btrfs rw 0 0");
         let node = m.dir.join("root/dev/nvme0n1");
         let mode = || std::fs::metadata(&node).unwrap().permissions();
         let mode_before = mode();
@@ -4606,7 +4655,7 @@ while True:
             ),
         );
         op.ok(&["windows", "vm", "overlay", "create"]);
-        m.set("/proc/self/mounts", "/dev/nvme1n1p2 / btrfs rw 0 0");
+        m.set("/proc/1/mounts", "/dev/nvme1n1p2 / btrfs rw 0 0");
         std::fs::remove_file(&log).unwrap();
         let out = windows_runner(&m, &op);
         assert!(out.status.success(), "{}", windows_state(&m));
@@ -4899,6 +4948,8 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             "default legionctl-linux-cachyos-bore-lto.efi",
             "--create-only --disk /dev/nvme1n1 --part 1 --label legionctl",
             "Restart once: the next start uses legionctl's entry one time.",
+            // the entry that started this computer, not a boot manager's name (live r340: "rEFInd" for Linpus lite)
+            "If it fails, the start after uses Linpus lite as before.",
         ] {
             assert!(plan.contains(expected), "{expected} missing:\n{plan}");
         }
@@ -5069,7 +5120,8 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         let doctor = String::from_utf8(op.cli(&["doctor"]).stdout).unwrap();
         assert!(
             doctor.contains(
-                "the last start did not use legionctl's boot entry (it used Linpus lite)"
+                "the last start did not use legionctl's boot entry (it used Linpus lite), so Linpus lite stays \
+                 the default"
             ) && doctor
                 .contains("To try legionctl's entry again: legionctl boot install, then restart"),
             "{doctor}"
@@ -7070,7 +7122,7 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
     async fn as_root_the_windows_vm_starts_with_its_disk_and_gives_the_host_back() {
         let m = Machine::new("winvmroot");
         let _kernel = windows_machine(&m);
-        m.set("/proc/self/mounts", "/dev/nvme1n1p2 / btrfs rw 0 0");
+        m.set("/proc/1/mounts", "/dev/nvme1n1p2 / btrfs rw 0 0");
         let (_stand_ins, _asked, _processes) = start(&m).await;
         let op = on_bus(&m, "winvmroot");
         let out = windows_runner(&m, &op);
@@ -7853,7 +7905,7 @@ mod resources {
     fn resource_machine(m: &Machine) -> (std::thread::JoinHandle<()>, PathBuf) {
         let kernel = windows_machine(m);
         m.set(
-            "/proc/self/mounts",
+            "/proc/1/mounts",
             "/dev/nvme1n1p2 / btrfs rw 0 0\n/dev/nvme0n1p4 /mnt/windows-data ntfs3 rw 0 0",
         );
         let link = |from: &str, to: &str| {
@@ -8541,11 +8593,12 @@ mod fan_control {
         );
 
         enter_custom(m);
-        // the shipped profile does not mark the table writes verified (todo-17 step 4 is the user's): the reason
+        // the shipped profile does not mark the table writes verified (todo-17): one plain state, no builder refs
         let (ok, text) = set(&CURVE);
         assert!(
-            !ok && text.contains("not verified on this firmware")
-                && text.contains("First live load, step 4"),
+            !ok && text.contains("the fan table and full speed are not available on this machine")
+                && !text.contains("docs/design")
+                && !text.contains("todo-"),
             "{text}"
         );
         m.verify_fan_calls();
@@ -8706,8 +8759,14 @@ mod fan_control {
         // the EC fan lock: refused while the profile does not mark it verified; nothing opens /dev/port
         let (ok, text) = run(&op, &["fan", "lock", "on"]);
         assert!(
-            !ok && text.contains("the EC fan lock is not verified for this EC"),
+            !ok && text.contains("the EC fan lock is not available on this machine")
+                && !text.contains("ec_fan_lock_verified"),
             "{text}"
+        );
+        let status = op.ok(&["fan", "status"]);
+        assert!(
+            status.contains("EC fan lock: not available on this machine"),
+            "{status}"
         );
         let (ok, text) = run(&op, &["fan", "lock", "on", "--dry-run"]);
         assert!(ok, "{text}");
@@ -8715,7 +8774,7 @@ mod fan_control {
             text.contains(
                 "would write EC RAM 0xC4AB: 0x08, through port I/O: 0x4e=0x2e 0x4f=0x11 0x4e=0x2f 0x4f=0xc4 \
                  0x4e=0x2e 0x4f=0x10 0x4e=0x2f 0x4f=0xab 0x4e=0x2e 0x4f=0x12 0x4e=0x2f 0x4f=0x08"
-            ) && text.contains("warning: the EC fan lock is not verified"),
+            ) && text.contains("warning: the EC fan lock is not available on this machine"),
             "{text}"
         );
         assert_eq!(m.file("/dev/port"), "<missing>");

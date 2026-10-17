@@ -211,7 +211,7 @@ plan#todo-150): it remembers your last desktop.
 The boot entry is systemd-boot with a signed kernel image per kernel, started through a copy of shim, beside the
 entry you have now. `kernel default` and `kernel try` need it. After the install, restart once: that start uses
 legionctl's entry one time. If the desktop comes up, the entry becomes the default by itself and a desktop notice
-says so. If that start fails, the start after uses rEFInd as before, and `legionctl doctor` tells you what to do.
+says so. If that start fails, the start after uses the entry that started the computer before, and `legionctl doctor` tells you what to do.
 
 ```bash
 legionctl boot status

@@ -116,9 +116,8 @@ fn mode(m: &Machine) -> Result<Option<String>> {
 /// Why the fan table and full-speed calls are refused, or `None` when the profile marks them verified.
 fn curve_refusal(m: &Machine) -> Option<String> {
     (!m.profile.fan.as_ref().is_some_and(|f| f.curve_verified)).then(|| {
-        "the fan table and full-speed writes are not verified on this firmware: legionctl makes none of them until \
-         your first live write (docs/design/08-kernel.md, First live load, step 4) passes and the profile sets \
-         fan.curve_verified to true (todo-17). Use --dry-run to see the writes"
+        "the fan table and full speed are not available on this machine: their writes are not tested on this \
+         firmware. Use --dry-run to see the writes"
             .to_string()
     })
 }
@@ -271,9 +270,8 @@ pub fn lock_steps(on: bool) -> Vec<Step> {
 pub fn lock_refusal(m: &Machine) -> Option<String> {
     (!m.profile.fan.as_ref().is_some_and(|f| f.ec_fan_lock_verified)).then(|| {
         format!(
-            "the EC fan lock is not verified for this EC: it writes EC RAM 0x{EC_FAN_LOCK:04X} through port I/O, and an \
-             incorrect write can stop fan control. legionctl does not do it until the profile sets \
-             fan.ec_fan_lock_verified to true. Use --dry-run to see the writes"
+            "the EC fan lock is not available on this machine: it writes EC RAM 0x{EC_FAN_LOCK:04X} directly, this \
+             is not tested on this EC, and a wrong write can stop fan control. Use --dry-run to see the writes"
         )
     })
 }

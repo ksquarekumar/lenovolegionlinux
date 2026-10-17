@@ -1053,8 +1053,10 @@ wire! {
         nvidia_power_limit_w: Option<String>,
         /// Fan RPM from the `legionctl-wmi` module's hwmon device; `None` without the module.
         fan_rpm: Option<BTreeMap<String, u64>>,
-        /// Throttle reasons logged since boot (needs root).
+        /// Throttle reasons logged since boot, as `legionctl-system` reads them (the MSR is root's).
         throttle_reasons: Option<Vec<String>>,
+        /// Why `throttle_reasons` is unknown.
+        throttle_unknown: Option<String>,
         package_temp_c: Option<f64>,
         outputs: Vec<Output>,
         gpu_mode: GpuMode,

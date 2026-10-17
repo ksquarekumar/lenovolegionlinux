@@ -1,6 +1,6 @@
 //! Feedback (todo-168): the user's note with what the app shows (the tab's view and data, errors; the operator adds its last events)
 //! and a screenshot of the window becomes an immutable dossier entry `feedbacks/<NNNN>-<slug>/` that agents read.
-//! The dossier is the chat bar thread's, else the app's, else `legionctl`.
+//! The dossier is the chat bar thread's, else the user's; with neither, the app asks for one and keeps the note.
 
 use gpui_kit::{Context, Window};
 use legionctl_api::{FeedbackIn, op};
@@ -22,13 +22,22 @@ impl LegionApp {
             self.state.message = Some("/feedback <what you see or want>".into());
             return;
         }
-        let dossier = self
+        let Some(dossier) = self
             .screen
             .thread
             .as_ref()
             .map(|t| t.thread.dossier.clone())
             .or_else(|| self.screen.dossier.clone())
-            .unwrap_or_else(|| "legionctl".into());
+        else {
+            self.no_dossier(cx);
+            *self.screen.chat_mut() = format!("/feedback {note}");
+            self.state.message = Some(
+                "Choose a dossier for your feedback: click Use on a dossier, or New dossier. Then press Enter: your \
+                 note stays in the chat bar."
+                    .into(),
+            );
+            return;
+        };
         let key = self.tab_key();
         let view = self.screen.view();
         let mut about = std::collections::BTreeMap::from([

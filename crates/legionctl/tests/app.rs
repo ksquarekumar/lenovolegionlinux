@@ -2531,6 +2531,32 @@ fn attach_repository(
     });
 }
 
+/// Feedback with no dossier asks for one and keeps the note in the chat bar; nothing goes into a dossier
+/// (EV-review-12: it went into a dossier named legionctl).
+#[gpui_kit::test]
+fn feedback_with_no_dossier_asks_for_one_and_keeps_the_note(tcx: &mut TestAppContext) {
+    let (op, home, repo) = thread_lab("nofeedback");
+    user_cli(&op, &home, &repo, &["dossier", "release"]);
+    let (app, mut vcx, runtime) = open_app(tcx, &op, 1400., Some((&home, &repo)));
+    let cx = &mut vcx;
+    wait(cx, &app, "the threads", |a| !a.screen.threads.is_empty());
+    app.read_with(cx, |a, _| assert_eq!(a.screen.dossier, None));
+    send(cx, "/feedback Fans row is wrong");
+    app.read_with(cx, |a, _| {
+        assert!(
+            a.state
+                .message
+                .as_deref()
+                .is_some_and(|m| m.starts_with("Choose a dossier for your feedback")),
+            "{:?}",
+            a.state.message
+        );
+        assert_eq!(a.screen.chat(), "/feedback Fans row is wrong");
+    });
+    assert!(!home.join("agentWorkspaces/legionctl").exists());
+    drop(runtime);
+}
+
 /// todo-174, the user's path from no dossier to a kept conversation (the user's repro on r271: a dossier made, "Hi"
 /// answered with "no dossier in use in this repo", and `/dossier add ... --create` did nothing). An agent session's
 /// thread (thread 1 of session main) never opens by default and is not in the Work space. With no dossier chosen, the

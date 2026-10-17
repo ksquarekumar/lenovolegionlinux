@@ -244,9 +244,14 @@ impl<'a> Jail<'a> {
     }
 }
 
-fn run_action(config: &Resolved, action: &Action, event: Event, jail: &mut Jail<'_>) -> String {
+fn run_action(
+    config: &Resolved,
+    action: &Action,
+    (event, dossier): (Event, bool),
+    jail: &mut Jail<'_>,
+) -> String {
     let result: Result<String> = match action.id.as_str() {
-        "reminders" => Ok(reminders::emit(config, event)),
+        "reminders" => Ok(reminders::emit(config, event, dossier)),
         "load" => {
             load::read_load(&SysRoot::from_env(), &config.config.load).map(|l| load::brief(&l))
         }
@@ -261,13 +266,20 @@ fn run_action(config: &Resolved, action: &Action, event: Event, jail: &mut Jail<
             crate::archetypes::Sources::resolve(&crate::config::Dirs::from_env(), None)
                 .and_then(|agents| setup::check(&agents, &config.config.session))
                 .map(|report| {
-                    // a count, not the list: it goes into each session's context (`legionctl setup check` lists them)
-                    match report.needs_attention().len() {
-                        0 => String::new(),
-                        n => format!(
-                            "legionctl setup: {n} need attention (`legionctl setup check` shows each). Run \
-                             /legionctl:setup."
-                        ),
+                    // the rows in setup check's words, so the two give one answer at one time; a row that a start
+                    // of Claude Code changes for a moment (its plugin files) shows which it was
+                    let rows: Vec<String> = report
+                        .needs_attention()
+                        .iter()
+                        .map(|i| format!("{} for {} is {}", i.what, i.agent, i.status))
+                        .collect();
+                    if rows.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            "legionctl setup: {}. Run /legionctl:setup.",
+                            rows.join("; ")
+                        )
                     }
                 })
         }
@@ -288,14 +300,15 @@ fn run_action(config: &Resolved, action: &Action, event: Event, jail: &mut Jail<
 }
 
 /// Run every action bound to `event`, in order, and return their combined output. A failed action is reported in
-/// the output; the others still run. `jail` is where a repository layer's command action runs ([`command`]).
+/// the output; the others still run. `dossier`: the session has a dossier. `jail` is where a repository layer's
+/// command action runs ([`command`]).
 #[must_use]
-pub fn run(config: &Resolved, event: Event, jail: &mut Jail<'_>) -> String {
+pub fn run(config: &Resolved, event: Event, dossier: bool, jail: &mut Jail<'_>) -> String {
     let actions = actions(config);
     bound(config, event)
         .iter()
         .filter_map(|id| actions.iter().find(|a| &a.id == id))
-        .map(|action| run_action(config, action, event, jail))
+        .map(|action| run_action(config, action, (event, dossier), jail))
         .filter(|text| !text.is_empty())
         .collect::<Vec<_>>()
         .join("\n")
@@ -324,7 +337,12 @@ mod tests {
         for id in ["broken", "slow", "hello"] {
             bind(&config(), Event::Prompt, id).unwrap();
         }
-        let out = run(&config(), Event::Prompt, &mut Jail::new(&|| Ok(None)));
+        let out = run(
+            &config(),
+            Event::Prompt,
+            false,
+            &mut Jail::new(&|| Ok(None)),
+        );
         let lines: Vec<&str> = out.lines().collect();
         assert!(
             lines[0].starts_with("legionctl hook action broken failed"),

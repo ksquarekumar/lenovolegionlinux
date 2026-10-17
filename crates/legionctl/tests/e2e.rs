@@ -7546,6 +7546,7 @@ fn every_plugin_hook_runs_on_this_build_and_blocks_only_by_its_rule() {
         ["prompt s-free", "stop s-free"],
         "only the dossier gate and the dossier nudge block, and only a session without a dossier"
     );
+    reminders_and_setup_rows(&op, &home, &repo, &fixtures);
     let exe = env!("CARGO_BIN_EXE_legionctl");
     for args in [
         &["hook", "post-compact"][..],
@@ -7566,6 +7567,71 @@ fn every_plugin_hook_runs_on_this_build_and_blocks_only_by_its_rule() {
             "{args:?}: {out:?}"
         );
     }
+}
+
+/// The dossier reminder is for a session with a dossier, and the session start names the setup rows that setup
+/// check gives (EV-review-12: the reminder came on every prompt in a plain folder; the hook gave a bare count that
+/// the user could not match with setup check).
+fn reminders_and_setup_rows(op: &Operator, home: &Path, repo: &Path, fixtures: &Path) {
+    // the dossier reminder is for a session with a dossier; a plain folder with none got it on every prompt
+    // (EV-review-12, live in a Scratch HOME)
+    let plain = home.join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    let prompt = |cwd: &Path, session: &str| -> String {
+        let mut input: Value =
+            serde_json::from_str(&std::fs::read_to_string(fixtures.join("prompt.json")).unwrap())
+                .unwrap();
+        input["session_id"] = json!(session);
+        input["cwd"] = json!(cwd);
+        let out = op.run(cwd, &[], &["hook", "prompt"], &input.to_string());
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let (free, bound) = (prompt(&plain, "s-free"), prompt(repo, "s-bound"));
+    let reminder = "Keep this session's dossier current";
+    assert!(
+        free.contains("Reminder: Write all user-facing text") && !free.contains(reminder),
+        "{free}"
+    );
+    assert!(bound.contains(reminder), "{bound}");
+    // the session start names the setup rows that setup check gives (it gave a bare count that the user could not
+    // match: "1 need attention" while setup check said all set up)
+    let check: Value =
+        serde_json::from_slice(&op.run(repo, &[], &["setup", "check", "--json"], "").stdout)
+            .unwrap();
+    let rows: Vec<String> = check["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["status"] != "current")
+        .map(|i| {
+            format!(
+                "{} for {} is {}",
+                i["what"].as_str().unwrap(),
+                i["agent"].as_str().unwrap(),
+                i["status"].as_str().unwrap()
+            )
+        })
+        .collect();
+    assert!(!rows.is_empty(), "{check}");
+    let mut input: Value = serde_json::from_str(
+        &std::fs::read_to_string(fixtures.join("session-start.json")).unwrap(),
+    )
+    .unwrap();
+    input["session_id"] = json!("s-free");
+    input["cwd"] = json!(plain);
+    let start = String::from_utf8(
+        op.run(&plain, &[], &["hook", "session-start"], &input.to_string())
+            .stdout,
+    )
+    .unwrap();
+    assert!(
+        start.contains(&format!(
+            "legionctl setup: {}. Run /legionctl:setup.",
+            rows.join("; ")
+        )),
+        "{start}\n{rows:?}"
+    );
 }
 
 /// `doctor` names a legionctl plugin of another build (todo-176): Claude Code reads a folder marketplace's plugin from

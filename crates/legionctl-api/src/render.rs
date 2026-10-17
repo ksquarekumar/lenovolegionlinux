@@ -112,15 +112,17 @@ impl Render for Snapshot {
                         .collect::<Vec<_>>()
                         .join(" / ")
                 }),
-            s.throttle_reasons
-                .as_ref()
-                .map_or("unknown (needs root)".into(), |r| {
-                    if r.is_empty() {
-                        "none".into()
-                    } else {
-                        r.join(", ")
-                    }
-                })
+            s.throttle_reasons.as_ref().map_or_else(
+                || format!(
+                    "unknown ({})",
+                    s.throttle_unknown.as_deref().unwrap_or_default()
+                ),
+                |r| if r.is_empty() {
+                    "none".into()
+                } else {
+                    r.join(", ")
+                }
+            )
         ));
         out.extend(system_lines(s));
         out.join("\n")
@@ -417,7 +419,12 @@ impl Render for BootState {
                 Some(id) if self.next.as_ref() == Some(id) => format!(
                     "legionctl's entry: {}. {}",
                     label(id),
-                    legionctl_machine::boot::NEXT_START
+                    legionctl_machine::boot::next_start(
+                        &self
+                            .current
+                            .as_deref()
+                            .map_or("the entry that started this computer".into(), label)
+                    )
                 ),
                 Some(id) if self.current.as_ref() == Some(id) => format!(
                     "legionctl's entry: {}. This start used it: it becomes the default when the login screen is up.",
@@ -616,9 +623,9 @@ impl Render for crate::FanState {
         out.push(format!(
             "EC fan lock: {}",
             if self.ec_fan_lock_verified {
-                "verified in the profile"
+                "available"
             } else {
-                "not verified, refused"
+                "not available on this machine"
             }
         ));
         out.join("\n")
@@ -1165,10 +1172,10 @@ impl Render for Vec<Sample> {
                         |e| format!("{} ({e})", g.state),
                     )
                 });
-                let fans = s.root.fan_rpm.as_ref().map_or("? (root)".into(), |f| {
+                let fans = s.root.fan_rpm.as_ref().map_or("?".into(), |f| {
                     f.values().map(ToString::to_string).collect::<Vec<_>>().join("/")
                 });
-                let throttle = s.root.throttle_now.as_ref().map_or("? (root)".into(), |t| {
+                let throttle = s.root.throttle_now.as_ref().map_or("?".into(), |t| {
                     if t.is_empty() { "-".into() } else { t.join(",") }
                 });
                 let runq = s.runq_latency.as_ref().map_or("-".into(), |classes| {

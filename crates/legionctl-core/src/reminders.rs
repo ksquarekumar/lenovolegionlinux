@@ -113,12 +113,16 @@ pub fn remove(config: &Resolved, id: &str) -> Result<()> {
     config.set_user(&format!("reminders.{id}"), Value::Null)
 }
 
-/// Text for a hook: enabled reminders for this event, one per line, nothing when none apply.
+/// The built-in reminder to keep the session's dossier; it applies only to a session with a dossier.
+const DOSSIER: &str = "dossier-practice";
+
+/// Text for a hook: enabled reminders for this event, one per line, nothing when none apply. `dossier`: the session
+/// has a dossier.
 #[must_use]
-pub fn emit(config: &Resolved, event: Event) -> String {
+pub fn emit(config: &Resolved, event: Event, dossier: bool) -> String {
     list(config)
         .into_iter()
-        .filter(|r| r.enabled && r.event == event)
+        .filter(|r| r.enabled && r.event == event && (dossier || r.id != DOSSIER))
         .map(|r| format!("Reminder: {}", r.text))
         .collect::<Vec<_>>()
         .join("\n")

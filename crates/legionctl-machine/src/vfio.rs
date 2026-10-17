@@ -160,7 +160,7 @@ pub fn users(root: &SysRoot, devices: &[String], all: bool) -> Result<(Vec<Strin
         }
     }
     for (file, what) in [
-        ("/proc/self/mounts", "is mounted at"),
+        (crate::mounts::HOST_MOUNTS, "is mounted at"),
         ("/proc/swaps", "is swap"),
     ] {
         let table = root
