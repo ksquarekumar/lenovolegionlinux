@@ -2677,14 +2677,36 @@ fn each_failure_of_the_chat_names_its_cause(cx: &mut TestAppContext) {
             a.state.message.as_deref().is_some_and(|m| m.contains(want))
         });
     };
-    send(cx, "/dossier create chat");
+    // a change from the chat bar waits in the same confirm as its button, and runs only on Apply (U-13)
+    let confirm = |cx: &mut VisualTestContext, app: &Entity<LegionApp>, line: &str, name: &str| {
+        send(cx, line);
+        wait(cx, app, "the confirm", |a| {
+            a.state
+                .pending
+                .as_ref()
+                .is_some_and(|p| p.button.op == name)
+        });
+        let events: serde_json::Value =
+            serde_json::from_str(&op.ok(&["events", "--json"])).unwrap();
+        let ran = events["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["actor"] == "app" && e["kind"] == name);
+        assert!(!ran, "{name} ran before Apply");
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("apply", cx);
+        });
+    };
+    confirm(cx, &app, "/dossier create chat", "dossier.create");
     message(
         cx,
         &app,
         "the name in use",
         "dossier chat exists already: choose it with dossier use chat",
     );
-    send(cx, "/dossier use nobody");
+    confirm(cx, &app, "/dossier use nobody", "dossier.use");
     message(
         cx,
         &app,

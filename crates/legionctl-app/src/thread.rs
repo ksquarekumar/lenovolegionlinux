@@ -612,6 +612,19 @@ impl LegionApp {
             &self.screen.repo,
         ) {
             Action::Prompt(prompt) => self.prompt(&prompt, line, cx),
+            // a change from the chat bar or Ctrl+K takes the same plan or confirm as its button (U-13)
+            Action::Operation(op, input)
+                if op.class != legionctl_api::Class::Read && input["dry_run"] != true =>
+            {
+                self.act(
+                    legionctl_api::ViewButton {
+                        label: op.summary().to_string(),
+                        op: op.name.to_string(),
+                        input,
+                    },
+                    cx,
+                );
+            }
             Action::Operation(op, input) => self.start(op.name, input, line, cx),
             Action::Screen(words) if words[0] == "feedback" => {
                 self.feedback(line.trim_start_matches("/feedback").trim(), cx);
