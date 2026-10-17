@@ -6189,7 +6189,9 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         let ours = config();
         assert!(
             ours.starts_with("# legionctl greeter")
-                && ours.contains("command = \"cage -s -- /usr/lib/legionctl/legionctl-greeter\"")
+                && ours.contains(
+                    "command = \"systemd-cat -t legionctl-greeter cage -s -m last -- /usr/lib/legionctl/legionctl-greeter\""
+                )
                 && ours.contains("user = \"greeter\""),
             "{ours}"
         );
@@ -6244,6 +6246,51 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             status.contains("display manager at the next start: gdm.service"),
             "{status}"
         );
+    }
+
+    /// r324's greeter (one window over all monitors, so the login sat at the edge of one; no folder for the last
+    /// desktops): a new install makes greetd's configuration and the folder again, keeps the kept file and changes no
+    /// unit (boot of 2026-10-17).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_install_over_r324s_greeter_makes_its_config_and_folder_again() {
+        let m = Machine::new("greeterup");
+        let root = m.dir.join("root");
+        let r324 = "# legionctl greeter (legionctl greeter install; legionctl greeter remove puts /etc/greetd/config.toml.before back)\n[terminal]\nvt = 1\n\n[default_session]\ncommand = \"cage -s -- /usr/lib/legionctl/legionctl-greeter\"\nuser = \"greeter\"\n";
+        let log = greeter_machine(&m, r324);
+        m.set("/usr/bin/cage", "");
+        m.set(
+            "/etc/passwd",
+            "root:x:0:0::/root:/bin/bash\ngreeter:x:932:932::/:/bin/bash",
+        );
+        m.set("/etc/greetd/config.toml.before", "kept");
+        let (_stand_ins, _asked, _processes) = start(&m).await;
+        let op = on_bus(&m, "greeterup");
+        op.ok(&["greeter", "install"]);
+        let ours = std::fs::read_to_string(root.join("etc/greetd/config.toml")).unwrap();
+        assert!(
+            ours.contains(
+                "command = \"systemd-cat -t legionctl-greeter cage -s -m last -- /usr/lib/legionctl/legionctl-greeter\""
+            ),
+            "{ours}"
+        );
+        assert!(
+            std::fs::read_to_string(m.dir.join("units.log"))
+                .unwrap()
+                .contains(&root.join("var/lib/legionctl-greeter").display().to_string()),
+            "the greeter's folder is made"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("etc/greetd/config.toml.before")).unwrap(),
+            "kept\n"
+        );
+        let log = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            !log.lines()
+                .any(|l| l.starts_with("enable ") || l.starts_with("disable ")),
+            "no unit is enabled or disabled: {log}"
+        );
+        let again = op.cli(&["greeter", "install"]);
+        assert!(String::from_utf8_lossy(&again.stderr).contains("installed already"));
     }
 
     /// `legionctl-system` in one of its one-shot modes (`--boot-rebuild`, `--remove-check`) on machine `m`, as a

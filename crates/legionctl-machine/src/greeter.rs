@@ -71,12 +71,29 @@ fn systemctl(verb: &str, unit: &str) -> Step {
 
 /// Plan `greeter install`: greetd's configuration with our greeter (the old file kept), GDM disabled, greetd enabled.
 ///
+/// An install of an older version makes its configuration and folder again (r324 had no folder and spanned two
+/// monitors).
+///
 /// # Errors
-/// The greeter is installed already, greetd, cage or the greeter is not installed, or GDM is not the display manager.
+/// This version of the greeter is installed already, greetd, cage or the greeter is not installed, or GDM is not the
+/// display manager.
 pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
     let now = state(root)?;
+    let ours = config();
     if now.installed {
-        bail!("legionctl's greeter is installed already ({CONFIG})");
+        // an older install of ours: its configuration and the greeter's folder are made again; the kept file and the
+        // units stay as they are
+        // the root's read trims the text
+        if root.read(CONFIG)?.as_deref() == Some(ours.trim()) {
+            bail!("legionctl's greeter is installed already ({CONFIG})");
+        }
+        return Ok(vec![
+            state_folder(root),
+            Step::Create {
+                path: CONFIG.into(),
+                content: ours,
+            },
+        ]);
     }
     if !now.missing.is_empty() {
         bail!(
@@ -90,18 +107,8 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
             now.display_manager.as_deref().unwrap_or("none")
         );
     }
-    let mut steps = Vec::new();
-    // first, so a failure changes nothing of greetd or GDM; outside the daemon's sandbox (its ReadWritePaths do not
-    // have /var/lib); the folder stays after remove
-    steps.push(Step::Unit(
-        [
-            "install", "-d", "-m", "700", "-o", "greeter", "-g", "greeter",
-        ]
-        .map(String::from)
-        .into_iter()
-        .chain([root.path(STATE).to_string_lossy().into_owned()])
-        .collect(),
-    ));
+    // the folder first, so a failure changes nothing of greetd or GDM
+    let mut steps = vec![state_folder(root)];
     if let Some(old) = read_file(&root.path(CONFIG))? {
         steps.push(Step::Create {
             path: BEFORE.into(),
@@ -110,15 +117,37 @@ pub fn install_plan(root: &SysRoot) -> Result<Vec<Step>> {
     }
     steps.push(Step::Create {
         path: CONFIG.into(),
-        content: format!(
-            "{MARK} (legionctl greeter install; legionctl greeter remove puts {BEFORE} back)\n\
-             [terminal]\nvt = 1\n\n\
-             [default_session]\ncommand = \"cage -s -- {GREETER}\"\nuser = \"greeter\"\n"
-        ),
+        content: ours,
     });
     steps.push(systemctl("disable", GDM));
     steps.push(systemctl("enable", GREETD));
     Ok(steps)
+}
+
+/// greetd's configuration of this version: cage shows the greeter on one monitor (`-m last`: with two monitors, the
+/// default `extend` spans one window over both, and the login sits at the seam); `systemd-cat` puts the greeter's
+/// and cage's output in the journal (greetd gives a session the terminal, where nobody sees it).
+fn config() -> String {
+    format!(
+        "{MARK} (legionctl greeter install; legionctl greeter remove puts {BEFORE} back)\n\
+         [terminal]\nvt = 1\n\n\
+         [default_session]\n\
+         command = \"systemd-cat -t legionctl-greeter cage -s -m last -- {GREETER}\"\nuser = \"greeter\"\n"
+    )
+}
+
+/// The greeter's folder for the user `greeter`, through a unit outside the daemon's sandbox (its `ReadWritePaths` do
+/// not have /var/lib); the folder stays after remove.
+fn state_folder(root: &SysRoot) -> Step {
+    Step::Unit(
+        [
+            "install", "-d", "-m", "700", "-o", "greeter", "-g", "greeter",
+        ]
+        .map(String::from)
+        .into_iter()
+        .chain([root.path(STATE).to_string_lossy().into_owned()])
+        .collect(),
+    )
 }
 
 /// Plan `greeter remove`: the old configuration back, greetd disabled, GDM enabled.

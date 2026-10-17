@@ -6,19 +6,26 @@
 use std::io::{Read, Write};
 use std::os::unix::net::UnixListener;
 use std::path::Path;
+use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    AppContext, Entity, TestAppContext, VisualTestContext, WindowHandle, WindowOptions,
+    AppContext, Entity, SharedString, TestAppContext, VisualTestContext, WindowHandle,
+    WindowOptions,
 };
-use legionctl_app::greeter::{Auth, Greetd, Greeter, Remembered, Session, Stage, sessions};
+use legionctl_app::greeter::{
+    Auth, Greetd, Greeter, Power, Remembered, Session, Setup, Stage, sessions,
+};
 use serde_json::{Value, json};
 
+#[path = "common/process.rs"]
+mod process;
 #[path = "common/scratch.rs"]
 mod scratch;
 
+use process::Kill;
 use scratch::Scratch;
 
 type Requests = Arc<Mutex<Vec<Value>>>;
@@ -33,8 +40,10 @@ enum Pam {
     Authenticated,
 }
 
-/// A stand-in greetd at `greetd.sock` in a new folder; returns the folder and every request it got, in order.
-fn greetd(tag: &str, fingerprint: bool) -> (Scratch, Requests) {
+/// A stand-in greetd at `greetd.sock` in a new folder; returns the folder and every request it got, in order. With
+/// `hold`, its answer to `start_session` waits for a message on it (the moment between the start and the greeter's
+/// end).
+fn greetd(tag: &str, fingerprint: bool, hold: Option<Receiver<()>>) -> (Scratch, Requests) {
     let dir = Scratch::new(
         std::env::temp_dir().join(format!("legionctl-greeter-{tag}-{}", std::process::id())),
     );
@@ -82,7 +91,12 @@ fn greetd(tag: &str, fingerprint: bool) -> (Scratch, Requests) {
                     pam = Pam::Failed;
                     error("auth_error", "Authentication failure")
                 }
-                ("start_session", Pam::Authenticated) => json!({"type": "success"}),
+                ("start_session", Pam::Authenticated) => {
+                    if let Some(hold) = &hold {
+                        hold.recv().unwrap();
+                    }
+                    json!({"type": "success"})
+                }
                 ("cancel_session", _) => {
                     pam = Pam::None;
                     json!({"type": "success"})
@@ -127,7 +141,7 @@ fn password() -> Auth {
 
 #[test]
 fn a_password_login_starts_the_session_with_its_command_and_environment() {
-    let (stand_in, requests) = greetd("password", false);
+    let (stand_in, requests) = greetd("password", false, None);
     let socket = stand_in.join("greetd.sock");
     let mut g = Greetd::connect(&socket).unwrap();
     assert_eq!(g.create_session("alice").unwrap(), password());
@@ -147,13 +161,13 @@ fn a_password_login_starts_the_session_with_its_command_and_environment() {
 /// After a wrong password greetd keeps the failed session: the client cancels it, so the next try is a new session.
 #[test]
 fn a_wrong_password_is_refused_and_the_next_try_logs_in() {
-    let (stand_in, requests) = greetd("retry", false);
+    let (stand_in, requests) = greetd("retry", false, None);
     let socket = stand_in.join("greetd.sock");
     let mut g = Greetd::connect(&socket).unwrap();
     g.create_session("alice").unwrap();
     assert_eq!(
         g.respond(Some("wrong".into())).unwrap(),
-        Auth::Refused("Authentication failure".into())
+        Auth::Refused("Wrong password. Try again.".into())
     );
     assert_eq!(g.create_session("alice").unwrap(), password());
     assert_eq!(g.respond(Some("right".into())).unwrap(), Auth::Done);
@@ -173,7 +187,7 @@ fn a_wrong_password_is_refused_and_the_next_try_logs_in() {
 /// PAM asks for the password (the reader gave up).
 #[test]
 fn a_fingerprint_message_comes_first_then_the_password() {
-    let (stand_in, requests) = greetd("fingerprint", true);
+    let (stand_in, requests) = greetd("fingerprint", true, None);
     let socket = stand_in.join("greetd.sock");
     let mut g = Greetd::connect(&socket).unwrap();
     assert_eq!(
@@ -190,7 +204,7 @@ fn a_fingerprint_message_comes_first_then_the_password() {
 
 #[test]
 fn a_cancelled_login_lets_another_user_start_one() {
-    let (stand_in, requests) = greetd("cancel", false);
+    let (stand_in, requests) = greetd("cancel", false, None);
     let socket = stand_in.join("greetd.sock");
     let mut g = Greetd::connect(&socket).unwrap();
     g.create_session("alice").unwrap();
@@ -210,76 +224,8 @@ fn desktop(dir: &Path, id: &str, body: &str) {
     .unwrap();
 }
 
-/// The greeter's window on `greetd` with `found` and `remembered`, and its screen.
-fn open_screen(
-    cx: &mut TestAppContext,
-    greetd: Greetd,
-    found: Vec<Session>,
-    remembered: &Remembered,
-    handle: tokio::runtime::Handle,
-) -> (Entity<Greeter>, VisualTestContext) {
-    let remembered = remembered.clone();
-    let window: WindowHandle<gpui_kit::base::Root> = cx.update(|cx| {
-        let (window, _) = gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
-            cx.new(|cx| Greeter::new(greetd, found, remembered, handle, window, cx))
-        })
-        .unwrap();
-        window.downcast().unwrap()
-    });
-    let screen: Entity<Greeter> = window
-        .update(cx, |root, _, _| root.view().clone().downcast().unwrap())
-        .unwrap();
-    (screen, VisualTestContext::from_window(window.into(), cx))
-}
-
-/// Run the screen until `ready`, at most 10 s.
-fn wait(
-    cx: &mut VisualTestContext,
-    screen: &Entity<Greeter>,
-    what: &str,
-    ready: &dyn Fn(&Greeter) -> bool,
-) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        cx.run_until_parked();
-        if screen.read_with(cx, |g, _| ready(g)) {
-            return;
-        }
-        let state = screen.read_with(cx, |g, _| format!("{:?} {:?}", g.stage, g.message));
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for {what}: {state}"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
-
-/// The user name, Enter, the password `right`, Enter: until the session starts.
-fn log_in(cx: &mut VisualTestContext, screen: &Entity<Greeter>, user: &str) {
-    cx.update(|window, cx| {
-        window.click("user", cx);
-        window.input(user, cx);
-        window.press("enter", cx);
-    });
-    wait(cx, screen, "the password prompt", &|g| {
-        matches!(g.stage, Stage::Prompt { secret: true, .. })
-    });
-    cx.update(|window, cx| {
-        window.input("right", cx);
-        window.press("enter", cx);
-    });
-    wait(cx, screen, "the session start", &|g| {
-        g.stage == Stage::Started && !g.busy
-    });
-}
-
-/// The screen with the keyboard and the mouse: GNOME is the first session and chosen; the X11 session is shown as not
-/// supported and cannot be chosen; a click chooses COSMIC; the user name, Enter, the password, Enter: greetd starts
-/// COSMIC's command. The next screen (after the logout) selects COSMIC for alice by itself, not for bob (todo-150).
-#[gpui_kit::test]
-fn the_screen_logs_in_with_the_keyboard_and_starts_the_chosen_session(cx: &mut TestAppContext) {
-    let (stand_in, requests) = greetd("screen", false);
-    let socket = stand_in.join("greetd.sock");
+/// GNOME, COSMIC, a hidden session and an X11 session in folders next to `socket`.
+fn found(socket: &Path) -> Vec<Session> {
     let dir = socket.with_file_name("wayland-sessions");
     let x11 = socket.with_file_name("xsessions");
     std::fs::create_dir_all(&dir).unwrap();
@@ -304,20 +250,181 @@ fn the_screen_logs_in_with_the_keyboard_and_starts_the_chosen_session(cx: &mut T
         "gnome-flashback-metacity",
         "Name=GNOME Flashback (Metacity)\nExec=gnome-session --session=gnome-flashback-metacity",
     );
-    let found = sessions(&dir, &x11);
+    sessions(&dir, &x11)
+}
+
+/// What the stand-in logind and daemon on the private bus were asked, in order.
+type Calls = Arc<Mutex<Vec<String>>>;
+
+struct Logind(Calls);
+
+#[zbus::interface(name = "org.freedesktop.login1.Manager")]
+impl Logind {
+    fn power_off(&self, interactive: bool) {
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("PowerOff {interactive}"));
+    }
+    fn reboot(&self, interactive: bool) {
+        self.0.lock().unwrap().push(format!("Reboot {interactive}"));
+    }
+    fn suspend(&self, interactive: bool) {
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("Suspend {interactive}"));
+    }
+}
+
+struct Daemon(Calls);
+
+#[zbus::interface(name = "org.legionctl.System1")]
+impl Daemon {
+    fn greeter_act(&self, user: &str, action: &str) -> Vec<String> {
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("GreeterAct {user} {action}"));
+        vec![format!("{action} for {user}")]
+    }
+}
+
+/// A private bus in `dir` with the stand-in logind and daemon; returns their calls, the bus's address and what keeps
+/// them running.
+fn bus(dir: &Path, runtime: &tokio::runtime::Runtime) -> (Calls, String, Kill, zbus::Connection) {
+    let path = dir.join("bus");
+    let daemon = Kill::spawn(
+        std::process::Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--nopidfile"])
+            .arg(format!("--address=unix:path={}", path.display())),
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !path.exists() {
+        assert!(Instant::now() < deadline, "the private bus did not start");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let address = format!("unix:path={}", path.display());
+    let calls = Calls::default();
+    let conn = runtime.block_on(async {
+        zbus::connection::Builder::address(address.as_str())
+            .unwrap()
+            .name("org.freedesktop.login1")
+            .unwrap()
+            .name("org.legionctl.System1")
+            .unwrap()
+            .serve_at("/org/freedesktop/login1", Logind(calls.clone()))
+            .unwrap()
+            .serve_at("/org/legionctl/System1", Daemon(calls.clone()))
+            .unwrap()
+            .build()
+            .await
+            .unwrap()
+    });
+    (calls, address, daemon, conn)
+}
+
+/// The greeter's window on `greetd` with `setup`, and its screen.
+fn open_screen(
+    cx: &mut TestAppContext,
+    greetd: Greetd,
+    setup: Setup,
+    handle: tokio::runtime::Handle,
+) -> (Entity<Greeter>, VisualTestContext) {
+    let window: WindowHandle<gpui_kit::base::Root> = cx.update(|cx| {
+        let (window, _) = gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+            cx.new(|cx| Greeter::new(greetd, setup, handle, window, cx))
+        })
+        .unwrap();
+        window.downcast().unwrap()
+    });
+    let screen: Entity<Greeter> = window
+        .update(cx, |root, _, _| root.view().clone().downcast().unwrap())
+        .unwrap();
+    (screen, VisualTestContext::from_window(window.into(), cx))
+}
+
+fn setup(found: &[Session], people: &[&str], remembered: &Remembered, bus: &str) -> Setup {
+    Setup {
+        sessions: found.to_vec(),
+        people: Ok(people.iter().map(|p| (*p).to_string()).collect()),
+        remembered: remembered.clone(),
+        bus: bus.into(),
+    }
+}
+
+/// Run the screen until `ready`, at most 10 s.
+fn wait(
+    cx: &mut VisualTestContext,
+    screen: &Entity<Greeter>,
+    what: &str,
+    ready: &dyn Fn(&Greeter) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        cx.run_until_parked();
+        if screen.read_with(cx, |g, _| ready(g)) {
+            return;
+        }
+        let state = screen.read_with(cx, |g, _| {
+            format!("{:?} {:?} {:?}", g.stage, g.message, g.note)
+        });
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {what}: {state}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn prompt(g: &Greeter) -> bool {
+    matches!(g.stage, Stage::Prompt { secret: true, .. }) && !g.busy
+}
+
+/// The password `answer`, Enter, in the password field that has the focus.
+fn type_password(cx: &mut VisualTestContext, answer: &str) {
+    cx.update(|window, cx| {
+        window.input(answer, cx);
+        window.press("enter", cx);
+    });
+}
+
+/// Whether the element `id` is on the screen now.
+fn shown(cx: &mut VisualTestContext, id: &str) -> bool {
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(SharedString::from(id.to_string()))
+            .is_some()
+    })
+}
+
+/// The login of a person chosen with the mouse: GNOME first and chosen, the hidden session left out, the X11 session
+/// shown and not chosen; a click on COSMIC, a click on alice, her password, Enter: greetd starts COSMIC. After the
+/// logout the next screen asks alice's password at once (she logged in last) with COSMIC chosen; Esc goes back to the
+/// people, bob gets GNOME (todo-150).
+#[gpui_kit::test]
+fn a_chosen_person_logs_in_to_the_chosen_session_and_the_next_screen_remembers_both(
+    cx: &mut TestAppContext,
+) {
+    let (stand_in, requests) = greetd("screen", false, None);
+    let socket = stand_in.join("greetd.sock");
+    let found = found(&socket);
     let remembered = Remembered(socket.with_file_name("last-sessions"));
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let client = Greetd::connect(&socket).unwrap();
     cx.update(gpui_kit::init);
     let (screen, mut vcx) = open_screen(
         cx,
-        client,
-        found.clone(),
-        &remembered,
+        Greetd::connect(&socket).unwrap(),
+        setup(
+            &found,
+            &["alice", "bob"],
+            &remembered,
+            "unix:path=/nonexistent",
+        ),
         runtime.handle().clone(),
     );
     let vcx = &mut vcx;
-
     screen.read_with(vcx, |g, _| {
         let names: Vec<(&str, bool)> = g
             .sessions
@@ -330,17 +437,9 @@ fn the_screen_logs_in_with_the_keyboard_and_starts_the_chosen_session(cx: &mut T
                 ("GNOME", false),
                 ("COSMIC", false),
                 ("GNOME Flashback (Metacity)", true)
-            ],
-            "GNOME first, hidden ones left out, the X11 session last and not supported"
+            ]
         );
-        assert!(
-            g.sessions[2]
-                .unsupported
-                .as_ref()
-                .unwrap()
-                .contains("Wayland sessions only")
-        );
-        assert_eq!(g.session, 0);
+        assert_eq!((g.session, &g.stage, &g.user), (0, &Stage::Choose, &None));
     });
     vcx.update(|window, cx| window.click("session-gnome-flashback-metacity", cx));
     assert_eq!(
@@ -348,8 +447,15 @@ fn the_screen_logs_in_with_the_keyboard_and_starts_the_chosen_session(cx: &mut T
         0,
         "an X11 session cannot be chosen"
     );
-    vcx.update(|window, cx| window.click("session-cosmic", cx));
-    log_in(vcx, &screen, "alice");
+    vcx.update(|window, cx| {
+        window.click("session-cosmic", cx);
+        window.click("person-alice", cx);
+    });
+    wait(vcx, &screen, "alice's password prompt", &prompt);
+    type_password(vcx, "right");
+    wait(vcx, &screen, "the session start", &|g| {
+        g.stage == Stage::Started && !g.busy
+    });
     assert_eq!(
         requests.lock().unwrap().clone(),
         vec![
@@ -360,19 +466,241 @@ fn the_screen_logs_in_with_the_keyboard_and_starts_the_chosen_session(cx: &mut T
         ]
     );
 
-    // after the logout greetd starts a new greeter: alice gets COSMIC without a click, bob the first session
-    for (user, cmd) in [("alice", "start-cosmic"), ("bob", "/usr/bin/gnome-session")] {
-        let (stand_in, requests) = greetd(&format!("again-{user}"), false);
-        let client = Greetd::connect(&stand_in.join("greetd.sock")).unwrap();
-        let (screen, mut vcx) = open_screen(
-            cx,
-            client,
-            found.clone(),
-            &remembered,
-            runtime.handle().clone(),
-        );
-        log_in(&mut vcx, &screen, user);
-        assert_eq!(requests.lock().unwrap()[2]["cmd"], json!([cmd]), "{user}");
+    after_the_logout(cx, &found, &remembered, &runtime);
+    drop(runtime);
+}
+
+/// After the logout greetd starts a new greeter: alice is asked at once, with COSMIC; Esc, bob, GNOME.
+fn after_the_logout(
+    cx: &mut TestAppContext,
+    found: &[Session],
+    remembered: &Remembered,
+    runtime: &tokio::runtime::Runtime,
+) {
+    let (stand_in, requests) = greetd("again", false, None);
+    let (screen, mut vcx) = open_screen(
+        cx,
+        Greetd::connect(&stand_in.join("greetd.sock")).unwrap(),
+        setup(
+            found,
+            &["alice", "bob"],
+            remembered,
+            "unix:path=/nonexistent",
+        ),
+        runtime.handle().clone(),
+    );
+    let vcx = &mut vcx;
+    wait(vcx, &screen, "alice's prompt without a click", &prompt);
+    screen.read_with(vcx, |g, _| {
+        assert_eq!((g.user.as_deref(), g.session), (Some("alice"), 1));
+    });
+    vcx.update(|window, cx| window.press("escape", cx));
+    wait(vcx, &screen, "the people again", &|g| {
+        g.stage == Stage::Choose && !g.busy
+    });
+    vcx.update(|window, cx| window.click("person-bob", cx));
+    wait(vcx, &screen, "bob's prompt", &prompt);
+    screen.read_with(vcx, |g, _| {
+        assert_eq!(g.session, 0, "bob's own last desktop: none");
+    });
+    type_password(vcx, "right");
+    wait(vcx, &screen, "bob's session start", &|g| {
+        g.stage == Stage::Started && !g.busy
+    });
+    assert_eq!(
+        types(&requests),
+        [
+            "create_session",
+            "cancel_session",
+            "create_session",
+            "post_auth_message_response",
+            "start_session"
+        ]
+    );
+    assert_eq!(
+        requests.lock().unwrap()[4]["cmd"],
+        json!(["/usr/bin/gnome-session"])
+    );
+}
+
+/// The boot of 2026-10-17: after a good password, while greetd starts the desktop and the greeter has not ended, the
+/// screen showed its login form again ("logged in, then back to the greeter"). Now it shows the start, and no field,
+/// session or power control.
+#[gpui_kit::test]
+fn after_a_good_password_the_screen_shows_the_start_and_no_login_form(cx: &mut TestAppContext) {
+    let (release, hold) = channel();
+    let (stand_in, _) = greetd("handover", false, Some(hold));
+    let socket = stand_in.join("greetd.sock");
+    let found = found(&socket);
+    let remembered = Remembered(socket.with_file_name("last-sessions"));
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    cx.update(gpui_kit::init);
+    let (screen, mut vcx) = open_screen(
+        cx,
+        Greetd::connect(&socket).unwrap(),
+        setup(&found, &["alice"], &remembered, "unix:path=/nonexistent"),
+        runtime.handle().clone(),
+    );
+    let vcx = &mut vcx;
+    wait(vcx, &screen, "the only person's prompt at once", &prompt);
+    assert!(shown(vcx, "answer") && shown(vcx, "power-off"));
+    type_password(vcx, "right");
+    // one task at a time: greetd's answer to the start waits for `release`, and the test's executor runs the call on
+    // this thread
+    while screen.read_with(vcx, |g, _| g.stage != Stage::Started) {
+        assert!(vcx.executor().tick(), "the screen stopped before the start");
     }
+    for control in [
+        "answer",
+        "user",
+        "go",
+        "back",
+        "session-gnome",
+        "power-off",
+        "machine",
+    ] {
+        assert!(
+            !shown(vcx, control),
+            "{control} is shown after the password"
+        );
+    }
+    release.send(()).unwrap();
+    wait(vcx, &screen, "greetd's answer", &|g| !g.busy);
+    drop(runtime);
+}
+
+/// A wrong password: one short line under the field, the field again for the next try, which logs in.
+#[gpui_kit::test]
+fn a_wrong_password_says_so_by_the_field_and_the_next_try_logs_in(cx: &mut TestAppContext) {
+    let (stand_in, requests) = greetd("wrong", false, None);
+    let socket = stand_in.join("greetd.sock");
+    let found = found(&socket);
+    let remembered = Remembered(socket.with_file_name("last-sessions"));
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    cx.update(gpui_kit::init);
+    let (screen, mut vcx) = open_screen(
+        cx,
+        Greetd::connect(&socket).unwrap(),
+        setup(&found, &["alice"], &remembered, "unix:path=/nonexistent"),
+        runtime.handle().clone(),
+    );
+    let vcx = &mut vcx;
+    wait(vcx, &screen, "the prompt", &prompt);
+    type_password(vcx, "wrong");
+    wait(vcx, &screen, "the prompt again", &|g| {
+        prompt(g) && g.message.is_some()
+    });
+    assert_eq!(
+        screen.read_with(vcx, |g, _| g.message.clone()).as_deref(),
+        Some("Wrong password. Try again.")
+    );
+    assert!(shown(vcx, "answer"));
+    type_password(vcx, "right");
+    wait(vcx, &screen, "the start", &|g| {
+        g.stage == Stage::Started && !g.busy
+    });
+    assert_eq!(screen.read_with(vcx, |g, _| g.message.clone()), None);
+    assert_eq!(
+        types(&requests),
+        [
+            "create_session",
+            "post_auth_message_response",
+            "cancel_session",
+            "create_session",
+            "post_auth_message_response",
+            "start_session"
+        ]
+    );
+    drop(runtime);
+}
+
+/// Power off and restart ask once more; Esc takes the question back; the confirmation calls logind with no prompt
+/// (`interactive` false: before login no agent can ask).
+#[gpui_kit::test]
+fn a_power_action_asks_once_more_then_calls_logind(cx: &mut TestAppContext) {
+    let (stand_in, _) = greetd("power", false, None);
+    let socket = stand_in.join("greetd.sock");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (calls, address, _bus, _conn) = bus(&stand_in, &runtime);
+    let found = found(&socket);
+    let remembered = Remembered(socket.with_file_name("last-sessions"));
+    cx.update(gpui_kit::init);
+    let (screen, mut vcx) = open_screen(
+        cx,
+        Greetd::connect(&socket).unwrap(),
+        setup(&found, &["alice"], &remembered, &address),
+        runtime.handle().clone(),
+    );
+    let vcx = &mut vcx;
+    wait(vcx, &screen, "the prompt", &prompt);
+    vcx.update(|window, cx| window.click("power-off", cx));
+    assert_eq!(screen.read_with(vcx, |g, _| g.power), Some(Power::Off));
+    vcx.update(|window, cx| window.press("escape", cx));
+    assert_eq!(screen.read_with(vcx, |g, _| g.power), None);
+    vcx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("restart", cx);
+    });
+    vcx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("power-confirm", cx);
+    });
+    wait(vcx, &screen, "logind's answer", &|g| {
+        !g.busy && g.power.is_none()
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(*calls.lock().unwrap(), ["Reboot false"]);
+    assert!(
+        screen.read_with(vcx, |g, _| matches!(g.stage, Stage::Prompt { .. })),
+        "Esc on the question kept the login"
+    );
+    drop(runtime);
+}
+
+/// A machine choice for a user (G-25): without a user its buttons do nothing and show no error after the click; with a
+/// typed name the daemon gets the choice for that name and the screen shows its answer.
+#[gpui_kit::test]
+fn the_machine_choices_for_a_user_wait_for_a_user(cx: &mut TestAppContext) {
+    let (stand_in, _) = greetd("machine", false, None);
+    let socket = stand_in.join("greetd.sock");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (calls, address, _bus, _conn) = bus(&stand_in, &runtime);
+    let found = found(&socket);
+    let remembered = Remembered(socket.with_file_name("last-sessions"));
+    cx.update(gpui_kit::init);
+    let (screen, mut vcx) = open_screen(
+        cx,
+        Greetd::connect(&socket).unwrap(),
+        setup(&found, &[], &remembered, &address),
+        runtime.handle().clone(),
+    );
+    let vcx = &mut vcx;
+    vcx.update(|window, cx| window.click("machine", cx));
+    vcx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("vm-start", cx);
+    });
+    vcx.run_until_parked();
+    assert_eq!(
+        (
+            calls.lock().unwrap().len(),
+            screen.read_with(vcx, |g, _| g.note.clone())
+        ),
+        (0, None)
+    );
+    vcx.update(|window, cx| {
+        window.click("user", cx);
+        window.input("alice", cx);
+    });
+    vcx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("vm-start", cx);
+    });
+    wait(vcx, &screen, "the daemon's answer", &|g| g.note.is_some());
+    assert_eq!(*calls.lock().unwrap(), ["GreeterAct alice vm-start"]);
+    assert_eq!(
+        screen.read_with(vcx, |g, _| g.note.clone()).as_deref(),
+        Some("vm-start for alice")
+    );
     drop(runtime);
 }
