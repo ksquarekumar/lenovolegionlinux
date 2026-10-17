@@ -129,30 +129,23 @@ async fn approved(op: &OpInfo, principal: &Principal, input: &Value) -> Result<(
     if op.class != Class::Workspace && !marked {
         return Ok(());
     }
-    let what = format!("{} {}", op.name, redacted(op, input));
     let denied = |message: String| ApiError {
         code: Code::Denied,
         message,
         op: String::new(),
     };
-    // the app's Activity lists an ask until its answer
-    let note = |kind: &str, answer: &str| {
-        let payload = json!({"session": session, "what": what, "answer": answer});
-        if let Err(e) = Db::open_default().and_then(|db| db.record("operator", kind, &payload)) {
-            eprintln!("operator: cannot log the approval {kind}: {e:#}");
-        }
-    };
-    note("approval.ask", "");
     let short = &session[..session.len().min(8)];
-    let asked = crate::desktop::ask(&format!("legionctl: agent session {short} asks"), &what).await;
-    note(
-        "approval.answer",
-        match &asked {
-            Ok(true) => "allowed",
-            Ok(false) => "denied",
-            Err(_) => "not asked",
-        },
+    let dossier = crate::engine::dossiers()
+        .and_then(|d| d.active(session))
+        .ok()
+        .flatten()
+        .map(|d| format!(", dossier {d}"))
+        .unwrap_or_default();
+    let what = format!(
+        "{}\nAgent session {short}{dossier} asks for it.",
+        op.sentence(&redacted(op, input))
     );
+    let asked = crate::desktop::ask("legionctl: an agent asks for your approval", &what).await;
     match asked {
         Ok(true) => Ok(()),
         Ok(false) => Err(denied(format!(

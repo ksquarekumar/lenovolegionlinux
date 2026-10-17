@@ -7419,6 +7419,81 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
         assert_eq!(asked.lock().unwrap().len(), 2, "a safe key asks nothing");
     }
 
+    /// U-12: a question that waits for the user can be answered outside its desktop notice (the app's Activity, a
+    /// terminal): `approval answer <ask> allow` lets the agent's call go ahead and closes the notice; an agent cannot
+    /// answer, and a question that has its answer does not wait any more.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_user_answers_an_agents_question_outside_its_notice_and_the_notice_closes() {
+        let m = Machine::new("answer");
+        let (_stand_ins, _asked, (_bus, _daemon)) = start(&m).await;
+        let address = format!("unix:path={}", m.dir.join("bus").display());
+        let (_desktop, asked) = crate::desktop::answering(&address, &["wait"]).await;
+        let home = m.dir.join("home");
+        let op = std::sync::Arc::new(Operator::start(
+            "answer",
+            &[
+                ("PATH", m.dir.join("bin").into()),
+                ("HOME", home.clone().into()),
+                ("LEGIONCTL_SYSROOT", m.dir.join("root").into()),
+                ("DBUS_SYSTEM_BUS_ADDRESS", address.clone().into()),
+                ("DBUS_SESSION_BUS_ADDRESS", address.into()),
+            ],
+        ));
+        op.ok(&["events"]);
+        add_session_token(&home, "agent-token", "agent-1");
+        let agent = {
+            let (op, home) = (op.clone(), home.clone());
+            move |args: &[&str]| {
+                op.run(
+                    &home,
+                    &[
+                        ("LEGIONCTL_TOKEN", "agent-token"),
+                        ("HOME", home.to_str().unwrap()),
+                    ],
+                    args,
+                    "",
+                )
+            }
+        };
+        let waiting = {
+            let agent = agent.clone();
+            std::thread::spawn(move || agent(&["hooks", "add", "greet", "echo hello"]))
+        };
+        let ask = loop {
+            let events: Value = serde_json::from_str(&op.ok(&["events", "--json"])).unwrap();
+            if let Some(e) = events["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["kind"] == "approval.ask")
+            {
+                break e["payload"]["ask"].as_u64().unwrap().to_string();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        };
+        let refused = agent(&["approval", "answer", &ask, "allow"]);
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("only the user answers a question"),
+            "{refused:?}"
+        );
+        assert_eq!(
+            op.ok(&["approval", "answer", &ask, "allow"]).trim(),
+            format!("question {ask}: allowed")
+        );
+        let done = waiting.join().unwrap();
+        assert!(
+            done.status.success(),
+            "{}",
+            String::from_utf8_lossy(&done.stderr)
+        );
+        assert_eq!(asked.lock().unwrap().last().unwrap(), "closed 1");
+        let again = op.cli(&["approval", "answer", &ask, "deny"]);
+        assert!(
+            String::from_utf8_lossy(&again.stderr).contains("does not wait now"),
+            "{again:?}"
+        );
+    }
+
     /// An agent's call outside its own session waits for the user (DESIGN/03): a `workspace` op from a session's
     /// token shows a desktop notification with Allow and Deny (a stand-in desktop here, which denies the first and
     /// allows the second); Deny is the `denied` code; the session's own ops ask nothing; the user's own calls ask
@@ -7485,7 +7560,15 @@ for k, v in sorted(s["entries"].items()): print("Boot" + k + "* " + v + "\tHD(1,
             2,
             "only the agent's two workspace calls ask: {asked:?}"
         );
-        assert!(asked[0].starts_with("hooks.add {"), "{asked:?}");
+        // the user reads what the agent wants in words, not an operation name and its JSON (U-12)
+        assert_eq!(
+            asked[0],
+            format!(
+                "Define your own action: a one-line shell command whose output goes to the agent (id greet, command \
+                 echo hello, project {}).\nAgent session agent-1 asks for it.",
+                home.display()
+            ),
+        );
         let audit: Value = serde_json::from_str(&op.ok(&["events", "--json"])).unwrap();
         let outcomes: Vec<(String, Value, Value)> = audit["items"]
             .as_array()

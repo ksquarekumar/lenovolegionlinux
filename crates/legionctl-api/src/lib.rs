@@ -159,6 +159,41 @@ impl OpInfo {
         let text = self.text();
         text.split_once(". ").map_or(text, |(first, _)| first)
     }
+
+    /// A call in words, for the user who decides on it (an approval notice, Activity, a confirm): the first help
+    /// sentence, then each value the caller gave by its field name. Session fields, empty values, `false` and values
+    /// equal to their default are left out; `input` must already have its secrets taken out.
+    #[must_use]
+    pub fn sentence(&self, input: &Value) -> String {
+        let schema = (self.input)();
+        let given: Vec<String> = input
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(field, value)| {
+                let prop = &schema["properties"][field.as_str()];
+                prop["format"] != "session"
+                    && prop["default"] != **value
+                    && !matches!(value, Value::Null | Value::Bool(false))
+                    && value.as_str() != Some("")
+                    && value.as_array().is_none_or(|a| !a.is_empty())
+            })
+            .map(|(field, value)| {
+                let value = match value {
+                    Value::String(s) => s.clone(),
+                    Value::Bool(true) => "yes".into(),
+                    other => other.to_string(),
+                };
+                format!("{} {value}", field.replace('_', " "))
+            })
+            .collect();
+        let summary = self.summary().trim_end_matches('.');
+        if given.is_empty() {
+            format!("{summary}.")
+        } else {
+            format!("{summary} ({}).", given.join(", "))
+        }
+    }
 }
 
 /// Who made a call; the operator records it with every call that is not a read.
@@ -806,6 +841,11 @@ operations! {
     /// note with its front matter: time, builds, what the app showed), state.json, and screenshot.png (the window
     /// that the user picks in the desktop's screenshot dialog). Its event feedback.new is for the agents.
     feedback_new / FeedbackNew = "feedback.new", Workspace, FeedbackIn => Lines;
+    /// Answer a question that waits for the user (an agent's change outside its session, a repository's config, a
+    /// merge) from the app or a terminal, as Allow or Deny in its desktop notice does; the notice closes. For the user
+    /// only.
+    // class Session: the operation refuses an agent itself; Workspace would turn its call into one more question
+    approval_answer / ApprovalAnswer = "approval.answer", Session, ApprovalAnswerIn => Lines;
     /// Ledger findings for a dossier (default: this session's): a missing plan.md or plan section.
     dossier_check / DossierCheck = "dossier.check", Read, DossierCheckIn => DossierFindings;
     /// The dossier's health audit in one compact block: a count line, then one keyed line per finding (stale or

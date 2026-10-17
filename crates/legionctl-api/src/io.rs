@@ -523,6 +523,20 @@ pub enum OnOff {
     Off,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Answer {
+    Allow,
+    Deny,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ApprovalAnswerIn {
+    /// The question's number: `ask` of its `approval.ask` event (the app's Activity, `legionctl events`).
+    pub ask: u64,
+    pub answer: Answer,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GpuPowerIn {
     /// off: the NVIDIA GPU sleeps (D3cold) when no program uses it (refused while one does); on: it stays powered.

@@ -12646,6 +12646,51 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     }
   },
+  "approval.answer": {
+    "class": "session",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "ask": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The question's number: `ask` of its `approval.ask` event (the app's Activity, `legionctl events`)."
+        },
+        "answer": {
+          "type": "string",
+          "enum": [
+            "allow",
+            "deny"
+          ]
+        }
+      },
+      "required": [
+        "ask",
+        "answer"
+      ],
+      "title": "ApprovalAnswerIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
   "dossier.check": {
     "class": "read",
     "internal": false,

@@ -15,7 +15,8 @@ pub type Notify = (
 );
 
 /// A stand-in desktop on the private bus: it records the body of each notification and answers the n-th with
-/// the n-th of `answers` (an action key) as `ActionInvoked`.
+/// the n-th of `answers` (an action key) as `ActionInvoked`; `wait` gives no answer. A closed notice is recorded as
+/// `closed <id>`.
 pub async fn answering(
     address: &str,
     answers: &'static [&'static str],
@@ -39,6 +40,14 @@ pub async fn answering(
             if call
                 .header()
                 .member()
+                .is_some_and(|m| m.as_str() == "CloseNotification")
+            {
+                let (id,): (u32,) = call.body().deserialize().unwrap();
+                seen.lock().unwrap().push(format!("closed {id}"));
+                bus.reply(&call.header(), &()).await.unwrap();
+            } else if call
+                .header()
+                .member()
                 .is_some_and(|m| m.as_str() == "Notify")
             {
                 let (_, _, _, _, body, actions, ..): Notify = call.body().deserialize().unwrap();
@@ -51,11 +60,11 @@ pub async fn answering(
                 let n = {
                     let mut seen = seen.lock().unwrap();
                     seen.push(body);
-                    seen.len()
+                    seen.iter().filter(|b| !b.starts_with("closed ")).count()
                 };
                 let id = u32::try_from(n).unwrap();
                 bus.reply(&call.header(), &(id,)).await.unwrap();
-                if question {
+                if question && answers[n - 1] != "wait" {
                     bus.emit_signal(
                         None::<()>,
                         "/org/freedesktop/Notifications",

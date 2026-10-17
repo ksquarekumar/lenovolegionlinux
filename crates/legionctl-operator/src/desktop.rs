@@ -52,12 +52,72 @@ pub async fn ask(summary: &str, what: &str) -> Result<bool> {
     Ok(question(summary, what).await? == Some(true))
 }
 
-/// Ask the user `body` with the title `summary`, with Allow and Deny: the answer, or `None` when the user closed the
-/// notification or gave no answer within the time.
+/// The questions that wait for the user, by number, for an answer from the app or a terminal (`approval.answer`).
+static WAITING: std::sync::Mutex<
+    std::collections::BTreeMap<u64, tokio::sync::oneshot::Sender<bool>>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Give the answer to question `ask`, which waits: as Allow or Deny in its notice.
+///
+/// # Errors
+/// No question `ask` waits (it has its answer, or its time ended).
+pub fn answer(ask: u64, allow: bool) -> Result<()> {
+    let waiting = WAITING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&ask);
+    waiting.and_then(|tx| tx.send(allow).ok()).with_context(|| {
+        format!("question {ask} does not wait now: it has its answer, or its time ended")
+    })
+}
+
+/// The event of a question and of its answer, for the app's Activity; a failed write is told, the question goes on.
+fn note(kind: &str, payload: &serde_json::Value) {
+    if let Err(e) =
+        legionctl_core::db::Db::open_default().and_then(|db| db.record("operator", kind, payload))
+    {
+        eprintln!("operator: cannot log the approval {kind}: {e:#}");
+    }
+}
+
+/// Ask the user `body` with the title `summary`, with Allow and Deny in a desktop notice, which the app's Activity
+/// and `legionctl approval answer` can answer too (the notice then closes): the answer, or `None` when the user closed
+/// the notice or gave no answer within the time.
 ///
 /// # Errors
 /// There is no session bus or notification service to ask.
 pub async fn question(summary: &str, body: &str) -> Result<Option<bool>> {
+    let ask = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (tx, mut elsewhere) = tokio::sync::oneshot::channel();
+    WAITING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(ask, tx);
+    let answer = notice_answer(summary, body, ask, &mut elsewhere).await;
+    WAITING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&ask);
+    let said = match &answer {
+        Ok(Some(true)) => "allowed",
+        Ok(Some(false)) => "denied",
+        Ok(None) => "no answer",
+        Err(_) => "not asked",
+    };
+    note(
+        "approval.answer",
+        &serde_json::json!({"ask": ask, "summary": summary, "what": body, "answer": said}),
+    );
+    answer
+}
+
+async fn notice_answer(
+    summary: &str,
+    body: &str,
+    ask: u64,
+    elsewhere: &mut tokio::sync::oneshot::Receiver<bool>,
+) -> Result<Option<bool>> {
     let bus = zbus::Connection::session()
         .await
         .context("no session bus to ask the user")?;
@@ -90,29 +150,40 @@ pub async fn question(summary: &str, body: &str) -> Result<Option<bool>> {
         .await
         .context("no desktop notification service to ask the user")?;
     let id: u32 = reply.body().deserialize()?;
-    let answer = tokio::time::timeout(WAIT, async {
+    note(
+        "approval.ask",
+        &serde_json::json!({"ask": ask, "summary": summary, "what": body}),
+    );
+    let from_notice = async {
         while let Some(signal) = answers.next().await {
             let signal = signal.context("reading the notification service's answer")?;
             match signal.header().member().map(ToString::to_string).as_deref() {
                 Some("ActionInvoked") => {
                     let (of, key): (u32, String) = signal.body().deserialize()?;
                     if of == id {
-                        return Ok(Some(key == "allow"));
+                        return Ok((Some(key == "allow"), false));
                     }
                 }
                 Some("NotificationClosed") => {
                     let (of, _reason): (u32, u32) = signal.body().deserialize()?;
                     if of == id {
-                        return Ok(None);
+                        return Ok((None, false));
                     }
                 }
                 _ => {}
             }
         }
         anyhow::bail!("the notification service's signals ended before an answer")
+    };
+    let answered = tokio::time::timeout(WAIT, async {
+        tokio::select! {
+            notice = from_notice => notice,
+            Ok(allow) = &mut *elsewhere => Ok((Some(allow), true)),
+        }
     })
     .await;
-    if answer.is_err() {
+    // no answer within the time, or an answer from the app: the notice goes away
+    if !matches!(answered, Ok(Ok((_, false)))) {
         let _ = bus
             .call_method(
                 Some(NOTIFICATIONS),
@@ -124,7 +195,7 @@ pub async fn question(summary: &str, body: &str) -> Result<Option<bool>> {
             .await;
     }
     // no answer within the time is no decision (None): the caller says so
-    answer.unwrap_or(Ok(None))
+    answered.map_or(Ok(None), |a| a.map(|(answer, _)| answer))
 }
 
 const PORTAL: &str = "org.freedesktop.portal.Desktop";

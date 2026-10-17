@@ -3138,6 +3138,23 @@ impl Engine for Operator {
         Ok(items)
     }
 
+    fn approval_answer(&self, ctx: &Ctx, input: legionctl_api::ApprovalAnswerIn) -> Result<Lines> {
+        // the question is the user's: an agent never answers one, also not after the user allowed the call
+        anyhow::ensure!(
+            ctx.principal == legionctl_api::Principal::User,
+            "only the user answers a question"
+        );
+        let allow = input.answer == legionctl_api::Answer::Allow;
+        crate::desktop::answer(input.ask, allow)?;
+        Ok(Lines {
+            lines: vec![format!(
+                "question {}: {}",
+                input.ask,
+                if allow { "allowed" } else { "denied" }
+            )],
+        })
+    }
+
     fn feedback_new(&self, _: &Ctx, input: legionctl_api::FeedbackIn) -> Result<Lines> {
         let store = dossiers()?;
         let now = legionctl_core::facts::now_ms() / 1000;
