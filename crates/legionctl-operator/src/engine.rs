@@ -2244,21 +2244,49 @@ impl Engine for Operator {
     }
 
     fn agents_accounts_list(&self, _: &Ctx, _: Empty) -> Result<Vec<Account>> {
-        let root = legionctl_core::session::accounts_root();
-        legionctl_core::accounts::profiles()?
-            .into_iter()
-            .map(|name| {
-                // a login rests in the keyring while no session of the account runs
-                let has =
-                    |agent| legionctl_core::accounts::login_file(&name, agent).map(|f| f.is_some());
-                Ok(Account {
-                    claude: has("claude")?,
-                    codex: has("codex")?,
-                    dir: root.join(&name).display().to_string(),
+        let mut out: Vec<Account> = Vec::new();
+        for held in legionctl_core::accounts::logins()? {
+            let i = out
+                .iter()
+                .position(|a| a.name == held.name && a.source == held.source)
+                .unwrap_or_else(|| {
+                    out.push(Account {
+                        name: held.name.clone(),
+                        source: held.source.into(),
+                        active: held.active,
+                        claude: false,
+                        codex: false,
+                    });
+                    out.len() - 1
+                });
+            let a = &mut out[i];
+            a.active |= held.active;
+            if held.agent == "claude" {
+                a.claude = true;
+            } else {
+                a.codex = true;
+            }
+        }
+        // the legionctl profiles with no login yet are accounts too
+        for name in legionctl_core::accounts::profiles()? {
+            if !out
+                .iter()
+                .any(|a| a.name == name && a.source == "legionctl")
+            {
+                out.push(Account {
                     name,
-                })
-            })
-            .collect()
+                    source: "legionctl".into(),
+                    active: false,
+                    claude: false,
+                    codex: false,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    fn agents_accounts_capture(&self, _: &Ctx, input: AccountAddIn) -> Result<Lines> {
+        crate::accounts::capture(&input.name)
     }
 
     fn agents_accounts_usage(

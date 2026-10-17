@@ -249,7 +249,7 @@ fn account_of(
     Ok(match crate::accounts::decide(runtime, (&w.agent, own))? {
         crate::accounts::Decision::Stay => own.map(String::from),
         crate::accounts::Decision::Move { to, why } => {
-            store.thread_account(w.thread, Some(&w.member), &to, Some(&why))?;
+            store.thread_account(w.thread, Some(&w.member), Some(&to), Some(&why))?;
             Db::open_default()?.record(
                 "operator",
                 "agents.accounts.switch",
@@ -260,18 +260,17 @@ fn account_of(
     })
 }
 
-/// `thread account`: an operator member's account, or the chat bar's.
+/// `thread account`: an operator member's account, or the chat bar's; none: the current login.
 pub fn account(input: &legionctl_api::ThreadAccountIn) -> Result<Lines> {
-    dossiers()?.thread_account(input.thread, input.member.as_deref(), &input.account, None)?;
+    let account = input.account.as_deref();
+    dossiers()?.thread_account(input.thread, input.member.as_deref(), account, None)?;
+    let account = account.map_or_else(|| "the current login".into(), |a| format!("account {a}"));
     Ok(lines(vec![match &input.member {
         Some(member) => format!(
-            "thread {}: {member} runs on account {} from its next wake",
-            input.thread, input.account
+            "thread {}: {member} runs on {account} from its next wake",
+            input.thread
         ),
-        None => format!(
-            "thread {}: the chat bar runs on account {}",
-            input.thread, input.account
-        ),
+        None => format!("thread {}: the chat bar runs on {account}", input.thread),
     }]))
 }
 

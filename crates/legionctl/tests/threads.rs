@@ -1270,10 +1270,27 @@ impl Lab {
 /// each option an intent and its title); its pick at 0.8 opens that view and no composer runs. A pick of none goes on
 /// to the composer; a failed rlcd call fails the ask with rlcd's error and the composer does not run in its place. An
 /// intent that shares no word with a stored one asks no rlcd. Each step's outcome, tokens and time are in the answer,
-/// in the event views.ask and in views cost.
+/// in the event views.ask and in views cost, the composer's with the account it ran on (todo-179 (5): the current
+/// login, here clauth's profile alt, linked as clauth 0.17.0 does).
 #[test]
 fn a_similar_intent_opens_the_stored_view_through_rlcd_and_a_failed_rlcd_runs_no_composer() {
-    let (lab, port, log, server, _) = ask_lab("ask-rlcd", &json!({"views": {"rlcd": true}}));
+    let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-acp-agent.py");
+    let (lab, port, log, server, _) = ask_lab(
+        "ask-rlcd",
+        &json!({"views": {"rlcd": true}, "app": {"agent": "claude"},
+            "session": {"acp": {"claude": ["python3", fake]}, "acp_bind": ["claude"], "scope": false, "writable": []}}),
+    );
+    let alt = lab.home.join(".clauth/profiles/alt/credentials.json");
+    write(
+        &alt,
+        r#"{"claudeAiOauth": {"accessToken": "tok-a", "refreshToken": "r-alt"}}"#,
+    );
+    write(
+        &lab.home.join(".clauth/profiles.toml"),
+        "profiles = [\"alt\"]\n",
+    );
+    std::fs::create_dir_all(lab.home.join(".claude")).unwrap();
+    std::os::unix::fs::symlink(&alt, lab.home.join(".claude/.credentials.json")).unwrap();
     let ask = |pick: &str, intent: &str| {
         rlcd_backends(&lab.home, port, pick);
         lab.ask(&[intent])
@@ -1380,9 +1397,11 @@ fn rlcd_costs_are_recorded(lab: &Lab) {
     );
     let composer = row("composer");
     assert_eq!(
-        (&composer["runs"], &composer["failed"]),
-        (&json!(1), &json!(0))
+        (&composer["runs"], &composer["failed"], &composer["account"]),
+        (&json!(1), &json!(0), &json!("alt")),
+        "the composer ran on the current login, clauth's alt: {cost}"
     );
+    assert_eq!(rlcd["account"], Value::Null, "rlcd runs no agent");
     assert!(composer["tokens_in"].as_u64().unwrap() > 500, "{cost}");
     let events = lab.json("main", &["events", "--limit", "1000"]);
     let failed_event = events["items"]
@@ -3162,7 +3181,15 @@ fn a_member_runs_under_its_account_and_resumes_under_the_next_at_its_limit() {
     lab.ok(
         main,
         ws,
-        &["thread", "account", "1", "third", "--member", "observer0"],
+        &[
+            "thread",
+            "account",
+            "1",
+            "--account",
+            "third",
+            "--member",
+            "observer0",
+        ],
     );
     a.wake(3);
     assert_eq!(a.dirs().last(), Some(&a.profile("third")));

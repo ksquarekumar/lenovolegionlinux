@@ -1,7 +1,7 @@
 //! Account usage (todo-136): the rate-limit windows (Claude: 5 h and 7 d; Codex: its primary and secondary windows)
-//! of each account profile's Claude Code and Codex login, as the provider reports them, read with the profile's own
-//! access token. The token is only read: never refreshed (both agents rotate their refresh tokens, DESIGN-12 wall
-//! 1), never written, printed or logged. A read that fails is that account's error with its cause, never zero use.
+//! of each Claude Code and Codex login (the current one, clauth's profiles and legionctl's account profiles: `Held`),
+//! as the provider reports them, read with the login's own access token. The token is only read: never refreshed
+//! (both agents rotate their refresh tokens, DESIGN-12 wall 1), never written, printed or logged. A read that fails is that account's error with its cause, never zero use.
 //! Each answer, or its error, is kept in the cache (namespace `accounts`) with its fetch time.
 //!
 //! The endpoints, their request headers and the shapes of their answers are ported from clauth 0.17.0
@@ -10,6 +10,7 @@
 //! answer is an error that names the field.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use schemars::JsonSchema;
@@ -52,6 +53,10 @@ pub struct Window {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AccountUsage {
     pub account: String,
+    /// Where its login is: `current`, `clauth` or `legionctl` (`Held`).
+    pub source: String,
+    /// The current login, or clauth's active profile.
+    pub active: bool,
     pub agent: String,
     pub windows: Vec<Window>,
     /// Why the read failed; the windows are empty then.
@@ -76,6 +81,177 @@ pub struct Login {
     pub token: String,
     /// Codex's `ChatGPT` account (the `ChatGPT-Account-ID` header).
     pub account_id: Option<String>,
+}
+
+/// One agent's login of an account, and where it is:
+/// - `current`: the login Claude Code and Codex use now (`~/.claude/.credentials.json`, `~/.codex/auth.json`), named
+///   by the clauth profile that holds it (as `clauth which` does: the same refresh token), else `current`;
+/// - `clauth`: another profile of clauth (`~/.clauth/profiles/<name>`, read only; `active`: clauth's active one);
+/// - `legionctl`: an account profile of `agents accounts add`.
+pub struct Held {
+    pub name: String,
+    pub source: &'static str,
+    pub agent: String,
+    pub active: bool,
+    /// The login file; none: a legionctl profile's (`login_file`).
+    file: Option<PathBuf>,
+}
+
+impl Held {
+    /// `agent`'s login in legionctl account profile `name`.
+    #[must_use]
+    pub fn profile(name: &str, agent: &str) -> Self {
+        Self {
+            name: name.into(),
+            source: "legionctl",
+            agent: agent.into(),
+            active: false,
+            file: None,
+        }
+    }
+
+    fn bytes(&self) -> Result<Option<Vec<u8>>> {
+        match &self.file {
+            None => login_file(&self.name, &self.agent),
+            Some(path) => match std::fs::read(path) {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+            },
+        }
+    }
+}
+
+fn home() -> Result<PathBuf> {
+    Ok(PathBuf::from(
+        std::env::var_os("HOME").context("HOME is not set")?,
+    ))
+}
+
+/// The login file that `agent` uses now.
+///
+/// # Errors
+/// HOME is not set.
+pub fn live_file(agent: &str) -> Result<PathBuf> {
+    Ok(if agent == "claude" {
+        home()?.join(".claude/.credentials.json")
+    } else {
+        home()?.join(".codex/auth.json")
+    })
+}
+
+/// The login file of `agent` in clauth profile `name` (clauth 0.17.0 `profile_dir`: `credentials.json`,
+/// `auth.json`).
+fn clauth_file(name: &str, agent: &str) -> Result<PathBuf> {
+    Ok(home()?
+        .join(".clauth/profiles")
+        .join(name)
+        .join(if agent == "claude" {
+            "credentials.json"
+        } else {
+            "auth.json"
+        }))
+}
+
+/// clauth's roster of `agent` (clauth 0.17.0: `profiles.toml` for Claude Code, `codex-profiles.toml` for Codex): its
+/// active profile and its profiles; none when clauth has no roster.
+///
+/// # Errors
+/// The roster cannot be read or is not TOML with a list `profiles`.
+pub fn clauth_roster(agent: &str) -> Result<(Option<String>, Vec<String>)> {
+    let path = home()?.join(".clauth").join(if agent == "claude" {
+        "profiles.toml"
+    } else {
+        "codex-profiles.toml"
+    });
+    let text = match std::fs::read_to_string(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((None, Vec::new())),
+        text => text.with_context(|| format!("reading {}", path.display()))?,
+    };
+    let roster: toml::Table =
+        toml::from_str(&text).with_context(|| format!("{} is not TOML", path.display()))?;
+    let names = match roster.get("profiles") {
+        None => Vec::new(),
+        Some(list) => list
+            .as_array()
+            .and_then(|l| l.iter().map(|n| n.as_str().map(String::from)).collect())
+            .with_context(|| format!("{}: profiles is not a list of names", path.display()))?,
+    };
+    let active = roster
+        .get("active_profile")
+        .and_then(|a| a.as_str())
+        .map(String::from);
+    Ok((active, names))
+}
+
+/// The refresh token of a login file of `agent`, compared and dropped, never kept.
+fn refresh_token(agent: &str, bytes: &[u8]) -> Option<String> {
+    let file: Value = serde_json::from_slice(bytes).ok()?;
+    let token = if agent == "claude" {
+        &file["claudeAiOauth"]["refreshToken"]
+    } else {
+        &file["tokens"]["refresh_token"]
+    };
+    token.as_str().filter(|t| !t.is_empty()).map(String::from)
+}
+
+/// Every login: the current ones, clauth's other profiles, and the legionctl profiles' (`Held`).
+///
+/// # Errors
+/// HOME is not set, a login file, clauth's roster, the profiles folder or the keyring cannot be read.
+pub fn logins() -> Result<Vec<Held>> {
+    let mut out = Vec::new();
+    for agent in ["claude", "codex"] {
+        let (active, names) = clauth_roster(agent)?;
+        let live = live_file(agent)?;
+        let mut current = Held {
+            name: "current".into(),
+            source: "current",
+            agent: agent.into(),
+            active: true,
+            file: Some(live.clone()),
+        };
+        let live_login = current.bytes()?;
+        let token = live_login.as_deref().and_then(|b| refresh_token(agent, b));
+        // the owner: the profile that clauth's link points to, else the first with the same refresh token; two
+        // profiles with one login (two holders of one rotating token) both stay listed
+        let linked = live.canonicalize().ok();
+        let mut matching = Vec::new();
+        for name in &names {
+            let file = clauth_file(name, agent)?;
+            let held = Held {
+                name: name.clone(),
+                source: "clauth",
+                agent: agent.into(),
+                active: active.as_ref() == Some(name),
+                file: Some(file.clone()),
+            };
+            let Some(bytes) = held.bytes()? else { continue };
+            if token.is_some() && refresh_token(agent, &bytes) == token {
+                matching.push((linked.as_ref() == file.canonicalize().ok().as_ref(), held));
+            } else {
+                out.push(held);
+            }
+        }
+        // the linked one first, else the roster's order
+        matching.sort_by_key(|(link, _)| !*link);
+        let mut matching = matching.into_iter().map(|(_, h)| h);
+        if live_login.is_some() {
+            if let Some(owner) = matching.next() {
+                current.name = owner.name;
+            }
+            out.push(current);
+        }
+        out.extend(matching);
+    }
+    for name in profiles()? {
+        for agent in ["claude", "codex"] {
+            if login_file(&name, agent)?.is_some() {
+                out.push(Held::profile(&name, agent));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// The account profiles, by name.
@@ -119,13 +295,14 @@ pub fn login_file(account: &str, agent: &str) -> Result<Option<Vec<u8>>> {
     }
 }
 
-/// The access token of `agent`'s login in profile `account`, unchanged: an expired Claude token is an error (the
-/// agent refreshes it at its next start), never refreshed here.
+/// The access token of `held`, unchanged: an expired Claude token is an error (the agent, or clauth, refreshes it at
+/// its next use), never refreshed here.
 ///
 /// # Errors
 /// Not logged in, the login file does not parse or has no access token, or the token expired.
-pub fn login(account: &str, agent: &str, now_ms: i64) -> Result<Login> {
-    let Some(bytes) = login_file(account, agent)? else {
+pub fn login(held: &Held, now_ms: i64) -> Result<Login> {
+    let (account, agent) = (&held.name, held.agent.as_str());
+    let Some(bytes) = held.bytes()? else {
         bail!("login needed: {agent} is not logged in on account {account}");
     };
     let file: Value = serde_json::from_slice(&bytes).map_err(|e| {
@@ -138,8 +315,8 @@ pub fn login(account: &str, agent: &str, now_ms: i64) -> Result<Login> {
             .context("the claude login file has no claudeAiOauth.accessToken")?;
         if let Some(expires) = oauth["expiresAt"].as_i64().filter(|e| *e <= now_ms) {
             bail!(
-                "login needed: the access token of account {account} expired at {}; start Claude Code on the \
-                 account once (it refreshes its own token)",
+                "login needed: the access token of account {account} expired at {}; Claude Code refreshes it when \
+                 it next runs on the account",
                 expires / 1000
             );
         }
@@ -282,13 +459,13 @@ fn iso_seconds(text: &str) -> Option<i64> {
 
 const NS: &str = "accounts";
 
-/// The kept answer of `account`/`agent` while it lives.
+/// The kept answer of `held` while it lives.
 ///
 /// # Errors
 /// The cache cannot be opened or read, or the kept value does not parse.
-pub fn cached(account: &str, agent: &str) -> Result<Option<AccountUsage>> {
+pub fn cached(held: &Held) -> Result<Option<AccountUsage>> {
     crate::cache::Cache::open()?
-        .get(NS, &format!("{account}/{agent}"))?
+        .get(NS, &format!("{}/{}/{}", held.source, held.name, held.agent))?
         .map(|e| serde_json::from_slice(&e.value).context("a kept account usage"))
         .transpose()
 }
@@ -299,7 +476,10 @@ pub fn cached(account: &str, agent: &str) -> Result<Option<AccountUsage>> {
 /// The cache cannot be opened or written.
 pub fn keep(usage: &AccountUsage, ttl_s: u64, max_bytes: u64) -> Result<()> {
     crate::cache::Cache::open()?.put(
-        (NS, &format!("{}/{}", usage.account, usage.agent)),
+        (
+            NS,
+            &format!("{}/{}/{}", usage.source, usage.account, usage.agent),
+        ),
         &crate::cache::Entry {
             value: serde_json::to_vec(usage)?,
             meta: Value::Null,

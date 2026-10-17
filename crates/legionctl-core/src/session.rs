@@ -459,11 +459,25 @@ pub fn account_dir(account: &str) -> Result<PathBuf> {
         "an account name is a-z, 0-9 and '-', starting with a letter or digit"
     );
     let dir = accounts_root().join(account);
-    anyhow::ensure!(
-        dir.is_dir(),
+    if dir.is_dir() {
+        return Ok(dir);
+    }
+    for agent in ["claude", "codex"] {
+        if crate::accounts::clauth_roster(agent)?
+            .1
+            .iter()
+            .any(|n| n == account)
+        {
+            // shortcut: no session on a clauth profile that is not the current login; upgrade with clauth's own start
+            anyhow::bail!(
+                "account {account} is a clauth profile: a session runs on it when it is the current login (switch to \
+                 it with `clauth {account}`, then pick the current login)"
+            );
+        }
+    }
+    anyhow::bail!(
         "no account profile {account}; make it with `legionctl agents accounts add {account}`"
-    );
-    Ok(dir)
+    )
 }
 
 /// The skills a session gets (`session.skills`): each skill's name and its hash-checked folder in the store; `None`

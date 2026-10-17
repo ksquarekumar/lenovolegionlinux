@@ -1369,8 +1369,8 @@ impl Dossiers {
     }
 
     /// The account of operator member `member` of `thread` (it runs on it from its next wake), or of the thread's
-    /// chat bar (no member): a `thread.account` row of its log. `why` is a switch at the limit (todo-136): main0
-    /// gets it as a note.
+    /// chat bar (no member): a `thread.account` row of its log; none: the current login. `why` is a switch at the
+    /// limit (todo-136): main0 gets it as a note.
     ///
     /// # Errors
     /// No such thread or member, it is read-only, the member is not an operator member, no such account profile, or
@@ -1379,11 +1379,13 @@ impl Dossiers {
         &self,
         thread: i64,
         member: Option<&str>,
-        account: &str,
+        account: Option<&str>,
         why: Option<&str>,
     ) -> Result<()> {
         self.writable(thread)?;
-        crate::session::account_dir(account)?;
+        if let Some(account) = account {
+            crate::session::account_dir(account)?;
+        }
         let tx = self.begin()?;
         let Some(member) = member else {
             log(
@@ -1411,7 +1413,7 @@ impl Dossiers {
                 bail!("{member} is a Codex subagent: it runs on the account of its main session")
             }
             _ => bail!(
-                "{member} runs its own session: continue it with `session resume <id> --account {account}`"
+                "{member} runs its own session: continue it with `session resume <id> --account <name>`"
             ),
         }
         let mut fields: serde_json::Map<String, Value> = serde_json::from_str(&fields)?;
@@ -1433,7 +1435,10 @@ impl Dossiers {
                 thread,
                 (member, "main0"),
                 Kind::Note,
-                &format!("{member} continues on account {account}: {why}"),
+                &format!(
+                    "{member} continues on account {}: {why}",
+                    account.unwrap_or("current")
+                ),
                 None,
             )?;
         }

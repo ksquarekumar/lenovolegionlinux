@@ -99,8 +99,9 @@ pub struct Screen {
     pub updated: Option<std::time::Instant>,
     /// The refreshes since the start (the Activity reads its slow parts each 15th).
     pub ticks: u32,
-    /// The account profiles and their usage (`agents accounts list`, `agents accounts usage`, todo-136).
-    pub accounts: Vec<String>,
+    /// The accounts (the current login, clauth's and legionctl's profiles) and their usage (`agents accounts list`,
+    /// `agents accounts usage`, todo-136).
+    pub accounts: Vec<legionctl_api::Account>,
     pub usage: Vec<legionctl_api::AccountUsage>,
     /// Whose account picker shows: a member's name, or "" for the chat bar.
     pub picking: Option<String>,
@@ -199,26 +200,32 @@ impl Screen {
         }
     }
 
-    /// The chat bar's account: the thread's newest chat bar pick (a `thread.account` row of no member), else the
-    /// thread's account.
+    /// The chat bar's account: the thread's newest chat bar pick (a `thread.account` row of no member; none: the
+    /// current login), else the thread's account.
     #[must_use]
     pub fn chat_account(&self) -> Option<String> {
         let thread = self.tab_thread()?;
-        thread
+        match thread
             .log
             .iter()
             .rev()
             .find(|r| r.kind == "thread.account" && r.member.is_empty())
-            .and_then(|r| r.payload["account"].as_str().map(String::from))
-            .or_else(|| thread.thread.account.clone())
+        {
+            Some(pick) => pick.payload["account"].as_str().map(String::from),
+            None => thread.thread.account.clone(),
+        }
     }
 
-    /// An account's use in a few words (`claude 5h 42% 7d 8%`), each agent's, or why it cannot be read.
+    /// An account's use in a few words (`claude 5h 42% 7d 8%`), each agent's, or why it cannot be read; none: the
+    /// current login's.
     #[must_use]
-    pub fn usage_of(&self, account: &str) -> String {
+    pub fn usage_of(&self, account: Option<&str>) -> String {
         self.usage
             .iter()
-            .filter(|u| u.account == account)
+            .filter(|u| match account {
+                None => u.source == "current",
+                Some(a) => u.account == a && u.source != "current",
+            })
             .map(|u| match &u.error {
                 Some(e) if e.starts_with("login needed") => format!("{} login needed", u.agent),
                 Some(_) => format!("{} usage unknown", u.agent),
@@ -646,7 +653,7 @@ impl LegionApp {
             Ok((accounts, usage))
         });
         self.finish(cx, task, |app, (accounts, usage)| {
-            app.screen.accounts = accounts.into_iter().map(|a| a.name).collect();
+            app.screen.accounts = accounts;
             app.screen.usage = usage;
         });
     }
@@ -1213,11 +1220,12 @@ impl LegionApp {
         t: &Tokens,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let usage = account.map(|a| self.screen.usage_of(a)).unwrap_or_default();
-        let text = match account {
-            Some(a) if usage.is_empty() => a.to_string(),
-            Some(a) => format!("{a} · {usage}"),
-            None => "home login".into(),
+        let usage = self.screen.usage_of(account);
+        let name = account.unwrap_or("current login");
+        let text = if usage.is_empty() {
+            name.to_string()
+        } else {
+            format!("{name} · {usage}")
         };
         let why: Option<&'static str> = match run {
             None | Some("operator") => None,
@@ -1263,8 +1271,9 @@ impl LegionApp {
             .into_any_element()
     }
 
-    /// The account profiles with their use, for `member` of `thread` (none: the chat bar). A pick runs
-    /// `thread.account` with its approval.
+    /// The accounts with their use, for `member` of `thread` (none: the chat bar): the current login and the
+    /// legionctl profiles; a pick runs `thread.account` with its approval. A clauth profile that is not the current
+    /// login shows, and says how to switch to it: a session runs on it only as the current login.
     fn account_picker(
         &self,
         thread: i64,
@@ -1272,15 +1281,32 @@ impl LegionApp {
         t: &Tokens,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let picks = self.screen.accounts.iter().map(|a| {
-            let input = json!({"thread": thread, "member": member, "account": a});
-            let label = match member {
-                Some(m) => format!("Run {m} on account {a}"),
-                None => format!("Run the chat bar on account {a}"),
-            };
-            let usage = self.screen.usage_of(a);
-            div()
-                .id(SharedString::from(format!("pick-{a}")))
+        let current = self
+            .screen
+            .accounts
+            .iter()
+            .any(|a| a.source == "current")
+            .then_some((None, "current".to_string(), "current login".to_string()));
+        let entries = current.into_iter().chain(
+            self.screen
+                .accounts
+                .iter()
+                .filter(|a| a.source != "current")
+                .map(|a| {
+                    let label = if a.active {
+                        format!("{} ({}, active)", a.name, a.source)
+                    } else {
+                        format!("{} ({})", a.name, a.source)
+                    };
+                    (Some(a.clone()), a.name.clone(), label)
+                }),
+        );
+        let picks = entries.map(|(account, name, text)| {
+            let usage = self
+                .screen
+                .usage_of((account.is_some()).then_some(name.as_str()));
+            let chip = div()
+                .id(SharedString::from(format!("pick-{name}")))
                 .flex_none()
                 .px(S2)
                 .py(px(2.))
@@ -1289,13 +1315,31 @@ impl LegionApp {
                 .border_color(t.border)
                 .bg(t.raised)
                 .text_size(T_XS)
-                .text_color(t.text)
-                .cursor_pointer()
                 .child(if usage.is_empty() {
-                    a.clone()
+                    text
                 } else {
-                    format!("{a} · {usage}")
-                })
+                    format!("{text} · {usage}")
+                });
+            if let Some(a) = account.as_ref().filter(|a| a.source == "clauth") {
+                let why = SharedString::from(format!(
+                    "A clauth profile: to run on it, switch to it with `clauth {}` and pick the current login",
+                    a.name
+                ));
+                return chip
+                    .text_color(t.muted)
+                    .tooltip(move |window, cx| Tooltip::new(why.clone()).build(window, cx))
+                    .test_support();
+            }
+            let pick = account.map(|a| a.name);
+            let input = json!({"thread": thread, "member": member, "account": pick});
+            let label = match (member, &pick) {
+                (Some(m), Some(a)) => format!("Run {m} on account {a}"),
+                (Some(m), None) => format!("Run {m} on the current login"),
+                (None, Some(a)) => format!("Run the chat bar on account {a}"),
+                (None, None) => "Run the chat bar on the current login".into(),
+            };
+            chip.text_color(t.text)
+                .cursor_pointer()
                 .on_click(cx.listener(move |app, _, _, cx| {
                     app.screen.picking = None;
                     app.act(
@@ -1319,7 +1363,7 @@ impl LegionApp {
                     div()
                         .text_size(T_XS)
                         .text_color(t.muted)
-                        .child("No account profile: legionctl agents accounts add <name>"),
+                        .child("No login: log in to Claude Code or Codex, or add an account (legionctl agents accounts add <name>)"),
                 )
             })
             .children(picks)

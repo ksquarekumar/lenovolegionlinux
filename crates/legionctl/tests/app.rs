@@ -2627,6 +2627,28 @@ fn accounts_lab() -> (Operator, PathBuf, PathBuf, common::process::Kill) {
                 .to_string(),
         );
     }
+    // clauth's layout (0.17.0): alt is active and Claude Code's current login (a link to alt's file); side is not
+    for (name, token, five) in [("alt", "tok-a", 21.0), ("side", "tok-c", 5.0)] {
+        write(
+            &home.join(format!(".clauth/profiles/{name}/credentials.json")),
+            &format!(
+                r#"{{"claudeAiOauth": {{"accessToken": "{token}", "refreshToken": "r-{name}"}}}}"#
+            ),
+        );
+        write(
+            &answers.join(format!("{token}.json")),
+            &serde_json::json!({"body": {"limits": [{"kind": "session", "percent": five}, {"kind": "weekly_all", "percent": 8.0}]}})
+                .to_string(),
+        );
+    }
+    write(
+        &home.join(".clauth/profiles.toml"),
+        "active_profile = \"alt\"\nprofiles = [\"alt\", \"side\"]\n",
+    );
+    let live = home.join(".claude/.credentials.json");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    let _ = std::fs::remove_file(&live);
+    std::os::unix::fs::symlink(home.join(".clauth/profiles/alt/credentials.json"), &live).unwrap();
     // thread 3: a team of operator members (the main agent is neither Claude Code nor Codex)
     let launch: serde_json::Value = serde_json::from_str(&lab_cli(
         &op,
@@ -2676,7 +2698,12 @@ fn the_member_chip_shows_its_account_usage_and_the_picker_sets_it(cx: &mut TestA
             .find(|m| m.name == "observer0")
             .unwrap();
         assert_eq!(observer.account.as_deref(), Some("work"));
-        assert_eq!(a.screen.usage_of("work"), "claude 5h 42% 7d 8%");
+        assert_eq!(a.screen.usage_of(Some("work")), "claude 5h 42% 7d 8%");
+        assert_eq!(
+            a.screen.usage_of(None),
+            "claude 5h 21% 7d 8%",
+            "the current login is alt"
+        );
     });
     reveal(cx, "account-observer0");
     cx.update(|window, cx| window.click("account-observer0", cx));
@@ -2716,6 +2743,30 @@ fn the_member_chip_shows_its_account_usage_and_the_picker_sets_it(cx: &mut TestA
         a.screen.chat_account().as_deref() == Some("work")
     });
 
+    // the current login (clauth's alt) is an account; clauth's side shows, and a click on it picks nothing
+    reveal(cx, "account-");
+    cx.update(|window, cx| window.click("account-", cx));
+    reveal(cx, "pick-side");
+    cx.update(|window, cx| window.click("pick-side", cx));
+    cx.run_until_parked();
+    app.read_with(cx, |a, _| {
+        assert!(a.state.pending.is_none(), "side is not the current login");
+    });
+    cx.update(|window, cx| window.click("pick-current", cx));
+    wait(cx, &app, "the current login's approval", |a| {
+        a.state.pending.is_some()
+    });
+    app.read_with(cx, |a, _| {
+        assert_eq!(
+            a.state.pending.as_ref().unwrap().button.input,
+            serde_json::json!({"thread": 3, "member": null, "account": null})
+        );
+    });
+    cx.update(|window, cx| window.click("apply", cx));
+    wait(cx, &app, "the chat bar on the current login", |a| {
+        a.screen.chat_account().is_none()
+    });
+
     a_teammates_account_cannot_be_picked(cx, &app, (&op, &home, &repo));
     drop(runtime);
 }
@@ -2742,7 +2793,15 @@ fn a_teammates_account_cannot_be_picked(
             ("HOME", home.to_str().unwrap()),
             ("LEGIONCTL_SESSION", "main"),
         ],
-        &["thread", "account", "2", "spare", "--member", "observer0"],
+        &[
+            "thread",
+            "account",
+            "2",
+            "--account",
+            "spare",
+            "--member",
+            "observer0",
+        ],
         "",
     );
     assert!(

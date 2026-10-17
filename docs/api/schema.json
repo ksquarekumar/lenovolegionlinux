@@ -1881,14 +1881,18 @@
     "output": {
       "type": "array",
       "items": {
-        "description": "An account profile: its own Claude Code and Codex logins and transcripts.",
+        "description": "An account: the current login (`current`, named by the clauth profile that holds it), a clauth profile\n(`clauth`), or a legionctl account profile with its own logins and transcripts (`legionctl`).",
         "type": "object",
         "properties": {
           "name": {
             "type": "string"
           },
-          "dir": {
+          "source": {
             "type": "string"
+          },
+          "active": {
+            "description": "The current login, or clauth's active profile.",
+            "type": "boolean"
           },
           "claude": {
             "description": "Claude Code is logged in there.",
@@ -1901,7 +1905,8 @@
         },
         "required": [
           "name",
-          "dir",
+          "source",
+          "active",
           "claude",
           "codex"
         ]
@@ -1911,6 +1916,41 @@
     }
   },
   "agents.accounts.add": {
+    "class": "workspace",
+    "internal": false,
+    "input": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Profile name: a-z, 0-9 and '-'."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "AccountAddIn",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "description": "Lines of output (dossier rows, messages).",
+      "title": "Lines",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  "agents.accounts.capture": {
     "class": "workspace",
     "internal": false,
     "input": {
@@ -1977,6 +2017,14 @@
           "account": {
             "type": "string"
           },
+          "source": {
+            "description": "Where its login is: `current` (the login Claude Code and Codex use now), `clauth` or `legionctl`.",
+            "type": "string"
+          },
+          "active": {
+            "description": "The current login, or clauth's active profile.",
+            "type": "boolean"
+          },
           "agent": {
             "type": "string"
           },
@@ -2021,6 +2069,8 @@
         },
         "required": [
           "account",
+          "source",
+          "active",
           "agent",
           "windows",
           "fetched_at"
@@ -18312,6 +18362,14 @@
                   "string",
                   "null"
                 ]
+              },
+              "account": {
+                "description": "The account the composer ran on: the chat bar's pick, else the current login's name.",
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
               }
             },
             "required": [
@@ -19418,6 +19476,13 @@
             "description": "stored, rlcd or composer.",
             "type": "string"
           },
+          "account": {
+            "description": "The account the composer ran on (none: the step runs no agent, or an ask from before it was kept).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "runs": {
             "description": "The asks in which it ran, it answered, and it failed.",
             "type": "integer",
@@ -19538,13 +19603,16 @@
           "default": null
         },
         "account": {
-          "type": "string",
-          "description": "An account profile (`agents accounts list`)."
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "An account profile (`agents accounts list`); none: the current login.",
+          "default": null
         }
       },
       "required": [
-        "thread",
-        "account"
+        "thread"
       ],
       "title": "ThreadAccountIn",
       "$schema": "https://json-schema.org/draft/2020-12/schema"

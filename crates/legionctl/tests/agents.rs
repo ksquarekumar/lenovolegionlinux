@@ -748,8 +748,8 @@ struct UsageLab {
 }
 
 impl UsageLab {
-    fn new() -> UsageLab {
-        let lab = Lab::new("usage", &shipped_plugin());
+    fn new(tag: &str) -> UsageLab {
+        let lab = Lab::new(tag, &shipped_plugin());
         let answers = lab.home.join("usage");
         let (server, port) = usage::usage_server(&answers);
         let url = |agent: &str| format!("http://127.0.0.1:{port}/{agent}");
@@ -892,7 +892,7 @@ fn windows(usage: &Value, account: &str, agent: &str) -> Value {
 /// `--fresh` reads again; the seed view shows them by account.
 #[test]
 fn account_usage_comes_from_each_provider_read_only_and_a_changed_answer_is_an_error() {
-    let u = UsageLab::new();
+    let u = UsageLab::new("usage");
     let usage = u.read(&[]);
     assert_eq!(
         usage.as_array().unwrap().len(),
@@ -1016,12 +1016,149 @@ fn the_answer_is_kept_until_fresh(u: &UsageLab, usage: &Value) {
     let seed = u.lab.op.ok(&["views", "render", "accounts"]);
     for line in [
         "== work (2) ==",
-        "claude | 5h | 88 | 7d | 9 | no value | now",
-        "codex | 5h | 100 | 7d | 20 | no value | now",
-        "claude | no value | no value | no value | no value | the answer has no list limits | now",
+        "claude | legionctl | 5h | 88 | 7d | 9 | no value | now",
+        "codex | legionctl | 5h | 100 | 7d | 20 | no value | now",
+        "claude | legionctl | no value | no value | no value | no value | the answer has no list limits | now",
     ] {
         assert!(seed.lines().any(|l| l == line), "{line} missing:\n{seed}");
     }
+}
+
+/// todo-179 (5), r324: with no legionctl profile, the accounts were "no account profile has a login" while Claude Code
+/// and Codex were logged in and clauth had two profiles. In a Scratch HOME laid out as clauth 0.17.0 leaves it
+/// (`profiles.toml` with main and alt, alt active, `~/.claude/.credentials.json` a link to alt's file) and a Codex login
+/// that no clauth profile holds: the current logins are accounts (Claude Code's named alt, the profile the link points
+/// to, though main holds the same login), main is a clauth account, each read from the provider with its own token; nothing changes on disk. `agents accounts
+/// capture` never copies a login: alt is kept already, the Codex login is not kept and says how to make a second one;
+/// a Claude Code login that no clauth profile holds goes to `clauth capture <name>` (a stand-in), and with no login
+/// kept at all the call fails.
+#[test]
+fn the_current_logins_and_clauths_profiles_are_accounts_and_capture_never_copies_a_login() {
+    let u = UsageLab::new("current");
+    let home = u.lab.home.to_path_buf();
+    let clauth = |name: &str, token: &str| {
+        let path = home.join(format!(".clauth/profiles/{name}/credentials.json"));
+        write(
+            &path,
+            &json!({"claudeAiOauth": {"accessToken": format!("tok-{token}"), "refreshToken": format!("r-{token}")}})
+                .to_string(),
+        );
+        path
+    };
+    write(
+        &home.join(".clauth/profiles.toml"),
+        "active_profile = \"alt\"\nprofiles = [\"main\", \"alt\"]\n",
+    );
+    // main holds the same login as alt (seen live 2026-10-17): the link names the owner, and main stays listed
+    clauth("main", "alt");
+    let alt = clauth("alt", "alt");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::os::unix::fs::symlink(&alt, home.join(".claude/.credentials.json")).unwrap();
+    let codex = home.join(".codex/auth.json");
+    write(
+        &codex,
+        r#"{"tokens": {"access_token": "tok-livex", "refresh_token": "r-livex", "account_id": "acct-9"}}"#,
+    );
+    let limits = json!({"body": {"limits": [{"kind": "session", "percent": 30.0}, {"kind": "weekly_all", "percent": 4.0}]}});
+    u.answer("tok-alt", &limits);
+    u.answer("tok-livex", &json!({"body": {"rate_limit": {"primary_window": {"used_percent": 11.0, "limit_window_seconds": 18_000}}}}));
+    let disk = || {
+        [
+            &alt,
+            &codex,
+            &home.join(".clauth/profiles/main/credentials.json"),
+        ]
+        .map(|p| std::fs::read_to_string(p).unwrap())
+    };
+    let before = disk();
+
+    let usage = u.read(&[]);
+    let r = row(&usage, "alt", "claude");
+    assert_eq!(
+        [&r["source"], &r["active"]],
+        [&json!("current"), &json!(true)],
+        "{r}"
+    );
+    assert_eq!(windows(&usage, "alt", "claude")[0]["used_percent"], 30.0);
+    let r = row(&usage, "main", "claude");
+    assert_eq!(
+        [&r["source"], &r["active"]],
+        [&json!("clauth"), &json!(false)],
+        "{r}"
+    );
+    assert_eq!(windows(&usage, "current", "codex")[0]["used_percent"], 11.0);
+    assert_eq!(
+        usage
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["account"] == "alt")
+            .count(),
+        1,
+        "the current login is one account, not also clauth's alt: {usage:#}"
+    );
+    let text = u.lab.op.ok(&["agents", "accounts", "list"]);
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("alt") && l.contains("current login")),
+        "{text}"
+    );
+
+    capture_never_copies_a_login(&u, &disk, &before);
+}
+
+/// `agents accounts capture` in the layout of the test above: no copy, no write but clauth's own capture.
+fn capture_never_copies_a_login(
+    u: &UsageLab,
+    disk: &dyn Fn() -> [String; 3],
+    before: &[String; 3],
+) {
+    let home = u.lab.home.to_path_buf();
+    // clauth stands in: it logs its call
+    let bin = home.join("keyring-bin/clauth");
+    write(&bin, "#!/bin/sh\necho \"$*\" >> \"$HOME/clauth.log\"\n");
+    std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let kept = u.lab.op.ok(&["agents", "accounts", "capture", "keep"]);
+    assert!(
+        kept.contains("Claude Code: the current login is clauth profile alt already")
+            && kept.contains("Codex: the current login is not kept")
+            && kept.contains("clauth login keep --codex --browser"),
+        "{kept}"
+    );
+    assert_eq!(&disk(), before, "no login file changed");
+    assert!(!home.join("clauth.log").exists(), "clauth was not called");
+    assert!(
+        !home.join(".local/share/legionctl/accounts/keep").exists(),
+        "no copy"
+    );
+
+    // a Claude Code login that no clauth profile holds goes to clauth's capture
+    std::fs::remove_file(home.join(".claude/.credentials.json")).unwrap();
+    write(
+        &home.join(".claude/.credentials.json"),
+        &json!({"claudeAiOauth": {"accessToken": "tok-new", "refreshToken": "r-new"}}).to_string(),
+    );
+    let saved = u.lab.op.ok(&["agents", "accounts", "capture", "fresh"]);
+    assert!(
+        saved.contains("clauth keeps the current login as profile fresh"),
+        "{saved}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("clauth.log")).unwrap(),
+        "capture fresh\n"
+    );
+    std::fs::remove_file(home.join(".claude/.credentials.json")).unwrap();
+    let none = u
+        .lab
+        .op
+        .cli_in(&home, &["agents", "accounts", "capture", "none"]);
+    assert!(
+        !none.status.success()
+            && String::from_utf8_lossy(&none.stderr)
+                .contains("no login is kept: Codex: the current login is not kept"),
+        "{}",
+        String::from_utf8_lossy(&none.stderr)
+    );
 }
 
 /// The plugin's text names only commands that this build has (todo-176 S5: a plugin of a newer tree named

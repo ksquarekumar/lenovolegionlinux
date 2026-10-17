@@ -296,6 +296,10 @@ wire! {
     /// One account's rate-limit windows for one agent, from its provider; or why the read failed.
     struct AccountUsage from core::accounts::AccountUsage {
         account: String,
+        /// Where its login is: `current` (the login Claude Code and Codex use now), `clauth` or `legionctl`.
+        source: String,
+        /// The current login, or clauth's active profile.
+        active: bool,
         agent: String,
         windows: Vec<UsageWindow>,
         error: Option<String>,

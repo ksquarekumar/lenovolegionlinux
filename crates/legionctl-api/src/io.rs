@@ -266,8 +266,9 @@ pub struct ThreadAccountIn {
     /// An operator member: it runs on the account from its next wake. None: the chat bar's account.
     #[serde(default)]
     pub member: Option<String>,
-    /// An account profile (`agents accounts list`).
-    pub account: String,
+    /// An account profile (`agents accounts list`); none: the current login.
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1695,11 +1696,14 @@ pub struct Plugin {
     pub allowed: bool,
 }
 
-/// An account profile: its own Claude Code and Codex logins and transcripts.
+/// An account: the current login (`current`, named by the clauth profile that holds it), a clauth profile
+/// (`clauth`), or a legionctl account profile with its own logins and transcripts (`legionctl`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Account {
     pub name: String,
-    pub dir: String,
+    pub source: String,
+    /// The current login, or clauth's active profile.
+    pub active: bool,
     /// Claude Code is logged in there.
     pub claude: bool,
     /// Codex is logged in there.
@@ -2801,6 +2805,9 @@ pub struct AskStep {
     pub ms: u64,
     /// Why it failed, or why it found none.
     pub note: Option<String>,
+    /// The account the composer ran on: the chat bar's pick, else the current login's name.
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2831,6 +2838,8 @@ pub struct PartInfo {
 pub struct AskCost {
     /// stored, rlcd or composer.
     pub step: String,
+    /// The account the composer ran on (none: the step runs no agent, or an ask from before it was kept).
+    pub account: Option<String>,
     /// The asks in which it ran, it answered, and it failed.
     pub runs: u64,
     pub answered: u64,

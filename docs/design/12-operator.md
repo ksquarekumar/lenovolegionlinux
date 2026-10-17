@@ -189,9 +189,21 @@ Operating directory, dossier home `~/agentWorkspaces`, dossier and change sets: 
   first listed account under it, with a `thread.account` row, a note to main0 and an `agents.accounts.switch` event;
   when no listed account is under it, the wake fails with the reason (the restart limit applies). The check runs at
   the start of a wake, so a turn is never cut. A failed usage read of the member's account fails the wake with its
-  reason (user decision 2026-10-17). `thread account <thread> <account> [--member <m>]` (the app's
-  member chip and chat bar) picks an operator member's account from its next wake, or the chat bar's; a teammate or a
-  Codex subagent is refused. Only the defaults, /etc/legionctl and the user layer set `agents.accounts`.
+  reason (user decision 2026-10-17). `thread account <thread> [--account <name>] [--member <m>]` (the app's
+  member chip and chat bar) picks an operator member's account from its next wake, or the chat bar's; no
+  `--account` is the current login; a teammate or a Codex subagent is refused. Only the defaults, /etc/legionctl and
+  the user layer set `agents.accounts`.
+  The accounts (todo-179 (5), 2026-10-17): `agents accounts list` and `usage` show every login, each with its source:
+  `current` (the login Claude Code and Codex use now, `~/.claude/.credentials.json` and `~/.codex/auth.json`, named by
+  the clauth profile that holds the same refresh token, as `clauth which` does), `clauth` (clauth's other profiles,
+  read only from `~/.clauth`: `profiles.toml` and `codex-profiles.toml` for the roster and the active profile,
+  `profiles/<name>/credentials.json` or `auth.json` for the login) and `legionctl` (the profiles above). A session
+  runs on the current login (no account) or on a legionctl profile; a clauth profile that is not the current login
+  is refused with the way to switch to it (`clauth <name>`). `agents accounts capture <name>` keeps the current
+  logins without a copy (DESIGN-12 wall 1; clauth calls two holders of one refresh chain "two-carrier death"): a
+  login that a clauth profile holds is kept already; Claude Code's other login goes to `clauth capture <name>`; a
+  Codex login that no clauth profile holds is not kept (make a second login). The `views.ask` steps keep the account
+  the composer ran on, and `views.cost` counts per step and account.
 
 ## AI gateway
 

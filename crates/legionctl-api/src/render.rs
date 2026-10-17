@@ -1975,10 +1975,20 @@ impl Render for Vec<crate::Plugin> {
     }
 }
 
+/// Where an account's login is, in words: `current login`, `clauth (active)`, `legionctl`.
+fn from(source: &str, active: bool) -> String {
+    match (source, active) {
+        ("current", _) => "current login".into(),
+        (s, true) => format!("{s} (active)"),
+        (s, false) => s.into(),
+    }
+}
+
 impl Render for Vec<crate::AccountUsage> {
     fn text(&self) -> String {
         if self.is_empty() {
-            return "no account profile has a login (legionctl agents accounts add <name>)".into();
+            return "no login: Claude Code and Codex are not logged in, and no clauth or legionctl account has a login"
+                .into();
         }
         self.iter()
             .map(|u| {
@@ -1989,7 +1999,12 @@ impl Render for Vec<crate::AccountUsage> {
                         .collect::<Vec<_>>()
                         .join("  ")
                 });
-                format!("{:<16} {:<7} {what}", u.account, u.agent)
+                format!(
+                    "{:<16} {:<20} {:<7} {what}",
+                    u.account,
+                    from(&u.source, u.active),
+                    u.agent
+                )
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -1999,17 +2014,18 @@ impl Render for Vec<crate::AccountUsage> {
 impl Render for Vec<crate::Account> {
     fn text(&self) -> String {
         if self.is_empty() {
-            return "no account profiles (legionctl agents accounts add <name>)".into();
+            return "no login: Claude Code and Codex are not logged in, and no clauth or legionctl account has a login"
+                .into();
         }
         self.iter()
             .map(|a| {
                 let yes = |b: bool| if b { "logged in" } else { "not logged in" };
                 format!(
-                    "{:<16} claude {:<14} codex {:<14} {}",
+                    "{:<16} {:<20} claude {:<14} codex {}",
                     a.name,
+                    from(&a.source, a.active),
                     yes(a.claude),
                     yes(a.codex),
-                    a.dir
                 )
             })
             .collect::<Vec<_>>()

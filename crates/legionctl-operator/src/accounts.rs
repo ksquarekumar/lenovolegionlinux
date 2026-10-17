@@ -75,32 +75,34 @@ async fn fetch(url: &str, agent: &str, login: &Login) -> Result<Vec<accounts::Wi
     }
 }
 
-/// The usage of `account`'s `agent`: the kept answer, else (or with `fresh`) a read from the provider, kept with its
-/// fetch time; a failed read is the answer's error.
+/// The usage of `held`: the kept answer, else (or with `fresh`) a read from the provider, kept with its fetch time; a
+/// failed read is the answer's error.
 ///
 /// # Errors
 /// The cache fails.
 pub fn usage_of(
     runtime: &tokio::runtime::Handle,
     config: &Config,
-    (account, agent): (&str, &str),
+    held: &accounts::Held,
     fresh: bool,
 ) -> Result<AccountUsage> {
-    if !fresh && let Some(kept) = accounts::cached(account, agent)? {
+    if !fresh && let Some(kept) = accounts::cached(held)? {
         return Ok(kept);
     }
     let a = &config.agents.accounts;
-    let url = if agent == "claude" {
+    let url = if held.agent == "claude" {
         &a.endpoints.claude
     } else {
         &a.endpoints.codex
     };
     let now = now_ms();
-    let read = accounts::login(account, agent, now)
-        .and_then(|login| runtime.block_on(fetch(url, agent, &login)));
+    let read = accounts::login(held, now)
+        .and_then(|login| runtime.block_on(fetch(url, &held.agent, &login)));
     let usage = AccountUsage {
-        account: account.into(),
-        agent: agent.into(),
+        account: held.name.clone(),
+        source: held.source.into(),
+        active: held.active,
+        agent: held.agent.clone(),
         fetched_at: now / 1000,
         windows: read.as_ref().map(Clone::clone).unwrap_or_default(),
         error: read.err().map(|e| format!("{e:#}")),
@@ -110,31 +112,28 @@ pub fn usage_of(
     Ok(usage)
 }
 
-/// `agents accounts usage`: each logged-in agent of each profile (or of `account`).
+/// `agents accounts usage`: each login (`accounts::logins`), or those of `account`.
 ///
 /// # Errors
-/// No such profile, a profile or its keyring cannot be read, or the cache fails.
+/// No login has that name, a login cannot be read, or the cache fails.
 pub fn usage(
     runtime: &tokio::runtime::Handle,
     input: &legionctl_api::AccountUsageIn,
 ) -> Result<Vec<AccountUsage>> {
     let config = config()?;
-    let names = match &input.account {
-        Some(name) => {
-            legionctl_core::session::account_dir(name)?;
-            vec![name.clone()]
-        }
-        None => accounts::profiles()?,
-    };
-    let mut out = Vec::new();
-    for name in &names {
-        for agent in ["claude", "codex"] {
-            if accounts::login_file(name, agent)?.is_some() {
-                out.push(usage_of(runtime, &config, (name, agent), input.fresh)?);
-            }
-        }
+    let held: Vec<accounts::Held> = accounts::logins()?
+        .into_iter()
+        .filter(|h| input.account.as_ref().is_none_or(|a| *a == h.name))
+        .collect();
+    if let Some(name) = &input.account {
+        anyhow::ensure!(
+            !held.is_empty(),
+            "no account {name} has a login (`legionctl agents accounts list` lists the accounts)"
+        );
     }
-    Ok(out)
+    held.iter()
+        .map(|h| usage_of(runtime, &config, h, input.fresh))
+        .collect()
 }
 
 /// What a wake does with its member's account.
@@ -165,7 +164,12 @@ pub fn decide(
     let (Some(order), Some(account)) = (fallback.get(agent), account) else {
         return Ok(Decision::Stay);
     };
-    let now = usage_of(runtime, &config, (account, agent), false)?;
+    let now = usage_of(
+        runtime,
+        &config,
+        &accounts::Held::profile(account, agent),
+        false,
+    )?;
     if let Some(error) = now.error {
         bail!("the usage of account {account} cannot be read: {error}");
     }
@@ -174,7 +178,12 @@ pub fn decide(
     };
     let mut why = Vec::new();
     for next in order.iter().filter(|n| *n != account) {
-        let u = usage_of(runtime, &config, (next, agent), false)?;
+        let u = usage_of(
+            runtime,
+            &config,
+            &accounts::Held::profile(next, agent),
+            false,
+        )?;
         match (u.error.clone(), u.at_limit(*switch_at)) {
             (Some(error), _) => why.push(format!("{next}: {error}")),
             (None, Some(limit)) => why.push(format!("{next}: {limit}")),
@@ -195,4 +204,67 @@ pub fn decide(
             why.join("; ")
         }
     )
+}
+
+/// `agents accounts capture`: keep the current logins as account `name`, never as a copy (`AgentsAccountsCapture`).
+///
+/// # Errors
+/// The name is not an account name, a login cannot be read, clauth does not run or refuses, or no login is kept.
+pub fn capture(name: &str) -> Result<legionctl_api::Lines> {
+    anyhow::ensure!(
+        legionctl_core::dossier::valid_name(name),
+        "an account name is a-z, 0-9 and '-', starting with a letter or digit"
+    );
+    let logins = accounts::logins()?;
+    let current = |agent: &str| {
+        logins
+            .iter()
+            .find(|h| h.source == "current" && h.agent == agent)
+    };
+    let mut lines = Vec::new();
+    let mut kept = 0;
+    match current("codex") {
+        None => lines.push("Codex is not logged in".to_string()),
+        Some(h) if h.name != "current" => {
+            kept += 1;
+            lines.push(format!("Codex: the current login is clauth profile {} already", h.name));
+        }
+        Some(_) => lines.push(format!(
+            "Codex: the current login is not kept: no clauth profile holds it, and a copy of it logs one of the two \
+             out (its refresh token rotates); make a second login for the account: `clauth login {name} --codex \
+             --browser`, or `legionctl agents accounts add {name}` and log in there"
+        )),
+    }
+    match current("claude") {
+        None => lines.push("Claude Code is not logged in".into()),
+        Some(h) if h.name != "current" => {
+            kept += 1;
+            lines.push(format!(
+                "Claude Code: the current login is clauth profile {} already",
+                h.name
+            ));
+        }
+        Some(_) => {
+            let out = std::process::Command::new("clauth")
+                .args(["capture", name])
+                .output()
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Claude Code: keeping the current login needs clauth (`cargo install clauth`), which keeps it \
+                         with its refresh in step; legionctl makes no copy of it: {e}"
+                    )
+                })?;
+            anyhow::ensure!(
+                out.status.success(),
+                "clauth capture {name}: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            kept += 1;
+            lines.push(format!(
+                "Claude Code: clauth keeps the current login as profile {name} (`clauth capture`)"
+            ));
+        }
+    }
+    anyhow::ensure!(kept > 0, "no login is kept: {}", lines.join("; "));
+    Ok(legionctl_api::Lines { lines })
 }

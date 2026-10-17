@@ -443,6 +443,12 @@ operations! {
     agents_accounts_list / AgentsAccountsList = "agents.accounts.list", Read, Empty => Vec<Account>;
     /// Make an account profile (its own Claude Code and Codex logins); `session start --account` uses it.
     agents_accounts_add / AgentsAccountsAdd = "agents.accounts.add", Workspace, AccountAddIn => Lines;
+    /// Keep the current logins of Claude Code and Codex as account `name`, never as a copy (a refresh rotates the
+    /// refresh token, and a copy logs one of the two out: DESIGN-12 wall 1): a login that a clauth profile holds is
+    /// kept already; Claude Code's other login goes to clauth (`clauth capture <name>`: clauth keeps it in its store
+    /// with its refresh in step); a Codex login that no clauth profile holds is not kept, with the way to
+    /// make a second login. Fails when no login is kept.
+    agents_accounts_capture / AgentsAccountsCapture = "agents.accounts.capture", Workspace, AccountAddIn => Lines;
     /// Each account profile's rate-limit windows (Claude: 5h and 7d; Codex: its windows) from the provider, read
     /// with the profile's own access token, never refreshed; a failed read is that account's error with its cause.
     /// Answers are kept for `agents.accounts.usage_ttl_s`; `--fresh` reads again.

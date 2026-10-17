@@ -757,7 +757,8 @@ pub fn cost() -> Result<Vec<legionctl_api::AskCost>> {
         kinds: &["views.ask"],
         ..Default::default()
     };
-    let mut steps: BTreeMap<String, (legionctl_api::AskCost, Vec<u64>)> = BTreeMap::new();
+    let mut steps: BTreeMap<(String, Option<String>), (legionctl_api::AskCost, Vec<u64>)> =
+        BTreeMap::new();
     let mut after = 0;
     loop {
         let (rows, next) = db.events_page(&filter, after, 1000)?;
@@ -766,10 +767,12 @@ pub fn cost() -> Result<Vec<legionctl_api::AskCost>> {
                 serde_json::from_value(row.payload["steps"].clone())
                     .with_context(|| format!("event {} has no steps of an ask", row.id))?;
             for step in ran {
-                let (c, times) = steps.entry(step.step.clone()).or_insert_with(|| {
+                let key = (step.step.clone(), step.account.clone());
+                let (c, times) = steps.entry(key).or_insert_with(|| {
                     (
                         legionctl_api::AskCost {
                             step: step.step.clone(),
+                            account: step.account.clone(),
                             runs: 0,
                             answered: 0,
                             failed: 0,
@@ -1446,6 +1449,13 @@ fn compose(
         repo,
     )?;
     done.tokens_in = legionctl_core::pool::tokens(&prompt);
+    done.account = match &input.account {
+        Some(a) => Some(a.clone()),
+        None => legionctl_core::accounts::logins()?
+            .into_iter()
+            .find(|h| h.source == "current" && h.agent == agent)
+            .map(|h| h.name),
+    };
     let model = cfg.views.composer_models.get(&agent).cloned();
     let run = composer_run(engine, ctx, input, (&agent, model), &prompt, repo)?;
     done.tokens_out = legionctl_core::pool::tokens(&run.text);
