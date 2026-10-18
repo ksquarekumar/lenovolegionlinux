@@ -473,14 +473,10 @@ pub struct DossierConfig {
 pub struct Meta {
     /// Layer names, lowest first.
     pub precedence: Vec<String>,
-    /// Keys or key prefixes that only the defaults and /etc/legionctl may set.
-    pub locked: Vec<String>,
-    /// Keys or key prefixes that a repository layer file sets only after the user allowed that file's content once
-    /// (trust on first use, O-2): until then, and after a Deny, the file's values of these keys are not used.
-    pub approve: Vec<String>,
-    /// Keys or key prefixes that a repository layer file never sets, also after the user allowed it (who pays for an
-    /// agent); `*` is one key part.
-    pub repo_never: Vec<String>,
+    /// This computer's own scope or class of settings, over `config/settings.jsonc` (each /etc/legionctl file's
+    /// entries over the defaults'): computer scope only locks a setting, no project scope keeps it out of every
+    /// repository, a powerful class makes a repository file wait for the user's first answer.
+    pub overrides: BTreeMap<String, crate::settings::Override>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -548,18 +544,19 @@ pub struct Resolved {
     pub trace: BTreeMap<String, Vec<Setting>>,
     /// Files and keys that were not used, and why.
     pub problems: Vec<String>,
-    /// Repository layer files whose `config.approve` keys wait for the user's first answer.
+    /// Repository layer files whose powerful settings wait for the user's first answer.
     pub unapproved: Vec<Unapproved>,
     /// Settings whose value does not pass its deep check (DESIGN-20 rule 9): key -> why, with the step that fixes it
     /// and the value that applies until then (the last one below it that passes, or the default).
     pub held: BTreeMap<String, String>,
     user_dir: PathBuf,
     repo_dir: Option<PathBuf>,
-    /// Only the defaults and /etc/legionctl set these keys: `config.locked` and the settings of the computer only.
+    /// Only the defaults and /etc/legionctl set these keys: the settings of the computer scope only.
     locks: Vec<String>,
+    overrides: BTreeMap<String, crate::settings::Override>,
 }
 
-/// A repository layer file that sets keys of `config.approve` with content the user did not answer yet.
+/// A repository layer file that sets powerful settings with content the user did not answer yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unapproved {
     pub file: String,
@@ -750,9 +747,9 @@ struct Merge<'a> {
     locks: &'a [String],
     /// The keys that no repository layer file sets.
     repo_never: &'a [String],
-    /// A repository layer file: the `config.approve` keys and the user's answer to this content (none yet: `None`).
+    /// A repository layer file: the powerful settings and the user's answer to this content (none yet: `None`).
     approve: Option<(&'a [String], Option<bool>)>,
-    /// The `config.approve` keys this file set that wait for an answer.
+    /// The powerful settings this file set that wait for an answer.
     held: Vec<String>,
     trace: &'a mut BTreeMap<String, Vec<Setting>>,
     problems: &'a mut Vec<String>,
@@ -845,7 +842,7 @@ impl Merge<'_> {
 }
 
 /// Merge the layer files in order: each one's keys over the lower ones, with the locks, and a repository layer
-/// file's `config.approve` keys only when the user allowed its content; the files whose keys wait for an answer.
+/// file's powerful settings only when the user allowed its content; the files whose keys wait for an answer.
 fn merge_layers(
     ordered: Vec<(Source, bool, Value)>,
     (locks, repo_never, approve, approvals): (&[String], &[String], &[String], &Approvals),
@@ -911,23 +908,60 @@ pub fn read_layer_file(file: &Path) -> Result<Value> {
     }
 }
 
-/// The locked keys, the keys a repository file sets only after the user allowed it, and the keys it never sets: the
-/// registry's scopes and classes, and the lists of the defaults and /etc/legionctl (`list`) on top of them.
+/// `config.overrides` of the defaults, then of each /etc/legionctl file in order (its entries over the lower ones).
+///
+/// # Errors
+/// An entry does not fit (its file and key named).
+fn trusted_overrides(
+    defaults: &Value,
+    system: &[(PathBuf, Value)],
+) -> Result<BTreeMap<String, crate::settings::Override>> {
+    let mut out = BTreeMap::new();
+    let files = std::iter::once((Path::new("built in"), defaults))
+        .chain(system.iter().map(|(f, v)| (f.as_path(), v)));
+    for (file, value) in files {
+        if let Some(found) = value["config"].get("overrides") {
+            let entries: BTreeMap<String, crate::settings::Override> =
+                serde_json::from_value(found.clone())
+                    .with_context(|| format!("{}: config.overrides", file.display()))?;
+            out.extend(entries);
+        }
+    }
+    Ok(out)
+}
+
+/// The locked keys, the keys a repository file sets only after the user allowed it, and the keys it never sets: each
+/// setting's scope and class with this computer's `overrides`, and each override pattern below a setting.
 fn trust_lists(
-    list: &dyn Fn(&str) -> Result<Vec<String>>,
+    overrides: &BTreeMap<String, crate::settings::Override>,
 ) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
     use crate::settings::{Class, Scope};
-    let (mut locks, mut approve, mut repo_never) =
-        (list("locked")?, list("approve")?, list("repo_never")?);
-    for setting in crate::settings::registry()? {
-        if setting.class != Class::Safe {
-            approve.push(setting.key.clone());
+    let (mut locks, mut approve, mut repo_never) = (Vec::new(), Vec::new(), Vec::new());
+    let keys = crate::settings::registry()?
+        .iter()
+        .map(|s| s.key.clone())
+        .chain(overrides.keys().cloned());
+    for key in keys {
+        // a pattern above settings (a module) is its own entry, with what it says
+        let Some((scope, class)) = crate::settings::declared(&key, overrides).or_else(|| {
+            let o = overrides.get(&key)?;
+            Some((
+                o.scope
+                    .clone()
+                    .unwrap_or_else(|| vec![Scope::Computer, Scope::User, Scope::Project]),
+                o.class.unwrap_or(Class::Safe),
+            ))
+        }) else {
+            continue;
+        };
+        if class != Class::Safe {
+            approve.push(key.clone());
         }
-        if !setting.scope.contains(&Scope::Project) {
-            repo_never.push(setting.key.clone());
+        if !scope.contains(&Scope::Project) {
+            repo_never.push(key.clone());
         }
-        if setting.scope == [Scope::Computer] {
-            locks.push(setting.key.clone());
+        if scope == [Scope::Computer] {
+            locks.push(key);
         }
     }
     Ok((locks, approve, repo_never))
@@ -967,11 +1001,10 @@ pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
             .find_map(|(_, v)| v["config"].get(key).cloned())
             .unwrap_or_else(|| defaults["config"][key].clone())
     };
-    let list = |key: &str| -> Result<Vec<String>> {
-        serde_json::from_value(trusted_meta(key)).with_context(|| format!("config.{key}"))
-    };
-    let (locks, approve, repo_never) = trust_lists(&list)?;
-    let precedence = list("precedence")?;
+    let overrides = trusted_overrides(&defaults, &system)?;
+    let (locks, approve, repo_never) = trust_lists(&overrides)?;
+    let precedence: Vec<String> =
+        serde_json::from_value(trusted_meta("precedence")).context("config.precedence")?;
     // the repository's config files and capability sets need the user's answers
     let approvals = if repo_dir.is_some() {
         Approvals::read()?
@@ -1042,6 +1075,7 @@ pub fn resolve(dirs: &Dirs, project: Option<&Path>) -> Result<Resolved> {
         user_dir,
         repo_dir,
         locks,
+        overrides,
     })
 }
 
@@ -1193,6 +1227,21 @@ impl Resolved {
     #[must_use]
     pub fn repo_dir(&self) -> Option<&Path> {
         self.repo_dir.as_deref()
+    }
+
+    /// The scope and class of `key` on this computer (its declaration with `config.overrides`).
+    #[must_use]
+    pub fn declared(
+        &self,
+        key: &str,
+    ) -> Option<(Vec<crate::settings::Scope>, crate::settings::Class)> {
+        crate::settings::declared(key, &self.overrides)
+    }
+
+    /// The locked keys and patterns.
+    #[must_use]
+    pub fn locks(&self) -> &[String] {
+        &self.locks
     }
 
     /// Whether only the defaults and /etc/legionctl set `key`.

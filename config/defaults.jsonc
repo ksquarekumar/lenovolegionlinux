@@ -10,17 +10,13 @@
   "config": {
     // Only these defaults and /etc/legionctl may set "config". Lowest first.
     "precedence": ["defaults", "system", "user", "repo"],
-    // More keys or prefixes ("hooks.actions") that only the defaults and /etc/legionctl may set, besides every
-    // setting with the computer scope only.
-    "locked": [],
-    // More keys or prefixes that a repository's .legionctl file sets only after you allow that file once (trust on
-    // first use), besides every powerful and machine setting (config/settings.jsonc): legionctl asks with a desktop
-    // notification the first time, and again when the file changes. Until you allow it, and after Deny, the file's
-    // values of these keys are not used (`legionctl config layers` says so).
-    "approve": [],
-    // More keys or prefixes that a repository's .legionctl file never sets, also after you allow the file, besides
-    // every setting without the project scope: who pays for an agent (its account). "*" stands for one key part.
-    "repo_never": ["agents.configs.*.account"]
+    // This computer's own scope or class of settings over config/settings.jsonc (each /etc/legionctl file's entries
+    // over these): a key, a prefix, or a pattern with "*" for one key part -> {"scope": [...], "class": ...}.
+    // Scope ["computer"] locks a setting for everybody else; a scope without "project" keeps it out of every
+    // repository's .legionctl (also after you allow the file); class "powerful" makes a repository file wait for your
+    // first answer (trust on first use: legionctl asks once on the desktop, and again when the file changes).
+    // Who pays for an agent (its account) is never a project's choice.
+    "overrides": { "agents.configs.*.account": { "scope": ["computer", "user"] } }
   },
 
   "workspace": {

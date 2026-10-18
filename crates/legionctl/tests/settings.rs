@@ -262,8 +262,8 @@ fn wrong_changes_write_nothing(lab: &Lab) {
             "Model gateway port (gateway.port) is set only for this computer or you",
         ),
         (
-            &["config", "set", "config.locked", "[]"],
-            "is set only for this computer",
+            &["config", "set", "config.overrides", "{}"],
+            "is locked: only this computer's administrator can change it",
         ),
         (
             &["config", "set", "dossier.root", "/proc/notes"],

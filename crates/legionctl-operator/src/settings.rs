@@ -143,8 +143,12 @@ fn rows(resolved: Resolved, input: &SettingsIn) -> Result<SettingsView> {
             continue;
         }
         let finding = resolved.held.get(&setting.key).cloned().unwrap_or_default();
+        let mut setting = setting.clone();
+        if let Some((scope, class)) = resolved.declared(&setting.key) {
+            (setting.scope, setting.class) = (scope, class);
+        }
         items.push(SettingRow {
-            entries: entries(&resolved, setting, &value),
+            entries: entries(&resolved, &setting, &value),
             text: short(&value),
             edit: if value.is_null() {
                 json!("")
@@ -152,7 +156,7 @@ fn rows(resolved: Resolved, input: &SettingsIn) -> Result<SettingsView> {
                 value.clone()
             },
             locked: resolved.locked_key(&setting.key),
-            setting: setting.clone(),
+            setting,
             value,
             from,
             finding,

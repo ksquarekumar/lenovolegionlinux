@@ -98,6 +98,35 @@ pub enum Check {
     Port,
 }
 
+/// This computer's own scope or class for settings (`config.overrides` of the defaults and /etc/legionctl): a key, a
+/// key prefix or a pattern with `*` for one key part (`agents.configs.*.account`) -> what changes for it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Override {
+    /// The layers that may set it (only computer: locked for everybody else; no project: a project never sets it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<Vec<Scope>>,
+    /// How a change is approved (powerful: a project file sets it only after you allow that file).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<Class>,
+}
+
+/// The scope and class of `key`: its setting's declaration with the most specific override that holds it (the
+/// pattern is the key or above it); a pattern below a setting is its own entry (none: no setting holds `key`).
+#[must_use]
+pub fn declared(key: &str, overrides: &BTreeMap<String, Override>) -> Option<(Vec<Scope>, Class)> {
+    let setting = setting_of(key)?;
+    let (mut scope, mut class) = (setting.scope.clone(), setting.class);
+    let mut matching: Vec<(&String, &Override)> =
+        overrides.iter().filter(|(p, _)| holds(p, key)).collect();
+    matching.sort_by_key(|(p, _)| p.split('.').count());
+    for (_, o) in matching {
+        scope = o.scope.clone().unwrap_or(scope);
+        class = o.class.unwrap_or(class);
+    }
+    Some((scope, class))
+}
+
 /// A setting's declaration in `config/settings.jsonc`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -488,22 +517,24 @@ pub fn validate(resolved: &Resolved, edit: &Edit) -> Result<&'static Setting> {
             }
         );
     };
-    if !setting.scope.contains(&edit.scope) {
-        bail!(
-            "{} ({key}) is set only for {}",
-            setting.label,
-            setting
-                .scope
-                .iter()
-                .map(|s| s.words())
-                .collect::<Vec<_>>()
-                .join(" or ")
-        );
-    }
     if edit.scope != Scope::Computer && resolved.locked_key(key) {
         bail!(
             "{} ({key}) is locked: only this computer's administrator can change it",
             setting.label
+        );
+    }
+    let (scope, _) = resolved
+        .declared(key)
+        .unwrap_or_else(|| (setting.scope.clone(), setting.class));
+    if !scope.contains(&edit.scope) {
+        bail!(
+            "{} ({key}) is set only for {}",
+            setting.label,
+            scope
+                .iter()
+                .map(|s| s.words())
+                .collect::<Vec<_>>()
+                .join(" or ")
         );
     }
     let Some(value) = &edit.value else {

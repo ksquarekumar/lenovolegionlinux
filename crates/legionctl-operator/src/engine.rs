@@ -5623,9 +5623,10 @@ impl Engine for Operator {
 
     fn config_layers(&self, ctx: &Ctx, _: Empty) -> Result<LayerList> {
         let resolved = config(Some(ctx.folder()?))?;
+        let locked = resolved.locks().to_vec();
         Ok(LayerList {
             layers: resolved.layers.into_wire(),
-            locked: resolved.config.config.locked,
+            locked,
             problems: resolved.problems,
         })
     }

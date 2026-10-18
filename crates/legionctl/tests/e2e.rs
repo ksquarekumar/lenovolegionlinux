@@ -1087,8 +1087,7 @@ fn config_layers_merge_in_order_and_etc_locks_win() {
     let (op, home) = operator("config");
     // the site locks a key and a reminder; the user tries to change both; a repository adds its own rules
     let site = home.join("site-worktrees").display().to_string();
-    let locks =
-        json!({"config": {"locked": ["load", "reminders.ste100"]}, "workspace": {"root": site}});
+    let locks = json!({"config": {"overrides": {"load": {"scope": ["computer"]}, "reminders.ste100": {"scope": ["computer"]}}}, "workspace": {"root": site}});
     write(
         &home.join("root/etc/legionctl/10-site.jsonc"),
         &locks.to_string(),
@@ -1931,10 +1930,11 @@ fn an_agents_mcp_server_works_in_the_folder_its_agent_works_in_now() {
             .to_path_buf()
     };
 
-    let mut claude = Mcp::start_in(
+    let mut claude = Mcp::start(
         &op,
+        Some(&project),
         &[("HOME", h), ("CLAUDE_CODE_SESSION_ID", "c1")],
-        &project,
+        &[],
     );
     assert_eq!(
         folder_of(&mut claude),
@@ -1973,7 +1973,7 @@ fn an_agents_mcp_server_works_in_the_folder_its_agent_works_in_now() {
     assert_eq!(folder_of(&mut claude), project, "after its session ended");
 
     // Codex starts its MCP server with a cleared environment: no session
-    let mut codex = Mcp::start_in(&op, &[("HOME", h)], &project);
+    let mut codex = Mcp::start(&op, Some(&project), &[("HOME", h)], &[]);
     codex_prompt("x1", &moved);
     assert_eq!(
         folder_of(&mut codex),
@@ -8146,7 +8146,7 @@ fn the_processes_of_a_test_end_when_it_panics_and_when_its_binary_is_killed() {
 /// todo-122, as on 2026-10-15: the user's operator.db at v10 while an operator of another build runs (a stand-in that
 /// holds `operator.lock` with that build's fingerprint). An operator of this build does not start, and the file stays
 /// at v10 without a backup. After the other operator stopped, this one starts: it keeps the v10 file in
-/// `operator.db.v10.bak`, then takes the database to v17 with its rows (the MCP tool call log into the call record).
+/// `operator.db.v10.bak`, then takes the database to v18 with its rows (the MCP tool call log into the call record).
 #[test]
 fn an_operator_does_not_start_beside_one_of_another_build_and_keeps_the_old_database() {
     let home = home("holder");
@@ -8223,7 +8223,7 @@ fn an_operator_does_not_start_beside_one_of_another_build_and_keeps_the_old_data
     let op = operator_in("holder", &home);
     let events = op.ok(&["events", "--json"]);
     assert!(events.contains("kept.v10"), "{events}");
-    assert_eq!(version(&db), 17);
+    assert_eq!(version(&db), 18);
     assert_eq!(version(&bak), 10, "the backup is the v10 file");
     the_old_tool_log_is_in_the_call_record(&op);
     let kept: String = rusqlite::Connection::open(&bak)

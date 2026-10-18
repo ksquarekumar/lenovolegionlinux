@@ -9,9 +9,7 @@
 //   computer). A test checks that every config key has an entry here and that no entry names a key that is gone.
 {
   "config.precedence": {"label": "Order of settings files", "help": "The order in which settings files apply, from the built-in defaults to the project.", "scope": ["computer"], "class": "machine", "restart": "none", "affects": ["config"]},
-  "config.locked": {"label": "Settings for the administrator only", "help": "More settings that only this computer's administrator can change.", "scope": ["computer"], "class": "machine", "restart": "none", "affects": ["config"]},
-  "config.approve": {"label": "Project settings that ask first", "help": "More settings that a project can change only after you allow its files once.", "scope": ["computer"], "class": "machine", "restart": "none", "affects": ["config"]},
-  "config.repo_never": {"label": "Settings a project never changes", "help": "More settings that a project can never change, also after you allow its files.", "scope": ["computer"], "class": "machine", "restart": "none", "affects": ["config"]},
+  "config.overrides": {"label": "This computer's own rules for settings", "help": "Settings that only this computer's administrator can change, that a project never changes, or that a project changes only after you allow it.", "scope": ["computer"], "class": "machine", "restart": "none", "affects": ["config"]},
 
   "workspace.root": {"label": "Working copies folder", "help": "The folder where legionctl makes the working copies of your projects.", "scope": ["computer", "user", "project"], "class": "powerful", "restart": "none", "affects": ["workspace"], "check": "folder"},
   "workspace.nudge": {"label": "Remind agents to use a working copy", "help": "When agents get a reminder to work in their own working copy.", "scope": ["computer", "user", "project"], "class": "safe", "restart": "none", "affects": ["workspace"]},

@@ -164,12 +164,12 @@ Hardened (2026-10-16, EV-review-08, user decision "approve all, do it first"):
 - O-1: the repository's commands for a session (checks, test runs, the checkpoint's commit with the commit hooks,
   repository layer hooks) run in a sandbox of the session (`session::Jail`: the same mounts with a throwaway home
   layer, no runtime folder and no network), never on the host. The user's own calls run on the host.
-- O-2: a repository layer file sets the powerful and machine settings (`config/settings.jsonc`, and the keys that
-  `/etc/legionctl` adds in `config.approve`) only after the user allowed its
+- O-2: a repository layer file sets the powerful and machine settings (`config/settings.jsonc`, with this computer's
+  `config.overrides`) only after the user allowed its
   content once (desktop question, answer in `approvals.json` with the content hash, named by the file's path in the
   main checkout, so one answer holds in every worktree); a changed file asks again. Every path that reads the
-  repository layer asks (the operator's asker in core). A setting without the project scope, and
-  `config.repo_never` (who pays: `agents.configs.*.account`), is never taken from a repository.
+  repository layer asks (the operator's asker in core). A setting without the project scope (who pays:
+  `agents.configs.*.account`, by an override of the defaults) is never taken from a repository.
 
 Trust fixes (2026-10-17, EV-review-14, plan#todo-198):
 - A-1, A-6, A-4, A-5: the repository's reminders, agent configs, checks (and so the branch's own gates at merge),
@@ -349,7 +349,7 @@ each a folder of `*.jsonc` files merged in name order:
 - **Format:** JSONC, like the machine profile (decided 2026-10-13).
 - **Merge:** per key only (decided 2026-10-13): objects merge per key, other values replace, `null` removes a key,
   `"name+": [...]` appends to the array `name`. A whole-file merge mode waits for a reader that needs it.
-- **Order and locks** (`config.precedence`, `config.locked`) come only from the defaults and `/etc/legionctl`. A
+- **Order and locks** (`config.precedence`, `config.overrides`: a scope of the computer only locks) come only from the defaults and `/etc/legionctl`. A
   lower-trust layer that sets `config` or a locked key (or a key below it) is ignored and reported, so a repository or
   session cannot reorder layers to escape a gate. `legionctl reminders` and `legionctl hooks` refuse to write a
   locked key.

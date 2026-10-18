@@ -3275,8 +3275,8 @@ mod operator_and_daemon {
         op.ok(&[
             "config",
             "set",
-            "config.locked",
-            r#"["dossier.gate"]"#,
+            "config.overrides",
+            r#"{"dossier.gate": {"scope": ["computer"]}}"#,
             "--scope",
             "computer",
         ]);
@@ -3312,7 +3312,7 @@ mod operator_and_daemon {
             rows,
             [
                 ("dossier.gate", "computer"),
-                ("config.locked", "computer"),
+                ("config.overrides", "computer"),
                 ("dossier.nudge_turns", "user"),
                 ("dossier.nudge_turns", "computer")
             ]

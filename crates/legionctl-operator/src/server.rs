@@ -258,9 +258,16 @@ async fn in_scope(
 
 /// Whether an agent's call changes a setting of the powerful or machine class (the settings operations, and the
 /// operations that change hooks and reminders, which are such settings): the user is asked each time.
-fn powerful_setting(op: &OpInfo, input: &Value) -> bool {
-    use legionctl_core::settings::{Class as Kind, setting_of};
-    let class = |key: &str| setting_of(key).map_or(Kind::Powerful, |s| s.class);
+fn powerful_setting(op: &OpInfo, input: &Value, folder: Option<&std::path::Path>) -> bool {
+    use legionctl_core::settings::Class as Kind;
+    // the class on this computer (with its overrides); a setting that cannot be read asks
+    let resolved = crate::engine::config(folder).ok();
+    let class = |key: &str| {
+        resolved
+            .as_ref()
+            .and_then(|r| r.declared(key))
+            .map_or(Kind::Powerful, |(_, class)| class)
+    };
     match op.name {
         "config.set" | "config.unset" | "config.add" | "config.remove" => {
             input["key"].as_str().is_none_or(|k| class(k) != Kind::Safe)
@@ -296,7 +303,7 @@ async fn approved(
                     .any(|(field, prop)| prop["x-approval"] == true && input[field] == true)
         }
         // it is the user's own process otherwise: the gate is on what reaches every later session
-        Principal::Agent(_) => powerful_setting(op, input),
+        Principal::Agent(_) => powerful_setting(op, input, folder),
     };
     let Some(session) = principal.agent().filter(|_| asks) else {
         return Ok(());
