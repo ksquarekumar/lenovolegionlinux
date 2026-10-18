@@ -1580,7 +1580,7 @@ fn rebind(
             *active = Some(last.clone());
             Ok(format!(
                 "legionctl dossier: {last} (bound by itself: the last dossier used in {}; read its plan.md and newest \
-                 MEMORY, and use another with dossier_use if this work needs one)",
+                 MEMORY, and use another with legionctl_run dossier.use if this work needs one)",
                 place.display()
             ))
         }
@@ -1617,7 +1617,7 @@ fn blocking_reason(
     if config.dossier.nudge.contains(&Event::Stop) && unbound.is_some() {
         return Ok(Some(
             "legionctl: this session has no dossier. Before you end this reply, bind one with the legionctl MCP tool \
-             dossier_use (a new name makes a new dossier; ask the user for the name if it is not clear), record the state \
+             legionctl_run dossier.use (a new name makes a new dossier; ask the user for the name if it is not clear), record the state \
              in its plan.md and MEMORY, then finish."
                 .into(),
         ));
@@ -1627,7 +1627,7 @@ fn blocking_reason(
         .map(|p| {
             format!(
                 "legionctl: the main checkout {} has changes but dossier {} has no workspace there. Open one with the \
-                 legionctl MCP tool workspace_open and make code changes in its path; tell the user about the changes \
+                 legionctl MCP tool legionctl_run workspace.open and make code changes in its path; tell the user about the changes \
                  already in the main checkout, then finish.",
                 p.repo.display(),
                 active.unwrap_or_default()
@@ -1681,7 +1681,7 @@ fn dossier_nudge(
     }
     let text = format!(
         "legionctl: {turns} replies changed the workspace since this session last wrote dossier {dossier}. Record \
-         the state in its plan.md and MEMORY now (MCP tools dossier_edit, dossier_add)."
+         the state in its plan.md and MEMORY now (legionctl_run dossier.edit, dossier.add)."
     );
     Ok(match (event, level) {
         (Event::Prompt, Some(_)) => Some(Told::Line(text)),
@@ -1739,7 +1739,7 @@ fn start_lines(
         }
         Some((p, None)) if resolved.config.workspace.nudge => lines.push(format!(
             "legionctl: no workspace for {} yet. Before code changes, open one with the legionctl MCP tool \
-             workspace_open and work in its path.",
+             legionctl_run workspace.open and work in its path.",
             p.repo.display()
         )),
         _ => {}
@@ -1767,7 +1767,7 @@ fn start_lines(
 fn nudge_line(resolved: &Resolved) -> String {
     format!(
         "legionctl: this session has no dossier yet. Set it up first, before other work: bind one with the legionctl \
-         MCP tool dossier_use (a new name makes a new dossier; ask the user for the name if it is not clear).{}",
+         MCP tool legionctl_run dossier.use (a new name makes a new dossier; ask the user for the name if it is not clear).{}",
         if resolved.config.dossier.gate {
             " Until then, legionctl blocks the user's prompts except /legionctl:dossier."
         } else {

@@ -1118,7 +1118,7 @@ pub struct SessionRunIn {
     /// on in the thread's last ACP session, and the prompt and the answer (or the failure) are rows of its log.
     #[serde(default)]
     pub thread: Option<i64>,
-    /// Bind the agent to these operations: its only tools are legionctl's MCP tools of them (no file, shell or web
+    /// Bind the agent to these operations: its only tools are legionctl's MCP tools over them (no file, shell or web
     /// tools of its own, no settings, plugins or other MCP servers). None: the agent's own tools and the session's MCP
     /// servers.
     #[serde(default)]
@@ -2391,7 +2391,7 @@ pub struct ThreadSendIn {
     /// The thread; default: the caller's only open thread.
     #[serde(default)]
     pub thread: Option<i64>,
-    /// For a hard-block: the tool it refuses until the receiver acks it (`workspace_checkpoint`).
+    /// For a hard-block: the operation (`workspace.checkpoint`) or tool (`Bash`) it refuses until the receiver acks it.
     #[serde(default)]
     pub tool: Option<String>,
     /// For a notice: the watch rule whose step you did for the receiver; the message then tells the counts.
@@ -2789,7 +2789,7 @@ pub struct OpsListIn {
 /// One operation of the catalog.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OpEntry {
-    /// Its dotted name (`fan.curve.set`): the CLI's words, the MCP tool, the button's `op`.
+    /// Its dotted name (`fan.curve.set`): the CLI's words, the `op` of `legionctl_run`, the button's `op`.
     pub name: String,
     /// The first word of its name.
     pub group: String,

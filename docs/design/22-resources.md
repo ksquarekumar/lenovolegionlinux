@@ -114,7 +114,7 @@ polkit: the set was saved with polkit, and the boot menu needs a person at the k
 ## Surfaces
 
 - CLI: `legionctl resources list`, `legionctl resources act <id> <action> [--dry-run]`.
-- MCP: `resources_list`, `resources_act`.
+- MCP: `legionctl_run` with `op` `resources.list` or `resources.act`.
 - App: the page **Resources** (`legionctl-app resources`). Each group is a section; each resource is a row with its
   name, state and users, and one button for each action. A click runs `resources.act` with `--dry-run` first: the
   page shows the plan (or the route) with Apply and Discard, as the power policy does.

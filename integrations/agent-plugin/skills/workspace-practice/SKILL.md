@@ -19,7 +19,7 @@ user-invocable: true
 7. `status`, `checkpoint`, `merge` and `close` act on the workspace that contains the working directory, else on the
    dossier's own workspace, or on the one that `--topic <t>` names.
 8. CAUTION: The MCP server's working directory is the main checkout. Give `topic` (or `repo` as the workspace path) to
-   each workspace MCP tool, or the tool acts on the dossier's own workspace.
+   each workspace operation over MCP, or the operation acts on the dossier's own workspace.
 9. A folder outside git gets a folder workspace (an overlay layer, no branch). `--topic` is refused there.
 10. Commit with `workspace checkpoint "<message>"`, not raw `git commit`. It stages everything and commits; its test gate
     refuses a new or changed test with no assertion or no kill, and it runs each `gate: checkpoint` check of

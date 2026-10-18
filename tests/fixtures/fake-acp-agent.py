@@ -110,7 +110,7 @@ def run(argv):
 
 def mcp_load():
     """Start legionctl's MCP server of session/new as Codex starts MCP servers: with a cleared environment, only PATH
-    and the server's own `env`; call its load tool (`legionctl_run` with op load where the server has it). The line is
+    and the server's own `env`; run its op load (`legionctl_run`). The line is
     the call's text, or its error."""
     server = next(s for s in mcp_servers if s.get("name") == "legionctl")
     env = {"PATH": os.environ.get("PATH", ""), **{e["name"]: e["value"] for e in server.get("env", [])}}
@@ -128,11 +128,7 @@ def mcp_load():
 
     call(1, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "fake", "version": "0"}})
     child.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
-    names = [t["name"] for t in call(2, "tools/list", {}).get("result", {}).get("tools", [])]
-    if "legionctl_run" in names:
-        answer = call(3, "tools/call", {"name": "legionctl_run", "arguments": {"op": "load", "input": {}}})
-    else:
-        answer = call(3, "tools/call", {"name": "load", "arguments": {}})
+    answer = call(2, "tools/call", {"name": "legionctl_run", "arguments": {"op": "load", "input": {}}})
     child.kill()
     result = answer.get("result", {})
     text = " ".join(c.get("text", "") for c in result.get("content", []))

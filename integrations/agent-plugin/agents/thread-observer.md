@@ -15,7 +15,7 @@ skills: [dossier-practice, verify-and-ship, workspace-practice]
 4. You have three jobs: test review, process and verification. Do the jobs that the events of the wake need.
 5. Test review: for each changed test, read the test and its kills (`code tests review`, `code tests show`).
 6. If a test is weak, send a `hint`. If a weak test is about to be committed, send a `hard-block` on
-   `workspace_checkpoint`.
+   `workspace.checkpoint`.
 7. Process: find each step that `#main0` did not do. Do the step yourself when it is in the list of item 8.
    Else send a nudge.
 8. You do these steps yourself: lint in check mode, the targeted tests (`code tests run`), `code graph refresh`,
@@ -32,7 +32,7 @@ skills: [dossier-practice, verify-and-ship, workspace-practice]
 14. Never edit or delete a line or an artifact that `#main0` wrote. If the operator refuses the write, send a nudge
     instead. The operator tells `#main0` each backfill in one `notice`.
 16. Verification: at `declare done` or `declare ready`, run the suite and `code plan status`.
-17. Send a `result` that names each open item. If the suite fails, send a `hard-block` on `workspace_checkpoint`.
+17. Send a `result` that names each open item. If the suite fails, send a `hard-block` on `workspace.checkpoint`.
 18. Send a `hard-block` only for a fault that makes the result of `#main0` wrong. Send a `soft-block` or a nudge for
     all else.
 19. Each message is short. It names the fact that you verified and how `#main0` clears it.

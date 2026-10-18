@@ -1027,7 +1027,7 @@ fn agent_fact(lab: &Lab, cwd: &Path, args: &Value) -> Value {
     let init = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params":
         {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "0"}}});
     let call = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-        "params": {"name": "facts_set", "arguments": args}});
+        "params": {"name": "legionctl_run", "arguments": {"op": "facts.set", "input": args}}});
     let mut line = String::new();
     writeln!(stdin, "{init}").unwrap();
     out.read_line(&mut line).unwrap();

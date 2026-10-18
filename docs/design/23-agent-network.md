@@ -133,7 +133,7 @@ from ctx's `line..end_line` (a span, with blanks and comments).
 | Topic workspaces | One worktree per agent of one dossier, merge one by one. | workspace-practice skill |
 | Accounts | Account profiles with their own `CLAUDE_CONFIG_DIR`; `session resume --account` copies the Claude Code transcript into the other profile. | e2e `a_resumed_session_continues_on_another_account_with_its_transcript` |
 | App | `legionctl-app` on gpui-kit 0.7.0: Now, Apps & GPU, Health, Bench pages; polls every 2 s. | 09-ux.md |
-| Registry | Each operation declared once; it makes HTTP, MCP tool (`a_b_c`), CLI (`a b c`), polkit and event kind. | 15-layout.md |
+| Registry | Each operation declared once; it makes HTTP, the `op` of MCP `legionctl_run` (`a.b.c`), CLI (`a b c`), polkit and event kind. | 15-layout.md |
 | Test evidence | Mutation checks are made by hand and listed in each commit message ("Mutation-checked (each made its test fail): ..."). `cargo-mutants` and `cargo-llvm-cov` are not installed. 11 `#[test]` blocks are in `src/`; 5 integration test files with 72 functions in `tests/e2e.rs`. | git log, `crates/*/tests` |
 
 ## Part A: two code graphs (todo-90)
@@ -384,21 +384,21 @@ The memory row `ref-change-graph-for-rebase` points to this section.
 New group `code` (see question 5). Each operation is in the registry, so it is a CLI command, an MCP tool and an HTTP
 call.
 
-| Operation | CLI | MCP tool | Class |
+| Operation | CLI | MCP `legionctl_run` op | Class |
 | --- | --- | --- | --- |
-| `code.graph.refresh` | `code graph refresh [--ref] [--background]` | `code_graph_refresh` | session |
-| `code.graph.refs` | `code graph refs` (snapshots, size, refs that point to each) | `code_graph_refs` | read |
-| `code.graph.query` | `code graph query <text> [--ref]` (ctx `graph search --db`) | `code_graph_query` | read |
-| `code.graph.impact` | `code graph impact <key> [--ref] [--depth]` (key mapped to the node id) | `code_graph_impact` | read |
-| `code.graph.changes` | `code graph changes [--from] [--to] [--impact]` | `code_graph_changes` | read |
-| `code.graph.annotate` | `code graph annotate <key> --kind --value` | `code_graph_annotate` | session |
-| `code.graph.annotations` | `code graph annotations [--key] [--refs]` | `code_graph_annotations` | read |
-| `code.graph.prune` | `code graph prune [--dry-run]` | `code_graph_prune` | session |
-| `code.graph.hook` | `code graph hook install\|remove` | `code_graph_hook` | workspace |
-| `code.plan.check` | `code plan check [--ref]` | `code_plan_check` | read |
-| `code.plan.status` | `code plan status [--feature] [--ref]` | `code_plan_status` | read |
-| `code.tests.run` | `code tests run [--filter]` (a job) | `code_tests_run` | session |
-| `code.tests.review` | `code tests review [--staged] [--ref]` | `code_tests_review` | read |
+| `code.graph.refresh` | `code graph refresh [--ref] [--background]` | `code.graph.refresh` | session |
+| `code.graph.refs` | `code graph refs` (snapshots, size, refs that point to each) | `code.graph.refs` | read |
+| `code.graph.query` | `code graph query <text> [--ref]` (ctx `graph search --db`) | `code.graph.query` | read |
+| `code.graph.impact` | `code graph impact <key> [--ref] [--depth]` (key mapped to the node id) | `code.graph.impact` | read |
+| `code.graph.changes` | `code graph changes [--from] [--to] [--impact]` | `code.graph.changes` | read |
+| `code.graph.annotate` | `code graph annotate <key> --kind --value` | `code.graph.annotate` | session |
+| `code.graph.annotations` | `code graph annotations [--key] [--refs]` | `code.graph.annotations` | read |
+| `code.graph.prune` | `code graph prune [--dry-run]` | `code.graph.prune` | session |
+| `code.graph.hook` | `code graph hook install\|remove` | `code.graph.hook` | workspace |
+| `code.plan.check` | `code plan check [--ref]` | `code.plan.check` | read |
+| `code.plan.status` | `code plan status [--feature] [--ref]` | `code.plan.status` | read |
+| `code.tests.run` | `code tests run [--filter]` (a job) | `code.tests.run` | session |
+| `code.tests.review` | `code tests review [--staged] [--ref]` | `code.tests.review` | read |
 | `code.tests.mutant` | `code tests mutant record\|run` | `code_tests_mutant` | session |
 
 ctx's own MCP tools stay for the working copy. legionctl does not wrap them one by one.
@@ -556,7 +556,7 @@ projections, written in the same transaction as their event.
 | `hint` | Shown in the next prompt's context, with the facts that the observer verified. |
 | `reminder` | From a watch rule: "observer0: no `make lint` after 4 edits of `crates/` — 3rd time since 10:42". |
 | `soft-block` | The `stop` hook stops the end of one reply with the reason (like a nudge `warn`). |
-| `hard-block` | The `pre-tool` hook denies the matched tool (for example `workspace_checkpoint`) until the message is acked or retracted; the `stop` hook stops each reply. |
+| `hard-block` | The `pre-tool` hook denies the matched tool or operation (for example `workspace.checkpoint` through `legionctl_run`) until the message is acked or retracted; the `stop` hook stops each reply. |
 | `notice` | A step that the observer did for the main agent (B+3, process job), with the count of the miss. |
 | `result` | A test run, a review or a patch (a commit on the observer's topic branch). |
 
@@ -632,7 +632,7 @@ New group `thread` (question 5).
 | `thread.rules` | `thread rules list\|add\|rm` | session |
 | `thread.branch`, `thread.compensate`, `thread.import` | see B6, B7, C5 | workspace |
 
-Each is also an MCP tool (`thread_send`, ...). The events have kind `thread.*`, so `trace` and the UI follow them.
+Each is also an operation over MCP (`legionctl_run` op `thread.send`, ...). The events have kind `thread.*`, so `trace` and the UI follow them.
 
 ### B9. Tests (e2e, high diagnostic value)
 
@@ -644,7 +644,7 @@ Planned names (design): the built tests are named in each "Built" section and ma
 
 | Test | It catches |
 | --- | --- |
-| `an_observer_reminds_main_with_the_count_and_a_hard_block_stops_the_tool` | Three edits without lint give a reminder with count 3; a hard block denies `workspace_checkpoint` until ack; an expired block does not deny. |
+| `an_observer_reminds_main_with_the_count_and_a_hard_block_stops_the_tool` | Three edits without lint give a reminder with count 3; a hard block denies `workspace.checkpoint` until ack; an expired block does not deny. |
 | `an_observer_survives_an_operator_restart_and_delivers_each_message_once` | Kill the operator during a wake: the wake goes on in its loaded session; the main agent sees each message once. |
 | `a_branched_thread_keeps_the_history_up_to_the_point` | The branch has the events up to `--at`, its own workspace branch, and the parent is unchanged. |
 | `an_observer_writes_only_its_own_dossier_and_workspace` | Its write into the main dossier is denied; its patch arrives as a commit on its topic branch. |
@@ -712,11 +712,11 @@ can send `soft-block` and `hard-block` (B3), so a peer from another thread canno
 Observe: `thread.observe <peer> [--follow]` gives the peer's events (the same rows as `trace`); `--follow` streams
 them. It reads only; to watch with rules, join the thread (`thread join`).
 
-| Operation | CLI | MCP tool | Class |
+| Operation | CLI | MCP `legionctl_run` op | Class |
 | --- | --- | --- | --- |
-| `thread.peers` | `thread peers [--dossier <d>] [--topic <t>] [--thread <id>]` (default: the caller's own) | `thread_peers` | read |
-| `thread.observe` | `thread observe <peer> [--follow] [--kinds <k,...>]` | `thread_observe` | read |
-| `thread.send` (B8, `--to` now also takes a peer that is not a member) | `thread send --to <peer> <kind> "<text>"` | `thread_send` | session |
+| `thread.peers` | `thread peers [--dossier <d>] [--topic <t>] [--thread <id>]` (default: the caller's own) | `thread.peers` | read |
+| `thread.observe` | `thread observe <peer> [--follow] [--kinds <k,...>]` | `thread.observe` | read |
+| `thread.send` (B8, `--to` now also takes a peer that is not a member) | `thread send --to <peer> <kind> "<text>"` | `thread.send` | session |
 
 ### B+2. Agent config (todo-98)
 
@@ -887,9 +887,9 @@ How events reach each member and how it answers:
 | Member runs as | Events in | Out |
 | --- | --- | --- |
 | `main-agent` in a terminal or ACP | hooks `prompt`, `pre-tool`, `stop` (B4) | `thread ack`, `thread declare`, `thread send` |
-| operator member (default) | its wake prompt: the events since its cursor (B5) | `thread_send` (MCP tool) into the outbox |
+| operator member (default) | its wake prompt: the events since its cursor (B5) | `thread.send` (MCP `legionctl_run`) into the outbox |
 | Claude Code teammate (team mode) | the `TeammateIdle` hook answers exit 2 with its pending outbox messages, so the teammate keeps working on them; `TaskCompleted` exit 2 holds a task until the pool's gate passes | `thread_send`; `SendMessage` is recorded by `post-tool` |
-| plugin subagent | `SubagentStop` blocks with the pending messages as its reason | `thread_send` |
+| plugin subagent | `SubagentStop` blocks with the pending messages as its reason | `thread.send` |
 
 Triggers come from the archetype (B+3); a team file can narrow them, or opt in to `on-event` or `poll` (B5) for
 one member. A wake that reaches its `wake_budget` ends; its events stay after the cursor for the next wake.
@@ -1011,7 +1011,7 @@ What is different from B2-B8 and B+1, and why:
 | Steps done for main | `thread send main0 notice "<text>" --rule <id>` adds 1 to `done` and adds the counts to the text. | The observer that does the step says so; the operator does not run steps in P5. |
 | Pace | `on-trigger`, `on-stop`, `on-declare`. A wake is a `thread.wake` row with the count of log rows since the member's cursor, and the cursor moves at once. | No model member runs in P5: the ACP prompt of a wake, the timed paces (`on-event`, `poll`) and the move of the cursor after the prompt come with P6b. |
 | Soft-block | Stops one reply end; it does not stop a reply that goes on because a stop hook stopped it (`stop_hook_active`). | Claude Code sets `stop_hook_active`; only a hard-block may stop that reply again. |
-| Hard-block | Stops each reply end, also with `stop_hook_active`, and refuses the call of its tool (`--tool`; the same name, or an MCP tool that ends with `__<name>`) until the receiver acks it. A member that leaves makes its blocks `expired`. | B6: a member that is gone cannot hold the main agent. Failed members (P6b) use the same expiry. |
+| Hard-block | Stops each reply end, also with `stop_hook_active`, and refuses the call of its tool (`--tool`; the same name, a legionctl operation run through `legionctl_run`, or an MCP tool that ends with `__<name>`) until the receiver acks it. A member that leaves makes its blocks `expired`. | B6: a member that is gone cannot hold the main agent. Failed members (P6b) use the same expiry. |
 | Rights | `note` and `hint` from any session; `reminder`, `notice`, `result` from a member; blocks from a `thread-observer` member of the thread. | B+1. |
 | Receiver | A member name of the thread, or a peer's session id. | B+1 (`thread send --to <peer>`). |
 | `SendMessage` | The post-tool hook writes a `thread.message` row (channel `claude-inbox`, receiver, text, `sent` from the tool's `success`) in each thread of the sender. | Decision 1 of B+. The payload is the one Claude Code 2.1.296 sent (recorded in the e2e fixtures). |
@@ -1284,12 +1284,13 @@ update today (`acp.rs`, `update`: `_ => {}`). C3 stores it.
 
 ### D2. Can legionctl tools be addressed as `<toolset>/<toolname>` in searches?
 
-No, not in Claude Code. Claude Code names a plugin's MCP tool `mcp__plugin_<plugin>_<server>__<tool>`, so
-legionctl's are `mcp__plugin_legionctl_legionctl__workspace_checkpoint`. A plugin cannot change this name.
-ToolSearch takes `select:<exact name>`, keywords, or `+<word>` to require a word in the name: `+legionctl
+No, not in Claude Code. Claude Code names a plugin's MCP tool `mcp__plugin_<plugin>_<server>__<tool>`. A plugin
+cannot change this name. Since plan#todo-208, legionctl offers three tools (`legionctl_find`, `legionctl_describe`,
+`legionctl_run`); the operation is the `op` field of `legionctl_run` (`workspace.checkpoint`), and the hooks read it
+from the call's input. ToolSearch takes `select:<exact name>`, keywords, or `+<word>` to require a word in the name: `+legionctl
 checkpoint` is the closest form to `legionctl/checkpoint`. Skills and commands of a plugin are `legionctl:<name>`;
 plugin agents are subagent types `legionctl:<archetype>` (B+3). In legionctl's own UI, `/` commands use the CLI words
-(`/workspace checkpoint`), which map one to one to the registry name (`workspace.checkpoint`) and the MCP tool name.
+(`/workspace checkpoint`), which map one to one to the registry name (`workspace.checkpoint`), the `op` of `legionctl_run`.
 
 ## Relation to todo-78 (the CLI and app regrouping, decided last)
 

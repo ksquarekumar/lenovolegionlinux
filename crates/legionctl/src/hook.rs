@@ -148,6 +148,17 @@ async fn answer(event: &str, input: &Value) -> Result<Option<Answer>> {
     .map(Answer::Out))
 }
 
+/// The tool of a call as threads name it: the operation of legionctl's MCP tool `legionctl_run`
+/// (`workspace.checkpoint`), else the harness's tool name.
+fn tool_of(input: &Value) -> String {
+    let name = input["tool_name"].as_str().unwrap_or_default();
+    match input["tool_input"]["op"].as_str() {
+        Some(op) if name.ends_with("__legionctl_run") => op,
+        _ => name,
+    }
+    .to_string()
+}
+
 /// The pre-tool hook: a thread hard-block that holds the tool, else the dossier write guard, as a deny.
 async fn pre_tool(
     client: &Client,
@@ -158,7 +169,7 @@ async fn pre_tool(
     let held = client
         .call::<op::ThreadGate>(&ThreadGateIn {
             session: session.clone(),
-            tool: input["tool_name"].as_str().unwrap_or_default().to_string(),
+            tool: tool_of(input),
         })
         .await?;
     // the guard is on writes: every dossier can be read
@@ -224,7 +235,7 @@ async fn post_tool(
             agent: input["agent_id"].as_str().map(String::from),
             agent_type: input["agent_type"].as_str().map(String::from),
             project,
-            tool: input["tool_name"].as_str().unwrap_or_default().to_string(),
+            tool: tool_of(input),
             path,
             command: text("command"),
             to: text("to"),

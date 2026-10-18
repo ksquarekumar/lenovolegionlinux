@@ -48,12 +48,12 @@
       "enabled": true
     },
     "load-aware": {
-      "text": "Check the legionctl load (MCP tool `load`) before builds, test suites or parallel jobs, and scale them down when busy.",
+      "text": "Check the legionctl load (`legionctl_run load`) before builds, test suites or parallel jobs, and scale them down when busy.",
       "event": "session-start",
       "enabled": false
     },
     "workspace": {
-      "text": "Change code in the dossier's workspace (MCP tool workspace_open), not in the repository's own checkout.",
+      "text": "Change code in the dossier's workspace (`legionctl_run workspace.open`), not in the repository's own checkout.",
       "event": "session-start",
       "enabled": false
     }

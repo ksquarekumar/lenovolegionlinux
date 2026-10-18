@@ -6,5 +6,5 @@
    change`.
 4. observer0 sends one `result` that names each open item:
    "verification: 1 failed test (threads::blocks_hold_main_until_acked), P6a: 1 test not run since change".
-5. The suite failed, so observer0 also sends a `hard-block` on `workspace_checkpoint` with the failed test.
+5. The suite failed, so observer0 also sends a `hard-block` on `workspace.checkpoint` with the failed test.
 6. main0 fixes the test, runs the suite, acks both messages and declares `done` again.

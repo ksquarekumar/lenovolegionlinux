@@ -465,7 +465,8 @@ pub(crate) fn delivered(tx: &Transaction, list: &[Message]) -> Result<()> {
     Ok(())
 }
 
-/// The tool a hard-block names matches a tool call: the same name, or an MCP tool that ends with `__<name>`.
+/// The tool a hard-block names matches a tool call: the same name (a legionctl operation, or a tool of the harness),
+/// or an MCP tool that ends with `__<name>`.
 fn names(blocked: &str, tool: &str) -> bool {
     tool == blocked || tool.ends_with(&format!("__{blocked}"))
 }

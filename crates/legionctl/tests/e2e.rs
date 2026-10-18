@@ -224,6 +224,21 @@ impl Mcp {
         self.call_raw(method, params)["result"].clone()
     }
 
+    /// A call of the tool `name` with `arguments`: its text, and whether it is an error.
+    fn tool(&mut self, name: &str, arguments: &Value) -> (String, bool) {
+        let result = self.call("tools/call", &json!({"name": name, "arguments": arguments}));
+        (
+            result["content"][0]["text"].as_str().unwrap().to_string(),
+            result["isError"] == true,
+        )
+    }
+
+    /// `legionctl_run` of `op` with `input`: its JSON output or error envelope, and whether it is an error.
+    fn run(&mut self, op: &str, input: &Value) -> (Value, bool) {
+        let (text, error) = self.tool("legionctl_run", &json!({"op": op, "input": input}));
+        (serde_json::from_str(&text).unwrap(), error)
+    }
+
     /// The whole reply: its result or its error.
     fn call_raw(&mut self, method: &str, params: &Value) -> Value {
         self.next += 1;
@@ -621,7 +636,7 @@ fn a_plan_table_row_that_does_not_parse_is_refused_and_check_names_its_line() {
     );
 }
 
-/// A misspelled field is refused, not dropped: an agent's `dossier_edit` with `lines` for `content` (as happened on
+/// A misspelled field is refused, not dropped: an agent's `dossier.edit` with `lines` for `content` (as happened on
 /// 2026-10-14) ran as an empty replace and deleted the plan row it was to change. Through the MCP server, as agents
 /// call it: the call fails with the operation's real fields, and the row stays.
 #[test]
@@ -656,15 +671,11 @@ fn an_unknown_input_field_is_refused_before_the_operation_runs() {
         .unwrap();
 
     let mut mcp = Mcp::start(&op, &env);
-    let result = mcp.call(
-        "tools/call",
-        &json!({"name": "dossier_edit", "arguments": {
-            "path": "plan/plan.md", "mode": "replace", "start": anchor, "lines": ["| todo-1 | changed |"]
-        }}),
+    let (error, failed) = mcp.run(
+        "dossier.edit",
+        &json!({"path": "plan/plan.md", "mode": "replace", "start": anchor, "lines": ["| todo-1 | changed |"]}),
     );
-    assert_eq!(result["isError"], true, "{result}");
-    let error: Value =
-        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(failed, "{error}");
     assert_eq!(
         error["error"]["message"],
         "dossier.edit has no field [\"lines\"]; its fields: [\"content\", \"end\", \"mode\", \"path\", \"session\", \"start\"]",
@@ -677,27 +688,34 @@ fn an_unknown_input_field_is_refused_before_the_operation_runs() {
     );
 }
 
-/// `legionctl mcp --only <op>...`: the server of a bound agent.
+/// `legionctl mcp --only <op>...`: the server of a bound agent (todo-163, the ui-composer) finds, describes and runs
+/// only its operations.
 fn bound_server_offers_only_its_operations(op: &Operator) {
-    // a bound agent's server (todo-163, the ui-composer): only its operations are tools, and only they run
     let mut bound = Mcp::start_with(op, &[], &["--only", "views.list", "--only", "views.parts"]);
-    let tools = bound.call("tools/list", &json!({}));
-    let names: Vec<&str> = tools["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| t["name"].as_str().unwrap())
-        .collect();
-    assert_eq!(names, ["views_list", "views_parts"]);
-    let refused = bound.call_raw("tools/call", &json!({"name": "skills", "arguments": {}}));
+    let (groups, _) = bound.tool("legionctl_find", &json!({}));
     assert_eq!(
-        refused["error"]["message"], "unknown tool skills",
-        "a tool outside the binding does not run: {refused}"
+        groups,
+        "2 operations in 1 groups (group, count). Give words, a group or both.\nviews 2"
+    );
+    let (found, _) = bound.tool("legionctl_find", &json!({"words": "skills views"}));
+    assert!(
+        found.starts_with("2 operations match.\nviews.list · read ·") && !found.contains("skills"),
+        "{found}"
+    );
+    let (described, refused) = bound.tool("legionctl_describe", &json!({"op": "skills"}));
+    assert!(refused, "{described}");
+    let (ran, refused) = bound.run("skills", &json!({}));
+    assert!(refused, "{ran}");
+    assert_eq!(
+        ran["error"]["message"], "No operation skills. Use legionctl_find to find one.",
+        "an operation outside the binding does not run, and no name outside it is told"
     );
 }
 
+/// The MCP server offers 3 tools (plan#todo-208): an agent finds an operation, reads its input schema and runs it
+/// through the operator; a workspace operation still waits for the user; a wrong name gets the closest names.
 #[test]
-fn mcp_server_has_one_tool_per_operation_and_calls_the_operator() {
+fn an_agent_finds_describes_and_runs_operations_through_three_mcp_tools() {
     let (op, home) = operator("mcp");
     let mut mcp = Mcp::start(&op, &[]);
 
@@ -708,22 +726,80 @@ fn mcp_server_has_one_tool_per_operation_and_calls_the_operator() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    let expected: Vec<String> = legionctl_api::OPS
-        .iter()
-        .filter(|o| !o.internal())
-        .map(|o| o.name.replace(['.', '-'], "_"))
-        .collect();
     assert_eq!(
-        names, expected,
-        "the registry's public operations are the tool list"
+        names,
+        ["legionctl_find", "legionctl_describe", "legionctl_run"]
+    );
+    let public = legionctl_api::OPS.iter().filter(|o| !o.internal()).count();
+    let (groups, _) = mcp.tool("legionctl_find", &json!({}));
+    assert!(
+        groups.starts_with(&format!("{public} operations in ")) && groups.contains("\nfan "),
+        "{groups}"
+    );
+    let (found, _) = mcp.tool(
+        "legionctl_find",
+        &json!({"words": "checkpoint workspace", "limit": 1}),
+    );
+    let mut lines = found.lines();
+    let head = lines.next().unwrap();
+    assert!(
+        head.ends_with("left out. Give more words or a higher limit."),
+        "{found}"
+    );
+    assert!(
+        lines
+            .next()
+            .unwrap()
+            .starts_with("workspace.checkpoint · session · ")
+            && lines.next().is_none(),
+        "the op with both words in its name comes first: {found}"
+    );
+    let (described, _) = mcp.tool("legionctl_describe", &json!({"op": "hooks.add"}));
+    assert!(
+        described.starts_with(
+            "hooks.add · workspace. It changes your files, settings or other sessions"
+        ) && described.contains("Input: {")
+            && described.contains("\"command\"")
+            && described.ends_with("Output: HookTable"),
+        "{described}"
     );
 
     bound_server_offers_only_its_operations(&op);
 
-    let result = mcp.call("tools/call", &json!({"name": "skills", "arguments": {}}));
-    assert_ne!(result["isError"], true, "{result}");
-    let skills: Value =
-        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    // the MCP server runs for an agent: a workspace operation of hooks asks the user, and nobody can be asked here
+    let (denied, failed) = mcp.run(
+        "hooks.add",
+        &json!({"id": "greet", "command": "echo hello"}),
+    );
+    assert!(failed, "{denied}");
+    assert_eq!(denied["error"]["code"], "denied", "{denied}");
+    let (table, _) = mcp.run("hooks.list", &json!({}));
+    assert!(
+        !table.to_string().contains("greet"),
+        "nothing added: {table}"
+    );
+    let (unknown, failed) = mcp.run("workspace_checkpoint", &json!({}));
+    assert!(failed);
+    assert_eq!(
+        unknown["error"]["message"],
+        "No operation workspace_checkpoint. The closest: workspace.checkpoint, workspace.close, workspace.list."
+    );
+
+    skills_are_listed_with_their_plugin_folder(&mut mcp, &home);
+
+    // an agent's relative path is its own working directory, not the operator's
+    let (listed, _) = mcp.run("agents.list", &json!({"project": "some-project"}));
+    let text = listed.to_string();
+    let here = std::env::current_dir()
+        .unwrap()
+        .join("some-project/.claude/settings.json");
+    assert!(text.contains(&here.display().to_string()), "{text}");
+}
+
+/// `skills` over MCP: every plugin skill, its reminder, and its folder once Claude Code's plugin registry names it.
+fn skills_are_listed_with_their_plugin_folder(mcp: &mut Mcp, home: &Path) {
+    let (skills, failed) = mcp.run("skills", &json!({}));
+    assert!(!failed, "{skills}");
     let skills = skills.as_array().unwrap();
     let names: Vec<&str> = skills.iter().map(|s| s["name"].as_str().unwrap()).collect();
     assert_eq!(
@@ -773,9 +849,7 @@ fn mcp_server_has_one_tool_per_operation_and_calls_the_operator() {
             [{"scope": "user", "installPath": plugin}]}})
         .to_string(),
     );
-    let result = mcp.call("tools/call", &json!({"name": "skills", "arguments": {}}));
-    let skills: Value =
-        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    let (skills, _) = mcp.run("skills", &json!({}));
     let installed: Vec<(&str, &str)> = skills
         .as_array()
         .unwrap()
@@ -789,17 +863,6 @@ fn mcp_server_has_one_tool_per_operation_and_calls_the_operator() {
             plugin.join("skills/ste100-style").to_str().unwrap()
         )]
     );
-
-    // an agent's relative path is its own working directory, not the operator's
-    let result = mcp.call(
-        "tools/call",
-        &json!({"name": "agents_list", "arguments": {"project": "some-project"}}),
-    );
-    let text = result["content"][0]["text"].as_str().unwrap();
-    let here = std::env::current_dir()
-        .unwrap()
-        .join("some-project/.claude/settings.json");
-    assert!(text.contains(&here.display().to_string()), "{text}");
 }
 
 fn write(path: &Path, text: &str) {
@@ -1009,7 +1072,10 @@ fn the_dossier_gate_holds_in_a_repository_linked_to_a_dossier_and_nowhere_else()
     let stop: Value =
         serde_json::from_str(&hook("stop", json!({"session_id": "s4", "cwd": repo}))).unwrap();
     assert!(
-        stop["reason"].as_str().unwrap().contains("dossier_use"),
+        stop["reason"]
+            .as_str()
+            .unwrap()
+            .contains("legionctl_run dossier.use"),
         "{stop}"
     );
     assert_eq!(
@@ -2887,9 +2953,9 @@ fn the_mcp_proxy_offers_only_allowed_tools_and_logs_every_call() {
                 "--server",
                 "self",
                 "--allow",
-                "load",
+                "legionctl_find",
                 "--allow",
-                "capabilities",
+                "legionctl_describe",
                 "--",
                 exe,
                 "mcp",
@@ -2912,21 +2978,18 @@ fn the_mcp_proxy_offers_only_allowed_tools_and_logs_every_call() {
         tools.sort();
         let load = agent
             .peer()
-            .call_tool(CallToolRequestParams::new("load"))
+            .call_tool(CallToolRequestParams::new("legionctl_find"))
             .await
             .unwrap();
-        let doctor = agent
-            .peer()
-            .call_tool(CallToolRequestParams::new("doctor"))
-            .await;
+        let doctor = agent.peer().call_tool(hooks_list()).await;
         (tools, load, doctor)
     });
-    assert_eq!(tools, ["capabilities", "load"]);
+    assert_eq!(tools, ["legionctl_describe", "legionctl_find"]);
     assert_ne!(load.is_error, Some(true), "{load:?}");
     assert!(
-        doctor
-            .as_ref()
-            .is_err_and(|e| e.to_string().contains("doctor is not allowed for self")),
+        doctor.as_ref().is_err_and(|e| e
+            .to_string()
+            .contains("legionctl_run is not allowed for self")),
         "{doctor:?}"
     );
 
@@ -2952,8 +3015,8 @@ fn the_mcp_proxy_offers_only_allowed_tools_and_logs_every_call() {
     assert_eq!(
         summary,
         [
-            ("s-proxy".into(), "load".into(), "ok".into()),
-            ("s-proxy".into(), "doctor".into(), "refused".into())
+            ("s-proxy".into(), "legionctl_find".into(), "ok".into()),
+            ("s-proxy".into(), "legionctl_run".into(), "refused".into())
         ]
     );
     assert_eq!(calls[0]["args_hash"].as_str().unwrap().len(), 32, "{calls}");
@@ -3037,7 +3100,6 @@ fn the_proxy_reaches_a_remote_server_with_its_header() {
 #[test]
 fn the_proxy_reuses_a_cached_result_until_the_working_copy_changes() {
     use rmcp::ServiceExt;
-    use rmcp::model::CallToolRequestParams;
 
     let (op, home) = operator("cache");
     let repo = repository(&home);
@@ -3051,7 +3113,7 @@ fn the_proxy_reuses_a_cached_result_until_the_working_copy_changes() {
                 "--server",
                 "self",
                 "--cache",
-                "hooks_list=60:workspace",
+                "legionctl_run=60:workspace",
                 "--",
                 exe,
                 "mcp",
@@ -3069,13 +3131,7 @@ fn the_proxy_reuses_a_cached_result_until_the_working_copy_changes() {
             if change {
                 write(&repo.join("README.md"), "changed\n");
             }
-            results.push(
-                agent
-                    .peer()
-                    .call_tool(CallToolRequestParams::new("hooks_list"))
-                    .await
-                    .unwrap(),
-            );
+            results.push(agent.peer().call_tool(hooks_list()).await.unwrap());
         }
         results
     });
@@ -3111,7 +3167,7 @@ fn tool_cache_entries_belong_to_a_session_and_fit_the_limit() {
     for (token, session) in [("token-a", "s-a"), ("token-b", "s-b")] {
         add_session_token(&home, token, session);
     }
-    // one hooks_list call through the proxy, as the session of `token` (none: the user); its outcome
+    // one hooks.list call through the proxy, as the session of `token` (none: the user); its outcome
     let call = |token: Option<&str>| -> String {
         use rmcp::ServiceExt;
         let exe = env!("CARGO_BIN_EXE_legionctl");
@@ -3124,7 +3180,7 @@ fn tool_cache_entries_belong_to_a_session_and_fit_the_limit() {
                     "--server",
                     "self",
                     "--cache",
-                    "hooks_list=60",
+                    "legionctl_run=60",
                     "--",
                     exe,
                     "mcp",
@@ -3139,11 +3195,7 @@ fn tool_cache_entries_belong_to_a_session_and_fit_the_limit() {
                 ().serve(rmcp::transport::TokioChildProcess::new(proxy).unwrap())
                     .await
                     .unwrap();
-            agent
-                .peer()
-                .call_tool(rmcp::model::CallToolRequestParams::new("hooks_list"))
-                .await
-                .unwrap();
+            agent.peer().call_tool(hooks_list()).await.unwrap();
         });
         let calls: Value = serde_json::from_str(&op.ok(&["tools", "calls", "--json"])).unwrap();
         calls["items"].as_array().unwrap().last().unwrap()["outcome"]
@@ -3219,7 +3271,7 @@ fn add_session_token(home: &Path, token: &str, session: &str) {
 }
 
 /// A git repository with tag v1: a server that notes the network it sees, then serves legionctl's own MCP tools;
-/// configured as package `probe` and as MCP server `probe` allowing only `load`.
+/// configured as package `probe` and as MCP server `probe` allowing only `legionctl_find`.
 fn probe_package(home: &Path) {
     let source = home.join("probe-server");
     std::fs::create_dir_all(&source).unwrap();
@@ -3240,10 +3292,18 @@ fn probe_package(home: &Path) {
         &home.join(".config/legionctl/store.jsonc"),
         &json!({
             "packages": {"probe": {"kind": "git", "source": source, "version": "v1", "run": ["sh", "{dir}/server.sh"]}},
-            "mcp": {"servers": {"probe": {"package": "probe", "allow": ["load"]}}}
+            "mcp": {"servers": {"probe": {"package": "probe", "allow": ["legionctl_find"]}}}
         })
         .to_string(),
     );
+}
+
+/// `legionctl_run` of `hooks.list`, as an MCP tool call.
+fn hooks_list() -> rmcp::model::CallToolRequestParams {
+    let Value::Object(arguments) = json!({"op": "hooks.list"}) else {
+        unreachable!()
+    };
+    rmcp::model::CallToolRequestParams::new("legionctl_run").with_arguments(arguments)
 }
 
 /// Start `legionctl <args>` as an agent would start an MCP server, and list its tools.
@@ -3369,7 +3429,7 @@ fn a_store_package_runs_pinned_and_offline_and_a_changed_one_is_refused() {
         args.contains(&"--no-network".into()) && args.iter().any(|a| a.contains("store/probe/v1")),
         "{args:?}"
     );
-    assert_eq!(mcp_tools(&op, &home, &args), ["load"]);
+    assert_eq!(mcp_tools(&op, &home, &args), ["legionctl_find"]);
     assert_eq!(
         std::fs::read_to_string(home.join("net.txt")).unwrap(),
         "lo\n",

@@ -1,7 +1,7 @@
 //! Every legionctl operation, declared once in [`operations!`]. From that one list come:
 //!
 //! - [`OPS`]: name, permission class, help text and input JSON schema, from which the clients build the CLI and the
-//!   MCP tools and the operator builds its HTTP routes;
+//!   MCP tools' catalog and the operator builds its HTTP routes;
 //! - [`Engine`]: one method per operation, which `legionctl-operator` implements (a missing handler does not
 //!   compile), and [`dispatch`], which routes a call by name;
 //! - one marker type per operation in [`op`], for typed client calls, and [`render`] for the text a CLI prints.
@@ -151,8 +151,8 @@ pub enum Class {
 /// One operation as the surfaces see it.
 #[derive(Debug, Clone)]
 pub struct OpInfo {
-    /// Dotted name: `workspace.open` is `POST /v1/ops/workspace.open`, `legionctl workspace open` and the MCP tool
-    /// `workspace_open`.
+    /// Dotted name: `workspace.open` is `POST /v1/ops/workspace.open`, `legionctl workspace open` and the `op` of the
+    /// MCP tool `legionctl_run`.
     pub name: &'static str,
     /// The doc comment as one paragraph; see [`OpInfo::summary`].
     pub help: &'static str,

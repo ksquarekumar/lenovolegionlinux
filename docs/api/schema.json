@@ -13545,7 +13545,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Bind the agent to these operations: its only tools are legionctl's MCP tools of them (no file, shell or web\ntools of its own, no settings, plugins or other MCP servers). None: the agent's own tools and the session's MCP\nservers.",
+          "description": "Bind the agent to these operations: its only tools are legionctl's MCP tools over them (no file, shell or web\ntools of its own, no settings, plugins or other MCP servers). None: the agent's own tools and the session's MCP\nservers.",
           "default": []
         }
       },
@@ -16541,7 +16541,7 @@
             "string",
             "null"
           ],
-          "description": "For a hard-block: the tool it refuses until the receiver acks it (`workspace_checkpoint`).",
+          "description": "For a hard-block: the operation (`workspace.checkpoint`) or tool (`Bash`) it refuses until the receiver acks it.",
           "default": null
         },
         "rule": {
@@ -17144,7 +17144,7 @@
         "type": "object",
         "properties": {
           "name": {
-            "description": "Its dotted name (`fan.curve.set`): the CLI's words, the MCP tool, the button's `op`.",
+            "description": "Its dotted name (`fan.curve.set`): the CLI's words, the `op` of `legionctl_run`, the button's `op`.",
             "type": "string"
           },
           "group": {

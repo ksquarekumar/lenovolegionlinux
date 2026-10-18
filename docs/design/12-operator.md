@@ -21,7 +21,7 @@ flowchart LR
   `legionctl-core` directly. Phase 1b replaced that path.
 - **Phase 1b (built 2026-10-13):**
   - `legionctl-api` declares every operation once (name, permission class, input type, output type; the doc comment
-    is the help). From that list it generates the HTTP routes, the MCP tools, the CLI (clap builder, from the input
+    is the help). From that list it generates the HTTP routes, the catalog of the three MCP tools (find, describe, run), the CLI (clap builder, from the input
     JSON schemas) and the `Engine` trait that `legionctl-operator` must implement, so a missing handler does not
     compile.
   - Transport: HTTP/JSON on `$XDG_RUNTIME_DIR/legionctl/api.sock`, owned by `legionctl-operator.socket` (systemd

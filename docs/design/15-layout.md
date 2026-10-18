@@ -48,7 +48,7 @@ workspace, machine, account) and engine. The registry generates every surface:
 | From `power.apply` | Surface |
 | --- | --- |
 | HTTP | `POST /v1/ops/power.apply` |
-| MCP tool | `power_apply` |
+| MCP | `legionctl_run` with `op` `power.apply` (`legionctl_find`, `legionctl_describe` find and show it) |
 | CLI | `legionctl power apply --source ac` |
 | polkit action | `org.legionctl.power.apply` |
 | event log kind | `power.apply` with actor, input and outcome |

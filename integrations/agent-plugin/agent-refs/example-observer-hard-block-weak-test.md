@@ -8,7 +8,7 @@ Trigger: main0 edits `crates/legionctl/tests/threads.rs` and runs `workspace che
 3. observer0 sends:
 
 ```text
-legionctl thread send main0 hard-block --tool workspace_checkpoint "peers_are_listed has no kill and asserts only
+legionctl thread send main0 hard-block --tool workspace.checkpoint "peers_are_listed has no kill and asserts only
 a non-empty list. Assert the peer's session and state, record a mutation (code tests mutant record), then ack."
 ```
 

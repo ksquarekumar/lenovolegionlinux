@@ -2,11 +2,12 @@
 description: Manage what legionctl's agent hooks run at session start and on every prompt (guided)
 argument-hint: [bind|unbind <event> <action>] [add <id> "<command>"] [rm <id>]
 ---
-Help the user manage legionctl hook bindings. Request: $ARGUMENTS
+Help the user manage legionctl hook bindings. Run each operation with the legionctl MCP tool `legionctl_run`.
+Request: $ARGUMENTS
 
-1. Call `hooks_list`. Show the bindings of each event in run order, then the actions (built-in with one line each; the
+1. Call `hooks.list`. Show the bindings of each event in run order, then the actions (built-in with one line each; the
    user's own with their command and timeout).
-2. If the request says what to do, call `hooks_bind`, `hooks_unbind`, `hooks_add` or `hooks_rm`, and show the new
+2. If the request says what to do, run `hooks.bind`, `hooks.unbind`, `hooks.add` or `hooks.rm`, and show the new
    bindings. The change asks the user on the desktop first (Allow or Deny); tell the user to answer it.
 3. Else offer the built-in actions that are not bound. Each action bound to `prompt` runs on each turn and costs time
    and tokens.

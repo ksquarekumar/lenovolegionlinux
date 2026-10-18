@@ -140,7 +140,7 @@ Claude Code clauth's MCP server. Without clauth, the Accounts view shows the cur
 
 | Part | What |
 | --- | --- |
-| MCP tools | one per operation: the command path with `_` (`kernel cmdline set` is `kernel_cmdline_set`) |
+| MCP tools | three: `legionctl_find`, `legionctl_describe`, `legionctl_run` (`op` is the command path with `.`: `kernel.cmdline.set`) |
 | Skills | `ste100-style`, `glanceable-style`, `dossier-practice`, `tool-lifecycle`, `workspace-practice`, `machine-tools`, `verify-and-ship`, `sessions-and-agents` ([skills](integrations/agent-plugin/skills)) |
 | Hooks | reminders, load and setup notices; the dossier gate (in a repository linked to a dossier: no prompt until the session has one); thread messages at each prompt, tool call and reply end |
 | Agents | archetypes `main-agent`, `thread-observer`, `ui-composer`; team `vanilla` |

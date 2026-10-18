@@ -186,9 +186,27 @@ impl Lab {
         })
     }
 
-    /// The pre-tool hook's refusal of a call of `tool`, if it refuses. The payload is the recorded Edit call with
-    /// the tool's name set: the hook reads only the name, the session, the folder and a file path.
+    /// The pre-tool hook's refusal of a call of `tool` (on a file), if it refuses.
     fn pre_tool(&self, session: &str, tool: &str) -> Option<String> {
+        self.pre_tool_call(
+            session,
+            tool,
+            &json!({"file_path": self.repo.join("README.md")}),
+        )
+    }
+
+    /// The pre-tool hook on a call of legionctl's MCP tool `legionctl_run` with `op`, as Claude Code names it.
+    fn pre_run(&self, session: &str, op: &str) -> Option<String> {
+        self.pre_tool_call(
+            session,
+            "mcp__plugin_legionctl_legionctl__legionctl_run",
+            &json!({"op": op, "input": {}}),
+        )
+    }
+
+    /// The payload is the recorded Edit call with the tool's name and input set: the hook reads only the name, the
+    /// session, the folder and the input.
+    fn pre_tool_call(&self, session: &str, tool: &str, tool_input: &Value) -> Option<String> {
         let mut payload: Value = serde_json::from_str(&claude_hook(
             "pre-tool",
             &json!({"tool_name": "Edit", "session_id": session, "cwd": self.repo,
@@ -196,6 +214,7 @@ impl Lab {
         ))
         .unwrap();
         payload["tool_name"] = json!(tool);
+        payload["tool_input"] = tool_input.clone();
         let out = self
             .op
             .run(&self.repo, &[], &["hook", "pre-tool"], &payload.to_string());
@@ -422,8 +441,7 @@ fn blocks_hold_main_until_acked_and_only_an_observer_of_the_thread_sends_them() 
         "a soft-block stops one reply only"
     );
 
-    // hard-block on the checkpoint tool: each reply end and each call of that tool, until the ack
-    let tool = "mcp__plugin_legionctl_legionctl__workspace_checkpoint";
+    // hard-block on the checkpoint operation: each reply end and each legionctl_run of it, until the ack
     let block_checkpoint = |text: &str| {
         lab.thread(
             "obs",
@@ -433,21 +451,26 @@ fn blocks_hold_main_until_acked_and_only_an_observer_of_the_thread_sends_them() 
                 "hard-block",
                 text,
                 "--tool",
-                "workspace_checkpoint",
+                "workspace.checkpoint",
             ],
         );
     };
     block_checkpoint("test fx::doubles kills no mutant.");
     let held = lab
-        .pre_tool("main", tool)
-        .expect("the named tool is refused");
+        .pre_run("main", "workspace.checkpoint")
+        .expect("legionctl_run of the named operation is refused");
     assert!(
         held.contains("observer0 holds") && held.contains("hard-block #3"),
         "{held}"
     );
     assert_eq!(lab.pre_tool("main", "Bash"), None, "another tool passes");
     assert_eq!(
-        lab.pre_tool("other", tool),
+        lab.pre_run("main", "workspace.status"),
+        None,
+        "another operation passes"
+    );
+    assert_eq!(
+        lab.pre_run("other", "workspace.checkpoint"),
         None,
         "another session's tool passes"
     );
@@ -469,7 +492,7 @@ fn blocks_hold_main_until_acked_and_only_an_observer_of_the_thread_sends_them() 
         .collect();
     assert_eq!(kinds, ["hint", "soft-block", "hard-block"], "{inbox}");
     lab.thread("main", &["ack", "3", "--reply", "added the assertion"]);
-    assert_eq!(lab.pre_tool("main", tool), None);
+    assert_eq!(lab.pre_run("main", "workspace.checkpoint"), None);
     assert_eq!(lab.stop("main", false), None);
     let note = lab.json("obs", &["thread", "inbox"]);
     let reply = (note[0]["kind"].as_str(), note[0]["body"].as_str());
@@ -477,12 +500,12 @@ fn blocks_hold_main_until_acked_and_only_an_observer_of_the_thread_sends_them() 
 
     // a member that leaves cannot hold main0
     block_checkpoint("the suite fails.");
-    assert!(lab.pre_tool("main", tool).is_some());
+    assert!(lab.pre_run("main", "workspace.checkpoint").is_some());
     assert!(
         lab.thread("main", &["leave", "1", "observer0"])
             .contains("1 of its blocks expired")
     );
-    assert_eq!(lab.pre_tool("main", tool), None);
+    assert_eq!(lab.pre_run("main", "workspace.checkpoint"), None);
     assert_eq!(lab.stop("main", false), None);
 }
 
@@ -1834,7 +1857,7 @@ if has 'test change' && [ ! -e .flooded ]; then
   awk 'BEGIN { s = sprintf("%1000s", ""); gsub(/ /, "w", s); for (i = 0; i < 200; i++) print s }'
 fi
 if [ -e "$FAKE_ACP_SCRIPTS/crash" ]; then
-  [ -e .blocked ] || { touch .blocked; legionctl thread send main0 hard-block "the suite fails" --tool workspace_checkpoint; }
+  [ -e .blocked ] || { touch .blocked; legionctl thread send main0 hard-block "the suite fails" --tool workspace.checkpoint; }
   kill -9 "$PPID"
 fi
 echo done
@@ -2648,7 +2671,7 @@ fn a_failed_member_restarts_within_its_limit_then_its_blocks_expire() {
         .find(|m| m["kind"] == "hard-block")
         .unwrap();
     assert_eq!(block["state"], "expired");
-    assert_eq!(lab.pre_tool(&main, "workspace_checkpoint"), None);
+    assert_eq!(lab.pre_run(&main, "workspace.checkpoint"), None);
     let told = lab.hook(&main, &ws, "prompt", json!({"prompt": "go on"}));
     assert!(
         told.contains("note from observer0 (thread 1): observer0 failed 4 times within 1h:")
@@ -2975,7 +2998,7 @@ impl RlcdPool {
         write(
             &pool.lab.home.join("scripts/observer0.sh"),
             "printf '%s\\n' \"$FAKE_ACP_PROMPT\" > prompt.txt\n\
-             [ -e .blocked ] || { touch .blocked; legionctl thread send main0 hard-block \"the suite fails\" --tool workspace_checkpoint; }\n\
+             [ -e .blocked ] || { touch .blocked; legionctl thread send main0 hard-block \"the suite fails\" --tool workspace.checkpoint; }\n\
              echo checked the lint\n",
         );
         write(
@@ -3046,7 +3069,7 @@ impl RlcdPool {
     fn checkpoint_held(&self) -> bool {
         self.pool
             .lab
-            .pre_tool(&self.pool.main, "workspace_checkpoint")
+            .pre_run(&self.pool.main, "workspace.checkpoint")
             .is_some()
     }
 }

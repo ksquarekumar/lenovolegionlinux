@@ -34,7 +34,7 @@ switch was one change on 2026-10-13 ([07-plan](07-plan.md)).
    I/O, thermal trips), sched_ext through scx_loader. No eBPF for writes. HID-BPF input fixes: not built.
 6. **Session UX**: the GNOME OSD and vitals overlay, the GPUI app (the only UI), Fn keys handled by the daemon.
 7. **Dual boot**: find and fix Windows hazards, restart into Windows once, and run the installed Windows under KVM.
-8. **Agents are users too**: every operation is also an MCP tool with a permission class. Agents work in dossiers
+8. **Agents are users too**: every operation is also reachable over MCP (find, describe, run) with a permission class. Agents work in dossiers
    and workspaces, run in sandboxes behind a git gate, and observe each other in threads. Only a person approves a
    machine change ([12-operator](12-operator.md), [18-workspaces](18-workspaces.md),
    [23-agent-network](23-agent-network.md)).

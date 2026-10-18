@@ -4,12 +4,13 @@ argument-hint: use <name> [--steal] | active | release | list | check | rename <
 ---
 legionctl:dossier request: $ARGUMENTS
 
-Use the legionctl MCP tools; the client fills in the session id. Follow skill `legionctl:dossier-practice`.
+Run each operation with the legionctl MCP tool `legionctl_run` (`op`, `input`); the client fills in the session id.
+Follow skill `legionctl:dossier-practice`.
 
-1. `use <name>`: call `dossier_use` with `name`. If it is refused, show who holds the dossier and ask before you pass
+1. `use <name>`: run `dossier.use` with `name`. If it is refused, show who holds the dossier and ask before you pass
    `steal: true`.
-2. After a bind, read `<name>/plan.md` and the newest MEMORY files with `dossier_read`.
-3. `active`, `release`, `list`, `check`: call `dossier_active`, `dossier_release`, `dossier_list` or `dossier_check` and
+2. After a bind, read `<name>/plan.md` and the newest MEMORY files with `dossier.read`.
+3. `active`, `release`, `list`, `check`: run `dossier.active`, `dossier.release`, `dossier.list` or `dossier.check` and
    show the result.
-4. `rename <name> <to>`: call `dossier_rename`; the operator asks the user. A name in use is refused.
-5. No arguments: call `dossier_active` and `dossier_list`, then ask which dossier to use or what name to create.
+4. `rename <name> <to>`: run `dossier.rename`; the operator asks the user. A name in use is refused.
+5. No arguments: run `dossier.active` and `dossier.list`, then ask which dossier to use or what name to create.
