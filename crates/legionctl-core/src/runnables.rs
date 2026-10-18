@@ -154,7 +154,8 @@ pub struct Toolverse {
     pub skills: Vec<String>,
 }
 
-/// Its allowed in and out RPC (the gateway enforces them; until the gateway service, the session record keeps them).
+/// Its allowed in and out RPC (the session record keeps them; the gateway's tunnel enforces `out`, `forbidden` and
+/// `web_read`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Connections {
@@ -673,6 +674,78 @@ fn merge(into: &mut Manifest, set: &Manifest) {
     smallest(&mut b.usd, s.usd);
     if set.harness.is_some() {
         into.harness.clone_from(&set.harness);
+    }
+}
+
+/// The connections that session `id` was granted, from its record, as the gateway's tunnel enforces them; `None`: no
+/// such session, or one from before grants.
+///
+/// # Errors
+/// The record cannot be read or does not parse.
+pub fn connections_of(db: &crate::db::Db, id: &str) -> Result<Option<Connections>> {
+    let text: Option<String> = db
+        .conn()
+        .query_row(
+            "SELECT connections FROM sessions WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    text.map(|t| serde_json::from_str(&t).context("a session's granted connections"))
+        .transpose()
+}
+
+impl Connections {
+    /// Why `host`:`port` is not open to this grant, if it is not: a forbidden host never is; a declared endpoint is;
+    /// with web read any host on 443 is, when its addresses are all public ([`public`], the caller checks them).
+    #[must_use]
+    pub fn refusal(&self, host: &str, port: u16) -> Option<String> {
+        if self.forbidden.iter().any(|h| h.eq_ignore_ascii_case(host)) {
+            return Some("this session may never reach it".into());
+        }
+        if self.declares(host, port) || (self.web_read && port == 443) {
+            return None;
+        }
+        Some("this session has no connection to it (`legionctl runnables show <session>`)".into())
+    }
+
+    /// Whether `host`:`port` is one of its declared endpoints.
+    #[must_use]
+    pub fn declares(&self, host: &str, port: u16) -> bool {
+        self.out
+            .iter()
+            .any(|e| e.host.eq_ignore_ascii_case(host) && e.port == port)
+    }
+}
+
+/// An address on the open internet: not loopback, private, link-local, shared (100.64/10), unspecified, broadcast,
+/// documentation or unique local.
+#[must_use]
+pub fn public(address: std::net::IpAddr) -> bool {
+    match address {
+        std::net::IpAddr::V4(a) => {
+            let [first, second, ..] = a.octets();
+            !(a.is_loopback()
+                || a.is_private()
+                || a.is_link_local()
+                || a.is_unspecified()
+                || a.is_broadcast()
+                || a.is_documentation()
+                || (first == 100 && (64..128).contains(&second)))
+        }
+        std::net::IpAddr::V6(a) => {
+            let first = a.segments()[0];
+            a.to_ipv4_mapped().map_or_else(
+                || {
+                    !(a.is_loopback()
+                        || a.is_unspecified()
+                        || (first & 0xfe00) == 0xfc00
+                        || (first & 0xffc0) == 0xfe80)
+                },
+                |v4| public(v4.into()),
+            )
+        }
     }
 }
 

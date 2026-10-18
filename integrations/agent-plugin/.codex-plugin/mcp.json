@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "legionctl": {
+      "command": "legionctl",
+      "args": ["mcp"],
+      "env_vars": ["XDG_RUNTIME_DIR"]
+    }
+  }
+}

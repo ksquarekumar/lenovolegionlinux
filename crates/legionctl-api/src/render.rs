@@ -927,21 +927,15 @@ impl Render for Vec<SkillInfo> {
                 _ => "no reminder".into(),
             };
             out.push(format!("legionctl:{}  ({reminder})", s.name));
-            out.push(format!(
-                "  claude: {}",
-                s.claude
-                    .as_ref()
-                    .map_or("plugin not installed".into(), |p| p.display().to_string())
-            ));
-            out.push(format!(
-                "  codex:  {} ({})",
-                s.codex.display(),
-                if s.codex_linked {
-                    "linked"
-                } else {
-                    "missing; run `legionctl setup apply`"
-                }
-            ));
+            for (agent, path) in [("claude:", &s.claude), ("codex:", &s.codex)] {
+                out.push(format!(
+                    "  {agent:<8}{}",
+                    path.as_ref().map_or(
+                        "plugin not installed; run `legionctl setup apply`".into(),
+                        |p| p.display().to_string()
+                    )
+                ));
+            }
         }
         out.join("\n")
     }

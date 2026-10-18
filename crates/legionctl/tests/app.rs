@@ -326,7 +326,7 @@ fn health_findings(cx: &mut VisualTestContext, app: &Entity<LegionApp>) {
             )]
         );
         assert_eq!(
-            buttons("setup: legionctl mcp for codex is missing")[0].2,
+            buttons("setup: legionctl agent main-agent for codex is missing")[0].2,
             serde_json::json!({"install_ctx": false})
         );
         assert_eq!(

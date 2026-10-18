@@ -41,7 +41,13 @@ struct Lab {
 }
 
 impl Lab {
-    fn new(tag: &str, files: &[(&str, &str)], extra: &[(&str, OsString)]) -> Lab {
+    /// With `gateway`, the model gateway on that port (its tunnel is the sessions' only way out).
+    fn new(
+        tag: &str,
+        files: &[(&str, &str)],
+        extra: &[(&str, OsString)],
+        gateway: Option<u16>,
+    ) -> Lab {
         // outside /tmp (private in a session sandbox) and outside any repository, like a real home
         let home = Scratch::new(format!(
             "/var/tmp/legionctl-runnables-{tag}-{}",
@@ -58,6 +64,12 @@ impl Lab {
                 home.join("worktrees").display()
             ),
         );
+        if let Some(port) = gateway {
+            write(
+                &home.join(".config/legionctl/gateway.jsonc"),
+                &json!({"gateway": {"port": port}}).to_string(),
+            );
+        }
         std::fs::create_dir_all(home.join("root")).unwrap();
         let repo = home.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
@@ -207,7 +219,7 @@ fn set_names(grant: &Value) -> Vec<String> {
 /// dossier stays free. The same start without those flags gets the main agent's sets.
 #[test]
 fn a_start_that_requests_sets_it_may_not_have_is_refused_with_each_reason() {
-    let lab = Lab::new("refuse", &[], &[]);
+    let lab = Lab::new("refuse", &[], &[], None);
     lab.agents(&json!({"probe": ["true"]}));
     let sets = lab.home.join(".config/legionctl/capabilities");
     write(
@@ -309,6 +321,7 @@ fn a_rust_session_gets_cargos_hosts_in_its_record_and_its_registry_as_an_overlay
             "[package]\nname = \"probe\"\nversion = \"0.1.0\"\n",
         )],
         &[],
+        None,
     );
     lab.agents(&json!({"probe": ["sh", "-c",
         "echo crate > ~/.cargo/registry/probe.crate && cat ~/.cargo/registry/probe.crate && echo WROTE"]}));
@@ -348,7 +361,7 @@ fn a_rust_session_gets_cargos_hosts_in_its_record_and_its_registry_as_an_overlay
 /// danger-full-access and its update check off after its command.
 #[test]
 fn the_harness_sets_turn_the_harness_sandboxes_off_in_the_session() {
-    let lab = Lab::new("harness", &[], &[]);
+    let lab = Lab::new("harness", &[], &[], None);
     lab.agents(&json!({"claude": ["claude", "--settings", "{settings}"], "codex": ["codex"]}));
     let claude = launch(&lab.start("claude", "harness", &[]));
     let id = claude["id"].as_str().unwrap();
@@ -419,7 +432,12 @@ async fn a_repository_set_with_a_powerful_part_is_granted_only_after_the_user_al
     }
     let address = format!("unix:path={}", bus_path.display());
     let (_desktop, asked) = desktop::answering(&address, &["allow", "deny"]).await;
-    let lab = Lab::new("tofu", &[], &[("DBUS_SESSION_BUS_ADDRESS", address.into())]);
+    let lab = Lab::new(
+        "tofu",
+        &[],
+        &[("DBUS_SESSION_BUS_ADDRESS", address.into())],
+        None,
+    );
     lab.agents(&json!({"probe": ["true"]}));
     let set = lab.repo.join(".legionctl/capabilities/mirror.jsonc");
     let mirror = |host: &str| {
@@ -489,5 +507,149 @@ async fn a_repository_set_with_a_powerful_part_is_granted_only_after_the_user_al
         asked.lock().unwrap().len(),
         2,
         "a changed file asks again, a denied content does not"
+    );
+}
+
+/// A server on the host's 127.0.0.1 (its port) that answers each HTTP request with `TUNNEL_OK`.
+fn tunnel_ok_server() -> u16 {
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = server.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut stream in server.incoming().flatten() {
+            let mut request = [0u8; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut request);
+            let _ = std::io::Write::write_all(
+                &mut stream,
+                b"HTTP/1.1 200 OK\r\ncontent-length: 9\r\nconnection: close\r\n\r\nTUNNEL_OK",
+            );
+        }
+    });
+    port
+}
+
+/// `launch` run as `session start` runs it: its sandbox in the session's scope cgroup (`legionctl-session-<id>.scope`,
+/// here under this test's own cgroup), where the gateway finds the session of a caller.
+fn run_in_scope(lab: &Lab, launch: &Value) -> Output {
+    let own = std::fs::read_to_string("/proc/self/cgroup").unwrap();
+    let scope = Path::new("/sys/fs/cgroup")
+        .join(own.trim().trim_start_matches("0::/"))
+        .join(format!(
+            "legionctl-session-{}.scope",
+            launch["id"].as_str().unwrap()
+        ));
+    std::fs::create_dir_all(&scope).unwrap();
+    let mut wrapped = launch.clone();
+    let procs = scope.join("cgroup.procs");
+    let sandbox = wrapped["sandbox"].as_array_mut().unwrap();
+    for (at, part) in [
+        "sh",
+        "-c",
+        "echo $$ > \"$0\" && exec \"$@\"",
+        procs.to_str().unwrap(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        sandbox.insert(at, part.into());
+    }
+    let out = lab.run_launch(&wrapped);
+    let _ = std::fs::remove_dir(&scope);
+    out
+}
+
+/// A session's only way out is the gateway's tunnel to its granted connections (DESIGN-12; todo-205: Codex on a
+/// `ChatGPT` login reaches chatgpt.com only this way, through its `HTTPS_PROXY`). A program in the sandbox (curl, as
+/// Codex's HTTP client does) opens a tunnel to a declared endpoint and gets the server's answer; a host it was not
+/// granted (the same server by its address) and a forbidden one are refused with the reason. Each tunnel is an event
+/// with its bytes, each refusal one with its reason. The sandbox runs in the session's scope cgroup, as `session start`
+/// puts it there (the gateway knows the session by it).
+#[test]
+fn a_session_reaches_its_granted_connections_through_the_gateway_tunnel_and_nothing_else() {
+    let port = tunnel_ok_server();
+    let gateway = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let lab = Lab::new("tunnel", &[], &[], Some(gateway));
+    write(
+        &lab.home
+            .join(".config/legionctl/capabilities/service.jsonc"),
+        &json!({"name": "service", "version": 1, "connections": {
+            "out": [{"host": "localhost", "port": port, "why": "the test's server"}],
+            "forbidden": ["forbidden.localhost"]}})
+        .to_string(),
+    );
+    write(
+        &lab.home.join(".config/legionctl/runnables.jsonc"),
+        r#"{ "runnables": { "allow+": ["service"] } }"#,
+    );
+    // curl through the session's proxy: the answer of a granted host, then the tunnel status of two others
+    let through = |host: &str| {
+        format!(
+            "curl -s -w ' %{{http_connect}}\\n' --noproxy '' -p -x \"$HTTPS_PROXY\" http://{host}:{port}/"
+        )
+    };
+    let probe = [
+        through("localhost"),
+        through("127.0.0.1"),
+        through("forbidden.localhost"),
+    ]
+    .join("; ");
+    lab.agents(&json!({"probe": ["sh", "-c", probe]}));
+    let launch = launch(&lab.start("probe", "tunnel", &["--capability", "service"]));
+    let id = launch["id"].as_str().unwrap();
+    let lines = launch["lines"].to_string();
+    assert!(
+        lines.contains("network: the model gateway and the granted connections only"),
+        "{lines}"
+    );
+    let out = run_in_scope(&lab, &launch);
+    let said = text(&out);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        ["TUNNEL_OK 200", " 403", " 403"],
+        "granted, not granted, forbidden: {said}"
+    );
+    let events: Value =
+        serde_json::from_str(&lab.op.ok(&["events", "--limit", "1000", "--json"])).unwrap();
+    let of = |kind: &str| -> Vec<Value> {
+        events["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["kind"] == kind)
+            .map(|e| e["payload"].clone())
+            .collect()
+    };
+    let tunnels = of("gateway.tunnel");
+    assert_eq!(tunnels.len(), 1, "{events:#}");
+    assert_eq!(tunnels[0]["host"], "localhost");
+    assert_eq!(tunnels[0]["who"], format!("session:{id}"));
+    assert!(tunnels[0]["down"].as_u64().unwrap() > 9, "{tunnels:?}");
+    let refused: Vec<(String, String)> = of("gateway.refused")
+        .iter()
+        .map(|e| {
+            (
+                e["host"].as_str().unwrap().to_string(),
+                e["why"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        refused,
+        [
+            (
+                "127.0.0.1".to_string(),
+                "this session has no connection to it (`legionctl runnables show <session>`)"
+                    .to_string()
+            ),
+            (
+                "forbidden.localhost".to_string(),
+                "this session may never reach it".to_string()
+            )
+        ]
     );
 }

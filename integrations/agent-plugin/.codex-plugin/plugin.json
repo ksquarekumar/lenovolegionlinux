@@ -1,0 +1,8 @@
+{
+  "name": "legionctl",
+  "version": "0.6.0",
+  "description": "Operate this Lenovo Legion laptop from Codex: system state and load, dossiers and workspaces (one git worktree per dossier), agent settings, and human-approved power/GPU actions through the local legionctl MCP server.",
+  "skills": "./skills/",
+  "mcpServers": "./.codex-plugin/mcp.json",
+  "hooks": "./hooks/hooks.json"
+}

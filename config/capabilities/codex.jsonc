@@ -2,7 +2,9 @@
 // itself. Its own command sandbox is off (sandbox mode danger-full-access, user decision 2026-10-17): our sandbox, the
 // environment and the gateway are the one boundary; its approval policy stays as the session sets it. The ACP adapter
 // (codex-acp of the ACP project) takes no -c arguments: its mode agent-full-access is the same setting (sandbox
-// danger-full-access, no approval asks and no auto review).
+// danger-full-access, no approval asks and no auto review). Codex 0.163 on a ChatGPT login takes its backend from the
+// login (an HTTPS origin; it reads no OPENAI_BASE_URL), so it reaches chatgpt.com through the gateway's tunnel
+// (HTTPS_PROXY), to the hosts below only.
 {
   "$schema": "../../docs/api/runnable.schema.json",
   "name": "codex",
@@ -26,7 +28,7 @@
       { "host": "chatgpt.com", "shape": "openai-responses", "streaming": ["sse", "websocket"] },
       { "host": "api.openai.com", "shape": "openai-responses", "streaming": ["sse"] }
     ],
-    "base_url_variables": ["OPENAI_BASE_URL"],
+    "base_url_variables": [],
     "credentials": ["~/.codex/auth.json"],
     "telemetry": [
       { "host": "api.github.com", "args": ["-c", "check_for_update_on_startup=false"] }

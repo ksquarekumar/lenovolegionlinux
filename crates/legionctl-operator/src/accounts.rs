@@ -93,7 +93,9 @@ fn state(
             )],
         );
     } else if h.name == "current" {
-        "no clauth account holds this login, so clauth does not read its use".into()
+        // shortcut: no step button yet (keeping a login needs a name: Claude Code's capture, a new Codex login);
+        // upgrade with a named-input form for the row (plan#todo-205)
+        UNKNOWN.into()
     } else if let Some(p) = entry {
         if p.auth_status == "broken" {
             format!(

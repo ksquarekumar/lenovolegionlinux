@@ -1,8 +1,10 @@
 //! Agent setup: make ctx (<https://ctx.rs>) and legionctl available to Claude Code and Codex out of the box.
 //!
 //! - ctx: its bundled skill and MCP server for both agents (`ctx integrations install skill|mcp`).
-//! - Codex: legionctl's MCP server in ~/.codex/config.toml, the plugin's skills linked into ~/.codex/skills, and each
-//!   agent config as a Codex agent in ~/.codex/agents/<name>.toml (instructions, model and effort only).
+//! - Codex: the legionctl plugin from the package's folder (`codex plugin marketplace add`, `add`), which gives it
+//!   legionctl's MCP server, hooks and skills as Claude Code's plugin does; Codex runs the hooks after you trust them
+//!   in Codex. Each agent config as a Codex agent in ~/.codex/agents/<name>.toml (instructions, model and effort
+//!   only): a Codex plugin has no agents.
 //! - Claude Code gets legionctl's MCP server, hooks and skills from the plugin itself.
 //! - The systemd user manager (and so the operator and its checks) gets ~/.local/bin, ~/.cargo/bin and bun's global
 //!   folder (`bun pm -g bin` with `BUN_INSTALL=~/.bun`) before its PATH through ~/.config/environment.d/99-legionctl.conf; it reads the file
@@ -215,18 +217,63 @@ fn codex_config() -> PathBuf {
     home().join(".codex/config.toml")
 }
 
+/// ~/.codex/config.toml as a table; none when there is no file.
+///
 /// # Errors
-/// `text` is not valid TOML.
-pub fn codex_has_legionctl(text: &str) -> Result<bool> {
-    let table: toml::Table = text
-        .parse()
-        .context("~/.codex/config.toml is not valid TOML; fix it before setup")?;
-    Ok(table
+/// The file cannot be read or is not valid TOML.
+fn codex_table() -> Result<toml::Table> {
+    let text = legionctl_machine::sysroot::read_file(&codex_config())?.unwrap_or_default();
+    text.parse()
+        .context("~/.codex/config.toml is not valid TOML; fix it before setup")
+}
+
+/// Codex (`codex`): `setup apply` installs it with bun (`session.npm`), so ~/.bun/bin first, then PATH.
+fn codex_bin() -> Option<PathBuf> {
+    tool_bin("codex", ".bun/bin")
+}
+
+/// The Codex items: the plugin (from the package's folder and of this build), its MCP server (no entry of
+/// config.toml replaces the plugin's), and its hooks (trusted in Codex; Codex runs no hook before that). None without
+/// Codex; a config.toml that cannot be read is one row.
+fn codex_items() -> Vec<Item> {
+    let config = codex_config().display().to_string();
+    let row = |what: &str, status: String, path: &str| Item {
+        what: what.into(),
+        agent: "codex".into(),
+        status,
+        path: path.into(),
+    };
+    let table = match codex_table() {
+        Ok(table) => table,
+        Err(e) => return vec![row("legionctl mcp", format!("{e:#}"), &config)],
+    };
+    let Some(bin) = codex_bin() else {
+        return Vec::new();
+    };
+    let home = home();
+    let plugin = crate::plugin::codex_plugin_status(&home, &table);
+    let market = crate::plugin::package_marketplace().display().to_string();
+    let mcp = if table
         .get("mcp_servers")
         .and_then(|s| s.get("legionctl"))
-        .and_then(|e| e.get("command"))
-        .and_then(|c| c.as_str())
-        == Some("legionctl"))
+        .is_some()
+    {
+        "outdated: an entry in config.toml replaces the plugin's".into()
+    } else if plugin == "current" {
+        "current".into()
+    } else {
+        "missing".into()
+    };
+    let hooks = if plugin == "current" {
+        crate::plugin::codex_hooks_status(&bin, &home)
+    } else {
+        "missing".into()
+    };
+    vec![
+        row("legionctl plugin", plugin, &market),
+        row("legionctl mcp", mcp, &config),
+        row("legionctl hooks", hooks, &config),
+    ]
 }
 
 /// The agent plugin's folder (`LEGIONCTL_PLUGIN` for a checkout's `integrations/agent-plugin`).
@@ -274,54 +321,6 @@ fn codex_agent_items(agents: &Sources) -> Vec<Item> {
             }
         })
         .collect()
-}
-
-fn skill_names() -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(plugin_skills())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().join("SKILL.md").is_file())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    names
-}
-
-fn codex_items() -> Vec<Item> {
-    let config = codex_config();
-    let status = match legionctl_machine::sysroot::read_file(&config) {
-        Ok(Some(text)) => match codex_has_legionctl(&text) {
-            Ok(true) => "current".into(),
-            Ok(false) => "missing".into(),
-            Err(e) => e.to_string(),
-        },
-        Ok(None) => "missing".into(),
-        Err(e) => format!("{e:#}"),
-    };
-    let mut items = vec![Item {
-        what: "legionctl mcp".into(),
-        agent: "codex".into(),
-        status,
-        path: config.display().to_string(),
-    }];
-    for name in skill_names() {
-        let link = home()
-            .join(".codex/skills")
-            .join(format!("legionctl-{name}"));
-        let status = if std::fs::read_link(&link).is_ok_and(|t| t == plugin_skills().join(&name)) {
-            "current"
-        } else {
-            "missing"
-        };
-        items.push(Item {
-            what: format!("legionctl skill {name}"),
-            agent: "codex".into(),
-            status: status.into(),
-            path: link.display().to_string(),
-        });
-    }
-    items
 }
 
 /// 99-: environment.d(5) reads the files of all its folders in file-name order, so a system file (Ubuntu's
@@ -594,73 +593,11 @@ pub fn apply(
         done.push(format!("ctx {kind}: installed for {}", AGENTS.join(", ")));
     }
 
-    let config = codex_config();
-    let text = legionctl_machine::sysroot::read_file(&config)?.unwrap_or_default();
-    if !codex_has_legionctl(&text)? {
-        ensure!(
-            !text.contains("[mcp_servers.legionctl]"),
-            "{} has [mcp_servers.legionctl] with another command; set `command = \"legionctl\"` in it",
-            config.display()
-        );
-        if config.exists() {
-            std::fs::copy(&config, config.with_extension("toml.legionctl-bak"))
-                .context("backing up codex config")?;
-        }
-        std::fs::create_dir_all(config.parent().context("codex config has no parent")?)?;
-        let block = "\n# added by `legionctl setup`\n[mcp_servers.legionctl]\ncommand = \"legionctl\"\nargs = [\"mcp\"]\n";
-        let updated = format!("{}{block}", text.trim_end_matches('\n'));
-        ensure!(
-            codex_has_legionctl(&updated)?,
-            "refusing to write: result would not contain [mcp_servers.legionctl]"
-        );
-        std::fs::write(&config, updated)?;
-        done.push(format!(
-            "legionctl mcp: added to {} (backup *.legionctl-bak)",
-            config.display()
-        ));
-    }
-
-    let skills_dir = home().join(".codex/skills");
-    // skills that were renamed or removed leave dangling legionctl-* links behind; drop only those
-    for entry in std::fs::read_dir(&skills_dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-    {
-        let path = entry.path();
-        if entry
-            .file_name()
-            .to_string_lossy()
-            .starts_with("legionctl-")
-            && path.is_symlink()
-            && !path.exists()
-        {
-            std::fs::remove_file(&path)?;
-            done.push(format!("removed stale link {}", path.display()));
-        }
-    }
-    for name in skill_names() {
-        let target = plugin_skills().join(&name);
-        let link = skills_dir.join(format!("legionctl-{name}"));
-        if std::fs::read_link(&link).is_ok_and(|t| t == target) {
-            continue;
-        }
-        std::fs::create_dir_all(&skills_dir)?;
-        if link.is_symlink() {
-            std::fs::remove_file(&link)?;
-        }
-        ensure!(
-            !link.exists(),
-            "{} exists and is not a legionctl link; not replacing it",
-            link.display()
-        );
-        std::os::unix::fs::symlink(&target, &link)?;
-        done.push(format!("legionctl skill {name}: linked for codex"));
-    }
-
+    done.extend(install_codex_plugin()?);
     done.extend(write_codex_agents(&codex_agents)?);
     done.extend(install_acp_adapters(session)?);
     done.extend(install_claude_plugin()?);
+    done.extend(remove_codex_skill_links()?);
     done.extend(enable_osd()?);
     done.extend(set_up_clauth()?);
     let folders = path_folders()?;
@@ -876,6 +813,105 @@ fn install_claude_plugin() -> Result<Vec<String>> {
         "legionctl plugin: installed into Claude Code from {} (active at the next session start)",
         item.path
     )])
+}
+
+/// `codex <args>`, which must succeed.
+fn codex(codex: &Path, args: &[&str]) -> Result<()> {
+    let out = Command::new(codex)
+        .args(args)
+        .output()
+        .with_context(|| format!("running codex {}", args.join(" ")))?;
+    ensure!(
+        out.status.success(),
+        "codex {}: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(())
+}
+
+/// Install the legionctl plugin into Codex from the package's folder (Codex reads its Claude Code marketplace), so the
+/// plugin and this legionctl are one build: a marketplace of the same name from another folder goes first, and an
+/// earlier setup's `[mcp_servers.legionctl]` in config.toml (it replaces the plugin's entry, which has the variables
+/// that Codex clears) is removed, with a backup. An entry with another command is the user's: setup stops.
+fn install_codex_plugin() -> Result<Vec<String>> {
+    let config = codex_config();
+    let table = codex_table()?;
+    let Some(bin) = codex_bin() else {
+        return Ok(Vec::new());
+    };
+    let mut done = Vec::new();
+    if let Some(entry) = table.get("mcp_servers").and_then(|s| s.get("legionctl")) {
+        ensure!(
+            entry.get("command").and_then(toml::Value::as_str) == Some("legionctl"),
+            "{} has [mcp_servers.legionctl] with another command; remove it, the legionctl plugin gives Codex that server",
+            config.display()
+        );
+        let text = std::fs::read_to_string(&config)?;
+        let mut doc: toml_edit::DocumentMut = text.parse()?;
+        if let Some(servers) = doc
+            .get_mut("mcp_servers")
+            .and_then(toml_edit::Item::as_table_like_mut)
+        {
+            servers.remove("legionctl");
+        }
+        std::fs::copy(&config, config.with_extension("toml.legionctl-bak"))
+            .context("backing up codex config")?;
+        std::fs::write(&config, doc.to_string())?;
+        done.push(format!(
+            "legionctl mcp: the old entry removed from {} (backup *.legionctl-bak); the plugin gives it",
+            config.display()
+        ));
+    }
+    if crate::plugin::codex_plugin_status(&home(), &table) != "current" {
+        let market = crate::plugin::package_marketplace();
+        let (name, key) = (crate::plugin::MARKETPLACE, crate::plugin::PLUGIN_KEY);
+        if table
+            .get("marketplaces")
+            .and_then(|m| m.get(name))
+            .is_some()
+        {
+            codex(&bin, &["plugin", "marketplace", "remove", name])?;
+        }
+        codex(
+            &bin,
+            &[
+                "plugin",
+                "marketplace",
+                "add",
+                &market.display().to_string(),
+            ],
+        )?;
+        codex(&bin, &["plugin", "add", key])?;
+        done.push(format!(
+            "legionctl plugin: installed into Codex from {} (trust its hooks at the next Codex start)",
+            market.display()
+        ));
+    }
+    Ok(done)
+}
+
+/// The links of an earlier setup in ~/.codex/skills (`legionctl-<name>`): the plugin gives Codex the skills now, and
+/// a link would show each one twice.
+fn remove_codex_skill_links() -> Result<Vec<String>> {
+    let mut done = Vec::new();
+    for entry in std::fs::read_dir(home().join(".codex/skills"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let path = entry.path();
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("legionctl-")
+            && path.is_symlink()
+        {
+            std::fs::remove_file(&path)?;
+            done.push(format!("removed the old skill link {}", path.display()));
+        }
+    }
+    Ok(done)
 }
 
 /// The OSD extension, where GNOME Shell's `gnome-extensions` is (doctor shows the same row).

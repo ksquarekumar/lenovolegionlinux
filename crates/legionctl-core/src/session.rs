@@ -1196,8 +1196,9 @@ pub fn mcp_config(config: &Config, store: &crate::packages::Store) -> Result<ser
     Ok(serde_json::json!({ "mcpServers": servers }))
 }
 
-/// The agents' variables for the model gateway (their model calls go there), and the line that says what network the
-/// session has.
+/// The agents' variables for the model gateway: model calls to its APIs, every other HTTPS call through its tunnel to
+/// the session's granted connections (DESIGN-12; Codex on a `ChatGPT` login reaches chatgpt.com only this way). And the
+/// line that says what network the session has.
 fn network(env: &mut Vec<(String, String)>, gateway: Option<u16>) -> String {
     let Some(port) = gateway else {
         return "network: none (gateway.port is 0: no model gateway)".into();
@@ -1211,8 +1212,12 @@ fn network(env: &mut Vec<(String, String)>, gateway: Option<u16>) -> String {
             "OPENAI_BASE_URL".into(),
             format!("http://127.0.0.1:{port}/v1"),
         ),
+        ("HTTPS_PROXY".into(), format!("http://127.0.0.1:{port}")),
+        ("NO_PROXY".into(), "127.0.0.1,localhost".into()),
     ]);
-    format!("network: none but the model gateway (127.0.0.1:{port} in the sandbox)")
+    format!(
+        "network: the model gateway and the granted connections only (127.0.0.1:{port} in the sandbox)"
+    )
 }
 
 /// For a headless run on the host: make its ACP command ready ([`crate::setup::ready`]: a missing adapter is
@@ -1321,7 +1326,7 @@ fn harness_parts(
 }
 
 /// The line that says what the session got: its sets and its connections, which the session record keeps for the
-/// gateway (the sandbox has no network but the model gateway until the gateway service enforces them).
+/// gateway's tunnel.
 fn granted_line(grant: &crate::runnables::Grant) -> String {
     let sets: Vec<String> = grant
         .sets
@@ -1330,7 +1335,7 @@ fn granted_line(grant: &crate::runnables::Grant) -> String {
         .collect();
     let c = &grant.manifest.connections;
     format!(
-        "capabilities: {}; connections: {} out, web read {} (kept for the gateway; `legionctl runnables show <session>`)",
+        "capabilities: {}; connections: {} out, web read {} (`legionctl runnables show <session>`)",
         if sets.is_empty() {
             "none".into()
         } else {

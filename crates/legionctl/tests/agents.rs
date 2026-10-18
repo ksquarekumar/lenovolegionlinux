@@ -156,6 +156,15 @@ esac
             std::os::unix::fs::PermissionsExt::from_mode(0o755),
         )
         .unwrap();
+        // never the machine's Codex: a stand-in `codex` with codex 0.163's plugin behaviour (tests/fixtures/fake-codex.py)
+        let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-codex.py");
+        let codex = home.join(".bun/bin/codex");
+        write(
+            &codex,
+            &format!("#!/bin/sh\nexec python3 {} \"$@\"\n", fake.display()),
+        );
+        std::fs::set_permissions(&codex, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
         stand_in_systemctl(&home);
         stand_in_clauth_setup(&home);
         Lab { op, home, repo }
@@ -857,9 +866,10 @@ fn setup_check_sees_the_claude_code_plugin_and_apply_installs_it_from_the_packag
         )
     );
     assert_eq!(row(), "current");
+    let again = apply();
     assert!(
-        !apply().contains("legionctl plugin"),
-        "nothing to do once current"
+        !again.contains("legionctl plugin"),
+        "nothing to do once current: {again}"
     );
 
     // a checkout as the marketplace: its plugin can be of another build
@@ -1339,7 +1349,7 @@ fn without_clauth_the_current_logins_show_and_setup_installs_and_starts_it() {
         serde_json::from_str(&lab.op.ok(&["agents", "accounts", "usage", "--json"])).unwrap();
     assert_eq!(
         row(&usage, "current", "claude")["text"],
-        "Claude Code, the current login: no clauth account holds this login, so clauth does not read its use."
+        "Claude Code, the current login: use unknown."
     );
 
     std::fs::write(home.join("clauth-version"), "0.18.0").unwrap();
@@ -1437,7 +1447,7 @@ fn the_current_logins_and_clauths_profiles_are_accounts_and_capture_never_copies
     );
     assert_eq!(
         row(&usage, "current", "codex")["text"],
-        "Codex, the current login: no clauth account holds this login, so clauth does not read its use."
+        "Codex, the current login: use unknown."
     );
     let seed = a.lab.op.ok(&["views", "render", "accounts"]);
     assert_eq!(
@@ -1680,4 +1690,157 @@ fn system_path() -> OsString {
         std::env::split_paths(&std::env::var_os("PATH").unwrap()).filter(|p| !p.starts_with(&home)),
     )
     .unwrap()
+}
+
+/// The legionctl rows of Codex in `setup check` (not its agent files): (what, status).
+fn codex_rows(lab: &Lab) -> Vec<(String, String)> {
+    let check: Value = serde_json::from_str(&lab.op.ok(&["setup", "check", "--json"])).unwrap();
+    check["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["agent"] == "codex")
+        .map(|i| (i["what"].as_str().unwrap(), i["status"].as_str().unwrap()))
+        .filter(|(what, _)| what.starts_with("legionctl") && !what.starts_with("legionctl agent"))
+        .map(|(what, status)| (what.to_string(), status.to_string()))
+        .collect()
+}
+
+/// What Codex reads from the plugin it installed at `installed`: the MCP server with the operator's folder, the hooks
+/// and the skills.
+fn assert_codex_reads_the_plugin(installed: &Path) {
+    let manifest: Value = serde_json::from_str(
+        &std::fs::read_to_string(installed.join(".codex-plugin/plugin.json")).unwrap(),
+    )
+    .unwrap();
+    let read = |key: &str| -> Value {
+        let path = manifest[key].as_str().unwrap().trim_start_matches("./");
+        serde_json::from_str(&std::fs::read_to_string(installed.join(path)).unwrap()).unwrap()
+    };
+    assert_eq!(
+        read("mcpServers")["mcpServers"]["legionctl"],
+        json!({"command": "legionctl", "args": ["mcp"], "env_vars": ["XDG_RUNTIME_DIR"]})
+    );
+    assert_eq!(
+        read("hooks")["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+        "legionctl hook session-start"
+    );
+    assert!(
+        installed
+            .join(manifest["skills"].as_str().unwrap())
+            .join("ste100-style/SKILL.md")
+            .is_file()
+    );
+}
+
+/// Codex gets legionctl as a plugin from the package's folder, as Claude Code does (todo-205): `setup apply` on a
+/// home with an earlier setup's `[mcp_servers.legionctl]` (no `XDG_RUNTIME_DIR`: Codex starts MCP servers with a cleared
+/// environment, so legionctl's server did not find the operator) and its skill links installs the plugin through
+/// `codex plugin` (a stand-in with codex 0.163's behaviour), removes the old entry (the user's other settings stay,
+/// with a backup) and the old links. The installed plugin gives Codex the MCP server with `XDG_RUNTIME_DIR`, the shared
+/// hooks and the shared skills. `setup check` shows the plugin, the server and the hooks for Codex, and the hooks wait
+/// for the user's trust in Codex until the user gives it; `skills` shows each skill in Codex's plugin. Codex's copy of
+/// an older build is not current, and apply installs it again.
+#[test]
+fn setup_apply_gives_codex_the_legionctl_plugin_with_its_mcp_server_hooks_and_skills() {
+    let lab = Lab::new("codex-plugin", &shipped_plugin());
+    lab.stand_in_ctx();
+    let config = lab.home.join(".codex/config.toml");
+    write(
+        &config,
+        "model = \"gpt-6.1-sol\"\n\n# added by `legionctl setup`\n[mcp_servers.legionctl]\ncommand = \"legionctl\"\nargs = [\"mcp\"]\n",
+    );
+    let link = lab.home.join(".codex/skills/legionctl-ste100-style");
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(shipped_plugin().join("skills/ste100-style"), &link).unwrap();
+    let rows = || codex_rows(&lab);
+    let row = |what: &str, status: &str| (what.to_string(), status.to_string());
+    assert_eq!(
+        rows(),
+        [
+            row("legionctl plugin", "missing"),
+            row(
+                "legionctl mcp",
+                "outdated: an entry in config.toml replaces the plugin's"
+            ),
+            row("legionctl hooks", "missing"),
+        ]
+    );
+
+    let out = lab.op.cli_in(&lab.home, &["setup", "apply"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let log = std::fs::read_to_string(lab.home.join("codex.log")).unwrap();
+    let market = shipped_plugin().parent().unwrap().to_path_buf();
+    assert!(
+        log.contains(&format!("plugin marketplace add {}", market.display()))
+            && log.contains("plugin add legionctl@lenovolegionlinux"),
+        "{log}"
+    );
+    let now: toml::Table = std::fs::read_to_string(&config).unwrap().parse().unwrap();
+    assert_eq!(
+        now["model"].as_str(),
+        Some("gpt-6.1-sol"),
+        "the user's settings stay"
+    );
+    assert!(
+        now.get("mcp_servers")
+            .and_then(|s| s.get("legionctl"))
+            .is_none(),
+        "{now:#?}"
+    );
+    assert!(config.with_extension("toml.legionctl-bak").is_file());
+    assert!(!link.is_symlink(), "the old skill link is gone");
+
+    let installed = lab
+        .home
+        .join(".codex/plugins/cache/lenovolegionlinux/legionctl/0.6.0");
+    assert_codex_reads_the_plugin(&installed);
+    let waiting = legionctl_core::plugin::CODEX_HOOKS_UNTRUSTED;
+    assert_eq!(
+        rows(),
+        [
+            row("legionctl plugin", "current"),
+            row("legionctl mcp", "current"),
+            row("legionctl hooks", waiting),
+        ]
+    );
+    // the user trusts the hooks in Codex (Codex writes its trust; here the stand-in's list)
+    let keys: Vec<String> = [
+        "session_start",
+        "user_prompt_submit",
+        "pre_tool_use",
+        "subagent_start",
+        "post_tool_use",
+        "pre_compact",
+        "stop",
+        "session_end",
+    ]
+    .iter()
+    .map(|e| format!("legionctl@lenovolegionlinux:hooks/hooks.json:{e}:0:0"))
+    .collect();
+    write(&lab.home.join("codex-trusted"), &keys.join("\n"));
+    assert_eq!(rows()[2], row("legionctl hooks", "current"));
+    let skills: Value = serde_json::from_str(&lab.op.ok(&["skills", "--json"])).unwrap();
+    let ste = skills
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "ste100-style")
+        .unwrap_or_else(|| panic!("{skills:#}"));
+    assert_eq!(ste["codex"], json!(installed.join("skills/ste100-style")));
+
+    // Codex keeps a copy: after an update of the package its copy is of another build, and apply installs it again
+    write(&installed.join("hooks/hooks.json"), "{}\n");
+    assert_eq!(rows()[0], row("legionctl plugin", "not of this build"));
+    let out = lab.op.cli_in(&lab.home, &["setup", "apply"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(rows()[0], row("legionctl plugin", "current"));
 }

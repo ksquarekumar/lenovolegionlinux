@@ -3555,6 +3555,77 @@ fn a_run_on_codexs_acp_adapter_takes_its_live_answer_shape() {
     );
 }
 
+/// A run whose agent gives no words fails with one plain sentence, never "done" with an empty answer (todo-205, live
+/// job 290: Codex answered only "Falling back from `WebSockets` to HTTPS transport. workspace routing discovery failed"
+/// and the run was done). Codex: the replayed transcript of @agentclientprotocol/codex-acp 2.2.2 with no path to its
+/// service, recorded 2026-10-18 with legionctl's typed-failure capability (its warnings and its error come as typed
+/// session failures, none as words); the run fails with the error. Without that capability the adapter sends them as
+/// words, as job 290 kept them (codex-acp-no-service-untyped.jsonl, the same run in that shape). Claude's shape: a stand-in that ends its turn with
+/// no words; the run fails with the same sentence. Each job is failed with that sentence.
+#[test]
+fn a_run_whose_agent_gives_no_words_fails_with_one_sentence() {
+    let (op, home) = operator("no-words");
+    let repo = repository(&home);
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    adapter::executable(
+        &home.join(".local/bin/fake-acp"),
+        &adapter::node_script(&home),
+    );
+    write(
+        &home.join(".config/legionctl/run.jsonc"),
+        &json!({"session": {"acp": {
+                    "codex": ["python3", fixtures.join("replay-acp-agent.py"), fixtures.join("codex-acp-no-service.jsonl"),
+                              fixtures.join("codex-acp-no-service-untyped.jsonl")],
+                    "claude": adapter::COMMAND},
+                "scope": false, "writable": []}})
+        .to_string(),
+    );
+    let sentences = [
+        (
+            "codex",
+            "review the plan",
+            "the agent stopped with an error: workspace routing discovery failed",
+        ),
+        (
+            "claude",
+            "SILENT review the plan",
+            "the agent gave no answer",
+        ),
+    ];
+    for (agent, prompt, sentence) in sentences {
+        let out = op.run(
+            &repo,
+            &[("HOME", home.to_str().unwrap())],
+            &["session", "run", agent, prompt, "--dossier", agent],
+            "",
+        );
+        let (stdout, stderr) = (
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        assert!(!out.status.success(), "{agent}: {stdout}");
+        assert!(stderr.contains(sentence), "{agent}: {stderr}");
+        assert!(
+            !stdout.contains("Falling back") && !stderr.contains("Falling back"),
+            "{agent}: a transport warning is no answer: {stdout}"
+        );
+    }
+    let jobs: Value = serde_json::from_str(&op.ok(&["jobs", "list", "--json"])).unwrap();
+    let mut failed: Vec<&str> = jobs["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{jobs}"))
+        .iter()
+        .filter(|j| j["kind"] == "session.run" && j["state"] == "failed")
+        .filter_map(|j| j["error"].as_str())
+        .collect();
+    failed.sort_unstable();
+    assert_eq!(
+        failed,
+        [sentences[1].2, sentences[0].2],
+        "each job fails with its sentence: {jobs:#}"
+    );
+}
+
 /// A headless run through an ACP adapter (a stand-in agent): it gets the session's MCP servers at session/new, its
 /// permission ask is answered and logged, it works inside the same sandbox and git gate as an interactive session,
 /// and its answer comes back. The adapter starts as the defaults start Zed's: bun runs a `#!/usr/bin/env node` script
@@ -5805,7 +5876,7 @@ fn a_sandboxed_agent_finds_no_way_out_and_still_commits_calls_the_model_and_the_
         launch["lines"].as_array().unwrap().iter().any(|l| l
             .as_str()
             .unwrap()
-            .starts_with("network: none but the model gateway")),
+            .starts_with("network: the model gateway and the granted connections only")),
         "{launch}"
     );
     assert_eq!(
@@ -8157,4 +8228,66 @@ fn a_write_that_waits_out_the_lock_says_so_in_one_sentence() {
             && !stderr.contains("Error code 5"),
         "{stderr}"
     );
+}
+
+/// The legionctl hooks answer Codex's own payloads (todo-205: the plugin's hooks.json runs in Codex on the same
+/// events): each payload as codex 0.163 sent it through the installed plugin, recorded 2026-10-18 (tests/fixtures/
+/// codex-hooks, anonymized). Session start and each prompt give Codex the session's dossier and the reminders as
+/// context (Codex reads plain output and the JSON's additionalContext as Claude Code does); the tool, stop and end
+/// hooks pass.
+#[test]
+fn the_legionctl_hooks_answer_codexs_own_payloads() {
+    let (op, home) = operator("codex-hooks");
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/codex-hooks");
+    let session = "01a14ef6-5f77-7523-b576-8e1af9113d99";
+    assert!(
+        op.run(
+            &home,
+            &[("LEGIONCTL_SESSION", session)],
+            &["dossier", "use", "codex-hooks"],
+            ""
+        )
+        .status
+        .success()
+    );
+    let hook = |event: &str, fixture: &str| -> (bool, String, String) {
+        let mut payload: Value =
+            serde_json::from_str(&std::fs::read_to_string(fixtures.join(fixture)).unwrap())
+                .unwrap();
+        payload["cwd"] = json!(home);
+        let out = op.run(&home, &[], &["hook", event], &payload.to_string());
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    // Codex takes a start or prompt hook's plain output as context, or the JSON's additionalContext, as Claude Code does
+    let context = |stdout: &str| -> String {
+        match serde_json::from_str::<Value>(stdout) {
+            Ok(answer) => answer["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{answer:#}"))
+                .to_string(),
+            Err(_) => stdout.to_string(),
+        }
+    };
+    let (ok, start, err) = hook("session-start", "session-start.json");
+    assert!(ok, "{err}");
+    assert!(context(&start).contains("codex-hooks"), "{start}");
+    let (ok, prompt, err) = hook("prompt", "prompt.json");
+    assert!(ok, "{err}");
+    assert!(
+        context(&prompt).contains("legionctl:ste100-style"),
+        "{prompt}"
+    );
+    for (event, fixture) in [
+        ("pre-tool", "pre-tool-bash.json"),
+        ("post-tool", "post-tool-bash.json"),
+        ("stop", "stop.json"),
+        ("session-end", "session-end.json"),
+    ] {
+        let (ok, _, err) = hook(event, fixture);
+        assert!(ok, "{event}: {err}");
+    }
 }

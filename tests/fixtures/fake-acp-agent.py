@@ -6,7 +6,7 @@ On a prompt it announces a tool call, asks one permission, commits a file and tr
 servers from session/new, the permission outcome, and whether the commit and the push went through. The answer comes
 line by line, 0.1 s apart; a prompt that starts with WAIT holds after the first line until a file `release` is in the
 working folder, or the file $FAKE_ACP_RELEASE when that is set (at most 30 s), and one that starts with SLOW waits 30 s first (a long run, for the test that stops the
-operator in the middle of one). It can load its sessions (kept in `.fake-acp-sessions` in the working folder, so a
+operator in the middle of one), and one that starts with SILENT ends its turn with no words. It can load its sessions (kept in `.fake-acp-sessions` in the working folder, so a
 new adapter process finds them): session/load replays the earlier prompts and a REPLAYED line before it answers.
 After session/new and session/load it offers two commands (available_commands_update): /plan <what to plan> and
 /status. In a thread member's session (LEGIONCTL_MEMBER=<thread>/<member>), a prompt runs the script
@@ -113,6 +113,8 @@ def prompt(params):
     script = os.path.join(os.environ.get("FAKE_ACP_SCRIPTS", ""), os.environ.get("LEGIONCTL_MEMBER", "").split("/")[-1] + ".sh")
     if os.environ.get("LEGIONCTL_MEMBER") and os.path.isfile(script):
         return member(session, text, script)
+    if text.startswith("SILENT"):
+        return {"stopReason": "end_turn"}
     if text.startswith("SLOW"):
         time.sleep(30)
     update(session, "tool_call", toolCallId="t1", title="git push", kind="execute", status="pending")

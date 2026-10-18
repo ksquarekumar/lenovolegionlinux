@@ -5137,7 +5137,7 @@
         "type": "object",
         "properties": {
           "name": {
-            "description": "Skill name; Claude Code loads it as `legionctl:<name>`.",
+            "description": "Skill name; Claude Code and Codex load it as `legionctl:<name>`.",
             "type": "string"
           },
           "description": {
@@ -5151,11 +5151,11 @@
             ]
           },
           "codex": {
-            "description": "Codex link (~/.codex/skills/legionctl-<name>) and whether it resolves.",
-            "type": "string"
-          },
-          "codex_linked": {
-            "type": "boolean"
+            "description": "Path inside the installed Codex plugin, when the plugin is installed.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "reminder": {
             "description": "Reminder that keeps the skill in force, and its state.",
@@ -5173,9 +5173,7 @@
         },
         "required": [
           "name",
-          "description",
-          "codex",
-          "codex_linked"
+          "description"
         ]
       },
       "title": "Array_of_SkillInfo",

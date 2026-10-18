@@ -1183,8 +1183,10 @@ fn setup_findings() -> Result<Vec<legionctl_api::Finding>> {
                 )));
             }
             let text = format!("setup: {} for {} is {}", i.what, i.agent, i.status);
-            // no setup step mends an extension that GNOME Shell refused
-            if i.status == legionctl_machine::system::OSD_BROKEN {
+            // no setup step mends an extension that GNOME Shell refused, nor gives Codex the user's trust
+            if i.status == legionctl_machine::system::OSD_BROKEN
+                || i.status == legionctl_core::plugin::CODEX_HOOKS_UNTRUSTED
+            {
                 return Ok(state(text));
             }
             Ok(legionctl_api::Finding {
@@ -1228,7 +1230,7 @@ fn not_run(name: &str, e: &anyhow::Error) -> legionctl_api::Finding {
     ))
 }
 
-/// The agent side of `doctor`: a Claude Code plugin of another build, stale dossier bindings, workspaces that drifted
+/// The agent side of `doctor`: a Claude Code plugin of another build (Codex's: its setup rows), stale dossier bindings, workspaces that drifted
 /// from their record.
 fn agent_findings() -> Result<Vec<String>> {
     let mut w = legionctl_core::plugin::findings(&home());

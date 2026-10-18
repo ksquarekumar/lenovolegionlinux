@@ -1,6 +1,7 @@
-//! `legionctl hook <event>`: the adapter between Claude Code's hooks and the operator. It reads the hook's JSON from
-//! stdin (`session_id`, `cwd`, `prompt`, `tool_input`; in a legionctl session `LEGIONCTL_SESSION` replaces
-//! `session_id`) and answers in Claude Code's hook protocol:
+//! `legionctl hook <event>`: the adapter between the hooks of Claude Code and Codex and the operator (the plugin's one
+//! hooks.json; Codex sends the same payloads and reads the same answers on the events it has, all but teammate-idle
+//! and task-completed). It reads the hook's JSON from stdin (`session_id`, `cwd`, `prompt`, `tool_input`; in a
+//! legionctl session `LEGIONCTL_SESSION` replaces `session_id`) and answers in Claude Code's hook protocol:
 //!
 //! | Event | Operation | Answer |
 //! | --- | --- | --- |

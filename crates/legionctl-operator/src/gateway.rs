@@ -221,6 +221,7 @@ pub async fn serve(bound: Bound, ready: crate::Ready) -> Result<()> {
             "/v1/responses",
             post(|s, c, h, b| call(s, c, Api::Responses, h, b)),
         )
+        .fallback(tunnel)
         .with_state(gateway);
     ready.set();
     tokio::try_join!(
@@ -234,6 +235,109 @@ pub async fn serve(bound: Bound, ready: crate::Ready) -> Result<()> {
         axum::serve(local, app.into_make_service_with_connect_info::<Caller>()).into_future()
     )?;
     Ok(())
+}
+
+/// A session's HTTPS tunnel (`CONNECT host:port`, its `HTTPS_PROXY`; DESIGN-12): open only to what its grant allows
+/// ([`legionctl_core::runnables::Connections::refusal`]), to the addresses checked. Each tunnel is an event with its
+/// host and bytes (`gateway.tunnel`), each refusal one with the reason (`gateway.refused`): the gateway does not see
+/// inside TLS. Every other method or path is not the gateway's.
+async fn tunnel(
+    axum::extract::ConnectInfo(caller): axum::extract::ConnectInfo<Caller>,
+    request: axum::extract::Request,
+) -> Response {
+    if request.method() != axum::http::Method::CONNECT {
+        return refuse(StatusCode::NOT_FOUND, "the gateway has no such path");
+    }
+    let Some((host, port)) = request
+        .uri()
+        .authority()
+        .map(|a| (a.host().to_ascii_lowercase(), a.port_u16().unwrap_or(443)))
+    else {
+        return refuse(StatusCode::BAD_REQUEST, "CONNECT needs host:port");
+    };
+    let event = json!({ "who": caller.who, "host": host, "port": port });
+    let mut upstream = match open(&caller.who, &host, port).await {
+        Ok(stream) => stream,
+        Err((status, why)) => {
+            log("gateway.refused", json!({ "why": why }), &event);
+            return refuse(status, &format!("{host}:{port}: {why}"));
+        }
+    };
+    tokio::spawn(async move {
+        let started = Instant::now();
+        let bytes = match hyper::upgrade::on(request).await {
+            Ok(upgraded) => tokio::io::copy_bidirectional(
+                &mut hyper_util::rt::TokioIo::new(upgraded),
+                &mut upstream,
+            )
+            .await
+            .unwrap_or_default(),
+            Err(_) => (0, 0),
+        };
+        log(
+            "gateway.tunnel",
+            json!({ "up": bytes.0, "down": bytes.1, "ms": started.elapsed().as_millis() }),
+            &event,
+        );
+    });
+    StatusCode::OK.into_response()
+}
+
+/// The upstream of a tunnel for `who` to `host`:`port`, when its grant allows it; else the status and the reason.
+async fn open(
+    who: &str,
+    host: &str,
+    port: u16,
+) -> Result<tokio::net::TcpStream, (StatusCode, String)> {
+    let Some(session) = who.strip_prefix("session:") else {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "the tunnel is for legionctl sessions; this program is not in one".into(),
+        ));
+    };
+    let connections = Db::open_default()
+        .and_then(|db| legionctl_core::runnables::connections_of(&db, session))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?
+        .ok_or((
+            StatusCode::FORBIDDEN,
+            format!("session {session} has no granted connections"),
+        ))?;
+    if let Some(why) = connections.refusal(host, port) {
+        return Err((StatusCode::FORBIDDEN, why));
+    }
+    let addresses: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("cannot find the host: {e}"),
+            )
+        })?
+        .collect();
+    // web read: the addresses checked are the ones connected to (a name that turns local later gets no tunnel)
+    if !connections.declares(host, port)
+        && !addresses
+            .iter()
+            .all(|a| legionctl_core::runnables::public(a.ip()))
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "web read reaches public hosts only; this one is local or private".into(),
+        ));
+    }
+    tokio::net::TcpStream::connect(&addresses[..])
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("cannot connect: {e}")))
+}
+
+/// An event of the gateway: `fields` with the caller and the target of `event`.
+fn log(kind: &str, mut fields: Value, event: &Value) {
+    if let (Some(f), Some(e)) = (fields.as_object_mut(), event.as_object()) {
+        f.extend(e.clone());
+    }
+    if let Err(e) = Db::open_default().and_then(|db| db.record("gateway", kind, &fields)) {
+        eprintln!("operator: {kind} not recorded: {e:#}");
+    }
 }
 
 fn refuse(status: StatusCode, message: &str) -> Response {

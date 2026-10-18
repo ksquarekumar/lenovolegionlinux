@@ -340,7 +340,7 @@
       "additionalProperties": false
     },
     "Connections": {
-      "description": "Its allowed in and out RPC (the gateway enforces them; until the gateway service, the session record keeps them).",
+      "description": "Its allowed in and out RPC (the session record keeps them; the gateway's tunnel enforces `out`, `forbidden` and\n`web_read`).",
       "type": "object",
       "properties": {
         "out": {

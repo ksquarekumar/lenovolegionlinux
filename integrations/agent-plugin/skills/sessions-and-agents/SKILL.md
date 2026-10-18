@@ -32,8 +32,10 @@ user-invocable: true
 11. A session has no network of its own: its only way out is the model gateway (`gateway.sock`; the agent's base URLs
     point to it). The gateway counts tokens and cost per account and model and enforces `gateway.budgets`
     (`day_usd`, `month_usd`), also in containers (`--network none`) and VMs. `~/.ssh`, credential and token files,
-    `.env` files and clauth's store (`~/.clauth`) are hidden; git config and hooks are read-only. Logins that need other hosts
-    (OAuth refresh, a ChatGPT login) and remote MCP servers wait for the gateway's connections (plan todo-153).
+    `.env` files and clauth's store (`~/.clauth`) are hidden; git config and hooks are read-only. Every other HTTPS call
+    (a ChatGPT login's backend, an OAuth refresh, a web read) goes through the gateway's tunnel (`HTTPS_PROXY`) to the
+    session's granted connections only (`runnables show <session>`); events `gateway.tunnel` and `gateway.refused`. A
+    session is known by its host scope; the tunnel of a container or VM session is not checked yet (plan todo-205).
 12. `session pause` and `session unpause` freeze and thaw a session; its memory stays. `session stop` stops it and
     everything it started.
 13. `session resume <id> [--account <name>]` continues an ended session with the same id, dossier and workspace.

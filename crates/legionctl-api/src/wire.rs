@@ -643,14 +643,13 @@ wire! {
     }
 
     struct SkillInfo from core::skills::SkillInfo {
-        /// Skill name; Claude Code loads it as `legionctl:<name>`.
+        /// Skill name; Claude Code and Codex load it as `legionctl:<name>`.
         name: String,
         description: String,
         /// Path inside the installed Claude Code plugin, when the plugin is installed.
         claude: Option<PathBuf>,
-        /// Codex link (~/.codex/skills/legionctl-<name>) and whether it resolves.
-        codex: PathBuf,
-        codex_linked: bool,
+        /// Path inside the installed Codex plugin, when the plugin is installed.
+        codex: Option<PathBuf>,
         /// Reminder that keeps the skill in force, and its state.
         reminder: Option<String>,
         reminder_on: Option<bool>,

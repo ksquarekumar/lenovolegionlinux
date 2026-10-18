@@ -9,10 +9,11 @@ use std::time::Instant;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    AvailableCommandInput, CloseSessionRequest, ContentBlock, ContentChunk, InitializeRequest,
-    LoadSessionRequest, McpServer, McpServerStdio, NewSessionRequest, PermissionOptionKind,
-    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate, TextContent,
+    AvailableCommandInput, ClientCapabilities, CloseSessionRequest, ContentBlock, ContentChunk,
+    InitializeRequest, LoadSessionRequest, McpServer, McpServerStdio, NewSessionRequest,
+    PermissionOptionKind, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionId, SessionNotification,
+    SessionUpdate, TextContent,
 };
 use agent_client_protocol::{AcpAgent, Client};
 use anyhow::{Context, Result};
@@ -111,6 +112,27 @@ struct Live {
     over: Arc<tokio::sync::Notify>,
     /// The first event that could not be logged: the run fails with it at its end (its audit is not whole).
     unlogged: Option<String>,
+    /// The agent's last warning or error while it answered (Codex's typed session failures), and whether its turn
+    /// ended with that error.
+    failure: (Option<String>, bool),
+}
+
+/// The run's `initialize`, with the client capability that makes Codex's adapter send its warnings and errors as
+/// typed session failures (`session_info_update` and the prompt answer's `_meta`), never as words of the answer.
+fn initialize() -> InitializeRequest {
+    let typed = serde_json::json!({"jetbrains": {"air": {"version": 1, "capabilities": ["sessionFailure"]}}});
+    InitializeRequest::new(ProtocolVersion::V1).client_capabilities(
+        ClientCapabilities::new().meta(typed.as_object().cloned().unwrap_or_default()),
+    )
+}
+
+/// The typed session failure in `meta`: its severity (`warning`, `error`) and its title.
+fn failure_of(meta: Option<&agent_client_protocol::schema::v1::Meta>) -> Option<(String, String)> {
+    let failure = &meta?.get("jetbrains")?["air"]["sessionFailure"];
+    Some((
+        failure["severity"].as_str()?.to_string(),
+        failure["title"].as_str()?.to_string(),
+    ))
 }
 
 impl Live {
@@ -201,6 +223,15 @@ impl Live {
                 "session.output",
                 serde_json::json!({ "tag": tag, "tool": call.title }),
             ),
+            SessionUpdate::SessionInfoUpdate(info) => {
+                if let Some((severity, title)) = failure_of(info.meta.as_ref()) {
+                    self.record(
+                        "session.output",
+                        serde_json::json!({ "tag": tag, severity: title }),
+                    );
+                    self.failure.0 = Some(title);
+                }
+            }
             _ => {}
         }
     }
@@ -224,6 +255,28 @@ fn keep_acp(live: &Mutex<Live>, job: i64, input: &serde_json::Value) -> Result<(
 }
 
 impl Live {
+    /// The prompt's answer: its typed failure, if any, is the agent's last words; an error ends the turn as failed.
+    fn ended(&mut self, meta: Option<&agent_client_protocol::schema::v1::Meta>) {
+        if let Some((severity, title)) = failure_of(meta) {
+            self.failure = (Some(title), severity == "error");
+        }
+    }
+
+    /// A turn that ended with the agent's error, or with no words (unless a limit cut it), fails: never a run that is
+    /// done with an empty answer.
+    fn answered(&self, limited: bool) -> Result<()> {
+        if let (Some(error), true) = &self.failure {
+            anyhow::bail!("the agent stopped with an error: {error}");
+        }
+        if !limited && self.text.trim().is_empty() {
+            match &self.failure.0 {
+                Some(last) => anyhow::bail!("the agent gave no answer; its last words: {last}"),
+                None => anyhow::bail!("the agent gave no answer"),
+            }
+        }
+        Ok(())
+    }
+
     /// The run's output; its ACP session id from the job, also when the connection was dropped.
     fn output(&self, id: String, job: i64, started: Instant) -> Result<RunOutput> {
         if let Some(why) = &self.unlogged {
@@ -302,6 +355,7 @@ async fn drive(
         limit: budget.tokens,
         over: over.clone(),
         unlogged: None,
+        failure: (None, false),
     }));
     let (asks, updates) = (live.clone(), live.clone());
     let client = Client
@@ -320,10 +374,7 @@ async fn drive(
             agent_client_protocol::on_receive_notification!(),
         )
         .connect_with(agent, async |cx| {
-            let init = cx
-                .send_request(InitializeRequest::new(ProtocolVersion::V1))
-                .block_task()
-                .await?;
+            let init = cx.send_request(initialize()).block_task().await?;
             if input["load"] == true && !init.agent_capabilities.load_session {
                 return Err(anyhow::anyhow!(
                     "the agent cannot load an ACP session, so the run cannot go on in {}",
@@ -355,12 +406,10 @@ async fn drive(
                 Some(history) if fresh => history,
                 _ => prompt,
             };
-            cx.send_request(PromptRequest::new(
-                acp.clone(),
-                vec![ContentBlock::Text(TextContent::new(text))],
-            ))
-            .block_task()
-            .await?;
+            let words = vec![ContentBlock::Text(TextContent::new(text))];
+            let turn = PromptRequest::new(acp.clone(), words);
+            let answer = cx.send_request(turn).block_task().await?;
+            lock(&live).ended(answer.meta.as_ref());
             if init.agent_capabilities.session_capabilities.close.is_some() {
                 cx.send_request(CloseSessionRequest::new(acp))
                     .block_task()
@@ -377,6 +426,7 @@ async fn drive(
         done = client => { done.map_err(adapter_error)?; None }
     };
     let live = lock(&live);
+    live.answered(reached.is_some())?;
     // an answer that came in whole within one poll reached its limit too
     let reached = reached.or_else(|| budget.reached(&live.text, started.elapsed().as_secs()));
     Ok((live.output(id, job, started)?, reached))

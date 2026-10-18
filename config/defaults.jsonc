@@ -126,8 +126,12 @@
       "codex": ["codex"]
     },
     // Agent name -> the command that continues an ended session (legionctl session resume <id>).
+    // Codex keeps its own session ids: --last is the newest Codex session of the session's folder, which in the session's
+    // own layer of ~/.codex is its own (shortcut: a Codex run on the host in the same folder later would win; upgrade
+    // by keeping Codex's thread id in the session record).
     "resume": {
-      "claude": ["claude", "--resume", "{id}", "--settings", "{settings}", "--mcp-config", "{mcp}", "--strict-mcp-config"]
+      "claude": ["claude", "--resume", "{id}", "--settings", "{settings}", "--mcp-config", "{mcp}", "--strict-mcp-config"],
+      "codex": ["codex", "resume", "--last"]
     },
     // Agent name -> its ACP adapter, for headless runs (legionctl session run): Zed's adapter for Claude Code, the
     // ACP project's for Codex (on the Codex app server), run by bun (`bun --bun x --no-install <adapter>`: bun's
