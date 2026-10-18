@@ -189,6 +189,29 @@ fn fstab_targets(root: &SysRoot, disk: &str) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
+/// The block devices (`nvme0n1p3`) of the NTFS entries of `/etc/fstab` on the `NVMe` controller `disk`.
+fn ntfs_volumes(root: &SysRoot, disk: &str) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for l in root.read("/etc/fstab")?.unwrap_or_default().lines() {
+        let mut fields = l.split_whitespace();
+        let (Some(source), Some(_), Some(kind)) = (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        if l.trim_start().starts_with('#')
+            || !matches!(kind, "ntfs3" | "ntfs" | "ntfs-3g" | "fuseblk")
+        {
+            continue;
+        }
+        if source_controller(root, source)?.as_deref() == Some(disk)
+            && let Some(name) = block(root, source)?
+        {
+            out.push(name);
+        }
+    }
+    Ok(out)
+}
+
 /// The mount points of the Windows disk's partitions in `/etc/fstab`: what `disk_plan` attaches and detaches. None
 /// when this machine has no Windows volume.
 ///
@@ -442,9 +465,15 @@ fn refusals(root: &SysRoot) -> Result<Vec<String>> {
             "the Windows registry cannot be read ({e:#}), so Fast Startup can be on: start Windows on the machine and shut it down fully"
         )),
     }
-    for volume in &state.dirty_ntfs {
-        if controller(root, volume)?.as_deref() == Some(disk.as_str()) {
-            why.push(windows::dirty_hazard(volume));
+    // the flag on the volume, not the kernel log: a VM run that cleaned it starts the next one without a Linux start
+    for volume in ntfs_volumes(root, &disk)? {
+        match windows::ntfs_dirty(&root.path(format!("/dev/{volume}"))) {
+            Ok(false) => {}
+            Ok(true) => why.push(windows::dirty_hazard(&volume)),
+            Err(e) => why.push(format!(
+                "the NTFS volume {volume} cannot be read ({e:#}), so it can be dirty: start Windows on the machine and \
+                 shut it down fully"
+            )),
         }
     }
     why.extend(hibernation(root, &target));

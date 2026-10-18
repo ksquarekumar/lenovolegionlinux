@@ -3885,6 +3885,35 @@ mod operator_and_daemon {
         }
     }
 
+    /// An NTFS volume as far as its dirty flag needs: the boot sector (512-byte sectors, 4 KiB clusters, the MFT at
+    /// cluster 4, 1 KiB records) and MFT record 3 (`$Volume`) with its update sequence and its `$VOLUME_INFORMATION`.
+    fn ntfs_volume(dirty: bool) -> Vec<u8> {
+        let mut v = vec![0u8; 16384 + 4 * 1024];
+        v[3..11].copy_from_slice(b"NTFS    ");
+        v[0x0B..0x0D].copy_from_slice(&512u16.to_le_bytes());
+        v[0x0D] = 8;
+        v[0x30..0x38].copy_from_slice(&4u64.to_le_bytes());
+        v[0x40] = (-10i8).to_ne_bytes()[0];
+        let r = &mut v[16384 + 3 * 1024..16384 + 4 * 1024];
+        r[..4].copy_from_slice(b"FILE");
+        r[4..6].copy_from_slice(&0x30u16.to_le_bytes());
+        r[6..8].copy_from_slice(&3u16.to_le_bytes());
+        r[0x14..0x16].copy_from_slice(&0x38u16.to_le_bytes());
+        // the update sequence number, at the end of each 512 bytes (the array keeps the zeros that were there)
+        r[0x30..0x32].copy_from_slice(&[7, 0]);
+        r[510..512].copy_from_slice(&[7, 0]);
+        r[1022..1024].copy_from_slice(&[7, 0]);
+        // $VOLUME_INFORMATION: resident, its value at 0x18 (version 3.1, then the flags)
+        r[0x38..0x3C].copy_from_slice(&0x70u32.to_le_bytes());
+        r[0x3C..0x40].copy_from_slice(&0x28u32.to_le_bytes());
+        r[0x38 + 0x14..0x38 + 0x16].copy_from_slice(&0x18u16.to_le_bytes());
+        r[0x38 + 0x18 + 8] = 3;
+        r[0x38 + 0x18 + 9] = 1;
+        r[0x38 + 0x18 + 0x0A] = u8::from(dirty);
+        r[0x60..0x64].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        v
+    }
+
     /// The Windows disk's block device (4 MiB of known bytes), and `qemu-img` (overlay, commit, image) and `qemu-io`
     /// (the VM's writes) on the operator's and daemon's PATH; the stand-in QEMU writes its arguments and the disk's mode.
     fn windows_disk(m: &Machine) {
@@ -3892,6 +3921,10 @@ mod operator_and_daemon {
         // the whole disk: 4 MiB of known bytes (512-byte sectors)
         m.set("/sys/block/nvme0n1/size", "8192");
         std::fs::create_dir_all(root.join("dev")).unwrap();
+        // its two NTFS partitions, clean
+        for part in ["nvme0n1p3", "nvme0n1p4"] {
+            std::fs::write(root.join("dev").join(part), ntfs_volume(false)).unwrap();
+        }
         std::fs::write(
             root.join("dev/nvme0n1"),
             (0..4u32 << 20)
@@ -4054,8 +4087,9 @@ mod operator_and_daemon {
     }
 
     /// A Windows VM start needs proof that Windows shut down fully (B1): a hibernated Windows, a hibernation file that
-    /// cannot be read or has an unknown header, a registry that cannot be read (Fast Startup unknown) and a dirty
-    /// volume of the Windows disk are each refused before anything changes, with what to do.
+    /// cannot be read or has an unknown header, a registry that cannot be read (Fast Startup unknown), and a volume of
+    /// the Windows disk whose own flag says dirty or that cannot be read are each refused before anything changes, with
+    /// what to do; an old dirty line in the kernel log does not refuse.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_windows_vm_start_needs_proof_that_windows_shut_down_fully() {
         let m = Machine::new("winsafe");
@@ -4068,7 +4102,7 @@ mod operator_and_daemon {
         let hive = m
             .dir
             .join("root/mnt/windows-system/Windows/System32/config/SYSTEM");
-        let kernel_log = m.dir.join("kernel.log");
+        let data = m.dir.join("root/dev/nvme0n1p4");
         let refused = |why: &str| {
             assert!(!windows_runner(&m, &op).status.success());
             let state = windows_state(&m);
@@ -4103,14 +4137,17 @@ mod operator_and_daemon {
         std::fs::write(&hive, b"regf but cut short").unwrap();
         refused("the Windows registry cannot be read");
         std::fs::write(&hive, HiveFile::system(1, 0)).unwrap();
+        // the flag on the volume itself (a dirty line of the kernel log from before a VM run that cleaned it is old)
+        std::fs::write(&data, ntfs_volume(true)).unwrap();
+        refused("NTFS volume nvme0n1p4 is marked dirty");
+        std::fs::write(&data, b"not a file system").unwrap();
+        refused("the NTFS volume nvme0n1p4 cannot be read");
+        std::fs::write(&data, ntfs_volume(false)).unwrap();
         std::fs::write(
-            &kernel_log,
-            "ntfs3(nvme0n1p4): It is recommened to check volume for errors\n\
-             ntfs3(nvme0n1p4): volume is dirty and \"force\" flag is not set!\n",
+            m.dir.join("kernel.log"),
+            "ntfs3(nvme0n1p4): volume is dirty and \"force\" flag is not set!\n",
         )
         .unwrap();
-        refused("NTFS volume nvme0n1p4 is marked dirty");
-        std::fs::remove_file(&kernel_log).unwrap();
 
         // proof again: the start goes on to the next guard
         assert!(!windows_runner(&m, &op).status.success());

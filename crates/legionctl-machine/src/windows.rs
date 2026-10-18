@@ -94,6 +94,90 @@ pub fn dirty_ntfs() -> Result<Vec<String>> {
     Ok(volumes)
 }
 
+/// Whether the NTFS volume on the block device `dev` is marked dirty: bit 0x0001 of the flags of its `$Volume`
+/// (`$VOLUME_INFORMATION` of MFT record 3), as Windows leaves them until it shuts down fully or checks the volume.
+///
+/// # Errors
+/// The device cannot be read, or it holds no NTFS volume that this reader knows.
+pub fn ntfs_dirty(dev: &Path) -> Result<bool> {
+    use std::io::{Read, Seek, SeekFrom};
+    let bad = || {
+        anyhow::anyhow!(
+            "{} holds no NTFS volume that legionctl can read",
+            dev.display()
+        )
+    };
+    let le = |b: &[u8], at: usize, n: usize| -> Result<u64> {
+        let bytes = b.get(at..at + n).ok_or_else(bad)?;
+        Ok(bytes.iter().rev().fold(0, |v, x| (v << 8) | u64::from(*x)))
+    };
+    let mut file =
+        std::fs::File::open(dev).with_context(|| format!("opening {}", dev.display()))?;
+    let mut boot = [0u8; 512];
+    file.read_exact(&mut boot)
+        .with_context(|| format!("reading {}", dev.display()))?;
+    anyhow::ensure!(&boot[3..11] == b"NTFS    ", bad());
+    let sector = le(&boot, 0x0B, 2)?;
+    // the values come from the disk: no arithmetic on them may overflow
+    let per_cluster = match boot[0x0D] {
+        0 => return Err(bad()),
+        n @ 1..=0x80 => u64::from(n),
+        // a large cluster: 2^(256 - n) sectors
+        n => 1u64.checked_shl(256 - u32::from(n)).ok_or_else(bad)?,
+    };
+    let cluster = sector.checked_mul(per_cluster).ok_or_else(bad)?;
+    let record_size = match i8::from_ne_bytes([boot[0x40]]) {
+        n if n > 0 => u64::from(n.unsigned_abs())
+            .checked_mul(cluster)
+            .ok_or_else(bad)?,
+        n => 1u64
+            .checked_shl(u32::from(n.unsigned_abs()))
+            .ok_or_else(bad)?,
+    };
+    anyhow::ensure!((1024..=65536).contains(&record_size), bad());
+    let mut record = vec![0u8; usize::try_from(record_size)?];
+    let start = le(&boot, 0x30, 8)?
+        .checked_mul(cluster)
+        .and_then(|mft| mft.checked_add(3 * record_size))
+        .ok_or_else(bad)?;
+    file.seek(SeekFrom::Start(start))?;
+    file.read_exact(&mut record)
+        .with_context(|| format!("reading {}", dev.display()))?;
+    anyhow::ensure!(&record[..4] == b"FILE", bad());
+    // the update sequence: the last two bytes of each 512 bytes hold its number, the array holds what was there
+    let (usa, count) = (
+        usize::try_from(le(&record, 4, 2)?)?,
+        usize::try_from(le(&record, 6, 2)?)?,
+    );
+    let number = [
+        record.get(usa).copied().ok_or_else(bad)?,
+        record.get(usa + 1).copied().ok_or_else(bad)?,
+    ];
+    for i in 1..count {
+        let end = i * 512 - 2;
+        anyhow::ensure!(record.get(end..end + 2) == Some(&number[..]), bad());
+        let kept = record
+            .get(usa + 2 * i..usa + 2 * i + 2)
+            .ok_or_else(bad)?
+            .to_vec();
+        record[end..end + 2].copy_from_slice(&kept);
+    }
+    let mut at = usize::try_from(le(&record, 0x14, 2)?)?;
+    loop {
+        let kind = le(&record, at, 4)?;
+        anyhow::ensure!(kind != 0xFFFF_FFFF, bad());
+        let length = usize::try_from(le(&record, at + 4, 4)?)?;
+        anyhow::ensure!(length > 0, bad());
+        if kind == 0x70 {
+            // resident: the value starts at its offset; the flags are at 0x0A of the value
+            let value = at + usize::try_from(le(&record, at + 0x14, 2)?)?;
+            anyhow::ensure!(record.get(at + 8) == Some(&0), bad());
+            return Ok(le(&record, value + 0x0A, 2)? & 1 == 1);
+        }
+        at += length;
+    }
+}
+
 /// The Windows volume: an NTFS volume of the mount table or of `/etc/fstab` (an automount mounts it on access) that
 /// holds the SYSTEM hive; its source (`/dev/...` or `UUID=...`) and mount point. None when no volume holds it.
 ///

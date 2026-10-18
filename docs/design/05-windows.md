@@ -76,7 +76,9 @@ passthrough (the laptop keyboard stays with Linux), QEMU user network (e1000e, n
 kernel's KVM resets an SMM guest), `swtpm` as TPM 2.0, the host's SMBIOS type 1/2 and the `MSDM` table (activation).
 The daemon (D-Bus `WindowsVmBegin`/`WindowsVmEnd`, polkit `org.legionctl.windows.vm`) starts only on proof that
 Windows shut down fully, so it refuses: a BootNext into Windows; Fast Startup on, or a registry that cannot be read;
-a volume of the Windows disk that the kernel reported dirty since boot (or a kernel log that cannot be read);
+an NTFS volume of the Windows disk (its `/etc/fstab` entries) whose own `$Volume` flags say dirty, or that cannot be
+read (the daemon reads the boot sector and MFT record 3 of the block device, so a volume that a VM run cleaned starts
+the next run without a Linux start; doctor and `windows status` still show the kernel log's dirty lines);
 `hiberfil.sys` that says hibernated, cannot be read, or has a header other than zeros or `wake` (no file: hibernation
 is off); a Windows partition in use after its automount is
 stopped; the GPU while Mutter or a process holds it (Mutter ignores the 4080 only after `gpu primary intel
