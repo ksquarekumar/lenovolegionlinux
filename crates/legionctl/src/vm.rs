@@ -25,6 +25,8 @@ const SPEC_DIR: &str = "/run/legionctl-spec";
 /// discipline, which would echo the client's first request back (QEMU holds the input until the guest opens it).
 const CONSOLE: &str = "/dev/hvc0";
 const PORT: &str = "org.legionctl.agent";
+/// A headless agent's stderr in the guest: `legionctl vm`'s own stderr on the host, apart from the agent's output.
+const STDERR_PORT: &str = "org.legionctl.stderr";
 
 /// The virtiofs daemons of a VM; they go when the VM ends.
 pub(crate) struct Daemons(Vec<Child>);
@@ -96,12 +98,7 @@ pub fn run(spec_path: &Path, argv: Vec<String>) -> Result<()> {
         "-chardev",
         "stdio,id=agent,signal=off",
     ])
-    .arg("-device")
-    .arg(if spec.guest.interactive {
-        "virtconsole,chardev=agent".to_string()
-    } else {
-        format!("virtserialport,chardev=agent,name={PORT}")
-    })
+    .args(agent_channel(spec.guest.interactive))
     .arg("-netdev")
     .arg(netdev(&me, &spec))
     .args(["-device", "virtio-net-pci,netdev=net"]);
@@ -146,11 +143,27 @@ pub fn run(spec_path: &Path, argv: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+/// The agent's channel on QEMU's stdio: a console for an interactive agent; for a headless one a port, and a port
+/// for its stderr that is this process's stderr.
+fn agent_channel(interactive: bool) -> Vec<String> {
+    if interactive {
+        return vec!["-device".into(), "virtconsole,chardev=agent".into()];
+    }
+    vec![
+        "-device".into(),
+        format!("virtserialport,chardev=agent,name={PORT}"),
+        "-chardev".into(),
+        "file,id=stderr,path=/proc/self/fd/2,append=on".into(),
+        "-device".into(),
+        format!("virtserialport,chardev=stderr,name={STDERR_PORT}"),
+    ]
+}
+
 /// The guest's own error (its line in the VM's `console`), as the run's.
 fn guest_failed(console: &Path) -> Result<()> {
-    let log = std::fs::read_to_string(console)
-        .with_context(|| format!("reading {}", console.display()))?;
-    match legionctl_core::session::guest_error(&log) {
+    // the console has the boot's terminal codes too
+    let log = std::fs::read(console).with_context(|| format!("reading {}", console.display()))?;
+    match legionctl_core::session::guest_error(&String::from_utf8_lossy(&log)) {
         Some(why) => anyhow::bail!("the VM did not start the agent: {why}"),
         None => Ok(()),
     }
@@ -375,6 +388,22 @@ pub fn forward(port: u16, socket: &Path, agent: &[String]) -> Result<()> {
     std::process::exit(status.code().unwrap_or(1));
 }
 
+/// `from` to `to` until its end, with plain reads and writes: `std::io::copy` splices a pipe into a virtio port, which
+/// takes nothing (it returns 0, and the agent then dies of SIGPIPE).
+fn pass(from: &mut impl std::io::Read, to: &mut impl std::io::Write) -> std::io::Result<()> {
+    let mut buffer = [0; 16384];
+    loop {
+        let n = match from.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        to.write_all(&buffer[..n])?;
+        to.flush()?;
+    }
+}
+
 fn mount(args: &[&str], path: &Path) -> Result<()> {
     // a folder mount point is made; a file one (a bind) is there already
     if !path.exists() {
@@ -495,10 +524,49 @@ fn session() -> Result<()> {
         .env_clear()
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
         .envs(spec.env.iter().map(|(k, v)| (k, v)))
-        .current_dir(&spec.workdir)
-        .stdin(console.try_clone()?)
-        .stdout(console.try_clone()?)
-        .stderr(console);
-    agent.status().context("running the agent")?;
+        .current_dir(&spec.workdir);
+    if spec.interactive {
+        agent
+            .stdin(console.try_clone()?)
+            .stdout(console.try_clone()?)
+            .stderr(console);
+        agent.status().context("running the agent")?;
+        return Ok(());
+    }
+    // a headless agent gets pipes, as on the host: a runtime that reads its input as a file (bun: pread) fails on a
+    // port; its stderr goes apart from its output (the ACP channel), to the host's stderr
+    let port = format!("/dev/virtio-ports/{STDERR_PORT}");
+    let mut stderr = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&port)
+        .with_context(|| format!("opening {port}"))?;
+    let mut child = agent
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("running the agent")?;
+    let (mut input, mut output, mut errors) = (
+        child.stdin.take().context("the agent's stdin")?,
+        child.stdout.take().context("the agent's stdout")?,
+        child.stderr.take().context("the agent's stderr")?,
+    );
+    let mut from = console.try_clone()?;
+    std::thread::spawn(move || pass(&mut from, &mut input));
+    let mut to = console;
+    let (done, copied) = std::sync::mpsc::channel();
+    let also = done.clone();
+    std::thread::spawn(move || done.send(pass(&mut output, &mut to)));
+    std::thread::spawn(move || also.send(pass(&mut errors, &mut stderr)));
+    child.wait()?;
+    // its output and errors reach the host before the VM powers off; a process it left behind with them open does
+    // not hold the VM
+    let deadline = Instant::now() + Duration::from_secs(5);
+    for _ in 0..2 {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if copied.recv_timeout(left).is_err() {
+            break;
+        }
+    }
     Ok(())
 }

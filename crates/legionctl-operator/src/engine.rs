@@ -364,13 +364,24 @@ fn session_control(what: legionctl_core::session::Control, id: &str, done: &str)
 }
 
 /// The agent layer of a repository's image (W5, note 18): git and, for the agents, Node.js from the image's own
-/// package manager; the agents and their adapters from npm; the static client as `legionctl` and as the git gate,
-/// with the real git kept for it.
+/// package manager; the agents and their adapters from npm; the git gate as a link to the static client that the
+/// session mounts, with the real git kept for it; the layer's key as a label.
 fn agent_layer(base: &str, npm: &[String]) -> String {
+    let body = layer_body(npm);
+    format!(
+        "FROM {base}\n{body}LABEL {LAYER_LABEL}={:016x}\n",
+        legionctl_machine::fnv(body.as_bytes())
+    )
+}
+
+/// The label of an agent image with the key of its agent layer: an image with another key is packed again.
+const LAYER_LABEL: &str = "org.legionctl.layer";
+
+/// The agent layer's steps after its `FROM`.
+fn layer_body(npm: &[String]) -> String {
     let node = if npm.is_empty() { "" } else { " nodejs npm" };
     let mut text = format!(
-        "FROM {base}\n\
-         USER root\n\
+        "USER root\n\
          RUN set -e; \\\n\
          if command -v apt-get >/dev/null; then apt-get update && apt-get install -y --no-install-recommends git ca-certificates{node} && rm -rf /var/lib/apt/lists/*; \\\n\
          elif command -v apk >/dev/null; then apk add --no-cache git ca-certificates{node}; \\\n\
@@ -601,8 +612,8 @@ fn pack_vm(
     first_boot(&disk, &new, (&iso, if gpu { "4096" } else { "2048" }))?;
     std::fs::rename(&new, &disk)?;
     std::fs::write(
-        legionctl_core::session::vm_boot_mark(&disk),
-        legionctl_core::session::VM_BOOT,
+        legionctl_core::session::vm_pack_mark(&disk),
+        vm_key(&container.npm, gpu),
     )?;
     let mark = legionctl_core::session::vm_gpu_mark(&disk);
     if gpu {
@@ -758,32 +769,69 @@ fn pack_job(
     }
 }
 
-/// A session in a VM of the repository that holds `dir` runs on a disk of this pack: a disk that an older pack made
-/// (its boot mark is not [`legionctl_core::session::VM_BOOT`]) is packed again first, once, with `note` before it.
-fn current_vm_disk(
+/// The key of a VM disk's pack: what its first boot sets up.
+fn vm_key(npm: &[String], gpu: bool) -> String {
+    let made = vm_user_data(npm, gpu) + GUEST_UNIT;
+    format!("{:016x}", legionctl_machine::fnv(made.as_bytes()))
+}
+
+/// The key of the agent image `image`, or none when there is no such image.
+fn image_key(image: &str) -> Result<Option<String>> {
+    let format = format!("{{{{index .Config.Labels \"{LAYER_LABEL}\"}}}}");
+    let out = Command::new("docker")
+        .args(["image", "inspect", "-f", &format, image])
+        .output()
+        .context("running docker")?;
+    Ok(out
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
+}
+
+/// A session in a container or a VM runs on what this config packs: a missing agent image or VM disk of the
+/// repository that holds `dir` is packed first, one that another config or version packed (its key differs) again,
+/// once, with `note` before it.
+fn current_pack(
     (dir, inside): (&Path, legionctl_core::session::Inside),
     session: &legionctl_core::config::SessionConfig,
     note: impl FnOnce(&str),
 ) -> Result<()> {
+    use legionctl_core::session::Inside;
     // two sessions at once pack it once
     static PACKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    if inside != legionctl_core::session::Inside::Vm {
-        return Ok(());
-    }
     let _one = PACKING
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let disk = legionctl_core::session::vm_disk(dir);
-    let mark = legionctl_core::session::vm_boot_mark(&disk);
-    // no disk: the session says how to make one
-    if !disk.is_file()
-        || std::fs::read_to_string(&mark).is_ok_and(|m| m == legionctl_core::session::VM_BOOT)
-    {
-        return Ok(());
+    match inside {
+        Inside::Host => {}
+        Inside::Container => {
+            let want = format!(
+                "{:016x}",
+                legionctl_machine::fnv(layer_body(&session.container.npm).as_bytes())
+            );
+            match image_key(&legionctl_core::session::agent_image(dir))? {
+                Some(key) if key == want => return Ok(()),
+                Some(_) => note("Updating the agent image. This takes some minutes.\n"),
+                None => {
+                    note("Making the agent image of this repository. This takes some minutes.\n");
+                }
+            }
+            pack(dir, None, &session.container)?;
+        }
+        Inside::Vm => {
+            let disk = legionctl_core::session::vm_disk(dir);
+            let gpu = legionctl_core::session::vm_gpu_mark(&disk).exists();
+            let mark = std::fs::read_to_string(legionctl_core::session::vm_pack_mark(&disk));
+            if !disk.is_file() {
+                note("Making the VM disk of this repository. This takes some minutes.\n");
+            } else if mark.is_ok_and(|m| m == vm_key(&session.container.npm, gpu)) {
+                return Ok(());
+            } else {
+                note("Updating the VM disk. This takes some minutes.\n");
+            }
+            pack_vm(dir, &session.container, &session.vm, gpu)?;
+        }
     }
-    note("Updating the VM disk to this version of legionctl. This takes some minutes.\n");
-    let gpu = legionctl_core::session::vm_gpu_mark(&disk).exists();
-    pack_vm(dir, &session.container, &session.vm, gpu)?;
     Ok(())
 }
 
@@ -1983,7 +2031,7 @@ impl Operator {
             serde_json::from_value::<Option<Vec<String>>>(input["tools"].clone())
                 .context("the job's tools are not a list of operations")?
                 .unwrap_or_default();
-        current_vm_disk(
+        current_pack(
             (&record.workdir, record.inside),
             &resolved.config.session,
             |_| (),
@@ -5207,7 +5255,7 @@ impl Engine for Operator {
             tools: &[],
         };
         let mut updated = None;
-        current_vm_disk((dir, start.inside), &resolved.config.session, |line| {
+        current_pack((dir, start.inside), &resolved.config.session, |line| {
             updated = Some(line.trim().to_string());
         })?;
         let mut launch = store.start_session(&start, &resolved.config)?;
@@ -5394,7 +5442,7 @@ impl Engine for Operator {
         let resolved = resolve(&Dirs::from_env(), Some(&place_of(&session.workdir)))?;
         let token = legionctl_api::random_token()?;
         let mut updated = None;
-        current_vm_disk(
+        current_pack(
             (&session.workdir, session.inside),
             &resolved.config.session,
             |line| updated = Some(line.trim().to_string()),
@@ -5530,7 +5578,7 @@ impl Operator {
                 &mut announce,
             )?;
         }
-        current_vm_disk((dir, start.inside), &resolved.config.session, |text| {
+        current_pack((dir, start.inside), &resolved.config.session, |text| {
             let _ = db.record(
                 "acp",
                 "session.output",

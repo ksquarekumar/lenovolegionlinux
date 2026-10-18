@@ -188,8 +188,8 @@ legionctl session list
 | Option | What |
 | --- | --- |
 | `--in host` | bwrap: your home read-only, the workspace writable |
-| `--in container` | docker; run `legionctl workspace pack` first |
-| `--in vm` | QEMU; run `legionctl workspace pack --as vm` first |
+| `--in container` | docker; the first session makes the repository's image |
+| `--in vm` | QEMU; the first session makes the repository's disk |
 | `--gpu` | the NVIDIA GPU for this run only |
 | `--account <name>` | another clauth account, with its own login and limits |
 

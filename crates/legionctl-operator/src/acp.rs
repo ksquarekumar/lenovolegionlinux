@@ -298,8 +298,8 @@ impl Live {
     }
 }
 
-fn lock<T>(held: &Mutex<T>) -> MutexGuard<'_, T> {
-    held.lock()
+fn lock(live: &Mutex<Live>) -> MutexGuard<'_, Live> {
+    live.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
@@ -436,13 +436,9 @@ async fn drive(
 }
 
 /// `e` of a run's connection. An adapter that ended before it answered gives one sentence with its own error, not the
-/// JSON-RPC envelope: a VM guest's line in its `console`, else the adapter's `stderr` (its last line: the sandbox's,
-/// the container's or the agent's).
-fn adapter_error(
-    e: agent_client_protocol::Error,
-    stderr: &str,
-    console: Option<&std::path::Path>,
-) -> anyhow::Error {
+/// JSON-RPC envelope: the last line of its `stderr` file (the sandbox's, the container's, `legionctl vm`'s with the
+/// guest's, or the agent's).
+fn adapter_error(e: agent_client_protocol::Error, stderr: &std::path::Path) -> anyhow::Error {
     let ended = agent_client_protocol::is_incoming_transport_closed(&e)
         || e.data
             .as_ref()
@@ -451,15 +447,13 @@ fn adapter_error(
     if !ended {
         return e.into();
     }
-    let log = console.and_then(|c| std::fs::read_to_string(c).ok());
-    let guest = log
-        .as_deref()
-        .and_then(session::guest_error)
-        .map(|why| format!("the VM did not start the agent: {why}"));
-    let why = guest.or_else(|| {
-        let last = stderr.trim().trim_start_matches("Error: ");
-        (!last.is_empty()).then(|| last.to_string())
-    });
+    // the adapter wrote it before it ended, so before its output closed
+    let text = std::fs::read_to_string(stderr).unwrap_or_default();
+    let why = text
+        .lines()
+        .rev()
+        .map(|l| l.trim().trim_start_matches("Error: "))
+        .find(|l| !l.is_empty());
     match why {
         Some(why) => anyhow::anyhow!("the agent stopped before it answered: {why}"),
         None => anyhow::anyhow!("the agent stopped before it answered, with no error message"),
@@ -510,12 +504,11 @@ fn adapter(
     AcpAgent,
     impl FnOnce(agent_client_protocol::Error) -> anyhow::Error,
 )> {
-    let console = (launch.inside == Inside::Vm)
-        .then(|| {
-            std::env::var_os("XDG_RUNTIME_DIR")
-                .map(|r| session::vm_console(std::path::Path::new(&r), &launch.id))
-        })
-        .flatten();
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?;
+    let stderr = std::path::Path::new(&runtime)
+        .join("legionctl/sessions")
+        .join(&launch.id)
+        .join("adapter.err");
     // legionctl is the git gate on the host and a VM's runner; a container's image has its own gate
     let mut sandbox = launch.sandbox;
     let mut gate = Vec::new();
@@ -537,19 +530,20 @@ fn adapter(
             ]);
         }
     }
-    let argv = [launch.scope, sandbox, gate, launch.agent].concat();
-    let stderr = Arc::new(Mutex::new(String::new()));
-    let last = stderr.clone();
-    // shortcut: the library ends the stderr reader with the connection, so a line that comes after the closed
-    // transport is lost; a VM's guest line comes from its console instead
+    // the adapter's stderr goes to a file of the run: the library's own reader stops with the connection, and a line
+    // written just before a closed output would be lost
+    let wrap = [
+        "sh",
+        "-c",
+        "f=$1; shift; exec \"$@\" 2>\"$f\"",
+        "sh",
+        &stderr.to_string_lossy(),
+    ]
+    .map(String::from);
+    let argv = [wrap.to_vec(), launch.scope, sandbox, gate, launch.agent].concat();
     let agent = AcpAgent::new(McpServer::Stdio(
         McpServerStdio::new("agent", &argv[0]).args(argv[1..].to_vec()),
-    ))
-    .with_debug(move |line, direction| {
-        if direction == agent_client_protocol::LineDirection::Stderr && !line.trim().is_empty() {
-            *lock(&last) = line.to_string();
-        }
-    });
-    let failed = move |e| adapter_error(e, &lock(&stderr), console.as_deref());
+    ));
+    let failed = move |e| adapter_error(e, &stderr);
     Ok((agent, failed))
 }

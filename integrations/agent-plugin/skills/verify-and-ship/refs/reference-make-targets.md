@@ -4,7 +4,7 @@
 
 | Target | What it runs |
 | --- | --- |
-| `make static` | The static `legionctl` (musl) that `workspace pack` puts into agent images, in the `rust:alpine` image with docker. |
+| `make static` | The static `legionctl` (musl) that container and VM sessions run, in the `rust:alpine` image with docker. |
 | `make lint` | Each pre-commit hook on all files: whitespace, end of file, JSON, TOML, YAML, shell, rustfmt and clippy, Biome, profile validation, actionlint. |
 | `make rust-lint` | `cargo fmt --check`, clippy pedantic with warnings as errors, `cargo machete`, `cargo deny check`. |
 | `make js-lint` | Biome and tsc for the GNOME Shell extension. |

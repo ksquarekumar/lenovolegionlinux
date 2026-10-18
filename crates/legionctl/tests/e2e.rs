@@ -4009,7 +4009,9 @@ fn container_repository(home: &Path, (gateway, provider): (u16, u16)) -> PathBuf
     write(
         &home.join(".config/legionctl/run.jsonc"),
         &json!({"session": {
-            "acp": {"fake": ["python3", "fake-acp-agent.py"]},
+            // the real adapters (bun) read their input as a pipe: a port or a file fails them (r380)
+            "acp": {"fake": ["sh", "-c", "[ -p /dev/stdin ] && [ -p /dev/stdout ] || \
+                { echo 'the adapter has no pipes' >&2; exit 1; }; exec python3 fake-acp-agent.py"]},
             "agents": {"probe": ["sh", "-c", probe]},
             "scope": false,
             "writable": [state, home.join(".claude")],
@@ -4061,8 +4063,8 @@ fn sandbox_calls(home: &Path) -> usize {
 /// and sessions `--in container` run there, headless and interactive (through the real client): the workspace, its
 /// git data and the dossier are mounted at their own paths, so the agent's commits land in the workspace on the host;
 /// the image's `/usr/bin/git` is the static client, which asks the operator through the mounted socket and refuses
-/// the push; the home is private; the sessions are recorded as containers'. Without a packed image, a run says how
-/// to make one. Needs docker and `make static`.
+/// the push; the home is private; the sessions are recorded as containers'. A run with no image, or with an image of
+/// another agent layer, makes it first and says so. The adapter gets pipes. Needs docker and `make static`.
 #[test]
 fn sessions_in_a_container_work_on_the_mounted_workspace_behind_the_git_gate() {
     let home = home("container");
@@ -4073,7 +4075,7 @@ fn sessions_in_a_container_work_on_the_mounted_workspace_behind_the_git_gate() {
     let op = operator_with("container2", &home, &docker());
     let run = |args: &[&str]| op.run(&repo, &[("HOME", home.to_str().unwrap())], args, "");
     let words = |line: &'static str| line.split(' ').collect::<Vec<_>>();
-    let in_container = words("session run fake fix --dossier port --in container --json");
+    let in_container = words("session run fake fix --dossier port --in container");
     let image = "localhost/repo/legionctl-agent:latest";
     let rmi = || {
         std::process::Command::new("docker")
@@ -4082,28 +4084,14 @@ fn sessions_in_a_container_work_on_the_mounted_workspace_behind_the_git_gate() {
     };
     let _ = rmi();
 
-    let unpacked = run(&in_container);
+    // no image: the run makes it first, and works there
+    let made = run(&words("session run fake fix --dossier port --in container"));
+    let text = String::from_utf8_lossy(&made.stdout);
     assert!(
-        String::from_utf8_lossy(&unpacked.stderr)
-            .contains("make it with `legionctl workspace pack`"),
-        "{}",
-        String::from_utf8_lossy(&unpacked.stderr)
+        made.status.success() && text.starts_with("Making the agent image of this repository."),
+        "{text}{}",
+        String::from_utf8_lossy(&made.stderr)
     );
-    let packed = run(&["workspace", "pack"]);
-    assert!(
-        String::from_utf8_lossy(&packed.stdout)
-            .contains(&format!("packed {image} from localhost/repo/repo:")),
-        "the agent layer goes on the repository's own image: {}",
-        String::from_utf8_lossy(&packed.stderr)
-    );
-
-    let out = run(&in_container);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let text = serde_json::from_slice::<Value>(&out.stdout).unwrap()["text"].to_string();
     for expected in [
         "prompt: fix",
         "inside: container",
@@ -4120,6 +4108,14 @@ fn sessions_in_a_container_work_on_the_mounted_workspace_behind_the_git_gate() {
         ),
         "headless",
         "the commit is in the workspace on the host"
+    );
+    an_image_of_another_agent_layer_is_made_again(image, &|| run(&in_container));
+    let packed = run(&["workspace", "pack"]);
+    assert!(
+        String::from_utf8_lossy(&packed.stdout)
+            .contains(&format!("packed {image} from localhost/repo/repo:")),
+        "the agent layer goes on the repository's own image: {}",
+        String::from_utf8_lossy(&packed.stderr)
     );
 
     let started = run(&words("session start probe --dossier talk --in container"));
@@ -4169,6 +4165,34 @@ fn sessions_in_a_container_work_on_the_mounted_workspace_behind_the_git_gate() {
         );
     }
     let _ = rmi();
+}
+
+/// An agent image of another agent layer (an older pack, its label differs): the next run makes it again first.
+fn an_image_of_another_agent_layer_is_made_again(
+    image: &str,
+    run: &dyn Fn() -> std::process::Output,
+) {
+    let old = std::process::Command::new("docker")
+        .args(["build", "-q", "-t", image, "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut b| {
+            use std::io::Write;
+            write!(
+                b.stdin.take().unwrap(),
+                "FROM {image}\nLABEL org.legionctl.layer=old\n"
+            )?;
+            b.wait()
+        })
+        .unwrap();
+    assert!(old.success());
+    let again = run();
+    let text = String::from_utf8_lossy(&again.stdout);
+    assert!(
+        again.status.success() && text.starts_with("Updating the agent image."),
+        "{text}{}",
+        String::from_utf8_lossy(&again.stderr)
+    );
 }
 
 /// The Debian 13 cloud image of the VM tests and its SHA512SUMS, downloaded once into /var/tmp/legionctl-test-cache.
@@ -4221,8 +4245,9 @@ fn vm_repository(
     (op, path, repo, provider)
 }
 
-/// W5 part 3 (note 18): `workspace pack --as vm` makes the repository's disk from a cloud image (checked against its
-/// SHA512SUMS) in one cloud-init boot, and sessions `--in vm` run on a throwaway layer over it, headless and through
+/// W5 part 3 (note 18): the first session makes the repository's disk from a cloud image (checked against its
+/// SHA512SUMS) in one cloud-init boot, a disk of another pack is made again, the adapter gets pipes (bun reads a port
+/// as a file, r380), and sessions `--in vm` run on a throwaway layer over it, headless and through
 /// the real client: the workspace, its git data and the dossier are virtiofs shares at their own paths, so commits
 /// land in the workspaces on the host; the disk's `/usr/bin/git` is the static client, which reaches the operator
 /// through the guest's relay and QEMU's forward, and refuses the push. Boots VMs: needs KVM, QEMU, virtiofsd,
@@ -4233,15 +4258,14 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
     let (op, home, repo, _provider) = vm_repository("vm", "vm2");
     let run = |args: &[&str]| op.run(&repo, &[("HOME", home.to_str().unwrap())], args, "");
 
-    let packed = run(&["workspace", "pack", "--as", "vm"]);
-    assert!(
-        String::from_utf8_lossy(&packed.stdout).contains("legionctl/vm/repo.qcow2 from file://"),
-        "{}{}",
-        String::from_utf8_lossy(&packed.stdout),
-        String::from_utf8_lossy(&packed.stderr)
-    );
     let words = |line: &'static str| line.split(' ').collect::<Vec<_>>();
+    // no disk: the first run makes it (here one that asks for the GPU, which this disk does not have)
     let gpu = run(&words("session run fake fix --dossier port --in vm --gpu"));
+    assert!(
+        String::from_utf8_lossy(&gpu.stdout).starts_with("Making the VM disk of this repository."),
+        "{}",
+        String::from_utf8_lossy(&gpu.stdout)
+    );
     assert!(
         String::from_utf8_lossy(&gpu.stderr).contains(
             "has no NVIDIA driver: make it with `legionctl workspace pack --as vm --gpu`"
@@ -4249,11 +4273,11 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
         "{}",
         String::from_utf8_lossy(&gpu.stderr)
     );
-    // a disk that an older client packed (no boot mark: its unit ran the disk's own client, which could not read a
-    // newer guest spec, r368) is packed again by the operator before the run, and the run works on it
+    // a disk of another pack (its mark differs: an older client, whose unit ran the disk's own client that could not
+    // read a newer guest spec, r368) is packed again by the operator before the run, and the run works on it
     let disk = home.join(".local/share/legionctl/vm/repo.qcow2");
     let mark = disk.with_extension("boot");
-    std::fs::remove_file(&mark).unwrap();
+    std::fs::write(&mark, "old").unwrap();
     let out = run(&words("session run fake fix --dossier port --in vm"));
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -4262,7 +4286,7 @@ fn sessions_in_a_vm_work_on_the_shared_workspace_behind_the_git_gate() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        text.starts_with("Updating the VM disk to this version of legionctl."),
+        text.starts_with("Updating the VM disk."),
         "the progress line comes first:\n{text}"
     );
     assert!(mark.is_file(), "the disk is packed again, with its mark");

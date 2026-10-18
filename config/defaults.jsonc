@@ -168,9 +168,9 @@
         "bun"],
       "client": "/usr/lib/legionctl/legionctl-static"
     },
-    // Sessions in a VM (`--in vm`) run on the repository's disk, made by `legionctl workspace pack --as vm`: a layer
-    // over this cloud image with git, Node.js and the npm packages above. Each session gets a
-    // throwaway layer over the disk; its folders are shared with virtiofs.
+    // Sessions in a VM (`--in vm`) run on the repository's disk, made at the first session (or `workspace pack --as
+    // vm`): a layer over this cloud image with git, Node.js and the npm packages above. Each session gets a throwaway
+    // layer over the disk; its folders are shared with virtiofs.
     "vm": {
       "base": "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2",
       "disk_gib": 20,

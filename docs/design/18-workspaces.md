@@ -367,10 +367,14 @@ instead of the systemd scope.
   layer and the guest service, then disables cloud-init. The disk holds no client: `legionctl vm` puts the host's
   static client into the session's spec share, the guest service mounts that share and starts it (`legionctl` and
   `/usr/bin/git` in the guest link to it), so the disk never skews from the guest spec (r368: a disk with an older
-  client could not read the spec, and the guest powered off). The pack writes a boot mark beside the disk
-  (`<repo>.boot`); before a session on a disk with another mark or none, the operator packs it again by itself, once,
-  and says so in the run's output. When the guest fails, the run fails with the guest's own `legionctl guest:` line
-  from the console log. A session runs `legionctl vm <spec>` in its scope (so pause,
+  client could not read the spec, and the guest powered off). The pack writes the key of what it set up (the
+  cloud-init steps with the npm list, and the guest unit) beside the disk (`<repo>.boot`); an agent image has the key
+  of its agent layer as the label `org.legionctl.layer`. Before a session, the operator makes a missing image or disk,
+  and makes again one with another key or none, once, and says so in the run's output (r380: no "make it with
+  workspace pack" step). A headless agent in the guest gets pipes, as on the host (bun reads a virtio port as a file
+  and fails with ESPIPE, r380), relayed to the ACP port; its stderr goes to a port of its own that is `legionctl vm`'s
+  stderr. Every adapter's stderr goes to `adapter.err` in the session's runtime folder, and a run that ends before an
+  answer fails with its last line (the guest's `legionctl guest:` line, the container's or the agent's). A session runs `legionctl vm <spec>` in its scope (so pause,
   unpause and stop act on the scope, as for a host session): a virtiofs daemon per shared folder, then QEMU on a
   throwaway layer over the disk (`snapshot=on`), the agent on the virtio console (the runner's stdio: JSON-RPC for a
   headless run, a terminal for an interactive one). In the guest, `legionctl guest` mounts the shares at their own

@@ -835,21 +835,15 @@ enum Runs {
     Vm(PathBuf),
 }
 
-/// Where a session of the repository that holds `dir` runs, or the error that says how to make its image or disk.
-fn runs(inside: Inside, dir: &Path) -> Result<Runs> {
-    Ok(match inside {
+/// Where a session of the repository that holds `dir` runs.
+fn runs(inside: Inside, dir: &Path) -> Runs {
+    match inside {
         Inside::Host => Runs::Host,
-        Inside::Container => Runs::Container(packed(dir)?),
-        Inside::Vm => {
-            let disk = vm_disk(dir);
-            anyhow::ensure!(
-                disk.is_file(),
-                "no VM disk {}: make it with `legionctl workspace pack --as vm` in the repository",
-                disk.display()
-            );
-            Runs::Vm(disk)
-        }
-    })
+        // the operator packs a missing or old image before the session
+        Inside::Container => Runs::Container(agent_image(dir)),
+        // the operator packs a missing or old disk before the session
+        Inside::Vm => Runs::Vm(vm_disk(dir)),
+    }
 }
 
 /// `vm <session folder>/vm.json --` (a `legionctl` subcommand): the session's VM, sharing `mounts` with virtiofs. The runtime folder
@@ -996,24 +990,11 @@ pub fn static_client(container: &crate::config::ContainerConfig) -> Result<PathB
     Ok(client)
 }
 
-/// The boot of the guest that `workspace pack --as vm` writes into a disk: its unit starts the static client from the
-/// spec share. A disk whose mark ([`vm_boot_mark`]) holds another value, or none, is packed again before its next
-/// session. Change it when the disk's unit or layout changes.
-pub const VM_BOOT: &str = "spec-share-client";
-
-/// The mark beside a VM disk with the [`VM_BOOT`] of its pack.
+/// The mark beside a VM disk with the key of its pack: a disk with another key, or none, is packed again before its
+/// next session.
 #[must_use]
-pub fn vm_boot_mark(disk: &Path) -> PathBuf {
+pub fn vm_pack_mark(disk: &Path) -> PathBuf {
     disk.with_extension("boot")
-}
-
-/// Session `id`'s VM console (`legionctl vm` writes it), in the runtime folder `runtime`.
-#[must_use]
-pub fn vm_console(runtime: &Path, id: &str) -> PathBuf {
-    runtime
-        .join("legionctl/sessions")
-        .join(id)
-        .join("console.log")
 }
 
 /// The guest's own error in a VM's console `log`: the text of its last `legionctl guest:` line.
@@ -1039,20 +1020,6 @@ pub fn agent_image(dir: &Path) -> String {
         "legionctl-agent",
         "latest",
     )
-}
-
-/// Session `id`'s agent image, or the error that says how to make it.
-fn packed(dir: &Path) -> Result<String> {
-    let image = agent_image(dir);
-    let found = std::process::Command::new("docker")
-        .args(["image", "inspect", "-f", "{{.Id}}", &image])
-        .output()
-        .context("running docker")?;
-    anyhow::ensure!(
-        found.status.success(),
-        "no agent image {image}: make it with `legionctl workspace pack` in the repository"
-    );
-    Ok(image)
 }
 
 /// clauth has `account`, with a login of `agent` when it is Claude Code or Codex (an agent of another name gets the
@@ -1703,7 +1670,7 @@ impl Dossiers {
         let store = crate::packages::Store::new(crate::packages::Store::default_root());
         let mcp_json = mcp_config(config, &store)?;
         let skills = skills(config, &store)?;
-        let runs = runs(start.inside, start.dir)?;
+        let runs = runs(start.inside, start.dir);
         let id = new_id()?;
         // a refused set stops the session before anything is bound (DESIGN-13: at start, not at the first call)
         let grant = crate::runnables::grant(
@@ -1781,7 +1748,7 @@ impl Dossiers {
         let store = crate::packages::Store::new(crate::packages::Store::default_root());
         let mcp_json = mcp_config(config, &store)?;
         let skills = skills(config, &store)?;
-        let runs = runs(record.inside, &record.workdir)?;
+        let runs = runs(record.inside, &record.workdir);
         // the sets it asked for at its start, granted again under today's layers; a session from before grants asks
         // for its harness's and languages' sets
         let before: Option<crate::runnables::Grant> = self

@@ -19,8 +19,8 @@ user-invocable: true
    starts with `/<name>` runs one.
 5. `session start <agent>` prepares an interactive session; the client then runs it in your terminal. It takes the
    options of `run` except `--tag`.
-6. `--in host|container|vm` picks the sandbox. A container needs `workspace pack` first; a VM needs `workspace pack --as
-   vm` first.
+6. `--in host|container|vm` picks the sandbox. The first session in a container or a VM makes the repository's image
+   or disk (some minutes, said in the output); a change of `session.container.npm` or of legionctl makes it again.
 7. In each sandbox, `git` is the git gate: local commands run; push, fetch, pull, remote, `reset --hard`, rebase, `clean
    -f`, `branch -D` and other history or remote commands are refused (`gates.git.deny`).
 8. MCP servers come through `legionctl mcp-proxy`: only the allowed tools, and each call is logged.
