@@ -13,8 +13,8 @@
       "title": "Forbidden for agents",
       "widget": "table",
       "source": { "op": "config.settings", "input": { "key": "actions.forbid" }, "path": "$.items.0.entries" },
-      "columns": ["pattern", "reason", "from"],
-      "labels": { "pattern": "Action", "reason": "Why", "from": "Set by" },
+      "columns": ["pattern", "reason", "set", "from"],
+      "labels": { "pattern": "Action", "reason": "Why", "set": "Only with", "from": "Set by" },
       "row_actions": [
         { "label": "Remove", "op": "config.remove", "input": { "key": "actions.forbid", "value": "{row.pattern}" } }
       ]

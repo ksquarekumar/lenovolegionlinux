@@ -315,12 +315,15 @@ impl Operator {
     fn item(setting: &Setting, input: &ConfigItemIn) -> Result<Value> {
         if setting.kind["x-rules"] == true {
             let pattern = text(&input.value);
-            return Ok(
-                json!({ "pattern": pattern, "reason": input.reason.clone().unwrap_or_default() }),
-            );
+            let mut rule =
+                json!({ "pattern": pattern, "reason": input.reason.clone().unwrap_or_default() });
+            if let Some(set) = &input.set {
+                rule["set"] = json!(set);
+            }
+            return Ok(rule);
         }
-        if input.reason.is_some() {
-            bail!("{} takes no reason", setting.label);
+        if input.reason.is_some() || input.set.is_some() {
+            bail!("{} takes no reason and no set", setting.label);
         }
         Ok(match (&input.value, setting.kind.get("items")) {
             (Value::String(t), Some(kind)) => settings::parse(kind, t)?,
@@ -369,6 +372,7 @@ impl Operator {
             setting,
             &ConfigItemIn {
                 reason: None,
+                set: None,
                 ..input.clone()
             },
         )?;

@@ -14522,6 +14522,14 @@
           "description": "For a list of rules: why, in a few words.",
           "default": null
         },
+        "set": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "For a git: or cmd: rule: only for the sessions that hold this capability set (rust-dev).",
+          "default": null
+        },
         "scope": {
           "oneOf": [
             {
@@ -14652,6 +14660,14 @@
             "null"
           ],
           "description": "For a list of rules: why, in a few words.",
+          "default": null
+        },
+        "set": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "For a git: or cmd: rule: only for the sessions that hold this capability set (rust-dev).",
           "default": null
         },
         "scope": {

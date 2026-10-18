@@ -379,7 +379,7 @@ fn size(dir: &Path) -> u64 {
 fn session_files(
     runtime: &Path,
     id: &str,
-    (config, manifest): (&Config, &crate::runnables::Manifest),
+    (config, grant): (&Config, &crate::runnables::Grant),
     mcp_json: &serde_json::Value,
 ) -> Result<[PathBuf; 3]> {
     let dir = runtime.join("legionctl/sessions").join(id);
@@ -390,7 +390,7 @@ fn session_files(
         dir.join("mcp.json"),
     ];
     std::fs::write(&files[0], "")?;
-    std::fs::write(&files[1], claude_settings(config, manifest).to_string())?;
+    std::fs::write(&files[1], claude_settings(config, grant).to_string())?;
     std::fs::write(&files[2], mcp_json.to_string())?;
     Ok(files)
 }
@@ -1127,14 +1127,26 @@ fn codex_bound_home(
 }
 
 /// Claude Code settings for a session (layer 1 of the gates, note 14): the forbidden git and shell commands of
-/// `actions.forbid` and the grant's forbidden commands as `permissions.deny`, so the agent learns them before it runs a command (the git shim in the
-/// sandbox stays the authority for git), with the harness set's settings over them (its own sandbox off).
-fn claude_settings(config: &Config, manifest: &crate::runnables::Manifest) -> serde_json::Value {
-    let forbid = &config.actions.forbid;
-    let deny: Vec<String> = crate::actions::ActionsConfig::names(forbid, "git")
+/// `actions.forbid` that bind it (every entry with no set, and those of the sets of its grant) as `permissions.deny`,
+/// so the agent learns them before it runs a command (the git shim in the sandbox stays the authority for git), with
+/// the harness set's settings over them (its own sandbox off).
+fn claude_settings(config: &Config, grant: &crate::runnables::Grant) -> serde_json::Value {
+    let manifest = &grant.manifest;
+    let binds = |rule: &crate::actions::Rule| {
+        rule.set
+            .as_ref()
+            .is_none_or(|set| grant.sets.iter().any(|g| g.name == *set))
+    };
+    let forbid: Vec<crate::actions::Rule> = config
+        .actions
+        .forbid
+        .iter()
+        .filter(|r| binds(r))
+        .cloned()
+        .collect();
+    let deny: Vec<String> = crate::actions::ActionsConfig::names(&forbid, "git")
         .map(|(rule, _)| format!("git {rule}"))
-        .chain(crate::actions::ActionsConfig::names(forbid, "cmd").map(|(c, _)| c.to_string()))
-        .chain(manifest.host.forbidden_commands.iter().cloned())
+        .chain(crate::actions::ActionsConfig::names(&forbid, "cmd").map(|(c, _)| c.to_string()))
         .map(|command| format!("Bash({command}:*)"))
         .collect();
     let mut settings = serde_json::json!({ "permissions": { "deny": deny } });
@@ -1870,8 +1882,7 @@ impl Dossiers {
         );
         let manifest = &grant.manifest;
         let mcp_json = session_env(bound_mcp(mcp_json, who.tools), &id, token, &runtime);
-        let [real_git, settings, mcp] =
-            session_files(&runtime, &id, (config, manifest), &mcp_json)?;
+        let [real_git, settings, mcp] = session_files(&runtime, &id, (config, grant), &mcp_json)?;
         let workdir = agent_dir(ws);
         let host = matches!(runs, Runs::Host);
         // the operator's sockets read-only (a sandbox cannot put its own in their place), and of the sessions' files

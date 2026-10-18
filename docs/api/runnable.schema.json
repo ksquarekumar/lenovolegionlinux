@@ -62,8 +62,7 @@
       "$ref": "#/$defs/Host",
       "default": {
         "privileges": [],
-        "devices": [],
-        "forbidden_commands": []
+        "devices": []
       }
     },
     "storage": {
@@ -229,14 +228,6 @@
         },
         "devices": {
           "description": "Device nodes (`/dev/...`): bound into a host or container sandbox; a VM gets none.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "default": []
-        },
-        "forbidden_commands": {
-          "description": "Commands it must not run (`cargo publish`): Claude Code's settings deny them (`Bash(<command>:*)`).",
           "type": "array",
           "items": {
             "type": "string"

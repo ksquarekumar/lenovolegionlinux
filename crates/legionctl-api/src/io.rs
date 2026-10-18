@@ -128,6 +128,9 @@ pub struct ConfigItemIn {
     /// For a list of rules: why, in a few words.
     #[serde(default)]
     pub reason: Option<String>,
+    /// For a git: or cmd: rule: only for the sessions that hold this capability set (rust-dev).
+    #[serde(default)]
+    pub set: Option<String>,
     /// For whom: user, project or computer.
     #[serde(default = "for_you")]
     pub scope: legionctl_core::settings::Scope,

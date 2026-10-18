@@ -820,10 +820,9 @@ impl Render for RunnableGrant {
                 }
             ),
             format!(
-                "host: {} privileges, {} devices, {} forbidden commands",
+                "host: {} privileges, {} devices",
                 count("host", "privileges"),
-                count("host", "devices"),
-                count("host", "forbidden_commands")
+                count("host", "devices")
             ),
         ];
         if let Some(agent) = m["harness"]["agent"].as_str() {

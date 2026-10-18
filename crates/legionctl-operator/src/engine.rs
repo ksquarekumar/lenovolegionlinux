@@ -5526,7 +5526,17 @@ impl Engine for Operator {
 
     fn gates_check(&self, ctx: &Ctx, input: GateIn) -> Result<Guard> {
         let dir = ctx.folder()?;
-        let forbid = config(Some(ctx.folder()?))?.config.actions.forbid;
+        let mut forbid = config(Some(ctx.folder()?))?.config.actions.forbid;
+        // an entry of a set binds the sessions that hold the set
+        let held = match ctx.principal.agent() {
+            Some(id) => dossiers()?.scope(id)?.sets,
+            None => Vec::new(),
+        };
+        forbid.retain(|r| {
+            r.set
+                .as_ref()
+                .is_none_or(|s| held.iter().any(|g| g.name == *s))
+        });
         let deny: Vec<(&str, &str)> = legionctl_core::actions::ActionsConfig::names(&forbid, "git")
             .map(|(rule, r)| (rule, r.reason.as_str()))
             .collect();

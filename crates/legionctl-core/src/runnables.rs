@@ -117,8 +117,6 @@ pub struct Host {
     pub privileges: Vec<String>,
     /// Device nodes (`/dev/...`): bound into a host or container sandbox; a VM gets none.
     pub devices: Vec<String>,
-    /// Commands it must not run (`cargo publish`): Claude Code's settings deny them (`Bash(<command>:*)`).
-    pub forbidden_commands: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -649,10 +647,6 @@ fn merge(into: &mut Manifest, set: &Manifest) {
     }
     union(&mut into.host.privileges, &set.host.privileges);
     union(&mut into.host.devices, &set.host.devices);
-    union(
-        &mut into.host.forbidden_commands,
-        &set.host.forbidden_commands,
-    );
     union(&mut into.storage, &set.storage);
     union(&mut into.channels, &set.channels);
     let (t, s) = (&mut into.toolverse, &set.toolverse);

@@ -9,6 +9,8 @@
 //! - `git:<subcommand> <flags>`: forbidden git commands in a session sandbox (the git gate), `push`, `reset --hard`.
 //! - `cmd:<command>`: forbidden shell commands (Claude Code's `permissions.deny` of a session).
 //!
+//! A `git:` or `cmd:` entry with a `set` binds only the sessions that hold that capability set.
+//!
 //! Forbidden wins over allowed. The lists bind agents; your own calls are yours.
 
 use schemars::JsonSchema;
@@ -25,6 +27,10 @@ pub struct Rule {
     pub pattern: String,
     /// Why, in a few words, for the person who reads the list.
     pub reason: String,
+    /// Only for a session that holds this capability set (a `cmd:` or `git:` entry of a set's own work, such as
+    /// `cargo publish` for rust-dev); none: every agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -79,6 +85,13 @@ pub fn unfit(rule: &Rule) -> Option<String> {
             "{}: write it as <kind>:<name>, the kind one of {}",
             rule.pattern,
             KINDS.join(", ")
+        ));
+    }
+    if rule.set.is_some() && !rule.pattern.starts_with("git:") && !rule.pattern.starts_with("cmd:")
+    {
+        return Some(format!(
+            "{}: a set binds git: and cmd: entries only",
+            rule.pattern
         ));
     }
     rule.reason

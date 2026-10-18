@@ -376,6 +376,21 @@ fn a_rust_session_gets_cargos_hosts_in_its_record_and_its_registry_as_an_overlay
 fn the_harness_sets_turn_the_harness_sandboxes_off_in_the_session() {
     let lab = Lab::new("harness", &[], &[], None);
     lab.agents(&json!({"claude": ["claude", "--settings", "{settings}"], "codex": ["codex"]}));
+    // a forbidden command of one set binds only the sessions that hold that set
+    for (command, set) in [
+        ("cmd:cargo publish", "claude-code"),
+        ("cmd:npm publish", "codex"),
+    ] {
+        let args = [
+            "config",
+            "add",
+            "actions.forbid",
+            command,
+            "--reason",
+            "Releases stay with you",
+        ];
+        lab.op.ok(&[&args[..], &["--set", set]].concat());
+    }
     let claude = launch(&lab.start("claude", "harness", &[]));
     let id = claude["id"].as_str().unwrap();
     let settings: Value = serde_json::from_str(
@@ -396,6 +411,11 @@ fn the_harness_sets_turn_the_harness_sandboxes_off_in_the_session() {
             .unwrap()
             .contains(&json!("Bash(git push:*)")),
         "{settings:#}"
+    );
+    let deny = settings["permissions"]["deny"].to_string();
+    assert!(
+        deny.contains("Bash(cargo publish:*)") && !deny.contains("npm publish"),
+        "{deny}"
     );
     let sandbox = claude["sandbox"].to_string();
     assert!(
