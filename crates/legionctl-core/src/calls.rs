@@ -47,21 +47,40 @@ macro_rules! tables {
 pub(crate) use tables;
 
 /// v16 -> v17: the folder each recorded call worked in, the folder each agent session works in now (its newest hook
-/// call's `cwd`), which that session's MCP server works in too, and each user thread's scratch folder, kept at its
-/// start (before, each caller's config gave it).
+/// call's `cwd`), which that session's MCP server works in too, each user thread's scratch folder, kept at its
+/// start (before, each caller's config gave it), and the app's tab facts without their old `repo=` parameters.
 macro_rules! folders {
     () => {
-        "ALTER TABLE calls ADD COLUMN folder TEXT NOT NULL DEFAULT '';
+        concat!(
+            "ALTER TABLE calls ADD COLUMN folder TEXT NOT NULL DEFAULT '';
      CREATE TABLE agent_folders (
         session TEXT PRIMARY KEY,
         folder  TEXT NOT NULL,
         harness TEXT NOT NULL,
         seen    INTEGER NOT NULL
      );
-     ALTER TABLE threads ADD COLUMN scratch TEXT;"
+     ALTER TABLE threads ADD COLUMN scratch TEXT;",
+            crate::calls::old_tab_params!()
+        )
     };
 }
 pub(crate) use folders;
+
+/// Part of v16 -> v17: the app's tab facts lose the `repo=` view parameters of the time when each tab had its own
+/// repository (the app's one project is the folder of every view now).
+macro_rules! old_tab_params {
+    () => {
+        "
+     UPDATE facts SET value = json_set(value, '$.tabs', (
+        SELECT json_group_array(CASE WHEN json_type(t.value, '$.params') = 'array' THEN json_set(t.value, '$.params',
+            (SELECT json_group_array(p.value) FROM json_each(t.value, '$.params') p WHERE p.value NOT LIKE 'repo=%'))
+          ELSE json(t.value) END)
+        FROM json_each(facts.value, '$.tabs') t))
+     WHERE entity = 'app' AND attribute = 'tabs' AND json_valid(value) AND json_type(value, '$.tabs') = 'array'
+       AND value LIKE '%repo=%';"
+    };
+}
+pub(crate) use old_tab_params;
 
 /// A call as it starts.
 pub struct Call<'a> {
@@ -364,5 +383,46 @@ impl Db {
         let limit = usize::try_from(limit).unwrap_or(usize::MAX);
         let next = (rows.len() > limit).then(|| rows[limit - 1].id);
         Ok((rows.into_iter().take(limit).collect(), next))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The app's tab facts of an older build lose their `repo=` view parameters in the v17 step; the other
+    /// parameters, tabs and facts stay as they were.
+    #[test]
+    fn the_v17_step_drops_the_old_repo_parameters_of_the_apps_tabs() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(crate::facts::tables!()).unwrap();
+        let fact = |entity: &str, attribute: &str, value: &str| {
+            db.execute(
+                "INSERT INTO facts (entity, attribute, value, scope, scope_id, source, evidence, confidence, \
+                 valid_from, recorded_from) VALUES (?1, ?2, ?3, 'global', '', 'user', '{}', 1.0, 0, 0)",
+                [entity, attribute, value],
+            )
+            .unwrap();
+        };
+        fact(
+            "app",
+            "tabs",
+            r#"{"tabs":[{"kind":"view","name":"code-graph","params":["repo=/old","key=rust:.:add"]},{"kind":"chat"},{"kind":"thread","id":3}],"active":1}"#,
+        );
+        fact("app", "project", r#""/work/repo=x""#);
+        db.execute_batch(old_tab_params!()).unwrap();
+        let values: Vec<serde_json::Value> = db
+            .prepare("SELECT value FROM facts ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|v| serde_json::from_str(&v.unwrap()).unwrap())
+            .collect();
+        assert_eq!(
+            values,
+            [
+                serde_json::json!({"tabs": [{"kind": "view", "name": "code-graph", "params": ["key=rust:.:add"]},
+                    {"kind": "chat"}, {"kind": "thread", "id": 3}], "active": 1}),
+                serde_json::json!("/work/repo=x")
+            ]
+        );
     }
 }
