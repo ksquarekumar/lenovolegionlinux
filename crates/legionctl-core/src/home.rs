@@ -60,12 +60,18 @@ pub(crate) fn link(dossiers: &Dossiers, dir: &Path) -> Result<Vec<String>> {
         }
         Ok(_) => return Ok(vec![refused(&at, dossiers)]),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            std::os::unix::fs::symlink(&dossiers.root, &at)?;
-            out.push(format!(
-                "linked {} to {}",
-                at.display(),
-                dossiers.root.display()
-            ));
+            match std::os::unix::fs::symlink(&dossiers.root, &at) {
+                Ok(()) => out.push(format!(
+                    "linked {} to {}",
+                    at.display(),
+                    dossiers.root.display()
+                )),
+                // a session that started at the same time made the same link
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::AlreadyExists
+                        && at.canonicalize().ok() == Some(root) => {}
+                Err(e) => return Err(e.into()),
+            }
         }
         Err(e) => return Err(e.into()),
     }
