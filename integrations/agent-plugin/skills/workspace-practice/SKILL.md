@@ -26,6 +26,7 @@ user-invocable: true
     refuses a new or changed test with no assertion or no kill, and it runs each `gate: checkpoint` check of
     `.legionctl/checks.jsonc` that has no passing run at the tree. Without that file it runs no check (skill
     verify-and-ship, rule 2). Skill verify-and-ship says what the message holds.
+    Run `legionctl code tests review` before it: it shows the tests the gate refuses (skill verify-and-ship).
 11. Write each checkpoint's SHA, scope and tests into its `plan.md` row in the same turn.
 12. `workspace status` shows ahead and behind the base, changes, conflicts and drift. If it shows drift, say what
     happened and propose the fix (switch the branch back, or open the workspace again).

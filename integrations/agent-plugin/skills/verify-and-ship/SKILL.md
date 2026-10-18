@@ -35,6 +35,8 @@ user-invocable: true
 10. Mutation-check each new test: break the behavior it guards with one small change, run only that test, see it fail,
     put the code back, see it pass. Do this for each behavior the test claims. Record each one with `code tests mutant
     record`: the checkpoint's test gate needs a kill for each new or changed test (`refs/reference-test-gate.md`).
+10a. Before each `workspace checkpoint`, run `legionctl code tests review` in the workspace. It lists each new or
+    changed test that the gate refuses, with the reason. Fix each one first: a refused checkpoint commits nothing.
 11. When an operation, its class, a wire type or a planning type changes, write `docs/api/schema.json` and
     `planning/*.schema.json` again:
     `LEGIONCTL_WRITE_SCHEMA=1 cargo test --profile test-fast -p legionctl --test e2e the_wire_format`.
