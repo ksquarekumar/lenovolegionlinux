@@ -21,27 +21,53 @@ const HEADER: &str = "// Written by legionctl (`legionctl config set`, Settings)
 /// # Errors
 /// The folder cannot be made or locked, or the file cannot be read, parsed or written.
 pub fn edit(dir: &Path, key: &str, value: Option<Value>) -> Result<Value> {
-    std::fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
-    let folder = std::fs::File::open(dir).with_context(|| format!("opening {}", dir.display()))?;
-    rustix::fs::flock(&folder, rustix::fs::FlockOperation::LockExclusive)
-        .with_context(|| format!("locking {}", dir.display()))?;
     let path = dir.join(MANAGED);
-    let mut managed = match std::fs::read(&path) {
-        Ok(bytes) => {
-            match serde_json::from_reader(json_comments::StripComments::new(bytes.as_slice()))
+    update(&path, |bytes| {
+        let mut managed = match bytes {
+            Some(bytes) => match serde_json::from_reader(json_comments::StripComments::new(bytes))
                 .with_context(|| format!("parsing {}", path.display()))?
             {
                 Value::Object(map) => map,
                 _ => bail!("{} is not a JSON object", path.display()),
-            }
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Map::new(),
+            },
+            None => Map::new(),
+        };
+        let parts: Vec<&str> = key.split('.').collect();
+        let old = put(&mut managed, &parts, value);
+        let text = format!(
+            "{HEADER}{}\n",
+            serde_json::to_string_pretty(&Value::Object(managed))?
+        );
+        Ok((text.into_bytes(), old))
+    })
+}
+
+/// Change the file `path` from its bytes (none: no file yet) to the bytes that `change` gives, under an exclusive lock
+/// of its folder, through a temporary file of its own and a rename: concurrent changes never lose each other
+/// (review/16 B10), and a reader never sees half a file. What `change` gives besides.
+///
+/// # Errors
+/// The folder cannot be made or locked, the file cannot be read or written, or `change` fails.
+pub fn update<T>(
+    path: &Path,
+    change: impl FnOnce(Option<&[u8]>) -> Result<(Vec<u8>, T)>,
+) -> Result<T> {
+    let dir = path.parent().context("a file has a folder")?;
+    std::fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
+    let folder = std::fs::File::open(dir).with_context(|| format!("opening {}", dir.display()))?;
+    rustix::fs::flock(&folder, rustix::fs::FlockOperation::LockExclusive)
+        .with_context(|| format!("locking {}", dir.display()))?;
+    let old = match std::fs::read(path) {
+        Ok(bytes) => Some(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
-    let parts: Vec<&str> = key.split('.').collect();
-    let old = put(&mut managed, &parts, value);
+    let (bytes, out) = change(old.as_deref())?;
+    let name = path
+        .file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
     let tmp = dir.join(format!(
-        ".{MANAGED}.{}.{}.tmp",
+        ".{name}.{}.{}.tmp",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -49,13 +75,9 @@ pub fn edit(dir: &Path, key: &str, value: Option<Value>) -> Result<Value> {
     ));
     let written = (|| -> Result<()> {
         let mut file = std::fs::File::create(&tmp)?;
-        writeln!(
-            file,
-            "{HEADER}{}",
-            serde_json::to_string_pretty(&Value::Object(managed))?
-        )?;
+        file.write_all(&bytes)?;
         file.sync_all()?;
-        std::fs::rename(&tmp, &path)?;
+        std::fs::rename(&tmp, path)?;
         folder.sync_all()?;
         Ok(())
     })();
@@ -63,7 +85,7 @@ pub fn edit(dir: &Path, key: &str, value: Option<Value>) -> Result<Value> {
         let _ = std::fs::remove_file(&tmp);
     }
     written.with_context(|| format!("writing {}", path.display()))?;
-    Ok(old)
+    Ok(out)
 }
 
 /// Put `value` at `parts` in `map` (or remove it; an object left empty goes too); the old value (null: none).

@@ -608,13 +608,14 @@ impl Approvals {
     /// # Errors
     /// The file cannot be read or written.
     pub fn answer(file: &str, hash: &str, allowed: bool) -> Result<()> {
-        let mut all = Approvals::read()?;
-        all.0.insert(file.to_string(), (hash.to_string(), allowed));
-        let path = Self::path();
-        std::fs::create_dir_all(path.parent().context("no state folder")?)?;
-        let part = path.with_extension("part");
-        std::fs::write(&part, serde_json::to_vec_pretty(&all)?)?;
-        Ok(std::fs::rename(&part, &path)?)
+        legionctl_machine::settings_file::update(&Self::path(), |bytes| {
+            let mut all: Approvals = match bytes {
+                Some(bytes) => serde_json::from_slice(bytes).context("approvals.json")?,
+                None => Approvals::default(),
+            };
+            all.0.insert(file.to_string(), (hash.to_string(), allowed));
+            Ok((serde_json::to_vec_pretty(&all)?, ()))
+        })
     }
 }
 

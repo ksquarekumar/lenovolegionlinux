@@ -532,6 +532,55 @@ fn a_projects_list_binds_its_agents(lab: &Lab, repo: &Path) {
     assert!(!failed, "outside the project: {out}");
 }
 
+/// Twelve projects get a setting at the same time: each new project file is the user's own, so each is allowed, and
+/// the trust answers of all twelve are kept (the answers' file is changed under its lock too).
+fn project_answers_at_the_same_time_all_land(op: &std::sync::Arc<Operator>, home: &Path) {
+    let repos: Vec<std::path::PathBuf> = (0..12)
+        .map(|i| {
+            let repo = home.join(format!("p{i}"));
+            std::fs::create_dir_all(repo.join(".git")).unwrap();
+            repo
+        })
+        .collect();
+    let threads: Vec<_> = repos
+        .iter()
+        .cloned()
+        .map(|repo| {
+            let op = op.clone();
+            std::thread::spawn(move || {
+                let out = op.cli_in(
+                    &repo,
+                    &[
+                        "config",
+                        "set",
+                        "dossier.gate",
+                        "false",
+                        "--scope",
+                        "project",
+                    ],
+                );
+                assert!(out.status.success(), "{}", text(&out));
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    let approvals: Value = serde_json::from_slice(
+        &std::fs::read(home.join(".local/state/legionctl/approvals.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(approvals.as_object().unwrap().len(), 12, "{approvals:#}");
+    for repo in &repos {
+        let gate = op.cli_in(
+            repo,
+            &["config", "settings", "--key", "dossier.gate", "--json"],
+        );
+        let row: Value = serde_json::from_slice(&gate.stdout).unwrap();
+        assert_eq!(row["items"][0]["from"], "project", "{row}");
+    }
+}
+
 /// Changes that run at the same time never lose each other (review/16 B10): each takes the layer's lock, writes its
 /// own temporary file and renames it. Before, two writers read the same file and the second rename dropped the first
 /// one's key. The operations that change settings for you (reminders, hooks) go the same way, with their history;
@@ -579,6 +628,7 @@ fn changes_at_the_same_time_all_land_with_their_history() {
         "{history:#}"
     );
 
+    project_answers_at_the_same_time_all_land(&op, &home);
     op.ok(&["hooks", "add", "greet", "echo hello"]);
     op.ok(&["hooks", "bind", "prompt", "greet"]);
     op.ok(&["hooks", "rm", "greet"]);
